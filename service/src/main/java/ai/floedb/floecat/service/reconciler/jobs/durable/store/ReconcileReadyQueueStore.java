@@ -41,6 +41,9 @@ public interface ReconcileReadyQueueStore {
     // queue or leasing a job). Lets the caller surface a backlog signal instead of failing
     // silently.
     public boolean abortedByBudget;
+    // Number of stale (non-current) ready pointers deleted while scanning. A persistently non-zero
+    // value means the ready queue is leaking pointers faster than scans drain them.
+    public int prunedCount;
   }
 
   record ReadyQueueEntry(

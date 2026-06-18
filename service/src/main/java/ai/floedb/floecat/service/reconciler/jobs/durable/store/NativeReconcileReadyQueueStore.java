@@ -25,6 +25,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Predicate;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -38,6 +39,18 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
   private ReconcileLeaseStore leaseStore;
   private int readyScanLimit;
   private Predicate<StoredReconcileJob> requiresReadyPointer;
+
+  // Delete ready-queue pointers the scan finds to be non-current (canonical/record gone, the job is
+  // waiting, or the pointer was superseded by a requeue) as they are encountered. Requeue/fail
+  // paths
+  // leak these stale pointers; left in place they pile up at the head of the due-ordered scan and a
+  // budget-bounded scan never reaches leasable work behind them. Pruning only ever removes pointers
+  // that are NOT a job's current pointer, so it cannot strand leasable work. Kill-switch for
+  // safety.
+  @ConfigProperty(
+      name = "floecat.reconciler.job-store.lease-scan-prune-stale",
+      defaultValue = "true")
+  boolean pruneStaleReadyEntries = true;
 
   public void bind(
       ReconcileReadyQueueBackend readyQueueBackend,
@@ -196,19 +209,24 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
         CanonicalPointerSnapshot canonicalSnapshot =
             readyQueueBackend.loadCanonicalSnapshot(candidate.canonicalPointerKey()).orElse(null);
         if (canonicalSnapshot == null) {
+          pruneStaleReadyEntry(candidate, scanStats);
           continue;
         }
         var recordOpt = jobIndexStore.readRecord(canonicalSnapshot);
         if (recordOpt.isEmpty()) {
+          pruneStaleReadyEntry(candidate, scanStats);
           continue;
         }
         StoredReconcileJob record = recordOpt.get();
         if ("JS_WAITING".equals(record.state)) {
+          pruneStaleReadyEntry(candidate, scanStats);
           continue;
         }
         if (!readyPointerMatchesRecord(candidate, record)) {
+          pruneStaleReadyEntry(candidate, scanStats);
           continue;
         }
+        // Not stale, just not eligible for this requester: leave the pointer for another lane.
         if (!matchesLeaseRequest(record, request)) {
           continue;
         }
@@ -353,6 +371,24 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
       case PINNED_EXECUTOR -> candidate.filterValue().equals(record.pinnedExecutorId());
       case JOB_KIND -> candidate.filterValue().equals(record.jobKind().name());
     };
+  }
+
+  private void pruneStaleReadyEntry(ReadyQueueEntry candidate, LeaseScanStats scanStats) {
+    if (!pruneStaleReadyEntries || candidate == null) {
+      return;
+    }
+    String readyPointerKey = candidate.readyPointerKey();
+    if (readyPointerKey == null || readyPointerKey.isBlank()) {
+      return;
+    }
+    try {
+      if (readyQueueBackend.deleteReadyEntry(readyPointerKey) && scanStats != null) {
+        scanStats.prunedCount++;
+      }
+    } catch (RuntimeException e) {
+      // Best-effort cleanup: a failed delete must never abort the lease scan.
+      LOG.debugf("failed to prune stale ready pointer %s: %s", readyPointerKey, e.getMessage());
+    }
   }
 
   private static boolean scanBudgetExceeded(LeaseScanStats scanStats) {

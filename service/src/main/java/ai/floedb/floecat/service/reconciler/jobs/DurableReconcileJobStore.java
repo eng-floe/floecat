@@ -901,14 +901,24 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (scanStats.abortedByBudget) {
         // Surfaced, not swallowed: a scan that cannot reach leasable work within its budget
         // signals a ready-queue backlog that needs draining (stuck/failing jobs requeueing).
+        // pruned>0 means it is actively self-draining; pruned stuck at 0 with a backlog points
+        // elsewhere.
         LOG.warnf(
             "leaseNext aborted by scan budget total_ms=%d scan_count=%d candidate_count=%d"
-                + " budget_ms=%d",
-            totalMs, scanStats.scanCount, scanStats.candidateCount, leaseScanBudgetMs);
+                + " pruned=%d budget_ms=%d",
+            totalMs,
+            scanStats.scanCount,
+            scanStats.candidateCount,
+            scanStats.prunedCount,
+            leaseScanBudgetMs);
       } else {
         LOG.debugf(
-            "leaseNext total_ms=%d scan_count=%d candidate_count=%d leased=%s",
-            totalMs, scanStats.scanCount, scanStats.candidateCount, leased.isPresent());
+            "leaseNext total_ms=%d scan_count=%d candidate_count=%d pruned=%d leased=%s",
+            totalMs,
+            scanStats.scanCount,
+            scanStats.candidateCount,
+            scanStats.prunedCount,
+            leased.isPresent());
       }
       return leased;
     } finally {

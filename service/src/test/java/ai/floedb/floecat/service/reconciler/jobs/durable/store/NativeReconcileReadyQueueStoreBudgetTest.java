@@ -23,14 +23,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeaseRequest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore.LeaseScanStats;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit coverage for the ready-scan wall-clock budget. The budget lets a lease scan a caller has
- * already abandoned (past the worker-control client deadline) stop and yield its concurrency slot
- * instead of running to completion, which is what prevents abandoned scans from piling up.
+ * Unit coverage for the lease-scan guards: the wall-clock budget (so a scan a caller has already
+ * abandoned yields its concurrency slot instead of running to completion) and inline pruning of
+ * stale ready pointers (so leaked pointers drain instead of starving leasable work behind them).
  */
 class NativeReconcileReadyQueueStoreBudgetTest {
 
@@ -69,6 +70,24 @@ class NativeReconcileReadyQueueStoreBudgetTest {
         backend.scanReadySliceCalls >= 1, "scan must reach the backend when not budget-gated");
   }
 
+  @Test
+  void scanPrunesOrphanedReadyPointer() {
+    PruningBackend backend = new PruningBackend();
+    NativeReconcileReadyQueueStore store = new NativeReconcileReadyQueueStore();
+    store.bind(backend, null, null, 128, record -> true);
+
+    LeaseScanStats stats = new LeaseScanStats();
+    Optional<LeasedJob> leased =
+        store.leaseReadyDue(System.currentTimeMillis(), LeaseRequest.all(), stats);
+
+    assertTrue(leased.isEmpty(), "an orphaned pointer cannot be leased");
+    assertEquals(1, stats.prunedCount, "the orphaned (canonical-missing) pointer must be pruned");
+    assertEquals(
+        List.of("rp-orphan"),
+        backend.deleted,
+        "deleteReadyEntry called with the stale pointer key");
+  }
+
   /** Records ready-scan calls and returns an empty page so the scan terminates cleanly. */
   private static final class CountingBackend implements ReconcileReadyQueueBackend {
     int scanReadySliceCalls;
@@ -93,6 +112,42 @@ class NativeReconcileReadyQueueStoreBudgetTest {
     @Override
     public Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(String canonicalPointerKey) {
       throw new UnsupportedOperationException("not used in this test");
+    }
+  }
+
+  /** Serves one due candidate whose canonical snapshot is missing, and records prune deletes. */
+  private static final class PruningBackend implements ReconcileReadyQueueBackend {
+    final List<String> deleted = new ArrayList<>();
+
+    @Override
+    public ReconcileReadyQueueStore.ReadyQueueScanPage scanReadySlice(
+        ReadyQueueSlice slice, int pageSize, String pageToken) {
+      ReconcileReadyQueueStore.ReadyQueueEntry orphan =
+          new ReconcileReadyQueueStore.ReadyQueueEntry(
+              "rp-orphan",
+              "cp-orphan",
+              "acct",
+              "job",
+              1L,
+              ReconcileReadyQueueStore.ReadyIndexType.GLOBAL,
+              "");
+      return new ReconcileReadyQueueStore.ReadyQueueScanPage(List.of(orphan), "");
+    }
+
+    @Override
+    public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
+      throw new UnsupportedOperationException("not used in this test");
+    }
+
+    @Override
+    public boolean deleteReadyEntry(String readyPointerKey) {
+      deleted.add(readyPointerKey);
+      return true;
+    }
+
+    @Override
+    public Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(String canonicalPointerKey) {
+      return Optional.empty();
     }
   }
 }
