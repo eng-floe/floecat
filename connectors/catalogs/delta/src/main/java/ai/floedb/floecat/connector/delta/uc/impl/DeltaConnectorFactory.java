@@ -129,9 +129,7 @@ final class DeltaConnectorFactory {
             engineContext.parquetInput(),
             ndvEnabled,
             ndvSampleFraction,
-            ndvMaxFiles,
-            effectiveOptions.get(UnityDeltaConnector.TABLE_ROOT_HINT_FULL_NAME_OPTION),
-            effectiveOptions.get(UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION));
+            ndvMaxFiles);
       }
     };
   }

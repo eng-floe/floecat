@@ -18,7 +18,6 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
 import ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials;
-import ai.floedb.floecat.connector.delta.uc.impl.UnityDeltaConnector;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
@@ -90,6 +89,7 @@ public class ServerSideStorageConfigResolver {
         Optional.empty(),
         Optional.empty(),
         Optional.empty(),
+        Optional.empty(),
         connector,
         config,
         false);
@@ -102,6 +102,7 @@ public class ServerSideStorageConfigResolver {
         ctx.flatMap(ReconcileContext::authorizationToken),
         ctx.flatMap(ReconcileContext::executionJobId),
         ctx.flatMap(ReconcileContext::executionLeaseEpoch),
+        Optional.empty(),
         connector,
         config,
         false);
@@ -111,6 +112,7 @@ public class ServerSideStorageConfigResolver {
       Optional<String> authorizationToken,
       Optional<String> executionJobId,
       Optional<String> executionLeaseEpoch,
+      Optional<String> storageLocation,
       Connector connector,
       ConnectorConfig config) {
     return resolve(
@@ -118,6 +120,7 @@ public class ServerSideStorageConfigResolver {
         authorizationToken,
         executionJobId,
         executionLeaseEpoch,
+        storageLocation,
         connector,
         config,
         false);
@@ -127,6 +130,7 @@ public class ServerSideStorageConfigResolver {
       Optional<String> authorizationToken,
       Optional<String> executionJobId,
       Optional<String> executionLeaseEpoch,
+      Optional<String> storageLocation,
       Connector connector,
       ConnectorConfig config) {
     return resolveManaged(
@@ -134,6 +138,7 @@ public class ServerSideStorageConfigResolver {
         authorizationToken,
         executionJobId,
         executionLeaseEpoch,
+        storageLocation,
         connector,
         config);
   }
@@ -143,6 +148,7 @@ public class ServerSideStorageConfigResolver {
       Optional<String> authorizationToken,
       Optional<String> executionJobId,
       Optional<String> executionLeaseEpoch,
+      Optional<String> storageLocation,
       Connector connector,
       ConnectorConfig config) {
     ConnectorConfig resolved =
@@ -151,6 +157,7 @@ public class ServerSideStorageConfigResolver {
             authorizationToken,
             executionJobId,
             executionLeaseEpoch,
+            storageLocation,
             connector,
             config,
             true);
@@ -171,6 +178,7 @@ public class ServerSideStorageConfigResolver {
       Optional<String> authorizationToken,
       Optional<String> executionJobId,
       Optional<String> executionLeaseEpoch,
+      Optional<String> storageLocation,
       Connector connector,
       ConnectorConfig config,
       boolean refreshableExecutionCredentials) {
@@ -181,7 +189,7 @@ public class ServerSideStorageConfigResolver {
       if (!connector.hasResourceId()) {
         return config;
       }
-      String locationPrefix = storageAuthorityLookupLocation(config);
+      String locationPrefix = storageAuthorityLookupLocation(storageLocation, config);
       if (locationPrefix == null) {
         return config;
       }
@@ -220,7 +228,7 @@ public class ServerSideStorageConfigResolver {
     if (config.kind() != ConnectorConfig.Kind.ICEBERG || !connector.hasResourceId()) {
       return config;
     }
-    String locationPrefix = storageAuthorityLookupLocation(config);
+    String locationPrefix = storageAuthorityLookupLocation(storageLocation, config);
     if (locationPrefix == null) {
       return config;
     }
@@ -382,16 +390,19 @@ public class ServerSideStorageConfigResolver {
         new ResolvedStorageCredentials(accessKeyId, secretAccessKey, sessionToken, expiresAt));
   }
 
-  static String storageAuthorityLookupLocation(ConnectorConfig config) {
+  static String storageAuthorityLookupLocation(
+      Optional<String> storageLocation, ConnectorConfig config) {
     if (config == null) {
       return null;
     }
-    if (config.kind() == ConnectorConfig.Kind.DELTA) {
-      Map<String, String> options = config.options();
-      String hintedLocation = options.get(UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION);
-      if (isNonBlank(hintedLocation)) {
-        return normalizeS3Location(hintedLocation, false);
+    if (storageLocation != null && storageLocation.isPresent()) {
+      String explicitLocation = normalizeS3Location(storageLocation.orElse(null), false);
+      if (explicitLocation != null) {
+        return explicitLocation;
       }
+    }
+    Map<String, String> options = config.options();
+    if (config.kind() == ConnectorConfig.Kind.DELTA) {
       String tableRoot = options.get("delta.table-root");
       if (isNonBlank(tableRoot)) {
         return normalizeS3Location(tableRoot, false);
@@ -401,20 +412,18 @@ public class ServerSideStorageConfigResolver {
     if (config.kind() != ConnectorConfig.Kind.ICEBERG) {
       return null;
     }
-    Map<String, String> options = config.options();
     String source = normalize(options.get("iceberg.source"));
     if ("filesystem".equals(source)) {
       return normalizeS3Location(config.uri(), false);
     }
     if ("rest".equals(source)) {
-      String warehouse = options.get("warehouse");
-      if (warehouse == null || warehouse.isBlank()) {
-        return null;
-      }
-      boolean hasS3Endpoint = isNonBlank(options.get("s3.endpoint"));
-      return normalizeWarehouseLocation(warehouse, hasS3Endpoint);
+      return null;
     }
     return null;
+  }
+
+  static String storageAuthorityLookupLocation(ConnectorConfig config) {
+    return storageAuthorityLookupLocation(Optional.empty(), config);
   }
 
   private static void putStorageProperty(Map<String, String> target, String key, String value) {
@@ -439,20 +448,6 @@ public class ServerSideStorageConfigResolver {
                     && key.startsWith(
                         RefreshingAwsCredentialsProviderRegistry
                             .ICEBERG_CLIENT_CREDENTIALS_PROVIDER_PREFIX));
-  }
-
-  private static String normalizeWarehouseLocation(String warehouse, boolean allowBareWarehouse) {
-    String normalized = normalizeS3Location(warehouse, true);
-    if (normalized != null) {
-      return normalized;
-    }
-    if (!allowBareWarehouse
-        || warehouse == null
-        || warehouse.isBlank()
-        || warehouse.contains("://")) {
-      return null;
-    }
-    return "s3://" + trimTrailingSlash(warehouse) + "/";
   }
 
   private static String normalizeS3Location(String location, boolean ensureTrailingSlash) {

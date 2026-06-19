@@ -28,7 +28,6 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
-import ai.floedb.floecat.connector.delta.uc.impl.UnityDeltaConnector;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
@@ -46,20 +45,25 @@ import org.mockito.ArgumentCaptor;
 class ServerSideStorageConfigResolverTest {
 
   @Test
-  void restWarehouseUsesS3PrefixForAuthorityLookup() {
+  void restStorageLocationHintUsesTableStorageRootForAuthorityLookup() {
     ConnectorConfig config =
         new ConnectorConfig(
             ConnectorConfig.Kind.ICEBERG,
             "rest",
             "http://polaris:8181/api/catalog",
             Map.of(
-                "iceberg.source", "rest",
-                "warehouse", "warehouse",
-                "s3.endpoint", "http://minio:9000"),
+                "iceberg.source",
+                "rest",
+                "warehouse",
+                "warehouse",
+                "s3.endpoint",
+                "http://minio:9000"),
             new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
 
     assertEquals(
-        "s3://warehouse/", ServerSideStorageConfigResolver.storageAuthorityLookupLocation(config));
+        "s3://warehouse/ns/table",
+        ServerSideStorageConfigResolver.storageAuthorityLookupLocation(
+            java.util.Optional.of("s3://warehouse/ns/table"), config));
   }
 
   @Test
@@ -93,13 +97,13 @@ class ServerSideStorageConfigResolverTest {
   }
 
   @Test
-  void nonS3RestWarehouseDoesNotResolveAuthorityLookupLocation() {
+  void restConnectorWithoutStorageLocationHintDoesNotResolveAuthorityLookupLocation() {
     ConnectorConfig config =
         new ConnectorConfig(
             ConnectorConfig.Kind.ICEBERG,
             "rest",
             "http://polaris:8181/api/catalog",
-            Map.of("iceberg.source", "rest", "warehouse", "file:///tmp/warehouse"),
+            Map.of("iceberg.source", "rest", "warehouse", "s3://warehouse"),
             new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
 
     assertNull(ServerSideStorageConfigResolver.storageAuthorityLookupLocation(config));
@@ -183,7 +187,14 @@ class ServerSideStorageConfigResolverTest {
                 "s3.endpoint", "http://localstack:4566"),
             new ConnectorConfig.Auth("oauth2", Map.of("token", "x"), Map.of()));
 
-    ConnectorConfig resolved = resolver.resolve(java.util.Optional.empty(), connector, config);
+    ConnectorConfig resolved =
+        resolver.resolveWithAuthorization(
+            java.util.Optional.empty(),
+            java.util.Optional.empty(),
+            java.util.Optional.empty(),
+            java.util.Optional.of("s3://warehouse/ns/table"),
+            connector,
+            config);
 
     assertEquals(config, resolved);
   }
@@ -221,7 +232,14 @@ class ServerSideStorageConfigResolverTest {
 
     assertThrows(
         StatusRuntimeException.class,
-        () -> resolver.resolve(java.util.Optional.empty(), connector, config));
+        () ->
+            resolver.resolveWithAuthorization(
+                java.util.Optional.empty(),
+                java.util.Optional.empty(),
+                java.util.Optional.empty(),
+                java.util.Optional.of("s3://warehouse/ns/table"),
+                connector,
+                config));
   }
 
   @Test
@@ -258,7 +276,7 @@ class ServerSideStorageConfigResolverTest {
   }
 
   @Test
-  void resolveMergesResolvedStorageAuthorityForDeltaHintLocation() {
+  void resolveMergesResolvedStorageAuthorityForExplicitDeltaStorageLocation() {
     ServerSideStorageConfigResolver resolver =
         new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
     resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
@@ -292,14 +310,17 @@ class ServerSideStorageConfigResolverTest {
             ConnectorConfig.Kind.DELTA,
             "delta",
             "http://localhost",
-            Map.of(
-                "delta.source",
-                "unity",
-                UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION,
-                "s3://bucket/table"),
+            Map.of("delta.source", "unity"),
             new ConnectorConfig.Auth("none", Map.of(), Map.of()));
 
-    ConnectorConfig resolved = resolver.resolve(java.util.Optional.empty(), connector, config);
+    ConnectorConfig resolved =
+        resolver.resolveWithAuthorization(
+            java.util.Optional.empty(),
+            java.util.Optional.empty(),
+            java.util.Optional.empty(),
+            java.util.Optional.of("s3://bucket/table"),
+            connector,
+            config);
 
     assertEquals("http://localstack:4566", resolved.options().get("s3.endpoint"));
     assertEquals("us-east-1", resolved.options().get("s3.region"));
@@ -334,17 +355,14 @@ class ServerSideStorageConfigResolverTest {
             ConnectorConfig.Kind.DELTA,
             "delta",
             "http://localhost",
-            Map.of(
-                "delta.source",
-                "unity",
-                UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION,
-                "s3://bucket/table"),
+            Map.of("delta.source", "unity"),
             new ConnectorConfig.Auth("none", Map.of(), Map.of()));
 
     resolver.resolveWithAuthorization(
         java.util.Optional.of("token"),
         java.util.Optional.of("job-1"),
         java.util.Optional.of("lease-1"),
+        java.util.Optional.of("s3://bucket/table"),
         connector,
         config);
 
@@ -395,11 +413,7 @@ class ServerSideStorageConfigResolverTest {
             ConnectorConfig.Kind.DELTA,
             "delta",
             "http://localhost",
-            Map.of(
-                "delta.source",
-                "unity",
-                UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION,
-                "s3://bucket/table"),
+            Map.of("delta.source", "unity"),
             new ConnectorConfig.Auth("none", Map.of(), Map.of()));
 
     String providerId;
@@ -408,6 +422,7 @@ class ServerSideStorageConfigResolverTest {
             java.util.Optional.of("token"),
             java.util.Optional.of("job-1"),
             java.util.Optional.of("lease-1"),
+            java.util.Optional.of("s3://bucket/table"),
             connector,
             config)) {
       providerId =
@@ -463,11 +478,7 @@ class ServerSideStorageConfigResolverTest {
             ConnectorConfig.Kind.DELTA,
             "delta",
             "http://localhost",
-            Map.of(
-                "delta.source",
-                "unity",
-                UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION,
-                "s3://bucket/table"),
+            Map.of("delta.source", "unity"),
             new ConnectorConfig.Auth("none", Map.of(), Map.of()));
 
     IllegalStateException error =
@@ -478,6 +489,7 @@ class ServerSideStorageConfigResolverTest {
                     java.util.Optional.of("token"),
                     java.util.Optional.of("job-1"),
                     java.util.Optional.of("lease-1"),
+                    java.util.Optional.of("s3://bucket/table"),
                     connector,
                     config));
     assertEquals(
@@ -520,11 +532,7 @@ class ServerSideStorageConfigResolverTest {
             ConnectorConfig.Kind.DELTA,
             "delta",
             "http://localhost",
-            Map.of(
-                "delta.source",
-                "unity",
-                UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION,
-                "s3://bucket/table"),
+            Map.of("delta.source", "unity"),
             new ConnectorConfig.Auth("none", Map.of(), Map.of()));
 
     assertThrows(
@@ -534,6 +542,7 @@ class ServerSideStorageConfigResolverTest {
                 java.util.Optional.of("token"),
                 java.util.Optional.of("job-1"),
                 java.util.Optional.of("lease-1"),
+                java.util.Optional.of("s3://bucket/table"),
                 connector,
                 config));
   }
@@ -583,11 +592,7 @@ class ServerSideStorageConfigResolverTest {
             ConnectorConfig.Kind.DELTA,
             "delta",
             "http://localhost",
-            Map.of(
-                "delta.source",
-                "unity",
-                UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION,
-                "s3://bucket/table"),
+            Map.of("delta.source", "unity"),
             new ConnectorConfig.Auth("none", Map.of(), Map.of()));
 
     try (var resolved =
@@ -595,6 +600,7 @@ class ServerSideStorageConfigResolverTest {
             java.util.Optional.of("token"),
             java.util.Optional.of("job-1"),
             java.util.Optional.of("lease-1"),
+            java.util.Optional.of("s3://bucket/table"),
             connector,
             config)) {
       String providerId =
@@ -662,11 +668,7 @@ class ServerSideStorageConfigResolverTest {
             ConnectorConfig.Kind.DELTA,
             "delta",
             "http://localhost",
-            Map.of(
-                "delta.source",
-                "unity",
-                UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION,
-                "s3://bucket/table"),
+            Map.of("delta.source", "unity"),
             new ConnectorConfig.Auth("none", Map.of(), Map.of()));
 
     try (var resolved =
@@ -674,6 +676,7 @@ class ServerSideStorageConfigResolverTest {
             java.util.Optional.of("token"),
             java.util.Optional.of("job-1"),
             java.util.Optional.of("lease-1"),
+            java.util.Optional.of("s3://bucket/table"),
             connector,
             config)) {
       String providerId =
@@ -774,24 +777,19 @@ class ServerSideStorageConfigResolverTest {
   }
 
   @Test
-  void storageAuthorityLookupLocationUsesDeltaHintLocation() {
-    ServerSideStorageConfigResolver resolver =
-        new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
+  void storageAuthorityLookupLocationUsesExplicitStorageLocation() {
     ConnectorConfig config =
         new ConnectorConfig(
             ConnectorConfig.Kind.DELTA,
             "delta",
             "http://localhost",
-            Map.of(
-                "delta.source",
-                "unity",
-                UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION,
-                "s3://bucket/table"),
+            Map.of("delta.source", "unity"),
             new ConnectorConfig.Auth("none", Map.of(), Map.of()));
 
     assertEquals(
         "s3://bucket/table",
-        ServerSideStorageConfigResolver.storageAuthorityLookupLocation(config));
+        ServerSideStorageConfigResolver.storageAuthorityLookupLocation(
+            java.util.Optional.of("s3://bucket/table"), config));
   }
 
   @Test
@@ -816,11 +814,7 @@ class ServerSideStorageConfigResolverTest {
             ConnectorConfig.Kind.DELTA,
             "delta",
             "http://localhost",
-            Map.of(
-                "delta.source",
-                "unity",
-                UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION,
-                "s3://bucket/table"),
+            Map.of("delta.source", "unity"),
             new ConnectorConfig.Auth("none", Map.of(), Map.of()));
 
     IllegalArgumentException error =
@@ -831,6 +825,7 @@ class ServerSideStorageConfigResolverTest {
                     java.util.Optional.of("token"),
                     java.util.Optional.of("job-1"),
                     java.util.Optional.empty(),
+                    java.util.Optional.of("s3://bucket/table"),
                     connector,
                     config));
     assertEquals(

@@ -188,8 +188,8 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
     --cred secret_access_key=test
   ```
 
-  See [`docs/storage-authorities.md`](storage-authorities.md) for dedicated storage-authority
-  examples, including cross-account assume-role vending.
+  See the [storage authorities guide](storage-authorities.md) for dedicated
+  storage-authority examples, including cross-account assume-role vending.
 
 - **Managing snapshot constraints**
 

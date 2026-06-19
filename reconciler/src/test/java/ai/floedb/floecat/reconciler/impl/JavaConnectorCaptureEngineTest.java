@@ -101,6 +101,7 @@ class JavaConnectorCaptureEngineTest {
             false,
             Optional.empty(),
             Optional.empty(),
+            Optional.empty(),
             Optional.empty());
 
     assertThat(engine.supports(missingPlannedFiles)).isFalse();
@@ -128,6 +129,7 @@ class JavaConnectorCaptureEngineTest {
             FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             false,
+            Optional.empty(),
             Optional.empty(),
             Optional.empty(),
             Optional.empty());
@@ -161,6 +163,7 @@ class JavaConnectorCaptureEngineTest {
             eq(Optional.of("worker-token")),
             eq(Optional.of("job-1")),
             eq(Optional.of("lease-1")),
+            eq(Optional.empty()),
             eq(SOURCE_CONNECTOR),
             any()))
         .thenReturn(resolvedConfig);
@@ -168,6 +171,7 @@ class JavaConnectorCaptureEngineTest {
             eq(Optional.of("worker-token")),
             eq(Optional.of("job-1")),
             eq(Optional.of("lease-1")),
+            eq(Optional.empty()),
             eq(SOURCE_CONNECTOR),
             any()))
         .thenReturn(
@@ -192,6 +196,7 @@ class JavaConnectorCaptureEngineTest {
             FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.COLUMN),
             false,
+            Optional.empty(),
             Optional.of("worker-token"),
             Optional.of("job-1"),
             Optional.of("lease-1"));
@@ -202,6 +207,7 @@ class JavaConnectorCaptureEngineTest {
             eq(Optional.of("worker-token")),
             eq(Optional.of("job-1")),
             eq(Optional.of("lease-1")),
+            eq(Optional.empty()),
             eq(SOURCE_CONNECTOR),
             any());
   }
@@ -228,6 +234,7 @@ class JavaConnectorCaptureEngineTest {
             FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             false,
+            Optional.empty(),
             Optional.empty(),
             Optional.empty(),
             Optional.empty());
@@ -328,6 +335,7 @@ class JavaConnectorCaptureEngineTest {
             false,
             Optional.empty(),
             Optional.empty(),
+            Optional.empty(),
             Optional.empty());
 
     var result = engine.capture(request);
@@ -396,6 +404,7 @@ class JavaConnectorCaptureEngineTest {
             false,
             Optional.empty(),
             Optional.empty(),
+            Optional.empty(),
             Optional.empty());
 
     var result = engine.capture(request);
@@ -451,6 +460,7 @@ class JavaConnectorCaptureEngineTest {
             FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.COLUMN),
             false,
+            Optional.empty(),
             Optional.empty(),
             Optional.empty(),
             Optional.empty());
@@ -565,6 +575,7 @@ class JavaConnectorCaptureEngineTest {
             FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             true,
+            Optional.empty(),
             Optional.empty(),
             Optional.empty(),
             Optional.empty());
@@ -740,6 +751,7 @@ class JavaConnectorCaptureEngineTest {
                 FloecatConnector.StatsTargetKind.COLUMN,
                 FloecatConnector.StatsTargetKind.FILE),
             false,
+            Optional.empty(),
             Optional.empty(),
             Optional.empty(),
             Optional.empty());

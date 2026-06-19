@@ -39,6 +39,7 @@ public record CaptureEngineRequest(
     FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy,
     Set<FloecatConnector.StatsTargetKind> requestedStatsTargetKinds,
     boolean capturePageIndex,
+    Optional<String> storageLocation,
     Optional<String> authorizationToken,
     Optional<String> executionJobId,
     Optional<String> executionLeaseEpoch) {
@@ -64,6 +65,10 @@ public record CaptureEngineRequest(
         requestedStatsTargetKinds == null
             ? Set.of()
             : Set.copyOf(new LinkedHashSet<>(requestedStatsTargetKinds));
+    storageLocation =
+        storageLocation == null
+            ? Optional.empty()
+            : storageLocation.map(String::trim).filter(location -> !location.isBlank());
     authorizationToken =
         authorizationToken == null
             ? Optional.empty()

@@ -25,9 +25,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
-import ai.floedb.floecat.connector.delta.uc.impl.UnityDeltaConnector;
 import ai.floedb.floecat.connector.rpc.Connector;
-import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
@@ -1219,33 +1217,8 @@ public class ReconcilerService {
     return resolveServerSideStorage(
         ctx,
         active.connector(),
-        withDeltaTableStorageLocationHint(active.connector(), active.resolvedConfig(), metadata));
-  }
-
-  private ConnectorConfig withDeltaTableStorageLocationHint(
-      Connector connector, ConnectorConfig config, DestinationTableMetadata metadata) {
-    if (connector == null
-        || config == null
-        || metadata == null
-        || connector.getKind() != ConnectorKind.CK_DELTA
-        || metadata.storageLocation() == null
-        || metadata.storageLocation().isBlank()
-        || metadata.sourceNamespace() == null
-        || metadata.sourceNamespace().isBlank()
-        || metadata.sourceName() == null
-        || metadata.sourceName().isBlank()) {
-      return config;
-    }
-    LinkedHashMap<String, String> options = new LinkedHashMap<>(config.options());
-    options.put(
-        UnityDeltaConnector.TABLE_ROOT_HINT_FULL_NAME_OPTION,
-        metadata.sourceNamespace() + "." + metadata.sourceName());
-    options.put(UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION, metadata.storageLocation());
-    if (options.equals(config.options())) {
-      return config;
-    }
-    return new ConnectorConfig(
-        config.kind(), config.displayName(), config.uri(), Map.copyOf(options), config.auth());
+        active.resolvedConfig(),
+        Optional.ofNullable(metadata.storageLocation()).filter(location -> !location.isBlank()));
   }
 
   ReconcileContext buildContext(PrincipalContext principal, Optional<String> bearerToken) {
@@ -1409,10 +1382,24 @@ public class ReconcilerService {
 
   private ConnectorConfig resolveServerSideStorage(
       ReconcileContext ctx, Connector connector, ConnectorConfig config) {
+    return resolveServerSideStorage(ctx, connector, config, Optional.empty());
+  }
+
+  private ConnectorConfig resolveServerSideStorage(
+      ReconcileContext ctx,
+      Connector connector,
+      ConnectorConfig config,
+      Optional<String> storageLocation) {
     if (serverSideStorageConfigResolver == null) {
       return config;
     }
-    return serverSideStorageConfigResolver.resolve(Optional.of(ctx), connector, config);
+    return serverSideStorageConfigResolver.resolveWithAuthorization(
+        ctx.authorizationToken(),
+        ctx.executionJobId(),
+        ctx.executionLeaseEpoch(),
+        storageLocation,
+        connector,
+        config);
   }
 
   record ActiveConnector(

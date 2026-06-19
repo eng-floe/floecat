@@ -377,7 +377,7 @@ Preferred model: storage-authority-backed credential vending
 In that preferred model, Floecat vends temporary object-store credentials from storage authorities;
 the client does not need static S3 keys in its catalog config.
 
-See [`docs/storage-authorities.md`](storage-authorities.md) for storage-authority concepts and
+See the [storage authorities guide](storage-authorities.md) for storage-authority concepts and
 worked CLI examples.
 
 ---

@@ -226,4 +226,4 @@ Extensibility points:
 - SPI details: [`docs/connectors-spi.md`](connectors-spi.md)
 - Iceberg connector for contrast: [`docs/connectors-iceberg.md`](connectors-iceberg.md)
 - Service & reconciler integration: [`docs/service.md`](service.md), [`docs/reconciler.md`](reconciler.md)
-- Storage credential vending: [`docs/storage-authorities.md`](storage-authorities.md)
+- Storage credential vending: [Storage authorities guide](storage-authorities.md)

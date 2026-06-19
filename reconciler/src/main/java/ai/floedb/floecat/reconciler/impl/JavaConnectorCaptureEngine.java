@@ -122,6 +122,7 @@ public class JavaConnectorCaptureEngine implements CaptureEngine {
         request.authorizationToken(),
         request.executionJobId(),
         request.executionLeaseEpoch(),
+        request.storageLocation(),
         connector,
         resolved);
   }

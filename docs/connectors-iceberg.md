@@ -179,4 +179,4 @@ To extend behavior:
 - SPI contract: [`docs/connectors-spi.md`](connectors-spi.md)
 - Delta connector for comparison: [`docs/connectors-delta.md`](connectors-delta.md)
 - Service connector management: [`docs/service.md`](service.md)
-- Storage credential vending: [`docs/storage-authorities.md`](storage-authorities.md)
+- Storage credential vending: [Storage authorities guide](storage-authorities.md)
