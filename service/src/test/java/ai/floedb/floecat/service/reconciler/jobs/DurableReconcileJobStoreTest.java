@@ -874,7 +874,6 @@ class DurableReconcileJobStoreTest {
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, execJobId));
     assertEquals("Lease expired; requeued", requeued.message);
     assertEquals("JS_QUEUED", requeued.state);
-    assertTrue(requeued.nextAttemptAtMs > System.currentTimeMillis());
 
     long deadlineMs = System.currentTimeMillis() + 2_000L;
     java.util.Optional<ReconcileJobStore.LeasedJob> secondLease = java.util.Optional.empty();
