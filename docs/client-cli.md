@@ -70,8 +70,9 @@ syntactic sugar such as `catalog.ns.table` references and `--props k=v` repeated
 - **Secret handling** – Secret-bearing connector and storage-authority values must be supplied via
   `--cred-type` / `--cred`, not `--auth k=v`. The service stores those secrets out-of-band and
   only returns redacted or client-safe values.
-- **Pagination defaults** – `DEFAULT_PAGE_SIZE` is 1000; commands paginate internally by default.
-  Commands that expose `--page-size` include connector and storage-authority listing workflows.
+- **Pagination defaults** – Commands paginate internally in batches of 100 rows. User-facing limits
+  are exposed only on ordered result sets such as `snapshots`, `connector jobs`, and ordered stats
+  commands.
 - **Query display** – `query get` prints the `QueryDescriptor` metadata (snapshots, expansions,
   obligations). Use `query fetch-scan <query_id> <table_id>` to print the data/delete `ScanFile`
   entries returned by connectors via the query lifecycle SPI.

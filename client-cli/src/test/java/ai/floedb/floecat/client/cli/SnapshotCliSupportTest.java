@@ -27,6 +27,7 @@ import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
+import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import io.grpc.ManagedChannel;
 import io.grpc.Server;
@@ -76,6 +77,34 @@ class SnapshotCliSupportTest {
       SnapshotCliSupport.handle(
           "snapshots", List.of(), new PrintStream(buf), h.snapshotsStub, ignored -> tableId());
       assertTrue(buf.toString().contains("usage:"), "expected usage message");
+    }
+  }
+
+  @Test
+  void snapshotsLimitStopsPagingAfterRequestedRows() throws Exception {
+    try (Harness h = new Harness()) {
+      h.snapshotService.listSnapshotsPages =
+          List.of(
+              ListSnapshotsResponse.newBuilder()
+                  .addSnapshots(Snapshot.newBuilder().setSnapshotId(3L).build())
+                  .addSnapshots(Snapshot.newBuilder().setSnapshotId(2L).build())
+                  .setPage(PageResponse.newBuilder().setNextPageToken("page-2").build())
+                  .build(),
+              ListSnapshotsResponse.newBuilder()
+                  .addSnapshots(Snapshot.newBuilder().setSnapshotId(1L).build())
+                  .build());
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      SnapshotCliSupport.handle(
+          "snapshots",
+          List.of("catalog.ns.tbl", "--limit", "2"),
+          new PrintStream(buf),
+          h.snapshotsStub,
+          ignored -> tableId());
+
+      assertEquals(1, h.snapshotService.listSnapshotsCalls.get());
+      assertTrue(buf.toString().contains("Showing first 2 snapshots."));
+      assertTrue(!buf.toString().contains("1"));
     }
   }
 
@@ -237,9 +266,12 @@ class SnapshotCliSupportTest {
   private static final class CapturingSnapshotService
       extends SnapshotServiceGrpc.SnapshotServiceImplBase {
 
+    final AtomicInteger listSnapshotsCalls = new AtomicInteger();
     final AtomicInteger getSnapshotCalls = new AtomicInteger();
     final AtomicInteger deleteSnapshotCalls = new AtomicInteger();
     final List<Snapshot> snapshotsToReturn = new ArrayList<>();
+    List<ListSnapshotsResponse> listSnapshotsPages = List.of();
+    ListSnapshotsRequest lastListSnapshotsRequest;
     Snapshot snapshotToReturn = Snapshot.getDefaultInstance();
     GetSnapshotRequest lastGetRequest;
     DeleteSnapshotRequest lastDeleteRequest;
@@ -248,8 +280,15 @@ class SnapshotCliSupportTest {
     @Override
     public void listSnapshots(
         ListSnapshotsRequest request, StreamObserver<ListSnapshotsResponse> responseObserver) {
-      responseObserver.onNext(
-          ListSnapshotsResponse.newBuilder().addAllSnapshots(snapshotsToReturn).build());
+      listSnapshotsCalls.incrementAndGet();
+      lastListSnapshotsRequest = request;
+      if (!listSnapshotsPages.isEmpty()) {
+        int index = Math.min(listSnapshotsCalls.get() - 1, listSnapshotsPages.size() - 1);
+        responseObserver.onNext(listSnapshotsPages.get(index));
+      } else {
+        responseObserver.onNext(
+            ListSnapshotsResponse.newBuilder().addAllSnapshots(snapshotsToReturn).build());
+      }
       responseObserver.onCompleted();
     }
 

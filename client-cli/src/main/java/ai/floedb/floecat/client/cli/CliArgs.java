@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -166,6 +167,29 @@ final class CliArgs {
       Function<R, List<T>> items,
       Function<R, String> next,
       Consumer<List<T>> pageConsumer) {
+    return forEachPageUntil(
+        pageSize,
+        fetch,
+        items,
+        next,
+        (response, pageItems) -> {
+          pageConsumer.accept(pageItems);
+          return true;
+        });
+  }
+
+  /**
+   * Visits each page from a paginated gRPC call until the visitor returns {@code false} or there
+   * are no more pages.
+   *
+   * @return total number of items seen across fetched pages
+   */
+  static <T, R> int forEachPageUntil(
+      int pageSize,
+      Function<PageRequest, R> fetch,
+      Function<R, List<T>> items,
+      Function<R, String> next,
+      BiFunction<R, List<T>, Boolean> pageVisitor) {
 
     int seen = 0;
     String token = "";
@@ -175,7 +199,9 @@ final class CliArgs {
       List<T> pageItems = items.apply(resp);
       if (pageItems != null && !pageItems.isEmpty()) {
         seen += pageItems.size();
-        pageConsumer.accept(pageItems);
+        if (!pageVisitor.apply(resp, pageItems)) {
+          break;
+        }
       }
       token = Optional.ofNullable(next.apply(resp)).orElse("");
     } while (!token.isBlank());

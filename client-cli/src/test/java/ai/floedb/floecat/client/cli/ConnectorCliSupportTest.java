@@ -34,6 +34,7 @@ import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
+import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.CaptureOutput;
 import ai.floedb.floecat.connector.rpc.Connector;
@@ -894,6 +895,51 @@ class ConnectorCliSupportTest {
   }
 
   @Test
+  void connectorJobsLimitStopsPagingAfterRequestedRows() throws Exception {
+    try (Harness h = new Harness()) {
+      h.reconcileControlService.listJobsPages =
+          List.of(
+              ListReconcileJobsResponse.newBuilder()
+                  .addJobs(
+                      ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                          .setJobId("job-plan-2")
+                          .setConnectorId(CONNECTOR_UUID)
+                          .setKind(ReconcileJobKind.RJK_PLAN_CONNECTOR)
+                          .build())
+                  .addJobs(
+                      ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                          .setJobId("job-plan-1")
+                          .setConnectorId(CONNECTOR_UUID)
+                          .setKind(ReconcileJobKind.RJK_PLAN_CONNECTOR)
+                          .build())
+                  .setPage(PageResponse.newBuilder().setNextPageToken("page-2").build())
+                  .build(),
+              ListReconcileJobsResponse.newBuilder()
+                  .addJobs(
+                      ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                          .setJobId("job-plan-0")
+                          .setConnectorId(CONNECTOR_UUID)
+                          .setKind(ReconcileJobKind.RJK_PLAN_CONNECTOR)
+                          .build())
+                  .build());
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of("jobs", "--limit", "2"),
+          new PrintStream(buf),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      assertEquals(1, h.reconcileControlService.listReconcileJobsCalls.get());
+      assertTrue(buf.toString().contains("Showing first 2 reconcile jobs."));
+      assertFalse(buf.toString().contains("job-plan-0"));
+    }
+  }
+
+  @Test
   void connectorJobsRendersWaitingStateAndSanitizesUuidPrefixedMessage() throws Exception {
     try (Harness h = new Harness()) {
       h.reconcileControlService.listJobsResponse =
@@ -1332,6 +1378,8 @@ class ConnectorCliSupportTest {
     ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeResponse getJobTreeResponse =
         ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeResponse.getDefaultInstance();
     ListReconcileJobsResponse listJobsResponse = ListReconcileJobsResponse.getDefaultInstance();
+    List<ListReconcileJobsResponse> listJobsPages = List.of();
+    ListReconcileJobsRequest lastListJobsRequest;
 
     @Override
     public void startCapture(
@@ -1366,7 +1414,13 @@ class ConnectorCliSupportTest {
         ListReconcileJobsRequest request,
         StreamObserver<ListReconcileJobsResponse> responseObserver) {
       listReconcileJobsCalls.incrementAndGet();
-      responseObserver.onNext(listJobsResponse);
+      lastListJobsRequest = request;
+      if (!listJobsPages.isEmpty()) {
+        int index = Math.min(listReconcileJobsCalls.get() - 1, listJobsPages.size() - 1);
+        responseObserver.onNext(listJobsPages.get(index));
+      } else {
+        responseObserver.onNext(listJobsResponse);
+      }
       responseObserver.onCompleted();
     }
 

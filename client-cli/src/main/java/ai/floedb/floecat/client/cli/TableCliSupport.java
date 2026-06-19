@@ -55,7 +55,7 @@ import java.util.function.Supplier;
  */
 final class TableCliSupport {
 
-  private static final int DEFAULT_PAGE_SIZE = 1000;
+  private static final int DEFAULT_PAGE_SIZE = 100;
 
   private TableCliSupport() {}
 
