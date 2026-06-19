@@ -39,7 +39,7 @@ view get <id|catalog.ns[.ns...].name>
 view update <id|fq> [--display <name>] [--namespace <catalog.ns[.ns...]>] [--sql <text>] [--desc <text>] [--props k=v ...]
 view delete <id|fq>
 
-snapshots <catalog.ns[.ns...].table>
+snapshots <catalog.ns[.ns...].table> [--limit N]
 snapshot get <table> <snapshot_id>
 snapshot delete <table> <snapshot_id> [--etag <etag>]
 
@@ -82,7 +82,7 @@ query get <query_id>
 query fetch-scan <query_id> <table_id>
 
 connectors
-connector list [--kind <KIND>] [--page-size <N>]
+connector list [--kind <KIND>]
 connector get <display_name|id>
 connector create <display_name> <source_type (ICEBERG|DELTA|GLUE|UNITY)> <uri> <source_namespace (a[.b[.c]...])> <destination_catalog (name)>
     [--source-table <name>] [--source-cols c1,#id2,...]
@@ -115,14 +115,14 @@ connector trigger <display_name|id> (--full|--incremental)
     [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]
     [--snapshot <id[,id...]>|--current|--latest-n <n>|--all] [--columns c1,#id2,...]
 connector job <jobId> [--json]
-connector jobs [--connector <id|name>] [--state queued,running,...] [--page-size <N>] [--json]
-connector jobs --child <parentJobId> [--connector <id|name>] [--state queued,running,...] [--page-size <N>] [--json]
+connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--limit N] [--json]
+connector jobs --child <parentJobId> [--json]
 connector cancel <jobId> [--reason <text>]
 connector settings get
 connector settings update [--auto-enabled true|false] [--default-interval-sec <n>] [--default-mode incremental|full] [--finished-job-retention-sec <n>]
 
 storage-authorities
-storage-authority list [--page-size <N>]
+storage-authority list
 storage-authority get <display_name|id>
 storage-authority create <display_name> --location-prefix <uri-prefix>
     [--desc <text>] [--enabled true|false] [--type <type>]

@@ -60,7 +60,7 @@ import java.util.function.Function;
 /** CLI support for {@code stats} and {@code analyze} commands. */
 final class StatsCliSupport {
 
-  private static final int DEFAULT_PAGE_SIZE = 1000;
+  private static final int DEFAULT_PAGE_SIZE = 100;
   private static final int FILE_STATS_PAGE_SIZE = 100;
   private static final String TABLE_TARGET_SPEC = "table";
 
@@ -201,13 +201,15 @@ final class StatsCliSupport {
                 CliUtils.snapshotFromTokenOrCurrent(
                     CliArgs.parseStringFlag(args, "--snapshot", "current")))
             .addTargetKinds(StatsTargetKind.STK_COLUMN);
+    Function<ai.floedb.floecat.catalog.rpc.ListTargetStatsResponse, String> nextToken =
+        r -> r.hasPage() ? r.getPage().getNextPageToken() : "";
 
     if (json) {
       streamJsonRecords(
           out,
           writer -> {
             var remaining = new int[] {limit};
-            CliArgs.forEachPage(
+            CliArgs.forEachPageUntil(
                 pageSize,
                 pr ->
                     statistics.listTargetStats(
@@ -218,10 +220,10 @@ final class StatsCliSupport {
                                     .build())
                             .build()),
                 r -> r.getRecordsList(),
-                r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
-                records -> {
+                nextToken,
+                (response, records) -> {
                   if (remaining[0] <= 0) {
-                    return;
+                    return false;
                   }
                   List<TargetStatsRecord> page =
                       records.stream()
@@ -236,40 +238,44 @@ final class StatsCliSupport {
                     }
                     remaining[0] -= page.size();
                   }
+                  return remaining[0] > 0;
                 });
           });
       return;
     }
     printColumnStatsHeader(out);
     var remaining = new int[] {limit};
-    int seen =
-        CliArgs.forEachPage(
-            pageSize,
-            pr ->
-                statistics.listTargetStats(
-                    rb.setPage(
-                            PageRequest.newBuilder()
-                                .setPageSize(pr.getPageSize())
-                                .setPageToken(pr.getPageToken())
-                                .build())
-                        .build()),
-            r -> r.getRecordsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
-            records -> {
-              if (remaining[0] <= 0) {
-                return;
-              }
-              List<TargetStatsRecord> page =
-                  records.stream()
-                      .filter(TargetStatsRecord::hasScalar)
-                      .limit(remaining[0])
-                      .toList();
-              if (!page.isEmpty()) {
-                printColumnStatsRows(page, out);
-                remaining[0] -= page.size();
-              }
-            });
-    if (hasLimit && seen > limit) {
+    var truncated = new boolean[] {false};
+    CliArgs.forEachPageUntil(
+        pageSize,
+        pr ->
+            statistics.listTargetStats(
+                rb.setPage(
+                        PageRequest.newBuilder()
+                            .setPageSize(pr.getPageSize())
+                            .setPageToken(pr.getPageToken())
+                            .build())
+                    .build()),
+        r -> r.getRecordsList(),
+        nextToken,
+        (response, records) -> {
+          if (remaining[0] <= 0) {
+            return false;
+          }
+          List<TargetStatsRecord> filtered =
+              records.stream().filter(TargetStatsRecord::hasScalar).toList();
+          List<TargetStatsRecord> page = filtered.stream().limit(remaining[0]).toList();
+          if (!page.isEmpty()) {
+            printColumnStatsRows(page, out);
+            remaining[0] -= page.size();
+          }
+          if (remaining[0] <= 0) {
+            truncated[0] = filtered.size() > page.size() || !nextToken.apply(response).isBlank();
+            return false;
+          }
+          return true;
+        });
+    if (hasLimit && truncated[0]) {
       printLimitNotice("column stats", limit, out);
     }
   }
@@ -299,39 +305,47 @@ final class StatsCliSupport {
                 CliUtils.snapshotFromTokenOrCurrent(
                     CliArgs.parseStringFlag(args, "--snapshot", "current")))
             .addTargetKinds(StatsTargetKind.STK_FILE);
+    Function<ai.floedb.floecat.catalog.rpc.ListTargetStatsResponse, String> nextToken =
+        r -> r.hasPage() ? r.getPage().getNextPageToken() : "";
 
     var remaining = new int[] {limit};
     var printed = new int[] {0};
-    int seen =
-        CliArgs.forEachPage(
-            pageSize,
-            pr ->
-                statistics.listTargetStats(
-                    rb.setPage(
-                            PageRequest.newBuilder()
-                                .setPageSize(pr.getPageSize())
-                                .setPageToken(pr.getPageToken())
-                                .build())
-                        .build()),
-            r -> r.getRecordsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
-            records -> {
-              if (remaining[0] <= 0) {
-                return;
-              }
-              List<TargetStatsRecord> page =
-                  records.stream().filter(TargetStatsRecord::hasFile).limit(remaining[0]).toList();
-              if (!page.isEmpty()) {
-                printFileColumnStatsPage(page, printed[0], printed[0] == 0, out);
-                printed[0] += page.size();
-                remaining[0] -= page.size();
-              }
-            });
-    if (seen == 0 || printed[0] == 0) {
+    var truncated = new boolean[] {false};
+    CliArgs.forEachPageUntil(
+        pageSize,
+        pr ->
+            statistics.listTargetStats(
+                rb.setPage(
+                        PageRequest.newBuilder()
+                            .setPageSize(pr.getPageSize())
+                            .setPageToken(pr.getPageToken())
+                            .build())
+                    .build()),
+        r -> r.getRecordsList(),
+        nextToken,
+        (response, records) -> {
+          if (remaining[0] <= 0) {
+            return false;
+          }
+          List<TargetStatsRecord> filtered =
+              records.stream().filter(TargetStatsRecord::hasFile).toList();
+          List<TargetStatsRecord> page = filtered.stream().limit(remaining[0]).toList();
+          if (!page.isEmpty()) {
+            printFileColumnStatsPage(page, printed[0], printed[0] == 0, out);
+            printed[0] += page.size();
+            remaining[0] -= page.size();
+          }
+          if (remaining[0] <= 0) {
+            truncated[0] = filtered.size() > page.size() || !nextToken.apply(response).isBlank();
+            return false;
+          }
+          return true;
+        });
+    if (printed[0] == 0) {
       out.println("No file stats found.");
       return;
     }
-    if (hasLimit && seen > limit) {
+    if (hasLimit && truncated[0]) {
       printLimitNotice("file stats", limit, out);
     }
   }
@@ -364,13 +378,15 @@ final class StatsCliSupport {
             .setSnapshot(
                 CliUtils.snapshotFromTokenOrCurrent(
                     CliArgs.parseStringFlag(args, "--snapshot", "current")));
+    Function<ai.floedb.floecat.catalog.rpc.ListIndexArtifactsResponse, String> nextToken =
+        r -> r.hasPage() ? r.getPage().getNextPageToken() : "";
 
     if (json) {
       streamJsonRecords(
           out,
           writer -> {
             var remaining = new int[] {limit};
-            CliArgs.forEachPage(
+            CliArgs.forEachPageUntil(
                 pageSize,
                 pr ->
                     indexes.listIndexArtifacts(
@@ -381,10 +397,10 @@ final class StatsCliSupport {
                                     .build())
                             .build()),
                 r -> r.getRecordsList(),
-                r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
-                records -> {
+                nextToken,
+                (response, records) -> {
                   if (remaining[0] <= 0) {
-                    return;
+                    return false;
                   }
                   List<IndexArtifactRecord> page = records.stream().limit(remaining[0]).toList();
                   if (!page.isEmpty()) {
@@ -395,44 +411,50 @@ final class StatsCliSupport {
                     }
                     remaining[0] -= page.size();
                   }
+                  return remaining[0] > 0;
                 });
           });
       return;
     }
     var remaining = new int[] {limit};
     var printed = new int[] {0};
-    int seen =
-        CliArgs.forEachPage(
-            pageSize,
-            pr ->
-                indexes.listIndexArtifacts(
-                    rb.setPage(
-                            PageRequest.newBuilder()
-                                .setPageSize(pr.getPageSize())
-                                .setPageToken(pr.getPageToken())
-                                .build())
-                        .build()),
-            r -> r.getRecordsList(),
-            r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
-            records -> {
-              if (remaining[0] <= 0) {
-                return;
-              }
-              List<IndexArtifactRecord> page = records.stream().limit(remaining[0]).toList();
-              if (!page.isEmpty()) {
-                if (printed[0] == 0) {
-                  printIndexArtifactsHeader(out);
-                }
-                printIndexArtifactsRows(page, printed[0], out);
-                printed[0] += page.size();
-                remaining[0] -= page.size();
-              }
-            });
-    if (seen == 0 || printed[0] == 0) {
+    var truncated = new boolean[] {false};
+    CliArgs.forEachPageUntil(
+        pageSize,
+        pr ->
+            indexes.listIndexArtifacts(
+                rb.setPage(
+                        PageRequest.newBuilder()
+                            .setPageSize(pr.getPageSize())
+                            .setPageToken(pr.getPageToken())
+                            .build())
+                    .build()),
+        r -> r.getRecordsList(),
+        nextToken,
+        (response, records) -> {
+          if (remaining[0] <= 0) {
+            return false;
+          }
+          List<IndexArtifactRecord> page = records.stream().limit(remaining[0]).toList();
+          if (!page.isEmpty()) {
+            if (printed[0] == 0) {
+              printIndexArtifactsHeader(out);
+            }
+            printIndexArtifactsRows(page, printed[0], out);
+            printed[0] += page.size();
+            remaining[0] -= page.size();
+          }
+          if (remaining[0] <= 0) {
+            truncated[0] = records.size() > page.size() || !nextToken.apply(response).isBlank();
+            return false;
+          }
+          return true;
+        });
+    if (printed[0] == 0) {
       out.println("No index artifacts found.");
       return;
     }
-    if (hasLimit && seen > limit) {
+    if (hasLimit && truncated[0]) {
       printLimitNotice("index artifacts", limit, out);
     }
   }
