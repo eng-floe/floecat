@@ -18,12 +18,15 @@ package ai.floedb.floecat.connector.iceberg.impl;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
+import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
+import ai.floedb.floecat.connector.common.auth.RegistryBackedAwsCredentialsProvider;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import java.lang.reflect.InvocationTargetException;
@@ -164,6 +167,40 @@ class IcebergConnectorFactoryTest {
   }
 
   @Test
+  void buildStoragePropertiesUsesRefreshingProviderInsteadOfStaticSessionKeys() {
+    Map<String, String> props =
+        IcebergConnectorFactory.buildStorageProperties(
+            IcebergConnectorFactory.buildBaseIcebergProperties(
+                Map.of(
+                    "iceberg.source",
+                    "filesystem",
+                    "s3.region",
+                    "us-east-1",
+                    RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
+                    "provider-1",
+                    "s3.access-key-id",
+                    "akid",
+                    "s3.secret-access-key",
+                    "secret",
+                    "s3.session-token",
+                    "session")),
+            "none",
+            Map.of());
+
+    assertEquals(
+        RegistryBackedAwsCredentialsProvider.class.getName(),
+        props.get("client.credentials-provider"));
+    assertEquals(
+        "provider-1",
+        props.get(
+            "client.credentials-provider."
+                + RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID));
+    assertFalse(props.containsKey("s3.access-key-id"));
+    assertFalse(props.containsKey("s3.secret-access-key"));
+    assertFalse(props.containsKey("s3.session-token"));
+  }
+
+  @Test
   void filesystemStoragePropsIncludeResolvedAwsCredentials() {
     ConnectorConfig resolved =
         CredentialResolverSupport.apply(
@@ -197,6 +234,43 @@ class IcebergConnectorFactoryTest {
     assertEquals("us-east-1", props.get("s3.region"));
     assertEquals("us-east-1", props.get("client.region"));
     assertEquals("ignored", props.get("warehouse"));
+  }
+
+  @Test
+  void restCatalogPropsUseRefreshingProviderWhenPresent() {
+    Map<String, String> props =
+        IcebergConnectorFactory.buildCatalogProperties(
+            "https://glue.us-east-1.amazonaws.com/iceberg/",
+            IcebergConnectorFactory.buildBaseIcebergProperties(
+                Map.of(
+                    "iceberg.source",
+                    "glue",
+                    "s3.region",
+                    "us-east-1",
+                    RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
+                    "provider-1",
+                    "s3.access-key-id",
+                    "akid",
+                    "s3.secret-access-key",
+                    "secret",
+                    "s3.session-token",
+                    "session")));
+
+    IcebergConnectorFactory.applyCatalogAuth(props, "aws-sigv4", Map.of());
+    IcebergConnectorFactory.applyStorageAuth(props, "aws-sigv4", Map.of());
+
+    assertEquals("sigv4", props.get("rest.auth.type"));
+    assertEquals(
+        RegistryBackedAwsCredentialsProvider.class.getName(),
+        props.get("client.credentials-provider"));
+    assertEquals(
+        "provider-1",
+        props.get(
+            "client.credentials-provider."
+                + RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID));
+    assertFalse(props.containsKey("s3.access-key-id"));
+    assertFalse(props.containsKey("s3.secret-access-key"));
+    assertFalse(props.containsKey("s3.session-token"));
   }
 
   @Test

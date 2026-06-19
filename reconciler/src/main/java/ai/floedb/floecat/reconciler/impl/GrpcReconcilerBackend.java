@@ -564,7 +564,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       request.columnSelectorPolicy(),
                       request.requestedStatsTargetKinds(),
                       request.capturePageIndex(),
-                      ctx.authorizationToken()));
+                      ctx.authorizationToken(),
+                      ctx.executionJobId(),
+                      ctx.executionLeaseEpoch()));
           if (!request.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
             return capture;
           }

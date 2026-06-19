@@ -79,8 +79,8 @@ public class JavaConnectorCaptureEngine implements CaptureEngine {
     if (!supports(request)) {
       return Optional.empty();
     }
-    try (var source =
-        connectorOpener.open(resolveCredentials(request.sourceConnector(), request))) {
+    try (var resolved = resolveCredentials(request.sourceConnector(), request);
+        var source = connectorOpener.open(resolved.config())) {
       return Optional.of(adapter.capture(source, request));
     } catch (RuntimeException e) {
       if (isMissingObjectFailure(e)) {
@@ -94,7 +94,8 @@ public class JavaConnectorCaptureEngine implements CaptureEngine {
     }
   }
 
-  private ConnectorConfig resolveCredentials(Connector connector, CaptureEngineRequest request) {
+  private ServerSideStorageConfigResolver.ResolvedConnectorConfig resolveCredentials(
+      Connector connector, CaptureEngineRequest request) {
     ConnectorConfig base = ConnectorConfigMapper.fromProto(connector);
     AuthConfig auth = connector == null ? AuthConfig.getDefaultInstance() : connector.getAuth();
     ConnectorConfig resolved;
@@ -115,10 +116,14 @@ public class JavaConnectorCaptureEngine implements CaptureEngine {
               .orElse(base);
     }
     if (serverSideStorageConfigResolver == null) {
-      return resolved;
+      return new ServerSideStorageConfigResolver.ResolvedConnectorConfig(resolved, () -> {});
     }
-    return serverSideStorageConfigResolver.resolveWithAuthorization(
-        request.authorizationToken(), connector, resolved);
+    return serverSideStorageConfigResolver.resolveManagedWithAuthorization(
+        request.authorizationToken(),
+        request.executionJobId(),
+        request.executionLeaseEpoch(),
+        connector,
+        resolved);
   }
 
   private static boolean isMissingObjectFailure(Throwable t) {

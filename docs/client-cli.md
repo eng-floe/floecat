@@ -147,6 +147,18 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
     --props iceberg.source=glue
   ```
 
+- **Creating a connector to an upstream Glue Iceberg table via assume role**
+
+  ```
+  connector create "call_center" ICEBERG
+    "https://glue.us-east-1.amazonaws.com/iceberg/"
+    tpcds_iceberg as --dest-ns iceberg --dest-table call_center
+    --auth-scheme aws-sigv4
+    --cred-type aws-assume-role
+    --cred role_arn=arn:aws:iam::123456789012:role/floecat-prod-s3-readonly
+    --props iceberg.source=glue
+  ```
+
 - **Configuring connector reconcile policy**
 
   ```
@@ -175,6 +187,9 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
     --cred access_key_id=test \
     --cred secret_access_key=test
   ```
+
+  See [`docs/storage-authorities.md`](storage-authorities.md) for dedicated storage-authority
+  examples, including cross-account assume-role vending.
 
 - **Managing snapshot constraints**
 

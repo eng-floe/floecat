@@ -54,6 +54,9 @@ Databricks SQL execution, and custom file readers for S3.
 - **Authentication** – Uses an OAuth2 bearer token supplied in the resolved connector config or
   the Databricks CLI cache. Token exchange and secret handling happen earlier in the service layer,
   except for CLI cache refresh which is handled in the connector.
+  For `delta.source=glue` and `delta.source=filesystem`, AWS temporary credentials from
+  `aws-assume-role` or `aws-web-identity` are preserved as a shared refreshable provider so native
+  Glue catalog access and S3 reads use the same AWS identity.
 - **HTTP & SQL clients** – `UcHttp` centralises base URI, connect/read timeouts, and error mapping.
   `SqlStmtClient` optionally executes SQL statements (for example to inspect statistics tables) via
   Databricks SQL warehouses.
@@ -128,6 +131,9 @@ Unity Catalog, token exchange endpoints typically use `https://<workspace-host>/
 For `delta.source=glue` and `delta.source=filesystem`, this Databricks OIDC token endpoint pattern
 does not apply. Shared outbound token endpoint validation behavior is documented in
 [`docs/operations.md`](operations.md).
+
+For `delta.source=glue`, the relevant credential types are `aws`, `cli` (provider=aws),
+`aws-web-identity`, and `aws-assume-role`.
 
 Extensibility points:
 
@@ -220,3 +226,4 @@ Extensibility points:
 - SPI details: [`docs/connectors-spi.md`](connectors-spi.md)
 - Iceberg connector for contrast: [`docs/connectors-iceberg.md`](connectors-iceberg.md)
 - Service & reconciler integration: [`docs/service.md`](service.md), [`docs/reconciler.md`](reconciler.md)
+- Storage credential vending: [`docs/storage-authorities.md`](storage-authorities.md)

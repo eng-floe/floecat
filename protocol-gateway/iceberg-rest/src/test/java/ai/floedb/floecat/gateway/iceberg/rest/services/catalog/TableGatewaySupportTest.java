@@ -35,8 +35,9 @@ import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.config.StorageAwsConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.storage.StorageCredentialAuthority;
-import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
+import ai.floedb.floecat.storage.rpc.StorageCredentialUsage;
+import ai.floedb.floecat.storage.rpc.VendStorageCredentialsRequest;
 import ai.floedb.floecat.storage.rpc.VendedStorageCredential;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
@@ -58,7 +59,7 @@ class TableGatewaySupportTest {
     when(storageAwsConfig.s3()).thenReturn(s3Config);
     when(s3Config.endpoint()).thenReturn(Optional.empty());
     when(s3Config.pathStyleAccess()).thenReturn(false);
-    when(grpcClient.resolveStorageAuthority(any()))
+    when(grpcClient.vendStorageCredentials(any()))
         .thenReturn(
             ResolveStorageAuthorityResponse.newBuilder()
                 .putClientSafeConfig("s3.endpoint", "http://localstack:4566")
@@ -100,12 +101,14 @@ class TableGatewaySupportTest {
     assertEquals("key", props.get("s3.access-key-id"));
     assertEquals("secret", props.get("s3.secret-access-key"));
 
-    ArgumentCaptor<ResolveStorageAuthorityRequest> requestCaptor =
-        ArgumentCaptor.forClass(ResolveStorageAuthorityRequest.class);
-    verify(grpcClient).resolveStorageAuthority(requestCaptor.capture());
+    ArgumentCaptor<VendStorageCredentialsRequest> requestCaptor =
+        ArgumentCaptor.forClass(VendStorageCredentialsRequest.class);
+    verify(grpcClient).vendStorageCredentials(requestCaptor.capture());
     assertEquals(
         "s3://floecat-dev/accounts/acct-1/tables/tbl-1/snapshots/1/compat/iceberg-rest/metadata",
         requestCaptor.getValue().getLocationPrefix());
+    assertEquals("acct-1", requestCaptor.getValue().getAccountId());
+    assertEquals(StorageCredentialUsage.SCU_SERVER, requestCaptor.getValue().getUsage());
     verify(storageCredentialAuthority, never()).resolveServerSideFileIoConfig(any(), anyBoolean());
   }
 
@@ -163,7 +166,7 @@ class TableGatewaySupportTest {
     when(storageAwsConfig.s3()).thenReturn(s3Config);
     when(s3Config.endpoint()).thenReturn(Optional.of("http://localstack:4566"));
     when(s3Config.pathStyleAccess()).thenReturn(true);
-    when(grpcClient.resolveStorageAuthority(any()))
+    when(grpcClient.vendStorageCredentials(any()))
         .thenReturn(
             ResolveStorageAuthorityResponse.newBuilder()
                 .setAuthorityId(

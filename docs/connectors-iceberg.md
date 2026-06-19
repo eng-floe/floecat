@@ -44,6 +44,9 @@ specializing discovery and catalog wiring.
 - **Authentication** – The connector supports multiple schemes: `aws-sigv4` (default), OAuth2 token,
   or none. SigV4 configuration controls signing names and regions, uses `s3.region` when
   `rest.signing-region` is unset, and injects request headers via Iceberg REST properties.
+  When the connector uses temporary AWS credentials such as `aws-assume-role` or
+  `aws-web-identity`, Floecat preserves them as a shared refreshable AWS credentials provider so
+  Glue discovery, Iceberg `RESTCatalog`, and `S3FileIO` use the same identity.
 - **NDV** – NDV collection is optional. Controlled by `stats.ndv.enabled`, `stats.ndv.sample_fraction`,
   and `stats.ndv.max_files` connector options. NDV providers combine sampling, Puffin sketches, and
   Parquet footer data.
@@ -127,6 +130,19 @@ To extend behavior:
     --dest-ns tpcds_iceberg \
     --props iceberg.source=glue
   ```
+- **Glue cross-account assume-role** – CLI example using AWS SigV4 plus an assumed role for
+  upstream Glue and S3 access:
+  ```bash
+  connector create "call_center" ICEBERG \
+    "https://glue.us-east-1.amazonaws.com/iceberg/" \
+    tpcds_iceberg as \
+    --dest-ns iceberg \
+    --dest-table call_center \
+    --auth-scheme aws-sigv4 \
+    --cred-type aws-assume-role \
+    --cred role_arn=arn:aws:iam::123456789012:role/floecat-prod-s3-readonly \
+    --props iceberg.source=glue
+  ```
 - **Nessie (REST catalog)** – CLI example using a Nessie REST endpoint:
   ```bash
   connector create "Nessie Iceberg" ICEBERG \
@@ -163,3 +179,4 @@ To extend behavior:
 - SPI contract: [`docs/connectors-spi.md`](connectors-spi.md)
 - Delta connector for comparison: [`docs/connectors-delta.md`](connectors-delta.md)
 - Service connector management: [`docs/service.md`](service.md)
+- Storage credential vending: [`docs/storage-authorities.md`](storage-authorities.md)

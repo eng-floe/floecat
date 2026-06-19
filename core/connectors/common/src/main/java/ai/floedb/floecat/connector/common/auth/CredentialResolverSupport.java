@@ -169,8 +169,7 @@ public final class CredentialResolverSupport {
         }
       }
       case AWS, AWS_WEB_IDENTITY, AWS_ASSUME_ROLE ->
-          resolveStorageCredentials(credential)
-              .ifPresent(resolved -> options.putAll(resolved.asS3Properties()));
+          applyAwsStorageCredentials(options, credential);
       case RFC8693_TOKEN_EXCHANGE -> {
         authProps = new HashMap<>();
         headerHints = new HashMap<>();
@@ -236,6 +235,55 @@ public final class CredentialResolverSupport {
       }
       default -> java.util.Optional.empty();
     };
+  }
+
+  private static void applyAwsStorageCredentials(
+      Map<String, String> options, AuthCredentials credential) {
+    if (credential == null) {
+      return;
+    }
+    switch (credential.getCredentialCase()) {
+      case AWS ->
+          resolveStorageCredentials(credential)
+              .ifPresent(resolved -> options.putAll(resolved.asS3Properties()));
+      case AWS_WEB_IDENTITY -> {
+        ResolvedStorageCredentials initial =
+            resolveStorageCredentials(credential)
+                .orElseThrow(
+                    () ->
+                        new IllegalStateException("Failed resolving AWS web identity credentials"));
+        String providerId =
+            RefreshingAwsCredentialsProviderRegistry.register(
+                initial,
+                () ->
+                    resolveStorageCredentials(credential)
+                        .orElseThrow(
+                            () ->
+                                new IllegalStateException(
+                                    "Failed refreshing AWS web identity credentials")));
+        options.putAll(RefreshingAwsCredentialsProviderRegistry.propertiesFor(providerId));
+        options.putAll(initial.asS3Properties());
+      }
+      case AWS_ASSUME_ROLE -> {
+        ResolvedStorageCredentials initial =
+            resolveStorageCredentials(credential)
+                .orElseThrow(
+                    () ->
+                        new IllegalStateException("Failed resolving AWS assume role credentials"));
+        String providerId =
+            RefreshingAwsCredentialsProviderRegistry.register(
+                initial,
+                () ->
+                    resolveStorageCredentials(credential)
+                        .orElseThrow(
+                            () ->
+                                new IllegalStateException(
+                                    "Failed refreshing AWS assume role credentials")));
+        options.putAll(RefreshingAwsCredentialsProviderRegistry.propertiesFor(providerId));
+        options.putAll(initial.asS3Properties());
+      }
+      default -> {}
+    }
   }
 
   private static void putIfNotBlank(Map<String, String> target, String key, String value) {

@@ -57,7 +57,9 @@ public class StandaloneJavaFileGroupExecutionRunner {
                     payload.capturePolicy()),
                 payload.capturePageIndex(),
                 reconcileWorkerAuthProvider.authorizationHeader(
-                    payload.tableId() == null ? "" : payload.tableId().getAccountId())));
+                    payload.tableId() == null ? "" : payload.tableId().getAccountId()),
+                java.util.Optional.of(payload.jobId()),
+                java.util.Optional.of(payload.leaseEpoch())));
     if (!payload.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
       return capture;
     }

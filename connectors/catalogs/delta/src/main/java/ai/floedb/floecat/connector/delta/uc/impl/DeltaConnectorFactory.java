@@ -17,6 +17,8 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import ai.floedb.floecat.connector.common.auth.AwsGlueClientFactory;
+import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
+import ai.floedb.floecat.connector.common.auth.RegistryBackedAwsCredentialsProvider;
 import ai.floedb.floecat.connector.spi.AuthProvider;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import io.delta.kernel.defaults.engine.DefaultEngine;
@@ -198,6 +200,11 @@ final class DeltaConnectorFactory {
   }
 
   private static AwsCredentialsProvider resolveCredentials(Map<String, String> options) {
+    String providerId =
+        resolveOption(options, RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID, null);
+    if (providerId != null && !providerId.isBlank()) {
+      return new RegistryBackedAwsCredentialsProvider(providerId);
+    }
     String access = resolveOption(options, "s3.access-key-id", null);
     String secret = resolveOption(options, "s3.secret-access-key", null);
     String token = resolveOption(options, "s3.session-token", null);

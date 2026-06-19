@@ -467,6 +467,7 @@ run-service: jar-dependencies
 	@echo "==> [DEV] quarkus:dev (profile=$(QUARKUS_PROFILE), seeded fake data)"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
+          -Dfloecat.reconciler.worker.auth.required=false \
 	  -Dfloecat.seed.enabled=true \
 	  -Dfloecat.seed.mode=fake \
 	  -Dfloecat.fixtures.use-aws-s3=false \

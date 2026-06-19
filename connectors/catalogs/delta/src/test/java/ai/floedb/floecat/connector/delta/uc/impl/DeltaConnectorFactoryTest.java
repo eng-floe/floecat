@@ -17,11 +17,15 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
+import ai.floedb.floecat.connector.common.auth.RegistryBackedAwsCredentialsProvider;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 
 class DeltaConnectorFactoryTest {
 
@@ -51,5 +55,25 @@ class DeltaConnectorFactoryTest {
                 DeltaConnectorFactory.validateOptions(
                     DeltaConnectorFactory.DeltaSource.GLUE, "s3://bucket/table"));
     assertTrue(ex.getMessage().contains("delta.source=filesystem"));
+  }
+
+  @Test
+  void resolveCredentialsPrefersRegisteredRefreshingProvider() throws Exception {
+    var method = DeltaConnectorFactory.class.getDeclaredMethod("resolveCredentials", Map.class);
+    method.setAccessible(true);
+
+    AwsCredentialsProvider provider =
+        (AwsCredentialsProvider)
+            method.invoke(
+                null,
+                Map.of(
+                    RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
+                    "provider-1",
+                    "s3.access-key-id",
+                    "akid",
+                    "s3.secret-access-key",
+                    "secret"));
+
+    assertInstanceOf(RegistryBackedAwsCredentialsProvider.class, provider);
   }
 }

@@ -39,7 +39,9 @@ public record CaptureEngineRequest(
     FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy,
     Set<FloecatConnector.StatsTargetKind> requestedStatsTargetKinds,
     boolean capturePageIndex,
-    Optional<String> authorizationToken) {
+    Optional<String> authorizationToken,
+    Optional<String> executionJobId,
+    Optional<String> executionLeaseEpoch) {
   public CaptureEngineRequest {
     sourceNamespace = sourceNamespace == null ? "" : sourceNamespace.trim();
     sourceTable = sourceTable == null ? "" : sourceTable.trim();
@@ -66,6 +68,14 @@ public record CaptureEngineRequest(
         authorizationToken == null
             ? Optional.empty()
             : authorizationToken.map(String::trim).filter(token -> !token.isBlank());
+    executionJobId =
+        executionJobId == null
+            ? Optional.empty()
+            : executionJobId.map(String::trim).filter(jobId -> !jobId.isBlank());
+    executionLeaseEpoch =
+        executionLeaseEpoch == null
+            ? Optional.empty()
+            : executionLeaseEpoch.map(String::trim).filter(leaseEpoch -> !leaseEpoch.isBlank());
   }
 
   private static Set<String> normalizeSelectors(Set<String> selectors) {

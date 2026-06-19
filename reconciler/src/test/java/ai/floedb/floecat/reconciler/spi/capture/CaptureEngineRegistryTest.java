@@ -147,6 +147,8 @@ class CaptureEngineRegistryTest {
             FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             false,
+            java.util.Optional.empty(),
+            java.util.Optional.empty(),
             java.util.Optional.empty());
     CaptureEngineRequest columnSelectors =
         new CaptureEngineRequest(
@@ -167,6 +169,8 @@ class CaptureEngineRegistryTest {
             FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             false,
+            java.util.Optional.empty(),
+            java.util.Optional.empty(),
             java.util.Optional.empty());
 
     assertThat(capabilities.supports(missingPlannedFiles)).isFalse();
@@ -205,6 +209,8 @@ class CaptureEngineRegistryTest {
             FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             false,
+            java.util.Optional.empty(),
+            java.util.Optional.empty(),
             java.util.Optional.empty());
 
     assertThat(request.statsColumns()).containsExactly("c1");
@@ -240,6 +246,8 @@ class CaptureEngineRegistryTest {
         FloecatConnector.ColumnSelectorPolicy.defaults(),
         statsTargetKinds,
         capturePageIndex,
+        java.util.Optional.empty(),
+        java.util.Optional.empty(),
         java.util.Optional.empty());
   }
 

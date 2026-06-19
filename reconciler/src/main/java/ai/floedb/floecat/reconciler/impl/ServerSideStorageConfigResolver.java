@@ -16,32 +16,54 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
+import ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials;
 import ai.floedb.floecat.connector.delta.uc.impl.UnityDeltaConnector;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
-import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityForAccountLocationRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.StorageAuthoritiesGrpc;
+import ai.floedb.floecat.storage.rpc.StorageCredentialUsage;
+import ai.floedb.floecat.storage.rpc.VendStorageCredentialsRequest;
+import ai.floedb.floecat.storage.rpc.VendedStorageCredential;
 import io.grpc.Metadata;
-import io.grpc.StatusRuntimeException;
 import io.grpc.stub.AbstractStub;
 import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class ServerSideStorageConfigResolver {
-  private static final Logger LOG = Logger.getLogger(ServerSideStorageConfigResolver.class);
-  private static final String ACCESS_DELEGATION_HEADER = "X-Iceberg-Access-Delegation";
-  private static final String VENDED_CREDENTIALS_MODE = "vended-credentials";
+  public record ResolvedConnectorConfig(ConnectorConfig config, Runnable closeAction)
+      implements AutoCloseable {
+    public ResolvedConnectorConfig {
+      config = config == null ? emptyConfig() : config;
+      closeAction = closeAction == null ? () -> {} : closeAction;
+    }
+
+    @Override
+    public void close() {
+      closeAction.run();
+    }
+
+    private static ConnectorConfig emptyConfig() {
+      return new ConnectorConfig(
+          ConnectorConfig.Kind.ICEBERG,
+          "",
+          "",
+          Map.of(),
+          new ConnectorConfig.Auth("none", Map.of(), Map.of()));
+    }
+  }
+
   private static final Metadata.Key<String> AUTHORIZATION =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORRELATION_ID =
@@ -63,7 +85,14 @@ public class ServerSideStorageConfigResolver {
   }
 
   public ConnectorConfig resolve(Connector connector, ConnectorConfig config) {
-    return resolve(Optional.empty(), Optional.empty(), connector, config);
+    return resolve(
+        Optional.empty(),
+        Optional.empty(),
+        Optional.empty(),
+        Optional.empty(),
+        connector,
+        config,
+        false);
   }
 
   public ConnectorConfig resolve(
@@ -71,20 +100,80 @@ public class ServerSideStorageConfigResolver {
     return resolve(
         ctx.map(ReconcileContext::correlationId),
         ctx.flatMap(ReconcileContext::authorizationToken),
+        ctx.flatMap(ReconcileContext::executionJobId),
+        ctx.flatMap(ReconcileContext::executionLeaseEpoch),
+        connector,
+        config,
+        false);
+  }
+
+  public ConnectorConfig resolveWithAuthorization(
+      Optional<String> authorizationToken,
+      Optional<String> executionJobId,
+      Optional<String> executionLeaseEpoch,
+      Connector connector,
+      ConnectorConfig config) {
+    return resolve(
+        Optional.empty(),
+        authorizationToken,
+        executionJobId,
+        executionLeaseEpoch,
+        connector,
+        config,
+        false);
+  }
+
+  public ResolvedConnectorConfig resolveManagedWithAuthorization(
+      Optional<String> authorizationToken,
+      Optional<String> executionJobId,
+      Optional<String> executionLeaseEpoch,
+      Connector connector,
+      ConnectorConfig config) {
+    return resolveManaged(
+        Optional.empty(),
+        authorizationToken,
+        executionJobId,
+        executionLeaseEpoch,
         connector,
         config);
   }
 
-  public ConnectorConfig resolveWithAuthorization(
-      Optional<String> authorizationToken, Connector connector, ConnectorConfig config) {
-    return resolve(Optional.empty(), authorizationToken, connector, config);
+  private ResolvedConnectorConfig resolveManaged(
+      Optional<String> correlationId,
+      Optional<String> authorizationToken,
+      Optional<String> executionJobId,
+      Optional<String> executionLeaseEpoch,
+      Connector connector,
+      ConnectorConfig config) {
+    ConnectorConfig resolved =
+        resolve(
+            correlationId,
+            authorizationToken,
+            executionJobId,
+            executionLeaseEpoch,
+            connector,
+            config,
+            true);
+    String providerId =
+        resolved == null
+            ? null
+            : resolved.options().get(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
+    if (!isNonBlank(providerId)) {
+      return new ResolvedConnectorConfig(resolved, () -> {});
+    }
+    String capturedProviderId = providerId;
+    return new ResolvedConnectorConfig(
+        resolved, () -> RefreshingAwsCredentialsProviderRegistry.unregister(capturedProviderId));
   }
 
   private ConnectorConfig resolve(
       Optional<String> correlationId,
       Optional<String> authorizationToken,
+      Optional<String> executionJobId,
+      Optional<String> executionLeaseEpoch,
       Connector connector,
-      ConnectorConfig config) {
+      ConnectorConfig config,
+      boolean refreshableExecutionCredentials) {
     if (connector == null || config == null || connector.getKindValue() == 0) {
       return config;
     }
@@ -98,17 +187,31 @@ public class ServerSideStorageConfigResolver {
       }
       ResolveStorageAuthorityResponse response =
           withHeaders(storageAuthorities, correlationId, authorizationToken)
-              .resolveStorageAuthorityForAccountLocation(
-                  ResolveStorageAuthorityForAccountLocationRequest.newBuilder()
-                      .setAccountId(connector.getResourceId().getAccountId())
-                      .setLocationPrefix(locationPrefix)
-                      .setIncludeCredentials(true)
-                      .setRequired(false)
-                      .build());
+              .vendStorageCredentials(
+                  resolveRequest(
+                      connector.getResourceId().getAccountId(),
+                      locationPrefix,
+                      executionJobId,
+                      executionLeaseEpoch));
       if (response == null) {
         return config;
       }
-      Map<String, String> merged = mergeResolvedStorageConfig(config.options(), response, true);
+      Map<String, String> merged =
+          mergeResolvedStorageConfig(
+              config.options(),
+              response,
+              true,
+              refreshableExecutionCredentials
+                  && executionJobId.isPresent()
+                  && executionLeaseEpoch.isPresent(),
+              () ->
+                  refreshExecutionBoundCredentials(
+                      correlationId,
+                      authorizationToken,
+                      connector.getResourceId().getAccountId(),
+                      locationPrefix,
+                      executionJobId,
+                      executionLeaseEpoch));
       return merged.equals(config.options())
           ? config
           : new ConnectorConfig(
@@ -121,53 +224,87 @@ public class ServerSideStorageConfigResolver {
     if (locationPrefix == null) {
       return config;
     }
-    ResolveStorageAuthorityResponse response;
-    try {
-      response =
-          withHeaders(storageAuthorities, correlationId, authorizationToken)
-              .resolveStorageAuthorityForAccountLocation(
-                  ResolveStorageAuthorityForAccountLocationRequest.newBuilder()
-                      .setAccountId(connector.getResourceId().getAccountId())
-                      .setLocationPrefix(locationPrefix)
-                      .setIncludeCredentials(true)
-                      .setRequired(false)
-                      .build());
-    } catch (StatusRuntimeException e) {
-      if (!shouldFallbackToVendedCredentials(connector, config, null)) {
-        throw e;
-      }
-      LOG.infof(
-          "storage authority lookup failed for iceberg rest connector=%s warehouse=%s; falling"
-              + " back to vended credentials: %s",
-          connector.getResourceId().getId(), config.options().get("warehouse"), e.getStatus());
-      return maybeEnableVendedCredentials(connector, config, null);
-    }
+    ResolveStorageAuthorityResponse response =
+        withHeaders(storageAuthorities, correlationId, authorizationToken)
+            .vendStorageCredentials(
+                resolveRequest(
+                    connector.getResourceId().getAccountId(),
+                    locationPrefix,
+                    executionJobId,
+                    executionLeaseEpoch));
     if (response == null) {
-      return maybeEnableVendedCredentials(connector, config, null);
+      return config;
     }
-    boolean preferVendedCredentials = hasAccessDelegationHeader(config.auth().headerHints());
     Map<String, String> merged =
-        mergeResolvedStorageConfig(config.options(), response, !preferVendedCredentials);
+        mergeResolvedStorageConfig(
+            config.options(),
+            response,
+            true,
+            refreshableExecutionCredentials
+                && executionJobId.isPresent()
+                && executionLeaseEpoch.isPresent(),
+            () ->
+                refreshExecutionBoundCredentials(
+                    correlationId,
+                    authorizationToken,
+                    connector.getResourceId().getAccountId(),
+                    locationPrefix,
+                    executionJobId,
+                    executionLeaseEpoch));
     ConnectorConfig resolved =
         merged.equals(config.options())
             ? config
             : new ConnectorConfig(
                 config.kind(), config.displayName(), config.uri(), merged, config.auth());
-    if (preferVendedCredentials || response.getStorageCredentialsCount() == 0) {
-      return maybeEnableVendedCredentials(connector, resolved, response);
-    }
     return resolved;
+  }
+
+  private static VendStorageCredentialsRequest resolveRequest(
+      String accountId,
+      String locationPrefix,
+      Optional<String> executionJobId,
+      Optional<String> executionLeaseEpoch) {
+    VendStorageCredentialsRequest.Builder request =
+        VendStorageCredentialsRequest.newBuilder()
+            .setAccountId(accountId)
+            .setLocationPrefix(locationPrefix)
+            .setIncludeCredentials(true)
+            .setRequired(false)
+            .setUsage(StorageCredentialUsage.SCU_SERVER);
+    if (executionJobId.isPresent() ^ executionLeaseEpoch.isPresent()) {
+      throw new IllegalArgumentException(
+          "executionJobId and executionLeaseEpoch must both be present together");
+    }
+    if (executionJobId.isPresent() && executionLeaseEpoch.isPresent()) {
+      request.setExecutionBinding(
+          ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+              .setReconcileLease(
+                  ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding.newBuilder()
+                      .setJobId(executionJobId.orElse(""))
+                      .setLeaseEpoch(executionLeaseEpoch.orElse("")))
+              .build());
+    }
+    return request.build();
   }
 
   static Map<String, String> mergeResolvedStorageConfig(
       Map<String, String> options, ResolveStorageAuthorityResponse response) {
-    return mergeResolvedStorageConfig(options, response, true);
+    return mergeResolvedStorageConfig(options, response, true, false, null);
   }
 
   static Map<String, String> mergeResolvedStorageConfig(
       Map<String, String> options,
       ResolveStorageAuthorityResponse response,
       boolean includeStorageCredentials) {
+    return mergeResolvedStorageConfig(options, response, includeStorageCredentials, false, null);
+  }
+
+  static Map<String, String> mergeResolvedStorageConfig(
+      Map<String, String> options,
+      ResolveStorageAuthorityResponse response,
+      boolean includeStorageCredentials,
+      boolean refreshableExecutionCredentials,
+      java.util.function.Supplier<ResolvedStorageCredentials> refresher) {
     Map<String, String> base = options == null ? Map.of() : options;
     if (response == null
         || (response.getClientSafeConfigCount() == 0
@@ -179,12 +316,70 @@ public class ServerSideStorageConfigResolver {
         .getClientSafeConfigMap()
         .forEach((key, value) -> putStorageProperty(merged, key, value));
     if (includeStorageCredentials && response.getStorageCredentialsCount() > 0) {
-      response
-          .getStorageCredentials(0)
-          .getConfigMap()
-          .forEach((key, value) -> putStorageProperty(merged, key, value));
+      Optional<ResolvedStorageCredentials> resolved = resolvedStorageCredentials(response);
+      if (refreshableExecutionCredentials) {
+        ResolvedStorageCredentials temporaryExecutionCredentials =
+            resolved
+                .filter(ServerSideStorageConfigResolver::isRefreshableExecutionCredential)
+                .orElseThrow(
+                    () ->
+                        new IllegalStateException(
+                            "Execution-bound storage credentials must include access key, secret key,"
+                                + " session token, and expiresAt"));
+        clearStorageCredentialProperties(merged);
+        String providerId =
+            RefreshingAwsCredentialsProviderRegistry.register(
+                temporaryExecutionCredentials, refresher);
+        merged.putAll(RefreshingAwsCredentialsProviderRegistry.propertiesFor(providerId));
+      } else {
+        response
+            .getStorageCredentials(0)
+            .getConfigMap()
+            .forEach((key, value) -> putStorageProperty(merged, key, value));
+      }
     }
     return Map.copyOf(merged);
+  }
+
+  private ResolvedStorageCredentials refreshExecutionBoundCredentials(
+      Optional<String> correlationId,
+      Optional<String> authorizationToken,
+      String accountId,
+      String locationPrefix,
+      Optional<String> executionJobId,
+      Optional<String> executionLeaseEpoch) {
+    ResolveStorageAuthorityResponse response =
+        withHeaders(storageAuthorities, correlationId, authorizationToken)
+            .vendStorageCredentials(
+                resolveRequest(accountId, locationPrefix, executionJobId, executionLeaseEpoch));
+    return resolvedStorageCredentials(response)
+        .filter(ServerSideStorageConfigResolver::isRefreshableExecutionCredential)
+        .orElseThrow(
+            () ->
+                new IllegalStateException(
+                    "Expected refreshable execution-bound credentials with access key, secret key,"
+                        + " session token, and expiresAt"));
+  }
+
+  static Optional<ResolvedStorageCredentials> resolvedStorageCredentials(
+      ResolveStorageAuthorityResponse response) {
+    if (response == null || response.getStorageCredentialsCount() == 0) {
+      return Optional.empty();
+    }
+    VendedStorageCredential credential = response.getStorageCredentials(0);
+    String accessKeyId = blankToNull(credential.getConfigMap().get("s3.access-key-id"));
+    String secretAccessKey = blankToNull(credential.getConfigMap().get("s3.secret-access-key"));
+    String sessionToken = blankToNull(credential.getConfigMap().get("s3.session-token"));
+    if (!isNonBlank(accessKeyId) || !isNonBlank(secretAccessKey)) {
+      return Optional.empty();
+    }
+    Instant expiresAt =
+        credential.hasExpiresAt()
+            ? Instant.ofEpochMilli(
+                com.google.protobuf.util.Timestamps.toMillis(credential.getExpiresAt()))
+            : null;
+    return Optional.of(
+        new ResolvedStorageCredentials(accessKeyId, secretAccessKey, sessionToken, expiresAt));
   }
 
   static String storageAuthorityLookupLocation(ConnectorConfig config) {
@@ -229,6 +424,23 @@ public class ServerSideStorageConfigResolver {
     target.put(key, value);
   }
 
+  private static void clearStorageCredentialProperties(Map<String, String> target) {
+    target.remove("s3.access-key-id");
+    target.remove("s3.secret-access-key");
+    target.remove("s3.session-token");
+    target.remove(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
+    target.remove(RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID);
+    target.remove(RefreshingAwsCredentialsProviderRegistry.ICEBERG_CLIENT_CREDENTIALS_PROVIDER);
+    target
+        .keySet()
+        .removeIf(
+            key ->
+                key != null
+                    && key.startsWith(
+                        RefreshingAwsCredentialsProviderRegistry
+                            .ICEBERG_CLIENT_CREDENTIALS_PROVIDER_PREFIX));
+  }
+
   private static String normalizeWarehouseLocation(String warehouse, boolean allowBareWarehouse) {
     String normalized = normalizeS3Location(warehouse, true);
     if (normalized != null) {
@@ -271,51 +483,16 @@ public class ServerSideStorageConfigResolver {
     return value != null && !value.isBlank();
   }
 
-  private static ConnectorConfig maybeEnableVendedCredentials(
-      Connector connector, ConnectorConfig config, ResolveStorageAuthorityResponse response) {
-    if (!shouldFallbackToVendedCredentials(connector, config, response)) {
-      return config;
-    }
-    Map<String, String> headerHints = new LinkedHashMap<>(config.auth().headerHints());
-    if (hasAccessDelegationHeader(headerHints)) {
-      return config;
-    }
-    headerHints.put(ACCESS_DELEGATION_HEADER, VENDED_CREDENTIALS_MODE);
-    LOG.infof(
-        "enabling vended credential fallback connector=%s source=%s warehouse=%s existingHeaders=%s",
-        connector.getResourceId().getId(),
-        config.options().get("iceberg.source"),
-        config.options().get("warehouse"),
-        config.auth().headerHints().keySet());
-    return new ConnectorConfig(
-        config.kind(),
-        config.displayName(),
-        config.uri(),
-        config.options(),
-        new ConnectorConfig.Auth(config.auth().scheme(), config.auth().props(), headerHints));
+  private static String blankToNull(String value) {
+    return isNonBlank(value) ? value.trim() : null;
   }
 
-  private static boolean shouldFallbackToVendedCredentials(
-      Connector connector, ConnectorConfig config, ResolveStorageAuthorityResponse response) {
-    if (connector == null || config == null || config.kind() != ConnectorConfig.Kind.ICEBERG) {
-      return false;
-    }
-    if (!"rest".equals(normalize(config.options().get("iceberg.source")))) {
-      return false;
-    }
-    return hasAccessDelegationHeader(config.auth().headerHints())
-        || response == null
-        || response.getStorageCredentialsCount() == 0;
-  }
-
-  private static boolean hasAccessDelegationHeader(Map<String, String> headerHints) {
-    if (headerHints == null || headerHints.isEmpty()) {
-      return false;
-    }
-    return headerHints.keySet().stream()
-        .filter(ServerSideStorageConfigResolver::isNonBlank)
-        .map(value -> value.trim().toLowerCase(Locale.ROOT))
-        .anyMatch("x-iceberg-access-delegation"::equals);
+  private static boolean isRefreshableExecutionCredential(ResolvedStorageCredentials credentials) {
+    return credentials != null
+        && isNonBlank(credentials.accessKeyId())
+        && isNonBlank(credentials.secretAccessKey())
+        && isNonBlank(credentials.sessionToken())
+        && credentials.expiresAt() != null;
   }
 
   private <T extends AbstractStub<T>> T withHeaders(

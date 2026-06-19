@@ -504,7 +504,9 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
         principal,
         id(),
         Instant.now(),
-        Optional.ofNullable(workerAuthorizationHeader(lease.accountId)));
+        Optional.ofNullable(workerAuthorizationHeader(lease.accountId)),
+        Optional.of(lease.jobId),
+        Optional.of(lease.leaseEpoch));
   }
 
   private String workerAuthorizationHeader(String accountId) {

@@ -21,8 +21,9 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
-import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
+import ai.floedb.floecat.storage.rpc.StorageCredentialUsage;
+import ai.floedb.floecat.storage.rpc.VendStorageCredentialsRequest;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -130,13 +131,15 @@ public class GrpcStorageCredentialAuthority implements StorageCredentialAuthorit
       boolean includeCredentials,
       boolean required,
       boolean serverSide) {
-    return grpcClient.resolveStorageAuthority(
-        ResolveStorageAuthorityRequest.newBuilder()
+    return grpcClient.vendStorageCredentials(
+        VendStorageCredentialsRequest.newBuilder()
+            .setAccountId(tableId.getAccountId())
             .setTableId(tableId)
             .setLocationPrefix(locationPrefix)
             .setIncludeCredentials(includeCredentials)
             .setRequired(required)
-            .setServerSide(serverSide)
+            .setUsage(
+                serverSide ? StorageCredentialUsage.SCU_SERVER : StorageCredentialUsage.SCU_CLIENT)
             .build());
   }
 

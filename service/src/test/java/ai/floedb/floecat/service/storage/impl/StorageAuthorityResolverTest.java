@@ -19,13 +19,20 @@ package ai.floedb.floecat.service.storage.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.StorageAuthority;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.StreamReadFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Instant;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,7 +49,15 @@ class StorageAuthorityResolverTest {
   @Test
   void buildResponseAllowsStaticAwsSecretsForServerSideAccess() {
     ResolveStorageAuthorityResponse response =
-        resolver.buildResponse(authority(), "s3://warehouse/orders", "acct", true, true, true);
+        resolver.buildResponse(
+            authority(),
+            "s3://warehouse/orders",
+            java.util.List.of("s3://warehouse/orders"),
+            "acct",
+            true,
+            true,
+            true,
+            false);
 
     assertEquals("us-east-1", response.getClientSafeConfigMap().get("s3.region"));
     assertEquals(1, response.getStorageCredentialsCount());
@@ -59,7 +74,111 @@ class StorageAuthorityResolverTest {
         IllegalArgumentException.class,
         () ->
             resolver.buildResponse(
-                authority(), "s3://warehouse/orders", "acct", true, true, false));
+                authority(),
+                "s3://warehouse/orders",
+                java.util.List.of("s3://warehouse/orders"),
+                "acct",
+                true,
+                true,
+                false,
+                true));
+  }
+
+  @Test
+  void buildResponseRejectsStaticAwsSecretsForExecutionBoundServerSideVending() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            resolver.buildResponse(
+                authority(),
+                "s3://warehouse/orders",
+                java.util.List.of("s3://warehouse/orders"),
+                "acct",
+                true,
+                true,
+                true,
+                true));
+  }
+
+  @Test
+  void buildResponseAllowsAmbientAssumeRoleWithoutStoredSecret() {
+    StorageAuthorityResolver ambientResolver =
+        new StorageAuthorityResolver() {
+          @Override
+          ResolvedStorageCredentials assumeRoleFromAmbientSource(
+              StorageAuthority authority, java.util.List<String> sessionScopeLocations) {
+            return new ResolvedStorageCredentials(
+                "temp-akid", "temp-secret", "temp-token", Instant.parse("2026-06-19T12:00:00Z"));
+          }
+        };
+    ambientResolver.secretsManager = new EmptySecretsManager();
+
+    ResolveStorageAuthorityResponse response =
+        ambientResolver.buildResponse(
+            authority().toBuilder()
+                .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+                .build(),
+            "s3://warehouse/orders",
+            java.util.List.of("s3://warehouse/orders"),
+            "acct",
+            true,
+            true,
+            true,
+            false);
+
+    assertEquals(
+        "temp-akid", response.getStorageCredentials(0).getConfigMap().get("s3.access-key-id"));
+    assertEquals(
+        "temp-token", response.getStorageCredentials(0).getConfigMap().get("s3.session-token"));
+    assertEquals(
+        Instant.parse("2026-06-19T12:00:00Z").getEpochSecond(),
+        response.getStorageCredentials(0).getExpiresAt().getSeconds());
+  }
+
+  @Test
+  void scopedSessionPolicyOmitsEmptyListPrefixConditionForBucketRoot() {
+    String policy = StorageAuthorityResolver.scopedSessionPolicy("s3://warehouse");
+
+    assertTrue(policy.contains("\"Resource\":[\"arn:aws:s3:::warehouse\"]"));
+    assertFalse(policy.contains("\"s3:prefix\""));
+    assertTrue(policy.contains("\"Resource\":[\"arn:aws:s3:::warehouse/*\"]"));
+  }
+
+  @Test
+  void scopedSessionPolicyForNonRootParsesAsValidJson() throws Exception {
+    String policy = StorageAuthorityResolver.scopedSessionPolicy("s3://warehouse/orders");
+    ObjectMapper mapper =
+        new ObjectMapper(
+            JsonFactory.builder().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build());
+
+    JsonNode root = mapper.readTree(policy);
+
+    assertEquals("2012-10-17", root.get("Version").asText());
+    assertEquals(2, root.get("Statement").size());
+    assertEquals("Allow", root.get("Statement").get(0).get("Effect").asText());
+    assertEquals("Allow", root.get("Statement").get(1).get("Effect").asText());
+  }
+
+  @Test
+  void scopedSessionPolicyForMultipleFilePathsParsesAsValidJson() throws Exception {
+    String policy =
+        StorageAuthorityResolver.scopedSessionPolicy(
+            java.util.List.of(
+                "s3://warehouse/orders/data/part-000.parquet",
+                "s3://warehouse/orders/data/part-001.parquet",
+                "s3://warehouse/orders/metadata/delete-000.parquet"));
+    ObjectMapper mapper =
+        new ObjectMapper(
+            JsonFactory.builder().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION).build());
+
+    JsonNode root = mapper.readTree(policy);
+
+    assertEquals("2012-10-17", root.get("Version").asText());
+    assertEquals(2, root.get("Statement").size());
+    assertEquals("Allow", root.get("Statement").get(0).get("Effect").asText());
+    assertEquals("Allow", root.get("Statement").get(1).get("Effect").asText());
+    assertTrue(policy.contains("part-000.parquet"));
+    assertTrue(policy.contains("delete-000.parquet"));
   }
 
   private static StorageAuthority authority() {
@@ -94,6 +213,22 @@ class StorageAuthorityResolverTest {
                       .setSecretAccessKey("secret"))
               .build()
               .toByteArray());
+    }
+
+    @Override
+    public void update(String accountId, String secretType, String secretId, byte[] payload) {}
+
+    @Override
+    public void delete(String accountId, String secretType, String secretId) {}
+  }
+
+  private static final class EmptySecretsManager implements SecretsManager {
+    @Override
+    public void put(String accountId, String secretType, String secretId, byte[] payload) {}
+
+    @Override
+    public Optional<byte[]> get(String accountId, String secretType, String secretId) {
+      return Optional.empty();
     }
 
     @Override
