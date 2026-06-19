@@ -97,12 +97,12 @@ Connector options (part of `ConnectorSpec.properties`):
 - For `iceberg.source=filesystem`, the connector `uri` must point at a single Iceberg metadata JSON
   file. `external.namespace` and `external.table-name` remain optional logical-name overrides.
 
-Auth credential types (`--cred-type`) are documented in [`docs/cli-reference.md`](cli-reference.md).
+Auth credential types (`--cred-type`) are documented in the CLI reference listed below.
 For Iceberg, the relevant types are `bearer`, `client`, `cli` (provider=aws), `token-exchange`,
 `token-exchange-entra`, `token-exchange-gcp`, `aws`, `aws-web-identity`, and `aws-assume-role`.
 When `iceberg.source=rest` uses service-side client credentials or token exchange, the shared
-outbound token endpoint allowlist and private/loopback guards described in
-[`docs/operations.md`](operations.md) apply.
+outbound token endpoint allowlist and private/loopback guards described in the operations guide
+listed below apply.
 
 To extend behavior:
 - Provide a custom NDV provider by plugging into `GenericStatsEngine`.
@@ -176,7 +176,9 @@ To extend behavior:
   uses `captureSnapshotTargetStats`).
 
 ## Cross-References
-- SPI contract: [`docs/connectors-spi.md`](connectors-spi.md)
-- Delta connector for comparison: [`docs/connectors-delta.md`](connectors-delta.md)
-- Service connector management: [`docs/service.md`](service.md)
-- Storage credential vending: [Storage authorities guide](storage-authorities.md)
+- [`docs/cli-reference.md`](cli-reference.md)
+- [`docs/operations.md`](operations.md)
+- [`docs/connectors-spi.md`](connectors-spi.md)
+- [`docs/connectors-delta.md`](connectors-delta.md)
+- [`docs/service.md`](service.md)
+- [Storage authorities guide](storage-authorities.md)

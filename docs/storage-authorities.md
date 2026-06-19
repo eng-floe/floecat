@@ -129,6 +129,6 @@ both.
 
 ## References
 
-- CLI syntax: [CLI reference](cli-reference.md)
-- Iceberg REST credential vending: [Iceberg REST gateway](iceberg-rest-gateway.md)
-- Secrets handling: [Secrets manager](secrets-manager.md)
+- [CLI reference](cli-reference.md)
+- [Iceberg REST gateway](iceberg-rest-gateway.md)
+- [Secrets manager](secrets-manager.md)

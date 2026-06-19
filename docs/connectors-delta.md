@@ -121,7 +121,7 @@ Important connector properties:
   upstream. For `delta.source=glue`, use resolved AWS credentials or non-secret
   `auth.properties` profile settings and set `auth.scheme=aws-sigv4` or `none`.
 
-Auth credential types (`--cred-type`) are documented in [`docs/cli-reference.md`](cli-reference.md).
+Auth credential types (`--cred-type`) are documented in the CLI reference listed below.
 For `delta.source=unity`, the relevant types are `bearer`, `client` (SP), `cli`,
 `token-exchange` (WIF), `token-exchange-entra`, and `token-exchange-gcp`. Entra/GCP exchanges only
 work if the Databricks workspace is configured to trust those IdPs. Use the Databricks workspace
@@ -129,8 +129,8 @@ host for `uri` (for example `https://dbc-<workspace-id>.cloud.databricks.com`); 
 Unity Catalog, token exchange endpoints typically use `https://<workspace-host>/oidc/v1/token`.
 
 For `delta.source=glue` and `delta.source=filesystem`, this Databricks OIDC token endpoint pattern
-does not apply. Shared outbound token endpoint validation behavior is documented in
-[`docs/operations.md`](operations.md).
+does not apply. Shared outbound token endpoint validation behavior is documented in the operations
+guide listed below.
 
 For `delta.source=glue`, the relevant credential types are `aws`, `cli` (provider=aws),
 `aws-web-identity`, and `aws-assume-role`.
@@ -223,7 +223,10 @@ Extensibility points:
 
 ## Cross-References
 
-- SPI details: [`docs/connectors-spi.md`](connectors-spi.md)
-- Iceberg connector for contrast: [`docs/connectors-iceberg.md`](connectors-iceberg.md)
-- Service & reconciler integration: [`docs/service.md`](service.md), [`docs/reconciler.md`](reconciler.md)
-- Storage credential vending: [Storage authorities guide](storage-authorities.md)
+- [`docs/cli-reference.md`](cli-reference.md)
+- [`docs/operations.md`](operations.md)
+- [`docs/connectors-spi.md`](connectors-spi.md)
+- [`docs/connectors-iceberg.md`](connectors-iceberg.md)
+- [`docs/service.md`](service.md)
+- [`docs/reconciler.md`](reconciler.md)
+- [Storage authorities guide](storage-authorities.md)
