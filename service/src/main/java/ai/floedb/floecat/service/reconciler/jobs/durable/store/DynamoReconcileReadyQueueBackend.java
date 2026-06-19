@@ -23,11 +23,16 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import software.amazon.awssdk.awscore.AwsRequestOverrideConfiguration;
+import software.amazon.awssdk.core.exception.AbortedException;
+import software.amazon.awssdk.core.exception.ApiCallAttemptTimeoutException;
+import software.amazon.awssdk.core.exception.ApiCallTimeoutException;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
@@ -68,7 +73,11 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
 
   @Override
   public ReconcileReadyQueueStore.ReadyQueueScanPage scanReadySlice(
-      ReadyQueueSlice slice, int pageSize, String pageToken) {
+      ReadyQueueSlice slice,
+      int pageSize,
+      String pageToken,
+      ReconcileReadyQueueStore.LeaseScanStats scanStats) {
+    assertLeaseScanActive(scanStats);
     QueryRequest.Builder query =
         QueryRequest.builder()
             .tableName(table)
@@ -88,7 +97,8 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
               ATTR_SORT_KEY, AttributeValue.fromS(token)));
     }
 
-    var response = dynamoDb.query(query.build());
+    applyLeaseScanTimeout(query, scanStats);
+    var response = runLeaseScanCall(scanStats, () -> dynamoDb.query(query.build()));
     List<ReconcileReadyQueueStore.ReadyQueueEntry> entries =
         new ArrayList<>(response.items().size());
     for (var item : response.items()) {
@@ -185,23 +195,25 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
   }
 
   @Override
-  public Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(String canonicalPointerKey) {
+  public Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(
+      String canonicalPointerKey, ReconcileReadyQueueStore.LeaseScanStats scanStats) {
+    assertLeaseScanActive(scanStats);
     var canonicalJobKey = JobIndexBackendSupport.parseCanonicalJobKey(canonicalPointerKey);
     if (canonicalJobKey != null) {
-      var response =
-          dynamoDb.getItem(
-              GetItemRequest.builder()
-                  .tableName(table)
-                  .consistentRead(true)
-                  .key(
-                      Map.of(
-                          ATTR_PARTITION_KEY,
-                          AttributeValue.fromS(
-                              JobIndexBackendSupport.canonicalPartitionKey(canonicalJobKey)),
-                          ATTR_SORT_KEY,
-                          AttributeValue.fromS(
-                              JobIndexBackendSupport.canonicalSortKey(canonicalJobKey))))
-                  .build());
+      GetItemRequest.Builder request =
+          GetItemRequest.builder()
+              .tableName(table)
+              .consistentRead(true)
+              .key(
+                  Map.of(
+                      ATTR_PARTITION_KEY,
+                      AttributeValue.fromS(
+                          JobIndexBackendSupport.canonicalPartitionKey(canonicalJobKey)),
+                      ATTR_SORT_KEY,
+                      AttributeValue.fromS(
+                          JobIndexBackendSupport.canonicalSortKey(canonicalJobKey))));
+      applyLeaseScanTimeout(request, scanStats);
+      var response = runLeaseScanCall(scanStats, () -> dynamoDb.getItem(request.build()));
       if (!response.hasItem() || response.item().isEmpty()) {
         return Optional.empty();
       }
@@ -216,16 +228,16 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
     if (key == null) {
       return Optional.empty();
     }
-    var response =
-        dynamoDb.getItem(
-            GetItemRequest.builder()
-                .tableName(table)
-                .consistentRead(true)
-                .key(
-                    Map.of(
-                        ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()),
-                        ATTR_SORT_KEY, AttributeValue.fromS(key.sortKey())))
-                .build());
+    GetItemRequest.Builder request =
+        GetItemRequest.builder()
+            .tableName(table)
+            .consistentRead(true)
+            .key(
+                Map.of(
+                    ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()),
+                    ATTR_SORT_KEY, AttributeValue.fromS(key.sortKey())));
+    applyLeaseScanTimeout(request, scanStats);
+    var response = runLeaseScanCall(scanStats, () -> dynamoDb.getItem(request.build()));
     if (!response.hasItem() || response.item().isEmpty()) {
       return Optional.empty();
     }
@@ -275,6 +287,68 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
   }
 
   private record DynamoPointerKey(String partitionKey, String sortKey) {}
+
+  private static void assertLeaseScanActive(ReconcileReadyQueueStore.LeaseScanStats scanStats) {
+    if (scanStats != null && scanStats.shouldStop()) {
+      throw new LeaseScanAbortedException(scanStats.abortedByCaller);
+    }
+  }
+
+  private static void applyLeaseScanTimeout(
+      QueryRequest.Builder request, ReconcileReadyQueueStore.LeaseScanStats scanStats) {
+    leaseScanTimeout(scanStats).ifPresent(request::overrideConfiguration);
+  }
+
+  private static void applyLeaseScanTimeout(
+      GetItemRequest.Builder request, ReconcileReadyQueueStore.LeaseScanStats scanStats) {
+    leaseScanTimeout(scanStats).ifPresent(request::overrideConfiguration);
+  }
+
+  private static Optional<AwsRequestOverrideConfiguration> leaseScanTimeout(
+      ReconcileReadyQueueStore.LeaseScanStats scanStats) {
+    if (scanStats == null || scanStats.deadlineAtMs <= 0L) {
+      return Optional.empty();
+    }
+    long remainingMs = scanStats.deadlineAtMs - System.currentTimeMillis();
+    if (remainingMs <= 0L) {
+      scanStats.abortedByDeadline = true;
+      throw new LeaseScanAbortedException(false);
+    }
+    return Optional.of(
+        AwsRequestOverrideConfiguration.builder()
+            .apiCallAttemptTimeout(Duration.ofMillis(Math.max(1L, remainingMs)))
+            .apiCallTimeout(Duration.ofMillis(Math.max(1L, remainingMs)))
+            .build());
+  }
+
+  private static <T> T runLeaseScanCall(
+      ReconcileReadyQueueStore.LeaseScanStats scanStats, java.util.function.Supplier<T> call) {
+    try {
+      return call.get();
+    } catch (ApiCallTimeoutException | ApiCallAttemptTimeoutException timeout) {
+      throw leaseScanAborted(scanStats, false, timeout);
+    } catch (AbortedException aborted) {
+      throw leaseScanAborted(scanStats, callerCancelled(scanStats), aborted);
+    }
+  }
+
+  private static LeaseScanAbortedException leaseScanAborted(
+      ReconcileReadyQueueStore.LeaseScanStats scanStats,
+      boolean callerCancelled,
+      RuntimeException cause) {
+    if (scanStats != null) {
+      if (callerCancelled) {
+        scanStats.abortedByCaller = true;
+      } else {
+        scanStats.abortedByDeadline = true;
+      }
+    }
+    return new LeaseScanAbortedException(callerCancelled, cause);
+  }
+
+  private static boolean callerCancelled(ReconcileReadyQueueStore.LeaseScanStats scanStats) {
+    return scanStats != null && scanStats.cancelled != null && scanStats.cancelled.getAsBoolean();
+  }
 
   private static String blankToEmpty(String value) {
     return value == null ? "" : value;

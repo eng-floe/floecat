@@ -19,55 +19,56 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeaseRequest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore.LeaseScanStats;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
-/**
- * Unit coverage for the lease-scan guards: the wall-clock budget (so a scan a caller has already
- * abandoned yields its concurrency slot instead of running to completion) and inline pruning of
- * stale ready pointers (so leaked pointers drain instead of starving leasable work behind them).
- */
 class NativeReconcileReadyQueueStoreBudgetTest {
 
   @Test
-  void scanAbortsImmediatelyWhenBudgetAlreadyExpired() {
+  void scanAbortsBeforeBackendCallsWhenDeadlineAlreadyExpired() {
     CountingBackend backend = new CountingBackend();
     NativeReconcileReadyQueueStore store = new NativeReconcileReadyQueueStore();
     store.bind(backend, null, null, 128, record -> true);
 
     LeaseScanStats stats = new LeaseScanStats();
-    stats.deadlineAtMs = System.currentTimeMillis() - 1; // already past
-
-    long now = System.currentTimeMillis();
-    Optional<LeasedJob> leased = store.leaseReadyDue(now, LeaseRequest.all(), stats);
-
-    assertTrue(leased.isEmpty(), "expired-budget scan must yield no work");
-    assertTrue(stats.abortedByBudget, "scan must record that it aborted on the budget");
-    assertEquals(
-        0, backend.scanReadySliceCalls, "scan must short-circuit before issuing any DynamoDB scan");
-  }
-
-  @Test
-  void scanProceedsWhenNoBudgetSet() {
-    CountingBackend backend = new CountingBackend();
-    NativeReconcileReadyQueueStore store = new NativeReconcileReadyQueueStore();
-    store.bind(backend, null, null, 128, record -> true);
-
-    LeaseScanStats stats = new LeaseScanStats(); // deadlineAtMs == 0 -> no budget
+    stats.deadlineAtMs = System.currentTimeMillis() - 1L;
 
     Optional<LeasedJob> leased =
         store.leaseReadyDue(System.currentTimeMillis(), LeaseRequest.all(), stats);
 
-    assertTrue(leased.isEmpty(), "empty ready queue yields no work");
-    assertFalse(stats.abortedByBudget, "no budget means no budget-abort");
-    assertTrue(
-        backend.scanReadySliceCalls >= 1, "scan must reach the backend when not budget-gated");
+    assertTrue(leased.isEmpty());
+    assertTrue(stats.abortedByDeadline);
+    assertEquals(0, backend.scanReadySliceCalls);
+    assertEquals(0, backend.loadCanonicalSnapshotCalls);
+  }
+
+  @Test
+  void scanReachesBackendWhenNoDeadlineIsConfigured() {
+    CountingBackend backend = new CountingBackend();
+    NativeReconcileReadyQueueStore store = new NativeReconcileReadyQueueStore();
+    store.bind(backend, null, null, 128, record -> true);
+
+    LeaseScanStats stats = new LeaseScanStats();
+    Optional<LeasedJob> leased =
+        store.leaseReadyDue(System.currentTimeMillis(), LeaseRequest.all(), stats);
+
+    assertTrue(leased.isEmpty());
+    assertFalse(stats.abortedByDeadline);
+    assertTrue(backend.scanReadySliceCalls >= 1);
   }
 
   @Test
@@ -80,48 +81,104 @@ class NativeReconcileReadyQueueStoreBudgetTest {
     Optional<LeasedJob> leased =
         store.leaseReadyDue(System.currentTimeMillis(), LeaseRequest.all(), stats);
 
-    assertTrue(leased.isEmpty(), "an orphaned pointer cannot be leased");
-    assertEquals(1, stats.prunedCount, "the orphaned (canonical-missing) pointer must be pruned");
-    assertEquals(
-        List.of("rp-orphan"),
-        backend.deleted,
-        "deleteReadyEntry called with the stale pointer key");
+    assertTrue(leased.isEmpty());
+    assertEquals(1, stats.prunedCount);
+    assertEquals(List.of("rp-orphan"), backend.deleted);
   }
 
-  /** Records ready-scan calls and returns an empty page so the scan terminates cleanly. */
+  @Test
+  void scanStopsBeforeLeaseWriteWhenCallerCancelsAfterRecordDecode() {
+    NativeReconcileReadyQueueStore store = new NativeReconcileReadyQueueStore();
+    ReconcileReadyQueueBackend backend = mock(ReconcileReadyQueueBackend.class);
+    ReconcileJobIndexStore jobIndexStore = mock(ReconcileJobIndexStore.class);
+    ReconcileLeaseStore leaseStore = mock(ReconcileLeaseStore.class);
+    AtomicBoolean cancelled = new AtomicBoolean(false);
+    store.bind(backend, jobIndexStore, leaseStore, 128, record -> true);
+    long dueAtMs = System.currentTimeMillis();
+    StoredReconcileJob record = new StoredReconcileJob();
+    record.jobId = "job-1";
+    record.accountId = "acct-1";
+    record.jobKind = ReconcileJobKind.PLAN_CONNECTOR.name();
+    record.state = "JS_QUEUED";
+    record.executionClass = "DEFAULT";
+    record.executionLane = "default";
+    record.laneKey = "default";
+    record.nextAttemptAtMs = dueAtMs;
+    record.readyPointerKey = store.readyPointerKeyFor(record, dueAtMs);
+
+    ReconcileReadyQueueStore.ReadyQueueEntry candidate =
+        new ReconcileReadyQueueStore.ReadyQueueEntry(
+            record.readyPointerKey,
+            "/canonical",
+            "acct-1",
+            "job-1",
+            dueAtMs,
+            ReconcileReadyQueueStore.ReadyIndexType.GLOBAL,
+            "");
+    when(backend.scanReadySlice(any(), eq(128), eq(""), any()))
+        .thenReturn(new ReconcileReadyQueueStore.ReadyQueueScanPage(List.of(candidate), ""));
+    CanonicalPointerSnapshot snapshot =
+        new CanonicalPointerSnapshot("/canonical", "blob://job", 7L);
+    when(backend.loadCanonicalSnapshot(eq("/canonical"), any())).thenReturn(Optional.of(snapshot));
+    when(jobIndexStore.readRecord(snapshot))
+        .thenAnswer(
+            ignored -> {
+              cancelled.set(true);
+              return Optional.of(record);
+            });
+
+    LeaseScanStats stats = new LeaseScanStats();
+    stats.cancelled = cancelled::get;
+
+    Optional<LeasedJob> leased =
+        store.leaseReadyDue(System.currentTimeMillis(), LeaseRequest.all(), stats);
+
+    assertTrue(leased.isEmpty());
+    assertTrue(stats.abortedByCaller);
+    verifyNoInteractions(leaseStore);
+  }
+
   private static final class CountingBackend implements ReconcileReadyQueueBackend {
     int scanReadySliceCalls;
+    int loadCanonicalSnapshotCalls;
 
     @Override
     public ReconcileReadyQueueStore.ReadyQueueScanPage scanReadySlice(
-        ReadyQueueSlice slice, int pageSize, String pageToken) {
+        ReadyQueueSlice slice,
+        int pageSize,
+        String pageToken,
+        ReconcileReadyQueueStore.LeaseScanStats scanStats) {
       scanReadySliceCalls++;
       return new ReconcileReadyQueueStore.ReadyQueueScanPage(List.of(), "");
     }
 
     @Override
     public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-      throw new UnsupportedOperationException("not used in this test");
+      throw new UnsupportedOperationException();
     }
 
     @Override
     public boolean deleteReadyEntry(String readyPointerKey) {
-      throw new UnsupportedOperationException("not used in this test");
+      throw new UnsupportedOperationException();
     }
 
     @Override
-    public Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(String canonicalPointerKey) {
-      throw new UnsupportedOperationException("not used in this test");
+    public Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(
+        String canonicalPointerKey, ReconcileReadyQueueStore.LeaseScanStats scanStats) {
+      loadCanonicalSnapshotCalls++;
+      return Optional.empty();
     }
   }
 
-  /** Serves one due candidate whose canonical snapshot is missing, and records prune deletes. */
   private static final class PruningBackend implements ReconcileReadyQueueBackend {
     final List<String> deleted = new ArrayList<>();
 
     @Override
     public ReconcileReadyQueueStore.ReadyQueueScanPage scanReadySlice(
-        ReadyQueueSlice slice, int pageSize, String pageToken) {
+        ReadyQueueSlice slice,
+        int pageSize,
+        String pageToken,
+        ReconcileReadyQueueStore.LeaseScanStats scanStats) {
       ReconcileReadyQueueStore.ReadyQueueEntry orphan =
           new ReconcileReadyQueueStore.ReadyQueueEntry(
               "rp-orphan",
@@ -136,7 +193,7 @@ class NativeReconcileReadyQueueStoreBudgetTest {
 
     @Override
     public ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken) {
-      throw new UnsupportedOperationException("not used in this test");
+      throw new UnsupportedOperationException();
     }
 
     @Override
@@ -146,7 +203,8 @@ class NativeReconcileReadyQueueStoreBudgetTest {
     }
 
     @Override
-    public Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(String canonicalPointerKey) {
+    public Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(
+        String canonicalPointerKey, ReconcileReadyQueueStore.LeaseScanStats scanStats) {
       return Optional.empty();
     }
   }
