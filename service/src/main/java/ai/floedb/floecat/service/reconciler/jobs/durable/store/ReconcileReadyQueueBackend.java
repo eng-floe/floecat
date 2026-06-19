@@ -26,11 +26,15 @@ public interface ReconcileReadyQueueBackend {
       List<ReconcileReadyQueueStore.ReadyQueueEntry> entries, String nextPageToken) {}
 
   ReconcileReadyQueueStore.ReadyQueueScanPage scanReadySlice(
-      ReadyQueueSlice slice, int pageSize, String pageToken);
+      ReadyQueueSlice slice,
+      int pageSize,
+      String pageToken,
+      ReconcileReadyQueueStore.LeaseScanStats scanStats);
 
   ReadyQueueScanPage scanAllReadyEntries(int pageSize, String pageToken);
 
   boolean deleteReadyEntry(String readyPointerKey);
 
-  Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(String canonicalPointerKey);
+  Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(
+      String canonicalPointerKey, ReconcileReadyQueueStore.LeaseScanStats scanStats);
 }
