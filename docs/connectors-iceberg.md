@@ -111,7 +111,7 @@ To extend behavior:
 
 ## Examples & Scenarios
 - **Connector creation** – A connector spec referencing Iceberg REST looks like:
-  ```json
+  ```text
   {
     "display_name":"glue-iceberg",
     "kind":"CK_ICEBERG",
@@ -122,7 +122,7 @@ To extend behavior:
   ```
   `ConnectorsImpl` validates it by creating an `IcebergConnector` and calling `listNamespaces()`.
 - **Glue (AWS SigV4)** – CLI example using Glue discovery:
-  ```bash
+  ```
   connector create "Glue Iceberg" ICEBERG \
     "https://glue.us-east-1.amazonaws.com/iceberg/" \
     tpcds_iceberg demo \
@@ -132,7 +132,7 @@ To extend behavior:
   ```
 - **Glue cross-account assume-role** – CLI example using AWS SigV4 plus an assumed role for
   upstream Glue and S3 access:
-  ```bash
+  ```
   connector create "call_center" ICEBERG \
     "https://glue.us-east-1.amazonaws.com/iceberg/" \
     tpcds_iceberg as \
@@ -144,7 +144,7 @@ To extend behavior:
     --props iceberg.source=glue
   ```
 - **Nessie (REST catalog)** – CLI example using a Nessie REST endpoint:
-  ```bash
+  ```
   connector create "Nessie Iceberg" ICEBERG \
     "http://localhost:19120/iceberg" \
     tpch demo \
@@ -160,7 +160,7 @@ To extend behavior:
   depends on some other valid storage credential path. If the upstream catalog rejects delegated
   access requests, connector planning or table load will fail on the REST call.
 - **Filesystem (single table)** – CLI example using the metadata JSON as the connector URI:
-  ```bash
+  ```
   connector create "Filesystem Iceberg" ICEBERG \
     "s3://warehouse/metadata/00001.metadata.json" \
     fixtures demo \

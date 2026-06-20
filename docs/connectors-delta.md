@@ -146,7 +146,7 @@ Extensibility points:
 
 - **Connector Spec** – A Unity Catalog connector might specify:
 
-  ```json
+  ```text
   {
     "display_name":"delta-unity",
     "kind":"CK_DELTA",
@@ -170,7 +170,7 @@ Extensibility points:
     the workspace OIDC URL:
     `https://<workspace-host>/oidc/v1/token`.
 
-    ```bash
+    ```
     connector create "Unity Delta SP" DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
       "cusack.ext_tpcds" tpcds --dest-ns federated --source-table store_sales \
       --auth-scheme oauth2 \
@@ -186,7 +186,7 @@ Extensibility points:
     URL:
     `https://<workspace-host>/oidc/v1/token`.
 
-    ```bash
+    ```
     connector create "Unity Delta WIF" DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
       "cusack.ext_tpcds" tpcds --dest-ns federated --source-table store_sales \
       --auth-scheme oauth2 \
@@ -201,7 +201,7 @@ Extensibility points:
 
   - **CLI cache** – Connector reads the Databricks CLI cache directly:
 
-    ```bash
+    ```
     connector create "Unity Delta CLI" DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
       "cusack.ext_tpcds" tpcds --dest-ns federated --source-table store_sales \
       --auth-scheme oauth2 \
@@ -211,7 +211,7 @@ Extensibility points:
 
   - **Bearer token (PAT)** – Using the `connector` CLI with a resolved token or Databricks personal access token:
 
-  ```bash
+  ```
   connector create "Unity Delta Token" DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
     "cusack.ext_tpcds" tpcds --dest-ns federated --source-table store_sales \
     --auth-scheme oauth2 --cred-type bearer --cred token=<access-token>

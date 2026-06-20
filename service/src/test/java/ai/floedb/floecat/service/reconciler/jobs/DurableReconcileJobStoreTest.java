@@ -877,20 +877,15 @@ class DurableReconcileJobStoreTest {
     assertEquals("JS_QUEUED", requeued.state);
     assertTrue(requeued.nextAttemptAtMs > System.currentTimeMillis());
 
-    long deadlineMs = System.currentTimeMillis() + 2_000L;
-    java.util.Optional<ReconcileJobStore.LeasedJob> secondLease = java.util.Optional.empty();
-    while (System.currentTimeMillis() < deadlineMs && secondLease.isEmpty()) {
-      secondLease =
-          store.leaseNext(
-              ReconcileJobStore.LeaseRequest.of(
-                  java.util.EnumSet.of(ReconcileExecutionClass.DEFAULT),
-                  Set.of(ReconcileJobStore.LeaseRequest.anyLaneToken()),
-                  Set.of("floescan_ingest"),
-                  java.util.EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)));
-      if (secondLease.isEmpty()) {
-        Thread.sleep(10L);
-      }
-    }
+    makeQueuedJobDueNow(execJobId);
+
+    java.util.Optional<ReconcileJobStore.LeasedJob> secondLease =
+        store.leaseNext(
+            ReconcileJobStore.LeaseRequest.of(
+                java.util.EnumSet.of(ReconcileExecutionClass.DEFAULT),
+                Set.of(ReconcileJobStore.LeaseRequest.anyLaneToken()),
+                Set.of("floescan_ingest"),
+                java.util.EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)));
 
     assertTrue(secondLease.isPresent());
 
@@ -2817,6 +2812,33 @@ class DurableReconcileJobStoreTest {
             .findFirst()
             .orElseThrow();
     store.leaseStore.reclaimExpiredLease(leaseExpiryEntry, nowMs);
+  }
+
+  private void makeQueuedJobDueNow(String jobId) {
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    long nowMs = System.currentTimeMillis();
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                canonicalPointerKey,
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.nextAttemptAtMs = nowMs;
+                      current.readyPointerKey =
+                          assertDoesNotThrow(
+                                  () ->
+                                      invokePrivateMethod(
+                                          store,
+                                          "readyPointerKeyFor",
+                                          new Class<?>[] {StoredReconcileJob.class, long.class},
+                                          current,
+                                          nowMs))
+                              .toString();
+                      return current;
+                    }));
   }
 
   private void configureLeaseRenewGraceMs(long leaseRenewGraceMs) {
