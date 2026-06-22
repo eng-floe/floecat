@@ -1872,7 +1872,9 @@ listed below apply.</p>
   --auth-scheme aws-sigv4 \
   --cred-type aws-assume-role \
   --cred role_arn=arn:aws:iam::123456789012:role/floecat-prod-s3-readonly \
-  --props iceberg.source=glue
+  --cred aws.region=us-east-1 \
+  --props iceberg.source=glue \
+  --props s3.region=us-east-1
 </code></pre></div></li>
 <li><strong>Nessie (REST catalog)</strong> – CLI example using a Nessie REST endpoint:
   <div class="highlight"><pre><span></span><code>connector create &quot;Nessie Iceberg&quot; ICEBERG \
