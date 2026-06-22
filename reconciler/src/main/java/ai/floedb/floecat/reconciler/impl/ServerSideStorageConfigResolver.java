@@ -394,38 +394,13 @@ public class ServerSideStorageConfigResolver {
 
   static String storageAuthorityLookupLocation(
       Optional<String> storageLocation, ConnectorConfig config) {
-    if (config == null) {
-      return null;
-    }
     if (storageLocation != null && storageLocation.isPresent()) {
       String explicitLocation = normalizeS3Location(storageLocation.orElse(null), false);
       if (explicitLocation != null) {
         return explicitLocation;
       }
     }
-    Map<String, String> options = config.options();
-    if (config.kind() == ConnectorConfig.Kind.DELTA) {
-      String tableRoot = options.get("delta.table-root");
-      if (isNonBlank(tableRoot)) {
-        return normalizeS3Location(tableRoot, false);
-      }
-      return null;
-    }
-    if (config.kind() != ConnectorConfig.Kind.ICEBERG) {
-      return null;
-    }
-    String source = normalize(options.get("iceberg.source"));
-    if ("filesystem".equals(source)) {
-      return normalizeS3Location(config.uri(), false);
-    }
-    if ("rest".equals(source)) {
-      return null;
-    }
     return null;
-  }
-
-  static String storageAuthorityLookupLocation(ConnectorConfig config) {
-    return storageAuthorityLookupLocation(Optional.empty(), config);
   }
 
   private static void putStorageProperty(Map<String, String> target, String key, String value) {

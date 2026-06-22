@@ -141,7 +141,9 @@ To extend behavior:
     --auth-scheme aws-sigv4 \
     --cred-type aws-assume-role \
     --cred role_arn=arn:aws:iam::123456789012:role/floecat-prod-s3-readonly \
-    --props iceberg.source=glue
+    --cred aws.region=us-east-1 \
+    --props iceberg.source=glue \
+    --props s3.region=us-east-1
   ```
 - **Nessie (REST catalog)** – CLI example using a Nessie REST endpoint:
   ```

@@ -43,6 +43,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sts.StsClient;
 import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
 import software.amazon.awssdk.services.sts.model.AssumeRoleResponse;
@@ -230,7 +231,8 @@ public final class CredentialResolverSupport {
         yield java.util.Optional.of(toResolvedStorageCredentials(creds));
       }
       case AWS_ASSUME_ROLE -> {
-        Credentials creds = assumeRole(credential.getAwsAssumeRole());
+        Credentials creds =
+            assumeRole(credential.getAwsAssumeRole(), credential.getPropertiesMap());
         yield java.util.Optional.of(toResolvedStorageCredentials(creds));
       }
       default -> java.util.Optional.empty();
@@ -372,11 +374,20 @@ public final class CredentialResolverSupport {
         expiresAt);
   }
 
-  private static Credentials assumeRole(AuthCredentials.AwsAssumeRole ar) {
+  private static Credentials assumeRole(
+      AuthCredentials.AwsAssumeRole ar, Map<String, String> properties) {
     var req = buildAssumeRoleRequest(ar);
+    String region =
+        firstNonBlank(
+            option(properties, "client.region"),
+            firstNonBlank(option(properties, "s3.region"), option(properties, "aws.region")));
 
-    try (var sts =
-        StsClient.builder().credentialsProvider(DefaultCredentialsProvider.create()).build()) {
+    var builder = StsClient.builder().credentialsProvider(DefaultCredentialsProvider.create());
+    if (region != null) {
+      builder.region(Region.of(region));
+    }
+
+    try (var sts = builder.build()) {
       return assumeRole(req, sts);
     }
   }
@@ -396,6 +407,17 @@ public final class CredentialResolverSupport {
   static Credentials assumeRole(AssumeRoleRequest req, StsClient sts) {
     AssumeRoleResponse resp = sts.assumeRole(req);
     return resp.credentials();
+  }
+
+  private static String option(Map<String, String> options, String key) {
+    if (options == null) {
+      return null;
+    }
+    String value = options.get(key);
+    if (value == null || value.isBlank()) {
+      return null;
+    }
+    return value;
   }
 
   private static AuthCredentials.TokenExchange requireBase(

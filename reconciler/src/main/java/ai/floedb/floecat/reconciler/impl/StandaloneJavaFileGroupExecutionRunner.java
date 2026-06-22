@@ -56,7 +56,8 @@ public class StandaloneJavaFileGroupExecutionRunner {
                 FileGroupExecutionSupport.requestedFileGroupStatsTargetKinds(
                     payload.capturePolicy()),
                 payload.capturePageIndex(),
-                java.util.Optional.empty(),
+                java.util.Optional.of(payload.storageLocation())
+                    .filter(location -> !location.isBlank()),
                 reconcileWorkerAuthProvider.authorizationHeader(
                     payload.tableId() == null ? "" : payload.tableId().getAccountId()),
                 java.util.Optional.of(payload.jobId()),

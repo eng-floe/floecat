@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
@@ -42,6 +43,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sts.StsClient;
 import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
 import software.amazon.awssdk.services.sts.model.AssumeRoleResponse;
@@ -832,6 +834,7 @@ class CredentialResolverSupportTest {
                 AuthCredentials.AwsAssumeRole.newBuilder()
                     .setRoleArn("arn:aws:iam::123456789012:role/demo")
                     .setRoleSessionName("demo"))
+            .putProperties("aws.region", "us-east-1")
             .build();
     var cfg =
         new ConnectorConfig(
@@ -847,6 +850,7 @@ class CredentialResolverSupportTest {
           mock(software.amazon.awssdk.services.sts.StsClientBuilder.class);
       mockedSts.when(StsClient::builder).thenReturn(builder);
       when(builder.credentialsProvider(any())).thenReturn(builder);
+      when(builder.region(any(Region.class))).thenReturn(builder);
       when(builder.build()).thenReturn(sts);
       when(sts.assumeRole(any(AssumeRoleRequest.class)))
           .thenReturn(
@@ -867,6 +871,7 @@ class CredentialResolverSupportTest {
       assertEquals("token", applied.options().get("s3.session-token"));
       assertNotNull(
           applied.options().get(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID));
+      verify(builder).region(Region.of("us-east-1"));
     }
   }
 

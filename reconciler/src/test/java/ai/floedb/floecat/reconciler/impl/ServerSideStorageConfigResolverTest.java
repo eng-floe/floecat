@@ -23,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -76,9 +78,9 @@ class ServerSideStorageConfigResolverTest {
             Map.of("iceberg.source", "filesystem"),
             new ConnectorConfig.Auth("none", Map.of(), Map.of()));
 
-    assertEquals(
-        "s3://warehouse/ns/table/metadata/00001.metadata.json",
-        ServerSideStorageConfigResolver.storageAuthorityLookupLocation(config));
+    assertNull(
+        ServerSideStorageConfigResolver.storageAuthorityLookupLocation(
+            java.util.Optional.empty(), config));
   }
 
   @Test
@@ -93,7 +95,9 @@ class ServerSideStorageConfigResolverTest {
                 "metadata-location", "s3://warehouse/ns/table/metadata/00001.metadata.json"),
             new ConnectorConfig.Auth("none", Map.of(), Map.of()));
 
-    assertNull(ServerSideStorageConfigResolver.storageAuthorityLookupLocation(config));
+    assertNull(
+        ServerSideStorageConfigResolver.storageAuthorityLookupLocation(
+            java.util.Optional.empty(), config));
   }
 
   @Test
@@ -106,7 +110,9 @@ class ServerSideStorageConfigResolverTest {
             Map.of("iceberg.source", "rest", "warehouse", "s3://warehouse"),
             new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
 
-    assertNull(ServerSideStorageConfigResolver.storageAuthorityLookupLocation(config));
+    assertNull(
+        ServerSideStorageConfigResolver.storageAuthorityLookupLocation(
+            java.util.Optional.empty(), config));
   }
 
   @Test
@@ -290,7 +296,7 @@ class ServerSideStorageConfigResolverTest {
   }
 
   @Test
-  void resolveStillPropagatesLookupFailureForNonRestIceberg() {
+  void resolveWithoutExplicitStorageLocationSkipsAuthorityLookupForFilesystemIceberg() {
     ServerSideStorageConfigResolver resolver =
         new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
     resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
@@ -317,9 +323,8 @@ class ServerSideStorageConfigResolverTest {
             Map.of("iceberg.source", "filesystem"),
             new ConnectorConfig.Auth("none", Map.of(), Map.of()));
 
-    assertThrows(
-        StatusRuntimeException.class,
-        () -> resolver.resolve(java.util.Optional.empty(), connector, config));
+    assertEquals(config, resolver.resolve(java.util.Optional.empty(), connector, config));
+    verify(resolver.storageAuthorities, never()).vendStorageCredentials(any());
   }
 
   @Test

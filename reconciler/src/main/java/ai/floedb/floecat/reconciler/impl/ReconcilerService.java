@@ -55,6 +55,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -1184,7 +1185,10 @@ public class ReconcilerService {
     ConnectorConfig config = ConnectorConfigMapper.fromProto(connector);
     ConnectorConfig resolved =
         resolveServerSideStorage(
-            ctx, connector, resolveCredentials(config, connector.getAuth(), connectorId));
+            ctx,
+            connector,
+            resolveCredentials(config, connector.getAuth(), connectorId),
+            sourceStorageLocation(config));
     return new ActiveConnector(
         connector,
         connector.hasSource() ? connector.getSource() : SourceSelector.getDefaultInstance(),
@@ -1385,6 +1389,26 @@ public class ReconcilerService {
     return resolveServerSideStorage(ctx, connector, config, Optional.empty());
   }
 
+  private Optional<String> sourceStorageLocation(ConnectorConfig config) {
+    if (config == null) {
+      return Optional.empty();
+    }
+    if (config.kind() == ConnectorConfig.Kind.DELTA) {
+      String location = firstNonBlank(config.options().get("storage_location"));
+      if (location == null) {
+        location = firstNonBlank(config.options().get("delta.table-root"));
+      }
+      return Optional.ofNullable(location);
+    }
+    if (config.kind() == ConnectorConfig.Kind.ICEBERG) {
+      String source = firstNonBlank(config.options().get("iceberg.source"));
+      if (source != null && "filesystem".equals(source.toLowerCase(Locale.ROOT))) {
+        return Optional.ofNullable(firstNonBlank(config.uri()));
+      }
+    }
+    return Optional.empty();
+  }
+
   private ConnectorConfig resolveServerSideStorage(
       ReconcileContext ctx,
       Connector connector,
@@ -1400,6 +1424,14 @@ public class ReconcilerService {
         storageLocation,
         connector,
         config);
+  }
+
+  private static String firstNonBlank(String value) {
+    if (value == null) {
+      return null;
+    }
+    String trimmed = value.trim();
+    return trimmed.isEmpty() ? null : trimmed;
   }
 
   record ActiveConnector(

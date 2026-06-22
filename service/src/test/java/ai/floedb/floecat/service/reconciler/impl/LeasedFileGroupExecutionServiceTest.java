@@ -32,6 +32,7 @@ import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
 import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
 import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.catalog.rpc.PutIndexArtifactItem;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
@@ -57,6 +58,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import com.google.protobuf.ByteString;
 import io.grpc.StatusRuntimeException;
@@ -67,11 +69,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class LeasedFileGroupExecutionServiceTest {
-  private static final String DELTA_TABLE_ROOT_HINT_FULL_NAME_OPTION =
-      "delta.table-root.hint.full-name";
-  private static final String DELTA_TABLE_ROOT_HINT_LOCATION_OPTION =
-      "delta.table-root.hint.location";
-
   private static final String ACCOUNT_ID = "acct";
   private static final String CONNECTOR_ID = "conn";
   private static final String PARENT_JOB_ID = "parent-job";
@@ -84,6 +81,7 @@ class LeasedFileGroupExecutionServiceTest {
   private ReconcileJobStore jobs;
   private TableRepository tableRepo;
   private ConnectorRepository connectorRepo;
+  private SnapshotRepository snapshotRepo;
   private CredentialResolver credentialResolver;
   private SnapshotFinalizePersistenceService snapshotFinalizePersistence;
   private PrincipalContext principal;
@@ -94,12 +92,14 @@ class LeasedFileGroupExecutionServiceTest {
     jobs = mock(ReconcileJobStore.class);
     tableRepo = mock(TableRepository.class);
     connectorRepo = mock(ConnectorRepository.class);
+    snapshotRepo = mock(SnapshotRepository.class);
     credentialResolver = mock(CredentialResolver.class);
     snapshotFinalizePersistence = mock(SnapshotFinalizePersistenceService.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
     service.tableRepo = tableRepo;
     service.connectorRepo = connectorRepo;
+    service.snapshotRepo = snapshotRepo;
     service.credentialResolver = credentialResolver;
     service.snapshotFinalizePersistence = snapshotFinalizePersistence;
     when(principal.getCorrelationId()).thenReturn("corr");
@@ -487,11 +487,63 @@ class LeasedFileGroupExecutionServiceTest {
         service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
 
     assertEquals(
-        "db.events",
-        payload.sourceConnector().getPropertiesOrThrow(DELTA_TABLE_ROOT_HINT_FULL_NAME_OPTION));
-    assertEquals(
-        "s3://bucket/table",
-        payload.sourceConnector().getPropertiesOrThrow(DELTA_TABLE_ROOT_HINT_LOCATION_OPTION));
+        "s3://bucket/table", payload.sourceConnector().getPropertiesOrThrow("storage_location"));
+  }
+
+  @Test
+  void resolveDerivesIcebergStorageLocationFromCurrentSnapshotMetadata() {
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    CHILD_JOB_ID,
+                    ReconcileJobKind.EXEC_FILE_GROUP,
+                    ReconcileSnapshotTask.empty(),
+                    group.asReference(),
+                    PARENT_JOB_ID)));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                        TABLE_ID,
+                        SNAPSHOT_ID,
+                        "db",
+                        "events",
+                        List.of(group),
+                        true,
+                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                        "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                        1),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(tableRepo.getById(tableId()))
+        .thenReturn(
+            Optional.of(
+                table().toBuilder()
+                    .putProperties("current-snapshot-id", Long.toString(SNAPSHOT_ID))
+                    .build()));
+    when(connectorRepo.getById(connectorId()))
+        .thenReturn(Optional.of(connector().toBuilder().setKind(ConnectorKind.CK_ICEBERG).build()));
+    when(snapshotRepo.getById(tableId(), SNAPSHOT_ID))
+        .thenReturn(
+            Optional.of(
+                Snapshot.newBuilder()
+                    .setMetadataLocation(
+                        "s3://bucket/warehouse/orders/metadata/00001.metadata.json")
+                    .build()));
+
+    StandaloneFileGroupExecutionPayload payload =
+        service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
+
+    assertEquals("s3://bucket/warehouse/orders", payload.storageLocation());
   }
 
   @Test

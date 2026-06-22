@@ -156,7 +156,9 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
     --auth-scheme aws-sigv4
     --cred-type aws-assume-role
     --cred role_arn=arn:aws:iam::123456789012:role/floecat-prod-s3-readonly
+    --cred aws.region=us-east-1
     --props iceberg.source=glue
+    --props s3.region=us-east-1
   ```
 
 - **Configuring connector reconcile policy**
