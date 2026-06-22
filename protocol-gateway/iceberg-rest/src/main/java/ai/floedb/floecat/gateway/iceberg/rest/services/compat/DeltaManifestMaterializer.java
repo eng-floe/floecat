@@ -953,7 +953,6 @@ public class DeltaManifestMaterializer {
             ResolveSnapshotCompatStorageRequest.newBuilder()
                 .setTableId(table.getResourceId())
                 .setSnapshotId(snapshot.getSnapshotId())
-                .setIncludeCredentials(false)
                 .build());
     if (response == null || response.getLocationPrefix().isBlank()) {
       throw new IllegalStateException("Compat storage resolution returned no writable location");

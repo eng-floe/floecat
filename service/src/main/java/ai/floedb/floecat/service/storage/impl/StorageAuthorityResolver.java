@@ -52,33 +52,28 @@ public class StorageAuthorityResolver {
       String locationPrefix,
       List<String> sessionScopeLocations,
       String accountId,
-      boolean includeCredentials,
-      boolean required,
-      boolean serverSide,
-      boolean temporaryOnly) {
+      boolean serverSide) {
     if (authority == null) {
-      if (required) {
-        throw new IllegalArgumentException(
-            "Credential vending was requested but no storage credential authority is configured for this table");
-      }
-      return ResolveStorageAuthorityResponse.getDefaultInstance();
+      throw new IllegalArgumentException(
+          "Credential vending was requested but no storage credential authority is configured for this table");
     }
+
     ResolveStorageAuthorityResponse.Builder response =
         ResolveStorageAuthorityResponse.newBuilder().setAuthorityId(authority.getResourceId());
     response.putAllClientSafeConfig(clientSafeConfig(authority));
-    if (!includeCredentials) {
-      return response.build();
-    }
     AuthCredentials authoritySecret =
         resolveAuthoritySecret(accountId, authority.getResourceId().getId()).orElse(null);
-    ResolvedStorageCredentials resolved =
-        serverSide
-            ? resolveServerSideCredentials(authority, authoritySecret, sessionScopeLocations)
-            : mintTemporaryCredentials(authority, authoritySecret, sessionScopeLocations);
-    if (temporaryOnly && !resolved.isTemporary()) {
-      throw new IllegalArgumentException(
-          "Credential vending requires temporary storage credentials");
+    ResolvedStorageCredentials resolved;
+    if (!serverSide) {
+      resolved = mintTemporaryCredentials(authority, authoritySecret, sessionScopeLocations);
+      if (!resolved.isTemporary()) {
+        throw new IllegalArgumentException(
+            "Credential vending requires scoped temporary storage credentials minted from a storage authority role");
+      }
+    } else {
+      resolved = resolveServerSideCredentials(authority, authoritySecret, sessionScopeLocations);
     }
+
     LinkedHashMap<String, String> storageConfig = new LinkedHashMap<>();
     storageConfig.put("type", authority.getType().isBlank() ? "s3" : authority.getType());
     storageConfig.putAll(clientSafeConfig(authority));
@@ -140,9 +135,11 @@ public class StorageAuthorityResolver {
     if (authoritySecret == null) {
       throw new IllegalArgumentException("Unsupported storage credential authority");
     }
-    return CredentialResolverSupport.resolveStorageCredentials(authoritySecret)
-        .orElseThrow(
-            () -> new IllegalArgumentException("Unsupported storage credential authority"));
+    ResolvedStorageCredentials resolved =
+        CredentialResolverSupport.resolveStorageCredentials(authoritySecret)
+            .orElseThrow(
+                () -> new IllegalArgumentException("Unsupported storage credential authority"));
+    return resolved;
   }
 
   Map<String, String> clientSafeConfig(StorageAuthority authority) {

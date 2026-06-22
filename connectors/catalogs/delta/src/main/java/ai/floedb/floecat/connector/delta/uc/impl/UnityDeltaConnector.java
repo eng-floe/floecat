@@ -105,7 +105,7 @@ public final class UnityDeltaConnector extends DeltaConnector {
       if (location != null && !location.isBlank()) {
         try {
           schemaJson = describeTableSchemaJson(location);
-        } catch (RuntimeException ignored) {
+        } catch (Exception ignored) {
           // Fall back to UC column metadata when Delta snapshot metadata is unavailable.
         }
       }
@@ -120,7 +120,7 @@ public final class UnityDeltaConnector extends DeltaConnector {
     } catch (RuntimeException e) {
       throw e;
     } catch (Exception e) {
-      throw new RuntimeException("describe failed", e);
+      throw new RuntimeException("describe failed: " + e.getMessage(), e);
     }
   }
 

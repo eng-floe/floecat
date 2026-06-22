@@ -276,8 +276,6 @@ public class ServerSideStorageConfigResolver {
         VendStorageCredentialsRequest.newBuilder()
             .setAccountId(accountId)
             .setLocationPrefix(locationPrefix)
-            .setIncludeCredentials(true)
-            .setRequired(false)
             .setUsage(StorageCredentialUsage.SCU_SERVER);
     if (executionJobId.isPresent() ^ executionLeaseEpoch.isPresent()) {
       throw new IllegalArgumentException(
@@ -314,38 +312,42 @@ public class ServerSideStorageConfigResolver {
       boolean refreshableExecutionCredentials,
       java.util.function.Supplier<ResolvedStorageCredentials> refresher) {
     Map<String, String> base = options == null ? Map.of() : options;
-    if (response == null
-        || (response.getClientSafeConfigCount() == 0
-            && (response.getStorageCredentialsCount() == 0 || !includeStorageCredentials))) {
+    if (response == null) {
       return base;
     }
     LinkedHashMap<String, String> merged = new LinkedHashMap<>(base);
+    if (refreshableExecutionCredentials) {
+      clearStorageCredentialProperties(merged);
+    }
     response
         .getClientSafeConfigMap()
         .forEach((key, value) -> putStorageProperty(merged, key, value));
-    if (includeStorageCredentials && response.getStorageCredentialsCount() > 0) {
-      Optional<ResolvedStorageCredentials> resolved = resolvedStorageCredentials(response);
-      if (refreshableExecutionCredentials) {
-        ResolvedStorageCredentials temporaryExecutionCredentials =
-            resolved
-                .filter(ServerSideStorageConfigResolver::isRefreshableExecutionCredential)
-                .orElseThrow(
-                    () ->
-                        new IllegalStateException(
-                            "Execution-bound storage credentials must include access key, secret key,"
-                                + " session token, and expiresAt"));
-        clearStorageCredentialProperties(merged);
+    if (!includeStorageCredentials || response.getStorageCredentialsCount() == 0) {
+      return Map.copyOf(merged);
+    }
+    if (refreshableExecutionCredentials) {
+      ResolvedStorageCredentials temporaryExecutionCredentials =
+          resolvedStorageCredentials(response)
+              .filter(ServerSideStorageConfigResolver::isExecutionBoundStorageCredential)
+              .orElseThrow(
+                  () ->
+                      new IllegalStateException(
+                          "Execution-bound storage credentials must include access key and secret key"));
+      if (isRefreshableExecutionCredential(temporaryExecutionCredentials)) {
         String providerId =
             RefreshingAwsCredentialsProviderRegistry.register(
                 temporaryExecutionCredentials, refresher);
         merged.putAll(RefreshingAwsCredentialsProviderRegistry.propertiesFor(providerId));
       } else {
-        response
-            .getStorageCredentials(0)
-            .getConfigMap()
-            .forEach((key, value) -> putStorageProperty(merged, key, value));
+        merged.putAll(temporaryExecutionCredentials.asS3Properties());
       }
+      return Map.copyOf(merged);
     }
+
+    response
+        .getStorageCredentials(0)
+        .getConfigMap()
+        .forEach((key, value) -> putStorageProperty(merged, key, value));
     return Map.copyOf(merged);
   }
 
@@ -488,6 +490,12 @@ public class ServerSideStorageConfigResolver {
         && isNonBlank(credentials.secretAccessKey())
         && isNonBlank(credentials.sessionToken())
         && credentials.expiresAt() != null;
+  }
+
+  private static boolean isExecutionBoundStorageCredential(ResolvedStorageCredentials credentials) {
+    return credentials != null
+        && isNonBlank(credentials.accessKeyId())
+        && isNonBlank(credentials.secretAccessKey());
   }
 
   private <T extends AbstractStub<T>> T withHeaders(

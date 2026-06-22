@@ -56,7 +56,7 @@ class UnityDeltaConnectorTest {
     server.setExecutor(null);
     server.start();
     int port = server.getAddress().getPort();
-    UcHttp http = new UcHttp("http://localhost:" + port, 1000, 5000, NO_AUTH);
+    UcHttp http = new UcHttp("http://127.0.0.1:" + port, 1000, 5000, NO_AUTH);
     connector = new UnityDeltaConnector("test-id", http, null, null, null, false, 0.0, 0);
   }
 

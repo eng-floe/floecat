@@ -134,6 +134,53 @@ class ServerSideStorageConfigResolverTest {
   }
 
   @Test
+  void
+      mergeResolvedStorageConfigClearsStaleRefreshableCredentialsWhenNoExecutionBoundCredentials() {
+    ResolveStorageAuthorityResponse response =
+        ResolveStorageAuthorityResponse.newBuilder()
+            .putClientSafeConfig("s3.region", "us-east-1")
+            .build();
+
+    Map<String, String> merged =
+        ServerSideStorageConfigResolver.mergeResolvedStorageConfig(
+            Map.of(
+                "s3.access-key-id",
+                "stale-access",
+                "s3.secret-access-key",
+                "stale-secret",
+                "s3.session-token",
+                "stale-token",
+                RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
+                "stale-provider",
+                RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID,
+                "stale-provider",
+                RefreshingAwsCredentialsProviderRegistry.ICEBERG_CLIENT_CREDENTIALS_PROVIDER,
+                "stale-provider",
+                RefreshingAwsCredentialsProviderRegistry.ICEBERG_CLIENT_CREDENTIALS_PROVIDER_PREFIX
+                    + "stale-provider",
+                "stale-provider"),
+            response,
+            true,
+            true,
+            () ->
+                new ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials(
+                    "refresh-access",
+                    "refresh-secret",
+                    "refresh-session",
+                    Instant.now().plusSeconds(900)));
+
+    assertFalse(merged.containsKey("s3.access-key-id"));
+    assertFalse(merged.containsKey("s3.secret-access-key"));
+    assertFalse(merged.containsKey("s3.session-token"));
+    assertEquals("us-east-1", merged.get("s3.region"));
+    assertFalse(merged.containsKey(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID));
+    assertFalse(merged.containsKey(RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID));
+    assertFalse(
+        merged.containsKey(
+            RefreshingAwsCredentialsProviderRegistry.ICEBERG_CLIENT_CREDENTIALS_PROVIDER));
+  }
+
+  @Test
   void mergeResolvedStorageConfigCanSkipServerSideSecrets() {
     ResolveStorageAuthorityResponse response =
         ResolveStorageAuthorityResponse.newBuilder()
@@ -447,7 +494,60 @@ class ServerSideStorageConfigResolverTest {
   }
 
   @Test
-  void resolveManagedWithAuthorizationRejectsExecutionCredentialsWithoutExpiry() {
+  void resolveManagedWithAuthorizationAcceptsExecutionCredentialsWithoutSessionOrExpiry() {
+    ServerSideStorageConfigResolver resolver =
+        new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
+    resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
+    when(resolver.storageAuthorities.withInterceptors(any()))
+        .thenReturn(resolver.storageAuthorities);
+    when(resolver.storageAuthorities.vendStorageCredentials(any()))
+        .thenReturn(
+            ResolveStorageAuthorityResponse.newBuilder()
+                .addStorageCredentials(
+                    VendedStorageCredential.newBuilder()
+                        .putConfig("s3.access-key-id", "test-access")
+                        .putConfig("s3.secret-access-key", "test-secret"))
+                .build());
+
+    Connector connector =
+        Connector.newBuilder()
+            .setKind(ConnectorKind.CK_DELTA)
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("conn")
+                    .setKind(ResourceKind.RK_CONNECTOR)
+                    .build())
+            .build();
+    ConnectorConfig config =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "delta",
+            "http://localhost",
+            Map.of("delta.source", "unity"),
+            new ConnectorConfig.Auth("none", Map.of(), Map.of()));
+
+    try (var resolved =
+        resolver.resolveManagedWithAuthorization(
+            java.util.Optional.of("token"),
+            java.util.Optional.of("job-1"),
+            java.util.Optional.of("lease-1"),
+            java.util.Optional.of("s3://bucket/table"),
+            connector,
+            config)) {
+      assertFalse(
+          resolved
+              .config()
+              .options()
+              .containsKey(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID));
+      assertEquals("test-access", resolved.config().options().get("s3.access-key-id"));
+      assertEquals("test-secret", resolved.config().options().get("s3.secret-access-key"));
+      assertFalse(resolved.config().options().containsKey("s3.session-token"));
+    }
+  }
+
+  @Test
+  void resolveManagedWithAuthorizationAcceptsExecutionCredentialsWithSessionTokenButNoExpiry() {
     ServerSideStorageConfigResolver resolver =
         new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
     resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
@@ -481,70 +581,23 @@ class ServerSideStorageConfigResolverTest {
             Map.of("delta.source", "unity"),
             new ConnectorConfig.Auth("none", Map.of(), Map.of()));
 
-    IllegalStateException error =
-        assertThrows(
-            IllegalStateException.class,
-            () ->
-                resolver.resolveManagedWithAuthorization(
-                    java.util.Optional.of("token"),
-                    java.util.Optional.of("job-1"),
-                    java.util.Optional.of("lease-1"),
-                    java.util.Optional.of("s3://bucket/table"),
-                    connector,
-                    config));
-    assertEquals(
-        "Execution-bound storage credentials must include access key, secret key, session token,"
-            + " and expiresAt",
-        error.getMessage());
-  }
-
-  @Test
-  void resolveManagedWithAuthorizationRejectsExecutionCredentialsWithoutSessionToken() {
-    ServerSideStorageConfigResolver resolver =
-        new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
-    resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
-    when(resolver.storageAuthorities.withInterceptors(any()))
-        .thenReturn(resolver.storageAuthorities);
-    when(resolver.storageAuthorities.vendStorageCredentials(any()))
-        .thenReturn(
-            ResolveStorageAuthorityResponse.newBuilder()
-                .addStorageCredentials(
-                    VendedStorageCredential.newBuilder()
-                        .putConfig("s3.access-key-id", "test-access")
-                        .putConfig("s3.secret-access-key", "test-secret")
-                        .setExpiresAt(
-                            com.google.protobuf.util.Timestamps.fromMillis(
-                                Instant.now().plusSeconds(900).toEpochMilli())))
-                .build());
-
-    Connector connector =
-        Connector.newBuilder()
-            .setKind(ConnectorKind.CK_DELTA)
-            .setResourceId(
-                ResourceId.newBuilder()
-                    .setAccountId("acct")
-                    .setId("conn")
-                    .setKind(ResourceKind.RK_CONNECTOR)
-                    .build())
-            .build();
-    ConnectorConfig config =
-        new ConnectorConfig(
-            ConnectorConfig.Kind.DELTA,
-            "delta",
-            "http://localhost",
-            Map.of("delta.source", "unity"),
-            new ConnectorConfig.Auth("none", Map.of(), Map.of()));
-
-    assertThrows(
-        IllegalStateException.class,
-        () ->
-            resolver.resolveManagedWithAuthorization(
-                java.util.Optional.of("token"),
-                java.util.Optional.of("job-1"),
-                java.util.Optional.of("lease-1"),
-                java.util.Optional.of("s3://bucket/table"),
-                connector,
-                config));
+    try (var resolved =
+        resolver.resolveManagedWithAuthorization(
+            java.util.Optional.of("token"),
+            java.util.Optional.of("job-1"),
+            java.util.Optional.of("lease-1"),
+            java.util.Optional.of("s3://bucket/table"),
+            connector,
+            config)) {
+      assertFalse(
+          resolved
+              .config()
+              .options()
+              .containsKey(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID));
+      assertEquals("test-access", resolved.config().options().get("s3.access-key-id"));
+      assertEquals("test-secret", resolved.config().options().get("s3.secret-access-key"));
+      assertEquals("test-session", resolved.config().options().get("s3.session-token"));
+    }
   }
 
   @Test

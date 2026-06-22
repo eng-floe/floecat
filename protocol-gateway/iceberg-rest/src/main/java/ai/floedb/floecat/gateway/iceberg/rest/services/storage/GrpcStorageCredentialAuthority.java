@@ -42,20 +42,13 @@ public class GrpcStorageCredentialAuthority implements StorageCredentialAuthorit
   }
 
   @Override
-  public List<StorageCredentialDto> resolveForTable(Table table, boolean required) {
-    String locationPrefix = resolveRequiredLocationPrefix(table, required);
-    if (locationPrefix == null) {
-      return null;
-    }
+  public List<StorageCredentialDto> resolveForTable(Table table) {
+    String locationPrefix = requireLocationPrefix(table);
     ResourceId tableId = resolvePersistedTableId(table);
     if (tableId == null) {
-      if (required) {
-        throw new IllegalArgumentException(
-            "Credential vending requires a persisted table resource");
-      }
-      return null;
+      throw new IllegalArgumentException("Credential vending requires a persisted table resource");
     }
-    var response = resolveStorageAuthority(tableId, locationPrefix, true, required, false);
+    var response = resolveStorageAuthority(tableId, locationPrefix, false);
     if (response == null || response.getStorageCredentialsCount() == 0) {
       return null;
     }
@@ -75,7 +68,7 @@ public class GrpcStorageCredentialAuthority implements StorageCredentialAuthorit
 
   @Override
   public Map<String, String> clientSafeConfig(Table table) {
-    String locationPrefix = resolveRequiredLocationPrefix(table, false);
+    String locationPrefix = resolveLocationPrefix(table);
     if (locationPrefix == null) {
       return Map.of();
     }
@@ -84,7 +77,7 @@ public class GrpcStorageCredentialAuthority implements StorageCredentialAuthorit
       return Map.of();
     }
     try {
-      var response = resolveStorageAuthority(tableId, locationPrefix, false, false, false);
+      var response = resolveStorageAuthority(tableId, locationPrefix, true);
       if (response == null || response.getClientSafeConfigCount() == 0) {
         return Map.of();
       }
@@ -98,61 +91,44 @@ public class GrpcStorageCredentialAuthority implements StorageCredentialAuthorit
   }
 
   @Override
-  public Map<String, String> resolveServerSideFileIoConfig(Table table, boolean required) {
-    String locationPrefix = resolveRequiredLocationPrefix(table, required);
+  public Map<String, String> resolveServerSideFileIoConfig(Table table) {
+    String locationPrefix = resolveLocationPrefix(table);
     if (locationPrefix == null) {
       return Map.of();
     }
     ResourceId tableId = resolvePersistedTableId(table);
     if (tableId == null) {
-      if (required) {
-        throw new IllegalArgumentException(
-            "Credential vending requires a persisted table resource");
-      }
       return Map.of();
     }
     try {
-      return serverSideFileIoConfig(
-          resolveStorageAuthority(tableId, locationPrefix, true, required, true));
+      return serverSideFileIoConfig(resolveStorageAuthority(tableId, locationPrefix, true));
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
         throw e;
       }
     }
-    if (required) {
-      throw new IllegalArgumentException("Credential vending requires a persisted table resource");
-    }
     return Map.of();
   }
 
   private ResolveStorageAuthorityResponse resolveStorageAuthority(
-      ResourceId tableId,
-      String locationPrefix,
-      boolean includeCredentials,
-      boolean required,
-      boolean serverSide) {
+      ResourceId tableId, String locationPrefix, boolean serverSide) {
     return grpcClient.vendStorageCredentials(
         VendStorageCredentialsRequest.newBuilder()
             .setAccountId(tableId.getAccountId())
             .setTableId(tableId)
             .setLocationPrefix(locationPrefix)
-            .setIncludeCredentials(includeCredentials)
-            .setRequired(required)
             .setUsage(
                 serverSide ? StorageCredentialUsage.SCU_SERVER : StorageCredentialUsage.SCU_CLIENT)
             .build());
   }
 
-  private static String resolveRequiredLocationPrefix(Table table, boolean required) {
+  private static String requireLocationPrefix(Table table) {
     String location = resolveLocationPrefix(table);
     if (location != null) {
       return location;
     }
-    if (required) {
-      throw new IllegalArgumentException(
-          "Credential vending was requested but no concrete storage location is available for this table");
-    }
-    return null;
+    throw new IllegalArgumentException(
+        "Credential vending was requested but no concrete storage location is available for this table");
   }
 
   static String resolveLocationPrefix(Table table) {

@@ -64,10 +64,11 @@ import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RealServiceTestResource;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
-import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
+import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
+import ai.floedb.floecat.reconciler.rpc.JobState;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.storage.rpc.CreateStorageAuthorityRequest;
@@ -1867,24 +1868,27 @@ class IcebergRestFixtureIT {
 
       withReconcileControlClient(
           stub -> {
-            // The fixture table is already mirrored by registration. Use a table-scoped
-            // stats-only capture to backfill the fixture state, then kick off a full async job.
-            stub.captureNow(
-                CaptureNowRequest.newBuilder()
-                    .setScope(
-                        CaptureScope.newBuilder()
-                            .setConnectorId(connector.getResourceId())
-                            .setDestinationTableId(tableId.getId())
-                            .setCapturePolicy(
-                                CapturePolicy.newBuilder()
-                                    .addOutputs(CaptureOutput.CO_TABLE_STATS)
-                                    .addOutputs(CaptureOutput.CO_FILE_STATS)
-                                    .addOutputs(CaptureOutput.CO_COLUMN_STATS))
+            // The fixture table is already mirrored by registration. Run a scoped async capture
+            // and wait explicitly for completion; the shared remote worker queue can exceed the
+            // synchronous CaptureNow deadline in fixture-heavy runs.
+            String jobId =
+                stub.startCapture(
+                        StartCaptureRequest.newBuilder()
+                            .setScope(
+                                CaptureScope.newBuilder()
+                                    .setConnectorId(connector.getResourceId())
+                                    .setDestinationTableId(tableId.getId())
+                                    .setCapturePolicy(
+                                        CapturePolicy.newBuilder()
+                                            .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                                            .addOutputs(CaptureOutput.CO_FILE_STATS)
+                                            .addOutputs(CaptureOutput.CO_COLUMN_STATS))
+                                    .build())
+                            .setMode(CaptureMode.CM_CAPTURE_ONLY)
+                            .setFullRescan(true)
                             .build())
-                    .setMode(CaptureMode.CM_CAPTURE_ONLY)
-                    .setFullRescan(true)
-                    .setMaxWait(com.google.protobuf.Duration.newBuilder().setSeconds(60).build())
-                    .build());
+                    .getJobId();
+            awaitReconcileJobTerminalState(stub, jobId, Duration.ofSeconds(180));
             return null;
           });
 
@@ -1967,6 +1971,43 @@ class IcebergRestFixtureIT {
             }
           });
     }
+  }
+
+  private static void awaitReconcileJobTerminalState(
+      ReconcileControlGrpc.ReconcileControlBlockingStub stub, String jobId, Duration timeout)
+  {
+    long deadlineNanos = System.nanoTime() + timeout.toNanos();
+    ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse response = null;
+    while (System.nanoTime() < deadlineNanos) {
+      response = stub.getReconcileJob(GetReconcileJobRequest.newBuilder().setJobId(jobId).build());
+      if (response.getState() == JobState.JS_SUCCEEDED) {
+        return;
+      }
+      if (response.getState() == JobState.JS_FAILED
+          || response.getState() == JobState.JS_CANCELLED
+          || response.getState() == JobState.JS_CANCELLING) {
+        Assertions.fail(
+            "Capture job did not succeed: jobId="
+                + jobId
+                + " state="
+                + response.getState()
+                + " message="
+                + response.getMessage());
+      }
+      try {
+        Thread.sleep(250);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        Assertions.fail("Interrupted while waiting for capture job completion: jobId=" + jobId);
+      }
+    }
+    Assertions.fail(
+        "Timed out waiting for capture job completion: jobId="
+            + jobId
+            + " lastState="
+            + (response == null ? "<none>" : response.getState())
+            + " message="
+            + (response == null ? "" : response.getMessage()));
   }
 
   @Test

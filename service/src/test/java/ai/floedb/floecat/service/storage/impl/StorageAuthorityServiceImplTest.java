@@ -225,7 +225,7 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
-  void resolveScopesTableIdToPrincipalAccount() {
+  void resolveServerSideScopesTableIdToPrincipalAccount() {
     ResolveStorageAuthorityResponse response =
         service
             .vendStorageCredentials(
@@ -233,7 +233,7 @@ class StorageAuthorityServiceImplTest {
                     .setAccountId("acct")
                     .setTableId(FOREIGN_TABLE_ID)
                     .setLocationPrefix("s3://warehouse/orders")
-                    .setUsage(StorageCredentialUsage.SCU_CLIENT)
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
                     .build())
             .await()
             .indefinitely();
@@ -244,7 +244,7 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
-  void resolveUsesRequestedLocationPrefixWhenItDiffersFromTableLocation() {
+  void resolveServerSideUsesRequestedLocationPrefixWhenItDiffersFromTableLocation() {
     StorageAuthority databricksAuthority =
         StorageAuthority.newBuilder()
             .setResourceId(DATARBRICKS_AUTHORITY_ID)
@@ -269,7 +269,7 @@ class StorageAuthorityServiceImplTest {
                     .setTableId(TABLE_ID)
                     .setLocationPrefix(
                         "s3://floedb-databricks-metastore-367509577365/metastore/table/metadata")
-                    .setUsage(StorageCredentialUsage.SCU_CLIENT)
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
                     .build())
             .await()
             .indefinitely();
@@ -278,7 +278,7 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
-  void resolvePrefersStorageLocationOverSourceMetadataLocation() {
+  void resolveServerSidePrefersStorageLocationOverSourceMetadataLocation() {
     when(tableRepo.getById(TABLE_ID))
         .thenReturn(Optional.of(tableWithStorageAndMetadataLocation()));
 
@@ -288,7 +288,7 @@ class StorageAuthorityServiceImplTest {
                 VendStorageCredentialsRequest.newBuilder()
                     .setAccountId("acct")
                     .setTableId(TABLE_ID)
-                    .setUsage(StorageCredentialUsage.SCU_CLIENT)
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
                     .build())
             .await()
             .indefinitely();
@@ -392,6 +392,54 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
+  void
+      resolveForAccountLocationAllowsStaticServerCredentialsForLeaseBoundExecutionWhenNotRequired() {
+    ResolveStorageAuthorityResponse response =
+        service
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
+                    .setLocationPrefix("s3://warehouse/orders/data/part-000.parquet")
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
+                    .setExecutionBinding(
+                        ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                            .setReconcileLease(
+                                ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding.newBuilder()
+                                    .setJobId("job-1")
+                                    .setLeaseEpoch("lease-1"))
+                            .build())
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(AUTHORITY_ID, response.getAuthorityId());
+    assertEquals("akid", response.getStorageCredentials(0).getConfigMap().get("s3.access-key-id"));
+    assertEquals(
+        "secret", response.getStorageCredentials(0).getConfigMap().get("s3.secret-access-key"));
+  }
+
+  @Test
+  void resolveForAccountLocationFailsForNoAuthority() {
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://warehouse/orders/data/part-000.parquet")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+  }
+
+  @Test
   void resolveForAccountLocationRejectsLocationOutsideLeasedTableScope() {
     var ex =
         org.junit.jupiter.api.Assertions.assertThrows(
@@ -457,35 +505,6 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
-  void resolveForAccountLocationRejectsStaticServerCredentialsForLeaseBoundExecution() {
-    var ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .vendStorageCredentials(
-                        VendStorageCredentialsRequest.newBuilder()
-                            .setAccountId("acct")
-                            .setLocationPrefix("s3://warehouse/orders/data/part-000.parquet")
-                            .setUsage(StorageCredentialUsage.SCU_SERVER)
-                            .setIncludeCredentials(true)
-                            .setRequired(true)
-                            .setExecutionBinding(
-                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
-                                    .setReconcileLease(
-                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
-                                            .newBuilder()
-                                            .setJobId("job-1")
-                                            .setLeaseEpoch("lease-1"))
-                                    .build())
-                            .build())
-                    .await()
-                    .indefinitely());
-
-    assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
-  }
-
-  @Test
   void resolveForAccountLocationRejectsMismatchedLeaseAccount() {
     when(reconcileJobs.getLeaseView("job-2"))
         .thenReturn(Optional.of(activeLeaseView("job-2", "other", "JS_RUNNING")));
@@ -524,7 +543,6 @@ class StorageAuthorityServiceImplTest {
                 ResolveSnapshotCompatStorageRequest.newBuilder()
                     .setTableId(TABLE_ID)
                     .setSnapshotId(77L)
-                    .setIncludeCredentials(true)
                     .build())
             .await()
             .indefinitely();

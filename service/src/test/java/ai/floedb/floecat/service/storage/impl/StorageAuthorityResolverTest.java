@@ -54,10 +54,7 @@ class StorageAuthorityResolverTest {
             "s3://warehouse/orders",
             java.util.List.of("s3://warehouse/orders"),
             "acct",
-            true,
-            true,
-            true,
-            false);
+            true);
 
     assertEquals("us-east-1", response.getClientSafeConfigMap().get("s3.region"));
     assertEquals(1, response.getStorageCredentialsCount());
@@ -66,6 +63,76 @@ class StorageAuthorityResolverTest {
     assertEquals(
         "secret", response.getStorageCredentials(0).getConfigMap().get("s3.secret-access-key"));
     assertFalse(response.getStorageCredentials(0).hasExpiresAt());
+  }
+
+  @Test
+  void buildResponseAllowsServerSideCredentialsWithSessionTokenButNoExpiry() {
+    StorageAuthorityResolver resolverWithSessionToken = new StorageAuthorityResolver();
+    resolverWithSessionToken.secretsManager =
+        new SecretsManager() {
+          @Override
+          public void put(String accountId, String secretType, String secretId, byte[] payload) {}
+
+          @Override
+          public Optional<byte[]> get(String accountId, String secretType, String secretId) {
+            return Optional.of(
+                AuthCredentials.newBuilder()
+                    .setAws(
+                        AuthCredentials.AwsCredentials.newBuilder()
+                            .setAccessKeyId("akid")
+                            .setSecretAccessKey("secret")
+                            .setSessionToken("token"))
+                    .build()
+                    .toByteArray());
+          }
+
+          @Override
+          public void update(
+              String accountId, String secretType, String secretId, byte[] payload) {}
+
+          @Override
+          public void delete(String accountId, String secretType, String secretId) {}
+        };
+
+    ResolveStorageAuthorityResponse response =
+        resolverWithSessionToken.buildResponse(
+            authority(),
+            "s3://warehouse/orders",
+            java.util.List.of("s3://warehouse/orders"),
+            "acct",
+            true);
+
+    assertEquals("akid", response.getStorageCredentials(0).getConfigMap().get("s3.access-key-id"));
+    assertEquals(
+        "secret", response.getStorageCredentials(0).getConfigMap().get("s3.secret-access-key"));
+    assertEquals("token", response.getStorageCredentials(0).getConfigMap().get("s3.session-token"));
+    assertFalse(response.getStorageCredentials(0).hasExpiresAt());
+  }
+
+  @Test
+  void buildResponseForClientWithoutAuthorityFails() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            resolver.buildResponse(
+                null,
+                "s3://warehouse/orders",
+                java.util.List.of("s3://warehouse/orders"),
+                "acct",
+                false));
+  }
+
+  @Test
+  void buildResponseForServerSideNoAuthorityFails() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            resolver.buildResponse(
+                null,
+                "s3://warehouse/orders",
+                java.util.List.of("s3://warehouse/orders"),
+                "acct",
+                true));
   }
 
   @Test
@@ -78,31 +145,60 @@ class StorageAuthorityResolverTest {
                 "s3://warehouse/orders",
                 java.util.List.of("s3://warehouse/orders"),
                 "acct",
-                true,
-                true,
-                false,
-                true));
+                false));
   }
 
   @Test
-  void buildResponseRejectsStaticAwsSecretsForExecutionBoundServerSideVending() {
-    assertThrows(
-        IllegalArgumentException.class,
-        () ->
-            resolver.buildResponse(
-                authority(),
-                "s3://warehouse/orders",
-                java.util.List.of("s3://warehouse/orders"),
-                "acct",
-                true,
-                true,
-                true,
-                true));
+  void buildResponseAllowsServerSideAssumeRoleWithStoredSourceCredentials() {
+    StorageAuthorityResolver assumeRoleResolver =
+        new StorageAuthorityResolver() {
+          @Override
+          ResolvedStorageCredentials assumeRoleFromStaticSource(
+              StorageAuthority authority,
+              AuthCredentials.AwsCredentials source,
+              java.util.List<String> sessionScopeLocations) {
+            return new ResolvedStorageCredentials(
+                "temp-akid", "temp-secret", "temp-token", Instant.parse("2026-06-19T12:00:00Z"));
+          }
+        };
+    assumeRoleResolver.secretsManager =
+        new EmptySecretsManager() {
+          @Override
+          public Optional<byte[]> get(String accountId, String secretType, String secretId) {
+            return Optional.of(
+                AuthCredentials.newBuilder()
+                    .setAws(
+                        AuthCredentials.AwsCredentials.newBuilder()
+                            .setAccessKeyId("akid")
+                            .setSecretAccessKey("secret")
+                            .setSessionToken("token"))
+                    .build()
+                    .toByteArray());
+          }
+        };
+
+    ResolveStorageAuthorityResponse response =
+        assumeRoleResolver.buildResponse(
+            authority().toBuilder()
+                .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+                .build(),
+            "s3://warehouse/orders",
+            java.util.List.of("s3://warehouse/orders"),
+            "acct",
+            true);
+
+    assertEquals(
+        "temp-akid", response.getStorageCredentials(0).getConfigMap().get("s3.access-key-id"));
+    assertEquals(
+        "temp-token", response.getStorageCredentials(0).getConfigMap().get("s3.session-token"));
+    assertEquals(
+        Instant.parse("2026-06-19T12:00:00Z").getEpochSecond(),
+        response.getStorageCredentials(0).getExpiresAt().getSeconds());
   }
 
   @Test
-  void buildResponseAllowsAmbientAssumeRoleWithoutStoredSecret() {
-    StorageAuthorityResolver ambientResolver =
+  void buildResponseAllowsServerSideAssumeRoleWithAmbientSourceCredentials() {
+    StorageAuthorityResolver assumeRoleResolver =
         new StorageAuthorityResolver() {
           @Override
           ResolvedStorageCredentials assumeRoleFromAmbientSource(
@@ -111,20 +207,17 @@ class StorageAuthorityResolverTest {
                 "temp-akid", "temp-secret", "temp-token", Instant.parse("2026-06-19T12:00:00Z"));
           }
         };
-    ambientResolver.secretsManager = new EmptySecretsManager();
+    assumeRoleResolver.secretsManager = new EmptySecretsManager();
 
     ResolveStorageAuthorityResponse response =
-        ambientResolver.buildResponse(
+        assumeRoleResolver.buildResponse(
             authority().toBuilder()
                 .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
                 .build(),
             "s3://warehouse/orders",
             java.util.List.of("s3://warehouse/orders"),
             "acct",
-            true,
-            true,
-            true,
-            false);
+            true);
 
     assertEquals(
         "temp-akid", response.getStorageCredentials(0).getConfigMap().get("s3.access-key-id"));
@@ -222,7 +315,7 @@ class StorageAuthorityResolverTest {
     public void delete(String accountId, String secretType, String secretId) {}
   }
 
-  private static final class EmptySecretsManager implements SecretsManager {
+  private static class EmptySecretsManager implements SecretsManager {
     @Override
     public void put(String accountId, String secretType, String secretId, byte[] payload) {}
 

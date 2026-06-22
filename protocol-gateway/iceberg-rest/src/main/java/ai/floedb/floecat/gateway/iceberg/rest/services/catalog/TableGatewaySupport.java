@@ -238,8 +238,7 @@ public class TableGatewaySupport {
     if (!usesVendedCredentials(accessDelegationMode)) {
       return null;
     }
-    List<StorageCredentialDto> credentials =
-        storageCredentialAuthority.resolveForTable(table, true);
+    List<StorageCredentialDto> credentials = storageCredentialAuthority.resolveForTable(table);
     if (credentials == null || credentials.isEmpty()) {
       throw new IllegalArgumentException(
           "Credential vending was requested but no credentials are available");
@@ -312,7 +311,7 @@ public class TableGatewaySupport {
             : (table != null
                     && hasPersistedTableId(table)
                     && StorageLocationResolver.resolveLocationPrefix(location) == null)
-                ? storageCredentialAuthority.resolveServerSideFileIoConfig(table, false)
+                ? storageCredentialAuthority.resolveServerSideFileIoConfig(table)
                 : Map.of();
     if (hasResolvedAuthority(authorityResponse)) {
       return authorityProps.isEmpty() ? Map.of() : Map.copyOf(authorityProps);
@@ -350,8 +349,6 @@ public class TableGatewaySupport {
               .setAccountId(table.getResourceId().getAccountId())
               .setTableId(table.getResourceId())
               .setLocationPrefix(resolvedLocation)
-              .setIncludeCredentials(true)
-              .setRequired(false)
               .setUsage(StorageCredentialUsage.SCU_SERVER)
               .build());
     }

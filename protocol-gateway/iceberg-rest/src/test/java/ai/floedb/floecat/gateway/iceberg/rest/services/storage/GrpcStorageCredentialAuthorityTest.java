@@ -123,7 +123,7 @@ class GrpcStorageCredentialAuthorityTest {
             .putProperties("location", "s3://warehouse/orders")
             .build();
 
-    Map<String, String> config = authority.resolveServerSideFileIoConfig(table, false);
+    Map<String, String> config = authority.resolveServerSideFileIoConfig(table);
 
     assertEquals("http://localhost:4566", config.get("s3.endpoint"));
     assertEquals("key", config.get("s3.access-key-id"));
@@ -168,7 +168,7 @@ class GrpcStorageCredentialAuthorityTest {
             .putProperties("storage_location", "s3://floecat-delta/call_center")
             .build();
 
-    Map<String, String> config = authority.resolveServerSideFileIoConfig(table, false);
+    Map<String, String> config = authority.resolveServerSideFileIoConfig(table);
 
     assertEquals("http://localhost:4566", config.get("s3.endpoint"));
     assertEquals("true", config.get("s3.path-style-access"));
@@ -228,7 +228,7 @@ class GrpcStorageCredentialAuthorityTest {
         Table.newBuilder().putProperties("location", "s3://warehouse/stage-create/orders").build();
 
     IllegalArgumentException ex =
-        assertThrows(IllegalArgumentException.class, () -> authority.resolveForTable(table, true));
+        assertThrows(IllegalArgumentException.class, () -> authority.resolveForTable(table));
 
     assertEquals("Credential vending requires a persisted table resource", ex.getMessage());
     verify(grpcClient, never()).vendStorageCredentials(any());
@@ -243,14 +243,14 @@ class GrpcStorageCredentialAuthorityTest {
             .putProperties("location", "s3://warehouse/orders/metadata/00001.metadata.json")
             .build();
 
-    Map<String, String> config = authority.resolveServerSideFileIoConfig(table, false);
+    Map<String, String> config = authority.resolveServerSideFileIoConfig(table);
 
     assertEquals(Map.of(), config);
     verify(grpcClient, never()).vendStorageCredentials(any());
   }
 
   @Test
-  void resolveServerSideFileIoConfigRejectsUnpersistedTableWhenRequired() {
+  void resolveServerSideFileIoConfigForUnpersistedTableReturnsEmpty() {
     GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
     GrpcStorageCredentialAuthority authority = new GrpcStorageCredentialAuthority(grpcClient);
     Table table =
@@ -258,12 +258,9 @@ class GrpcStorageCredentialAuthorityTest {
             .putProperties("location", "s3://warehouse/orders/metadata/00001.metadata.json")
             .build();
 
-    IllegalArgumentException ex =
-        assertThrows(
-            IllegalArgumentException.class,
-            () -> authority.resolveServerSideFileIoConfig(table, true));
+    Map<String, String> config = authority.resolveServerSideFileIoConfig(table);
 
-    assertEquals("Credential vending requires a persisted table resource", ex.getMessage());
+    assertEquals(Map.of(), config);
     verify(grpcClient, never()).vendStorageCredentials(any());
   }
 
@@ -285,7 +282,7 @@ class GrpcStorageCredentialAuthorityTest {
             .putProperties("location", "s3://warehouse/orders/metadata/00001.metadata.json")
             .build();
 
-    Map<String, String> config = authority.resolveServerSideFileIoConfig(table, false);
+    Map<String, String> config = authority.resolveServerSideFileIoConfig(table);
 
     assertEquals(Map.of(), config);
     verify(grpcClient).vendStorageCredentials(any());

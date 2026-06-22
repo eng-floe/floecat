@@ -59,10 +59,7 @@ public class ServerSideFileIoPropertiesResolver {
             locationPrefix,
             locationPrefix == null ? java.util.List.of() : java.util.List.of(locationPrefix),
             tableId.getAccountId(),
-            true,
-            false,
-            true,
-            false);
+            true);
     return mergeStorageAuthorityFileIoConfig(response);
   }
 

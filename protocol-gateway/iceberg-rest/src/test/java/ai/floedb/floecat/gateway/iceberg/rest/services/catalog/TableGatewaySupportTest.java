@@ -19,7 +19,6 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -109,7 +108,7 @@ class TableGatewaySupportTest {
         requestCaptor.getValue().getLocationPrefix());
     assertEquals("acct-1", requestCaptor.getValue().getAccountId());
     assertEquals(StorageCredentialUsage.SCU_SERVER, requestCaptor.getValue().getUsage());
-    verify(storageCredentialAuthority, never()).resolveServerSideFileIoConfig(any(), anyBoolean());
+    verify(storageCredentialAuthority, never()).resolveServerSideFileIoConfig(any());
   }
 
   @Test
@@ -118,7 +117,7 @@ class TableGatewaySupportTest {
     StorageCredentialDto dto =
         new StorageCredentialDto(
             "s3://floecat-dev/", Map.of("s3.endpoint", "http://localstack:4566"), Instant.now());
-    when(storageCredentialAuthority.resolveForTable(any(), anyBoolean())).thenReturn(List.of(dto));
+    when(storageCredentialAuthority.resolveForTable(any())).thenReturn(List.of(dto));
 
     StorageAwsConfig storageAwsConfig = mock(StorageAwsConfig.class);
     StorageAwsConfig.S3Config s3Config = mock(StorageAwsConfig.S3Config.class);

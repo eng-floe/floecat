@@ -132,10 +132,8 @@ message VendStorageCredentialsRequest {
   string account_id = 1;
   optional string location_prefix = 2;
   optional ai.floedb.floecat.common.ResourceId table_id = 3;
-  bool include_credentials = 4;
-  bool required = 5;
-  StorageCredentialUsage usage = 6;
-  optional ExecutionBinding execution_binding = 7;
+  StorageCredentialUsage usage = 4;
+  optional ExecutionBinding execution_binding = 5;
 }
 
 message ResolveStorageAuthorityResponse {
@@ -147,7 +145,6 @@ message ResolveStorageAuthorityResponse {
 message ResolveSnapshotCompatStorageRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   int64 snapshot_id = 2;
-  bool include_credentials = 3;
 }
 
 message ResolveSnapshotCompatStorageResponse {

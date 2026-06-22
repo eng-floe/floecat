@@ -295,7 +295,6 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                     correlationId(), null, Map.of("field", "account_id"));
               }
               boolean serverSide = usage(request) == StorageCredentialUsage.SCU_SERVER;
-              boolean temporaryOnly = !serverSide || isExecutionBound(request);
               CredentialScope credentialScope =
                   authorizeAndResolveLocation(principal, request, accountId);
               List<StorageAuthority> authorities =
@@ -311,10 +310,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                   credentialScope.responseLocationPrefix(),
                   credentialScope.sessionScopeLocations(),
                   accountId,
-                  request.getIncludeCredentials(),
-                  request.getRequired(),
-                  serverSide,
-                  temporaryOnly);
+                  serverSide);
             }),
         correlationId());
   }
@@ -451,7 +447,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
         request.hasLocationPrefix() ? trimToNull(request.getLocationPrefix()) : null;
     Table tableRecord = loadVisibleTable(tableId);
     String resolvedLocationPrefix = resolveTableLocationPrefix(tableRecord);
-    if (resolvedLocationPrefix == null && request.getRequired()) {
+    if (resolvedLocationPrefix == null) {
       throw new IllegalArgumentException(
           "Credential vending was requested but no concrete storage location is available for this table");
     }
@@ -467,7 +463,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   private String validateExplicitLocation(VendStorageCredentialsRequest request) {
     String locationPrefix =
         request.hasLocationPrefix() ? trimToNull(request.getLocationPrefix()) : null;
-    if (locationPrefix == null && request.getRequired()) {
+    if (locationPrefix == null) {
       throw new IllegalArgumentException(
           "Credential vending was requested but no concrete storage location is available for this table");
     }
