@@ -17,10 +17,16 @@
 package ai.floedb.floecat.service.security.impl;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import io.grpc.Context;
+import io.grpc.Status;
 import io.smallrye.common.vertx.VertxContext;
 import io.vertx.core.Vertx;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
  * Resolves the principal for the current call. The principal is carried on two channels:
@@ -49,6 +55,18 @@ public class PrincipalProvider {
   /** Vert.x duplicated-context local key under which the resolved principal is mirrored. */
   private static final String PRINCIPAL_LOCAL = "floecat.principal";
 
+  @Inject AccountRepository accountRepository;
+
+  @ConfigProperty(name = "floecat.interceptor.validate.account", defaultValue = "true")
+  boolean validateAccount;
+
+  public PrincipalProvider() {}
+
+  PrincipalProvider(AccountRepository accountRepository, boolean validateAccount) {
+    this.accountRepository = accountRepository;
+    this.validateAccount = validateAccount;
+  }
+
   /**
    * Returns the principal for the current call.
    *
@@ -63,11 +81,11 @@ public class PrincipalProvider {
   public PrincipalContext get() {
     PrincipalContext fromContextLocal = fromDuplicatedContext();
     if (fromContextLocal != null) {
-      return fromContextLocal;
+      return requireKnownAccount(fromContextLocal);
     }
     PrincipalContext fromGrpc = KEY.get();
     if (fromGrpc != null) {
-      return fromGrpc;
+      return requireKnownAccount(fromGrpc);
     }
     return PrincipalContext.getDefaultInstance();
   }
@@ -96,5 +114,23 @@ public class PrincipalProvider {
       }
     }
     return null;
+  }
+
+  private PrincipalContext requireKnownAccount(PrincipalContext principalContext) {
+    if (!validateAccount || principalContext == null) {
+      return principalContext;
+    }
+    String accountId = principalContext.getAccountId();
+    if (accountId == null || accountId.isBlank() || accountRepository == null) {
+      return principalContext;
+    }
+    ResourceId accountRid =
+        ResourceId.newBuilder().setId(accountId).setKind(ResourceKind.RK_ACCOUNT).build();
+    if (accountRepository.getById(accountRid).isEmpty()) {
+      throw Status.UNAUTHENTICATED
+          .withDescription("invalid or unknown account: " + accountId)
+          .asRuntimeException();
+    }
+    return principalContext;
   }
 }

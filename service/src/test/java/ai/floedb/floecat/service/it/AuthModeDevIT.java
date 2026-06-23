@@ -16,14 +16,22 @@
 
 package ai.floedb.floecat.service.it;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
 import ai.floedb.floecat.account.rpc.ListAccountsRequest;
+import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.AuthModeDevProfile;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
+import io.grpc.Metadata;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
+import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
@@ -35,8 +43,14 @@ import org.junit.jupiter.api.Test;
 @TestProfile(AuthModeDevProfile.class)
 class AuthModeDevIT {
 
+  private static final Metadata.Key<String> DEV_ACCOUNT_HEADER =
+      Metadata.Key.of("x-floe-account", Metadata.ASCII_STRING_MARSHALLER);
+
   @GrpcClient("floecat")
   AccountServiceGrpc.AccountServiceBlockingStub accounts;
+
+  @GrpcClient("floecat")
+  CatalogServiceGrpc.CatalogServiceBlockingStub catalogs;
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
@@ -53,5 +67,33 @@ class AuthModeDevIT {
         TestSupport.callWhenGrpcReady(
             () -> accounts.listAccounts(ListAccountsRequest.getDefaultInstance()));
     assertFalse(response.getAccountsList().isEmpty());
+  }
+
+  @Test
+  void listAccountsRejectsUnknownDevAccountHeader() {
+    Metadata metadata = new Metadata();
+    metadata.put(DEV_ACCOUNT_HEADER, "00000000-0000-0000-0000-000000000001");
+
+    var stub = accounts.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> stub.listAccounts(ListAccountsRequest.getDefaultInstance()));
+
+    assertEquals(Status.Code.UNAUTHENTICATED, ex.getStatus().getCode());
+  }
+
+  @Test
+  void listCatalogsRejectsUnknownDevAccountHeader() {
+    Metadata metadata = new Metadata();
+    metadata.put(DEV_ACCOUNT_HEADER, "00000000-0000-0000-0000-000000000001");
+
+    var stub = catalogs.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> stub.listCatalogs(ListCatalogsRequest.getDefaultInstance()));
+
+    assertEquals(Status.Code.UNAUTHENTICATED, ex.getStatus().getCode());
   }
 }
