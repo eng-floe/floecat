@@ -269,9 +269,7 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
   private static HashMap<String, String> attrsFor(Pointer pointer) {
     var attrs = new HashMap<String, String>();
     attrs.put(ATTR_BLOB_URI, pointer.getBlobUri());
-    if (pointer != null
-        && pointer.getReferenceKind() != null
-        && pointer.getReferenceKind() != PointerReferenceKind.PRK_UNSPECIFIED) {
+    if (pointer.getReferenceKind() != PointerReferenceKind.PRK_UNSPECIFIED) {
       attrs.put(ATTR_REFERENCE_KIND, pointer.getReferenceKind().name());
     }
     if (pointer.hasResourceId() && !pointer.getResourceId().getId().isEmpty()) {
