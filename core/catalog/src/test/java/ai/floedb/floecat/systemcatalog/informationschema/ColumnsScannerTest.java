@@ -19,14 +19,25 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 import static org.assertj.core.api.Assertions.*;
 
 import ai.floedb.floecat.arrow.ColumnarBatch;
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.metagraph.model.CatalogNode;
+import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Stream;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
@@ -83,6 +94,63 @@ class ColumnsScannerTest {
     var rows = new ColumnsScanner().scan(ctx).map(r -> Arrays.asList(r.values())).toList();
 
     assertThat(rows).containsExactly(List.of("marketing", "org.sales", "orders", "id", "long", 1));
+  }
+
+  @Test
+  void scan_usesTopologyNamespaceRefsWithoutMaterializingNamespaces() {
+    ResourceId catalogId = rid("marketing", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid("namespace", ResourceKind.RK_NAMESPACE);
+    ResourceId tableId = rid("orders-id", ResourceKind.RK_TABLE);
+    var overlay = new NamespaceListingFailsOverlay();
+    overlay.addNode(
+        new CatalogNode(
+            catalogId,
+            1,
+            Instant.EPOCH,
+            "marketing",
+            Map.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of()));
+    overlay.addRelation(
+        namespaceId,
+        new UserTableNode(
+            tableId,
+            1,
+            Instant.EPOCH,
+            catalogId,
+            namespaceId,
+            "orders",
+            TableFormat.TF_ICEBERG,
+            ColumnIdAlgorithm.CID_FIELD_ID,
+            "",
+            Map.of(),
+            List.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            List.of(),
+            Map.of(),
+            Map.of()));
+    overlay.setTableSchema(
+        tableId,
+        List.of(
+            SchemaColumn.newBuilder()
+                .setName("id")
+                .setLogicalType("long")
+                .setFieldId(1)
+                .setNullable(false)
+                .build()));
+    overlay.withNamespaceRef(namespaceId, "sales", catalogId, List.of("finance", "sales"));
+    SystemObjectScanContext ctx =
+        new SystemObjectScanContext(
+            overlay, NameRef.getDefaultInstance(), catalogId, EngineContext.empty());
+
+    var rows = new ColumnsScanner().scan(ctx).map(r -> Arrays.asList(r.values())).toList();
+
+    assertThat(rows)
+        .containsExactly(List.of("marketing", "finance.sales", "orders", "id", "long", 1));
   }
 
   @Test
@@ -217,5 +285,16 @@ class ColumnsScannerTest {
       result.add(value == null ? null : value.toString());
     }
     return result;
+  }
+
+  private static ResourceId rid(String id, ResourceKind kind) {
+    return ResourceId.newBuilder().setAccountId("account").setId(id).setKind(kind).build();
+  }
+
+  private static final class NamespaceListingFailsOverlay extends TestRefCatalogOverlay {
+    @Override
+    public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
+      throw new AssertionError("ref scan should not materialize namespaces");
+    }
   }
 }

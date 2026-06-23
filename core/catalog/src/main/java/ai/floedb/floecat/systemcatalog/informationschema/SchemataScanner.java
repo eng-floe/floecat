@@ -21,7 +21,6 @@ import ai.floedb.floecat.arrow.ArrowValueWriters;
 import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
-import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.columnar.AbstractArrowBatchBuilder;
 import ai.floedb.floecat.scanner.expr.Expr;
@@ -29,7 +28,8 @@ import ai.floedb.floecat.scanner.spi.ScanOutputFormat;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
-import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import ai.floedb.floecat.scanner.spi.SystemScanRequest;
+import ai.floedb.floecat.systemcatalog.informationschema.NamespaceScanSupport.NamespaceEntry;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -75,21 +75,22 @@ public final class SchemataScanner implements SystemObjectScanner {
 
   @Override
   public Stream<SystemObjectRow> scan(SystemObjectScanContext ctx) {
+    return scan(ctx, SystemScanRequest.empty());
+  }
+
+  @Override
+  public Stream<SystemObjectRow> scan(SystemObjectScanContext ctx, SystemScanRequest request) {
     Map<ResourceId, String> catalogById = new HashMap<>();
 
-    return ctx.listNamespaces().stream()
+    return NamespaceScanSupport.entries(ctx, request, "schema_name").stream()
         .map(
             ns ->
                 new SystemObjectRow(
                     new Object[] {
                       catalogById.computeIfAbsent(
                           ns.catalogId(), id -> ((CatalogNode) ctx.resolve(id)).displayName()),
-                      schemaName(ns)
+                      ns.schemaName()
                     }));
-  }
-
-  private static String schemaName(NamespaceNode namespace) {
-    return NameRefUtil.namespaceName(namespace.pathSegments(), namespace.displayName());
   }
 
   @Override
@@ -103,16 +104,22 @@ public final class SchemataScanner implements SystemObjectScanner {
       Expr predicate,
       List<String> requiredColumns,
       BufferAllocator allocator) {
+    return scanArrow(ctx, SystemScanRequest.of(predicate, requiredColumns), allocator);
+  }
+
+  @Override
+  public Stream<ColumnarBatch> scanArrow(
+      SystemObjectScanContext ctx, SystemScanRequest request, BufferAllocator allocator) {
     Objects.requireNonNull(ctx, "ctx");
     Objects.requireNonNull(allocator, "allocator");
-    Objects.requireNonNull(requiredColumns, "requiredColumns");
-    Set<String> requiredSet = ArrowSchemaUtil.normalizeRequiredColumns(requiredColumns);
-    List<NamespaceNode> namespaces = ctx.listNamespaces();
-    Iterator<NamespaceNode> namespaceIterator = namespaces.iterator();
+    Objects.requireNonNull(request, "request");
+    Set<String> requiredSet = ArrowSchemaUtil.normalizeRequiredColumns(request.requiredColumns());
+    Iterator<NamespaceEntry> namespaceIterator =
+        NamespaceScanSupport.entries(ctx, request, "schema_name").iterator();
     Spliterator<ColumnarBatch> spliterator =
         new Spliterators.AbstractSpliterator<ColumnarBatch>(
             Long.MAX_VALUE, Spliterator.ORDERED | Spliterator.NONNULL) {
-          private final Iterator<NamespaceNode> nsIter = namespaceIterator;
+          private final Iterator<NamespaceEntry> nsIter = namespaceIterator;
           private final Map<ResourceId, String> catalogNames = new HashMap<>();
 
           @Override
@@ -130,12 +137,12 @@ public final class SchemataScanner implements SystemObjectScanner {
                 if (builder == null) {
                   builder = new SchemataBatchBuilder(allocator, requiredSet);
                 }
-                NamespaceNode namespace = nsIter.next();
+                NamespaceEntry namespace = nsIter.next();
                 ResourceId catalogId = namespace.catalogId();
                 String catalogName =
                     catalogNames.computeIfAbsent(
                         catalogId, id -> ((CatalogNode) ctx.resolve(id)).displayName());
-                builder.append(catalogName, schemaName(namespace));
+                builder.append(catalogName, namespace.schemaName());
                 if (builder.isFull()) {
                   action.accept(builder.build());
                   return true;

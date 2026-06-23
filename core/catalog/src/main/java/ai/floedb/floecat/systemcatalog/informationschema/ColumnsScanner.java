@@ -21,7 +21,6 @@ import ai.floedb.floecat.arrow.ArrowValueWriters;
 import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
-import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
@@ -33,7 +32,8 @@ import ai.floedb.floecat.scanner.spi.ScanOutputFormat;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
-import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import ai.floedb.floecat.scanner.spi.SystemScanRequest;
+import ai.floedb.floecat.systemcatalog.informationschema.NamespaceScanSupport.NamespaceEntry;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -107,12 +107,19 @@ public final class ColumnsScanner implements SystemObjectScanner {
 
   @Override
   public Stream<SystemObjectRow> scan(SystemObjectScanContext ctx) {
+    return scan(ctx, SystemScanRequest.empty());
+  }
+
+  @Override
+  public Stream<SystemObjectRow> scan(SystemObjectScanContext ctx, SystemScanRequest request) {
     // Small per-scan caches (cheap, bounded)
     Map<ResourceId, String> catalogNames = new HashMap<>();
 
-    return ctx.listNamespaces().stream()
-        .flatMap(ns -> ctx.listRelations(ns.id()).stream())
-        .flatMap(node -> scanRelation(ctx, node, catalogNames));
+    return NamespaceScanSupport.entries(ctx, request, "table_schema").stream()
+        .flatMap(
+            ns ->
+                NamespaceScanSupport.relations(ctx, ns.id(), request, "table_name").stream()
+                    .flatMap(node -> scanRelation(ctx, ns, node, catalogNames)));
   }
 
   @Override
@@ -126,19 +133,25 @@ public final class ColumnsScanner implements SystemObjectScanner {
       Expr predicate,
       List<String> requiredColumns,
       BufferAllocator allocator) {
+    return scanArrow(ctx, SystemScanRequest.of(predicate, requiredColumns), allocator);
+  }
+
+  @Override
+  public Stream<ColumnarBatch> scanArrow(
+      SystemObjectScanContext ctx, SystemScanRequest request, BufferAllocator allocator) {
     Objects.requireNonNull(ctx, "ctx");
     Objects.requireNonNull(allocator, "allocator");
-    Objects.requireNonNull(requiredColumns, "requiredColumns");
-    Set<String> requiredSet = ArrowSchemaUtil.normalizeRequiredColumns(requiredColumns);
-    List<NamespaceNode> namespaces = ctx.listNamespaces();
-    Iterator<NamespaceNode> namespaceIterator = namespaces.iterator();
+    Objects.requireNonNull(request, "request");
+    Set<String> requiredSet = ArrowSchemaUtil.normalizeRequiredColumns(request.requiredColumns());
+    Iterator<NamespaceEntry> namespaceIterator =
+        NamespaceScanSupport.entries(ctx, request, "table_schema").iterator();
     Spliterator<ColumnarBatch> spliterator =
         new Spliterators.AbstractSpliterator<ColumnarBatch>(
             Long.MAX_VALUE, Spliterator.ORDERED | Spliterator.NONNULL) {
-          private final Iterator<NamespaceNode> nsIter = namespaceIterator;
+          private final Iterator<NamespaceEntry> nsIter = namespaceIterator;
           private Iterator<RelationNode> relationIter = Collections.emptyIterator();
           private Iterator<ColumnEntry> columnIter = Collections.emptyIterator();
-          private NamespaceNode currentNamespace;
+          private NamespaceEntry currentNamespace;
           private final Map<ResourceId, String> catalogNames = new HashMap<>();
 
           @Override
@@ -181,7 +194,9 @@ public final class ColumnsScanner implements SystemObjectScanner {
                 return null;
               }
               currentNamespace = nsIter.next();
-              relationIter = ctx.listRelations(currentNamespace.id()).iterator();
+              relationIter =
+                  NamespaceScanSupport.relations(ctx, currentNamespace.id(), request, "table_name")
+                      .iterator();
             }
             return relationIter.next();
           }
@@ -190,34 +205,38 @@ public final class ColumnsScanner implements SystemObjectScanner {
   }
 
   private Stream<SystemObjectRow> scanRelation(
-      SystemObjectScanContext ctx, RelationNode node, Map<ResourceId, String> catalogNames) {
+      SystemObjectScanContext ctx,
+      NamespaceEntry namespace,
+      RelationNode node,
+      Map<ResourceId, String> catalogNames) {
 
     if (node instanceof TableNode table) {
-      return scanTable(ctx, table, catalogNames);
+      return scanTable(ctx, namespace, table, catalogNames);
     }
 
     if (node instanceof ViewNode view) {
-      return scanView(ctx, view, catalogNames);
+      return scanView(ctx, namespace, view, catalogNames);
     }
 
     return Stream.empty();
   }
 
   private Stream<SystemObjectRow> scanTable(
-      SystemObjectScanContext ctx, TableNode table, Map<ResourceId, String> catalogNames) {
-
-    NamespaceNode namespace = (NamespaceNode) ctx.resolve(table.namespaceId());
+      SystemObjectScanContext ctx,
+      NamespaceEntry namespace,
+      TableNode table,
+      Map<ResourceId, String> catalogNames) {
     ResourceId catalogId = namespace.catalogId();
 
     String catalogName =
         catalogNames.computeIfAbsent(
             catalogId, id -> ((CatalogNode) ctx.resolve(id)).displayName());
 
-    String schemaName = schemaName(namespace);
+    String schemaName = namespace.schemaName();
 
     List<SchemaColumn> columns = ctx.graph().tableSchema(table.id());
 
-    if (table instanceof UserTableNode ut) {
+    if (table instanceof UserTableNode) {
       return columns.stream()
           .sorted(Comparator.comparingInt(SchemaColumn::getFieldId))
           .map(
@@ -252,16 +271,17 @@ public final class ColumnsScanner implements SystemObjectScanner {
   }
 
   private Stream<SystemObjectRow> scanView(
-      SystemObjectScanContext ctx, ViewNode view, Map<ResourceId, String> catalogNames) {
-
-    NamespaceNode namespace = (NamespaceNode) ctx.resolve(view.namespaceId());
+      SystemObjectScanContext ctx,
+      NamespaceEntry namespace,
+      ViewNode view,
+      Map<ResourceId, String> catalogNames) {
     ResourceId catalogId = namespace.catalogId();
 
     String catalogName =
         catalogNames.computeIfAbsent(
             catalogId, id -> ((CatalogNode) ctx.resolve(id)).displayName());
 
-    String schemaName = schemaName(namespace);
+    String schemaName = namespace.schemaName();
     List<SchemaColumn> cols = view.outputColumns();
 
     List<SystemObjectRow> rows = new ArrayList<>(cols.size());
@@ -281,23 +301,19 @@ public final class ColumnsScanner implements SystemObjectScanner {
     return rows.stream();
   }
 
-  private static String schemaName(NamespaceNode namespace) {
-    return NameRefUtil.namespaceName(namespace.pathSegments(), namespace.displayName());
-  }
-
   private static String blankToNull(String value) {
     return value == null || value.isBlank() ? null : value;
   }
 
   private List<ColumnEntry> columnsForRelation(
       SystemObjectScanContext ctx,
-      NamespaceNode namespace,
+      NamespaceEntry namespace,
       RelationNode node,
       Map<ResourceId, String> catalogNames) {
     String catalogName =
         catalogNames.computeIfAbsent(
             namespace.catalogId(), id -> ((CatalogNode) ctx.resolve(id)).displayName());
-    String schemaName = schemaName(namespace);
+    String schemaName = namespace.schemaName();
 
     if (node instanceof TableNode table) {
       List<SchemaColumn> columns = ctx.graph().tableSchema(table.id());

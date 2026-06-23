@@ -19,12 +19,23 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 import static org.assertj.core.api.Assertions.*;
 
 import ai.floedb.floecat.arrow.ColumnarBatch;
+import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.metagraph.model.CatalogNode;
+import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.scanner.expr.Expr;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
+import ai.floedb.floecat.scanner.spi.SystemScanRequest;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Stream;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
@@ -77,6 +88,63 @@ class SchemataScannerTest {
     var rows = new SchemataScanner().scan(ctx).map(r -> List.of(r.values())).toList();
 
     assertThat(rows).containsExactly(List.of("main_catalog", "org.sales"));
+  }
+
+  @Test
+  void scan_usesTopologyNamespaceRefsWithoutMaterializingNamespaces() {
+    ResourceId catalogId = rid("main_catalog", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid("namespace", ResourceKind.RK_NAMESPACE);
+    var overlay = new NamespaceListingFailsOverlay();
+    overlay.addNode(
+        new CatalogNode(
+            catalogId,
+            1,
+            Instant.EPOCH,
+            "main_catalog",
+            Map.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of()));
+    overlay.withNamespaceRef(namespaceId, "sales", catalogId, List.of("finance", "sales"));
+    SystemObjectScanContext ctx =
+        new SystemObjectScanContext(
+            overlay, NameRef.getDefaultInstance(), catalogId, EngineContext.empty());
+
+    var rows = new SchemataScanner().scan(ctx).map(r -> List.of(r.values())).toList();
+
+    assertThat(rows).containsExactly(List.of("main_catalog", "finance.sales"));
+  }
+
+  @Test
+  void scan_doesNotPushDottedSchemaConstraintIntoNamespaceLookupByName() {
+    ResourceId catalogId = rid("main_catalog", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid("foo.bar", ResourceKind.RK_NAMESPACE);
+    var overlay = new NamespaceListingFailsOverlay();
+    overlay.addNode(
+        new CatalogNode(
+            catalogId,
+            1,
+            Instant.EPOCH,
+            "main_catalog",
+            Map.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of()));
+    overlay
+        .withNamespaceRef(namespaceId, "foo.bar", catalogId, List.of())
+        .failNamespaceRefsByName("dotted schema names must not use direct namespace lookup");
+    SystemObjectScanContext ctx =
+        new SystemObjectScanContext(
+            overlay, NameRef.getDefaultInstance(), catalogId, EngineContext.empty());
+    SystemScanRequest request =
+        SystemScanRequest.of(
+            new Expr.Eq(new Expr.ColumnRef("schema_name"), new Expr.Literal("foo.bar")), List.of());
+
+    var rows = new SchemataScanner().scan(ctx, request).map(r -> List.of(r.values())).toList();
+
+    assertThat(rows).containsExactly(List.of("main_catalog", "foo.bar"));
   }
 
   @Test
@@ -158,5 +226,16 @@ class SchemataScannerTest {
       list.add(value == null ? null : value.toString());
     }
     return list;
+  }
+
+  private static ResourceId rid(String id, ResourceKind kind) {
+    return ResourceId.newBuilder().setAccountId("account").setId(id).setKind(kind).build();
+  }
+
+  private static final class NamespaceListingFailsOverlay extends TestRefCatalogOverlay {
+    @Override
+    public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
+      throw new AssertionError("ref scan should not materialize namespaces");
+    }
   }
 }
