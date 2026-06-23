@@ -168,6 +168,21 @@ arbitrary engine-native type systems.
 If external Flight providers want to reuse `core/arrow`, they should first map their source type
 surface into Floecat logical types.
 
+### Record reflection writer (`ArrowRecordWriters`)
+
+`ArrowRecordWriters.fromRecordClass(...)` builds an Arrow schema + writer directly from a Java
+`record` (used by Flight system-table producers). Component types map to Arrow as above, with one
+extra rule for decimals: a `BigDecimal` carries no precision/scale, so a `BigDecimal` component
+**must** be annotated `@ArrowDecimal(precision, scale)` — an unannotated one is rejected. Precision
+and scale are validated through `LogicalType.decimal(...)` (`precision ≥ 1`, `0 ≤ scale ≤ precision`),
+and the column uses `Decimal128` for precision ≤ 38 and `Decimal256` for 39..76.
+
+Rounding is explicit. `@ArrowDecimal(rounding = ...)` controls how an input whose scale exceeds the
+column scale is coerced; it defaults to `RoundingMode.UNNECESSARY`, so excess scale throws rather
+than silently dropping precision. Padding a value to a larger scale is always lossless. Callers that
+intend lossy rounding opt in explicitly, e.g.
+`@ArrowDecimal(precision = 18, scale = 3, rounding = RoundingMode.HALF_UP)`.
+
 ## Source-Format Alias Lookup
 
 `LogicalKind.fromName(String candidate)` resolves source-format type names to canonical kinds:
