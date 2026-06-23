@@ -18,10 +18,12 @@ package ai.floedb.floecat.scanner.spi;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
+import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
@@ -31,6 +33,7 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import com.google.protobuf.Timestamp;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Shared overlay between metadata/system objects that exposes the graph operations needed by
@@ -59,6 +62,90 @@ public interface CatalogOverlay {
    * Lists relations that live inside the given namespace. Engine context is resolved implicitly.
    */
   List<RelationNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId);
+
+  /**
+   * Lists only system (built-in) relations in a namespace. Default falls back to a full list and
+   * filters; MetaGraph overrides this to skip the expensive user-object DynamoDB+S3 scan.
+   */
+  default List<RelationNode> listSystemRelationsInNamespace(
+      ResourceId catalogId, ResourceId namespaceId) {
+    return listRelationsInNamespace(catalogId, namespaceId).stream()
+        .filter(n -> n.origin() == GraphNodeOrigin.SYSTEM)
+        .toList();
+  }
+
+  /**
+   * Lists only system namespaces in a catalog. Default falls back to a full list and filters;
+   * MetaGraph overrides to skip the user-namespace storage scan.
+   */
+  default List<NamespaceNode> listSystemNamespaces(ResourceId catalogId) {
+    return listNamespaces(catalogId).stream()
+        .filter(n -> n.origin() == GraphNodeOrigin.SYSTEM)
+        .toList();
+  }
+
+  /**
+   * Whether this overlay can enumerate lightweight refs without materializing full graph nodes.
+   *
+   * <p>Default implementations below are correct but derive refs from full objects, so callers that
+   * need a true no-hydration path should check this before relying on refs for performance.
+   */
+  default boolean supportsLightweightRefs() {
+    return false;
+  }
+
+  /**
+   * Lists namespace refs for callers that only need topology metadata. Default derives refs from
+   * full namespace nodes; production overlays should override this with cache-backed pointer refs.
+   */
+  default List<TopologyGraph.NamespaceRef> listNamespaceRefs(ResourceId catalogId) {
+    return listNamespaces(catalogId).stream()
+        .map(
+            ns ->
+                new TopologyGraph.NamespaceRef(
+                    ns.id(), ns.displayName(), ns.catalogId(), ns.pathSegments()))
+        .toList();
+  }
+
+  /** Lists namespace refs whose rendered information_schema names match the supplied set. */
+  default List<TopologyGraph.NamespaceRef> listNamespaceRefsByName(
+      ResourceId catalogId, Set<String> names) {
+    if (names == null || names.isEmpty()) {
+      return List.of();
+    }
+    return listNamespaceRefs(catalogId).stream()
+        .filter(ref -> names.contains(TopologyNames.namespaceName(ref.pathSegments(), ref.name())))
+        .toList();
+  }
+
+  /**
+   * Lists relation refs for callers that only need relation name/id/kind. Default derives refs from
+   * full relation nodes; production overlays should override this with cache-backed pointer refs.
+   */
+  default List<TopologyGraph.RelationRef> listRelationRefs(
+      ResourceId catalogId, ResourceId namespaceId) {
+    return listRelationsInNamespace(catalogId, namespaceId).stream()
+        .map(
+            rel -> {
+              ResourceKind kind =
+                  rel.id().getKind() == ResourceKind.RK_VIEW
+                      ? ResourceKind.RK_VIEW
+                      : ResourceKind.RK_TABLE;
+              return new TopologyGraph.RelationRef(rel.id(), rel.displayName(), kind);
+            })
+        .toList();
+  }
+
+  /** Lists relation refs whose names match the supplied set. */
+  default List<TopologyGraph.RelationRef> listRelationRefsByName(
+      ResourceId catalogId, ResourceId namespaceId, Set<String> names) {
+    if (names == null || names.isEmpty()) {
+      return List.of();
+    }
+    return listRelationRefs(catalogId, namespaceId).stream()
+        .filter(ref -> names.contains(ref.name()))
+        .toList();
+  }
 
   List<FunctionNode> listFunctions(ResourceId catalogId, ResourceId namespaceId);
 

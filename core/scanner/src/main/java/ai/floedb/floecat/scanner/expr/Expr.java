@@ -20,6 +20,7 @@ package ai.floedb.floecat.scanner.expr;
 public sealed interface Expr
     permits Expr.ColumnRef,
         Expr.Literal,
+        Expr.BooleanLiteral,
         Expr.Eq,
         Expr.And,
         Expr.Or,
@@ -32,6 +33,9 @@ public sealed interface Expr
 
   /** Constant literal (string or null). */
   record Literal(String value) implements Expr {}
+
+  /** Constant boolean literal. */
+  record BooleanLiteral(boolean value) implements Expr {}
 
   /** Equality comparison. */
   record Eq(Expr left, Expr right) implements Expr {}

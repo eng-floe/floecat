@@ -124,6 +124,32 @@ public record SystemObjectScanContext(
     return graph.resolve(id);
   }
 
+  /** Lightweight namespace refs from the overlay; production avoids full node hydration. */
+  public List<TopologyGraph.NamespaceRef> listNamespaceRefs() {
+    return graph.listNamespaceRefs(queryDefaultCatalogId);
+  }
+
+  /** Lightweight namespace refs matching the supplied information_schema names. */
+  public List<TopologyGraph.NamespaceRef> listNamespaceRefsByName(java.util.Set<String> names) {
+    return graph.listNamespaceRefsByName(queryDefaultCatalogId, names);
+  }
+
+  /** Whether the overlay has a true lightweight ref implementation. */
+  public boolean supportsLightweightRefs() {
+    return graph.supportsLightweightRefs();
+  }
+
+  /** Lightweight relation refs for a namespace; production avoids full node hydration. */
+  public List<TopologyGraph.RelationRef> listRelationRefs(ResourceId namespaceId) {
+    return graph.listRelationRefs(queryDefaultCatalogId, namespaceId);
+  }
+
+  /** Lightweight relation refs matching the supplied names. */
+  public List<TopologyGraph.RelationRef> listRelationRefsByName(
+      ResourceId namespaceId, java.util.Set<String> names) {
+    return graph.listRelationRefsByName(queryDefaultCatalogId, namespaceId, names);
+  }
+
   /** Tables + views */
   public List<RelationNode> listRelations(ResourceId namespaceId) {
     return graph.listRelationsInNamespace(queryDefaultCatalogId, namespaceId);

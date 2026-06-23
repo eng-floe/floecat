@@ -39,6 +39,14 @@ public interface SystemObjectScanner {
   Stream<SystemObjectRow> scan(SystemObjectScanContext ctx);
 
   /**
+   * Lazily streams rows with optional request metadata. Implementations may use the request for
+   * safe access-path pruning; callers still apply the original predicate downstream.
+   */
+  default Stream<SystemObjectRow> scan(SystemObjectScanContext ctx, SystemScanRequest request) {
+    return scan(ctx);
+  }
+
+  /**
    * Arrow-native scan.
    *
    * <p>The {@code predicate} argument represents the expression that will be evaluated downstream
@@ -52,6 +60,15 @@ public interface SystemObjectScanner {
       List<String> requiredColumns,
       BufferAllocator allocator) {
     return Stream.empty();
+  }
+
+  /**
+   * Arrow-native scan with optional request metadata. Implementations may use the request for safe
+   * access-path pruning; callers still apply the original predicate downstream.
+   */
+  default Stream<ColumnarBatch> scanArrow(
+      SystemObjectScanContext ctx, SystemScanRequest request, BufferAllocator allocator) {
+    return scanArrow(ctx, request.predicate(), request.requiredColumns(), allocator);
   }
 
   /** Declares supported execution formats. */
