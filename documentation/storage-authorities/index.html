@@ -10,13 +10,9 @@
       
       
       
-        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/connectors-iceberg/">
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/storage-authorities/">
       
       
-        <link rel="prev" href="../connectors-common/">
-      
-      
-        <link rel="next" href="../connectors-delta/">
       
       
       <link rel="icon" href="../assets/images/favicon.png">
@@ -24,7 +20,7 @@
     
     
       
-        <title>Iceberg Connector - Floecat Documentation</title>
+        <title>Storage Authorities - Floecat Documentation</title>
       
     
     
@@ -78,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#iceberg-connector" class="md-skip">
+        <a href="#storage-authorities" class="md-skip">
           Skip to content
         </a>
       
@@ -114,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Iceberg Connector
+              Storage Authorities
             
           </span>
         </div>
@@ -834,8 +830,6 @@
       
   
   
-    
-  
   
   
     
@@ -848,11 +842,13 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
         
           
           <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
@@ -868,7 +864,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             Connectors
@@ -902,32 +898,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    Iceberg Connector
-    
-  </span>
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../connectors-iceberg/" class="md-nav__link">
         
   
   
@@ -938,98 +912,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#overview" class="md-nav__link">
-    <span class="md-ellipsis">
-      Overview
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#architecture-responsibilities" class="md-nav__link">
-    <span class="md-ellipsis">
-      Architecture &amp; Responsibilities
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#public-api-surface-area" class="md-nav__link">
-    <span class="md-ellipsis">
-      Public API / Surface Area
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#important-internal-details" class="md-nav__link">
-    <span class="md-ellipsis">
-      Important Internal Details
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#data-flow-lifecycle" class="md-nav__link">
-    <span class="md-ellipsis">
-      Data Flow &amp; Lifecycle
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration-extensibility" class="md-nav__link">
-    <span class="md-ellipsis">
-      Configuration &amp; Extensibility
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#examples-scenarios" class="md-nav__link">
-    <span class="md-ellipsis">
-      Examples &amp; Scenarios
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cross-references" class="md-nav__link">
-    <span class="md-ellipsis">
-      Cross-References
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1648,63 +1530,135 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#architecture-responsibilities" class="md-nav__link">
+  <a href="#when-to-use-one" class="md-nav__link">
     <span class="md-ellipsis">
-      Architecture &amp; Responsibilities
+      When To Use One
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#public-api-surface-area" class="md-nav__link">
+  <a href="#credential-models" class="md-nav__link">
     <span class="md-ellipsis">
-      Public API / Surface Area
+      Credential Models
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#important-internal-details" class="md-nav__link">
+  <a href="#examples" class="md-nav__link">
     <span class="md-ellipsis">
-      Important Internal Details
+      Examples
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Examples">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#static-aws-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      Static AWS Credentials
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cross-account-vended-s3-access" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cross-Account Vended S3 Access
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#common-uses" class="md-nav__link">
+    <span class="md-ellipsis">
+      Common Uses
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Common Uses">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#server-side-floecat-access" class="md-nav__link">
+    <span class="md-ellipsis">
+      Server-Side Floecat Access
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#iceberg-rest-credential-vending" class="md-nav__link">
+    <span class="md-ellipsis">
+      Iceberg REST Credential Vending
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#common-patterns" class="md-nav__link">
+    <span class="md-ellipsis">
+      Common Patterns
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Common Patterns">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#one-bucket-one-authority" class="md-nav__link">
+    <span class="md-ellipsis">
+      One Bucket, One Authority
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cross-account-read-only-access" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cross-Account Read-Only Access
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#common-failure-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Common Failure Modes
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#data-flow-lifecycle" class="md-nav__link">
+  <a href="#references" class="md-nav__link">
     <span class="md-ellipsis">
-      Data Flow &amp; Lifecycle
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration-extensibility" class="md-nav__link">
-    <span class="md-ellipsis">
-      Configuration &amp; Extensibility
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#examples-scenarios" class="md-nav__link">
-    <span class="md-ellipsis">
-      Examples &amp; Scenarios
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cross-references" class="md-nav__link">
-    <span class="md-ellipsis">
-      Cross-References
+      References
     </span>
   </a>
   
@@ -1726,7 +1680,7 @@
 
 
   
-    <a href="https://github.com/eng-floe/floecat/edit/main/docs/connectors-iceberg.md" title="Edit this page" class="md-content__button md-icon">
+    <a href="https://github.com/eng-floe/floecat/edit/main/docs/storage-authorities.md" title="Edit this page" class="md-content__button md-icon">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1734,186 +1688,115 @@
   
 
 
-<h1 id="iceberg-connector">Iceberg Connector<a class="headerlink" href="#iceberg-connector" title="Permanent link">&para;</a></h1>
+<h1 id="storage-authorities">Storage Authorities<a class="headerlink" href="#storage-authorities" title="Permanent link">&para;</a></h1>
 <h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
-<p><code>connectors/catalogs/iceberg/</code> implements the SPI for Iceberg catalogs exposed via the Iceberg REST API and
-AWS Glue. It enables Floecat to ingest schema metadata, partition specs, snapshots, statistics, and
-file manifests from Iceberg tables stored in S3.</p>
-<p>The implementation centres on <code>IcebergConnector</code> (abstract base) with catalog-specific subclasses
-for REST, Glue, and single-table filesystem-backed tables. Subclasses share NDV and stats collection while
-specializing discovery and catalog wiring.</p>
-<h2 id="architecture-responsibilities">Architecture &amp; Responsibilities<a class="headerlink" href="#architecture-responsibilities" title="Permanent link">&para;</a></h2>
+<p>Storage authorities are Floecat's prefix-scoped object-storage access definitions. They are used
+to match a table, metadata file, or other storage location to a configured object-store prefix and
+return:</p>
 <ul>
-<li><strong><code>IcebergConnector</code></strong> – Abstract <code>FloecatConnector</code> implementation. Defines shared snapshot,
-  stats, and NDV logic.</li>
-<li><strong><code>IcebergRestConnector</code></strong> – REST catalog discovery via Iceberg <code>RESTCatalog</code>.</li>
-<li><strong><code>IcebergGlueConnector</code></strong> – REST catalog + Glue discovery via <code>GlueIcebergFilter</code>.</li>
-<li><strong><code>IcebergFilesystemConnector</code></strong> – Single-table connector that opens directly from the connector
-  <code>uri</code> when <code>iceberg.source=filesystem</code>.</li>
-<li><strong><code>IcebergConnectorProvider</code></strong> – Exposes the connector via CDI so the service can instantiate it
-  using URIs from <code>ConnectorSpec</code>.</li>
-<li><strong><code>IcebergPlanner</code></strong> – Implements <code>connector/common/Planner</code>, translating Iceberg <code>TableScan</code>
-  results into <code>ScanFile</code> entries (data/delete files, column stats, formats).</li>
-<li><strong><code>IcebergTypeMapper</code></strong> – Converts Iceberg Types into Floecat logical types when reporting stats
-  or planner column metadata.</li>
-<li><strong><code>GlueIcebergFilter</code></strong> – Uses AWS Glue to quickly enumerate only those tables registered as
-  Iceberg, preventing needless REST calls.</li>
-<li><strong><code>PuffinNdvProvider</code></strong> – Leverages Puffin NDV files when available.</li>
+<li>client-safe storage config such as region, endpoint, and path-style access</li>
+<li>credentials when a workflow needs storage access for the matched prefix</li>
 </ul>
-<h2 id="public-api-surface-area">Public API / Surface Area<a class="headerlink" href="#public-api-surface-area" title="Permanent link">&para;</a></h2>
-<p><code>IcebergConnector</code> and subclasses satisfy the SPI:
-- <code>listNamespaces()</code> – Uses REST or Glue discovery depending on the selected source.
-- <code>listTables(namespace)</code> – Uses REST or Glue discovery depending on the selected source.
-- <code>describe(namespace, table)</code> – Loads the table, serialises the Iceberg schema to JSON via
-  <code>SchemaParser.toJson</code>, captures partition keys, and returns table properties.
-- <code>enumerateSnapshots(...)</code> – Iterates Iceberg snapshots and emits <code>SnapshotBundle</code>s with upstream
-  timestamps, parent IDs, sequence numbers, manifest lists, and summary maps.
-  When invoked with incremental <code>SnapshotEnumerationOptions</code>, the connector walks back from the
-  current snapshot through the parent chain and stops once it reaches a snapshot already known to
-  Floecat, returning only the newly discovered lineage.
-- <code>captureSnapshotTargetStats(...)</code> – Captures table/column/file stats for one snapshot (optionally
-  selector-scoped), using the configured <code>StatsEngine</code> and NDV providers.</p>
-<h2 id="important-internal-details">Important Internal Details<a class="headerlink" href="#important-internal-details" title="Permanent link">&para;</a></h2>
+<p>Storage authorities are generic storage infrastructure, not Iceberg-specific. Iceberg REST
+credential vending is one consumer of this layer, but the same model also applies to server-side
+Floecat workflows such as reconciliation and register/import flows that need to reach S3.</p>
+<p>Storage authorities are separate from connector auth:</p>
 <ul>
-<li><strong>Authentication</strong> – The connector supports multiple schemes: <code>aws-sigv4</code> (default), OAuth2 token,
-  or none. SigV4 configuration controls signing names and regions, uses <code>s3.region</code> when
-  <code>rest.signing-region</code> is unset, and injects request headers via Iceberg REST properties.
-  When the connector uses temporary AWS credentials such as <code>aws-assume-role</code> or
-  <code>aws-web-identity</code>, Floecat preserves them as a shared refreshable AWS credentials provider so
-  Glue discovery, Iceberg <code>RESTCatalog</code>, and <code>S3FileIO</code> use the same identity.</li>
-<li><strong>NDV</strong> – NDV collection is optional. Controlled by <code>stats.ndv.enabled</code>, <code>stats.ndv.sample_fraction</code>,
-  and <code>stats.ndv.max_files</code> connector options. NDV providers combine sampling, Puffin sketches, and
-  Parquet footer data.</li>
-<li><strong>S3 IO</strong> – Uses <code>org.apache.iceberg.aws.s3.S3FileIO</code> unless <code>io-impl</code> is specified in
-  connector options. Header hints (<code>rest.header.*</code>) propagate custom headers to REST calls.</li>
-<li><strong>Metadata capture</strong> – <code>IcebergConnector</code> carries only canonical snapshot fields, including the
-  snapshot metadata location as first-class state. It does not embed serialized Iceberg metadata
-  protobuf payloads in snapshot state.</li>
-<li><strong>Constraint mapping</strong> – Snapshot constraints currently emit only metadata that is reliably
-  exposed by core Iceberg tables:</li>
-<li><code>CT_PRIMARY_KEY</code> from Iceberg <code>identifier-field-ids</code> (advisory, emitted as not-enforced).</li>
-<li><code>CT_NOT_NULL</code> from required primitive schema fields (including nested struct leaves).</li>
-<li><code>CT_FOREIGN_KEY</code>, <code>CT_UNIQUE</code>, and <code>CT_CHECK</code> are not emitted from core Iceberg metadata
-    because no portable source is defined for them.</li>
-<li>Source-specific extraction path:<ul>
-<li><strong>REST</strong>: snapshot/schema-derived constraints + source-specific additions (currently none).</li>
-<li><strong>Glue</strong>: snapshot/schema-derived constraints + source-specific additions (currently none).</li>
-<li><strong>Filesystem</strong>: snapshot/schema-derived constraints + source-specific additions (currently none).</li>
+<li>connector auth is how Floecat reaches upstream catalogs or services such as Glue, Unity Catalog,
+  or Iceberg REST</li>
+<li>storage authorities are how Floecat resolves access to object storage for a given location prefix</li>
 </ul>
-</li>
-<li>Connector matrix (current behavior):<ul>
-<li><strong>REST</strong>: <code>CT_PRIMARY_KEY</code>, <code>CT_NOT_NULL</code>.</li>
-<li><strong>Glue</strong>: <code>CT_PRIMARY_KEY</code>, <code>CT_NOT_NULL</code>.</li>
-<li><strong>Filesystem</strong>: <code>CT_PRIMARY_KEY</code>, <code>CT_NOT_NULL</code>.</li>
+<h2 id="when-to-use-one">When To Use One<a class="headerlink" href="#when-to-use-one" title="Permanent link">&para;</a></h2>
+<p>Use a storage authority when:</p>
+<ul>
+<li>a Floecat workflow needs storage config or credentials for a specific S3 prefix</li>
+<li>a reconciler or import/register path needs to reach object storage</li>
+<li>an Iceberg REST client needs Floecat to vend S3 credentials for matching table prefixes</li>
+<li>you want prefix-based control over which buckets and paths are eligible for delegated access</li>
+<li>you want Floecat to mint temporary credentials instead of giving clients static keys</li>
 </ul>
-</li>
+<p>Do not use a storage authority as a substitute for connector auth. For example:</p>
+<ul>
+<li><code>connector create ... --cred-type aws-assume-role ...</code> is for Floecat reading an upstream Glue
+  or Delta source</li>
+<li><code>storage-authority create ... --assume-role-arn ...</code> is for Floecat resolving object-store
+  access for matching storage prefixes, including client vending when applicable</li>
 </ul>
-<h2 id="data-flow-lifecycle">Data Flow &amp; Lifecycle<a class="headerlink" href="#data-flow-lifecycle" title="Permanent link">&para;</a></h2>
-<p><div class="highlight"><pre><span></span><code>ConnectorFactory.create(cfg)
-  → IcebergConnectorFactory.create(uri, options, authScheme, authProps, headerHints)
-      → Build REST properties, configure SigV4 or token auth
-      → Choose REST/Glue/filesystem connector based on options
-      → Initialize RESTCatalog (and Glue filter when needed)
-  → listNamespaces/listTables/describe
-  → enumerateSnapshots
-      → For each snapshot load Table metadata lineage
-  → captureSnapshotTargetStats
-      → StatsEngine pulls Parquet stats (table/column + per-file), NDV provider merges sketches
-      → plan
-      → Build TableScan, collect FileScanTask -&gt; ScanBundle
+<h2 id="credential-models">Credential Models<a class="headerlink" href="#credential-models" title="Permanent link">&para;</a></h2>
+<p>Storage authorities support these common AWS patterns:</p>
+<ul>
+<li>static source credentials via <code>--cred-type aws</code></li>
+<li>source role assumption via <code>--cred-type aws-assume-role</code></li>
+<li>web identity via <code>--cred-type aws-web-identity</code></li>
+<li>vended role assumption via <code>--assume-role-arn</code></li>
+</ul>
+<p>The <code>--assume-role-arn</code> flags describe the role Floecat should assume for matched locations when a
+workflow requires temporary credentials. The <code>--cred-type ...</code> flags describe how Floecat
+authenticates to AWS in order to do that work.</p>
+<h2 id="examples">Examples<a class="headerlink" href="#examples" title="Permanent link">&para;</a></h2>
+<h3 id="static-aws-credentials">Static AWS Credentials<a class="headerlink" href="#static-aws-credentials" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>storage-authority<span class="w"> </span>create<span class="w"> </span>datalake-aws<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--location-prefix<span class="w"> </span>s3://my-datalake-bucket/<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--type<span class="w"> </span>s3<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--region<span class="w"> </span>us-east-1<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--cred-type<span class="w"> </span>aws<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--cred<span class="w"> </span><span class="nv">access_key_id</span><span class="o">=</span>XXX<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--cred<span class="w"> </span><span class="nv">secret_access_key</span><span class="o">=</span>YYY<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--cred<span class="w"> </span><span class="nv">session_token</span><span class="o">=</span>ZZZ
 </code></pre></div>
-Resources (RESTCatalog, GlueClient) are closed when the connector is closed.</p>
-<h2 id="configuration-extensibility">Configuration &amp; Extensibility<a class="headerlink" href="#configuration-extensibility" title="Permanent link">&para;</a></h2>
-<p>Connector options (part of <code>ConnectorSpec.properties</code>):
-- <code>iceberg.source</code> – Selects discovery backend (<code>glue</code>, <code>rest</code>, <code>filesystem</code>). Defaults to <code>glue</code>.
-- <code>rest.signing-region</code>, <code>s3.region</code>, <code>rest.auth.type</code>, <code>rest.signing-name</code> – control SigV4.
-- <code>io-impl</code> – override Iceberg IO implementation.
-- <code>stats.ndv.*</code> – enable NDV estimation (boolean), sample fraction (0−1], max Parquet files to scan.
-- <code>header.&lt;name&gt;</code> – send custom headers to the REST endpoint.
-- For <code>iceberg.source=filesystem</code>, the connector <code>uri</code> must point at a single Iceberg metadata JSON
-  file. <code>external.namespace</code> and <code>external.table-name</code> remain optional logical-name overrides.</p>
-<p>Auth credential types (<code>--cred-type</code>) are documented in the CLI reference listed below.
-For Iceberg, the relevant types are <code>bearer</code>, <code>client</code>, <code>cli</code> (provider=aws), <code>token-exchange</code>,
-<code>token-exchange-entra</code>, <code>token-exchange-gcp</code>, <code>aws</code>, <code>aws-web-identity</code>, and <code>aws-assume-role</code>.
-When <code>iceberg.source=rest</code> uses service-side client credentials or token exchange, the shared
-outbound token endpoint allowlist and private/loopback guards described in the operations guide
-listed below apply.</p>
-<p>To extend behavior:
-- Provide a custom NDV provider by plugging into <code>GenericStatsEngine</code>.
-- Wrap alternative auth schemes by implementing <code>AuthProvider</code> and mapping new <code>auth.scheme</code> values.
-- Add new planner logic by extending <code>IcebergPlanner</code> (for example to emit positional deletes).</p>
-<h2 id="examples-scenarios">Examples &amp; Scenarios<a class="headerlink" href="#examples-scenarios" title="Permanent link">&para;</a></h2>
+<p><code>session_token</code> is optional when the source credentials are long-lived access keys rather than
+temporary session credentials.</p>
+<h3 id="cross-account-vended-s3-access">Cross-Account Vended S3 Access<a class="headerlink" href="#cross-account-vended-s3-access" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>storage-authority<span class="w"> </span>create<span class="w"> </span>datalake-aws-prod<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--location-prefix<span class="w"> </span>s3://my-datalake-prod-bucket/<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--type<span class="w"> </span>s3<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--region<span class="w"> </span>us-east-1<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--assume-role-arn<span class="w"> </span>arn:aws:iam::123456789012:role/floecat-prod-s3-readonly<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--assume-role-external-id<span class="w"> </span>floecat-production
+</code></pre></div>
+<p><code>--assume-role-external-id</code> is optional unless the target role trust policy requires it.</p>
+<p>This example configures Floecat to assume the target role for the given S3 prefix when a matching
+workflow needs storage access. That can include Iceberg REST delegated client access, but it is not
+limited to that case.</p>
+<h2 id="common-uses">Common Uses<a class="headerlink" href="#common-uses" title="Permanent link">&para;</a></h2>
+<h3 id="server-side-floecat-access">Server-Side Floecat Access<a class="headerlink" href="#server-side-floecat-access" title="Permanent link">&para;</a></h3>
+<p>Storage authorities can be used by Floecat itself when server-side flows need object-store access
+for a matched location, for example:</p>
 <ul>
-<li><strong>Connector creation</strong> – A connector spec referencing Iceberg REST looks like:
-  <div class="highlight"><pre><span></span><code>{
-  &quot;display_name&quot;:&quot;glue-iceberg&quot;,
-  &quot;kind&quot;:&quot;CK_ICEBERG&quot;,
-  &quot;uri&quot;:&quot;https://iceberg.example.com&quot;,
-  &quot;properties&quot;:{&quot;s3.region&quot;:&quot;us-east-1&quot;,&quot;stats.ndv.enabled&quot;:&quot;true&quot;},
-  &quot;auth&quot;:{&quot;scheme&quot;:&quot;aws-sigv4&quot;,&quot;properties&quot;:{&quot;signing-name&quot;:&quot;glue&quot;}}
-}
-</code></pre></div>
-  <code>ConnectorsImpl</code> validates it by creating an <code>IcebergConnector</code> and calling <code>listNamespaces()</code>.</li>
-<li><strong>Glue (AWS SigV4)</strong> – CLI example using Glue discovery:
-  <div class="highlight"><pre><span></span><code>connector create &quot;Glue Iceberg&quot; ICEBERG \
-  &quot;https://glue.us-east-1.amazonaws.com/iceberg/&quot; \
-  tpcds_iceberg demo \
-  --auth-scheme aws-sigv4 \
-  --dest-ns tpcds_iceberg \
-  --props iceberg.source=glue
-</code></pre></div></li>
-<li><strong>Glue cross-account assume-role</strong> – CLI example using AWS SigV4 plus an assumed role for
-  upstream Glue and S3 access:
-  <div class="highlight"><pre><span></span><code>connector create &quot;call_center&quot; ICEBERG \
-  &quot;https://glue.us-east-1.amazonaws.com/iceberg/&quot; \
-  tpcds_iceberg as \
-  --dest-ns iceberg \
-  --dest-table call_center \
-  --auth-scheme aws-sigv4 \
-  --cred-type aws-assume-role \
-  --cred role_arn=arn:aws:iam::123456789012:role/floecat-prod-s3-readonly \
-  --cred aws.region=us-east-1 \
-  --props iceberg.source=glue \
-  --props s3.region=us-east-1
-</code></pre></div></li>
-<li><strong>Nessie (REST catalog)</strong> – CLI example using a Nessie REST endpoint:
-  <div class="highlight"><pre><span></span><code>connector create &quot;Nessie Iceberg&quot; ICEBERG \
-  &quot;http://localhost:19120/iceberg&quot; \
-  tpch demo \
-  --auth-scheme none \
-  --dest-ns tpch \
-  --props iceberg.source=rest \
-  --props warehouse=s3://warehouse
-</code></pre></div>
-  For <code>iceberg.source=rest</code>, Floecat only requests delegated storage access when the caller
-  explicitly sets <code>X-Iceberg-Access-Delegation</code>. This is intended for REST catalogs such as
-  Polaris that support returning <code>storage-credentials</code> on <code>loadTable</code>.
-  If the upstream REST catalog ignores that header, normal REST behavior still applies and success
-  depends on some other valid storage credential path. If the upstream catalog rejects delegated
-  access requests, connector planning or table load will fail on the REST call.</li>
-<li><strong>Filesystem (single table)</strong> – CLI example using the metadata JSON as the connector URI:
-  <div class="highlight"><pre><span></span><code>connector create &quot;Filesystem Iceberg&quot; ICEBERG \
-  &quot;s3://warehouse/metadata/00001.metadata.json&quot; \
-  fixtures demo \
-  --auth-scheme none \
-  --dest-ns fixtures \
-  --props iceberg.source=filesystem \
-  --props external.namespace=fixtures.simple \
-  --props external.table-name=trino_test
-</code></pre></div></li>
-<li><strong>Reconciliation</strong> – <code>ReconcilerService</code> iterates Iceberg tables, uses <code>describe</code> to create or
-  update Floecat Table records (storing schema JSON + upstream ref), ingests snapshot lineage via
-  <code>enumerateSnapshots</code>, then routes stats capture through the stats control plane (native engine
-  uses <code>captureSnapshotTargetStats</code>).</li>
+<li>reconciler execution against S3-backed tables</li>
+<li>metadata register/import flows</li>
+<li>future storage-backed workflows that resolve locations by prefix</li>
 </ul>
-<h2 id="cross-references">Cross-References<a class="headerlink" href="#cross-references" title="Permanent link">&para;</a></h2>
+<h3 id="iceberg-rest-credential-vending">Iceberg REST Credential Vending<a class="headerlink" href="#iceberg-rest-credential-vending" title="Permanent link">&para;</a></h3>
+<p>Storage authorities are also used by the Iceberg REST gateway when a client asks for delegated
+storage access and the table location matches an authority prefix.</p>
+<h2 id="common-patterns">Common Patterns<a class="headerlink" href="#common-patterns" title="Permanent link">&para;</a></h2>
+<h3 id="one-bucket-one-authority">One Bucket, One Authority<a class="headerlink" href="#one-bucket-one-authority" title="Permanent link">&para;</a></h3>
+<p>Use one storage authority per bucket or per major prefix boundary when you want clean separation of
+permissions and easy auditability.</p>
+<h3 id="cross-account-read-only-access">Cross-Account Read-Only Access<a class="headerlink" href="#cross-account-read-only-access" title="Permanent link">&para;</a></h3>
+<p>For a production bucket in another AWS account:</p>
 <ul>
-<li><a href="../cli-reference/"><code>docs/cli-reference.md</code></a></li>
-<li><a href="../operations/"><code>docs/operations.md</code></a></li>
-<li><a href="../connectors-spi/"><code>docs/connectors-spi.md</code></a></li>
-<li><a href="../connectors-delta/"><code>docs/connectors-delta.md</code></a></li>
-<li><a href="../service/"><code>docs/service.md</code></a></li>
-<li><a href="../storage-authorities/">Storage authorities guide</a></li>
+<li>configure <code>--location-prefix</code> for the target bucket or prefix</li>
+<li>configure <code>--assume-role-arn</code> for a role in that target account</li>
+<li>optionally configure <code>--assume-role-external-id</code> if required by the trust policy</li>
+</ul>
+<p>The target role should trust the Floecat AWS identity and allow only the minimum S3 actions needed
+for the intended workload, whether that is a server-side Floecat flow, an Iceberg REST client, or
+both.</p>
+<h2 id="common-failure-modes">Common Failure Modes<a class="headerlink" href="#common-failure-modes" title="Permanent link">&para;</a></h2>
+<ul>
+<li>prefix mismatch: the requested table location does not match any configured <code>location-prefix</code></li>
+<li>missing trust policy: Floecat can resolve the authority but cannot assume the target role</li>
+<li>missing S3 permissions: temporary credentials are minted but the bucket or prefix access is too narrow</li>
+<li>auth confusion: connector auth is configured correctly, but no storage authority exists for the
+  required storage prefix</li>
+</ul>
+<h2 id="references">References<a class="headerlink" href="#references" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../cli-reference/">CLI reference</a></li>
+<li><a href="../iceberg-rest-gateway/">Iceberg REST gateway</a></li>
+<li><a href="../secrets-manager/">Secrets manager</a></li>
 </ul>
 
 

@@ -1767,7 +1767,7 @@ fully-qualified name parsing (<code>FQNameParserUtil</code>) and CSV-like argume
   current account context and use injected blocking stubs annotated with <code>@GrpcClient("floecat")</code>.</li>
 <li><strong><code>CliCommandExecutor</code></strong> – Standalone, embeddable command dispatcher. No Quarkus, no JLine; takes
   gRPC stubs and a <code>PrintStream</code>, tokenizes input, and routes to the appropriate <code>*CliSupport</code>
-  handler. Thread-safe and reusable across calls. See <a href="#embedding">Embedding</a>.</li>
+  handler. Thread-safe and reusable across calls. See the Embedding section below.</li>
 <li><strong>Utility parsers</strong> – <code>FQNameParserUtil</code> splits catalog.namespace.table strings into <code>NameRef</code>s;
   <code>CsvListParserUtil</code> converts <code>k=v</code> style arguments into Java maps/lists.</li>
 <li><strong>Display helpers</strong> – The shell formats responses into human-readable tables, summarising
@@ -1849,14 +1849,14 @@ detailed human-readable view and also supports <code>--json</code>.</p>
 <h2 id="embedding">Embedding<a class="headerlink" href="#embedding" title="Permanent link">&para;</a></h2>
 <p><code>CliCommandExecutor</code> can be used directly in any JVM application without the Quarkus shell. It has
 no dependency on JLine, Picocli, or Quarkus runtime — only the gRPC stubs from <code>floecat-proto</code>.</p>
-<div class="highlight"><pre><span></span><code><span class="n">ManagedChannel</span><span class="w"> </span><span class="n">channel</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ManagedChannelBuilder</span>
-<span class="w">    </span><span class="p">.</span><span class="na">forAddress</span><span class="p">(</span><span class="s">&quot;localhost&quot;</span><span class="p">,</span><span class="w"> </span><span class="mi">9100</span><span class="p">)</span>
-<span class="w">    </span><span class="p">.</span><span class="na">usePlaintext</span><span class="p">()</span>
-<span class="w">    </span><span class="p">.</span><span class="na">build</span><span class="p">();</span>
+<div class="highlight"><pre><span></span><code>ManagedChannel channel = ManagedChannelBuilder
+    .forAddress(&quot;localhost&quot;, 9100)
+    .usePlaintext()
+    .build();
 
-<span class="n">CliCommandExecutor</span><span class="w"> </span><span class="n">executor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">CliCommandExecutor</span><span class="p">.</span><span class="na">fromChannel</span><span class="p">(</span><span class="n">channel</span><span class="p">,</span><span class="w"> </span><span class="n">System</span><span class="p">.</span><span class="na">out</span><span class="p">);</span>
-<span class="n">executor</span><span class="p">.</span><span class="na">execute</span><span class="p">(</span><span class="s">&quot;catalogs&quot;</span><span class="p">);</span>
-<span class="n">executor</span><span class="p">.</span><span class="na">execute</span><span class="p">(</span><span class="s">&quot;tables my-catalog.my-ns&quot;</span><span class="p">);</span>
+CliCommandExecutor executor = CliCommandExecutor.fromChannel(channel, System.out);
+executor.execute(&quot;catalogs&quot;);
+executor.execute(&quot;tables my-catalog.my-ns&quot;);
 </code></pre></div>
 <p><code>fromChannel</code> creates all service stubs from a single channel and uses no-op session-state
 callbacks. For full session management (e.g. <code>account set</code> / <code>catalog use</code> persisting across
@@ -1880,6 +1880,19 @@ namespace create demo.sales --desc &quot;Sales sandbox&quot; --props owner=analy
   --source-table call_center
   --dest-ns sales --dest-table my_call_center
   --props iceberg.source=glue
+</code></pre></div>
+<ul>
+<li><strong>Creating a connector to an upstream Glue Iceberg table via assume role</strong></li>
+</ul>
+<div class="highlight"><pre><span></span><code>connector create &quot;call_center&quot; ICEBERG
+  &quot;https://glue.us-east-1.amazonaws.com/iceberg/&quot;
+  tpcds_iceberg as --dest-ns iceberg --dest-table call_center
+  --auth-scheme aws-sigv4
+  --cred-type aws-assume-role
+  --cred role_arn=arn:aws:iam::123456789012:role/floecat-prod-s3-readonly
+  --cred aws.region=us-east-1
+  --props iceberg.source=glue
+  --props s3.region=us-east-1
 </code></pre></div>
 <ul>
 <li><strong>Configuring connector reconcile policy</strong></li>
@@ -1907,6 +1920,8 @@ connector trigger glue-iceberg --full --current --mode metadata-and-capture --ca
   --cred access_key_id=test \
   --cred secret_access_key=test
 </code></pre></div>
+<p>See the storage authorities guide below in Cross-References for dedicated
+  storage-authority examples, including cross-account assume-role vending.</p>
 <ul>
 <li><strong>Managing snapshot constraints</strong></li>
 </ul>
@@ -1942,8 +1957,8 @@ constraints delete-one demo.sales.users pk_users --snapshot 42
   lost updates when multiple writers race on the same snapshot.</p>
 <h2 id="cross-references">Cross-References<a class="headerlink" href="#cross-references" title="Permanent link">&para;</a></h2>
 <ul>
-<li>RPC contract details: <a href="../proto/"><code>docs/proto.md</code></a></li>
-<li>Service behavior enforced by catalog/table/query implementations: <a href="../service/"><code>docs/service.md</code></a></li>
+<li><a href="../proto/"><code>docs/proto.md</code></a></li>
+<li><a href="../service/"><code>docs/service.md</code></a></li>
 </ul>
 
 
