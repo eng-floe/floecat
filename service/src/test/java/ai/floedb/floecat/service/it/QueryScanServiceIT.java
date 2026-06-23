@@ -23,15 +23,21 @@ import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.rpc.*;
 import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.query.rpc.*;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
+import ai.floedb.floecat.service.storage.impl.StorageAuthorityServiceImpl;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
+import ai.floedb.floecat.storage.rpc.StorageAuthority;
+import ai.floedb.floecat.storage.secrets.SecretsManager;
 import com.google.protobuf.FieldMask;
+import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
@@ -40,6 +46,7 @@ import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.BeforeEach;
@@ -84,6 +91,8 @@ class QueryScanServiceIT {
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
   @Inject QueryContextStore queryStore;
+  @Inject StorageAuthorityRepository storageAuthorityRepo;
+  @Inject SecretsManager secretsManager;
 
   String catalogPrefix = this.getClass().getSimpleName() + "_";
 
@@ -154,6 +163,7 @@ class QueryScanServiceIT {
 
     var catName = catalogPrefix + "scan_info";
     var cat = TestSupport.createCatalog(catalog, catName, "");
+    seedStorageAuthority(cat.getResourceId().getAccountId(), "s3://bucket");
     var ns =
         TestSupport.createNamespace(
             namespace, cat.getResourceId(), "scan_info", List.of("scan"), "");
@@ -221,6 +231,39 @@ class QueryScanServiceIT {
     assertEquals(metadataLocation, info.getMetadataLocation());
     assertFalse(info.getPropertiesMap().containsKey("metadata-location"));
     assertEquals(snap.getSnapshotId(), info.getSnapshotId());
+  }
+
+  private void seedStorageAuthority(String accountId, String locationPrefix) {
+    String authorityId = UUID.randomUUID().toString();
+    long now = System.currentTimeMillis();
+    var authority =
+        StorageAuthority.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(authorityId)
+                    .setKind(ResourceKind.RK_STORAGE_AUTHORITY)
+                    .build())
+            .setDisplayName("test-" + authorityId)
+            .setEnabled(true)
+            .setType("s3")
+            .setLocationPrefix(locationPrefix)
+            .setRegion("us-east-1")
+            .setCreatedAt(Timestamps.fromMillis(now))
+            .setUpdatedAt(Timestamps.fromMillis(now))
+            .build();
+    storageAuthorityRepo.create(authority);
+    StorageAuthorityServiceImpl.storeCredentials(
+        secretsManager,
+        accountId,
+        authorityId,
+        AuthCredentials.newBuilder()
+            .setAws(
+                AuthCredentials.AwsCredentials.newBuilder()
+                    .setAccessKeyId("test")
+                    .setSecretAccessKey("test")
+                    .setSessionToken(""))
+            .build());
   }
 
   /** Ensures streaming scans reject unpinned tables. */

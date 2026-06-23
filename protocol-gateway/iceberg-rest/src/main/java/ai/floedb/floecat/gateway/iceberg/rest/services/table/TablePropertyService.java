@@ -122,6 +122,8 @@ public class TablePropertyService {
       return new PropertyUpdateResult(mergedProps, null);
     }
     CommitUpdateInspector.Parsed parsed = CommitUpdateInspector.inspectUpdates(updates);
+    Long existingCurrentSnapshotId =
+        asLong(tableSupplier.get().getPropertiesMap().get("current-snapshot-id"));
     Map<String, String> targetProps = mergedProps;
     if (hasPropertyUpdates(updates)) {
       if (targetProps == null) {
@@ -135,6 +137,9 @@ public class TablePropertyService {
     targetProps = applySnapshotPropertyUpdates(targetProps, tableSupplier, parsed);
     targetProps = applyRefPropertyUpdates(targetProps, tableSupplier, parsed);
     targetProps = applyTableDefinitionPropertyUpdates(targetProps, tableSupplier, updates);
+    targetProps =
+        preserveCurrentSnapshotForMetadataOnlyCommit(
+            targetProps, tableSupplier, parsed, existingCurrentSnapshotId);
     return new PropertyUpdateResult(targetProps, null);
   }
 
@@ -355,6 +360,29 @@ public class TablePropertyService {
       changed = true;
     }
     return changed ? targetProps : mergedProps;
+  }
+
+  private Map<String, String> preserveCurrentSnapshotForMetadataOnlyCommit(
+      Map<String, String> mergedProps,
+      Supplier<Table> tableSupplier,
+      CommitUpdateInspector.Parsed parsed,
+      Long existingCurrentSnapshotId) {
+    if (existingCurrentSnapshotId == null || existingCurrentSnapshotId <= 0) {
+      return mergedProps;
+    }
+    if (parsed == null
+        || !parsed.addedSnapshots().isEmpty()
+        || !parsed.removedSnapshotIdsSet().isEmpty()
+        || !parsed.snapshotRefMutations().isEmpty()) {
+      return mergedProps;
+    }
+    Map<String, String> targetProps =
+        mergedProps == null ? ensurePropertyMap(tableSupplier, null) : mergedProps;
+    if (targetProps.containsKey("current-snapshot-id")) {
+      return mergedProps;
+    }
+    targetProps.put("current-snapshot-id", Long.toString(existingCurrentSnapshotId));
+    return targetProps;
   }
 
   private boolean shouldApplyRequestedMainSnapshotId(

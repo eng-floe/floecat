@@ -35,6 +35,14 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
+import ai.floedb.floecat.reconciler.impl.ReconcilerService;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -44,12 +52,12 @@ import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.storage.rpc.DeleteStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.GetStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.ResolveSnapshotCompatStorageRequest;
-import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityForLocationRequest;
-import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.StorageAuthority;
 import ai.floedb.floecat.storage.rpc.StorageAuthoritySpec;
+import ai.floedb.floecat.storage.rpc.StorageCredentialUsage;
 import ai.floedb.floecat.storage.rpc.UpdateStorageAuthorityRequest;
+import ai.floedb.floecat.storage.rpc.VendStorageCredentialsRequest;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
@@ -92,6 +100,7 @@ class StorageAuthorityServiceImplTest {
   private RecordingSecretsManager secretsManager;
   private TableRepository tableRepo;
   private SnapshotRepository snapshotRepo;
+  private ReconcileJobStore reconcileJobs;
   private AtomicReference<StorageAuthority> state;
   private AtomicLong version;
 
@@ -104,6 +113,7 @@ class StorageAuthorityServiceImplTest {
     secretsManager = new RecordingSecretsManager();
     tableRepo = mock(TableRepository.class);
     snapshotRepo = mock(SnapshotRepository.class);
+    reconcileJobs = mock(ReconcileJobStore.class);
     state = new AtomicReference<>(currentAuthority());
     version = new AtomicLong(1L);
 
@@ -115,6 +125,7 @@ class StorageAuthorityServiceImplTest {
     service.resolver.secretsManager = secretsManager;
     service.tableRepo = tableRepo;
     service.snapshotRepo = snapshotRepo;
+    service.reconcileJobs = reconcileJobs;
     service.blobStoreType = "s3";
     service.blobBucket = "floecat-dev";
     service.storageAwsRegion = "us-east-1";
@@ -152,6 +163,8 @@ class StorageAuthorityServiceImplTest {
     when(tableRepo.getById(TABLE_ID)).thenReturn(Optional.of(currentTable()));
     when(snapshotRepo.getById(TABLE_ID, 77L))
         .thenReturn(Optional.of(currentSnapshot(TABLE_ID, 77L)));
+    when(reconcileJobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(reconcileJobs.getLeaseView("job-1")).thenReturn(Optional.of(activeLeaseView()));
   }
 
   @Test
@@ -212,13 +225,15 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
-  void resolveScopesTableIdToPrincipalAccount() {
+  void resolveServerSideScopesTableIdToPrincipalAccount() {
     ResolveStorageAuthorityResponse response =
         service
-            .resolveStorageAuthority(
-                ResolveStorageAuthorityRequest.newBuilder()
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
                     .setTableId(FOREIGN_TABLE_ID)
                     .setLocationPrefix("s3://warehouse/orders")
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
                     .build())
             .await()
             .indefinitely();
@@ -229,7 +244,7 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
-  void resolveUsesRequestedLocationPrefixWhenItDiffersFromTableLocation() {
+  void resolveServerSideUsesRequestedLocationPrefixWhenItDiffersFromTableLocation() {
     StorageAuthority databricksAuthority =
         StorageAuthority.newBuilder()
             .setResourceId(DATARBRICKS_AUTHORITY_ID)
@@ -243,20 +258,42 @@ class StorageAuthorityServiceImplTest {
             .build();
     when(repo.list(eq("acct"), anyInt(), any(), any()))
         .thenReturn(java.util.List.of(currentAuthority(), databricksAuthority));
-    when(tableRepo.getById(TABLE_ID)).thenReturn(Optional.of(reconciledTable()));
+    when(tableRepo.getById(TABLE_ID))
+        .thenReturn(Optional.of(tableWithRequestedDatabricksSubprefix()));
 
     ResolveStorageAuthorityResponse response =
         service
-            .resolveStorageAuthority(
-                ResolveStorageAuthorityRequest.newBuilder()
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
                     .setTableId(TABLE_ID)
                     .setLocationPrefix(
                         "s3://floedb-databricks-metastore-367509577365/metastore/table/metadata")
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
                     .build())
             .await()
             .indefinitely();
 
     assertEquals(DATARBRICKS_AUTHORITY_ID, response.getAuthorityId());
+  }
+
+  @Test
+  void resolveServerSidePrefersStorageLocationOverSourceMetadataLocation() {
+    when(tableRepo.getById(TABLE_ID))
+        .thenReturn(Optional.of(tableWithStorageAndMetadataLocation()));
+
+    ResolveStorageAuthorityResponse response =
+        service
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
+                    .setTableId(TABLE_ID)
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(AUTHORITY_ID, response.getAuthorityId());
   }
 
   @Test
@@ -266,10 +303,12 @@ class StorageAuthorityServiceImplTest {
             StatusRuntimeException.class,
             () ->
                 service
-                    .resolveStorageAuthority(
-                        ResolveStorageAuthorityRequest.newBuilder()
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
                             .setTableId(TABLE_ID)
                             .setLocationPrefix("s3://warehouse/other")
+                            .setUsage(StorageCredentialUsage.SCU_CLIENT)
                             .build())
                     .await()
                     .indefinitely());
@@ -281,9 +320,11 @@ class StorageAuthorityServiceImplTest {
   void resolveForLocationAllowsInternalLookupWithoutTableLoad() {
     ResolveStorageAuthorityResponse response =
         service
-            .resolveStorageAuthorityForLocation(
-                ResolveStorageAuthorityForLocationRequest.newBuilder()
-                    .setLocationPrefix("s3://warehouse/orders/metadata/v1.json")
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
+                    .setLocationPrefix("s3://warehouse/orders/data/part-000.parquet")
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
                     .build())
             .await()
             .indefinitely();
@@ -311,9 +352,11 @@ class StorageAuthorityServiceImplTest {
             StatusRuntimeException.class,
             () ->
                 service
-                    .resolveStorageAuthorityForLocation(
-                        ResolveStorageAuthorityForLocationRequest.newBuilder()
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
                             .setLocationPrefix("s3://warehouse/orders/metadata/v1.json")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
                             .build())
                     .await()
                     .indefinitely());
@@ -324,6 +367,175 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
+  void resolveForAccountLocationRequiresValidMatchingLeaseWhenProvided() {
+    ResolveStorageAuthorityResponse response =
+        service
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
+                    .setLocationPrefix("s3://warehouse/orders/data/part-000.parquet")
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
+                    .setExecutionBinding(
+                        ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                            .setReconcileLease(
+                                ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding.newBuilder()
+                                    .setJobId("job-1")
+                                    .setLeaseEpoch("lease-1"))
+                            .build())
+                    .build())
+            .await()
+            .indefinitely();
+
+    verify(reconcileJobs).renewLease("job-1", "lease-1");
+    verify(reconcileJobs).getLeaseView("job-1");
+    assertEquals(AUTHORITY_ID, response.getAuthorityId());
+  }
+
+  @Test
+  void
+      resolveForAccountLocationAllowsStaticServerCredentialsForLeaseBoundExecutionWhenNotRequired() {
+    ResolveStorageAuthorityResponse response =
+        service
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
+                    .setLocationPrefix("s3://warehouse/orders/data/part-000.parquet")
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
+                    .setExecutionBinding(
+                        ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                            .setReconcileLease(
+                                ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding.newBuilder()
+                                    .setJobId("job-1")
+                                    .setLeaseEpoch("lease-1"))
+                            .build())
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(AUTHORITY_ID, response.getAuthorityId());
+    assertEquals("akid", response.getStorageCredentials(0).getConfigMap().get("s3.access-key-id"));
+    assertEquals(
+        "secret", response.getStorageCredentials(0).getConfigMap().get("s3.secret-access-key"));
+  }
+
+  @Test
+  void resolveForAccountLocationFailsForNoAuthority() {
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://warehouse/orders/data/part-000.parquet")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+  }
+
+  @Test
+  void resolveForAccountLocationRejectsLocationOutsideLeasedTableScope() {
+    var ex =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://warehouse/other/metadata/v1.json")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1"))
+                                    .build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+  }
+
+  @Test
+  void resolveForAccountLocationRejectsSiblingFileOutsideLeasedFileGroupScope() {
+    when(reconcileJobs.getLeaseView("job-1"))
+        .thenReturn(
+            Optional.of(
+                activeLeaseView(
+                    "job-1",
+                    "acct",
+                    "JS_RUNNING",
+                    java.util.List.of(
+                        "s3://warehouse/orders/data/part-000.parquet",
+                        "s3://warehouse/orders/metadata/delete-000.parquet"))));
+
+    var ex =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://warehouse/orders/data/part-999.parquet")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1"))
+                                    .build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+  }
+
+  @Test
+  void resolveForAccountLocationRejectsMismatchedLeaseAccount() {
+    when(reconcileJobs.getLeaseView("job-2"))
+        .thenReturn(Optional.of(activeLeaseView("job-2", "other", "JS_RUNNING")));
+    when(reconcileJobs.renewLease("job-2", "lease-2")).thenReturn(true);
+
+    var ex =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://warehouse/orders/metadata/v1.json")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-2")
+                                            .setLeaseEpoch("lease-2"))
+                                    .build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+  }
+
+  @Test
   void resolveSnapshotCompatStorageUsesConfigBackedSettings() {
     var response =
         service
@@ -331,7 +543,6 @@ class StorageAuthorityServiceImplTest {
                 ResolveSnapshotCompatStorageRequest.newBuilder()
                     .setTableId(TABLE_ID)
                     .setSnapshotId(77L)
-                    .setIncludeCredentials(true)
                     .build())
             .await()
             .indefinitely();
@@ -371,7 +582,7 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
-  void clientSideCredentialVendingRejectsUnscopedTemporaryAuthorityCredentials() {
+  void clientSideCredentialVendingRejectsCredentialsWithoutKnownExpiry() {
     StorageAuthorityResolver resolver = new StorageAuthorityResolver();
     var authority = currentAuthority().toBuilder().clearAssumeRoleArn().build();
     var temporaryCredentials =
@@ -388,9 +599,9 @@ class StorageAuthorityServiceImplTest {
             IllegalArgumentException.class,
             () ->
                 resolver.mintTemporaryCredentials(
-                    authority, temporaryCredentials, "s3://warehouse/orders"));
+                    authority, temporaryCredentials, java.util.List.of("s3://warehouse/orders")));
 
-    assertTrue(ex.getMessage().contains("scoped temporary storage credentials"));
+    assertTrue(ex.getMessage().contains("known expiry"));
   }
 
   @Test
@@ -461,7 +672,30 @@ class StorageAuthorityServiceImplTest {
         .putProperties("location", "s3://floecat-dev/obs/floe_prod_otel_spans")
         .putProperties(
             "source_metadata_location",
-            "s3://floedb-databricks-metastore-367509577365/metastore/table/metadata")
+            "s3://floedb-databricks-metastore-367509577365/metastore/table/metadata/00001.metadata.json")
+        .build();
+  }
+
+  private static ai.floedb.floecat.catalog.rpc.Table tableWithRequestedDatabricksSubprefix() {
+    return ai.floedb.floecat.catalog.rpc.Table.newBuilder()
+        .setResourceId(TABLE_ID)
+        .putProperties(
+            "storage_location", "s3://floedb-databricks-metastore-367509577365/metastore/table")
+        .putProperties("location", "s3://floecat-dev/obs/floe_prod_otel_spans")
+        .putProperties(
+            "source_metadata_location",
+            "s3://floedb-databricks-metastore-367509577365/metastore/table/metadata/00001.metadata.json")
+        .build();
+  }
+
+  private static ai.floedb.floecat.catalog.rpc.Table tableWithStorageAndMetadataLocation() {
+    return ai.floedb.floecat.catalog.rpc.Table.newBuilder()
+        .setResourceId(TABLE_ID)
+        .putProperties("storage_location", "s3://warehouse/orders")
+        .putProperties("location", "s3://warehouse/orders")
+        .putProperties(
+            "source_metadata_location",
+            "s3://floedb-databricks-metastore-367509577365/metastore/table/metadata/00001.metadata.json")
         .build();
   }
 
@@ -483,6 +717,52 @@ class StorageAuthorityServiceImplTest {
     } catch (ReflectiveOperationException e) {
       throw new AssertionError("Failed to inject BaseServiceImpl principal provider", e);
     }
+  }
+
+  private static ReconcileJobStore.ReconcileJob activeLeaseView() {
+    return activeLeaseView("job-1", "acct", "JS_RUNNING");
+  }
+
+  private static ReconcileJobStore.ReconcileJob activeLeaseView(
+      String jobId, String accountId, String state) {
+    return activeLeaseView(
+        jobId, accountId, state, java.util.List.of("s3://warehouse/orders/data/part-000.parquet"));
+  }
+
+  private static ReconcileJobStore.ReconcileJob activeLeaseView(
+      String jobId, String accountId, String state, java.util.List<String> filePaths) {
+    return new ReconcileJobStore.ReconcileJob(
+        jobId,
+        accountId,
+        "conn-1",
+        state,
+        "",
+        1L,
+        1L,
+        1L,
+        1L,
+        0L,
+        0L,
+        0L,
+        false,
+        ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
+        0L,
+        0L,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.defaults(),
+        "",
+        ReconcileJobKind.EXEC_FILE_GROUP,
+        ReconcileTableTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.of("tbl-1", 77L, "src", "orders"),
+        ReconcileFileGroupTask.of(
+            "plan-1",
+            "group-1",
+            "tbl-1",
+            77L,
+            filePaths == null ? 0 : filePaths.size(),
+            filePaths == null ? java.util.List.of() : filePaths),
+        "");
   }
 
   private static final class RecordingSecretsManager implements SecretsManager {

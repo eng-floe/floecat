@@ -62,6 +62,11 @@ public final class AwsGlueClientFactory {
 
   private static AwsCredentialsProvider resolveCredentials(
       Map<String, String> options, Map<String, String> authProps) {
+    String providerId =
+        option(options, RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
+    if (providerId != null) {
+      return new RegistryBackedAwsCredentialsProvider(providerId);
+    }
     String access = option(options, "s3.access-key-id");
     String secret = option(options, "s3.secret-access-key");
     String token = option(options, "s3.session-token");

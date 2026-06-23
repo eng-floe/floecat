@@ -17,6 +17,11 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -25,6 +30,7 @@ import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
+import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import java.time.Instant;
 import java.util.List;
@@ -206,5 +212,36 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
         .containsEntry("s3.access-key-id", "access-key")
         .containsEntry("s3.secret-access-key", "secret-key")
         .containsEntry("s3.session-token", "session-token");
+  }
+
+  @Test
+  void activeConnectorPassesFilesystemIcebergMetadataLocationForServerSideResolution() {
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setUri("s3://bucket/table/metadata/00001.metadata.json")
+            .putProperties("iceberg.source", "filesystem")
+            .setAuth(AuthConfig.newBuilder().setScheme("aws-sigv4"))
+            .build();
+    ServerSideStorageConfigResolver storageResolver = mock(ServerSideStorageConfigResolver.class);
+    service.serverSideStorageConfigResolver = storageResolver;
+    service.backend = new ReturningBackend(connector);
+    when(storageResolver.resolveWithAuthorization(
+            any(), any(), any(), any(), eq(connector), any(ConnectorConfig.class)))
+        .thenAnswer(invocation -> invocation.getArgument(5));
+
+    ReconcileContext ctx =
+        new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.empty());
+    service.activeConnectorForResult(ctx, connectorId);
+
+    @SuppressWarnings("unchecked")
+    var locationCaptor = org.mockito.ArgumentCaptor.forClass(Optional.class);
+    verify(storageResolver)
+        .resolveWithAuthorization(
+            any(), any(), any(), locationCaptor.capture(), eq(connector), any());
+    assertThat(locationCaptor.getValue())
+        .contains("s3://bucket/table/metadata/00001.metadata.json");
   }
 }

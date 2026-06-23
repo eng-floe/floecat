@@ -30,13 +30,8 @@ import java.util.function.Function;
 import org.apache.parquet.io.InputFile;
 
 public final class UnityDeltaConnector extends DeltaConnector {
-  public static final String TABLE_ROOT_HINT_FULL_NAME_OPTION = "delta.table-root.hint.full-name";
-  public static final String TABLE_ROOT_HINT_LOCATION_OPTION = "delta.table-root.hint.location";
-
   private final UcHttp ucHttp;
   private final SqlStmtClient sql;
-  private final String tableRootHintFullName;
-  private final String tableRootHintLocation;
 
   UnityDeltaConnector(
       String connectorId,
@@ -46,14 +41,10 @@ public final class UnityDeltaConnector extends DeltaConnector {
       Function<String, InputFile> parquetInput,
       boolean ndvEnabled,
       double ndvSampleFraction,
-      long ndvMaxFiles,
-      String tableRootHintFullName,
-      String tableRootHintLocation) {
+      long ndvMaxFiles) {
     super(connectorId, engine, parquetInput, ndvEnabled, ndvSampleFraction, ndvMaxFiles);
     this.ucHttp = ucHttp;
     this.sql = sql;
-    this.tableRootHintFullName = normalizeHintValue(tableRootHintFullName);
-    this.tableRootHintLocation = normalizeHintValue(tableRootHintLocation);
   }
 
   @Override
@@ -114,7 +105,7 @@ public final class UnityDeltaConnector extends DeltaConnector {
       if (location != null && !location.isBlank()) {
         try {
           schemaJson = describeTableSchemaJson(location);
-        } catch (RuntimeException ignored) {
+        } catch (Exception ignored) {
           // Fall back to UC column metadata when Delta snapshot metadata is unavailable.
         }
       }
@@ -129,17 +120,13 @@ public final class UnityDeltaConnector extends DeltaConnector {
     } catch (RuntimeException e) {
       throw e;
     } catch (Exception e) {
-      throw new RuntimeException("describe failed", e);
+      throw new RuntimeException("describe failed: " + e.getMessage(), e);
     }
   }
 
   @Override
   protected String storageLocation(String namespaceFq, String tableName) {
-    String full = namespaceFq + "." + tableName;
-    if (full.equals(tableRootHintFullName) && tableRootHintLocation != null) {
-      return tableRootHintLocation;
-    }
-    return loadStorageLocation(full);
+    return loadStorageLocation(namespaceFq + "." + tableName);
   }
 
   @Override
@@ -380,13 +367,5 @@ public final class UnityDeltaConnector extends DeltaConnector {
     } catch (Exception e) {
       throw new RuntimeException("Failed to resolve storage_location for " + full, e);
     }
-  }
-
-  private static String normalizeHintValue(String value) {
-    if (value == null) {
-      return null;
-    }
-    String trimmed = value.trim();
-    return trimmed.isEmpty() ? null : trimmed;
   }
 }

@@ -28,6 +28,7 @@ import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
+import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
@@ -52,8 +53,12 @@ import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
+import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.service.storage.impl.StorageAuthorityServiceImpl;
+import ai.floedb.floecat.storage.rpc.StorageAuthority;
+import ai.floedb.floecat.storage.secrets.SecretsManager;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -101,6 +106,14 @@ public class SeedRunner {
               ReconcileCapturePolicy.Output.TABLE_STATS,
               ReconcileCapturePolicy.Output.FILE_STATS,
               ReconcileCapturePolicy.Output.COLUMN_STATS));
+  private static final List<String> FIXTURE_STORAGE_AUTHORITY_PREFIXES =
+      List.of(
+          "s3://yb-iceberg-tpcds",
+          "s3://staged-fixtures",
+          "s3://floecat",
+          "s3://dev-testing-datasets-153499698604-us-east-1-an",
+          "s3://floecat-delta");
+  private static final List<String> FAKE_STORAGE_AUTHORITY_PREFIXES = List.of("s3://seed-data");
 
   private static final Logger LOG = Logger.getLogger(SeedRunner.class);
   private static final String EXAMPLES_CATALOG = "examples";
@@ -122,6 +135,8 @@ public class SeedRunner {
   @Inject TableRepository tables;
   @Inject SnapshotRepository snapshots;
   @Inject ConnectorRepository connectorRepo;
+  @Inject StorageAuthorityRepository storageAuthorityRepo;
+  @Inject SecretsManager secretsManager;
 
   @GrpcClient("floecat")
   ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl;
@@ -227,6 +242,7 @@ public class SeedRunner {
         List.of(DELTA_NAMESPACE.get(0)),
         DELTA_NAMESPACE.get(0),
         now);
+    seedFixtureStorageAuthorities(accountId, now);
     seedFixtureTables(accountId, examplesId, now);
     seedDeltaFixtureTables(accountId, examplesId, now);
 
@@ -245,6 +261,8 @@ public class SeedRunner {
     final long now = clock.millis();
 
     var accountId = seedAccount("t-0001", "First account", now);
+    seedFakeStorageAuthorities(accountId, now);
+    seedFixtureStorageAuthorities(accountId, now);
 
     var examplesId = seedCatalog(accountId.getId(), EXAMPLES_CATALOG, "Examples catalog", now);
     var icebergNsId =
@@ -520,6 +538,140 @@ public class SeedRunner {
       ResourceId connectorId =
           seedIcebergConnector(accountId, catalogId, fixture, fixtureRoot, now);
       syncConnector(accountId, catalogId, connectorId, fixture);
+    }
+  }
+
+  private void seedFixtureStorageAuthorities(ResourceId accountId, long now) {
+    Map<String, String> fileIoProperties = new LinkedHashMap<>();
+    AuthCredentials credentials;
+    if (TestS3Fixtures.useAwsFixtures()) {
+      fileIoProperties.putAll(TestS3Fixtures.awsFileIoProperties());
+      credentials = staticAwsCredentials(fileIoProperties, false);
+      if (credentials == null) {
+        LOG.warn(
+            "Skipping fixture storage authority seeding; fixture AWS credentials are not configured");
+        return;
+      }
+    } else {
+      fileIoProperties.put("s3.region", "us-east-1");
+      credentials = staticAwsCredentials(fileIoProperties, true);
+    }
+    upsertStorageAuthorities(
+        accountId,
+        now,
+        FIXTURE_STORAGE_AUTHORITY_PREFIXES,
+        fileIoProperties,
+        credentials,
+        "fixture");
+  }
+
+  private void seedFakeStorageAuthorities(ResourceId accountId, long now) {
+    Map<String, String> fileIoProperties = new LinkedHashMap<>();
+    fileIoProperties.put("s3.region", "us-east-1");
+    upsertStorageAuthorities(
+        accountId,
+        now,
+        FAKE_STORAGE_AUTHORITY_PREFIXES,
+        fileIoProperties,
+        staticAwsCredentials(fileIoProperties, true),
+        "fake");
+  }
+
+  private void upsertStorageAuthorities(
+      ResourceId accountId,
+      long now,
+      List<String> prefixes,
+      Map<String, String> fileIoProperties,
+      AuthCredentials credentials,
+      String displayNamePrefix) {
+    Map<String, StorageAuthority> existingByPrefix =
+        storageAuthorityRepo
+            .list(accountId.getId(), Integer.MAX_VALUE, "", new StringBuilder())
+            .stream()
+            .filter(
+                authority ->
+                    authority.getLocationPrefix() != null
+                        && !authority.getLocationPrefix().isBlank())
+            .collect(
+                java.util.stream.Collectors.toMap(
+                    StorageAuthority::getLocationPrefix,
+                    authority -> authority,
+                    (left, _right) -> left));
+
+    for (String prefix : prefixes) {
+      StorageAuthority current = existingByPrefix.get(prefix);
+      String storageAuthorityId =
+          current == null
+              ? uuidFor(accountId.getId() + "/storage-authority:" + prefix + ":seed")
+              : current.getResourceId().getId();
+      ResourceId authorityResourceId =
+          current == null
+              ? ResourceId.newBuilder()
+                  .setAccountId(accountId.getId())
+                  .setKind(ResourceKind.RK_STORAGE_AUTHORITY)
+                  .setId(storageAuthorityId)
+                  .build()
+              : current.getResourceId();
+      StorageAuthority.Builder authority =
+          (current == null ? StorageAuthority.newBuilder() : current.toBuilder())
+              .setResourceId(authorityResourceId)
+              .setDisplayName(
+                  displayNamePrefix + "-" + prefix.substring("s3://".length()).replace('/', '-'))
+              .setEnabled(true)
+              .setType("s3")
+              .setLocationPrefix(prefix)
+              .setUpdatedAt(Timestamps.fromMillis(now));
+      if (current == null) {
+        authority.setCreatedAt(Timestamps.fromMillis(now));
+      }
+      putIfPresent(fileIoProperties.get("s3.region"), authority::setRegion);
+      putIfPresent(fileIoProperties.get("s3.endpoint"), authority::setEndpoint);
+      putIfPresent(
+          fileIoProperties.get("s3.path-style-access"),
+          value -> authority.setPathStyleAccess(Boolean.parseBoolean(value)));
+      if (current == null) {
+        storageAuthorityRepo.create(authority.build());
+      } else {
+        var meta = storageAuthorityRepo.metaFor(authorityResourceId);
+        if (!storageAuthorityRepo.update(authority.build(), meta.getPointerVersion())) {
+          throw new IllegalStateException(
+              "failed to update fixture storage authority for " + prefix);
+        }
+      }
+      StorageAuthorityServiceImpl.storeCredentials(
+          secretsManager, accountId.getId(), storageAuthorityId, credentials);
+    }
+  }
+
+  private static AuthCredentials staticAwsCredentials(
+      Map<String, String> fileIoProperties, boolean allowDefaults) {
+    String accessKeyId = fileIoProperties.get("s3.access-key-id");
+    String secretAccessKey = fileIoProperties.get("s3.secret-access-key");
+    if ((accessKeyId == null
+            || accessKeyId.isBlank()
+            || secretAccessKey == null
+            || secretAccessKey.isBlank())
+        && !allowDefaults) {
+      return null;
+    }
+    String resolvedAccessKeyId =
+        accessKeyId == null || accessKeyId.isBlank() ? "test" : accessKeyId;
+    String resolvedSecretAccessKey =
+        secretAccessKey == null || secretAccessKey.isBlank() ? "test" : secretAccessKey;
+    String sessionToken = fileIoProperties.get("s3.session-token");
+    return AuthCredentials.newBuilder()
+        .setAws(
+            AuthCredentials.AwsCredentials.newBuilder()
+                .setAccessKeyId(resolvedAccessKeyId)
+                .setSecretAccessKey(resolvedSecretAccessKey)
+                .setSessionToken(
+                    sessionToken == null || sessionToken.isBlank() ? "" : sessionToken))
+        .build();
+  }
+
+  private static void putIfPresent(String value, java.util.function.Consumer<String> setter) {
+    if (value != null && !value.isBlank()) {
+      setter.accept(value);
     }
   }
 

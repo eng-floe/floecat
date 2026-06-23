@@ -40,8 +40,9 @@ import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.storage.StorageCredentialAuthority;
 import ai.floedb.floecat.gateway.iceberg.rest.services.storage.StorageLocationResolver;
-import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
+import ai.floedb.floecat.storage.rpc.StorageCredentialUsage;
+import ai.floedb.floecat.storage.rpc.VendStorageCredentialsRequest;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.StatusRuntimeException;
@@ -237,8 +238,7 @@ public class TableGatewaySupport {
     if (!usesVendedCredentials(accessDelegationMode)) {
       return null;
     }
-    List<StorageCredentialDto> credentials =
-        storageCredentialAuthority.resolveForTable(table, true);
+    List<StorageCredentialDto> credentials = storageCredentialAuthority.resolveForTable(table);
     if (credentials == null || credentials.isEmpty()) {
       throw new IllegalArgumentException(
           "Credential vending was requested but no credentials are available");
@@ -311,7 +311,7 @@ public class TableGatewaySupport {
             : (table != null
                     && hasPersistedTableId(table)
                     && StorageLocationResolver.resolveLocationPrefix(location) == null)
-                ? storageCredentialAuthority.resolveServerSideFileIoConfig(table, false)
+                ? storageCredentialAuthority.resolveServerSideFileIoConfig(table)
                 : Map.of();
     if (hasResolvedAuthority(authorityResponse)) {
       return authorityProps.isEmpty() ? Map.of() : Map.copyOf(authorityProps);
@@ -344,13 +344,12 @@ public class TableGatewaySupport {
     }
     String resolvedLocation = StorageLocationResolver.resolveLocationPrefix(location);
     if (resolvedLocation != null) {
-      return grpcClient.resolveStorageAuthority(
-          ResolveStorageAuthorityRequest.newBuilder()
+      return grpcClient.vendStorageCredentials(
+          VendStorageCredentialsRequest.newBuilder()
+              .setAccountId(table.getResourceId().getAccountId())
               .setTableId(table.getResourceId())
               .setLocationPrefix(resolvedLocation)
-              .setIncludeCredentials(true)
-              .setRequired(false)
-              .setServerSide(true)
+              .setUsage(StorageCredentialUsage.SCU_SERVER)
               .build());
     }
     return null;

@@ -17,7 +17,7 @@ fully-qualified name parsing (`FQNameParserUtil`) and CSV-like argument parsing 
   current account context and use injected blocking stubs annotated with `@GrpcClient("floecat")`.
 - **`CliCommandExecutor`** – Standalone, embeddable command dispatcher. No Quarkus, no JLine; takes
   gRPC stubs and a `PrintStream`, tokenizes input, and routes to the appropriate `*CliSupport`
-  handler. Thread-safe and reusable across calls. See [Embedding](#embedding).
+  handler. Thread-safe and reusable across calls. See the Embedding section below.
 - **Utility parsers** – `FQNameParserUtil` splits catalog.namespace.table strings into `NameRef`s;
   `CsvListParserUtil` converts `k=v` style arguments into Java maps/lists.
 - **Display helpers** – The shell formats responses into human-readable tables, summarising
@@ -108,7 +108,7 @@ detailed human-readable view and also supports `--json`.
 `CliCommandExecutor` can be used directly in any JVM application without the Quarkus shell. It has
 no dependency on JLine, Picocli, or Quarkus runtime — only the gRPC stubs from `floecat-proto`.
 
-```java
+```text
 ManagedChannel channel = ManagedChannelBuilder
     .forAddress("localhost", 9100)
     .usePlaintext()
@@ -147,6 +147,20 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
     --props iceberg.source=glue
   ```
 
+- **Creating a connector to an upstream Glue Iceberg table via assume role**
+
+  ```
+  connector create "call_center" ICEBERG
+    "https://glue.us-east-1.amazonaws.com/iceberg/"
+    tpcds_iceberg as --dest-ns iceberg --dest-table call_center
+    --auth-scheme aws-sigv4
+    --cred-type aws-assume-role
+    --cred role_arn=arn:aws:iam::123456789012:role/floecat-prod-s3-readonly
+    --cred aws.region=us-east-1
+    --props iceberg.source=glue
+    --props s3.region=us-east-1
+  ```
+
 - **Configuring connector reconcile policy**
 
   ```
@@ -175,6 +189,9 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
     --cred access_key_id=test \
     --cred secret_access_key=test
   ```
+
+  See the storage authorities guide below in Cross-References for dedicated
+  storage-authority examples, including cross-account assume-role vending.
 
 - **Managing snapshot constraints**
 
@@ -213,5 +230,5 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
 
 ## Cross-References
 
-- RPC contract details: [`docs/proto.md`](proto.md)
-- Service behavior enforced by catalog/table/query implementations: [`docs/service.md`](service.md)
+- [`docs/proto.md`](proto.md)
+- [`docs/service.md`](service.md)

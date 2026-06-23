@@ -99,6 +99,9 @@ class JavaConnectorCaptureEngineTest {
             FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             false,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
             Optional.empty());
 
     assertThat(engine.supports(missingPlannedFiles)).isFalse();
@@ -126,6 +129,9 @@ class JavaConnectorCaptureEngineTest {
             FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             false,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
             Optional.empty());
 
     assertThat(engine.capture(request)).isEmpty();
@@ -154,8 +160,22 @@ class JavaConnectorCaptureEngineTest {
             java.util.Map.of(),
             new ConnectorConfig.Auth("none", java.util.Map.of(), java.util.Map.of()));
     when(storageResolver.resolveWithAuthorization(
-            eq(Optional.of("worker-token")), eq(SOURCE_CONNECTOR), any()))
+            eq(Optional.of("worker-token")),
+            eq(Optional.of("job-1")),
+            eq(Optional.of("lease-1")),
+            eq(Optional.empty()),
+            eq(SOURCE_CONNECTOR),
+            any()))
         .thenReturn(resolvedConfig);
+    when(storageResolver.resolveManagedWithAuthorization(
+            eq(Optional.of("worker-token")),
+            eq(Optional.of("job-1")),
+            eq(Optional.of("lease-1")),
+            eq(Optional.empty()),
+            eq(SOURCE_CONNECTOR),
+            any()))
+        .thenReturn(
+            new ServerSideStorageConfigResolver.ResolvedConnectorConfig(resolvedConfig, () -> {}));
     when(connector.capturePlannedFileGroup(
             any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
         .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(), List.of()));
@@ -176,11 +196,20 @@ class JavaConnectorCaptureEngineTest {
             FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.COLUMN),
             false,
-            Optional.of("worker-token"));
+            Optional.empty(),
+            Optional.of("worker-token"),
+            Optional.of("job-1"),
+            Optional.of("lease-1"));
 
     assertThat(engine.capture(request)).isPresent();
     verify(storageResolver)
-        .resolveWithAuthorization(eq(Optional.of("worker-token")), eq(SOURCE_CONNECTOR), any());
+        .resolveManagedWithAuthorization(
+            eq(Optional.of("worker-token")),
+            eq(Optional.of("job-1")),
+            eq(Optional.of("lease-1")),
+            eq(Optional.empty()),
+            eq(SOURCE_CONNECTOR),
+            any());
   }
 
   @Test
@@ -205,6 +234,9 @@ class JavaConnectorCaptureEngineTest {
             FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             false,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
             Optional.empty());
 
     S3Exception expiredToken =
@@ -301,6 +333,9 @@ class JavaConnectorCaptureEngineTest {
                 FloecatConnector.StatsTargetKind.COLUMN,
                 FloecatConnector.StatsTargetKind.FILE),
             false,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
             Optional.empty());
 
     var result = engine.capture(request);
@@ -367,6 +402,9 @@ class JavaConnectorCaptureEngineTest {
             FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             false,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
             Optional.empty());
 
     var result = engine.capture(request);
@@ -422,6 +460,9 @@ class JavaConnectorCaptureEngineTest {
             FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.COLUMN),
             false,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
             Optional.empty());
 
     var result = engine.capture(request);
@@ -534,6 +575,9 @@ class JavaConnectorCaptureEngineTest {
             FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(FloecatConnector.StatsTargetKind.FILE),
             true,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
             Optional.empty());
 
     var result = engine.capture(request);
@@ -707,6 +751,9 @@ class JavaConnectorCaptureEngineTest {
                 FloecatConnector.StatsTargetKind.COLUMN,
                 FloecatConnector.StatsTargetKind.FILE),
             false,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
             Optional.empty());
 
     var result = engine.capture(request);

@@ -98,9 +98,9 @@ import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import ai.floedb.floecat.storage.rpc.ResolveSnapshotCompatStorageRequest;
 import ai.floedb.floecat.storage.rpc.ResolveSnapshotCompatStorageResponse;
-import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.StorageAuthoritiesGrpc;
+import ai.floedb.floecat.storage.rpc.VendStorageCredentialsRequest;
 import ai.floedb.floecat.transaction.rpc.AbortTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.AbortTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionRequest;
@@ -312,9 +312,9 @@ public class GrpcServiceFacade {
     return directoryStub().resolveView(request);
   }
 
-  public ResolveStorageAuthorityResponse resolveStorageAuthority(
-      ResolveStorageAuthorityRequest request) {
-    return storageAuthorityStub().resolveStorageAuthority(request);
+  public ResolveStorageAuthorityResponse vendStorageCredentials(
+      VendStorageCredentialsRequest request) {
+    return storageAuthorityStub().vendStorageCredentials(request);
   }
 
   public ResolveSnapshotCompatStorageResponse resolveSnapshotCompatStorage(

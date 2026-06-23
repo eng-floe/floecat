@@ -95,6 +95,7 @@ class RemoteFileGroupReconcileExecutorTest {
             connector,
             "floedb.obs",
             "otel_spans_raw",
+            "s3://bucket",
             tableId,
             41L,
             "plan-1",
@@ -378,6 +379,7 @@ class RemoteFileGroupReconcileExecutorTest {
         connector(),
         "floedb.obs",
         "otel_spans_raw",
+        "s3://bucket",
         ResourceId.newBuilder()
             .setAccountId("acct")
             .setKind(ResourceKind.RK_TABLE)
@@ -398,6 +400,7 @@ class RemoteFileGroupReconcileExecutorTest {
         connector(),
         "floedb.obs",
         "otel_spans_raw",
+        "s3://bucket",
         ResourceId.newBuilder()
             .setAccountId("acct")
             .setKind(ResourceKind.RK_TABLE)

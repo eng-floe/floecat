@@ -22,9 +22,9 @@ import java.util.List;
 import java.util.Map;
 
 public interface StorageCredentialAuthority {
-  List<StorageCredentialDto> resolveForTable(Table table, boolean required);
+  List<StorageCredentialDto> resolveForTable(Table table);
 
   Map<String, String> clientSafeConfig(Table table);
 
-  Map<String, String> resolveServerSideFileIoConfig(Table table, boolean required);
+  Map<String, String> resolveServerSideFileIoConfig(Table table);
 }

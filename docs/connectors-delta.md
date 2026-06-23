@@ -54,6 +54,9 @@ Databricks SQL execution, and custom file readers for S3.
 - **Authentication** – Uses an OAuth2 bearer token supplied in the resolved connector config or
   the Databricks CLI cache. Token exchange and secret handling happen earlier in the service layer,
   except for CLI cache refresh which is handled in the connector.
+  For `delta.source=glue` and `delta.source=filesystem`, AWS temporary credentials from
+  `aws-assume-role` or `aws-web-identity` are preserved as a shared refreshable provider so native
+  Glue catalog access and S3 reads use the same AWS identity.
 - **HTTP & SQL clients** – `UcHttp` centralises base URI, connect/read timeouts, and error mapping.
   `SqlStmtClient` optionally executes SQL statements (for example to inspect statistics tables) via
   Databricks SQL warehouses.
@@ -118,7 +121,7 @@ Important connector properties:
   upstream. For `delta.source=glue`, use resolved AWS credentials or non-secret
   `auth.properties` profile settings and set `auth.scheme=aws-sigv4` or `none`.
 
-Auth credential types (`--cred-type`) are documented in [`docs/cli-reference.md`](cli-reference.md).
+Auth credential types (`--cred-type`) are documented in the CLI reference listed below.
 For `delta.source=unity`, the relevant types are `bearer`, `client` (SP), `cli`,
 `token-exchange` (WIF), `token-exchange-entra`, and `token-exchange-gcp`. Entra/GCP exchanges only
 work if the Databricks workspace is configured to trust those IdPs. Use the Databricks workspace
@@ -126,8 +129,11 @@ host for `uri` (for example `https://dbc-<workspace-id>.cloud.databricks.com`); 
 Unity Catalog, token exchange endpoints typically use `https://<workspace-host>/oidc/v1/token`.
 
 For `delta.source=glue` and `delta.source=filesystem`, this Databricks OIDC token endpoint pattern
-does not apply. Shared outbound token endpoint validation behavior is documented in
-[`docs/operations.md`](operations.md).
+does not apply. Shared outbound token endpoint validation behavior is documented in the operations
+guide listed below.
+
+For `delta.source=glue`, the relevant credential types are `aws`, `cli` (provider=aws),
+`aws-web-identity`, and `aws-assume-role`.
 
 Extensibility points:
 
@@ -140,7 +146,7 @@ Extensibility points:
 
 - **Connector Spec** – A Unity Catalog connector might specify:
 
-  ```json
+  ```text
   {
     "display_name":"delta-unity",
     "kind":"CK_DELTA",
@@ -164,7 +170,7 @@ Extensibility points:
     the workspace OIDC URL:
     `https://<workspace-host>/oidc/v1/token`.
 
-    ```bash
+    ```
     connector create "Unity Delta SP" DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
       "cusack.ext_tpcds" tpcds --dest-ns federated --source-table store_sales \
       --auth-scheme oauth2 \
@@ -180,7 +186,7 @@ Extensibility points:
     URL:
     `https://<workspace-host>/oidc/v1/token`.
 
-    ```bash
+    ```
     connector create "Unity Delta WIF" DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
       "cusack.ext_tpcds" tpcds --dest-ns federated --source-table store_sales \
       --auth-scheme oauth2 \
@@ -195,7 +201,7 @@ Extensibility points:
 
   - **CLI cache** – Connector reads the Databricks CLI cache directly:
 
-    ```bash
+    ```
     connector create "Unity Delta CLI" DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
       "cusack.ext_tpcds" tpcds --dest-ns federated --source-table store_sales \
       --auth-scheme oauth2 \
@@ -205,7 +211,7 @@ Extensibility points:
 
   - **Bearer token (PAT)** – Using the `connector` CLI with a resolved token or Databricks personal access token:
 
-  ```bash
+  ```
   connector create "Unity Delta Token" DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
     "cusack.ext_tpcds" tpcds --dest-ns federated --source-table store_sales \
     --auth-scheme oauth2 --cred-type bearer --cred token=<access-token>
@@ -217,6 +223,10 @@ Extensibility points:
 
 ## Cross-References
 
-- SPI details: [`docs/connectors-spi.md`](connectors-spi.md)
-- Iceberg connector for contrast: [`docs/connectors-iceberg.md`](connectors-iceberg.md)
-- Service & reconciler integration: [`docs/service.md`](service.md), [`docs/reconciler.md`](reconciler.md)
+- [`docs/cli-reference.md`](cli-reference.md)
+- [`docs/operations.md`](operations.md)
+- [`docs/connectors-spi.md`](connectors-spi.md)
+- [`docs/connectors-iceberg.md`](connectors-iceberg.md)
+- [`docs/service.md`](service.md)
+- [`docs/reconciler.md`](reconciler.md)
+- [Storage authorities guide](storage-authorities.md)
