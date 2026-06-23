@@ -40,6 +40,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -81,6 +82,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
+  @Inject TopologyGraph topology;
   @Inject CatalogOverlay overlay;
   @Inject EngineHintSchemaCleaner hintCleaner;
 
@@ -154,10 +156,9 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   final boolean repoExhausted = repoNext.isBlank();
                   if (repoExhausted) {
                     var sysNodes =
-                        overlay.listRelationsInNamespace(catalogId, namespaceId).stream()
+                        overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
                             .filter(ViewNode.class::isInstance)
                             .map(ViewNode.class::cast)
-                            .filter(this::isSystemViewNode)
                             .toList();
                     sysCount = sysNodes.size();
 
@@ -185,10 +186,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   } else {
                     sysCount =
                         (int)
-                            overlay.listRelationsInNamespace(catalogId, namespaceId).stream()
+                            overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
                                 .filter(ViewNode.class::isInstance)
-                                .map(ViewNode.class::cast)
-                                .filter(this::isSystemViewNode)
                                 .count();
                   }
 
@@ -337,6 +336,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                     }
                     viewRepo.create(view);
                     metadataGraph.invalidate(viewResourceId);
+                    topology.evictRelationRefs(view.getNamespaceId());
                     var meta = viewRepo.metaForSafe(viewResourceId);
                     return CreateViewResponse.newBuilder().setView(view).setMeta(meta).build();
                   }
@@ -365,6 +365,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                                             fingerprint, canonicalFingerprint(existingSpec))) {
                                           metadataGraph.invalidate(
                                               existingOpt.get().getResourceId());
+                                          topology.evictRelationRefs(
+                                              existingOpt.get().getNamespaceId());
                                           return new IdempotencyGuard.CreateResult<>(
                                               existingOpt.get(), existingOpt.get().getResourceId());
                                         }
@@ -378,6 +380,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                                               "namespace_id", spec.getNamespaceId().getId()));
                                     }
                                     metadataGraph.invalidate(viewResourceId);
+                                    topology.evictRelationRefs(view.getNamespaceId());
                                     return new IdempotencyGuard.CreateResult<>(
                                         view, viewResourceId);
                                   },
@@ -490,6 +493,10 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                             "expected", Long.toString(meta.getPointerVersion()),
                             "actual", Long.toString(nowMeta.getPointerVersion())));
                   }
+                  topology.evict(viewId);
+                  if (!current.getNamespaceId().getId().equals(desired.getNamespaceId().getId())) {
+                    topology.evictRelationRefs(desired.getNamespaceId());
+                  }
                   metadataGraph.invalidate(viewId);
 
                   var outMeta = viewRepo.metaForSafe(viewId);
@@ -529,6 +536,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
+                    topology.evict(viewId);
                     metadataGraph.invalidate(viewId);
                     return DeleteViewResponse.newBuilder().setMeta(safe).build();
                   }
@@ -543,6 +551,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           "view",
                           Map.of("id", viewId.getId()));
 
+                  topology.evict(viewId);
                   metadataGraph.invalidate(viewId);
                   return DeleteViewResponse.newBuilder().setMeta(out).build();
                 }),

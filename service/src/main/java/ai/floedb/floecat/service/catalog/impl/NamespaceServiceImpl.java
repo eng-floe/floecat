@@ -32,9 +32,9 @@ import ai.floedb.floecat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateNamespaceResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -75,6 +75,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
+  @Inject TopologyGraph topology;
   @Inject MarkerStore markerStore;
 
   // Overlay gives access to system namespaces (and other system objects)
@@ -90,9 +91,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     if (catalogId == null) {
       return List.of();
     }
-    return overlay.listNamespaces(catalogId).stream()
-        .filter(ns -> ns != null && ns.origin() == GraphNodeOrigin.SYSTEM)
-        .toList();
+    return overlay.listSystemNamespaces(catalogId);
   }
 
   private static final String PATH_DELIM = "\u001F";
@@ -702,6 +701,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                               existing.getCatalogId(),
                                               existing.getParentsList());
                                           metadataGraph.invalidate(existing.getResourceId());
+                                          topology.evictNamespaceRefs(existing.getCatalogId());
                                           return new IdempotencyGuard.CreateResult<>(
                                               existing, existing.getResourceId());
                                         }
@@ -720,6 +720,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                     bumpParentNamespaceMarker(
                                         accountId, spec.getCatalogId(), parents);
                                     metadataGraph.invalidate(namespaceId);
+                                    topology.evictNamespaceRefs(spec.getCatalogId());
                                     return new IdempotencyGuard.CreateResult<>(built, namespaceId);
                                   },
                                   (ns) -> namespaceRepo.metaForSafe(ns.getResourceId()),
@@ -781,6 +782,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         markerStore.bumpCatalogMarker(catalogId);
         bumpParentNamespaceMarker(accountId, catalogId, parentList);
         metadataGraph.invalidate(rid);
+        topology.evictNamespaceRefs(catalogId);
       } catch (BaseResourceRepository.NameConflictException nce) {
         if (namespaceRepo.getByPath(accountId, catalogId.getId(), chain).isPresent()) {
           continue;
@@ -883,6 +885,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                             "expected", Long.toString(meta.getPointerVersion()),
                             "actual", Long.toString(nowMeta.getPointerVersion())));
                   }
+                  topology.evictNamespaceRefs(current.getCatalogId());
+                  topology.evictNamespaceRefs(desired.getCatalogId());
                   metadataGraph.invalidate(nsId);
 
                   var outMeta = namespaceRepo.metaForSafe(nsId);
@@ -935,6 +939,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
+                    topology.evictRelationRefs(namespaceId);
                     metadataGraph.invalidate(namespaceId);
                     return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
                   }
@@ -1006,6 +1011,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           "namespace",
                           Map.of("id", namespaceId.getId()));
 
+                  topology.evictRelationRefs(namespaceId);
+                  topology.evictNamespaceRefs(catalogId);
                   metadataGraph.invalidate(namespaceId);
                   markerStore.bumpCatalogMarker(catalogId);
                   bumpParentNamespaceMarker(

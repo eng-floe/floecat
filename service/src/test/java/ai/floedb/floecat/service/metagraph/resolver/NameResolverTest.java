@@ -30,6 +30,9 @@ import ai.floedb.floecat.service.testsupport.UserRepositoryTestSupport.FakeCatal
 import ai.floedb.floecat.service.testsupport.UserRepositoryTestSupport.FakeNamespaceRepository;
 import ai.floedb.floecat.service.testsupport.UserRepositoryTestSupport.FakeTableRepository;
 import ai.floedb.floecat.service.testsupport.UserRepositoryTestSupport.FakeViewRepository;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -111,6 +114,76 @@ class NameResolverTest {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("orders_v").build();
     assertThat(resolver.resolveViewId("corr", "account", ref))
         .hasValueSatisfying(r -> assertThat(r.getId()).isEqualTo("view"));
+  }
+
+  @Test
+  void listTableIdsCollectsAcrossNamespaces() {
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
+
+    ResourceId ns2Id = rid("account", "ns2", ResourceKind.RK_NAMESPACE);
+    namespaceRepository.put(
+        Namespace.newBuilder()
+            .setResourceId(ns2Id)
+            .setCatalogId(catalogId)
+            .setDisplayName("ns2")
+            .build());
+
+    ResourceId tbl2Id = rid("account", "tbl2", ResourceKind.RK_TABLE);
+    tableRepository.put(
+        Table.newBuilder()
+            .setResourceId(tbl2Id)
+            .setCatalogId(catalogId)
+            .setNamespaceId(ns2Id)
+            .setDisplayName("products")
+            .setSchemaJson("{}")
+            .build());
+
+    List<ResourceId> ids = resolver.listTableIds("account", "cat");
+    Set<String> idSet = ids.stream().map(ResourceId::getId).collect(Collectors.toSet());
+    assertThat(idSet).containsExactlyInAnyOrder("tbl", "tbl2");
+  }
+
+  @Test
+  void listViewIdsCollectsAcrossNamespaces() {
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
+
+    ResourceId ns2Id = rid("account", "ns2", ResourceKind.RK_NAMESPACE);
+    namespaceRepository.put(
+        Namespace.newBuilder()
+            .setResourceId(ns2Id)
+            .setCatalogId(catalogId)
+            .setDisplayName("ns2")
+            .build());
+
+    ResourceId view2Id = rid("account", "view2", ResourceKind.RK_VIEW);
+    viewRepository.put(
+        View.newBuilder()
+            .setResourceId(view2Id)
+            .setCatalogId(catalogId)
+            .setNamespaceId(ns2Id)
+            .setDisplayName("orders_v2")
+            .addSqlDefinitions(
+                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                    .setSql("select 2")
+                    .build())
+            .build());
+
+    List<ResourceId> ids = resolver.listViewIds("account", "cat");
+    Set<String> idSet = ids.stream().map(ResourceId::getId).collect(Collectors.toSet());
+    assertThat(idSet).containsExactlyInAnyOrder("view", "view2");
+  }
+
+  @Test
+  void listTableIdsEmptyForUnknownCatalog() {
+    assertThat(resolver.listTableIds("account", "no-such-catalog")).isEmpty();
+  }
+
+  @Test
+  void listTableIdsSingleNamespaceSkipsParallelPath() {
+    // Verifies the single-namespace fast path returns the same result.
+    List<ResourceId> ids = resolver.listTableIds("account", "cat");
+    assertThat(ids).hasSize(1);
+    assertThat(ids.get(0).getId()).isEqualTo("tbl");
   }
 
   @Test

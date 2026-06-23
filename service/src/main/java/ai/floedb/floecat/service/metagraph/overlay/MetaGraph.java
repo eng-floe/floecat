@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.metagraph.overlay;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
@@ -32,10 +33,13 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.TopologyGraph;
+import ai.floedb.floecat.scanner.spi.TopologyNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.metagraph.cache.CatalogTopologyCache;
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.systemcatalog.graph.SystemCatalogTranslator;
@@ -55,31 +59,26 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 @ApplicationScoped
-public final class MetaGraph implements CatalogOverlay {
+public final class MetaGraph implements CatalogOverlay, TopologyGraph {
 
   private final UserGraph userGraph;
   private final LogicalSchemaMapper schemaMapper;
   private final SystemGraph systemGraph;
   private final EngineContextProvider engine;
+  private final CatalogTopologyCache topologyCache;
 
-  /**
-   * Constructs a MetaGraph that merges system and user graph overlays.
-   *
-   * @param userGraph the user-defined graph overlay for mutable catalog objects
-   * @param schemaMapper mapper for converting between logical and physical schemas
-   * @param systemGraph the system graph overlay for immutable built-in catalog objects
-   * @param engine provider for current engine context (kind and version)
-   */
   @Inject
   public MetaGraph(
       UserGraph userGraph,
       LogicalSchemaMapper schemaMapper,
       SystemGraph systemGraph,
-      EngineContextProvider engine) {
+      EngineContextProvider engine,
+      CatalogTopologyCache topologyCache) {
     this.userGraph = userGraph;
     this.schemaMapper = schemaMapper;
     this.systemGraph = systemGraph;
     this.engine = engine;
+    this.topologyCache = topologyCache;
   }
 
   private EngineContext engineContext() {
@@ -118,7 +117,8 @@ public final class MetaGraph implements CatalogOverlay {
   public List<RelationNode> listRelations(ResourceId catalogId) {
     EngineContext ctx = engineContext();
     return mergeLists(
-        () -> systemGraph.listRelations(catalogId, ctx), () -> userGraph.listRelations(catalogId));
+        () -> systemGraph.listRelations(catalogId, ctx),
+        () -> listUserRelationsFromTopology(catalogId));
   }
 
   /**
@@ -136,7 +136,7 @@ public final class MetaGraph implements CatalogOverlay {
     EngineContext ctx = engineContext();
     return mergeLists(
         () -> systemGraph.listRelationsInNamespace(catalogId, namespaceId, ctx),
-        () -> userGraph.listRelationsInNamespace(catalogId, namespaceId));
+        () -> listUserRelationsFromTopology(catalogId, namespaceId));
   }
 
   /**
@@ -176,7 +176,24 @@ public final class MetaGraph implements CatalogOverlay {
     EngineContext ctx = engineContext();
     return mergeLists(
         () -> systemGraph.listNamespaces(catalogId, ctx),
-        () -> userGraph.listNamespaces(catalogId));
+        () -> listUserNamespacesFromTopology(catalogId));
+  }
+
+  @Override
+  public List<RelationNode> listSystemRelationsInNamespace(
+      ResourceId catalogId, ResourceId namespaceId) {
+    EngineContext ctx = engineContext();
+    return systemGraph.listRelationsInNamespace(catalogId, namespaceId, ctx).stream()
+        .map(RelationNode.class::cast)
+        .toList();
+  }
+
+  @Override
+  public List<NamespaceNode> listSystemNamespaces(ResourceId catalogId) {
+    EngineContext ctx = engineContext();
+    return systemGraph.listNamespaces(catalogId, ctx).stream()
+        .map(NamespaceNode.class::cast)
+        .toList();
   }
 
   /**
@@ -586,6 +603,37 @@ public final class MetaGraph implements CatalogOverlay {
     return result;
   }
 
+  private List<NamespaceNode> listUserNamespacesFromTopology(ResourceId catalogId) {
+    return topologyCache.listNamespaceRefs(catalogId).stream()
+        .map(TopologyGraph.NamespaceRef::id)
+        .map(userGraph::namespace)
+        .flatMap(Optional::stream)
+        .toList();
+  }
+
+  private List<RelationNode> listUserRelationsFromTopology(ResourceId catalogId) {
+    List<RelationNode> result = new ArrayList<>();
+    for (TopologyGraph.NamespaceRef namespace : topologyCache.listNamespaceRefs(catalogId)) {
+      result.addAll(listUserRelationsFromTopology(catalogId, namespace.id()));
+    }
+    return result;
+  }
+
+  private List<RelationNode> listUserRelationsFromTopology(
+      ResourceId catalogId, ResourceId namespaceId) {
+    return topologyCache.listRelationRefs(catalogId, namespaceId).stream()
+        .map(this::resolveUserRelation)
+        .flatMap(Optional::stream)
+        .toList();
+  }
+
+  private Optional<RelationNode> resolveUserRelation(TopologyGraph.RelationRef ref) {
+    if (ref.kind() == ResourceKind.RK_VIEW) {
+      return userGraph.view(ref.id()).map(RelationNode.class::cast);
+    }
+    return userGraph.table(ref.id()).map(RelationNode.class::cast);
+  }
+
   /**
    * Resolves a name reference with system-first precedence and ambiguity checking.
    *
@@ -780,5 +828,118 @@ public final class MetaGraph implements CatalogOverlay {
         correlationId,
         GeneratedErrorMessages.MessageKey.QUERY_INPUT_AMBIGUOUS,
         Map.of("name", name.toString()));
+  }
+
+  // ---- Lightweight ref listing and topology-cache invalidation ----
+
+  @Override
+  public boolean supportsLightweightRefs() {
+    return true;
+  }
+
+  @Override
+  public List<TopologyGraph.NamespaceRef> listNamespaceRefs(ResourceId catalogId) {
+    EngineContext ctx = engineContext();
+    List<NamespaceNode> sysNs = systemGraph.listNamespaces(catalogId, ctx);
+    List<TopologyGraph.NamespaceRef> userNs = topologyCache.listNamespaceRefs(catalogId);
+    if (sysNs.isEmpty()) {
+      return userNs;
+    }
+    List<TopologyGraph.NamespaceRef> result = new ArrayList<>(sysNs.size() + userNs.size());
+    for (NamespaceNode ns : sysNs) {
+      result.add(
+          new TopologyGraph.NamespaceRef(
+              ns.id(), ns.displayName(), ns.catalogId(), ns.pathSegments()));
+    }
+    result.addAll(userNs);
+    return result;
+  }
+
+  @Override
+  public List<TopologyGraph.NamespaceRef> listNamespaceRefsByName(
+      ResourceId catalogId, Set<String> names) {
+    if (names == null || names.isEmpty()) {
+      return List.of();
+    }
+    EngineContext ctx = engineContext();
+    List<NamespaceNode> sysNs =
+        systemGraph.listNamespaces(catalogId, ctx).stream()
+            .filter(
+                ns ->
+                    names.contains(
+                        TopologyNames.namespaceName(ns.pathSegments(), ns.displayName())))
+            .toList();
+    List<TopologyGraph.NamespaceRef> userNs =
+        topologyCache.listNamespaceRefsByName(catalogId, names);
+    if (sysNs.isEmpty()) {
+      return userNs;
+    }
+    List<TopologyGraph.NamespaceRef> result = new ArrayList<>(sysNs.size() + userNs.size());
+    for (NamespaceNode ns : sysNs) {
+      result.add(
+          new TopologyGraph.NamespaceRef(
+              ns.id(), ns.displayName(), ns.catalogId(), ns.pathSegments()));
+    }
+    result.addAll(userNs);
+    return result;
+  }
+
+  @Override
+  public List<TopologyGraph.RelationRef> listRelationRefs(
+      ResourceId catalogId, ResourceId namespaceId) {
+    EngineContext ctx = engineContext();
+    List<RelationNode> sysRels = systemGraph.listRelationsInNamespace(catalogId, namespaceId, ctx);
+    List<TopologyGraph.RelationRef> userRels =
+        topologyCache.listRelationRefs(catalogId, namespaceId);
+    if (sysRels.isEmpty()) {
+      return userRels;
+    }
+    List<TopologyGraph.RelationRef> result = new ArrayList<>(sysRels.size() + userRels.size());
+    for (RelationNode rel : sysRels) {
+      ResourceKind kind = rel instanceof ViewNode ? ResourceKind.RK_VIEW : ResourceKind.RK_TABLE;
+      result.add(new TopologyGraph.RelationRef(rel.id(), rel.displayName(), kind));
+    }
+    result.addAll(userRels);
+    return result;
+  }
+
+  @Override
+  public List<TopologyGraph.RelationRef> listRelationRefsByName(
+      ResourceId catalogId, ResourceId namespaceId, Set<String> names) {
+    if (names == null || names.isEmpty()) {
+      return List.of();
+    }
+    EngineContext ctx = engineContext();
+    List<RelationNode> sysRels =
+        systemGraph.listRelationsInNamespace(catalogId, namespaceId, ctx).stream()
+            .filter(r -> names.contains(r.displayName()))
+            .toList();
+    List<TopologyGraph.RelationRef> userRels =
+        topologyCache.listRelationRefsByName(catalogId, namespaceId, names);
+    if (sysRels.isEmpty()) {
+      return userRels;
+    }
+    List<TopologyGraph.RelationRef> result = new ArrayList<>(sysRels.size() + userRels.size());
+    for (RelationNode rel : sysRels) {
+      ResourceKind kind = rel instanceof ViewNode ? ResourceKind.RK_VIEW : ResourceKind.RK_TABLE;
+      result.add(new TopologyGraph.RelationRef(rel.id(), rel.displayName(), kind));
+    }
+    result.addAll(userRels);
+    return result;
+  }
+
+  @Override
+  public void evict(ResourceId resourceId) {
+    topologyCache.evict(resourceId);
+  }
+
+  @Override
+  public void evictRelationRefs(ResourceId namespaceId) {
+    topologyCache.evictRelationRefs(namespaceId);
+  }
+
+  @Override
+  public void evictNamespaceRefs(ResourceId catalogId) {
+    topologyCache.evictNamespaceRefs(catalogId);
   }
 }

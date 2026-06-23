@@ -27,6 +27,7 @@ import ai.floedb.floecat.scanner.spi.ScanOutputFormat;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.scanner.utils.RowStreamToArrowBatchAdapter;
 import ai.floedb.floecat.service.query.system.SystemRowFilter;
 import ai.floedb.floecat.service.query.system.SystemRowProjector;
@@ -52,19 +53,20 @@ public final class ArrowScanPlanner {
       List<SchemaColumn> schemaColumns,
       List<Predicate> predicates,
       List<String> requiredColumns,
-      Expr arrowExpr,
+      SystemScanRequest request,
       BufferAllocator allocator) {
     // Use the projected schema so plan.schema() matches the projected batch stream.
     Schema schema = ArrowBatchSerializer.schemaForColumns(schemaColumns, requiredColumns);
+    Expr arrowExpr = request.predicate();
     Stream<ColumnarBatch> batches;
     if (scanner.supportedFormats().contains(ScanOutputFormat.ARROW_IPC)) {
       batches =
           scanner
-              .scanArrow(ctx, arrowExpr, requiredColumns, allocator)
+              .scanArrow(ctx, request, allocator)
               .map(batch -> ArrowFilterOperator.filter(batch, arrowExpr, allocator))
               .map(batch -> ArrowProjectOperator.project(batch, requiredColumns, allocator));
     } else {
-      Stream<SystemObjectRow> rows = scanner.scan(ctx);
+      Stream<SystemObjectRow> rows = scanner.scan(ctx, request);
       Stream<SystemObjectRow> filtered = SystemRowFilter.filter(rows, schemaColumns, predicates);
       Stream<SystemObjectRow> projected =
           SystemRowProjector.project(filtered, schemaColumns, requiredColumns);

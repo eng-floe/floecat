@@ -62,6 +62,7 @@ public final class SystemRowFilter {
 
     return switch (p.getOp()) {
       case OP_EQ -> value != null && value.toString().equals(p.getValues(0));
+      case OP_IN -> value != null && p.getValuesList().contains(value.toString());
       case OP_IS_NULL -> value == null;
       case OP_IS_NOT_NULL -> value != null;
       default ->
@@ -99,6 +100,7 @@ public final class SystemRowFilter {
 
     return switch (predicate.getOp()) {
       case OP_EQ -> new Expr.Eq(column, new Expr.Literal(firstValue(predicate)));
+      case OP_IN -> inExpr(column, predicate.getValuesList());
       case OP_IS_NULL -> new Expr.IsNull(column);
       case OP_IS_NOT_NULL -> new Expr.Not(new Expr.IsNull(column));
       default ->
@@ -109,5 +111,17 @@ public final class SystemRowFilter {
 
   private static String firstValue(Predicate predicate) {
     return predicate.getValuesCount() > 0 ? predicate.getValues(0) : null;
+  }
+
+  private static Expr inExpr(Expr column, List<String> values) {
+    if (values.isEmpty()) {
+      return new Expr.BooleanLiteral(false);
+    }
+    Expr expr = null;
+    for (String value : values) {
+      Expr eq = new Expr.Eq(column, new Expr.Literal(value));
+      expr = expr == null ? eq : new Expr.Or(expr, eq);
+    }
+    return expr;
   }
 }

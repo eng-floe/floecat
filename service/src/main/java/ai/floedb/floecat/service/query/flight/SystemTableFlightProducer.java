@@ -31,6 +31,7 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
@@ -184,6 +185,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
     List<String> requiredColumns = command.getRequiredColumnsList();
     List<Predicate> predicates = command.getPredicatesList();
     Expr arrowExpr = SystemRowFilter.EXPRESSION_PROVIDER.toExpr(predicates);
+    SystemScanRequest scanRequest = SystemScanRequest.of(arrowExpr, requiredColumns);
     SystemObjectScanContext scanContext =
         new SystemObjectScanContext(
             graph,
@@ -194,7 +196,13 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
             constraintFactory.provider());
 
     return arrowPlanner.plan(
-        scanner, scanContext, scanner.schema(), predicates, requiredColumns, arrowExpr, allocator);
+        scanner,
+        scanContext,
+        scanner.schema(),
+        predicates,
+        requiredColumns,
+        scanRequest,
+        allocator);
   }
 
   @Override
