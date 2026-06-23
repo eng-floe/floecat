@@ -158,6 +158,53 @@ class IcebergConnectorIssuesTest {
   }
 
   @Test
+  void describePersistsStorageLocationProperty() {
+    Schema schema =
+        new Schema(0, List.of(Types.NestedField.optional(1, "id", Types.IntegerType.get())));
+    PartitionSpec spec = PartitionSpec.unpartitioned();
+    Map<String, String> tableProperties = new HashMap<>();
+    tableProperties.put("write.parquet.compression-codec", "zstd");
+
+    Table table =
+        (Table)
+            Proxy.newProxyInstance(
+                Table.class.getClassLoader(),
+                new Class<?>[] {Table.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schema" -> schema;
+                      case "spec" -> spec;
+                      case "location" -> "s3://warehouse/tpch_1.db/nation";
+                      case "properties" -> tableProperties;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+
+    IcebergConnector connector =
+        new IcebergConnector("test", null, null, null, false, 0.0d, 0L, null) {
+          @Override
+          public List<String> listNamespaces() {
+            return List.of();
+          }
+
+          @Override
+          public List<String> listTables(String namespaceFq) {
+            return List.of();
+          }
+
+          @Override
+          protected Table loadTableFromSource(String namespaceFq, String tableName) {
+            return table;
+          }
+        };
+
+    FloecatConnector.TableDescriptor descriptor = connector.describe("tpch_1", "nation");
+
+    assertEquals(
+        "s3://warehouse/tpch_1.db/nation", descriptor.properties().get("storage_location"));
+    assertEquals("zstd", descriptor.properties().get("write.parquet.compression-codec"));
+  }
+
+  @Test
   void skipsMalformedBoundsFromTpcdsSfoneFixture() {
     TestS3Fixtures.seedTpcdsSfoneFixtureOnce();
 
