@@ -20,6 +20,8 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.RecordComponent;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -31,6 +33,7 @@ import java.util.UUID;
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.BitVector;
 import org.apache.arrow.vector.DateDayVector;
+import org.apache.arrow.vector.DecimalVector;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.FixedSizeBinaryVector;
 import org.apache.arrow.vector.Float8Vector;
@@ -183,6 +186,24 @@ public final class ArrowRecordWriters {
                 v.setNull(i);
               } else {
                 v.setSafe(i, val);
+              }
+            };
+      } else if (jt == BigDecimal.class) {
+        ArrowDecimal decimal = comp.getAnnotation(ArrowDecimal.class);
+        if (decimal == null) {
+          throw new IllegalArgumentException(
+              "BigDecimal component " + name + " must be annotated with @ArrowDecimal");
+        }
+        int scale = decimal.scale();
+        field = field(name, ArrowDecimalTypes.decimalType(decimal.precision(), scale));
+        writer =
+            (root, i, row) -> {
+              DecimalVector v = (DecimalVector) root.getVector(name);
+              BigDecimal val = get(getter, row, BigDecimal.class);
+              if (val == null) {
+                v.setNull(i);
+              } else {
+                v.setSafe(i, val.setScale(scale, RoundingMode.HALF_UP));
               }
             };
       } else if (jt == Instant.class) {
