@@ -19,6 +19,8 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TableKey;
@@ -28,8 +30,10 @@ import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 @ApplicationScoped
 public class TableRepository {
@@ -88,6 +92,54 @@ public class TableRepository {
 
   public int count(String accountId, String catalogId, String namespaceId) {
     return repo.countByPrefix(Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId));
+  }
+
+  /**
+   * Scans the by-name pointer prefix for a namespace and returns lightweight refs without loading
+   * blobs from S3. Falls back to key/blobUri parsing for legacy pointers that predate
+   * Pointer.resource_id / display_name.
+   */
+  public List<RelationRef> listRefs(String accountId, String catalogId, String namespaceId) {
+    String prefix = Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId);
+    var pointers = repo.listRefsByPrefix(prefix);
+    var refs = new ArrayList<RelationRef>(pointers.size());
+    for (var p : pointers) {
+      toRelationRef(accountId, ResourceKind.RK_TABLE, p).ifPresent(refs::add);
+    }
+    return refs;
+  }
+
+  /** Reads exact by-name table pointers and returns refs without fetching blobs from S3. */
+  public List<RelationRef> listRefsByName(
+      String accountId, String catalogId, String namespaceId, Set<String> names) {
+    if (names == null || names.isEmpty()) {
+      return List.of();
+    }
+    List<RelationRef> refs = new ArrayList<>(names.size());
+    for (String name : names) {
+      if (name == null || name.isBlank()) {
+        continue;
+      }
+      repo.refByPointer(Keys.tablePointerByName(accountId, catalogId, namespaceId, name))
+          .flatMap(p -> toRelationRef(accountId, ResourceKind.RK_TABLE, p))
+          .ifPresent(refs::add);
+    }
+    return refs;
+  }
+
+  static Optional<RelationRef> toRelationRef(
+      String accountId, ResourceKind kind, ai.floedb.floecat.common.rpc.Pointer p) {
+    String name =
+        !p.getDisplayName().isEmpty() ? p.getDisplayName() : Keys.extractLastSegment(p.getKey());
+    ResourceId rid = p.getResourceId();
+    if (rid.getId().isEmpty()) {
+      String rawId = Keys.extractResourceIdFromBlobUri(p.getBlobUri());
+      if (rawId.isEmpty()) {
+        return Optional.empty();
+      }
+      rid = ResourceId.newBuilder().setAccountId(accountId).setId(rawId).setKind(kind).build();
+    }
+    return Optional.of(new RelationRef(rid, name, kind));
   }
 
   public MutationMeta metaFor(ResourceId tableResourceId) {

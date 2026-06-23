@@ -108,6 +108,17 @@ public final class UserRepositoryTestSupport {
     }
 
     @Override
+    public List<ResourceId> listIds(String accountId, String catalogId) {
+      return entries.values().stream()
+          .filter(
+              ns ->
+                  accountId.equals(ns.getResourceId().getAccountId())
+                      && catalogId.equals(ns.getCatalogId().getId()))
+          .map(Namespace::getResourceId)
+          .toList();
+    }
+
+    @Override
     public MutationMeta metaForSafe(ResourceId id) {
       throw new StorageNotFoundException("unused");
     }

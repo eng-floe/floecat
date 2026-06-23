@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.model;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.PointerReferenceKind;
+import ai.floedb.floecat.common.rpc.ResourceId;
 
 public final class PointerReferences {
   private PointerReferences() {}
@@ -49,6 +50,18 @@ public final class PointerReferences {
   public static Pointer blobPointer(String key, String blobUri, long version) {
     return asBlobPointer(
             Pointer.newBuilder().setKey(blankToEmpty(key)).setVersion(version), blobUri)
+        .build();
+  }
+
+  public static Pointer blobPointer(
+      String key, String blobUri, long version, ResourceId resourceId, String displayName) {
+    return asBlobPointer(
+            Pointer.newBuilder()
+                .setKey(blankToEmpty(key))
+                .setVersion(version)
+                .setResourceId(resourceId)
+                .setDisplayName(blankToEmpty(displayName)),
+            blobUri)
         .build();
   }
 

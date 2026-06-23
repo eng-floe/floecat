@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.model;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class KeysTest {
@@ -45,6 +46,17 @@ class KeysTest {
     assertEquals("a%2Bb", Keys.encodeSegment("a+b"));
     assertEquals("a%2Fb", Keys.encodeSegment("a/b"));
     assertEquals("a%25b", Keys.encodeSegment("a%b"));
+  }
+
+  @Test
+  void namespaceByPathKeyRoundTripsFullPathSegments() {
+    String key =
+        Keys.namespacePointerByPath(
+            "acct id", "cat/id", List.of("finance", "sales/emea", "a+b", "a%b"));
+
+    assertEquals(
+        List.of("finance", "sales/emea", "a+b", "a%b"),
+        Keys.extractNamespacePathSegments("acct id", "cat/id", key));
   }
 
   @Test

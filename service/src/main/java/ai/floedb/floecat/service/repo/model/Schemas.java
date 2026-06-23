@@ -105,7 +105,8 @@ public final class Schemas {
                 return new NamespaceKey(
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
-          .withCasBlobs();
+          .withCasBlobs()
+          .withPointerMeta(Namespace::getResourceId, Namespace::getDisplayName);
 
   public static final ResourceSchema<Table, TableKey> TABLE =
       ResourceSchema.<Table, TableKey>of(
@@ -125,7 +126,8 @@ public final class Schemas {
                 return new TableKey(
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
-          .withCasBlobs();
+          .withCasBlobs()
+          .withPointerMeta(Table::getResourceId, Table::getDisplayName);
 
   public static final ResourceSchema<Snapshot, SnapshotKey> SNAPSHOT =
       ResourceSchema.<Snapshot, SnapshotKey>of(
@@ -301,7 +303,8 @@ public final class Schemas {
                 return new ViewKey(
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
-          .withCasBlobs();
+          .withCasBlobs()
+          .withPointerMeta(View::getResourceId, View::getDisplayName);
 
   public static final ResourceSchema<Connector, ConnectorKey> CONNECTOR =
       ResourceSchema.<Connector, ConnectorKey>of(

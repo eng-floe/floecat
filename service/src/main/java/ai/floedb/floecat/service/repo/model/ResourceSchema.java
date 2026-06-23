@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.repo.model;
 
+import ai.floedb.floecat.common.rpc.ResourceId;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
@@ -34,13 +35,19 @@ public final class ResourceSchema<T, K extends ResourceKey> {
 
   public final boolean casBlobs;
 
+  // Null for resources that don't participate in topology caching (snapshots, stats, …).
+  public final Function<T, ResourceId> resourceIdFromValue;
+  public final Function<T, String> displayNameFromValue;
+
   private ResourceSchema(
       String resourceName,
       Function<K, String> canonicalPointerForKey,
       Function<K, String> blobUriForKey,
       Function<T, Map<String, String>> secondaryPointersFromValue,
       Function<T, K> keyFromValue,
-      boolean casBlobs) {
+      boolean casBlobs,
+      Function<T, ResourceId> resourceIdFromValue,
+      Function<T, String> displayNameFromValue) {
     this.resourceName = Objects.requireNonNull(resourceName, "resourceName");
     this.canonicalPointerForKey =
         Objects.requireNonNull(canonicalPointerForKey, "canonicalPointerForKey");
@@ -49,6 +56,8 @@ public final class ResourceSchema<T, K extends ResourceKey> {
         Objects.requireNonNull(secondaryPointersFromValue, "secondaryPointersFromValue");
     this.keyFromValue = Objects.requireNonNull(keyFromValue, "keyFromValue");
     this.casBlobs = casBlobs;
+    this.resourceIdFromValue = resourceIdFromValue;
+    this.displayNameFromValue = displayNameFromValue;
   }
 
   public static <T, K extends ResourceKey> ResourceSchema<T, K> of(
@@ -63,7 +72,9 @@ public final class ResourceSchema<T, K extends ResourceKey> {
         blobUriForKey,
         secondaryPointersFromValue,
         keyFromValue,
-        false);
+        false,
+        null,
+        null);
   }
 
   public ResourceSchema<T, K> withCasBlobs() {
@@ -73,6 +84,21 @@ public final class ResourceSchema<T, K extends ResourceKey> {
         blobUriForKey,
         secondaryPointersFromValue,
         keyFromValue,
-        true);
+        true,
+        resourceIdFromValue,
+        displayNameFromValue);
+  }
+
+  public ResourceSchema<T, K> withPointerMeta(
+      Function<T, ResourceId> resourceId, Function<T, String> displayName) {
+    return new ResourceSchema<>(
+        resourceName,
+        canonicalPointerForKey,
+        blobUriForKey,
+        secondaryPointersFromValue,
+        keyFromValue,
+        casBlobs,
+        Objects.requireNonNull(resourceId, "resourceId"),
+        Objects.requireNonNull(displayName, "displayName"));
   }
 }
