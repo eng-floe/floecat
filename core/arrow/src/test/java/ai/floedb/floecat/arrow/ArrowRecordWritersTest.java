@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
@@ -164,6 +165,33 @@ class ArrowRecordWritersTest {
   }
 
   @Test
+  void defaultRounding_padsLosslessly() {
+    ArrowRecordWriter<DefaultRoundingDecimalRow> writer =
+        ArrowRecordWriters.fromRecordClass(DefaultRoundingDecimalRow.class);
+    try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        VectorSchemaRoot root = VectorSchemaRoot.create(writer.schema(), allocator)) {
+      writer.write(root, List.of(new DefaultRoundingDecimalRow(new BigDecimal("5"))));
+
+      DecimalVector amount = (DecimalVector) root.getVector("amount");
+      assertThat(amount.getObject(0)).isEqualByComparingTo(new BigDecimal("5.000"));
+    }
+  }
+
+  @Test
+  void defaultRounding_rejectsExcessScaleAtWriteTime() {
+    ArrowRecordWriter<DefaultRoundingDecimalRow> writer =
+        ArrowRecordWriters.fromRecordClass(DefaultRoundingDecimalRow.class);
+    try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        VectorSchemaRoot root = VectorSchemaRoot.create(writer.schema(), allocator)) {
+      assertThatThrownBy(
+              () ->
+                  writer.write(
+                      root, List.of(new DefaultRoundingDecimalRow(new BigDecimal("1.2345")))))
+          .isInstanceOf(ArithmeticException.class);
+    }
+  }
+
+  @Test
   void fromRecordClass_rejectsUnannotatedDecimal() {
     assertThatThrownBy(() -> ArrowRecordWriters.fromRecordClass(UnannotatedDecimalRow.class))
         .isInstanceOf(IllegalArgumentException.class)
@@ -199,7 +227,12 @@ class ArrowRecordWritersTest {
       UUID uuidValue,
       byte[] bytesValue) {}
 
-  private record DecimalRow(@ArrowDecimal(precision = 18, scale = 3) BigDecimal amount) {}
+  private record DecimalRow(
+      @ArrowDecimal(precision = 18, scale = 3, rounding = RoundingMode.HALF_UP)
+          BigDecimal amount) {}
+
+  private record DefaultRoundingDecimalRow(
+      @ArrowDecimal(precision = 18, scale = 3) BigDecimal amount) {}
 
   private record Decimal256Row(@ArrowDecimal(precision = 50, scale = 2) BigDecimal amount) {}
 

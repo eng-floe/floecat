@@ -198,6 +198,7 @@ public final class ArrowRecordWriters {
         }
         int precision = decimal.precision();
         int scale = decimal.scale();
+        RoundingMode rounding = decimal.rounding();
         // Validate precision/scale through floecat's canonical decimal rules before building
         // the Arrow type (ArrowType.Decimal itself does not validate these).
         LogicalType.decimal(precision, scale);
@@ -205,7 +206,10 @@ public final class ArrowRecordWriters {
         writer =
             (root, i, row) -> {
               BigDecimal val = get(getter, row, BigDecimal.class);
-              BigDecimal scaled = (val == null) ? null : val.setScale(scale, RoundingMode.HALF_UP);
+              // Padding to a larger scale is lossless; excess scale uses the annotation's rounding
+              // mode (UNNECESSARY by default, which throws rather than silently dropping
+              // precision).
+              BigDecimal scaled = (val == null) ? null : val.setScale(scale, rounding);
               // ArrowDecimalTypes uses a 256-bit vector for precision > 38, a 128-bit one
               // otherwise.
               FieldVector v = root.getVector(name);

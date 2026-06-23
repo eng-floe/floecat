@@ -20,6 +20,7 @@ import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.math.RoundingMode;
 
 /**
  * Maps a {@link java.math.BigDecimal} record component to an Arrow {@code DECIMAL(precision,
@@ -32,4 +33,13 @@ public @interface ArrowDecimal {
   int precision();
 
   int scale();
+
+  /**
+   * How to coerce an input value whose scale exceeds {@link #scale()}. Padding to a larger scale is
+   * always lossless and unaffected by this; it only applies when an input carries more fractional
+   * digits than the column. Defaults to {@link RoundingMode#UNNECESSARY}, which throws rather than
+   * silently dropping precision — set an explicit mode such as {@link RoundingMode#HALF_UP} to opt
+   * into rounding.
+   */
+  RoundingMode rounding() default RoundingMode.UNNECESSARY;
 }
