@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.arrow;
 
+import ai.floedb.floecat.types.LogicalType;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
@@ -33,6 +34,7 @@ import java.util.UUID;
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.BitVector;
 import org.apache.arrow.vector.DateDayVector;
+import org.apache.arrow.vector.Decimal256Vector;
 import org.apache.arrow.vector.DecimalVector;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.FixedSizeBinaryVector;
@@ -194,16 +196,32 @@ public final class ArrowRecordWriters {
           throw new IllegalArgumentException(
               "BigDecimal component " + name + " must be annotated with @ArrowDecimal");
         }
+        int precision = decimal.precision();
         int scale = decimal.scale();
-        field = field(name, ArrowDecimalTypes.decimalType(decimal.precision(), scale));
+        // Validate precision/scale through floecat's canonical decimal rules before building
+        // the Arrow type (ArrowType.Decimal itself does not validate these).
+        LogicalType.decimal(precision, scale);
+        field = field(name, ArrowDecimalTypes.decimalType(precision, scale));
         writer =
             (root, i, row) -> {
-              DecimalVector v = (DecimalVector) root.getVector(name);
               BigDecimal val = get(getter, row, BigDecimal.class);
-              if (val == null) {
-                v.setNull(i);
+              BigDecimal scaled = (val == null) ? null : val.setScale(scale, RoundingMode.HALF_UP);
+              // ArrowDecimalTypes uses a 256-bit vector for precision > 38, a 128-bit one
+              // otherwise.
+              FieldVector v = root.getVector(name);
+              if (v instanceof Decimal256Vector decimal256) {
+                if (scaled == null) {
+                  decimal256.setNull(i);
+                } else {
+                  decimal256.setSafe(i, scaled);
+                }
               } else {
-                v.setSafe(i, val.setScale(scale, RoundingMode.HALF_UP));
+                DecimalVector decimal128 = (DecimalVector) v;
+                if (scaled == null) {
+                  decimal128.setNull(i);
+                } else {
+                  decimal128.setSafe(i, scaled);
+                }
               }
             };
       } else if (jt == Instant.class) {

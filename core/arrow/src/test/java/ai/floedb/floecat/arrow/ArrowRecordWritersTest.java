@@ -28,6 +28,7 @@ import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.BitVector;
 import org.apache.arrow.vector.DateDayVector;
+import org.apache.arrow.vector.Decimal256Vector;
 import org.apache.arrow.vector.DecimalVector;
 import org.apache.arrow.vector.Float8Vector;
 import org.apache.arrow.vector.IntVector;
@@ -141,10 +142,39 @@ class ArrowRecordWritersTest {
   }
 
   @Test
+  void fromRecordClass_writesDecimal256ForHighPrecision() {
+    ArrowRecordWriter<Decimal256Row> writer =
+        ArrowRecordWriters.fromRecordClass(Decimal256Row.class);
+
+    ArrowType.Decimal type = (ArrowType.Decimal) writer.schema().findField("amount").getType();
+    assertThat(type.getPrecision()).isEqualTo(50);
+    assertThat(type.getBitWidth()).isEqualTo(256);
+
+    try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        VectorSchemaRoot root = VectorSchemaRoot.create(writer.schema(), allocator)) {
+      // 40 significant digits — does not fit in a 128-bit decimal, so the writer must use the
+      // Decimal256Vector path rather than casting to DecimalVector.
+      BigDecimal big = new BigDecimal("12345678901234567890123456789012345678.99");
+      writer.write(root, List.of(new Decimal256Row(big), new Decimal256Row(null)));
+
+      Decimal256Vector amount = (Decimal256Vector) root.getVector("amount");
+      assertThat(amount.getObject(0)).isEqualByComparingTo(big);
+      assertThat(amount.isNull(1)).isTrue();
+    }
+  }
+
+  @Test
   void fromRecordClass_rejectsUnannotatedDecimal() {
     assertThatThrownBy(() -> ArrowRecordWriters.fromRecordClass(UnannotatedDecimalRow.class))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("@ArrowDecimal");
+  }
+
+  @Test
+  void fromRecordClass_rejectsInvalidDecimalPrecisionScale() {
+    assertThatThrownBy(() -> ArrowRecordWriters.fromRecordClass(InvalidDecimalRow.class))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("DECIMAL");
   }
 
   @Test
@@ -170,6 +200,10 @@ class ArrowRecordWritersTest {
       byte[] bytesValue) {}
 
   private record DecimalRow(@ArrowDecimal(precision = 18, scale = 3) BigDecimal amount) {}
+
+  private record Decimal256Row(@ArrowDecimal(precision = 50, scale = 2) BigDecimal amount) {}
+
+  private record InvalidDecimalRow(@ArrowDecimal(precision = 5, scale = 7) BigDecimal amount) {}
 
   private record UnannotatedDecimalRow(BigDecimal amount) {}
 
