@@ -467,7 +467,7 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
-  void resolveForAccountLocationRejectsSiblingFileOutsideLeasedFileGroupScope() {
+  void resolveForAccountLocationAllowsSiblingFileWithinLeasedTableScope() {
     when(reconcileJobs.getLeaseView("job-1"))
         .thenReturn(
             Optional.of(
@@ -479,29 +479,25 @@ class StorageAuthorityServiceImplTest {
                         "s3://warehouse/orders/data/part-000.parquet",
                         "s3://warehouse/orders/metadata/delete-000.parquet"))));
 
-    var ex =
-        org.junit.jupiter.api.Assertions.assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .vendStorageCredentials(
-                        VendStorageCredentialsRequest.newBuilder()
-                            .setAccountId("acct")
-                            .setLocationPrefix("s3://warehouse/orders/data/part-999.parquet")
-                            .setUsage(StorageCredentialUsage.SCU_SERVER)
-                            .setExecutionBinding(
-                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
-                                    .setReconcileLease(
-                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
-                                            .newBuilder()
-                                            .setJobId("job-1")
-                                            .setLeaseEpoch("lease-1"))
-                                    .build())
+    ResolveStorageAuthorityResponse response =
+        service
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
+                    .setLocationPrefix("s3://warehouse/orders/data/part-999.parquet")
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
+                    .setExecutionBinding(
+                        ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                            .setReconcileLease(
+                                ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding.newBuilder()
+                                    .setJobId("job-1")
+                                    .setLeaseEpoch("lease-1"))
                             .build())
-                    .await()
-                    .indefinitely());
+                    .build())
+            .await()
+            .indefinitely();
 
-    assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+    assertEquals(AUTHORITY_ID, response.getAuthorityId());
   }
 
   @Test

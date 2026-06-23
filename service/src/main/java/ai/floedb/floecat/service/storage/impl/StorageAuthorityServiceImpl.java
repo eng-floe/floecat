@@ -59,7 +59,6 @@ import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -550,15 +549,6 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     if (job == null) {
       return null;
     }
-    if (job.fileGroupTask != null && !job.fileGroupTask.filePaths().isEmpty()) {
-      List<String> filePaths = normalizedLocations(job.fileGroupTask.filePaths());
-      if (!filePaths.isEmpty()) {
-        String commonPrefix = commonLocationPrefix(filePaths);
-        String authorityLookupPrefix = commonPrefix != null ? commonPrefix : filePaths.getFirst();
-        String responsePrefix = commonPrefix != null ? commonPrefix : authorityLookupPrefix;
-        return new CredentialScope(authorityLookupPrefix, responsePrefix, List.copyOf(filePaths));
-      }
-    }
     String tableId = leasedTableId(job);
     if (tableId == null) {
       return null;
@@ -610,65 +600,6 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
             .asRuntimeException();
       }
     }
-  }
-
-  private static List<String> normalizedLocations(List<String> locations) {
-    if (locations == null || locations.isEmpty()) {
-      return List.of();
-    }
-    ArrayList<String> normalized = new ArrayList<>();
-    for (String location : locations) {
-      String trimmed = trimToNull(location);
-      if (trimmed != null) {
-        normalized.add(trimmed);
-      }
-    }
-    return List.copyOf(normalized);
-  }
-
-  private static String commonLocationPrefix(List<String> locations) {
-    if (locations == null || locations.isEmpty()) {
-      return null;
-    }
-    String common = StorageAuthorityResolver.stripTrailingSlash(locations.getFirst());
-    for (int index = 1; index < locations.size() && common != null && !common.isBlank(); index++) {
-      common = commonLocationPrefix(common, locations.get(index));
-    }
-    return common;
-  }
-
-  private static String commonLocationPrefix(String left, String right) {
-    if (!StorageAuthorityResolver.isNonBlank(left) || !StorageAuthorityResolver.isNonBlank(right)) {
-      return null;
-    }
-    String a = StorageAuthorityResolver.stripTrailingSlash(left.trim());
-    String b = StorageAuthorityResolver.stripTrailingSlash(right.trim());
-    int max = Math.min(a.length(), b.length());
-    int lastBoundary = -1;
-    for (int index = 0; index < max; index++) {
-      if (a.charAt(index) != b.charAt(index)) {
-        break;
-      }
-      if (a.charAt(index) == '/') {
-        lastBoundary = index;
-      }
-    }
-    if (a.equals(b)) {
-      return a;
-    }
-    if (lastBoundary < 0) {
-      return null;
-    }
-    if (a.regionMatches(true, 0, "s3://", 0, 5)) {
-      int bucketBoundary = a.indexOf('/', 5);
-      if (bucketBoundary < 0) {
-        return a.substring(0, lastBoundary);
-      }
-      return lastBoundary <= bucketBoundary
-          ? a.substring(0, bucketBoundary)
-          : a.substring(0, lastBoundary);
-    }
-    return a.substring(0, lastBoundary);
   }
 
   private static String leasedTableId(ReconcileJobStore.ReconcileJob job) {
