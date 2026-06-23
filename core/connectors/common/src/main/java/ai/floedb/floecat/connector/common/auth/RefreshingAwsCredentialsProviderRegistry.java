@@ -125,7 +125,7 @@ public final class RefreshingAwsCredentialsProviderRegistry {
     if (current == null) {
       return true;
     }
-    if (!current.isTemporary() || current.expiresAt() == null) {
+    if (!current.hasKnownExpiry() || current.expiresAt() == null) {
       return false;
     }
     return !now.isBefore(current.expiresAt().minus(refreshSkew));

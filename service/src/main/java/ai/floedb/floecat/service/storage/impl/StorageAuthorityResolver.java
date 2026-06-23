@@ -66,9 +66,9 @@ public class StorageAuthorityResolver {
     ResolvedStorageCredentials resolved;
     if (!serverSide) {
       resolved = mintTemporaryCredentials(authority, authoritySecret, sessionScopeLocations);
-      if (!resolved.isTemporary()) {
+      if (!resolved.hasKnownExpiry()) {
         throw new IllegalArgumentException(
-            "Credential vending requires scoped temporary storage credentials minted from a storage authority role");
+            "Credential vending requires credentials with a known expiry minted from a storage authority role");
       }
     } else {
       resolved = resolveServerSideCredentials(authority, authoritySecret, sessionScopeLocations);
@@ -118,11 +118,11 @@ public class StorageAuthorityResolver {
     if (authority.hasAssumeRoleArn() && !authority.getAssumeRoleArn().isBlank()) {
       return assumeRoleCredentials(authority, authoritySecret, sessionScopeLocations);
     }
-    if (resolved.isPresent() && resolved.get().isTemporary()) {
+    if (resolved.isPresent() && resolved.get().hasKnownExpiry()) {
       return resolved.get();
     }
     throw new IllegalArgumentException(
-        "Credential vending requires scoped temporary storage credentials minted from a storage authority role");
+        "Credential vending requires credentials with a known expiry minted from a storage authority role");
   }
 
   ResolvedStorageCredentials resolveServerSideCredentials(

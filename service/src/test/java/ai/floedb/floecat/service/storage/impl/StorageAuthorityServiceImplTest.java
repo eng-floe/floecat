@@ -582,7 +582,7 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
-  void clientSideCredentialVendingRejectsUnscopedTemporaryAuthorityCredentials() {
+  void clientSideCredentialVendingRejectsCredentialsWithoutKnownExpiry() {
     StorageAuthorityResolver resolver = new StorageAuthorityResolver();
     var authority = currentAuthority().toBuilder().clearAssumeRoleArn().build();
     var temporaryCredentials =
@@ -601,7 +601,7 @@ class StorageAuthorityServiceImplTest {
                 resolver.mintTemporaryCredentials(
                     authority, temporaryCredentials, java.util.List.of("s3://warehouse/orders")));
 
-    assertTrue(ex.getMessage().contains("scoped temporary storage credentials"));
+    assertTrue(ex.getMessage().contains("known expiry"));
   }
 
   @Test
