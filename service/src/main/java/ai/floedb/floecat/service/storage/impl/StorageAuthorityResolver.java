@@ -25,13 +25,16 @@ import ai.floedb.floecat.storage.rpc.VendedStorageCredential;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sts.StsClient;
@@ -47,37 +50,30 @@ public class StorageAuthorityResolver {
   ResolveStorageAuthorityResponse buildResponse(
       StorageAuthority authority,
       String locationPrefix,
+      List<String> sessionScopeLocations,
       String accountId,
-      boolean includeCredentials,
-      boolean required,
       boolean serverSide) {
     if (authority == null) {
-      if (required) {
-        throw new IllegalArgumentException(
-            "Credential vending was requested but no storage credential authority is configured for this table");
-      }
-      return ResolveStorageAuthorityResponse.getDefaultInstance();
+      throw new IllegalArgumentException(
+          "Credential vending was requested but no storage credential authority is configured for this table");
     }
+
     ResolveStorageAuthorityResponse.Builder response =
         ResolveStorageAuthorityResponse.newBuilder().setAuthorityId(authority.getResourceId());
     response.putAllClientSafeConfig(clientSafeConfig(authority));
-    if (!includeCredentials) {
-      return response.build();
-    }
     AuthCredentials authoritySecret =
-        resolveAuthoritySecret(accountId, authority.getResourceId().getId())
-            .orElseThrow(
-                () ->
-                    new IllegalArgumentException(
-                        "Credential vending was requested but no storage credential authority is configured for this table"));
-    ResolvedStorageCredentials resolved =
-        serverSide
-            ? resolveServerSideCredentials(authority, authoritySecret, locationPrefix)
-            : mintTemporaryCredentials(authority, authoritySecret, locationPrefix);
-    if (!serverSide && !resolved.isTemporary()) {
-      throw new IllegalArgumentException(
-          "Credential vending requires temporary storage credentials");
+        resolveAuthoritySecret(accountId, authority.getResourceId().getId()).orElse(null);
+    ResolvedStorageCredentials resolved;
+    if (!serverSide) {
+      resolved = mintTemporaryCredentials(authority, authoritySecret, sessionScopeLocations);
+      if (!resolved.hasKnownExpiry()) {
+        throw new IllegalArgumentException(
+            "Credential vending requires credentials with a known expiry minted from a storage authority role");
+      }
+    } else {
+      resolved = resolveServerSideCredentials(authority, authoritySecret, sessionScopeLocations);
     }
+
     LinkedHashMap<String, String> storageConfig = new LinkedHashMap<>();
     storageConfig.put("type", authority.getType().isBlank() ? "s3" : authority.getType());
     storageConfig.putAll(clientSafeConfig(authority));
@@ -112,34 +108,38 @@ public class StorageAuthorityResolver {
   }
 
   ResolvedStorageCredentials mintTemporaryCredentials(
-      StorageAuthority authority, AuthCredentials authoritySecret, String locationPrefix) {
+      StorageAuthority authority,
+      AuthCredentials authoritySecret,
+      List<String> sessionScopeLocations) {
     Optional<ResolvedStorageCredentials> resolved =
-        CredentialResolverSupport.resolveStorageCredentials(authoritySecret);
-    if (authoritySecret != null
-        && authoritySecret.getCredentialCase() == AuthCredentials.CredentialCase.AWS
-        && authority.hasAssumeRoleArn()
-        && !authority.getAssumeRoleArn().isBlank()) {
-      return assumeRoleFromStaticSource(authority, authoritySecret.getAws(), locationPrefix);
+        authoritySecret == null
+            ? Optional.empty()
+            : CredentialResolverSupport.resolveStorageCredentials(authoritySecret);
+    if (authority.hasAssumeRoleArn() && !authority.getAssumeRoleArn().isBlank()) {
+      return assumeRoleCredentials(authority, authoritySecret, sessionScopeLocations);
     }
-    if (resolved.isPresent() && resolved.get().isTemporary()) {
-      throw new IllegalArgumentException(
-          "Credential vending requires scoped temporary storage credentials minted from a storage authority role");
+    if (resolved.isPresent() && resolved.get().hasKnownExpiry()) {
+      return resolved.get();
     }
     throw new IllegalArgumentException(
-        "Credential vending requires scoped temporary storage credentials minted from a storage authority role");
+        "Credential vending requires credentials with a known expiry minted from a storage authority role");
   }
 
   ResolvedStorageCredentials resolveServerSideCredentials(
-      StorageAuthority authority, AuthCredentials authoritySecret, String locationPrefix) {
-    if (authoritySecret != null
-        && authoritySecret.getCredentialCase() == AuthCredentials.CredentialCase.AWS
-        && authority.hasAssumeRoleArn()
-        && !authority.getAssumeRoleArn().isBlank()) {
-      return assumeRoleFromStaticSource(authority, authoritySecret.getAws(), locationPrefix);
+      StorageAuthority authority,
+      AuthCredentials authoritySecret,
+      List<String> sessionScopeLocations) {
+    if (authority.hasAssumeRoleArn() && !authority.getAssumeRoleArn().isBlank()) {
+      return assumeRoleCredentials(authority, authoritySecret, sessionScopeLocations);
     }
-    return CredentialResolverSupport.resolveStorageCredentials(authoritySecret)
-        .orElseThrow(
-            () -> new IllegalArgumentException("Unsupported storage credential authority"));
+    if (authoritySecret == null) {
+      throw new IllegalArgumentException("Unsupported storage credential authority");
+    }
+    ResolvedStorageCredentials resolved =
+        CredentialResolverSupport.resolveStorageCredentials(authoritySecret)
+            .orElseThrow(
+                () -> new IllegalArgumentException("Unsupported storage credential authority"));
+    return resolved;
   }
 
   Map<String, String> clientSafeConfig(StorageAuthority authority) {
@@ -159,8 +159,21 @@ public class StorageAuthorityResolver {
     return computed.isEmpty() ? Map.of() : Map.copyOf(computed);
   }
 
-  private ResolvedStorageCredentials assumeRoleFromStaticSource(
-      StorageAuthority authority, AuthCredentials.AwsCredentials source, String locationPrefix) {
+  ResolvedStorageCredentials assumeRoleCredentials(
+      StorageAuthority authority,
+      AuthCredentials authoritySecret,
+      List<String> sessionScopeLocations) {
+    if (authoritySecret != null
+        && authoritySecret.getCredentialCase() == AuthCredentials.CredentialCase.AWS) {
+      return assumeRoleFromStaticSource(authority, authoritySecret.getAws(), sessionScopeLocations);
+    }
+    return assumeRoleFromAmbientSource(authority, sessionScopeLocations);
+  }
+
+  ResolvedStorageCredentials assumeRoleFromStaticSource(
+      StorageAuthority authority,
+      AuthCredentials.AwsCredentials source,
+      List<String> sessionScopeLocations) {
     AwsCredentialsProvider provider =
         source.getSessionToken() == null || source.getSessionToken().isBlank()
             ? StaticCredentialsProvider.create(
@@ -171,6 +184,22 @@ public class StorageAuthorityResolver {
                     source.getSecretAccessKey(),
                     source.getSessionToken()));
 
+    return assumeRole(authority, provider, sessionScopeLocations);
+  }
+
+  ResolvedStorageCredentials assumeRoleFromAmbientSource(
+      StorageAuthority authority, List<String> sessionScopeLocations) {
+    return assumeRole(authority, ambientCredentialsProvider(), sessionScopeLocations);
+  }
+
+  AwsCredentialsProvider ambientCredentialsProvider() {
+    return DefaultCredentialsProvider.create();
+  }
+
+  private ResolvedStorageCredentials assumeRole(
+      StorageAuthority authority,
+      AwsCredentialsProvider provider,
+      List<String> sessionScopeLocations) {
     var builder = StsClient.builder().credentialsProvider(provider);
     if (authority.hasRegion() && !authority.getRegion().isBlank()) {
       builder.region(Region.of(authority.getRegion()));
@@ -188,7 +217,7 @@ public class StorageAuthorityResolver {
                     "floecat-storage-authority"))
             .externalId(
                 authority.hasAssumeRoleExternalId() ? authority.getAssumeRoleExternalId() : null)
-            .policy(scopedSessionPolicy(locationPrefix))
+            .policy(scopedSessionPolicy(sessionScopeLocations))
             .durationSeconds(duration != null && duration > 0 ? duration : null)
             .build();
 
@@ -202,42 +231,59 @@ public class StorageAuthorityResolver {
     }
   }
 
-  private static String scopedSessionPolicy(String locationPrefix) {
-    S3Location scope = S3Location.parse(locationPrefix);
-    if (scope == null) {
+  static String scopedSessionPolicy(String locationPrefix) {
+    return scopedSessionPolicy(locationPrefix == null ? List.of() : List.of(locationPrefix));
+  }
+
+  static String scopedSessionPolicy(List<String> locationPrefixes) {
+    List<S3Location> scopes =
+        normalizeS3Scopes(locationPrefixes).stream()
+            .map(S3Location::parse)
+            .filter(scope -> scope != null)
+            .toList();
+    if (scopes.isEmpty()) {
       return null;
     }
-    String bucket = jsonEscape(scope.bucket());
-    String objectArn = jsonEscape(scope.objectArn());
-    String listPrefix = jsonEscape(scope.listPrefix());
+    ArrayList<String> statements = new ArrayList<>();
+    for (S3BucketScope bucketScope : groupByBucket(scopes)) {
+      statements.add(bucketScope.listStatementJson());
+      statements.add(bucketScope.objectStatementJson());
+    }
     return """
         {
           "Version":"2012-10-17",
-          "Statement":[
-            {
-              "Effect":"Allow",
-              "Action":["s3:ListBucket","s3:GetBucketLocation"],
-              "Resource":["arn:aws:s3:::%s"],
-              "Condition":{"StringLike":{"s3:prefix":["%s","%s/*"]}}
-            },
-            {
-              "Effect":"Allow",
-              "Action":[
-                "s3:GetObject",
-                "s3:PutObject",
-                "s3:DeleteObject",
-                "s3:AbortMultipartUpload",
-                "s3:ListMultipartUploadParts"
-              ],
-              "Resource":["%s","%s/*"]
-            }
-          ]
+          "Statement":[%s]
         }
         """
-        .formatted(bucket, listPrefix, listPrefix, objectArn, objectArn)
+        .formatted(String.join(",", statements))
         .replace('\n', ' ')
         .replaceAll("\\s+", " ")
         .trim();
+  }
+
+  private static List<String> normalizeS3Scopes(List<String> locationPrefixes) {
+    if (locationPrefixes == null || locationPrefixes.isEmpty()) {
+      return List.of();
+    }
+    LinkedHashSet<String> normalized = new LinkedHashSet<>();
+    for (String locationPrefix : locationPrefixes) {
+      if (locationPrefix == null || locationPrefix.isBlank()) {
+        continue;
+      }
+      normalized.add(locationPrefix.trim());
+    }
+    return List.copyOf(normalized);
+  }
+
+  private static List<S3BucketScope> groupByBucket(List<S3Location> scopes) {
+    LinkedHashMap<String, ArrayList<S3Location>> grouped = new LinkedHashMap<>();
+    for (S3Location scope : scopes) {
+      grouped.computeIfAbsent(scope.bucket(), ignored -> new ArrayList<>()).add(scope);
+    }
+    ArrayList<S3BucketScope> bucketScopes = new ArrayList<>();
+    grouped.forEach(
+        (bucket, bucketLocations) -> bucketScopes.add(new S3BucketScope(bucket, bucketLocations)));
+    return List.copyOf(bucketScopes);
   }
 
   private static String jsonEscape(String value) {
@@ -274,14 +320,77 @@ public class StorageAuthorityResolver {
       return new S3Location(bucket, prefix);
     }
 
-    String objectArn() {
-      return keyPrefix.isBlank()
-          ? "arn:aws:s3:::%s".formatted(bucket)
-          : "arn:aws:s3:::%s/%s".formatted(bucket, keyPrefix);
-    }
-
     String listPrefix() {
       return keyPrefix;
+    }
+
+    String objectResourceJson() {
+      if (keyPrefix.isBlank()) {
+        return "[\"arn:aws:s3:::%s/*\"]".formatted(jsonEscape(bucket));
+      }
+      String objectArn = jsonEscape("arn:aws:s3:::%s/%s".formatted(bucket, keyPrefix));
+      return "[\"%s\",\"%s/*\"]".formatted(objectArn, objectArn);
+    }
+  }
+
+  private record S3BucketScope(String bucket, List<S3Location> scopes) {
+    String listStatementJson() {
+      String escapedBucket = jsonEscape(bucket);
+      if (scopes.stream().anyMatch(scope -> scope.keyPrefix().isBlank())) {
+        return """
+            {
+              "Effect":"Allow",
+              "Action":["s3:ListBucket","s3:GetBucketLocation"],
+              "Resource":["arn:aws:s3:::%s"]
+            }
+            """
+            .formatted(escapedBucket)
+            .replace('\n', ' ')
+            .replaceAll("\\s+", " ")
+            .trim();
+      }
+      ArrayList<String> prefixes = new ArrayList<>();
+      for (S3Location scope : scopes) {
+        String prefix = jsonEscape(scope.listPrefix());
+        prefixes.add("\"" + prefix + "\"");
+        prefixes.add("\"" + prefix + "/*\"");
+      }
+      return """
+          {
+            "Effect":"Allow",
+            "Action":["s3:ListBucket","s3:GetBucketLocation"],
+            "Resource":["arn:aws:s3:::%s"],
+            "Condition":{"StringLike":{"s3:prefix":[%s]}}
+          }
+          """
+          .formatted(escapedBucket, String.join(",", prefixes))
+          .replace('\n', ' ')
+          .replaceAll("\\s+", " ")
+          .trim();
+    }
+
+    String objectStatementJson() {
+      LinkedHashSet<String> resources = new LinkedHashSet<>();
+      for (S3Location scope : scopes) {
+        if (scope.keyPrefix().isBlank()) {
+          resources.add("\"arn:aws:s3:::%s/*\"".formatted(jsonEscape(bucket)));
+          continue;
+        }
+        String objectArn = jsonEscape("arn:aws:s3:::%s/%s".formatted(bucket, scope.keyPrefix()));
+        resources.add("\"" + objectArn + "\"");
+        resources.add("\"" + objectArn + "/*\"");
+      }
+      return """
+          {
+            "Effect":"Allow",
+            "Action":["s3:GetObject","s3:GetObjectVersion"],
+            "Resource":[%s]
+          }
+          """
+          .formatted(String.join(",", resources))
+          .replace('\n', ' ')
+          .replaceAll("\\s+", " ")
+          .trim();
     }
   }
 

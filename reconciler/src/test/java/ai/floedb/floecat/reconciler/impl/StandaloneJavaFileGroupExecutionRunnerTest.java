@@ -50,6 +50,7 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         ArgumentCaptor.forClass(CaptureEngineRequest.class);
     org.mockito.Mockito.verify(runner.captureEngineRegistry).capture(request.capture());
     assertThat(request.getValue().authorizationToken()).contains("Bearer worker-token");
+    assertThat(request.getValue().storageLocation()).contains("s3://bucket/path");
   }
 
   @Test
@@ -118,6 +119,7 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         Connector.newBuilder().setKind(ConnectorKind.CK_ICEBERG).build(),
         "ns",
         "table",
+        "s3://bucket/path",
         ResourceId.newBuilder()
             .setAccountId(accountId)
             .setKind(ResourceKind.RK_TABLE)

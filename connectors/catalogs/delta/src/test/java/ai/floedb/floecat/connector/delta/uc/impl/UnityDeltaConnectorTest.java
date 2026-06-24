@@ -56,9 +56,8 @@ class UnityDeltaConnectorTest {
     server.setExecutor(null);
     server.start();
     int port = server.getAddress().getPort();
-    UcHttp http = new UcHttp("http://localhost:" + port, 1000, 5000, NO_AUTH);
-    connector =
-        new UnityDeltaConnector("test-id", http, null, null, null, false, 0.0, 0, null, null);
+    UcHttp http = new UcHttp("http://127.0.0.1:" + port, 1000, 5000, NO_AUTH);
+    connector = new UnityDeltaConnector("test-id", http, null, null, null, false, 0.0, 0);
   }
 
   @AfterEach
@@ -81,24 +80,6 @@ class UnityDeltaConnectorTest {
     assertThatThrownBy(() -> connector.describe("mycat.myschema", "missing_table"))
         .isInstanceOf(RuntimeException.class)
         .hasMessageContaining("404");
-  }
-
-  @Test
-  void storageLocationUsesTableHintWithoutUcLookup() {
-    UnityDeltaConnector hinted =
-        new UnityDeltaConnector(
-            "test-id",
-            new UcHttp("http://127.0.0.1:1", 1000, 5000, NO_AUTH),
-            null,
-            null,
-            null,
-            false,
-            0.0,
-            0,
-            "mycat.myschema.orders",
-            "s3://bucket/table");
-
-    assertThat(hinted.storageLocation("mycat.myschema", "orders")).isEqualTo("s3://bucket/table");
   }
 
   @Test

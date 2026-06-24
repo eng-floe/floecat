@@ -804,6 +804,7 @@ class GrpcRemoteReconcileExecutorClient
             : Connector.getDefaultInstance(),
         execution.getSourceNamespace(),
         execution.getSourceTable(),
+        execution.getStorageLocation(),
         execution.hasTableId() ? execution.getTableId() : null,
         execution.getSnapshotId(),
         execution.getPlanId(),

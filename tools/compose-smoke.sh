@@ -47,6 +47,7 @@ COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ENDPOINT=${COMPOSE_SMOKE_UPSTREAM_DELTA_UN
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION:-us-east-1}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ACCESS_KEY_ID=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ACCESS_KEY_ID:-test}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_SECRET_ACCESS_KEY=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_SECRET_ACCESS_KEY:-test}
+COMPOSE_SMOKE_LOCALSTACK_BUCKETS="${COMPOSE_SMOKE_LOCALSTACK_BUCKETS:-bucket floecat floecat-delta floecat-dev staged-fixtures warehouse yb-iceberg-tpcds}"
 COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX=${COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX:-true}
 COMPOSE_SMOKE_STATS_RETRIES=${COMPOSE_SMOKE_STATS_RETRIES:-45}
 COMPOSE_SMOKE_STATS_SLEEP_SECONDS=${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}
@@ -713,12 +714,39 @@ quit")
     local warehouse="$COMPOSE_SMOKE_UPSTREAM_ICEBERG_WAREHOUSE"
     local source_namespace="$COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS"
     local source_table="$COMPOSE_SMOKE_UPSTREAM_ICEBERG_TABLE"
+    local localstack_storage_bucket_resource_list=""
+    local localstack_storage_authority_name=""
+    local bucket
+    for bucket in $COMPOSE_SMOKE_LOCALSTACK_BUCKETS; do
+      local storage_authority_name
+      local storage_bucket
+      local localstack_authority_setup_out
+
+      storage_bucket="$bucket"
+      storage_authority_name="smoke-upstream-iceberg-storage-${storage_bucket//[^a-zA-Z0-9]/_}-${COMPOSE_SMOKE_RUN_ID}"
+      localstack_authority_setup_out=$(run_cli_script "$compose_cmd" "account t-0001
+storage-authority create $storage_authority_name --location-prefix s3://$storage_bucket/ --type s3 --region us-east-1 --endpoint http://localstack:4566 --path-style-access true --assume-role-arn arn:aws:iam::000000000000:role/polaris --duration-seconds 900 --cred-type aws --cred access_key_id=test --cred secret_access_key=test
+quit")
+      echo "$localstack_authority_setup_out"
+      assert_contains "$label upstream iceberg storage authority setup (${storage_bucket})" "$localstack_authority_setup_out" "$storage_authority_name"
+
+      if [ "$storage_bucket" = "floecat" ]; then
+        localstack_storage_authority_name="$storage_authority_name"
+      fi
+
+      localstack_storage_bucket_resource_list+="\\\"arn:aws:s3:::${storage_bucket}\\\",\\\"arn:aws:s3:::${storage_bucket}/*\\\","
+    done
+    localstack_storage_bucket_resource_list=${localstack_storage_bucket_resource_list%,}
+    if [ -z "$localstack_storage_authority_name" ]; then
+      echo "[FAIL] $label upstream iceberg expected floecat storage authority name not resolved"
+      return 1
+    fi
 
     docker exec "$localstack_container" sh -lc "cat > /tmp/polaris-trust.json <<'JSON'
 {\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"*\"},\"Action\":\"sts:AssumeRole\"}]}
 JSON
 cat > /tmp/polaris-policy.json <<'JSON'
-{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:PutObject\",\"s3:DeleteObject\",\"s3:ListBucket\"],\"Resource\":[\"arn:aws:s3:::floecat\",\"arn:aws:s3:::floecat/*\"]}]}
+{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:PutObject\",\"s3:DeleteObject\",\"s3:ListBucket\"],\"Resource\":[${localstack_storage_bucket_resource_list}]}
 JSON
 awslocal iam create-role --role-name polaris --assume-role-policy-document file:///tmp/polaris-trust.json >/dev/null 2>&1 || true
 awslocal iam put-role-policy --role-name polaris --policy-name polaris-s3 --policy-document file:///tmp/polaris-policy.json >/dev/null 2>&1 || true" >/dev/null
@@ -817,7 +845,7 @@ EOF
       local scenario_suffix="$2"
       local access_delegation_header="$3"
       local expect_vended_creds="$4"
-      local scenario_storage_authority_name="smoke-upstream-iceberg-storage${scenario_suffix}"
+      local scenario_storage_authority_name="$localstack_storage_authority_name"
       local scenario_connector_name="smoke-upstream-iceberg${scenario_suffix}"
       local scenario_catalog_name="${COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG}${scenario_suffix}"
       local scenario_expected_table="${scenario_catalog_name}.${COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE#*.}"
@@ -849,11 +877,9 @@ PY
       local rest_setup_out
       rest_setup_out=$(run_cli_script "$compose_cmd" "account t-0001
 catalog create $scenario_catalog_name --desc compose-smoke-upstream-iceberg${scenario_suffix}
-storage-authority create $scenario_storage_authority_name --location-prefix s3://floecat/ --type s3 --region us-east-1 --endpoint http://localstack:4566 --path-style-access true --assume-role-arn arn:aws:iam::000000000000:role/polaris --duration-seconds 900 --cred-type aws --cred access_key_id=test --cred secret_access_key=test
 connector create $scenario_connector_name ICEBERG $COMPOSE_SMOKE_UPSTREAM_ICEBERG_URI $COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS $scenario_catalog_name --auth-scheme oauth2 --cred-type client --cred endpoint=${COMPOSE_SMOKE_POLARIS_BASE_URI}/api/catalog/v1/oauth/tokens --cred client_id=root --cred client_secret=s3cr3t --cred scope=PRINCIPAL_ROLE:ALL${access_delegation_arg} --props iceberg.source=rest --props warehouse=$warehouse --props s3.endpoint=http://localstack:4566 --props s3.path-style-access=true --props s3.region=us-east-1
 quit")
       echo "$rest_setup_out"
-      assert_contains "$label upstream iceberg ${scenario_key} storage authority setup" "$rest_setup_out" "$scenario_storage_authority_name"
       assert_contains "$label upstream iceberg ${scenario_key} connector setup" "$rest_setup_out" "$scenario_connector_name"
 
       run_connector_trigger_and_wait \

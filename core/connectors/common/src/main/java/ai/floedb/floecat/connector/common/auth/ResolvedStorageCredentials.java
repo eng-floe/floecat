@@ -23,7 +23,11 @@ import java.util.Map;
 public record ResolvedStorageCredentials(
     String accessKeyId, String secretAccessKey, String sessionToken, Instant expiresAt) {
 
-  public boolean isTemporary() {
+  public boolean isSessionCredential() {
+    return sessionToken != null && !sessionToken.isBlank();
+  }
+
+  public boolean hasKnownExpiry() {
     return expiresAt != null;
   }
 

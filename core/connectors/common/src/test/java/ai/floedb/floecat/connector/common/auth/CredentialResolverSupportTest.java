@@ -18,11 +18,15 @@ package ai.floedb.floecat.connector.common.auth;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
@@ -39,6 +43,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sts.StsClient;
 import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
 import software.amazon.awssdk.services.sts.model.AssumeRoleResponse;
@@ -263,6 +268,63 @@ class CredentialResolverSupportTest {
     assertEquals("https://www.googleapis.com/auth/cloud-platform", form.get("scope"));
     String assertion = form.get("assertion");
     assertNotNull(assertion);
+  }
+
+  @Test
+  void refreshingAwsCredentialsRegistryRefreshesExpiringCredentials() {
+    String providerId =
+        RefreshingAwsCredentialsProviderRegistry.register(
+            "provider-1",
+            new ResolvedStorageCredentials(
+                "akid-1", "secret-1", "session-1", java.time.Instant.now().minusSeconds(1)),
+            () ->
+                new ResolvedStorageCredentials(
+                    "akid-2", "secret-2", "session-2", java.time.Instant.now().plusSeconds(900)),
+            java.time.Duration.ofMinutes(5));
+    try {
+      var resolved = RefreshingAwsCredentialsProviderRegistry.resolve(providerId);
+      assertEquals("akid-2", resolved.accessKeyId());
+      assertEquals("secret-2", resolved.secretAccessKey());
+      assertEquals(
+          "session-2",
+          assertInstanceOf(
+                  software.amazon.awssdk.auth.credentials.AwsSessionCredentials.class, resolved)
+              .sessionToken());
+    } finally {
+      RefreshingAwsCredentialsProviderRegistry.unregister(providerId);
+    }
+  }
+
+  @Test
+  void registryBackedAwsCredentialsProviderReadsProviderIdFromProperties() {
+    String providerId =
+        RefreshingAwsCredentialsProviderRegistry.register(
+            "provider-2",
+            new ResolvedStorageCredentials("akid", "secret", "session", null),
+            () -> new ResolvedStorageCredentials("unused", "unused", "unused", null),
+            java.time.Duration.ofMinutes(5));
+    try {
+      var provider =
+          RegistryBackedAwsCredentialsProvider.create(
+              Map.of(RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID, providerId));
+      var resolved = provider.resolveCredentials();
+      assertEquals("akid", resolved.accessKeyId());
+      assertEquals("secret", resolved.secretAccessKey());
+    } finally {
+      RefreshingAwsCredentialsProviderRegistry.unregister(providerId);
+    }
+  }
+
+  @Test
+  void refreshingAwsCredentialsRegistryUsesAdaptiveRefreshSkewForShortLivedCredentials() {
+    java.time.Instant now = java.time.Instant.now();
+    java.time.Duration skew =
+        RefreshingAwsCredentialsProviderRegistry.computeRefreshSkew(
+            new ResolvedStorageCredentials("akid", "secret", "session", now.plusSeconds(30)),
+            java.time.Duration.ofMinutes(5));
+
+    long seconds = skew.toSeconds();
+    assertTrue(seconds >= 9L && seconds <= 10L);
   }
 
   @Test
@@ -762,6 +824,55 @@ class CredentialResolverSupportTest {
     assertNull(applied.auth().props().get("access_key_id"));
     assertNull(applied.auth().props().get("secret_access_key"));
     assertNull(applied.auth().props().get("session_token"));
+  }
+
+  @Test
+  void assumeRoleCredentialsRegisterRefreshingProvider() {
+    var creds =
+        AuthCredentials.newBuilder()
+            .setAwsAssumeRole(
+                AuthCredentials.AwsAssumeRole.newBuilder()
+                    .setRoleArn("arn:aws:iam::123456789012:role/demo")
+                    .setRoleSessionName("demo"))
+            .putProperties("aws.region", "us-east-1")
+            .build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.ICEBERG,
+            "name",
+            "https://glue.us-east-1.amazonaws.com/iceberg/",
+            Map.of("iceberg.source", "glue"),
+            new ConnectorConfig.Auth("aws-sigv4", Map.of(), Map.of()));
+
+    try (var mockedSts = mockStatic(StsClient.class)) {
+      StsClient sts = mock(StsClient.class);
+      software.amazon.awssdk.services.sts.StsClientBuilder builder =
+          mock(software.amazon.awssdk.services.sts.StsClientBuilder.class);
+      mockedSts.when(StsClient::builder).thenReturn(builder);
+      when(builder.credentialsProvider(any())).thenReturn(builder);
+      when(builder.region(any(Region.class))).thenReturn(builder);
+      when(builder.build()).thenReturn(sts);
+      when(sts.assumeRole(any(AssumeRoleRequest.class)))
+          .thenReturn(
+              AssumeRoleResponse.builder()
+                  .credentials(
+                      Credentials.builder()
+                          .accessKeyId("AKIA")
+                          .secretAccessKey("secret")
+                          .sessionToken("token")
+                          .expiration(java.time.Instant.now().plusSeconds(900))
+                          .build())
+                  .build());
+
+      ConnectorConfig applied = CredentialResolverSupport.apply(cfg, creds);
+
+      assertEquals("AKIA", applied.options().get("s3.access-key-id"));
+      assertEquals("secret", applied.options().get("s3.secret-access-key"));
+      assertEquals("token", applied.options().get("s3.session-token"));
+      assertNotNull(
+          applied.options().get(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID));
+      verify(builder).region(Region.of("us-east-1"));
+    }
   }
 
   @Test

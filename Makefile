@@ -100,10 +100,13 @@ MVN_FLAGS   := -q -T 1C --no-transfer-progress -DskipTests -DskipUTs=true -Dskip
 MVN_TESTALL := --no-transfer-progress
 TEST ?=
 TEST_SELECTOR_ARGS := $(if $(strip $(TEST)),-Dtest="$(TEST)",)
+IT_SELECTOR_ARGS := $(if $(strip $(findstring IT,$(TEST))),-Dit.test="$(TEST)",)
+FAILSAFE_SELECTOR_ARGS := $(if $(strip $(TEST)),-Dfailsafe.failIfNoSpecifiedTests=false,)
 SUREFIRE_SELECTOR_ARGS := -Dsurefire.failIfNoSpecifiedTests=false
-LOCALSTACK_TEST_GOAL := $(if $(strip $(TEST)),test,verify)
-LOCALSTACK_TEST_SKIP_ITS := $(if $(strip $(TEST)),-DskipITs=true,)
-LOCALSTACK_TEST_PROJECTS := $(if $(strip $(TEST)),service,service,protocol-gateway/iceberg-rest,client-cli)
+LOCALSTACK_TEST_HAS_IT := $(findstring IT,$(TEST))
+LOCALSTACK_TEST_GOAL := $(if $(strip $(TEST)),$(if $(strip $(LOCALSTACK_TEST_HAS_IT)),verify,test),verify)
+LOCALSTACK_TEST_SKIP_ITS := $(if $(strip $(TEST)),$(if $(strip $(LOCALSTACK_TEST_HAS_IT)),,-DskipITs=true),)
+LOCALSTACK_TEST_PROJECTS := $(if $(strip $(TEST)),$(if $(strip $(LOCALSTACK_TEST_HAS_IT)),protocol-gateway/iceberg-rest,service),service,protocol-gateway/iceberg-rest,client-cli)
 TEST_RECONCILER_PROPS := -Dfloecat.reconciler.worker.auth.required=false
 SITE_MAKEFILE ?= tools/site/make/site.mk
 
@@ -211,6 +214,7 @@ LOCALSTACK_ENV := \
 	AWS_DEFAULT_REGION=$(LOCALSTACK_REGION) \
 	AWS_ACCESS_KEY_ID=$(LOCALSTACK_ACCESS_KEY) \
 	AWS_SECRET_ACCESS_KEY=$(LOCALSTACK_SECRET_KEY) \
+	AWS_SESSION_TOKEN= \
 	AWS_REQUEST_CHECKSUM_CALCULATION=WHEN_REQUIRED \
 	AWS_RESPONSE_CHECKSUM_VALIDATION=WHEN_REQUIRED
 
@@ -348,7 +352,7 @@ test: $(PROTO_JAR) keycloak-up
 	  echo "==> [BUILD] installing parent POM to local repo"; \
 	  $(MVN) $(MVN_TESTALL) install -N; \
 	  echo "==> [TEST] service + REST gateway + client-cli (unit + IT, in-memory)"; \
-	  $(MVN) $(MVN_TESTALL) \
+  $(MVN) $(MVN_TESTALL) $(SUREFIRE_SELECTOR_ARGS) $(FAILSAFE_SELECTOR_ARGS) $(TEST_SELECTOR_ARGS) $(IT_SELECTOR_ARGS) \
 	    -Dfloecat.fixtures.use-aws-s3=false \
 	    $(TEST_RECONCILER_PROPS) \
 	    -pl service,protocol-gateway/iceberg-rest,client-cli -am \
@@ -366,7 +370,7 @@ test-localstack: $(PROTO_JAR) localstack-down localstack-up keycloak-up
 	  $(MVN) $(MVN_TESTALL) install -N; \
 	  echo "==> [TEST] LocalStack suite goal=$(LOCALSTACK_TEST_GOAL) projects=$(LOCALSTACK_TEST_PROJECTS) test=$(TEST)"; \
 	  $(LOCALSTACK_ENV) \
-	  $(MVN) $(MVN_TESTALL) $(SUREFIRE_SELECTOR_ARGS) $(TEST_SELECTOR_ARGS) $(LOCALSTACK_TEST_SKIP_ITS) $(CATALOG_LOCALSTACK_PROPS) $(FIXTURE_LOCALSTACK_PROPS) $(REST_LOCALSTACK_IO_PROPS) $(TEST_RECONCILER_PROPS) \
+  $(MVN) $(MVN_TESTALL) $(SUREFIRE_SELECTOR_ARGS) $(FAILSAFE_SELECTOR_ARGS) $(TEST_SELECTOR_ARGS) $(IT_SELECTOR_ARGS) $(LOCALSTACK_TEST_SKIP_ITS) $(CATALOG_LOCALSTACK_PROPS) $(FIXTURE_LOCALSTACK_PROPS) $(REST_LOCALSTACK_IO_PROPS) $(TEST_RECONCILER_PROPS) \
 	    -pl $(LOCALSTACK_TEST_PROJECTS) -am \
 	    $(LOCALSTACK_TEST_GOAL)'
 
@@ -467,6 +471,7 @@ run-service: jar-dependencies
 	@echo "==> [DEV] quarkus:dev (profile=$(QUARKUS_PROFILE), seeded fake data)"
 	$(MVN) -f ./pom.xml \
 	  -Dquarkus.profile=$(QUARKUS_PROFILE) \
+          -Dfloecat.reconciler.worker.auth.required=false \
 	  -Dfloecat.seed.enabled=true \
 	  -Dfloecat.seed.mode=fake \
 	  -Dfloecat.fixtures.use-aws-s3=false \

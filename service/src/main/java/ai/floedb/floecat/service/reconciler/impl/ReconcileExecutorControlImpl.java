@@ -775,6 +775,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       .setPlanId(payload.planId())
                       .setGroupId(payload.groupId())
                       .addAllFilePaths(payload.plannedFilePaths())
+                      .setStorageLocation(payload.storageLocation())
                       .setCapturePolicy(
                           ai.floedb.floecat.connector.rpc.CapturePolicy.newBuilder()
                               .addAllColumns(

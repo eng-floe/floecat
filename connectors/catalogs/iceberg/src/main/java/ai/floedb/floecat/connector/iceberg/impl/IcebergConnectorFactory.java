@@ -18,6 +18,8 @@ package ai.floedb.floecat.connector.iceberg.impl;
 
 import ai.floedb.floecat.connector.common.auth.AwsGlueClientFactory;
 import ai.floedb.floecat.connector.common.auth.AwsProfileSupport;
+import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
+import ai.floedb.floecat.connector.common.auth.RegistryBackedAwsCredentialsProvider;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import java.time.Duration;
 import java.util.Collections;
@@ -41,6 +43,9 @@ final class IcebergConnectorFactory {
   private static final ConcurrentMap<CatalogCacheKey, CatalogCacheEntry> REST_CATALOG_CACHE =
       new ConcurrentHashMap<>();
   private static final String DEFAULT_S3_FILE_IO = "org.apache.iceberg.aws.s3.S3FileIO";
+  private static final String CLIENT_CREDENTIALS_PROVIDER = "client.credentials-provider";
+  private static final String CLIENT_CREDENTIALS_PROVIDER_PREFIX =
+      CLIENT_CREDENTIALS_PROVIDER + ".";
 
   private IcebergConnectorFactory() {}
 
@@ -279,6 +284,21 @@ final class IcebergConnectorFactory {
 
   static void applyStorageAuth(
       Map<String, String> props, String authScheme, Map<String, String> authProps) {
+    String refreshProviderId =
+        props.get(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
+    if (!isBlank(refreshProviderId)) {
+      props.putIfAbsent("io-impl", DEFAULT_S3_FILE_IO);
+      props.put(CLIENT_CREDENTIALS_PROVIDER, RegistryBackedAwsCredentialsProvider.class.getName());
+      props.put(
+          CLIENT_CREDENTIALS_PROVIDER_PREFIX
+              + RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID,
+          refreshProviderId);
+      props.remove("s3.access-key-id");
+      props.remove("s3.secret-access-key");
+      props.remove("s3.session-token");
+      normalizeAwsRegionProperties(props);
+      return;
+    }
     Map<String, String> safeAuthProps = authProps == null ? Collections.emptyMap() : authProps;
     String scheme = (authScheme == null ? "none" : authScheme.trim().toLowerCase(Locale.ROOT));
     switch (scheme) {

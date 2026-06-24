@@ -735,6 +735,7 @@ class GrpcRemoteReconcileExecutorClientTest {
         ai.floedb.floecat.connector.rpc.Connector.getDefaultInstance(),
         "db",
         "events",
+        "s3://bucket/path",
         ResourceId.newBuilder()
             .setAccountId("acct")
             .setKind(ResourceKind.RK_TABLE)

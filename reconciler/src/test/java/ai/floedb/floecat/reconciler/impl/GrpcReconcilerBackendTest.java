@@ -57,7 +57,6 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.connector.delta.uc.impl.UnityDeltaConnector;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
@@ -582,11 +581,13 @@ class GrpcReconcilerBackendTest {
     backend.fetchSnapshotFilePlan(reconcileContext(), tableId, 44L);
 
     var configCaptor = org.mockito.ArgumentCaptor.forClass(ConnectorConfig.class);
-    verify(backend.serverSideStorageConfigResolver).resolve(any(), any(), configCaptor.capture());
-    assertThat(configCaptor.getValue().options())
-        .containsEntry(UnityDeltaConnector.TABLE_ROOT_HINT_FULL_NAME_OPTION, "main.sales.orders")
-        .containsEntry(
-            UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION, "s3://bucket/path/orders");
+    @SuppressWarnings("unchecked")
+    var locationCaptor = org.mockito.ArgumentCaptor.forClass(Optional.class);
+    verify(backend.serverSideStorageConfigResolver)
+        .resolveWithAuthorization(
+            any(), any(), any(), locationCaptor.capture(), any(), configCaptor.capture());
+    assertThat(locationCaptor.getValue()).contains("s3://bucket/path/orders");
+    assertThat(configCaptor.getValue().options()).doesNotContainKey("delta.table-root");
   }
 
   @Test

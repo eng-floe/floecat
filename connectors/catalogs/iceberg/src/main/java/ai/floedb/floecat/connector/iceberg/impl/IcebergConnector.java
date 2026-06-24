@@ -217,6 +217,10 @@ public abstract class IcebergConnector implements FloecatConnector {
     Schema schema = table.schema();
     String schemaJson = SchemaParser.toJson(schema);
     List<String> partitionKeys = table.spec().fields().stream().map(f -> f.name()).toList();
+    Map<String, String> properties = new LinkedHashMap<>(table.properties());
+    if (table.location() != null && !table.location().isBlank()) {
+      properties.put("storage_location", table.location());
+    }
 
     return new TableDescriptor(
         namespaceFq,
@@ -225,7 +229,7 @@ public abstract class IcebergConnector implements FloecatConnector {
         schemaJson,
         partitionKeys,
         ColumnIdAlgorithm.CID_FIELD_ID,
-        table.properties());
+        Map.copyOf(properties));
   }
 
   @Override

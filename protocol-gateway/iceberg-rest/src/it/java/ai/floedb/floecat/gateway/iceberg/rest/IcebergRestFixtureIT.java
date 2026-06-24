@@ -69,7 +69,6 @@ import ai.floedb.floecat.connector.rpc.CaptureOutput;
 import ai.floedb.floecat.connector.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
-import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.storage.rpc.CreateStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.ListStorageAuthoritiesRequest;
 import ai.floedb.floecat.storage.rpc.StorageAuthoritiesGrpc;

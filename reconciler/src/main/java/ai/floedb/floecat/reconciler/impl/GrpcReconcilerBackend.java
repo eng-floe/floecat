@@ -74,9 +74,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
-import ai.floedb.floecat.connector.delta.uc.impl.UnityDeltaConnector;
 import ai.floedb.floecat.connector.rpc.Connector;
-import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
@@ -564,7 +562,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       request.columnSelectorPolicy(),
                       request.requestedStatsTargetKinds(),
                       request.capturePageIndex(),
-                      ctx.authorizationToken()));
+                      Optional.of(sourceCtx.storageLocation()),
+                      ctx.authorizationToken(),
+                      ctx.executionJobId(),
+                      ctx.executionLeaseEpoch()));
           if (!request.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
             return capture;
           }
@@ -1524,11 +1525,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         resolveServerSideStorage(
             ctx,
             connector,
-            withDeltaTableStorageLocationHint(
-                connector,
-                resolveCredentials(
-                    ConnectorConfigMapper.fromProto(connector), connector.getAuth(), connectorId),
-                sourceContext.get()));
+            resolveCredentials(
+                ConnectorConfigMapper.fromProto(connector), connector.getAuth(), connectorId),
+            Optional.of(sourceContext.get().storageLocation())
+                .filter(location -> !location.isBlank()));
     try (FloecatConnector source = connectorOpener.open(config)) {
       return operation.apply(source, sourceContext.get());
     } catch (RuntimeException e) {
@@ -1568,32 +1568,20 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   private ConnectorConfig resolveServerSideStorage(
-      ReconcileContext ctx, Connector connector, ConnectorConfig config) {
+      ReconcileContext ctx,
+      Connector connector,
+      ConnectorConfig config,
+      Optional<String> storageLocation) {
     if (serverSideStorageConfigResolver == null) {
       return config;
     }
-    return serverSideStorageConfigResolver.resolve(Optional.of(ctx), connector, config);
-  }
-
-  private static ConnectorConfig withDeltaTableStorageLocationHint(
-      Connector connector, ConnectorConfig config, SourceConnectorContext sourceContext) {
-    if (connector == null
-        || connector.getKind() != ConnectorKind.CK_DELTA
-        || config == null
-        || sourceContext == null
-        || sourceContext.storageLocation().isBlank()
-        || sourceContext.sourceNamespace().isBlank()
-        || sourceContext.sourceTable().isBlank()) {
-      return config;
-    }
-    LinkedHashMap<String, String> options = new LinkedHashMap<>(config.options());
-    options.put(
-        UnityDeltaConnector.TABLE_ROOT_HINT_FULL_NAME_OPTION,
-        sourceContext.sourceNamespace() + "." + sourceContext.sourceTable());
-    options.put(
-        UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION, sourceContext.storageLocation());
-    return new ConnectorConfig(
-        config.kind(), config.displayName(), config.uri(), Map.copyOf(options), config.auth());
+    return serverSideStorageConfigResolver.resolveWithAuthorization(
+        ctx.authorizationToken(),
+        ctx.executionJobId(),
+        ctx.executionLeaseEpoch(),
+        storageLocation,
+        connector,
+        config);
   }
 
   private static boolean isMissingObjectFailure(Throwable t) {

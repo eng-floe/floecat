@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
@@ -45,15 +46,14 @@ import ai.floedb.floecat.storage.rpc.ListStorageAuthoritiesRequest;
 import ai.floedb.floecat.storage.rpc.ListStorageAuthoritiesResponse;
 import ai.floedb.floecat.storage.rpc.ResolveSnapshotCompatStorageRequest;
 import ai.floedb.floecat.storage.rpc.ResolveSnapshotCompatStorageResponse;
-import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityForAccountLocationRequest;
-import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityForLocationRequest;
-import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.StorageAuthorities;
 import ai.floedb.floecat.storage.rpc.StorageAuthority;
 import ai.floedb.floecat.storage.rpc.StorageAuthoritySpec;
+import ai.floedb.floecat.storage.rpc.StorageCredentialUsage;
 import ai.floedb.floecat.storage.rpc.UpdateStorageAuthorityRequest;
 import ai.floedb.floecat.storage.rpc.UpdateStorageAuthorityResponse;
+import ai.floedb.floecat.storage.rpc.VendStorageCredentialsRequest;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
@@ -90,6 +90,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   @Inject SecretsManager secretsManager;
   @Inject TableRepository tableRepo;
   @Inject SnapshotRepository snapshotRepo;
+  @Inject ReconcileJobStore reconcileJobs;
 
   @ConfigProperty(name = "floecat.blob")
   String blobStoreType;
@@ -281,108 +282,34 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   }
 
   @Override
-  public Uni<ResolveStorageAuthorityResponse> resolveStorageAuthority(
-      ResolveStorageAuthorityRequest request) {
+  public Uni<ResolveStorageAuthorityResponse> vendStorageCredentials(
+      VendStorageCredentialsRequest request) {
     return mapFailures(
         run(
             () -> {
               PrincipalContext principal = principalProvider.get();
-              authz.require(principal, List.of("connector.read", "table.read", "catalog.read"));
-              ResourceId tableId =
-                  scopedTableId(principal.getAccountId(), request.getTableId(), correlationId());
-              String requestedLocationPrefix =
-                  request.hasLocationPrefix() ? trimToNull(request.getLocationPrefix()) : null;
-              Table tableRecord = loadVisibleTable(tableId);
-              String resolvedLocationPrefix = resolveTableLocationPrefix(tableRecord);
-              if (resolvedLocationPrefix == null && request.getRequired()) {
-                throw new IllegalArgumentException(
-                    "Credential vending was requested but no concrete storage location is available for this table");
-              }
-              if (requestedLocationPrefix != null
-                  && resolvedLocationPrefix != null
-                  && !StorageAuthorityResolver.matchesLocationPrefix(
-                      requestedLocationPrefix, resolvedLocationPrefix)) {
-                throw GrpcErrors.invalidArgument(
-                    correlationId(), null, Map.of("field", "location_prefix"));
-              }
-              String locationPrefix =
-                  requestedLocationPrefix != null
-                      ? requestedLocationPrefix
-                      : resolvedLocationPrefix;
-              List<StorageAuthority> authorities =
-                  repo.list(tableId.getAccountId(), Integer.MAX_VALUE, "", new StringBuilder());
-              StorageAuthority authority =
-                  StorageAuthorityResolver.resolveBest(authorities, locationPrefix).orElse(null);
-              return resolver.buildResponse(
-                  authority,
-                  locationPrefix,
-                  tableId.getAccountId(),
-                  request.getIncludeCredentials(),
-                  request.getRequired(),
-                  request.getServerSide());
-            }),
-        correlationId());
-  }
-
-  @Override
-  public Uni<ResolveStorageAuthorityResponse> resolveStorageAuthorityForLocation(
-      ResolveStorageAuthorityForLocationRequest request) {
-    return mapFailures(
-        run(
-            () -> {
-              PrincipalContext principal = principalProvider.get();
-              authz.require(principal, RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL);
-              String locationPrefix =
-                  request.hasLocationPrefix() ? trimToNull(request.getLocationPrefix()) : null;
-              if (locationPrefix == null && request.getRequired()) {
-                throw new IllegalArgumentException(
-                    "Credential vending was requested but no concrete storage location is available for this table");
-              }
-              List<StorageAuthority> authorities =
-                  repo.list(principal.getAccountId(), Integer.MAX_VALUE, "", new StringBuilder());
-              StorageAuthority authority =
-                  StorageAuthorityResolver.resolveBest(authorities, locationPrefix).orElse(null);
-              return resolver.buildResponse(
-                  authority,
-                  locationPrefix,
-                  principal.getAccountId(),
-                  request.getIncludeCredentials(),
-                  request.getRequired(),
-                  true);
-            }),
-        correlationId());
-  }
-
-  @Override
-  public Uni<ResolveStorageAuthorityResponse> resolveStorageAuthorityForAccountLocation(
-      ResolveStorageAuthorityForAccountLocationRequest request) {
-    return mapFailures(
-        run(
-            () -> {
-              PrincipalContext principal = principalProvider.get();
-              authz.require(principal, RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL);
               String accountId = trimToNull(request.getAccountId());
               if (accountId == null) {
                 throw GrpcErrors.invalidArgument(
                     correlationId(), null, Map.of("field", "account_id"));
               }
-              String locationPrefix =
-                  request.hasLocationPrefix() ? trimToNull(request.getLocationPrefix()) : null;
-              if (locationPrefix == null && request.getRequired()) {
-                throw new IllegalArgumentException(
-                    "Credential vending was requested but no concrete storage location is available for this table");
-              }
+              boolean serverSide = usage(request) == StorageCredentialUsage.SCU_SERVER;
+              CredentialScope credentialScope =
+                  authorizeAndResolveLocation(principal, request, accountId);
               List<StorageAuthority> authorities =
                   repo.list(accountId, Integer.MAX_VALUE, "", new StringBuilder());
               StorageAuthority authority =
-                  StorageAuthorityResolver.resolveBest(authorities, locationPrefix).orElse(null);
+                  StorageAuthorityResolver.resolveBest(
+                          authorities, credentialScope.authorityLookupLocationPrefix())
+                      .orElse(null);
+              validateAuthorityCoversSessionScope(
+                  authority, credentialScope.sessionScopeLocations());
               return resolver.buildResponse(
                   authority,
-                  locationPrefix,
+                  credentialScope.responseLocationPrefix(),
+                  credentialScope.sessionScopeLocations(),
                   accountId,
-                  request.getIncludeCredentials(),
-                  request.getRequired(),
-                  true);
+                  serverSide);
             }),
         correlationId());
   }
@@ -452,8 +379,11 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     if (trimToNull(spec.getLocationPrefix()) == null) {
       throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "spec.location_prefix"));
     }
-    if (creating && !hasCredentials(spec)) {
-      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "spec.credentials"));
+    if (creating
+        && !hasCredentials(spec)
+        && (trimToNull(spec.hasAssumeRoleArn() ? spec.getAssumeRoleArn() : null) == null)) {
+      throw GrpcErrors.invalidArgument(
+          corr, null, Map.of("field", "spec.credentials|spec.assume_role_arn"));
     }
   }
 
@@ -487,55 +417,213 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   }
 
   private String resolveTableLocationPrefix(Table table) {
-    if (table == null) {
+    return TableStorageLocationResolver.resolveTableLocation(table, snapshotRepo);
+  }
+
+  private CredentialScope authorizeAndResolveLocation(
+      PrincipalContext principal, VendStorageCredentialsRequest request, String accountId) {
+    if (request.hasExecutionBinding() && request.getExecutionBinding().hasReconcileLease()) {
+      authz.require(principal, RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL);
+      return resolveExecutionBoundLocation(request, validateExecutionLease(request, accountId));
+    }
+    if (request.hasTableId()) {
+      authz.require(principal, List.of("connector.read", "table.read", "catalog.read"));
+      ResourceId tableId =
+          scopedTableId(principal.getAccountId(), request.getTableId(), correlationId());
+      if (!accountId.equals(tableId.getAccountId())) {
+        throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("field", "account_id"));
+      }
+      String locationPrefix = resolveTableScopedLocation(request, tableId);
+      return CredentialScope.forSingleLocation(locationPrefix);
+    }
+    authz.require(principal, RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL);
+    return CredentialScope.forSingleLocation(validateExplicitLocation(request));
+  }
+
+  private String resolveTableScopedLocation(
+      VendStorageCredentialsRequest request, ResourceId tableId) {
+    String requestedLocationPrefix =
+        request.hasLocationPrefix() ? trimToNull(request.getLocationPrefix()) : null;
+    Table tableRecord = loadVisibleTable(tableId);
+    String resolvedLocationPrefix = resolveTableLocationPrefix(tableRecord);
+    if (resolvedLocationPrefix == null) {
+      throw new IllegalArgumentException(
+          "Credential vending was requested but no concrete storage location is available for this table");
+    }
+    if (requestedLocationPrefix != null
+        && resolvedLocationPrefix != null
+        && !StorageAuthorityResolver.matchesLocationPrefix(
+            requestedLocationPrefix, resolvedLocationPrefix)) {
+      throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("field", "location_prefix"));
+    }
+    return requestedLocationPrefix != null ? requestedLocationPrefix : resolvedLocationPrefix;
+  }
+
+  private String validateExplicitLocation(VendStorageCredentialsRequest request) {
+    String locationPrefix =
+        request.hasLocationPrefix() ? trimToNull(request.getLocationPrefix()) : null;
+    if (locationPrefix == null) {
+      throw new IllegalArgumentException(
+          "Credential vending was requested but no concrete storage location is available for this table");
+    }
+    return locationPrefix;
+  }
+
+  private CredentialScope resolveExecutionBoundLocation(
+      VendStorageCredentialsRequest request, ReconcileJobStore.ReconcileJob job) {
+    String requestedLocationPrefix = validateExplicitLocation(request);
+    CredentialScope scope = resolveLeaseScopedLocation(job);
+    if (scope == null || scope.authorityLookupLocationPrefix() == null) {
+      throw io.grpc.Status.FAILED_PRECONDITION
+          .withDescription("reconcile lease is not bound to a concrete storage location")
+          .asRuntimeException();
+    }
+    if (requestedLocationPrefix == null) {
+      return scope;
+    }
+    if (!isWithinExecutionScope(requestedLocationPrefix, scope)) {
+      throw io.grpc.Status.PERMISSION_DENIED
+          .withDescription("requested location is outside the leased reconcile storage scope")
+          .asRuntimeException();
+    }
+    return scope.withResponseLocationPrefix(requestedLocationPrefix);
+  }
+
+  private static StorageCredentialUsage usage(VendStorageCredentialsRequest request) {
+    if (request == null || request.getUsage() == StorageCredentialUsage.SCU_UNSPECIFIED) {
+      return StorageCredentialUsage.SCU_CLIENT;
+    }
+    return request.getUsage();
+  }
+
+  private ReconcileJobStore.ReconcileJob validateExecutionLease(
+      VendStorageCredentialsRequest request, String accountId) {
+    if (request == null) {
       return null;
     }
-    String sourceMetadataLocation =
-        resolveStorageUri(table.getPropertiesMap().get("source_metadata_location"));
-    if (sourceMetadataLocation != null) {
-      return sourceMetadataLocation;
+    if (!request.hasExecutionBinding() || !request.getExecutionBinding().hasReconcileLease()) {
+      return null;
     }
-    String location = resolveStorageUri(table.getPropertiesMap().get("location"));
-    if (location != null) {
-      return location;
+    String jobId = trimToNull(request.getExecutionBinding().getReconcileLease().getJobId());
+    String leaseEpoch =
+        trimToNull(request.getExecutionBinding().getReconcileLease().getLeaseEpoch());
+    if (jobId == null || leaseEpoch == null) {
+      throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("field", "execution_binding"));
     }
-    String storageLocation = resolveStorageUri(table.getPropertiesMap().get("storage_location"));
-    if (storageLocation != null) {
-      return storageLocation;
+    boolean renewed = reconcileJobs.renewLease(jobId, leaseEpoch);
+    if (!renewed) {
+      throw io.grpc.Status.FAILED_PRECONDITION
+          .withDescription("reconcile lease is no longer valid")
+          .asRuntimeException();
     }
-    String deltaTableRoot = resolveStorageUri(table.getPropertiesMap().get("delta.table-root"));
-    if (deltaTableRoot != null) {
-      return deltaTableRoot;
+    ReconcileJobStore.ReconcileJob job =
+        reconcileJobs
+            .getLeaseView(jobId)
+            .orElseThrow(
+                () ->
+                    io.grpc.Status.NOT_FOUND
+                        .withDescription("reconcile job not found: " + jobId)
+                        .asRuntimeException());
+    if (!accountId.equals(job.accountId)) {
+      throw io.grpc.Status.PERMISSION_DENIED
+          .withDescription("reconcile lease account does not match requested account")
+          .asRuntimeException();
     }
-    String externalLocation = resolveStorageUri(table.getPropertiesMap().get("external.location"));
-    if (externalLocation != null) {
-      return externalLocation;
+    if (!isActiveLeasedState(job.state)) {
+      throw io.grpc.Status.FAILED_PRECONDITION
+          .withDescription(
+              "reconcile job is no longer active for lease "
+                  + jobId
+                  + " state="
+                  + (job.state == null ? "" : job.state))
+          .asRuntimeException();
     }
-    String currentSnapshotId = table.getPropertiesMap().get("current-snapshot-id");
-    if (currentSnapshotId != null && !currentSnapshotId.isBlank()) {
-      try {
-        long snapshotId = Long.parseLong(currentSnapshotId);
-        String metadataLocation =
-            snapshotRepo
-                .getById(table.getResourceId(), snapshotId)
-                .map(SnapshotRepository::metadataLocation)
-                .orElse(null);
-        if (metadataLocation != null && !metadataLocation.isBlank()) {
-          int idx = metadataLocation.indexOf("/metadata/");
-          if (idx > 0) {
-            return metadataLocation.substring(0, idx);
-          }
-          int slash = metadataLocation.lastIndexOf('/');
-          if (slash > 0) {
-            return metadataLocation.substring(0, slash);
-          }
-        }
-      } catch (NumberFormatException ignored) {
-        // Ignore malformed current snapshot pointers and continue to upstream URI fallback.
+    return job;
+  }
+
+  private static boolean isActiveLeasedState(String state) {
+    return "JS_LEASED".equals(state) || "JS_RUNNING".equals(state) || "JS_CANCELLING".equals(state);
+  }
+
+  private CredentialScope resolveLeaseScopedLocation(ReconcileJobStore.ReconcileJob job) {
+    if (job == null) {
+      return null;
+    }
+    String tableId = leasedTableId(job);
+    if (tableId == null) {
+      return null;
+    }
+    String locationPrefix =
+        resolveTableLocationPrefix(
+            loadVisibleTable(
+                ResourceId.newBuilder()
+                    .setAccountId(job.accountId)
+                    .setKind(ResourceKind.RK_TABLE)
+                    .setId(tableId)
+                    .build()));
+    return CredentialScope.forSingleLocation(locationPrefix);
+  }
+
+  private static boolean isWithinExecutionScope(
+      String requestedLocationPrefix, CredentialScope scope) {
+    if (requestedLocationPrefix == null || scope == null) {
+      return false;
+    }
+    List<String> sessionScopes = scope.sessionScopeLocations();
+    if (sessionScopes == null || sessionScopes.isEmpty()) {
+      return StorageAuthorityResolver.matchesLocationPrefix(
+          requestedLocationPrefix, scope.authorityLookupLocationPrefix());
+    }
+    for (String sessionScope : sessionScopes) {
+      if (StorageAuthorityResolver.matchesLocationPrefix(sessionScope, requestedLocationPrefix)
+          || StorageAuthorityResolver.matchesLocationPrefix(
+              requestedLocationPrefix, sessionScope)) {
+        return true;
       }
     }
-    String upstreamUri = table.hasUpstream() ? table.getUpstream().getUri() : null;
-    return resolveStorageUri(upstreamUri);
+    return false;
+  }
+
+  private static void validateAuthorityCoversSessionScope(
+      StorageAuthority authority, List<String> sessionScopeLocations) {
+    if (authority == null
+        || sessionScopeLocations == null
+        || sessionScopeLocations.isEmpty()
+        || authority.getLocationPrefix().isBlank()) {
+      return;
+    }
+    for (String sessionScopeLocation : sessionScopeLocations) {
+      if (!StorageAuthorityResolver.matchesLocationPrefix(
+          sessionScopeLocation, authority.getLocationPrefix())) {
+        throw io.grpc.Status.FAILED_PRECONDITION
+            .withDescription("leased reconcile storage scope spans multiple storage authorities")
+            .asRuntimeException();
+      }
+    }
+  }
+
+  private static String leasedTableId(ReconcileJobStore.ReconcileJob job) {
+    if (job == null) {
+      return null;
+    }
+    if (job.fileGroupTask != null && !job.fileGroupTask.tableId().isBlank()) {
+      return job.fileGroupTask.tableId();
+    }
+    if (job.snapshotTask != null && !job.snapshotTask.tableId().isBlank()) {
+      return job.snapshotTask.tableId();
+    }
+    if (job.tableTask != null
+        && job.tableTask.destinationTableId() != null
+        && !job.tableTask.destinationTableId().isBlank()) {
+      return job.tableTask.destinationTableId();
+    }
+    return null;
+  }
+
+  private static boolean isExecutionBound(VendStorageCredentialsRequest request) {
+    return request != null
+        && request.hasExecutionBinding()
+        && request.getExecutionBinding().hasReconcileLease();
   }
 
   private String resolveSnapshotCompatLocationPrefix(ResourceId tableId, long snapshotId) {
@@ -573,35 +661,28 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
         .build();
   }
 
-  private static String resolveStorageUri(String value) {
-    if (value == null || value.isBlank()) {
-      return null;
-    }
-    String trimmed = value.trim();
-    String lower = trimmed.toLowerCase(java.util.Locale.ROOT);
-    if (lower.startsWith("s3://")
-        || lower.startsWith("s3a://")
-        || lower.startsWith("s3n://")
-        || lower.startsWith("abfs://")
-        || lower.startsWith("abfss://")
-        || lower.startsWith("gs://")
-        || lower.startsWith("gcs://")
-        || lower.startsWith("wasb://")
-        || lower.startsWith("wasbs://")
-        || lower.startsWith("adl://")
-        || lower.startsWith("oss://")
-        || lower.startsWith("cos://")
-        || lower.startsWith("file://")) {
-      return trimmed;
-    }
-    return null;
-  }
-
   private void storeCredentials(String accountId, String authorityId, StorageAuthoritySpec spec) {
     if (!hasCredentials(spec)) {
       return;
     }
     storeCredentials(secretsManager, accountId, authorityId, spec.getCredentials());
+  }
+
+  private record CredentialScope(
+      String authorityLookupLocationPrefix,
+      String responseLocationPrefix,
+      List<String> sessionScopeLocations) {
+    static CredentialScope forSingleLocation(String locationPrefix) {
+      return new CredentialScope(
+          locationPrefix,
+          locationPrefix,
+          locationPrefix == null ? List.of() : List.of(locationPrefix));
+    }
+
+    CredentialScope withResponseLocationPrefix(String responseLocationPrefix) {
+      return new CredentialScope(
+          authorityLookupLocationPrefix, responseLocationPrefix, sessionScopeLocations);
+    }
   }
 
   public static void storeCredentials(

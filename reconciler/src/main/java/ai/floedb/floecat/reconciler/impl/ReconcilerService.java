@@ -25,9 +25,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
-import ai.floedb.floecat.connector.delta.uc.impl.UnityDeltaConnector;
 import ai.floedb.floecat.connector.rpc.Connector;
-import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
@@ -57,6 +55,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -1186,7 +1185,10 @@ public class ReconcilerService {
     ConnectorConfig config = ConnectorConfigMapper.fromProto(connector);
     ConnectorConfig resolved =
         resolveServerSideStorage(
-            ctx, connector, resolveCredentials(config, connector.getAuth(), connectorId));
+            ctx,
+            connector,
+            resolveCredentials(config, connector.getAuth(), connectorId),
+            sourceStorageLocation(config));
     return new ActiveConnector(
         connector,
         connector.hasSource() ? connector.getSource() : SourceSelector.getDefaultInstance(),
@@ -1219,33 +1221,8 @@ public class ReconcilerService {
     return resolveServerSideStorage(
         ctx,
         active.connector(),
-        withDeltaTableStorageLocationHint(active.connector(), active.resolvedConfig(), metadata));
-  }
-
-  private ConnectorConfig withDeltaTableStorageLocationHint(
-      Connector connector, ConnectorConfig config, DestinationTableMetadata metadata) {
-    if (connector == null
-        || config == null
-        || metadata == null
-        || connector.getKind() != ConnectorKind.CK_DELTA
-        || metadata.storageLocation() == null
-        || metadata.storageLocation().isBlank()
-        || metadata.sourceNamespace() == null
-        || metadata.sourceNamespace().isBlank()
-        || metadata.sourceName() == null
-        || metadata.sourceName().isBlank()) {
-      return config;
-    }
-    LinkedHashMap<String, String> options = new LinkedHashMap<>(config.options());
-    options.put(
-        UnityDeltaConnector.TABLE_ROOT_HINT_FULL_NAME_OPTION,
-        metadata.sourceNamespace() + "." + metadata.sourceName());
-    options.put(UnityDeltaConnector.TABLE_ROOT_HINT_LOCATION_OPTION, metadata.storageLocation());
-    if (options.equals(config.options())) {
-      return config;
-    }
-    return new ConnectorConfig(
-        config.kind(), config.displayName(), config.uri(), Map.copyOf(options), config.auth());
+        active.resolvedConfig(),
+        Optional.ofNullable(metadata.storageLocation()).filter(location -> !location.isBlank()));
   }
 
   ReconcileContext buildContext(PrincipalContext principal, Optional<String> bearerToken) {
@@ -1409,10 +1386,52 @@ public class ReconcilerService {
 
   private ConnectorConfig resolveServerSideStorage(
       ReconcileContext ctx, Connector connector, ConnectorConfig config) {
+    return resolveServerSideStorage(ctx, connector, config, Optional.empty());
+  }
+
+  private Optional<String> sourceStorageLocation(ConnectorConfig config) {
+    if (config == null) {
+      return Optional.empty();
+    }
+    if (config.kind() == ConnectorConfig.Kind.DELTA) {
+      String location = firstNonBlank(config.options().get("storage_location"));
+      if (location == null) {
+        location = firstNonBlank(config.options().get("delta.table-root"));
+      }
+      return Optional.ofNullable(location);
+    }
+    if (config.kind() == ConnectorConfig.Kind.ICEBERG) {
+      String source = firstNonBlank(config.options().get("iceberg.source"));
+      if (source != null && "filesystem".equals(source.toLowerCase(Locale.ROOT))) {
+        return Optional.ofNullable(firstNonBlank(config.uri()));
+      }
+    }
+    return Optional.empty();
+  }
+
+  private ConnectorConfig resolveServerSideStorage(
+      ReconcileContext ctx,
+      Connector connector,
+      ConnectorConfig config,
+      Optional<String> storageLocation) {
     if (serverSideStorageConfigResolver == null) {
       return config;
     }
-    return serverSideStorageConfigResolver.resolve(Optional.of(ctx), connector, config);
+    return serverSideStorageConfigResolver.resolveWithAuthorization(
+        ctx.authorizationToken(),
+        ctx.executionJobId(),
+        ctx.executionLeaseEpoch(),
+        storageLocation,
+        connector,
+        config);
+  }
+
+  private static String firstNonBlank(String value) {
+    if (value == null) {
+      return null;
+    }
+    String trimmed = value.trim();
+    return trimmed.isEmpty() ? null : trimmed;
   }
 
   record ActiveConnector(

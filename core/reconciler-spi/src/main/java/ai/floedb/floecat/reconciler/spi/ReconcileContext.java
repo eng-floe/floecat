@@ -30,6 +30,8 @@ public final class ReconcileContext {
   private final String source;
   private final Instant now;
   private final Optional<String> authorizationToken;
+  private final Optional<String> executionJobId;
+  private final Optional<String> executionLeaseEpoch;
 
   public ReconcileContext(
       String correlationId,
@@ -37,12 +39,38 @@ public final class ReconcileContext {
       String source,
       Instant now,
       Optional<String> authorizationToken) {
+    this(
+        correlationId,
+        principal,
+        source,
+        now,
+        authorizationToken,
+        Optional.empty(),
+        Optional.empty());
+  }
+
+  public ReconcileContext(
+      String correlationId,
+      PrincipalContext principal,
+      String source,
+      Instant now,
+      Optional<String> authorizationToken,
+      Optional<String> executionJobId,
+      Optional<String> executionLeaseEpoch) {
     this.correlationId = Objects.requireNonNull(correlationId, "correlationId");
     this.principal = Objects.requireNonNull(principal, "principal");
     this.source = Objects.requireNonNull(source, "source");
     this.now = Objects.requireNonNull(now, "now");
     this.authorizationToken =
         Objects.requireNonNull(authorizationToken, "authorizationToken")
+            .map(String::trim)
+            .filter(v -> !v.isBlank());
+    this.executionJobId =
+        Objects.requireNonNull(executionJobId, "executionJobId")
+            .map(String::trim)
+            .filter(v -> !v.isBlank());
+    this.executionLeaseEpoch =
+        Objects.requireNonNull(executionLeaseEpoch, "executionLeaseEpoch")
             .map(String::trim)
             .filter(v -> !v.isBlank());
   }
@@ -65,5 +93,13 @@ public final class ReconcileContext {
 
   public Optional<String> authorizationToken() {
     return authorizationToken;
+  }
+
+  public Optional<String> executionJobId() {
+    return executionJobId;
+  }
+
+  public Optional<String> executionLeaseEpoch() {
+    return executionLeaseEpoch;
   }
 }

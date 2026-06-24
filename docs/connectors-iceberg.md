@@ -44,6 +44,9 @@ specializing discovery and catalog wiring.
 - **Authentication** – The connector supports multiple schemes: `aws-sigv4` (default), OAuth2 token,
   or none. SigV4 configuration controls signing names and regions, uses `s3.region` when
   `rest.signing-region` is unset, and injects request headers via Iceberg REST properties.
+  When the connector uses temporary AWS credentials such as `aws-assume-role` or
+  `aws-web-identity`, Floecat preserves them as a shared refreshable AWS credentials provider so
+  Glue discovery, Iceberg `RESTCatalog`, and `S3FileIO` use the same identity.
 - **NDV** – NDV collection is optional. Controlled by `stats.ndv.enabled`, `stats.ndv.sample_fraction`,
   and `stats.ndv.max_files` connector options. NDV providers combine sampling, Puffin sketches, and
   Parquet footer data.
@@ -94,12 +97,12 @@ Connector options (part of `ConnectorSpec.properties`):
 - For `iceberg.source=filesystem`, the connector `uri` must point at a single Iceberg metadata JSON
   file. `external.namespace` and `external.table-name` remain optional logical-name overrides.
 
-Auth credential types (`--cred-type`) are documented in [`docs/cli-reference.md`](cli-reference.md).
+Auth credential types (`--cred-type`) are documented in the CLI reference listed below.
 For Iceberg, the relevant types are `bearer`, `client`, `cli` (provider=aws), `token-exchange`,
 `token-exchange-entra`, `token-exchange-gcp`, `aws`, `aws-web-identity`, and `aws-assume-role`.
 When `iceberg.source=rest` uses service-side client credentials or token exchange, the shared
-outbound token endpoint allowlist and private/loopback guards described in
-[`docs/operations.md`](operations.md) apply.
+outbound token endpoint allowlist and private/loopback guards described in the operations guide
+listed below apply.
 
 To extend behavior:
 - Provide a custom NDV provider by plugging into `GenericStatsEngine`.
@@ -108,7 +111,7 @@ To extend behavior:
 
 ## Examples & Scenarios
 - **Connector creation** – A connector spec referencing Iceberg REST looks like:
-  ```json
+  ```text
   {
     "display_name":"glue-iceberg",
     "kind":"CK_ICEBERG",
@@ -119,7 +122,7 @@ To extend behavior:
   ```
   `ConnectorsImpl` validates it by creating an `IcebergConnector` and calling `listNamespaces()`.
 - **Glue (AWS SigV4)** – CLI example using Glue discovery:
-  ```bash
+  ```
   connector create "Glue Iceberg" ICEBERG \
     "https://glue.us-east-1.amazonaws.com/iceberg/" \
     tpcds_iceberg demo \
@@ -127,8 +130,23 @@ To extend behavior:
     --dest-ns tpcds_iceberg \
     --props iceberg.source=glue
   ```
+- **Glue cross-account assume-role** – CLI example using AWS SigV4 plus an assumed role for
+  upstream Glue and S3 access:
+  ```
+  connector create "call_center" ICEBERG \
+    "https://glue.us-east-1.amazonaws.com/iceberg/" \
+    tpcds_iceberg as \
+    --dest-ns iceberg \
+    --dest-table call_center \
+    --auth-scheme aws-sigv4 \
+    --cred-type aws-assume-role \
+    --cred role_arn=arn:aws:iam::123456789012:role/floecat-prod-s3-readonly \
+    --cred aws.region=us-east-1 \
+    --props iceberg.source=glue \
+    --props s3.region=us-east-1
+  ```
 - **Nessie (REST catalog)** – CLI example using a Nessie REST endpoint:
-  ```bash
+  ```
   connector create "Nessie Iceberg" ICEBERG \
     "http://localhost:19120/iceberg" \
     tpch demo \
@@ -144,7 +162,7 @@ To extend behavior:
   depends on some other valid storage credential path. If the upstream catalog rejects delegated
   access requests, connector planning or table load will fail on the REST call.
 - **Filesystem (single table)** – CLI example using the metadata JSON as the connector URI:
-  ```bash
+  ```
   connector create "Filesystem Iceberg" ICEBERG \
     "s3://warehouse/metadata/00001.metadata.json" \
     fixtures demo \
@@ -160,6 +178,9 @@ To extend behavior:
   uses `captureSnapshotTargetStats`).
 
 ## Cross-References
-- SPI contract: [`docs/connectors-spi.md`](connectors-spi.md)
-- Delta connector for comparison: [`docs/connectors-delta.md`](connectors-delta.md)
-- Service connector management: [`docs/service.md`](service.md)
+- [`docs/cli-reference.md`](cli-reference.md)
+- [`docs/operations.md`](operations.md)
+- [`docs/connectors-spi.md`](connectors-spi.md)
+- [`docs/connectors-delta.md`](connectors-delta.md)
+- [`docs/service.md`](service.md)
+- [Storage authorities guide](storage-authorities.md)

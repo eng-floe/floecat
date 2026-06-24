@@ -326,6 +326,31 @@ class TablePropertyServiceTest {
   }
 
   @Test
+  void applyCommitPropertyUpdatesPreservesCurrentSnapshotForMetadataOnlyFormatUpgrade() {
+    Table table =
+        Table.newBuilder()
+            .putProperties("current-snapshot-id", "5239576338451716881")
+            .putProperties("last-sequence-number", "0")
+            .putProperties("format-version", "1")
+            .build();
+
+    List<Map<String, Object>> updates =
+        List.of(
+            Map.of(
+                "action",
+                "remove-properties",
+                "removals",
+                List.of("current-snapshot-id", "format-version")),
+            Map.of("action", "upgrade-format-version", "format-version", 2));
+
+    var result = service.applyCommitPropertyUpdates(() -> table, null, updates);
+
+    assertNull(result.error());
+    assertEquals("5239576338451716881", result.properties().get("current-snapshot-id"));
+    assertEquals("2", result.properties().get("format-version"));
+  }
+
+  @Test
   void applyCanonicalMetadataPropertiesNormalizesSnapshotAndRefPropertiesFromMetadata() {
     Map<String, Map<String, Object>> staleRefs = new LinkedHashMap<>();
     staleRefs.put("main", new LinkedHashMap<>(Map.of("snapshot-id", 10L, "type", "branch")));

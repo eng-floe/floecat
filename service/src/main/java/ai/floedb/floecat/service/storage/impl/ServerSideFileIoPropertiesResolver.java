@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.storage.impl;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -39,10 +40,12 @@ public class ServerSideFileIoPropertiesResolver {
           "s3.session-token");
 
   @Inject StorageAuthorityRepository repo;
+  @Inject SnapshotRepository snapshotRepo;
   @Inject StorageAuthorityResolver resolver;
 
   public Map<String, String> resolve(Table table, String location) {
-    String locationPrefix = resolveLocationPrefix(table, location);
+    String locationPrefix =
+        TableStorageLocationResolver.resolveRequestedOrTableLocation(table, location, snapshotRepo);
     ResourceId tableId = resolvePersistedTableId(table);
     if (locationPrefix == null || tableId == null) {
       return Map.of();
@@ -52,7 +55,11 @@ public class ServerSideFileIoPropertiesResolver {
     var authority = StorageAuthorityResolver.resolveBest(authorities, locationPrefix).orElse(null);
     ResolveStorageAuthorityResponse response =
         resolver.buildResponse(
-            authority, locationPrefix, tableId.getAccountId(), true, false, true);
+            authority,
+            locationPrefix,
+            locationPrefix == null ? java.util.List.of() : java.util.List.of(locationPrefix),
+            tableId.getAccountId(),
+            true);
     return mergeStorageAuthorityFileIoConfig(response);
   }
 
@@ -92,58 +99,6 @@ public class ServerSideFileIoPropertiesResolver {
         && table.hasResourceId()
         && table.getResourceId().getKind() == ResourceKind.RK_TABLE) {
       return table.getResourceId();
-    }
-    return null;
-  }
-
-  private static String resolveLocationPrefix(Table table, String location) {
-    String requestedLocation = resolveStorageUri(location);
-    if (requestedLocation != null) {
-      return requestedLocation;
-    }
-    if (table == null) {
-      return null;
-    }
-    String propertyLocation = resolveStorageUri(table.getPropertiesMap().get("location"));
-    if (propertyLocation != null) {
-      return propertyLocation;
-    }
-    String storageLocation = resolveStorageUri(table.getPropertiesMap().get("storage_location"));
-    if (storageLocation != null) {
-      return storageLocation;
-    }
-    String deltaTableRoot = resolveStorageUri(table.getPropertiesMap().get("delta.table-root"));
-    if (deltaTableRoot != null) {
-      return deltaTableRoot;
-    }
-    String externalLocation = resolveStorageUri(table.getPropertiesMap().get("external.location"));
-    if (externalLocation != null) {
-      return externalLocation;
-    }
-    String upstreamUri = table.hasUpstream() ? table.getUpstream().getUri() : null;
-    return resolveStorageUri(upstreamUri);
-  }
-
-  private static String resolveStorageUri(String value) {
-    if (value == null || value.isBlank()) {
-      return null;
-    }
-    String trimmed = value.trim();
-    String lower = trimmed.toLowerCase(java.util.Locale.ROOT);
-    if (lower.startsWith("s3://")
-        || lower.startsWith("s3a://")
-        || lower.startsWith("s3n://")
-        || lower.startsWith("abfs://")
-        || lower.startsWith("abfss://")
-        || lower.startsWith("gs://")
-        || lower.startsWith("gcs://")
-        || lower.startsWith("wasb://")
-        || lower.startsWith("wasbs://")
-        || lower.startsWith("adl://")
-        || lower.startsWith("oss://")
-        || lower.startsWith("cos://")
-        || lower.startsWith("file://")) {
-      return trimmed;
     }
     return null;
   }

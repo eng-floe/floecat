@@ -210,7 +210,6 @@ public class TableLoadService {
               ResolveSnapshotCompatStorageRequest.newBuilder()
                   .setTableId(tableRecord.getResourceId())
                   .setSnapshotId(snapshot.getSnapshotId())
-                  .setIncludeCredentials(true)
                   .build());
       if (response == null
           || !response.hasStorage()

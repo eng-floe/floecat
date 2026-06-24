@@ -29,6 +29,7 @@ public record StandaloneFileGroupExecutionPayload(
     Connector sourceConnector,
     String sourceNamespace,
     String sourceTable,
+    String storageLocation,
     ResourceId tableId,
     long snapshotId,
     String planId,
@@ -42,6 +43,7 @@ public record StandaloneFileGroupExecutionPayload(
     sourceConnector = sourceConnector == null ? Connector.getDefaultInstance() : sourceConnector;
     sourceNamespace = sourceNamespace == null ? "" : sourceNamespace.trim();
     sourceTable = sourceTable == null ? "" : sourceTable.trim();
+    storageLocation = storageLocation == null ? "" : storageLocation.trim();
     planId = planId == null ? "" : planId.trim();
     groupId = groupId == null ? "" : groupId.trim();
     plannedFilePaths =

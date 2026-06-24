@@ -56,6 +56,7 @@ import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -72,13 +73,10 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class LeasedFileGroupExecutionService extends BaseServiceImpl {
   private static final Logger LOG = Logger.getLogger(LeasedFileGroupExecutionService.class);
-  private static final String DELTA_TABLE_ROOT_HINT_FULL_NAME_OPTION =
-      "delta.table-root.hint.full-name";
-  private static final String DELTA_TABLE_ROOT_HINT_LOCATION_OPTION =
-      "delta.table-root.hint.location";
   @Inject ReconcileJobStore jobs;
   @Inject TableRepository tableRepo;
   @Inject ConnectorRepository connectorRepo;
+  @Inject SnapshotRepository snapshotRepo;
   @Inject CredentialResolver credentialResolver;
   @Inject StatsStore statsStore;
   @Inject IndexArtifactRepository indexArtifactRepo;
@@ -123,6 +121,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         resolvedConnector,
         String.join(".", table.getUpstream().getNamespacePathList()),
         table.getUpstream().getTableDisplayName(),
+        resolvePayloadStorageLocation(table),
         tableId,
         plannedTask.snapshotId(),
         plannedTask.planId(),
@@ -131,7 +130,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         FileGroupExecutionSupport.effectiveCapturePolicy(lease));
   }
 
-  private Connector withTableStorageLocationHint(Connector connector, Table table) {
+  private Connector withTableStorageLocation(Connector connector, Table table) {
     if (connector == null
         || table == null
         || connector.getKind() != ConnectorKind.CK_DELTA
@@ -142,17 +141,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     if (storageLocation == null || storageLocation.isBlank()) {
       return connector;
     }
-    if (!table.hasUpstream() || table.getUpstream().getNamespacePathCount() == 0) {
-      return connector;
-    }
-    String fullName =
-        String.join(".", table.getUpstream().getNamespacePathList())
-            + "."
-            + table.getUpstream().getTableDisplayName();
-    return connector.toBuilder()
-        .putProperties(DELTA_TABLE_ROOT_HINT_FULL_NAME_OPTION, fullName)
-        .putProperties(DELTA_TABLE_ROOT_HINT_LOCATION_OPTION, storageLocation)
-        .build();
+    return connector.toBuilder().putProperties("storage_location", storageLocation).build();
   }
 
   private Connector resolvedConnectorPayload(Connector connector, Table table) {
@@ -162,7 +151,85 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             .putAllProperties(resolved.options())
             .setAuth(toAuthConfig(resolved.auth()))
             .build();
-    return withTableStorageLocationHint(payload, table);
+    return withTableStorageLocation(payload, table);
+  }
+
+  private String resolvePayloadStorageLocation(Table table) {
+    if (table == null) {
+      return "";
+    }
+    String location = firstNonBlank(table.getPropertiesMap().get("storage_location"));
+    if (location != null) {
+      return location;
+    }
+    location = firstNonBlank(table.getPropertiesMap().get("location"));
+    if (location != null) {
+      return location;
+    }
+    location = firstNonBlank(table.getPropertiesMap().get("delta.table-root"));
+    if (location != null) {
+      return location;
+    }
+    location = firstNonBlank(table.getPropertiesMap().get("external.location"));
+    if (location != null) {
+      return location;
+    }
+    location = deriveTableRootLocation(table.getPropertiesMap().get("source_metadata_location"));
+    if (!location.isBlank()) {
+      return location;
+    }
+    String currentSnapshotId = firstNonBlank(table.getPropertiesMap().get("current-snapshot-id"));
+    if (currentSnapshotId != null && snapshotRepo != null) {
+      try {
+        long snapshotId = Long.parseLong(currentSnapshotId);
+        location =
+            snapshotRepo
+                .getById(table.getResourceId(), snapshotId)
+                .map(SnapshotRepository::metadataLocation)
+                .map(LeasedFileGroupExecutionService::deriveTableRootLocation)
+                .orElse("");
+        if (!location.isBlank()) {
+          return location;
+        }
+      } catch (NumberFormatException ignored) {
+        // Fall through to upstream URI when the snapshot id is not parseable.
+      }
+    }
+    return firstNonBlank(table.hasUpstream() ? table.getUpstream().getUri() : null, "");
+  }
+
+  private static String deriveTableRootLocation(String location) {
+    String normalized = firstNonBlank(location);
+    if (normalized == null) {
+      return "";
+    }
+    int metadataSegment = normalized.indexOf("/metadata/");
+    if (metadataSegment > 0) {
+      return normalized.substring(0, metadataSegment);
+    }
+    int deltaLogSegment = normalized.indexOf("/_delta_log/");
+    if (deltaLogSegment > 0) {
+      return normalized.substring(0, deltaLogSegment);
+    }
+    if (normalized.endsWith("/metadata")) {
+      return normalized.substring(0, normalized.length() - "/metadata".length());
+    }
+    if (normalized.endsWith("/_delta_log")) {
+      return normalized.substring(0, normalized.length() - "/_delta_log".length());
+    }
+    return normalized;
+  }
+
+  private static String firstNonBlank(String value) {
+    return firstNonBlank(value, null);
+  }
+
+  private static String firstNonBlank(String value, String defaultValue) {
+    if (value == null) {
+      return defaultValue;
+    }
+    String trimmed = value.trim();
+    return trimmed.isEmpty() ? defaultValue : trimmed;
   }
 
   public boolean persistChunk(
