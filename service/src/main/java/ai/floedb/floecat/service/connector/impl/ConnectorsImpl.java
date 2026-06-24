@@ -973,9 +973,25 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     if (policy == null) {
       return;
     }
+    if (policy.getOutputsCount() == 0) {
+      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", fieldName + ".outputs"));
+    }
     if (policy.getMaxDefaultColumns() < 0) {
       throw GrpcErrors.invalidArgument(
           corr, null, Map.of("field", fieldName + ".max_default_columns"));
+    }
+    for (int i = 0; i < policy.getColumnsCount(); i++) {
+      var column = policy.getColumns(i);
+      String columnField = fieldName + ".columns[" + i + "]";
+      if (column.getSelector().isBlank()) {
+        throw GrpcErrors.invalidArgument(corr, null, Map.of("field", columnField + ".selector"));
+      }
+      if (!column.getCaptureStats() && !column.getCaptureIndex()) {
+        throw GrpcErrors.invalidArgument(
+            corr,
+            null,
+            Map.of("field", columnField, "reason", "column capture policy has no enabled outputs"));
+      }
     }
   }
 
