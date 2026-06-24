@@ -24,13 +24,10 @@ import ai.floedb.floecat.service.repo.model.ResourceSchema;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
-import ai.floedb.floecat.telemetry.NoopObservability;
-import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
-import io.quarkus.arc.Arc;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -45,7 +42,6 @@ import org.jboss.logging.Logger;
 public class GenericResourceRepository<T, K extends ResourceKey> extends BaseResourceRepository<T> {
 
   private static final Logger log = Logger.getLogger(GenericResourceRepository.class);
-  private static final Observability NOOP_OBSERVABILITY = new NoopObservability();
 
   private final ResourceSchema<T, K> schema;
 
@@ -61,7 +57,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   public Optional<T> getByKey(K key) {
-    return get(schema.canonicalPointerForKey.apply(key));
+    return observeRepository("get_by_key", () -> get(schema.canonicalPointerForKey.apply(key)));
   }
 
   /**
@@ -84,6 +80,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    * all is a transient transaction conflict and is signalled as retryable.
    */
   public void create(T value) {
+    observeRepository(
+        "create",
+        () -> {
     K key = schema.keyFromValue.apply(value);
     String canonicalPointer = schema.canonicalPointerForKey.apply(key);
     String blobUri = schema.blobUriForKey.apply(key);
@@ -113,6 +112,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     // and classify, walking canonical-then-secondary order so a conflict reports the same
     // key/message as before.
     classifyCreateConflict(blobUri, pointerKeys);
+        });
   }
 
   private void classifyCreateConflict(String blobUri, List<String> pointerKeys) {
@@ -177,6 +177,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    * impact.
    */
   public boolean createIfAbsent(T value) {
+    return observeRepository(
+        "create_if_absent",
+        () -> {
     K key = schema.keyFromValue.apply(value);
     String canonicalPointer = schema.canonicalPointerForKey.apply(key);
     String blobUri = schema.blobUriForKey.apply(key);
@@ -202,6 +205,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     }
     return classifyCreateIfAbsentConflict(
         canonicalPointer, blobUri, pointerKeys, blobExistedBefore);
+        });
   }
 
   private boolean classifyCreateIfAbsentConflict(
@@ -277,27 +281,6 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return new CorruptionException(message);
   }
 
-  /**
-   * Resolves the application {@link Observability} via Arc. The repositories are plain helpers, not
-   * CDI beans, so rather than threading an {@code Observability} through every repository
-   * constructor we look the bean up lazily on this rare anomaly path. Outside a running Arc
-   * container (e.g. unit tests) it falls back to a no-op.
-   */
-  private static Observability observability() {
-    try {
-      var container = Arc.container();
-      if (container != null) {
-        var handle = container.instance(Observability.class);
-        if (handle.isAvailable()) {
-          return handle.get();
-        }
-      }
-    } catch (RuntimeException ignore) {
-      // Arc not initialised — fall back to the no-op below.
-    }
-    return NOOP_OBSERVABILITY;
-  }
-
   private void cleanupCreateIfAbsentBlobOnCasMiss(
       String canonicalPointer, String blobUri, boolean blobExistedBefore) {
     // For casBlobs schemas the URI is content-addressed (SHA256): concurrent writers with
@@ -328,6 +311,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    * version shift) is signalled as retryable.
    */
   public boolean update(T updatedValue, long expectedCanonicalVersion) {
+    return observeRepository(
+        "update",
+        () -> {
     K key = schema.keyFromValue.apply(updatedValue);
     String canonicalPointer = schema.canonicalPointerForKey.apply(key);
     String blobUri = schema.blobUriForKey.apply(key);
@@ -418,6 +404,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       return true;
     }
     return classifyUpdateConflict(canonicalPointer, expectedCanonicalVersion, blobUri, toAdd);
+        });
   }
 
   private boolean classifyUpdateConflict(
@@ -442,6 +429,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   public boolean delete(K key) {
+    return observeRepository(
+        "delete",
+        () -> {
     String canonicalPointer = schema.canonicalPointerForKey.apply(key);
     var canonicalPtr = pointerStore.get(canonicalPointer).orElse(null);
     if (canonicalPtr == null) {
@@ -472,9 +462,13 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       deleteQuietly(() -> blobStore.delete(blobUri));
     }
     return true;
+        });
   }
 
   public boolean deleteWithPrecondition(K key, long expectedCanonicalVersion) {
+    return observeRepository(
+        "delete_with_precondition",
+        () -> {
     String canonicalPointer = schema.canonicalPointerForKey.apply(key);
     String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
 
@@ -502,6 +496,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       deleteQuietly(() -> blobStore.delete(blobUri));
     }
     return true;
+        });
   }
 
   public MutationMeta metaFor(K key) {
@@ -509,6 +504,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   public MutationMeta metaFor(K key, Timestamp nowTs) {
+    return observeRepository(
+        "meta_for",
+        () -> {
     String canonicalPointer = schema.canonicalPointerForKey.apply(key);
     var pointer =
         pointerStore
@@ -516,8 +514,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
             .orElseThrow(
                 () ->
                     new NotFoundException(
-                        "Pointer missing for " + schema.resourceName + ": " + canonicalPointer));
+                    "Pointer missing for " + schema.resourceName + ": " + canonicalPointer));
     return safeMetaOrDefault(canonicalPointer, pointer.getBlobUri(), nowTs);
+        });
   }
 
   public MutationMeta metaForSafe(K key) {
@@ -525,6 +524,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   public MutationMeta metaForSafe(K key, Timestamp nowTs) {
+    return observeRepository(
+        "meta_for_safe",
+        () -> {
     String canonical = schema.canonicalPointerForKey.apply(key);
     var ptrOpt = pointerStore.get(canonical);
     if (schema.casBlobs && ptrOpt.isEmpty()) {
@@ -546,6 +548,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       blobUri = schema.blobUriForKey.apply(key);
     }
     return safeMetaOrDefault(canonical, blobUri, nowTs);
+        });
   }
 
   private String resolveBlobUriForDelete(K key, String canonicalPointer) {
@@ -557,5 +560,10 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       return "";
     }
     return schema.blobUriForKey.apply(key);
+  }
+
+  @Override
+  protected String resourceName() {
+    return schema.resourceName;
   }
 }

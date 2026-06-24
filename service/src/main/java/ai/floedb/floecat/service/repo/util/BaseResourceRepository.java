@@ -25,9 +25,14 @@ import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.telemetry.NoopObservability;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.ObservationScope;
+import ai.floedb.floecat.telemetry.helpers.StoreMetrics;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
+import io.quarkus.arc.Arc;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
@@ -37,8 +42,12 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 public abstract class BaseResourceRepository<T> implements ResourceRepository<T> {
+  private static final Observability NOOP_OBSERVABILITY = new NoopObservability();
+  private static volatile Observability cachedObservability;
+
   protected PointerStore pointerStore;
   protected BlobStore blobStore;
   protected ProtoParser<T> parser;
@@ -112,6 +121,9 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
   @Override
   public Optional<T> get(String key) {
+    return observeRepository(
+        "get",
+        () -> {
     var pointerStoreOpt = pointerStore.get(key);
     if (pointerStoreOpt.isEmpty()) {
       return Optional.empty();
@@ -142,6 +154,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     } catch (Exception e) {
       throw new CorruptionException("parse failed: " + blobUri, e);
     }
+        });
   }
 
   private boolean pointerChangedOrDeleted(String key, Pointer before) {
@@ -193,6 +206,9 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
   @Override
   public void putBlob(String blobUri, T value) {
+    observeRepository(
+        "put_blob",
+        () -> {
     byte[] bytes = toBytes.apply(value);
     String want = sha256B64(bytes);
     var before = blobStore.head(blobUri);
@@ -207,9 +223,13 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     if (after.isEmpty() || !want.equals(after.get().getEtag())) {
       throw new AbortRetryableException("blob write verification failed: " + blobUri);
     }
+        });
   }
 
   protected void putBlobStrictBytes(String blobUri, byte[] bytes) {
+    observeRepository(
+        "put_blob_strict",
+        () -> {
     final String want = sha256B64(bytes);
 
     if (blobStore.head(blobUri).map(h -> want.equals(h.getEtag())).orElse(false)) {
@@ -221,10 +241,14 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     if (!blobStore.head(blobUri).map(h -> want.equals(h.getEtag())).orElse(false)) {
       throw new AbortRetryableException("blob write verification failed: " + blobUri);
     }
+        });
   }
 
   @Override
   public void advancePointer(String key, String blobUri, long expectedVersion) {
+    observeRepository(
+        "advance_pointer",
+        () -> {
     var pointer = pointerStore.get(key).orElse(null);
 
     if (pointer == null) {
@@ -278,6 +302,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
             + expectedVersion
             + " actual="
             + after.getVersion());
+        });
   }
 
   /**
@@ -289,6 +314,9 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   private static final int REFS_PAGE_SIZE = 1_000;
 
   public List<Pointer> listRefsByPrefix(String prefix) {
+    return observeRepository(
+        "list_refs_by_prefix",
+        () -> {
     List<Pointer> out = new ArrayList<>();
     String token = "";
     do {
@@ -297,14 +325,18 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
       token = next.toString();
     } while (!token.isBlank());
     return out;
+        });
   }
 
   public Optional<Pointer> refByPointer(String key) {
-    return pointerStore.get(key);
+    return observeRepository("ref_by_pointer", () -> pointerStore.get(key));
   }
 
   @Override
   public List<T> listByPrefix(String prefix, int limit, String token, StringBuilder nextOut) {
+    return observeRepository(
+        "list_by_prefix",
+        () -> {
     var rows = pointerStore.listPointersByPrefix(prefix, Math.max(1, limit), token, nextOut);
     var uris = new ArrayList<String>(rows.size());
     for (var row : rows) {
@@ -331,11 +363,12 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
       }
     }
     return blobs;
+        });
   }
 
   @Override
   public int countByPrefix(String prefix) {
-    return pointerStore.countByPrefix(prefix);
+    return observeRepository("count_by_prefix", () -> pointerStore.countByPrefix(prefix));
   }
 
   protected static String sha256B64(byte[] data) {
@@ -348,6 +381,9 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected MutationMeta safeMetaOrDefault(String pointerKey, String blobUri, Timestamp nowTs) {
+    return observeRepository(
+        "meta",
+        () -> {
     var pointerOpt = pointerStore.get(pointerKey);
     var header = blobStore.head(blobUri);
     long version = pointerOpt.map(Pointer::getVersion).orElse(0L);
@@ -360,6 +396,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
         .setEtag(etag)
         .setUpdatedAt(nowTs)
         .build();
+        });
   }
 
   protected static void deleteQuietly(Runnable runnable) {
@@ -371,6 +408,9 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected void compareAndDeleteOrThrow(String key, long expectedVersion) {
+    observeRepository(
+        "compare_delete",
+        () -> {
     boolean ok = pointerStore.compareAndDelete(key, expectedVersion);
     if (!ok) {
       var cur = pointerStore.get(key).orElse(null);
@@ -387,6 +427,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
               + " actual="
               + cur.getVersion());
     }
+        });
   }
 
   protected boolean compareAndDeleteOrFalse(String key, long expectedVersion) {
@@ -399,6 +440,9 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   public String dumpByPrefix(String prefix, int pageSize) {
+    return observeRepository(
+        "dump_by_prefix",
+        () -> {
     Objects.requireNonNull(prefix, "prefix");
     final int limit = Math.max(1, pageSize);
 
@@ -437,9 +481,13 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     } while (!token.isEmpty());
 
     return stringBuilder.toString();
+        });
   }
 
   public String dumpPointer(String key) {
+    return observeRepository(
+        "dump_pointer",
+        () -> {
     var pointer = pointerStore.get(key).orElse(null);
 
     if (pointer == null) {
@@ -463,6 +511,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     return String.format(
         "version=%d etag=%s created=%s modified=%s rid=%s %s -> %s",
         pointer.getVersion(), etag, created, modified, resourceId, pointer.getKey(), blobUri);
+        });
   }
 
   protected String requireBlobReference(Pointer pointer, String pointerKey) {
@@ -474,5 +523,55 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
             + (pointerKey == null ? "" : pointerKey)
             + " kind="
             + (pointer == null ? "null" : pointer.getReferenceKind().name()));
+  }
+
+  protected String resourceName() {
+    return "resource";
+  }
+
+  protected <R> R observeRepository(String operation, Supplier<R> supplier) {
+    StoreMetrics metrics =
+        new StoreMetrics(observability(), "repository", resourceName() + "." + operation);
+    ObservationScope scope = metrics.observe();
+    try {
+      R result = supplier.get();
+      scope.success();
+      return result;
+    } catch (RuntimeException | Error e) {
+      scope.error(e);
+      throw e;
+    } finally {
+      scope.close();
+    }
+  }
+
+  protected void observeRepository(String operation, Runnable runnable) {
+    observeRepository(
+        operation,
+        () -> {
+          runnable.run();
+          return null;
+        });
+  }
+
+  protected static Observability observability() {
+    Observability cached = cachedObservability;
+    if (cached != null) {
+      return cached;
+    }
+    try {
+      var container = Arc.container();
+      if (container != null) {
+        var handle = container.instance(Observability.class);
+        if (handle.isAvailable()) {
+          Observability resolved = handle.get();
+          cachedObservability = resolved;
+          return resolved;
+        }
+      }
+    } catch (RuntimeException ignore) {
+      // Arc not initialised, common in repository unit tests.
+    }
+    return NOOP_OBSERVABILITY;
   }
 }
