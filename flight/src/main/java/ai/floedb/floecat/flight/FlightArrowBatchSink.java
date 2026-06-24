@@ -43,6 +43,12 @@ public final class FlightArrowBatchSink implements ArrowBatchSink {
   private VectorSchemaRoot schemaRoot;
   private VectorLoader loader;
   private boolean started;
+  private int batches;
+  private long rows;
+  private long copyNanos;
+  private long putNextNanos;
+  private long completeNanos;
+  private boolean completedEmptyStream;
 
   public FlightArrowBatchSink(ServerStreamListener listener, BufferAllocator allocator) {
     this.listener = Objects.requireNonNull(listener, "listener");
@@ -73,14 +79,29 @@ public final class FlightArrowBatchSink implements ArrowBatchSink {
   @Override
   public void onBatch(VectorSchemaRoot root) {
     ensureSchemaRoot(root);
-    schemaRoot.clear();
-    schemaRoot.allocateNew();
-    try (ArrowRecordBatch recordBatch = new VectorUnloader(root).getRecordBatch()) {
-      loader.load(recordBatch);
-      schemaRoot.setRowCount(recordBatch.getLength());
+
+    long copyStartNanos = System.nanoTime();
+    try {
+      schemaRoot.clear();
+      schemaRoot.allocateNew();
+      try (ArrowRecordBatch recordBatch = new VectorUnloader(root).getRecordBatch()) {
+        loader.load(recordBatch);
+        schemaRoot.setRowCount(recordBatch.getLength());
+      }
+    } finally {
+      copyNanos += Math.max(0L, System.nanoTime() - copyStartNanos);
     }
-    ensureStarted();
-    listener.putNext();
+
+    int rowCount = schemaRoot.getRowCount();
+    long putNextStartNanos = System.nanoTime();
+    try {
+      ensureStarted();
+      listener.putNext();
+      batches++;
+      rows += rowCount;
+    } finally {
+      putNextNanos += Math.max(0L, System.nanoTime() - putNextStartNanos);
+    }
   }
 
   private void ensureStarted() {
@@ -92,14 +113,20 @@ public final class FlightArrowBatchSink implements ArrowBatchSink {
 
   @Override
   public void onComplete() {
-    if (!started) {
-      ensureSchemaRoot(null);
-      schemaRoot.clear();
-      schemaRoot.allocateNew();
-      schemaRoot.setRowCount(0);
-      ensureStarted();
+    long completeStartNanos = System.nanoTime();
+    try {
+      if (!started) {
+        ensureSchemaRoot(null);
+        schemaRoot.clear();
+        schemaRoot.allocateNew();
+        schemaRoot.setRowCount(0);
+        ensureStarted();
+        completedEmptyStream = true;
+      }
+      listener.completed();
+    } finally {
+      completeNanos += Math.max(0L, System.nanoTime() - completeStartNanos);
     }
-    listener.completed();
   }
 
   public void close() {
@@ -110,5 +137,29 @@ public final class FlightArrowBatchSink implements ArrowBatchSink {
         schemaRoot = null;
       }
     }
+  }
+
+  int batches() {
+    return batches;
+  }
+
+  long rows() {
+    return rows;
+  }
+
+  long copyNanos() {
+    return copyNanos;
+  }
+
+  long putNextNanos() {
+    return putNextNanos;
+  }
+
+  long completeNanos() {
+    return completeNanos;
+  }
+
+  boolean completedEmptyStream() {
+    return completedEmptyStream;
   }
 }

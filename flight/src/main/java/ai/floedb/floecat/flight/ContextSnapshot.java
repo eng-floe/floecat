@@ -27,15 +27,19 @@ public final class ContextSnapshot {
 
   private final Map<String, Object> mdc;
   private final Context context;
+  private final io.opentelemetry.context.Context otelContext;
 
-  private ContextSnapshot(Map<String, Object> mdc, Context context) {
+  private ContextSnapshot(
+      Map<String, Object> mdc, Context context, io.opentelemetry.context.Context otelContext) {
     this.mdc = mdc;
     this.context = context;
+    this.otelContext = otelContext;
   }
 
   public static ContextSnapshot capture() {
     Map<String, Object> current = MDC.getMap();
-    return new ContextSnapshot(copy(current), Context.current());
+    return new ContextSnapshot(
+        copy(current), Context.current().fork(), io.opentelemetry.context.Context.current());
   }
 
   public AutoCloseable apply() {
@@ -46,12 +50,40 @@ public final class ContextSnapshot {
       setContext(mdc);
     }
     Context previousContext = context.attach();
+    io.opentelemetry.context.Scope previousOtelScope;
+    try {
+      previousOtelScope = otelContext.makeCurrent();
+    } catch (Throwable t) {
+      try {
+        context.detach(previousContext);
+      } finally {
+        if (previous == null || previous.isEmpty()) {
+          MDC.clear();
+        } else {
+          setContext(previous);
+        }
+      }
+      if (t instanceof RuntimeException re) {
+        throw re;
+      }
+      if (t instanceof Error e) {
+        throw e;
+      }
+      throw new IllegalStateException("Failed to restore OpenTelemetry context", t);
+    }
     return () -> {
-      context.detach(previousContext);
-      if (previous == null || previous.isEmpty()) {
-        MDC.clear();
-      } else {
-        setContext(previous);
+      try {
+        try {
+          previousOtelScope.close();
+        } finally {
+          context.detach(previousContext);
+        }
+      } finally {
+        if (previous == null || previous.isEmpty()) {
+          MDC.clear();
+        } else {
+          setContext(previous);
+        }
       }
     };
   }
