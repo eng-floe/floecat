@@ -33,9 +33,9 @@ This two-set approach keeps cardinality in check while giving you control over w
 
 ### Result/Status conventions
 
- - `result` (used in RPC scopes, store/GC helpers) conveys the logical outcome and expects values such as `success`, `error`, `retry`, `unknown`, etc. Keep the values lowercase and stable; `unknown` is reserved for lenient mode or when `ObservationScope.close()` runs without an explicit `success()` or `error()` so dashboards can distinguish missing outcomes.
- - `status` (typically the gRPC code name like `OK`, `INVALID_ARGUMENT`, `UNKNOWN`) maps to transport-layer status codes. Tags are case-sensitive (Micrometer doesn’t normalize them), so we standardize on uppercase gRPC names throughout the helpers.
- - `result` is meant for business outcomes, while `status` captures the transport-level code; both help you filter dashboards more precisely. The hub enforces these tag keys via required/allowed tag sets so reports stay consistent across modules.
+- `result` (used in RPC scopes, store/GC helpers) conveys the logical outcome and expects values such as `success`, `error`, `retry`, `unknown`, etc. Keep the values lowercase and stable; `unknown` is reserved for lenient mode or when `ObservationScope.close()` runs without an explicit `success()` or `error()` so dashboards can distinguish missing outcomes.
+- `status` (typically the gRPC code name like `OK`, `INVALID_ARGUMENT`, `UNKNOWN`) maps to transport-layer status codes. Tags are case-sensitive (Micrometer doesn’t normalize them), so we standardize on uppercase gRPC names throughout the helpers.
+- `result` is meant for business outcomes, while `status` captures the transport-level code; both help you filter dashboards more precisely. The hub enforces these tag keys via required/allowed tag sets so reports stay consistent across modules.
 
 ## Breaking changes & Versioning
 
@@ -44,6 +44,7 @@ Metric stability is critical for dashboards. The `since` column on each `MetricI
 In addition to metrics, service spans include `floecat.component` and `floecat.operation` attributes (matching the measurement dimensions). RPC spans also set `floecat.rpc.status` to the gRPC status name. Storage observations emit child spans with a `floecat.store.operation` attribute so latency/throughput links land on the correct store trace. Logs can expose those values as `floecat_component`/`floecat_operation` MDC keys, along with `traceId`/`spanId`, whenever Quarkus JSON logging (default `log-format`) writes them under the `mdc` field—Loki can then derive fields for Tempo’s **Logs for this trace** button and jump-to-trace/log links stay reliable.
 
 Quarkus already exposes the standard `jvm.*`, `processor.*`, and `system.*` metrics via its built-in Micrometer binders (`JvmMemoryMetrics`, `JvmThreadMetrics`, `ProcessorMetrics`, etc.), so we dropped the duplicated `floecat.jvm.process.cpu.usage`, `floecat.jvm.memory.used.bytes`, and `floecat.jvm.threads.count` gauges. Those conventional metrics remain available on the contract-independent canonical names, and you can reference the [OpenTelemetry JVM metric semantic conventions](https://opentelemetry.io/docs/specs/semconv/runtime/jvm-metrics/) for the complete list. We continue to emit the custom `floecat.jvm.gc.live.data.*` series because the GC policy and dashboards still graph GC live data plus growth rate via the same component/operation tags.
+
 - **Latency policies rely on Micrometer histogram percentiles**. Enable distribution statistics/percentile publishing (for example `quarkus.micrometer.export.prometheus.distribution-statistics.enabled=true` or the equivalent `distributionStatisticConfig`) so the policy can read p95/p99 instead of falling back to `Timer.max()`. Without those histograms the policy still runs but reverts to the observable maximum, making it less predictive.
 
 Executor timers (`floecat.core.exec.task.wait`/`task.run`) come from the Mutiny default executor wrapper; the Vert.x pool instrumentation backs the queue-depth, active, and rejected gauges, but it does not instrument task-submission latency.

@@ -73,6 +73,26 @@
   color: #3f2823;
 }
 
+.md-nav__link {
+  align-items: center;
+  min-height: 1.5rem;
+}
+
+.md-nav__link--active,
+.md-nav__link--active:visited,
+.md-nav__link--active .md-ellipsis,
+.md-nav__link:focus,
+.md-nav__link:hover,
+.md-nav__link:focus .md-ellipsis,
+.md-nav__link:hover .md-ellipsis,
+.md-tabs__link--active,
+.md-tabs__link:focus,
+.md-tabs__link:hover,
+.md-typeset .toclink:focus,
+.md-typeset .toclink:hover {
+  color: #084860;
+}
+
 .md-typeset h1,
 .md-typeset h2,
 .md-typeset h3 {
@@ -83,9 +103,20 @@
   color: #0b5f80;
 }
 
+.md-typeset p a,
+.md-typeset li a,
+.md-typeset td a {
+  text-decoration: underline;
+  text-underline-offset: 0.12em;
+}
+
 .md-typeset a:hover,
 .md-typeset a:focus {
   color: #084860;
+}
+
+.md-typeset .highlight .na {
+  color: #565656;
 }
 
 /* Header shortcut to jump back to Floecat site root. */
