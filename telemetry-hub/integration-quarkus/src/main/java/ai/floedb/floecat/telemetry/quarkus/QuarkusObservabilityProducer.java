@@ -39,6 +39,12 @@ public class QuarkusObservabilityProducer {
   @ConfigProperty(name = "telemetry.contract.version", defaultValue = "v1")
   String contractVersion;
 
+  @ConfigProperty(name = "telemetry.diagnostics.enabled", defaultValue = "true")
+  boolean diagnosticsEnabled;
+
+  @ConfigProperty(name = "telemetry.store-spans.enabled", defaultValue = "false")
+  boolean storeSpansEnabled;
+
   private final TelemetryRegistry telemetryRegistry = Telemetry.newRegistryWithCore();
 
   @Produces
@@ -46,7 +52,8 @@ public class QuarkusObservabilityProducer {
   public Observability observability() {
     TelemetryPolicy policy = strict ? TelemetryPolicy.STRICT : TelemetryPolicy.LENIENT;
     meterRegistry.config().commonTags("telemetry.contract.version", contractVersion);
-    return new MicrometerObservability(meterRegistry, telemetryRegistry, policy);
+    return new MicrometerObservability(
+        meterRegistry, telemetryRegistry, policy, diagnosticsEnabled, storeSpansEnabled);
   }
 
   @Produces

@@ -20,11 +20,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.ObservationScope;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
+import ai.floedb.floecat.telemetry.StoreOperationSummary;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import ai.floedb.floecat.telemetry.TestObservability;
 import ai.floedb.floecat.telemetry.TestObservability.TestStoreTraceScope;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -59,18 +63,28 @@ class StoreMetricsTest {
   @Test
   void storeMetricsNotifiesTraceScopeSuccess() {
     TestObservability observability = new TestObservability();
-    StoreMetrics metrics = new StoreMetrics(observability, "svc", "op");
-    ObservationScope scope = metrics.observe(Tag.of(TagKey.ACCOUNT, "acct"));
-    scope.success();
-    scope.close();
+    try (Scope ignored = StoreOperationSummary.start(Context.current(), true).makeCurrent()) {
+      StoreMetrics metrics = new StoreMetrics(observability, "svc", "op");
+      ObservationScope scope = metrics.observe(Tag.of(TagKey.ACCOUNT, "acct"));
+      scope.success();
+      scope.close();
 
-    List<TestStoreTraceScope> traceScopes =
-        observability.storeTraceScopes().get(Observability.Category.STORE.name());
-    assertThat(traceScopes).hasSize(1);
-    TestStoreTraceScope traceScope = traceScopes.get(0);
-    assertThat(traceScope.succeeded()).isTrue();
-    assertThat(traceScope.error()).isNull();
-    assertThat(traceScope.closed()).isTrue();
+      List<TestStoreTraceScope> traceScopes =
+          observability.storeTraceScopes().get(Observability.Category.STORE.name());
+      assertThat(traceScopes).hasSize(1);
+      TestStoreTraceScope traceScope = traceScopes.get(0);
+      assertThat(traceScope.succeeded()).isTrue();
+      assertThat(traceScope.error()).isNull();
+      assertThat(traceScope.closed()).isTrue();
+
+      PhaseDiagnostics diagnostics = observability.diagnostics("svc", "op");
+      StoreOperationSummary.addTo(diagnostics);
+      diagnostics.emit("summary");
+      assertThat(observability.diagnosticEvents().get(0).fields())
+          .containsEntry("store_operations", 1L)
+          .containsEntry("store_errors", 0L)
+          .containsEntry("svc_op_count", 1L);
+    }
   }
 
   @Test

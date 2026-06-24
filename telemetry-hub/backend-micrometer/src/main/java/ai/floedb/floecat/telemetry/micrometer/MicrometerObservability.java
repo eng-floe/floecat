@@ -22,6 +22,7 @@ import ai.floedb.floecat.telemetry.MetricType;
 import ai.floedb.floecat.telemetry.MetricValidator;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.ObservationScope;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import ai.floedb.floecat.telemetry.StoreTraceScope;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
@@ -33,6 +34,8 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.common.AttributesBuilder;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanBuilder;
 import io.opentelemetry.api.trace.SpanContext;
@@ -47,11 +50,13 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -72,6 +77,8 @@ public final class MicrometerObservability implements Observability {
 
   private final TelemetryPolicy policy;
   private final Tracer tracer;
+  private final boolean diagnosticsEnabled;
+  private final boolean storeSpansEnabled;
 
   private static final Set<String> HISTOGRAM_TIMERS =
       Set.of(
@@ -131,6 +138,15 @@ public final class MicrometerObservability implements Observability {
 
   public MicrometerObservability(
       MeterRegistry registry, TelemetryRegistry telemetryRegistry, TelemetryPolicy policy) {
+    this(registry, telemetryRegistry, policy, true, true);
+  }
+
+  public MicrometerObservability(
+      MeterRegistry registry,
+      TelemetryRegistry telemetryRegistry,
+      TelemetryPolicy policy,
+      boolean diagnosticsEnabled,
+      boolean storeSpansEnabled) {
     this.registry = Objects.requireNonNull(registry, "registry");
     this.telemetryRegistry = Objects.requireNonNull(telemetryRegistry, "telemetryRegistry");
     this.validator =
@@ -152,6 +168,8 @@ public final class MicrometerObservability implements Observability {
         descriptionFor(Telemetry.Metrics.OBSERVABILITY_REGISTRY_SIZE));
     this.policy = policy;
     this.tracer = GlobalOpenTelemetry.getTracer("ai.floedb.floecat.telemetry");
+    this.diagnosticsEnabled = diagnosticsEnabled;
+    this.storeSpansEnabled = storeSpansEnabled;
   }
 
   @Override
@@ -235,6 +253,19 @@ public final class MicrometerObservability implements Observability {
     }
     List<Tag> baseTags = buildScopeTags(component, operation, tags);
     return new MicrometerObservationScope(category, component, operation, baseTags, metrics);
+  }
+
+  @Override
+  public PhaseDiagnostics diagnostics(String component, String operation, Tag... tags) {
+    if (!diagnosticsEnabled) {
+      return PhaseDiagnostics.NOOP;
+    }
+    Span span = Span.current();
+    if (!span.getSpanContext().isValid() || !span.isRecording()) {
+      return PhaseDiagnostics.NOOP;
+    }
+    return new OtelPhaseDiagnostics(
+        component, operation, buildScopeTags(component, operation, tags), span);
   }
 
   private ScopeMetrics metricsFor(Category category) {
@@ -575,6 +606,9 @@ public final class MicrometerObservability implements Observability {
 
   @Override
   public StoreTraceScope storeTraceScope(String component, String operation, Tag... tags) {
+    if (!storeSpansEnabled) {
+      return StoreTraceScope.NOOP;
+    }
     Span parent = Span.current();
     if (!parent.getSpanContext().isValid() || !parent.isRecording()) {
       return StoreTraceScope.NOOP;
@@ -638,6 +672,144 @@ public final class MicrometerObservability implements Observability {
       } finally {
         span.end();
       }
+    }
+  }
+
+  private static final class OtelPhaseDiagnostics implements PhaseDiagnostics {
+    private static final Pattern UNSAFE_FIELD_CHARS = Pattern.compile("[^a-z0-9_]+");
+    private static final Pattern REPEATED_UNDERSCORES = Pattern.compile("_+");
+
+    private final String component;
+    private final String operation;
+    private final List<Tag> tags;
+    private final Span span;
+    private final LinkedHashMap<String, Long> timersNanos = new LinkedHashMap<>();
+    private final LinkedHashMap<String, Long> counters = new LinkedHashMap<>();
+    private final LinkedHashMap<String, Object> values = new LinkedHashMap<>();
+
+    private OtelPhaseDiagnostics(String component, String operation, List<Tag> tags, Span span) {
+      this.component = component;
+      this.operation = operation;
+      this.tags = tags == null ? List.of() : List.copyOf(tags);
+      this.span = Objects.requireNonNull(span, "span");
+    }
+
+    @Override
+    public Timer timer(String key) {
+      long startNanos = System.nanoTime();
+      return () -> nanos(key, System.nanoTime() - startNanos);
+    }
+
+    @Override
+    public void nanos(String key, long nanos) {
+      if (nanos < 0) {
+        return;
+      }
+      timersNanos.merge(msKey(key), nanos, Long::sum);
+    }
+
+    @Override
+    public void count(String key) {
+      add(key, 1L);
+    }
+
+    @Override
+    public void add(String key, long amount) {
+      counters.merge(fieldKey(key), amount, Long::sum);
+    }
+
+    @Override
+    public void put(String key, String value) {
+      values.put(fieldKey(key), value == null ? "" : value);
+    }
+
+    @Override
+    public void put(String key, long value) {
+      values.put(fieldKey(key), value);
+    }
+
+    @Override
+    public void put(String key, double value) {
+      values.put(fieldKey(key), value);
+    }
+
+    @Override
+    public void put(String key, boolean value) {
+      values.put(fieldKey(key), value);
+    }
+
+    @Override
+    public void emit(String eventName) {
+      if (!span.getSpanContext().isValid() || !span.isRecording()) {
+        return;
+      }
+      AttributesBuilder builder =
+          Attributes.builder()
+              .put("component", safe(component))
+              .put("operation", safe(operation));
+      for (Tag tag : tags) {
+        if (tag != null) {
+          builder.put("tag_" + fieldKey(tag.key()), safe(tag.value()));
+        }
+      }
+      values.forEach((key, value) -> appendAttribute(builder, key, value));
+      counters.forEach(builder::put);
+      timersNanos.forEach((key, nanos) -> builder.put(key, nanos / 1_000_000.0));
+      span.addEvent(safe(eventName), builder.build());
+    }
+
+    private static void appendAttribute(AttributesBuilder builder, String key, Object value) {
+      if (value instanceof Number number) {
+        if (value instanceof Float || value instanceof Double) {
+          builder.put(key, number.doubleValue());
+        } else {
+          builder.put(key, number.longValue());
+        }
+        return;
+      }
+      if (value instanceof Boolean bool) {
+        builder.put(key, bool.booleanValue());
+        return;
+      }
+      builder.put(key, safe(value == null ? "" : value.toString()));
+    }
+
+    private static String msKey(String key) {
+      String normalized = fieldKey(key);
+      if (normalized.endsWith("_ms")) {
+        return normalized;
+      }
+      if (normalized.endsWith("_nanos")) {
+        return normalized.substring(0, normalized.length() - "_nanos".length()) + "_ms";
+      }
+      return normalized + "_ms";
+    }
+
+    private static String fieldKey(String key) {
+      String raw = key == null ? "" : key.trim().toLowerCase(Locale.ROOT);
+      if (raw.isEmpty()) {
+        return "unknown";
+      }
+      String normalized = UNSAFE_FIELD_CHARS.matcher(raw).replaceAll("_");
+      normalized = REPEATED_UNDERSCORES.matcher(normalized).replaceAll("_");
+      normalized = stripEdgeUnderscores(normalized);
+      return normalized.isEmpty() ? "unknown" : normalized;
+    }
+
+    private static String stripEdgeUnderscores(String value) {
+      int start = 0;
+      int end = value.length();
+      while (start < end && value.charAt(start) == '_') {
+        start++;
+      }
+      while (end > start && value.charAt(end - 1) == '_') {
+        end--;
+      }
+      return value.substring(start, end);
+    }
+
+    private static String safe(String value) {
+      return value == null ? "" : value;
     }
   }
 }

@@ -38,6 +38,7 @@ public final class TestObservability implements Observability {
   private final Map<MetricId, List<Tag>> gaugeTags = new LinkedHashMap<>();
   private final Map<String, List<TestObservationScope>> scopes = new LinkedHashMap<>();
   private final Map<String, List<TestStoreTraceScope>> storeTraceScopes = new LinkedHashMap<>();
+  private final List<TestDiagnosticEvent> diagnosticEvents = new ArrayList<>();
 
   @Override
   public void counter(MetricId metric, double amount, Tag... tags) {
@@ -87,6 +88,11 @@ public final class TestObservability implements Observability {
         new TestStoreTraceScope(component, operation, List.copyOf(baseTags));
     storeTraceScopes.computeIfAbsent(Category.STORE.name(), key -> new ArrayList<>()).add(scope);
     return scope;
+  }
+
+  @Override
+  public PhaseDiagnostics diagnostics(String component, String operation, Tag... tags) {
+    return new TestPhaseDiagnostics(component, operation, copyTags(tags));
   }
 
   private static List<Tag> copyTags(Tag[] tags) {
@@ -144,6 +150,10 @@ public final class TestObservability implements Observability {
     Map<String, List<TestStoreTraceScope>> copy = new LinkedHashMap<>();
     storeTraceScopes.forEach((k, v) -> copy.put(k, List.copyOf(v)));
     return Collections.unmodifiableMap(copy);
+  }
+
+  public List<TestDiagnosticEvent> diagnosticEvents() {
+    return List.copyOf(diagnosticEvents);
   }
 
   public static final class TestObservationScope implements ObservationScope {
@@ -311,6 +321,72 @@ public final class TestObservability implements Observability {
           Telemetry.Metrics.GC_PAUSE, Telemetry.Metrics.GC_ERRORS, Telemetry.Metrics.GC_RETRIES);
 
   private record ScopeMetrics(MetricId latency, MetricId errors, MetricId retries) {}
+
+  public record TestDiagnosticEvent(
+      String component, String operation, String eventName, Map<String, Object> fields) {}
+
+  private final class TestPhaseDiagnostics implements PhaseDiagnostics {
+    private final String component;
+    private final String operation;
+    private final Map<String, Object> fields = new LinkedHashMap<>();
+
+    private TestPhaseDiagnostics(String component, String operation, List<Tag> tags) {
+      this.component = component;
+      this.operation = operation;
+      for (Tag tag : tags) {
+        fields.put(tag.key(), tag.value());
+      }
+    }
+
+    @Override
+    public Timer timer(String key) {
+      long startNanos = System.nanoTime();
+      return () -> nanos(key, System.nanoTime() - startNanos);
+    }
+
+    @Override
+    public void nanos(String key, long nanos) {
+      fields.put(key + "_ms", nanos / 1_000_000.0);
+    }
+
+    @Override
+    public void count(String key) {
+      add(key, 1L);
+    }
+
+    @Override
+    public void add(String key, long amount) {
+      Object current = fields.get(key);
+      long value = current instanceof Number number ? number.longValue() : 0L;
+      fields.put(key, value + amount);
+    }
+
+    @Override
+    public void put(String key, String value) {
+      fields.put(key, value);
+    }
+
+    @Override
+    public void put(String key, long value) {
+      fields.put(key, value);
+    }
+
+    @Override
+    public void put(String key, double value) {
+      fields.put(key, value);
+    }
+
+    @Override
+    public void put(String key, boolean value) {
+      fields.put(key, value);
+    }
+
+    @Override
+    public void emit(String eventName) {
+      diagnosticEvents.add(
+          new TestDiagnosticEvent(component, operation, eventName, Map.copyOf(fields)));
+    }
+  }
 
   public static final class TestStoreTraceScope implements StoreTraceScope {
     private final String component;

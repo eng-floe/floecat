@@ -29,7 +29,6 @@
 
   <properties>
     <grpc.version>1.81.0</grpc.version>
-    <otel.version>1.62.0</otel.version>
   </properties>
 
   <dependencies>
@@ -41,7 +40,6 @@
     <dependency>
       <groupId>io.opentelemetry</groupId>
       <artifactId>opentelemetry-api</artifactId>
-      <version>${otel.version}</version>
     </dependency>
     <dependency>
       <groupId>io.grpc</groupId>

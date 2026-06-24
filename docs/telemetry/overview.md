@@ -9,6 +9,11 @@ The telemetry hub lives under `telemetry-hub/` and provides:
 
 Use this overview to understand how metrics are named, tagged, versioned, contributed, and documented. The contract tables in `docs/telemetry/contract.md`/`contract.json`, the docgen regression test, and the demo dashboards all derive from the same registry, so keep those artifacts in sync with the ideas outlined below.
 
+For trace diagnostic events such as `floecat.rpc.summary`,
+`floecat.get_user_objects.summary`, and `floecat.flight.summary`, see
+[`docs/telemetry/diagnostics.md`](diagnostics.md). Those events are compact Jaeger summaries, not
+metric contract entries.
+
 ## Core naming & units
 
 All built-in metrics start with `floecat.core.` so dashboards and tooling can easily filter hub-supplied data. Service-specific metrics follow `floecat.service.*` (and any future origins should use `floecat.<origin>.*`) so it remains obvious where each metric comes from and there are no collisions between module contracts. For example, `floecat.core.rpc.requests` counts RPC requests while `floecat.service.gc.pointer.running` tracks the service pointer GC. Cache instrumentation exposes the full set of `floecat.core.cache.*` gauges and counters (configuration knobs, account counts, entry counts, weighted size, hits/misses, latency, errors) so operators can monitor any cache with the same metric names.

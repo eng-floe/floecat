@@ -22,6 +22,7 @@ import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.MetricType;
 import ai.floedb.floecat.telemetry.Observability.Category;
 import ai.floedb.floecat.telemetry.ObservationScope;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import ai.floedb.floecat.telemetry.StoreTraceScope;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
@@ -470,11 +471,96 @@ class MicrometerObservabilityTest {
   }
 
   @Test
+  void diagnosticsAddsEventToCurrentSpan() {
+    try (GlobalTelemetry telemetry = new GlobalTelemetry()) {
+      MicrometerObservability observability =
+          new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
+      Tracer tracer = GlobalOpenTelemetry.getTracer("test");
+      Span parent = tracer.spanBuilder("parent-span").startSpan();
+      try (Scope ignored = parent.makeCurrent()) {
+        PhaseDiagnostics diagnostics = observability.diagnostics("svc", "op");
+        diagnostics.put("found", true);
+        diagnostics.put("count", 3L);
+        diagnostics.emit("floecat.test.summary");
+      } finally {
+        parent.end();
+      }
+
+      SpanData span =
+          telemetry.exporter().getFinishedSpanItems().stream()
+              .filter(item -> item.getName().equals("parent-span"))
+              .findFirst()
+              .orElseThrow();
+      assertThat(span.getEvents())
+          .anySatisfy(
+              event -> {
+                assertThat(event.getName()).isEqualTo("floecat.test.summary");
+                assertThat(event.getAttributes().get(AttributeKey.stringKey("component")))
+                    .isEqualTo("svc");
+                assertThat(event.getAttributes().get(AttributeKey.stringKey("operation")))
+                    .isEqualTo("op");
+                assertThat(event.getAttributes().get(AttributeKey.booleanKey("found"))).isTrue();
+                assertThat(event.getAttributes().get(AttributeKey.longKey("count"))).isEqualTo(3L);
+              });
+    }
+  }
+
+  @Test
+  void diagnosticsDisabledReturnsNoop() {
+    try (GlobalTelemetry telemetry = new GlobalTelemetry()) {
+      MicrometerObservability observability =
+          new MicrometerObservability(
+              meters, telemetryRegistry, TelemetryPolicy.LENIENT, false, true);
+      Tracer tracer = GlobalOpenTelemetry.getTracer("test");
+      Span parent = tracer.spanBuilder("parent-span").startSpan();
+      try (Scope ignored = parent.makeCurrent()) {
+        observability.diagnostics("svc", "op").emit("floecat.test.summary");
+      } finally {
+        parent.end();
+      }
+
+      SpanData span =
+          telemetry.exporter().getFinishedSpanItems().stream()
+              .filter(item -> item.getName().equals("parent-span"))
+              .findFirst()
+              .orElseThrow();
+      assertThat(span.getEvents()).isEmpty();
+    }
+  }
+
+  @Test
+  void diagnosticsWithoutRecordingSpanReturnsNoop() {
+    MicrometerObservability observability =
+        new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
+
+    assertThat(observability.diagnostics("svc", "op")).isSameAs(PhaseDiagnostics.NOOP);
+  }
+
+  @Test
   void storeTraceScopeReturnsNoopWithoutParent() {
     MicrometerObservability observability =
         new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
     StoreTraceScope scope = observability.storeTraceScope("svc", "op");
     assertThat(scope).isSameAs(StoreTraceScope.NOOP);
+  }
+
+  @Test
+  void storeTraceScopeDisabledByConfigReturnsNoop() {
+    try (GlobalTelemetry telemetry = new GlobalTelemetry()) {
+      MicrometerObservability observability =
+          new MicrometerObservability(
+              meters, telemetryRegistry, TelemetryPolicy.LENIENT, true, false);
+      Tracer tracer = GlobalOpenTelemetry.getTracer("test");
+      Span parent = tracer.spanBuilder("parent-span").startSpan();
+      try (Scope ignored = parent.makeCurrent()) {
+        StoreTraceScope scope = observability.storeTraceScope("svc", "op");
+        assertThat(scope).isSameAs(StoreTraceScope.NOOP);
+      } finally {
+        parent.end();
+      }
+      assertThat(telemetry.exporter().getFinishedSpanItems())
+          .noneSatisfy(span -> assertThat(span.getName()).startsWith("store."));
+    }
   }
 
   @Test
