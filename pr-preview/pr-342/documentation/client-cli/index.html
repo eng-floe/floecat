@@ -1883,6 +1883,19 @@ namespace create demo.sales --desc &quot;Sales sandbox&quot; --props owner=analy
   --props iceberg.source=glue
 </code></pre></div>
 <ul>
+<li><strong>Creating a connector to an upstream Glue Iceberg table via assume role</strong></li>
+</ul>
+<div class="highlight"><pre><span></span><code>connector create &quot;call_center&quot; ICEBERG
+  &quot;https://glue.us-east-1.amazonaws.com/iceberg/&quot;
+  tpcds_iceberg as --dest-ns iceberg --dest-table call_center
+  --auth-scheme aws-sigv4
+  --cred-type aws-assume-role
+  --cred role_arn=arn:aws:iam::123456789012:role/floecat-prod-s3-readonly
+  --cred aws.region=us-east-1
+  --props iceberg.source=glue
+  --props s3.region=us-east-1
+</code></pre></div>
+<ul>
 <li><strong>Configuring connector reconcile policy</strong></li>
 </ul>
 <div class="highlight"><pre><span></span><code>connector update glue-iceberg --policy-enabled true --policy-mode incremental --policy-current
@@ -1915,6 +1928,8 @@ connector trigger glue-iceberg --full --current --mode metadata-and-capture --ca
   --cred access_key_id=test \
   --cred secret_access_key=test
 </code></pre></div>
+<p>See the storage authorities guide below in Cross-References for dedicated
+  storage-authority examples, including cross-account assume-role vending.</p>
 <ul>
 <li><strong>Managing snapshot constraints</strong></li>
 </ul>
@@ -1950,8 +1965,8 @@ constraints delete-one demo.sales.users pk_users --snapshot 42
   lost updates when multiple writers race on the same snapshot.</p>
 <h2 id="cross-references">Cross-References<a class="headerlink" href="#cross-references" title="Permanent link">&para;</a></h2>
 <ul>
-<li>RPC contract details: <a href="../proto/"><code>docs/proto.md</code></a></li>
-<li>Service behavior enforced by catalog/table/query implementations: <a href="../service/"><code>docs/service.md</code></a></li>
+<li><a href="../proto/"><code>docs/proto.md</code></a></li>
+<li><a href="../service/"><code>docs/service.md</code></a></li>
 </ul>
 
 

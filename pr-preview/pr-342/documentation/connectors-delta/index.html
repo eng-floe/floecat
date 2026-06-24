@@ -1784,7 +1784,10 @@ Databricks SQL execution, and custom file readers for S3.</p>
 <ul>
 <li><strong>Authentication</strong> – Uses an OAuth2 bearer token supplied in the resolved connector config or
   the Databricks CLI cache. Token exchange and secret handling happen earlier in the service layer,
-  except for CLI cache refresh which is handled in the connector.</li>
+  except for CLI cache refresh which is handled in the connector.
+  For <code>delta.source=glue</code> and <code>delta.source=filesystem</code>, AWS temporary credentials from
+  <code>aws-assume-role</code> or <code>aws-web-identity</code> are preserved as a shared refreshable provider so native
+  Glue catalog access and S3 reads use the same AWS identity.</li>
 <li><strong>HTTP &amp; SQL clients</strong> – <code>UcHttp</code> centralises base URI, connect/read timeouts, and error mapping.
   <code>SqlStmtClient</code> optionally executes SQL statements (for example to inspect statistics tables) via
   Databricks SQL warehouses.</li>
@@ -1848,15 +1851,17 @@ Databricks SQL execution, and custom file readers for S3.</p>
   upstream. For <code>delta.source=glue</code>, use resolved AWS credentials or non-secret
   <code>auth.properties</code> profile settings and set <code>auth.scheme=aws-sigv4</code> or <code>none</code>.</li>
 </ul>
-<p>Auth credential types (<code>--cred-type</code>) are documented in <a href="../cli-reference/"><code>docs/cli-reference.md</code></a>.
+<p>Auth credential types (<code>--cred-type</code>) are documented in the CLI reference listed below.
 For <code>delta.source=unity</code>, the relevant types are <code>bearer</code>, <code>client</code> (SP), <code>cli</code>,
 <code>token-exchange</code> (WIF), <code>token-exchange-entra</code>, and <code>token-exchange-gcp</code>. Entra/GCP exchanges only
 work if the Databricks workspace is configured to trust those IdPs. Use the Databricks workspace
 host for <code>uri</code> (for example <code>https://dbc-&lt;workspace-id&gt;.cloud.databricks.com</code>); for Databricks
 Unity Catalog, token exchange endpoints typically use <code>https://&lt;workspace-host&gt;/oidc/v1/token</code>.</p>
 <p>For <code>delta.source=glue</code> and <code>delta.source=filesystem</code>, this Databricks OIDC token endpoint pattern
-does not apply. Shared outbound token endpoint validation behavior is documented in
-<a href="../operations/"><code>docs/operations.md</code></a>.</p>
+does not apply. Shared outbound token endpoint validation behavior is documented in the operations
+guide listed below.</p>
+<p>For <code>delta.source=glue</code>, the relevant credential types are <code>aws</code>, <code>cli</code> (provider=aws),
+<code>aws-web-identity</code>, and <code>aws-assume-role</code>.</p>
 <p>Extensibility points:</p>
 <ul>
 <li>Implement new auth schemes by extending <code>AuthProvider</code> and wiring them in the connector provider.</li>
@@ -1868,21 +1873,21 @@ does not apply. Shared outbound token endpoint validation behavior is documented
 <ul>
 <li><strong>Connector Spec</strong> – A Unity Catalog connector might specify:</li>
 </ul>
-<div class="highlight"><pre><span></span><code><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;display_name&quot;</span><span class="p">:</span><span class="s2">&quot;delta-unity&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="s2">&quot;CK_DELTA&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;uri&quot;</span><span class="p">:</span><span class="s2">&quot;https://dbc-1234.cloud.databricks.com&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;properties&quot;</span><span class="p">:{</span>
-<span class="w">    </span><span class="nt">&quot;databricks.sql.warehouse_id&quot;</span><span class="p">:</span><span class="s2">&quot;abcd&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;s3.region&quot;</span><span class="p">:</span><span class="s2">&quot;us-west-2&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;stats.ndv.enabled&quot;</span><span class="p">:</span><span class="s2">&quot;true&quot;</span>
-<span class="w">  </span><span class="p">},</span>
-<span class="w">  </span><span class="nt">&quot;auth&quot;</span><span class="p">:{</span>
-<span class="w">    </span><span class="nt">&quot;scheme&quot;</span><span class="p">:</span><span class="s2">&quot;oauth2&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;credentials&quot;</span><span class="p">:{</span><span class="nt">&quot;bearer&quot;</span><span class="p">:{</span><span class="nt">&quot;token&quot;</span><span class="p">:</span><span class="s2">&quot;&lt;access-token&gt;&quot;</span><span class="p">}},</span>
-<span class="w">    </span><span class="nt">&quot;properties&quot;</span><span class="p">:{}</span>
-<span class="w">  </span><span class="p">}</span>
-<span class="p">}</span>
+<div class="highlight"><pre><span></span><code>{
+  &quot;display_name&quot;:&quot;delta-unity&quot;,
+  &quot;kind&quot;:&quot;CK_DELTA&quot;,
+  &quot;uri&quot;:&quot;https://dbc-1234.cloud.databricks.com&quot;,
+  &quot;properties&quot;:{
+    &quot;databricks.sql.warehouse_id&quot;:&quot;abcd&quot;,
+    &quot;s3.region&quot;:&quot;us-west-2&quot;,
+    &quot;stats.ndv.enabled&quot;:&quot;true&quot;
+  },
+  &quot;auth&quot;:{
+    &quot;scheme&quot;:&quot;oauth2&quot;,
+    &quot;credentials&quot;:{&quot;bearer&quot;:{&quot;token&quot;:&quot;&lt;access-token&gt;&quot;}},
+    &quot;properties&quot;:{}
+  }
+}
 </code></pre></div>
 <ul>
 <li><strong>CLI examples</strong></li>
@@ -1891,14 +1896,14 @@ does not apply. Shared outbound token endpoint validation behavior is documented
     client credentials exchange (service layer), connector sees a bearer token. Token endpoint is
     the workspace OIDC URL:
     <code>https://&lt;workspace-host&gt;/oidc/v1/token</code>.</p>
-<div class="highlight"><pre><span></span><code>connector<span class="w"> </span>create<span class="w"> </span><span class="s2">&quot;Unity Delta SP&quot;</span><span class="w"> </span>DELTA<span class="w"> </span>https://dbc-d382c535-b2a9.cloud.databricks.com<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span><span class="s2">&quot;cusack.ext_tpcds&quot;</span><span class="w"> </span>tpcds<span class="w"> </span>--dest-ns<span class="w"> </span>federated<span class="w"> </span>--source-table<span class="w"> </span>store_sales<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--auth-scheme<span class="w"> </span>oauth2<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--cred-type<span class="w"> </span>client<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--cred<span class="w"> </span><span class="nv">endpoint</span><span class="o">=</span>https://dbc-d382c535-b2a9.cloud.databricks.com/oidc/v1/token<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--cred<span class="w"> </span><span class="nv">client_id</span><span class="o">=</span>3d9b2f0f-7f1a-4b6e-9f0a-2f1b6c9a1234<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--cred<span class="w"> </span><span class="nv">client_secret</span><span class="o">=</span>ddbsp-9f1c2a3b4c5d6e7f8a9b<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--auth<span class="w"> </span><span class="nv">scope</span><span class="o">=</span>all-apis
+<div class="highlight"><pre><span></span><code>connector create &quot;Unity Delta SP&quot; DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
+  &quot;cusack.ext_tpcds&quot; tpcds --dest-ns federated --source-table store_sales \
+  --auth-scheme oauth2 \
+  --cred-type client \
+  --cred endpoint=https://dbc-d382c535-b2a9.cloud.databricks.com/oidc/v1/token \
+  --cred client_id=3d9b2f0f-7f1a-4b6e-9f0a-2f1b6c9a1234 \
+  --cred client_secret=ddbsp-9f1c2a3b4c5d6e7f8a9b \
+  --auth scope=all-apis
 </code></pre></div>
 </li>
 <li>
@@ -1906,34 +1911,34 @@ does not apply. Shared outbound token endpoint validation behavior is documented
     exchange (service layer), connector sees a bearer token. Token endpoint is the workspace OIDC
     URL:
     <code>https://&lt;workspace-host&gt;/oidc/v1/token</code>.</p>
-<div class="highlight"><pre><span></span><code>connector<span class="w"> </span>create<span class="w"> </span><span class="s2">&quot;Unity Delta WIF&quot;</span><span class="w"> </span>DELTA<span class="w"> </span>https://dbc-d382c535-b2a9.cloud.databricks.com<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span><span class="s2">&quot;cusack.ext_tpcds&quot;</span><span class="w"> </span>tpcds<span class="w"> </span>--dest-ns<span class="w"> </span>federated<span class="w"> </span>--source-table<span class="w"> </span>store_sales<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--auth-scheme<span class="w"> </span>oauth2<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--cred-type<span class="w"> </span>token-exchange<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--cred<span class="w"> </span><span class="nv">endpoint</span><span class="o">=</span>https://dbc-d382c535-b2a9.cloud.databricks.com/oidc/v1/token<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--cred<span class="w"> </span><span class="nv">client_id</span><span class="o">=</span>3d9b2f0f-7f1a-4b6e-9f0a-2f1b6c9a1234<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--cred<span class="w"> </span><span class="nv">client_secret</span><span class="o">=</span>ddbsp-9f1c2a3b4c5d6e7f8a9b<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--cred<span class="w"> </span><span class="nv">subject_token_type</span><span class="o">=</span>urn:ietf:params:oauth:token-type:jwt<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--cred<span class="w"> </span><span class="nv">requested_token_type</span><span class="o">=</span>urn:ietf:params:oauth:token-type:access_token<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--cred<span class="w"> </span><span class="nv">scope</span><span class="o">=</span><span class="s2">&quot;all-apis offline_access&quot;</span>
+<div class="highlight"><pre><span></span><code>connector create &quot;Unity Delta WIF&quot; DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
+  &quot;cusack.ext_tpcds&quot; tpcds --dest-ns federated --source-table store_sales \
+  --auth-scheme oauth2 \
+  --cred-type token-exchange \
+  --cred endpoint=https://dbc-d382c535-b2a9.cloud.databricks.com/oidc/v1/token \
+  --cred client_id=3d9b2f0f-7f1a-4b6e-9f0a-2f1b6c9a1234 \
+  --cred client_secret=ddbsp-9f1c2a3b4c5d6e7f8a9b \
+  --cred subject_token_type=urn:ietf:params:oauth:token-type:jwt \
+  --cred requested_token_type=urn:ietf:params:oauth:token-type:access_token \
+  --cred scope=&quot;all-apis offline_access&quot;
 </code></pre></div>
 </li>
 <li>
 <p><strong>CLI cache</strong> – Connector reads the Databricks CLI cache directly:</p>
-<div class="highlight"><pre><span></span><code>connector<span class="w"> </span>create<span class="w"> </span><span class="s2">&quot;Unity Delta CLI&quot;</span><span class="w"> </span>DELTA<span class="w"> </span>https://dbc-d382c535-b2a9.cloud.databricks.com<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span><span class="s2">&quot;cusack.ext_tpcds&quot;</span><span class="w"> </span>tpcds<span class="w"> </span>--dest-ns<span class="w"> </span>federated<span class="w"> </span>--source-table<span class="w"> </span>store_sales<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--auth-scheme<span class="w"> </span>oauth2<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--cred-type<span class="w"> </span>cli<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--cred<span class="w"> </span><span class="nv">cache_path</span><span class="o">=</span>~/.databricks/token-cache.json
+<div class="highlight"><pre><span></span><code>connector create &quot;Unity Delta CLI&quot; DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
+  &quot;cusack.ext_tpcds&quot; tpcds --dest-ns federated --source-table store_sales \
+  --auth-scheme oauth2 \
+  --cred-type cli \
+  --cred cache_path=~/.databricks/token-cache.json
 </code></pre></div>
 </li>
 <li>
 <p><strong>Bearer token (PAT)</strong> – Using the <code>connector</code> CLI with a resolved token or Databricks personal access token:</p>
 </li>
 </ul>
-<div class="highlight"><pre><span></span><code>connector<span class="w"> </span>create<span class="w"> </span><span class="s2">&quot;Unity Delta Token&quot;</span><span class="w"> </span>DELTA<span class="w"> </span>https://dbc-d382c535-b2a9.cloud.databricks.com<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span><span class="s2">&quot;cusack.ext_tpcds&quot;</span><span class="w"> </span>tpcds<span class="w"> </span>--dest-ns<span class="w"> </span>federated<span class="w"> </span>--source-table<span class="w"> </span>store_sales<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--auth-scheme<span class="w"> </span>oauth2<span class="w"> </span>--cred-type<span class="w"> </span>bearer<span class="w"> </span>--cred<span class="w"> </span><span class="nv">token</span><span class="o">=</span>&lt;access-token&gt;
+<div class="highlight"><pre><span></span><code>connector create &quot;Unity Delta Token&quot; DELTA https://dbc-d382c535-b2a9.cloud.databricks.com \
+  &quot;cusack.ext_tpcds&quot; tpcds --dest-ns federated --source-table store_sales \
+  --auth-scheme oauth2 --cred-type bearer --cred token=&lt;access-token&gt;
 </code></pre></div>
 <ul>
 <li><strong>Full reconciliation</strong> – <code>ReconcilerService</code> enters full-rescan mode (<code>fullRescan=true</code>), so the
@@ -1942,9 +1947,13 @@ does not apply. Shared outbound token endpoint validation behavior is documented
 </ul>
 <h2 id="cross-references">Cross-References<a class="headerlink" href="#cross-references" title="Permanent link">&para;</a></h2>
 <ul>
-<li>SPI details: <a href="../connectors-spi/"><code>docs/connectors-spi.md</code></a></li>
-<li>Iceberg connector for contrast: <a href="../connectors-iceberg/"><code>docs/connectors-iceberg.md</code></a></li>
-<li>Service &amp; reconciler integration: <a href="../service/"><code>docs/service.md</code></a>, <a href="../reconciler/"><code>docs/reconciler.md</code></a></li>
+<li><a href="../cli-reference/"><code>docs/cli-reference.md</code></a></li>
+<li><a href="../operations/"><code>docs/operations.md</code></a></li>
+<li><a href="../connectors-spi/"><code>docs/connectors-spi.md</code></a></li>
+<li><a href="../connectors-iceberg/"><code>docs/connectors-iceberg.md</code></a></li>
+<li><a href="../service/"><code>docs/service.md</code></a></li>
+<li><a href="../reconciler/"><code>docs/reconciler.md</code></a></li>
+<li><a href="../storage-authorities/">Storage authorities guide</a></li>
 </ul>
 
 
