@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.repo.model;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Objects;
 
@@ -1255,5 +1256,103 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String nid = req("namespace_id", namespaceId);
     return "/accounts/" + encode(tid) + "/namespaces/" + encode(nid) + "/markers/children";
+  }
+
+  /**
+   * Extracts the resource ID string from a blob URI following the standard pattern {@code
+   * /accounts/{accountId}/{type-plural}/{resourceId}/...}. Returns empty string if the URI does not
+   * match. Used as a fallback for legacy pointers that predate the {@code Pointer.resource_id}
+   * field.
+   *
+   * <p>Example: {@code /accounts/x/tables/my-table-id/table/sha.pb} → {@code my-table-id}
+   */
+  public static String extractResourceIdFromBlobUri(String blobUri) {
+    if (blobUri == null || blobUri.isEmpty()) {
+      return "";
+    }
+    // Pattern: /accounts/{accountId}/{type}/{resourceId}/...
+    int start = 0;
+    int slashCount = 0;
+    for (int i = 0; i < blobUri.length(); i++) {
+      if (blobUri.charAt(i) == '/') {
+        slashCount++;
+        if (slashCount == 4) {
+          start = i + 1;
+        } else if (slashCount == 5) {
+          return percentDecode(blobUri.substring(start, i));
+        }
+      }
+    }
+    return "";
+  }
+
+  /**
+   * Returns the last path segment of a pointer key, percent-decoded. Used as a fallback to extract
+   * display_name from a by-name pointer key when the Pointer.display_name field is not set (e.g.
+   * for pointers written before the topology fields were added).
+   *
+   * <p>Example: {@code /accounts/x/catalogs/c/namespaces/n/tables/by-name/my%20table} → {@code my
+   * table}
+   */
+  public static String extractLastSegment(String key) {
+    if (key == null || key.isEmpty()) {
+      return key;
+    }
+    int lastSlash = key.lastIndexOf('/');
+    String encoded = lastSlash >= 0 ? key.substring(lastSlash + 1) : key;
+    return percentDecode(encoded);
+  }
+
+  /**
+   * Returns the full namespace path encoded in a by-path namespace pointer key.
+   *
+   * <p>The by-path key is reversible because each namespace path segment is percent-encoded before
+   * the segments are joined with {@code /}. Literal slashes in namespace names are encoded as
+   * {@code %2F}, so splitting the suffix on {@code /} is delimiter-safe.
+   */
+  public static List<String> extractNamespacePathSegments(
+      String accountId, String catalogId, String key) {
+    if (key == null || key.isEmpty()) {
+      return List.of();
+    }
+    String prefix = namespacePointerByPathPrefix(accountId, catalogId, List.of());
+    if (!key.startsWith(prefix)) {
+      return List.of();
+    }
+    String suffix = key.substring(prefix.length());
+    if (suffix.isEmpty()) {
+      return List.of();
+    }
+    String[] encodedSegments = suffix.split("/");
+    java.util.ArrayList<String> segments = new java.util.ArrayList<>(encodedSegments.length);
+    for (String encoded : encodedSegments) {
+      if (!encoded.isEmpty()) {
+        segments.add(percentDecode(encoded));
+      }
+    }
+    return List.copyOf(segments);
+  }
+
+  private static String percentDecode(String encoded) {
+    if (encoded.indexOf('%') < 0) {
+      return encoded;
+    }
+    byte[] bytes = new byte[encoded.length()];
+    int out = 0;
+    for (int i = 0; i < encoded.length(); ) {
+      char ch = encoded.charAt(i);
+      if (ch == '%' && i + 2 < encoded.length()) {
+        int hi = Character.digit(encoded.charAt(i + 1), 16);
+        int lo = Character.digit(encoded.charAt(i + 2), 16);
+        if (hi >= 0 && lo >= 0) {
+          bytes[out++] = (byte) ((hi << 4) | lo);
+          i += 3;
+          continue;
+        }
+      }
+      bytes[out++] = (byte) ch;
+      i++;
+    }
+    return new String(bytes, 0, out, StandardCharsets.UTF_8);
   }
 }

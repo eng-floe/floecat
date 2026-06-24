@@ -149,6 +149,7 @@ public final class ArrowFilterOperator {
         case Expr.Eq eq -> equalityMask(eq);
         case Expr.Gt gt -> greaterThanMask(gt);
         case Expr.IsNull isNull -> isNullMask(isNull.expression());
+        case Expr.BooleanLiteral bool -> constantMask(bool.value());
         default -> throw new UnsupportedOperationException("Expr not supported: " + expr);
       };
     }
@@ -468,9 +469,14 @@ public final class ArrowFilterOperator {
     }
 
     private BitVector falseMask() {
+      return constantMask(false);
+    }
+
+    private BitVector constantMask(boolean value) {
       BitVector mask = newMask();
+      int bit = value ? 1 : 0;
       for (int i = 0; i < rowCount; i++) {
-        mask.setSafe(i, 0);
+        mask.setSafe(i, bit);
       }
       mask.setValueCount(rowCount);
       return mask;

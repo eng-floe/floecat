@@ -102,7 +102,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
     List<PointerStore.CasOp> ops = new ArrayList<>(pointerKeys.size());
     for (String pointerKey : pointerKeys) {
-      ops.add(new PointerStore.CasUpsert(pointerKey, 0L, reserve(pointerKey, blobUri)));
+      ops.add(new PointerStore.CasUpsert(pointerKey, 0L, reserve(pointerKey, blobUri, value)));
     }
 
     if (pointerStore.compareAndSetBatch(ops)) {
@@ -194,7 +194,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
     List<PointerStore.CasOp> ops = new ArrayList<>(pointerKeys.size());
     for (String pointerKey : pointerKeys) {
-      ops.add(new PointerStore.CasUpsert(pointerKey, 0L, reserve(pointerKey, blobUri)));
+      ops.add(new PointerStore.CasUpsert(pointerKey, 0L, reserve(pointerKey, blobUri, value)));
     }
 
     if (pointerStore.compareAndSetBatch(ops)) {
@@ -248,7 +248,14 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         "createIfAbsent conflict, no pointer present: " + canonicalPointer);
   }
 
-  private static Pointer reserve(String key, String blobUri) {
+  private Pointer reserve(String key, String blobUri, T value) {
+    if (schema.resourceIdFromValue != null && value != null) {
+      var rid = schema.resourceIdFromValue.apply(value);
+      var dn = schema.displayNameFromValue.apply(value);
+      if (rid != null && !rid.getId().isEmpty()) {
+        return PointerReferences.blobPointer(key, blobUri, 1L, rid, dn != null ? dn : "");
+      }
+    }
     return PointerReferences.blobPointer(key, blobUri, 1L);
   }
 
@@ -359,7 +366,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     batchedKeys.add(canonicalPointer);
     ops.add(
         new PointerStore.CasUpsert(
-            canonicalPointer, expectedCanonicalVersion, reserve(canonicalPointer, blobUri)));
+            canonicalPointer,
+            expectedCanonicalVersion,
+            reserve(canonicalPointer, blobUri, updatedValue)));
 
     for (String p : toAdd) {
       if (!batchedKeys.add(p)) {
@@ -367,7 +376,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       }
       Pointer existing = pointerStore.get(p).orElse(null);
       if (existing == null) {
-        ops.add(new PointerStore.CasUpsert(p, 0L, reserve(p, blobUri)));
+        ops.add(new PointerStore.CasUpsert(p, 0L, reserve(p, blobUri, updatedValue)));
       } else if (!blobUri.equals(existing.getBlobUri())) {
         // The new name already belongs to a different blob. Nothing has been committed, so failing
         // fast here leaves no partial state.
@@ -385,9 +394,11 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         }
         Pointer existing = pointerStore.get(p).orElse(null);
         if (existing == null) {
-          ops.add(new PointerStore.CasUpsert(p, 0L, reserve(p, blobUri)));
+          ops.add(new PointerStore.CasUpsert(p, 0L, reserve(p, blobUri, updatedValue)));
         } else if (!blobUri.equals(existing.getBlobUri())) {
-          ops.add(new PointerStore.CasUpsert(p, existing.getVersion(), reserve(p, blobUri)));
+          ops.add(
+              new PointerStore.CasUpsert(
+                  p, existing.getVersion(), reserve(p, blobUri, updatedValue)));
         }
         // else: already on the new blob — no op needed.
       }

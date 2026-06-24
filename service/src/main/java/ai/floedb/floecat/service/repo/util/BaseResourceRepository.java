@@ -280,6 +280,29 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
             + after.getVersion());
   }
 
+  /**
+   * Scans the pointer store by prefix and returns pointers without fetching blobs from S3. Used by
+   * topology-ref operations that only need (id, name, kind) — available from pointer metadata.
+   *
+   * <p>Loops through all DynamoDB pages; a single query returns at most ~1MB.
+   */
+  private static final int REFS_PAGE_SIZE = 1_000;
+
+  public List<Pointer> listRefsByPrefix(String prefix) {
+    List<Pointer> out = new ArrayList<>();
+    String token = "";
+    do {
+      var next = new StringBuilder();
+      out.addAll(pointerStore.listPointersByPrefix(prefix, REFS_PAGE_SIZE, token, next));
+      token = next.toString();
+    } while (!token.isBlank());
+    return out;
+  }
+
+  public Optional<Pointer> refByPointer(String key) {
+    return pointerStore.get(key);
+  }
+
   @Override
   public List<T> listByPrefix(String prefix, int limit, String token, StringBuilder nextOut) {
     var rows = pointerStore.listPointersByPrefix(prefix, Math.max(1, limit), token, nextOut);

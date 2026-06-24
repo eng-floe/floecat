@@ -19,6 +19,8 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.ViewKey;
@@ -28,8 +30,10 @@ import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 @ApplicationScoped
 public class ViewRepository {
@@ -87,6 +91,38 @@ public class ViewRepository {
 
   public int count(String accountId, String catalogId, String namespaceId) {
     return repo.countByPrefix(Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId));
+  }
+
+  /**
+   * Scans the by-name pointer prefix for a namespace and returns lightweight refs without loading
+   * blobs from S3. Falls back to key/blobUri parsing for legacy pointers.
+   */
+  public List<RelationRef> listRefs(String accountId, String catalogId, String namespaceId) {
+    String prefix = Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId);
+    var pointers = repo.listRefsByPrefix(prefix);
+    var refs = new ArrayList<RelationRef>(pointers.size());
+    for (var p : pointers) {
+      TableRepository.toRelationRef(accountId, ResourceKind.RK_VIEW, p).ifPresent(refs::add);
+    }
+    return refs;
+  }
+
+  /** Reads exact by-name view pointers and returns refs without fetching blobs from S3. */
+  public List<RelationRef> listRefsByName(
+      String accountId, String catalogId, String namespaceId, Set<String> names) {
+    if (names == null || names.isEmpty()) {
+      return List.of();
+    }
+    List<RelationRef> refs = new ArrayList<>(names.size());
+    for (String name : names) {
+      if (name == null || name.isBlank()) {
+        continue;
+      }
+      repo.refByPointer(Keys.viewPointerByName(accountId, catalogId, namespaceId, name))
+          .flatMap(p -> TableRepository.toRelationRef(accountId, ResourceKind.RK_VIEW, p))
+          .ifPresent(refs::add);
+    }
+    return refs;
   }
 
   public MutationMeta metaFor(ResourceId viewResourceId) {

@@ -28,6 +28,7 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.GrpcContextUtil;
@@ -144,14 +145,14 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
             Map.of("output_format", format.toString()));
       }
       boolean arrowRequested = format != OutputFormat.ROWS;
-      Expr arrowExpr =
-          arrowRequested ? SystemRowFilter.EXPRESSION_PROVIDER.toExpr(predicates) : null;
+      Expr predicateExpr = SystemRowFilter.EXPRESSION_PROVIDER.toExpr(predicates);
+      SystemScanRequest scanRequest = SystemScanRequest.of(predicateExpr, requiredColumns);
 
       if (arrowRequested) {
         BufferAllocator allocator = new RootAllocator(arrowMaxBytes);
         ArrowScanPlan plan =
             arrowPlanner.plan(
-                scanner, ctx, schema, predicates, requiredColumns, arrowExpr, allocator);
+                scanner, ctx, schema, predicates, requiredColumns, scanRequest, allocator);
         arrowSink.sink(
             emitter,
             plan,
@@ -160,7 +161,7 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
         return;
       }
 
-      try (Stream<SystemObjectRow> rows = scanner.scan(ctx);
+      try (Stream<SystemObjectRow> rows = scanner.scan(ctx, scanRequest);
           Stream<SystemObjectRow> filtered = SystemRowFilter.filter(rows, schema, predicates);
           Stream<SystemObjectRow> projected =
               SystemRowProjector.project(filtered, schema, requiredColumns)) {

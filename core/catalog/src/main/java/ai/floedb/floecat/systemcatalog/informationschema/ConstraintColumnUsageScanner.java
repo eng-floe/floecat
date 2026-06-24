@@ -21,6 +21,7 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -44,7 +45,16 @@ public final class ConstraintColumnUsageScanner implements SystemObjectScanner {
 
   @Override
   public Stream<SystemObjectRow> scan(SystemObjectScanContext ctx) {
-    return ConstraintScanIndex.build(ctx).entries().stream()
+    return rows(ConstraintScanIndex.build(ctx));
+  }
+
+  @Override
+  public Stream<SystemObjectRow> scan(SystemObjectScanContext ctx, SystemScanRequest request) {
+    return rows(ConstraintScanIndex.build(ctx, request, "constraint_schema", null));
+  }
+
+  private static Stream<SystemObjectRow> rows(ConstraintScanIndex index) {
+    return index.entries().stream()
         .flatMap(
             entry -> {
               if (entry.type() == ConstraintType.CT_FOREIGN_KEY) {

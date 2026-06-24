@@ -17,6 +17,8 @@ package ai.floedb.floecat.storage.kv.dynamodb.ps;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.PointerReferenceKind;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.storage.kv.AbstractEntity;
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.KvStore.Key;
@@ -58,6 +60,9 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
   static final String GLOBAL_PK = "_ACCOUNT_DIR";
   static final String ATTR_BLOB_URI = "blob_uri";
   static final String ATTR_REFERENCE_KIND = "reference_kind";
+  static final String ATTR_RESOURCE_ID = "rid";
+  static final String ATTR_RESOURCE_KIND = "rk";
+  static final String ATTR_DISPLAY_NAME = "dn";
 
   @Inject
   public PointerStoreEntity(@KvTable("floecat") KvStore kv) {
@@ -147,6 +152,27 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     if (expiresAtStr != null) {
       long ts = Long.parseLong(expiresAtStr);
       builder.setExpiresAt(Timestamps.fromMillis(ts * 1000L));
+    }
+    String rid = r.attrs().get(ATTR_RESOURCE_ID);
+    String rkStr = r.attrs().get(ATTR_RESOURCE_KIND);
+    if (rid != null && rkStr != null) {
+      try {
+        String pk = r.key().partitionKey();
+        String accountId = pk.startsWith("accounts/") ? pk.substring("accounts/".length()) : "";
+        if (!accountId.isEmpty()) {
+          builder.setResourceId(
+              ResourceId.newBuilder()
+                  .setAccountId(accountId)
+                  .setId(rid)
+                  .setKind(ResourceKind.valueOf(rkStr))
+                  .build());
+        }
+      } catch (IllegalArgumentException ignored) {
+      }
+    }
+    String dn = r.attrs().get(ATTR_DISPLAY_NAME);
+    if (dn != null && !dn.isEmpty()) {
+      builder.setDisplayName(dn);
     }
 
     return builder.buildPartial();
@@ -243,10 +269,15 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
   private static HashMap<String, String> attrsFor(Pointer pointer) {
     var attrs = new HashMap<String, String>();
     attrs.put(ATTR_BLOB_URI, pointer.getBlobUri());
-    if (pointer != null
-        && pointer.getReferenceKind() != null
-        && pointer.getReferenceKind() != PointerReferenceKind.PRK_UNSPECIFIED) {
+    if (pointer.getReferenceKind() != PointerReferenceKind.PRK_UNSPECIFIED) {
       attrs.put(ATTR_REFERENCE_KIND, pointer.getReferenceKind().name());
+    }
+    if (pointer.hasResourceId() && !pointer.getResourceId().getId().isEmpty()) {
+      attrs.put(ATTR_RESOURCE_ID, pointer.getResourceId().getId());
+      attrs.put(ATTR_RESOURCE_KIND, pointer.getResourceId().getKind().name());
+    }
+    if (!pointer.getDisplayName().isEmpty()) {
+      attrs.put(ATTR_DISPLAY_NAME, pointer.getDisplayName());
     }
     return attrs;
   }

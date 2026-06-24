@@ -42,6 +42,7 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -85,6 +86,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
+  @Inject TopologyGraph topology;
   @Inject MarkerStore markerStore;
   @Inject PointerStore pointerStore;
   @Inject EngineHintSchemaCleaner hintCleaner;
@@ -279,10 +281,9 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     // Always need sysCount for totalSize.
                     // Only need to materialize + sort if we're going to emit.
                     var rels =
-                        overlay.listRelationsInNamespace(catalogId, namespaceId).stream()
+                        overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
                             .filter(TableNode.class::isInstance)
                             .map(TableNode.class::cast)
-                            .filter(tn -> tn.origin() == GraphNodeOrigin.SYSTEM)
                             .toList();
 
                     sysCount = rels.size();
@@ -314,10 +315,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     // Repo not exhausted: still need sysCount for totalSize, but avoid sorting.
                     sysCount =
                         (int)
-                            overlay.listRelationsInNamespace(catalogId, namespaceId).stream()
+                            overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
                                 .filter(TableNode.class::isInstance)
-                                .map(TableNode.class::cast)
-                                .filter(tn -> tn.origin() == GraphNodeOrigin.SYSTEM)
                                 .count();
                   }
 
@@ -487,6 +486,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     }
                     markerStore.bumpNamespaceMarker(table.getNamespaceId());
                     metadataGraph.invalidate(tableResourceId);
+                    topology.evictRelationRefs(table.getNamespaceId());
                     var meta = tableRepo.metaForSafe(tableResourceId);
                     return CreateTableResponse.newBuilder().setTable(table).setMeta(meta).build();
                   }
@@ -517,6 +517,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                               existingOpt.get().getNamespaceId());
                                           metadataGraph.invalidate(
                                               existingOpt.get().getResourceId());
+                                          topology.evictRelationRefs(
+                                              existingOpt.get().getNamespaceId());
                                           return new IdempotencyGuard.CreateResult<>(
                                               existingOpt.get(), existingOpt.get().getResourceId());
                                         }
@@ -531,6 +533,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                     }
                                     markerStore.bumpNamespaceMarker(table.getNamespaceId());
                                     metadataGraph.invalidate(tableResourceId);
+                                    topology.evictRelationRefs(table.getNamespaceId());
                                     return new IdempotencyGuard.CreateResult<>(
                                         table, tableResourceId);
                                   },
@@ -650,9 +653,11 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                             "expected", Long.toString(meta.getPointerVersion()),
                             "actual", Long.toString(nowMeta.getPointerVersion())));
                   }
+                  topology.evict(tableId);
                   metadataGraph.invalidate(tableId);
 
                   if (!current.getNamespaceId().getId().equals(desired.getNamespaceId().getId())) {
+                    topology.evictRelationRefs(desired.getNamespaceId());
                     markerStore.bumpNamespaceMarker(current.getNamespaceId());
                     markerStore.bumpNamespaceMarker(desired.getNamespaceId());
                   }
@@ -702,6 +707,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
+                    topology.evict(tableId);
                     metadataGraph.invalidate(tableId);
                     if (existing != null) {
                       markerStore.bumpNamespaceMarker(existing.getNamespaceId());
@@ -720,6 +726,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           "table",
                           Map.of("id", tableId.getId()));
 
+                  topology.evict(tableId);
                   metadataGraph.invalidate(tableId);
                   if (existing != null) {
                     markerStore.bumpNamespaceMarker(existing.getNamespaceId());

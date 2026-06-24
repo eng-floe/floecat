@@ -101,6 +101,10 @@ message Pointer {
   int64 version = 3;
   google.protobuf.Timestamp expires_at = 4;
   PointerReferenceKind reference_kind = 5;
+  // Stable resource identity — populated at write time for topology-capable resources
+  // (TABLE, VIEW, NAMESPACE). Empty on legacy pointers; fall back to key/blob-uri parsing.
+  ResourceId resource_id = 6;
+  string display_name = 7;
 }
 
 message BlobHeader {

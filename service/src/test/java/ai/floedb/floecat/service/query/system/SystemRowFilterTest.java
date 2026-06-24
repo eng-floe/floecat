@@ -77,6 +77,28 @@ class SystemRowFilterTest {
   }
 
   @Test
+  void inPredicateMatchesAnyListedValue() {
+    var rows =
+        List.of(
+            new SystemObjectRow(new Object[] {"a", "b"}),
+            new SystemObjectRow(new Object[] {"c", "d"}),
+            new SystemObjectRow(new Object[] {"x", "y"}));
+
+    Predicate predicate =
+        Predicate.newBuilder()
+            .setColumn("col_a")
+            .setOp(Operator.OP_IN)
+            .addValues("a")
+            .addValues("c")
+            .build();
+
+    var result = SystemRowFilter.applyPredicates(rows, SCHEMA, List.of(predicate));
+
+    assertThat(result).hasSize(2);
+    assertThat(result).extracting(row -> row.values()[0]).containsExactly("a", "c");
+  }
+
+  @Test
   void isNullPredicateMatchesNullValue() {
     var rows =
         List.of(

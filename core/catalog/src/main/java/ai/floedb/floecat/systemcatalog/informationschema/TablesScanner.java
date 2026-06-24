@@ -20,8 +20,8 @@ import ai.floedb.floecat.arrow.ArrowSchemaUtil;
 import ai.floedb.floecat.arrow.ArrowValueWriters;
 import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
-import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.columnar.AbstractArrowBatchBuilder;
@@ -30,7 +30,9 @@ import ai.floedb.floecat.scanner.spi.ScanOutputFormat;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
-import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import ai.floedb.floecat.scanner.spi.SystemScanRequest;
+import ai.floedb.floecat.scanner.spi.TopologyGraph;
+import ai.floedb.floecat.systemcatalog.informationschema.NamespaceScanSupport.NamespaceEntry;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -42,7 +44,6 @@ import java.util.Set;
 import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.function.Consumer;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 import org.apache.arrow.memory.BufferAllocator;
@@ -90,17 +91,33 @@ public final class TablesScanner implements SystemObjectScanner {
 
   @Override
   public Stream<SystemObjectRow> scan(SystemObjectScanContext ctx) {
-    Map<ResourceId, String> schemaByNamespace =
-        ctx.listNamespaces().stream()
-            .collect(Collectors.toMap(NamespaceNode::id, TablesScanner::schemaName));
+    return scan(ctx, SystemScanRequest.empty());
+  }
 
+  @Override
+  public Stream<SystemObjectRow> scan(SystemObjectScanContext ctx, SystemScanRequest request) {
+    boolean supportsLightweightRefs = ctx.supportsLightweightRefs();
+    List<NamespaceEntry> namespaces = NamespaceScanSupport.entries(ctx, request, "table_schema");
     Map<ResourceId, String> catalogNames = new HashMap<>();
 
-    return ctx.listNamespaces().stream()
+    return namespaces.stream()
         .flatMap(
-            ns ->
-                ctx.listRelations(ns.id()).stream()
-                    .map(rel -> rowForRelation(ctx, ns, rel, schemaByNamespace, catalogNames)));
+            ns -> {
+              String catalogName =
+                  catalogNames.computeIfAbsent(
+                      ns.catalogId(), id -> ((CatalogNode) ctx.resolve(id)).displayName());
+              if (supportsLightweightRefs) {
+                List<TopologyGraph.RelationRef> refs =
+                    NamespaceScanSupport.relationRefs(ctx, ns.id(), request, "table_name");
+                return refs.stream()
+                    .filter(ref -> matchesTableType(request, ref))
+                    .map(ref -> rowForRef(catalogName, ns.schemaName(), ref));
+              }
+              // Fall back to full relation load when the overlay has no lightweight ref source.
+              return NamespaceScanSupport.relations(ctx, ns.id(), request, "table_name").stream()
+                  .filter(rel -> matchesTableType(request, rel))
+                  .map(rel -> rowForRelation(catalogName, ns.schemaName(), rel));
+            });
   }
 
   @Override
@@ -114,23 +131,27 @@ public final class TablesScanner implements SystemObjectScanner {
       Expr predicate,
       List<String> requiredColumns,
       BufferAllocator allocator) {
+    return scanArrow(ctx, SystemScanRequest.of(predicate, requiredColumns), allocator);
+  }
+
+  @Override
+  public Stream<ColumnarBatch> scanArrow(
+      SystemObjectScanContext ctx, SystemScanRequest request, BufferAllocator allocator) {
     Objects.requireNonNull(ctx, "ctx");
     Objects.requireNonNull(allocator, "allocator");
-    Objects.requireNonNull(requiredColumns, "requiredColumns");
-    Set<String> requiredSet = ArrowSchemaUtil.normalizeRequiredColumns(requiredColumns);
-    if (predicate != null) {
-      // TODO: predicate handling is delegated to the arrow filter operator downstream
-    }
-    List<NamespaceNode> namespaces = ctx.listNamespaces();
-    Map<ResourceId, String> schemaByNamespace =
-        namespaces.stream().collect(Collectors.toMap(NamespaceNode::id, TablesScanner::schemaName));
-    Iterator<NamespaceNode> namespaceIterator = namespaces.iterator();
+    Objects.requireNonNull(request, "request");
+    Set<String> requiredSet = ArrowSchemaUtil.normalizeRequiredColumns(request.requiredColumns());
+    boolean supportsLightweightRefs = ctx.supportsLightweightRefs();
+    Iterator<NamespaceEntry> namespaceIterator =
+        NamespaceScanSupport.entries(ctx, request, "table_schema").iterator();
+    // Each entry is {name, kind_string} -- populated from lightweight refs (fast, no S3)
+    // or full RelationNode objects when the overlay has no lightweight ref source.
     Spliterator<ColumnarBatch> spliterator =
         new Spliterators.AbstractSpliterator<ColumnarBatch>(
             Long.MAX_VALUE, Spliterator.ORDERED | Spliterator.NONNULL) {
-          private final Iterator<NamespaceNode> namespaceIter = namespaceIterator;
-          private Iterator<RelationNode> relationIterator = Collections.emptyIterator();
-          private NamespaceNode currentNamespace;
+          private final Iterator<NamespaceEntry> namespaceIter = namespaceIterator;
+          private Iterator<String[]> entryIterator = Collections.emptyIterator();
+          private NamespaceEntry currentNamespace;
           private final Map<ResourceId, String> catalogNames = new HashMap<>();
 
           @Override
@@ -138,8 +159,8 @@ public final class TablesScanner implements SystemObjectScanner {
             TablesBatchBuilder builder = null;
             try {
               while (true) {
-                RelationNode relation = nextRelation(ctx);
-                if (relation != null) {
+                String[] entry = nextEntry(ctx);
+                if (entry != null) {
                   if (builder == null) {
                     builder = new TablesBatchBuilder(allocator, requiredSet);
                   }
@@ -147,9 +168,7 @@ public final class TablesScanner implements SystemObjectScanner {
                   String catalogName =
                       catalogNames.computeIfAbsent(
                           catalogId, id -> ((CatalogNode) ctx.resolve(id)).displayName());
-                  String schemaName = schemaByNamespace.getOrDefault(currentNamespace.id(), "");
-                  builder.append(
-                      catalogName, schemaName, relation.displayName(), relationKind(relation));
+                  builder.append(catalogName, currentNamespace.schemaName(), entry[0], entry[1]);
                   if (builder.isFull()) {
                     action.accept(builder.build());
                     return true;
@@ -169,40 +188,72 @@ public final class TablesScanner implements SystemObjectScanner {
             }
           }
 
-          private RelationNode nextRelation(SystemObjectScanContext ctx) {
-            while (!relationIterator.hasNext()) {
+          private String[] nextEntry(SystemObjectScanContext ctx) {
+            while (!entryIterator.hasNext()) {
               if (!namespaceIter.hasNext()) {
                 return null;
               }
               currentNamespace = namespaceIter.next();
-              relationIterator = ctx.listRelations(currentNamespace.id()).iterator();
+              if (supportsLightweightRefs) {
+                List<TopologyGraph.RelationRef> refs =
+                    NamespaceScanSupport.relationRefs(
+                        ctx, currentNamespace.id(), request, "table_name");
+                entryIterator =
+                    refs.stream()
+                        .filter(ref -> matchesTableType(request, ref))
+                        .map(ref -> new String[] {ref.name(), refKindString(ref.kind())})
+                        .iterator();
+              } else {
+                entryIterator =
+                    NamespaceScanSupport.relations(
+                            ctx, currentNamespace.id(), request, "table_name")
+                        .stream()
+                        .filter(rel -> matchesTableType(request, rel))
+                        .map(rel -> new String[] {rel.displayName(), relationKind(rel)})
+                        .iterator();
+              }
             }
-            return relationIterator.next();
+            return entryIterator.next();
           }
         };
     return StreamSupport.stream(spliterator, false);
   }
 
+  private static boolean matchesTableType(
+      SystemScanRequest request, TopologyGraph.RelationRef ref) {
+    return request
+        .constraints()
+        .values("table_type")
+        .map(types -> types.contains(refKindString(ref.kind())))
+        .orElse(true);
+  }
+
+  private static boolean matchesTableType(SystemScanRequest request, RelationNode node) {
+    return request
+        .constraints()
+        .values("table_type")
+        .map(types -> types.contains(relationKind(node)))
+        .orElse(true);
+  }
+
   private static SystemObjectRow rowForRelation(
-      SystemObjectScanContext ctx,
-      NamespaceNode namespace,
-      RelationNode node,
-      Map<ResourceId, String> schemaByNamespace,
-      Map<ResourceId, String> catalogNames) {
-
-    ResourceId catalogId = namespace.catalogId();
-
-    String catalogName =
-        catalogNames.computeIfAbsent(
-            catalogId, id -> ((CatalogNode) ctx.resolve(id)).displayName());
-
+      String catalogName, String schemaName, RelationNode node) {
     return new SystemObjectRow(
-        new Object[] {
-          catalogName,
-          schemaByNamespace.getOrDefault(namespace.id(), ""),
-          node.displayName(),
-          relationKind(node)
-        });
+        new Object[] {catalogName, schemaName, node.displayName(), relationKind(node)});
+  }
+
+  private static SystemObjectRow rowForRef(
+      String catalogName, String schemaName, TopologyGraph.RelationRef ref) {
+    return new SystemObjectRow(
+        new Object[] {catalogName, schemaName, ref.name(), refKindString(ref.kind())});
+  }
+
+  private static String refKindString(ResourceKind kind) {
+    return switch (kind) {
+      case RK_TABLE -> "BASE TABLE";
+      case RK_VIEW -> "VIEW";
+      default -> "UNKNOWN";
+    };
   }
 
   private static String relationKind(RelationNode node) {
@@ -211,10 +262,6 @@ public final class TablesScanner implements SystemObjectScanner {
       case VIEW -> "VIEW";
       default -> "UNKNOWN";
     };
-  }
-
-  private static String schemaName(NamespaceNode namespace) {
-    return NameRefUtil.namespaceName(namespace.pathSegments(), namespace.displayName());
   }
 
   private static final class TablesBatchBuilder extends AbstractArrowBatchBuilder {

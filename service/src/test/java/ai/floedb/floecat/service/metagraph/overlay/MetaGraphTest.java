@@ -33,17 +33,21 @@ import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
+import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
+import ai.floedb.floecat.service.metagraph.cache.CatalogTopologyCache;
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
+import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
@@ -52,6 +56,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -62,6 +67,7 @@ class MetaGraphTest {
   UserGraph user;
   SystemGraph system;
   MetaGraph meta;
+  CatalogTopologyCache topologyCache;
   LogicalSchemaMapper schemaMapper;
   EngineContext context;
 
@@ -83,6 +89,7 @@ class MetaGraphTest {
   void setup() {
     user = mock(UserGraph.class);
     system = mock(SystemGraph.class);
+    topologyCache = mock(CatalogTopologyCache.class);
 
     schemaMapper =
         new LogicalSchemaMapper() {
@@ -97,7 +104,7 @@ class MetaGraphTest {
     when(engine.engineContext()).thenReturn(context);
     when(engine.isPresent()).thenReturn(true);
 
-    meta = new MetaGraph(user, schemaMapper, system, engine);
+    meta = new MetaGraph(user, schemaMapper, system, engine, topologyCache);
   }
 
   @AfterEach
@@ -180,55 +187,32 @@ class MetaGraphTest {
             return Map.of();
           }
         };
-    RelationNode u =
-        new RelationNode() {
-          @Override
-          public ResourceId id() {
-            return usrTable;
-          }
-
-          @Override
-          public ResourceId namespaceId() {
-            return ResourceId.getDefaultInstance();
-          }
-
-          @Override
-          public long version() {
-            return 1;
-          }
-
-          @Override
-          public String displayName() {
-            return "usr";
-          }
-
-          @Override
-          public Instant metadataUpdatedAt() {
-            return Instant.now();
-          }
-
-          @Override
-          public GraphNodeKind kind() {
-            return GraphNodeKind.TABLE;
-          }
-
-          @Override
-          public GraphNodeOrigin origin() {
-            return GraphNodeOrigin.USER;
-          }
-
-          @Override
-          public Map<EngineHintKey, EngineHint> engineHints() {
-            return Map.of();
-          }
-        };
+    UserTableNode u = TestNodes.tableNode(usrTable, "{}");
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat")
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns")
+            .build();
 
     when(system.listRelations(any(), same(context))).thenReturn(List.of(s));
-    when(user.listRelations(any())).thenReturn(List.of(u));
+    when(topologyCache.listNamespaceRefs(catalogId))
+        .thenReturn(
+            List.of(new TopologyGraph.NamespaceRef(namespaceId, "ns", catalogId, List.of())));
+    when(topologyCache.listRelationRefs(catalogId, namespaceId))
+        .thenReturn(List.of(new TopologyGraph.RelationRef(usrTable, "usr", ResourceKind.RK_TABLE)));
+    when(user.table(usrTable)).thenReturn(Optional.of(u));
 
-    List<RelationNode> out = meta.listRelations(ResourceId.newBuilder().setId("cat").build());
+    List<RelationNode> out = meta.listRelations(catalogId);
 
     assertThat(out).containsExactly(s, u);
+    verify(user, never()).listRelations(catalogId);
   }
 
   @Test
@@ -547,11 +531,84 @@ class MetaGraphTest {
   }
 
   @Test
+  void listNamespaceRefsByName_usesCacheByNameForUserNamespaces() {
+    ResourceId catalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat").build();
+    ResourceId userNamespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("user-ns")
+            .build();
+    ResourceId systemNamespaceId =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("sys-ns")
+            .build();
+    NamespaceNode systemNamespace =
+        new NamespaceNode(
+            systemNamespaceId,
+            1,
+            Instant.EPOCH,
+            catalogId,
+            List.of("information_schema"),
+            "tables",
+            GraphNodeOrigin.SYSTEM,
+            Map.of(),
+            Map.of());
+    Set<String> names = Set.of("sales", "information_schema.tables");
+    when(system.listNamespaces(catalogId, context)).thenReturn(List.of(systemNamespace));
+    when(topologyCache.listNamespaceRefsByName(catalogId, names))
+        .thenReturn(
+            List.of(
+                new TopologyGraph.NamespaceRef(
+                    userNamespaceId, "sales", catalogId, List.of("sales"))));
+
+    List<TopologyGraph.NamespaceRef> refs = meta.listNamespaceRefsByName(catalogId, names);
+
+    assertThat(refs)
+        .extracting(TopologyGraph.NamespaceRef::id)
+        .containsExactly(systemNamespaceId, userNamespaceId);
+    verify(topologyCache).listNamespaceRefsByName(catalogId, names);
+    verify(topologyCache, never()).listNamespaceRefs(catalogId);
+  }
+
+  @Test
+  void listRelationRefsByName_usesCacheByNameForUserRelations() {
+    ResourceId catalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat").build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns")
+            .build();
+    ResourceId userRelationId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("orders")
+            .build();
+    Set<String> names = Set.of("orders");
+    when(system.listRelationsInNamespace(catalogId, namespaceId, context)).thenReturn(List.of());
+    when(topologyCache.listRelationRefsByName(catalogId, namespaceId, names))
+        .thenReturn(
+            List.of(
+                new TopologyGraph.RelationRef(userRelationId, "orders", ResourceKind.RK_TABLE)));
+
+    List<TopologyGraph.RelationRef> refs =
+        meta.listRelationRefsByName(catalogId, namespaceId, names);
+
+    assertThat(refs).extracting(TopologyGraph.RelationRef::id).containsExactly(userRelationId);
+    verify(topologyCache).listRelationRefsByName(catalogId, namespaceId, names);
+    verify(topologyCache, never()).listRelationRefs(catalogId, namespaceId);
+  }
+
+  @Test
   void engineAbsent_showsEmptySystemGraph() {
     EngineContextProvider engine = mock(EngineContextProvider.class);
     when(engine.isPresent()).thenReturn(false);
 
-    MetaGraph metaNoEngine = new MetaGraph(user, schemaMapper, system, engine);
+    MetaGraph metaNoEngine = new MetaGraph(user, schemaMapper, system, engine, topologyCache);
 
     NameRef ref = NameRef.newBuilder().setName("t").build();
     when(system.resolveTable(ref, EngineContext.empty())).thenReturn(Optional.empty());

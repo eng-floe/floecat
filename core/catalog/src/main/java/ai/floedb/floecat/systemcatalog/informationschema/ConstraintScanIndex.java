@@ -25,11 +25,12 @@ import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
-import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
+import ai.floedb.floecat.scanner.spi.SystemScanRequest;
+import ai.floedb.floecat.systemcatalog.informationschema.NamespaceScanSupport.NamespaceEntry;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -61,6 +62,22 @@ public final class ConstraintScanIndex {
   }
 
   private static ConstraintScanIndex buildUncached(SystemObjectScanContext ctx) {
+    return buildUncached(ctx, SystemScanRequest.empty(), null, null);
+  }
+
+  public static ConstraintScanIndex build(
+      SystemObjectScanContext ctx,
+      SystemScanRequest request,
+      String schemaColumnName,
+      String tableNameColumn) {
+    return buildUncached(ctx, request, schemaColumnName, tableNameColumn);
+  }
+
+  private static ConstraintScanIndex buildUncached(
+      SystemObjectScanContext ctx,
+      SystemScanRequest request,
+      String schemaColumnName,
+      String tableNameColumn) {
     Map<ResourceId, TableRef> tableRefs = new LinkedHashMap<>();
     Map<ResourceId, TableRef> tablesWithConstraints = new LinkedHashMap<>();
     Map<ResourceId, String> catalogNames = new HashMap<>();
@@ -70,12 +87,13 @@ public final class ConstraintScanIndex {
         new HashMap<>();
     Map<String, Optional<TableRef>> referencedTablesByName = new HashMap<>();
 
-    for (NamespaceNode namespace : ctx.listNamespaces()) {
+    for (NamespaceEntry namespace : NamespaceScanSupport.entries(ctx, request, schemaColumnName)) {
       String catalogName =
           catalogNames.computeIfAbsent(
               namespace.catalogId(), id -> ((CatalogNode) ctx.resolve(id)).displayName());
-      String schemaName = schemaName(namespace);
-      for (RelationNode relation : ctx.listRelations(namespace.id())) {
+      String schemaName = namespace.schemaName();
+      for (RelationNode relation :
+          NamespaceScanSupport.relations(ctx, namespace.id(), request, tableNameColumn)) {
         if (!(relation instanceof TableNode table)) {
           continue;
         }
@@ -321,10 +339,6 @@ public final class ConstraintScanIndex {
       case FK_ACTION_RULE_NO_ACTION, FK_ACTION_RULE_UNSPECIFIED -> "NO ACTION";
       case UNRECOGNIZED -> "NO ACTION";
     };
-  }
-
-  private static String schemaName(NamespaceNode namespace) {
-    return NameRefUtil.namespaceName(namespace.pathSegments(), namespace.displayName());
   }
 
   public record TableRef(ResourceId tableId, String catalog, String schema, String name) {}

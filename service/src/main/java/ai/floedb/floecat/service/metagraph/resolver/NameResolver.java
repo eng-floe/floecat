@@ -30,10 +30,16 @@ import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.Semaphore;
+import org.eclipse.microprofile.context.ManagedExecutor;
 
 /**
  * Repository-backed name resolution helpers.
@@ -59,10 +65,14 @@ public final class NameResolver {
   // Dependencies
   // ----------------------------------------------------------------------
 
+  /** Max concurrent DynamoDB namespace scans per top-level listing call. */
+  static final int MAX_PARALLEL_NS_SCANS = 8;
+
   private final CatalogRepository catalogRepository;
   private final NamespaceRepository namespaceRepository;
   private final TableRepository tableRepository;
   private final ViewRepository viewRepository;
+  private volatile Executor blockingExecutor = ForkJoinPool.commonPool();
 
   @Inject
   public NameResolver(
@@ -75,6 +85,13 @@ public final class NameResolver {
     this.namespaceRepository = namespaceRepository;
     this.tableRepository = tableRepository;
     this.viewRepository = viewRepository;
+  }
+
+  @Inject
+  void init(Instance<ManagedExecutor> managedExecutors) {
+    if (managedExecutors != null) {
+      managedExecutors.stream().findFirst().ifPresent(e -> blockingExecutor = e);
+    }
   }
 
   // ----------------------------------------------------------------------
@@ -238,16 +255,12 @@ public final class NameResolver {
   }
 
   public List<ResourceId> listTableIds(String accountId, String catalogId) {
-    List<ResourceId> out = new ArrayList<>();
     List<ResourceId> nsIds = namespaceRepository.listIds(accountId, catalogId);
-
-    for (ResourceId ns : nsIds) {
-      List<Table> tables =
-          tableRepository.list(
-              accountId, catalogId, ns.getId(), Integer.MAX_VALUE, "", new StringBuilder());
-      for (Table t : tables) out.add(requireCanonicalTableId(t.getResourceId()));
+    if (nsIds.isEmpty()) return List.of();
+    if (nsIds.size() == 1) {
+      return listTableIdsInNamespace(accountId, catalogId, nsIds.get(0).getId());
     }
-    return out;
+    return parallelScan(nsIds, ns -> listTableIdsInNamespace(accountId, catalogId, ns.getId()));
   }
 
   public List<ResourceId> listTableIdsInNamespace(
@@ -256,6 +269,43 @@ public final class NameResolver {
         tableRepository.list(
             accountId, catalogId, namespaceId, Integer.MAX_VALUE, "", new StringBuilder());
     return tables.stream().map(Table::getResourceId).map(this::requireCanonicalTableId).toList();
+  }
+
+  /**
+   * Fans out per-namespace work across up to {@value #MAX_PARALLEL_NS_SCANS} concurrent tasks on
+   * the injected blocking executor. Each namespace is an independent DynamoDB scan; parallel
+   * execution reduces wall-clock time from O(N) to O(1) for warm DynamoDB connections.
+   */
+  private <T> List<T> parallelScan(
+      List<ResourceId> nsIds, java.util.function.Function<ResourceId, List<T>> task) {
+    Semaphore gate = new Semaphore(MAX_PARALLEL_NS_SCANS);
+    List<CompletableFuture<List<T>>> futures =
+        nsIds.stream()
+            .<CompletableFuture<List<T>>>map(
+                ns ->
+                    CompletableFuture.<List<T>>supplyAsync(
+                        () -> {
+                          gate.acquireUninterruptibly();
+                          try {
+                            return task.apply(ns);
+                          } finally {
+                            gate.release();
+                          }
+                        },
+                        blockingExecutor))
+            .toList();
+    List<T> out = new ArrayList<>();
+    for (CompletableFuture<List<T>> f : futures) {
+      try {
+        out.addAll(f.join());
+      } catch (java.util.concurrent.CompletionException ce) {
+        Throwable cause = ce.getCause();
+        if (cause instanceof RuntimeException re) throw re;
+        if (cause instanceof Error e) throw e;
+        throw new IllegalStateException("unexpected checked exception from async task", cause);
+      }
+    }
+    return out;
   }
 
   private ResourceId requireCanonicalTableId(ResourceId tableId) {
@@ -269,16 +319,12 @@ public final class NameResolver {
   }
 
   public List<ResourceId> listViewIds(String accountId, String catalogId) {
-    List<ResourceId> out = new ArrayList<>();
     List<ResourceId> nsIds = namespaceRepository.listIds(accountId, catalogId);
-
-    for (ResourceId ns : nsIds) {
-      List<View> views =
-          viewRepository.list(
-              accountId, catalogId, ns.getId(), Integer.MAX_VALUE, "", new StringBuilder());
-      for (View t : views) out.add(t.getResourceId());
+    if (nsIds.isEmpty()) return List.of();
+    if (nsIds.size() == 1) {
+      return listViewIdsInNamespace(accountId, catalogId, nsIds.get(0).getId());
     }
-    return out;
+    return parallelScan(nsIds, ns -> listViewIdsInNamespace(accountId, catalogId, ns.getId()));
   }
 
   public List<ResourceId> listViewIdsInNamespace(
