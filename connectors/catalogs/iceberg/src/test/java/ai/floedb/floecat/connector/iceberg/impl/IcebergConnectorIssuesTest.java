@@ -28,6 +28,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.FloecatConnector.FileGroupCaptureResult;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
+import ai.floedb.floecat.types.ManagedTableProperties;
 import java.lang.reflect.Proxy;
 import java.util.HashMap;
 import java.util.List;
@@ -164,6 +165,16 @@ class IcebergConnectorIssuesTest {
     PartitionSpec spec = PartitionSpec.unpartitioned();
     Map<String, String> tableProperties = new HashMap<>();
     tableProperties.put("write.parquet.compression-codec", "zstd");
+    Snapshot currentSnapshot =
+        (Snapshot)
+            Proxy.newProxyInstance(
+                Snapshot.class.getClassLoader(),
+                new Class<?>[] {Snapshot.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "snapshotId" -> 42L;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
 
     Table table =
         (Table)
@@ -176,6 +187,7 @@ class IcebergConnectorIssuesTest {
                       case "spec" -> spec;
                       case "location" -> "s3://warehouse/tpch_1.db/nation";
                       case "properties" -> tableProperties;
+                      case "currentSnapshot" -> currentSnapshot;
                       default -> throw new UnsupportedOperationException(method.getName());
                     });
 
@@ -202,6 +214,7 @@ class IcebergConnectorIssuesTest {
     assertEquals(
         "s3://warehouse/tpch_1.db/nation", descriptor.properties().get("storage_location"));
     assertEquals("zstd", descriptor.properties().get("write.parquet.compression-codec"));
+    assertEquals("42", descriptor.properties().get(ManagedTableProperties.CURRENT_SNAPSHOT_ID));
   }
 
   @Test

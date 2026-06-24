@@ -27,6 +27,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
@@ -47,6 +48,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   @Inject SnapshotFinalizePersistenceService persistence;
   @Inject SnapshotFinalizeChildStateService childStateService;
   @Inject SnapshotFinalizeCoverageService coverageService;
+  @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
 
   @ConfigProperty(
       name = "floecat.reconciler.executor.snapshot-finalize.enabled",
@@ -152,6 +154,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
             requestsStatsOutputs
                 ? ingestDirectStats(snapshotTask, tableId, lease.fullRescan, aggregateKinds)
                 : snapshotTask.directStatsRecordCount();
+        advanceCurrentSnapshot(tableId, snapshotTask, lease);
         return ExecutionResult.success(
             0,
             0,
@@ -199,6 +202,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           requestsStatsOutputs
               ? persistEmptySnapshotCompletionMarker(lease, snapshotTask, tableId)
               : 0L;
+      advanceCurrentSnapshot(tableId, snapshotTask, lease);
       return ExecutionResult.success(
           0,
           0,
@@ -309,6 +313,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           new IllegalStateException("snapshot file-group child jobs missing"));
     }
     if (!requestsStatsOutputs) {
+      advanceCurrentSnapshot(tableId, snapshotTask, lease);
       return ExecutionResult.success(
           0,
           0,
@@ -330,6 +335,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
                     .flatMap(group -> group.partialAggregateRecords().stream())
                     .toList());
     if (aggregateKinds.isEmpty()) {
+      advanceCurrentSnapshot(tableId, snapshotTask, lease);
       return ExecutionResult.success(
           0,
           0,
@@ -341,6 +347,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           "Skipped snapshot finalization " + snapshotTask.snapshotId() + " (no aggregate outputs)");
     }
     persistence.persistStats(aggregateStats);
+    advanceCurrentSnapshot(tableId, snapshotTask, lease);
     return ExecutionResult.success(
         0,
         0,
@@ -350,6 +357,23 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         1,
         aggregateStats.size(),
         "Finalized snapshot capture " + snapshotTask.snapshotId());
+  }
+
+  private void advanceCurrentSnapshot(
+      ResourceId tableId, ReconcileSnapshotTask snapshotTask, ReconcileJobStore.LeasedJob lease) {
+    if (currentSnapshotPointerService == null) {
+      return;
+    }
+    String corr = lease == null || lease.jobId == null ? "" : lease.jobId;
+    try {
+      currentSnapshotPointerService.maybeAdvance(tableId, snapshotTask.snapshotId(), corr);
+    } catch (RuntimeException e) {
+      LOG.debugf(
+          e,
+          "Could not advance current snapshot pointer for finalized table %s snapshot %d",
+          tableId == null ? "" : tableId.getId(),
+          snapshotTask == null ? -1L : snapshotTask.snapshotId());
+    }
   }
 
   private long persistEmptySnapshotCompletionMarker(

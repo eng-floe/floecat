@@ -59,6 +59,7 @@ class SnapshotServiceImplTest {
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
     svc.overlay = mock(CatalogOverlay.class);
+    svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     var tableId =
         ResourceId.newBuilder()
@@ -99,6 +100,7 @@ class SnapshotServiceImplTest {
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
     svc.overlay = mock(CatalogOverlay.class);
+    svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     var tableId =
         ResourceId.newBuilder()
@@ -157,6 +159,7 @@ class SnapshotServiceImplTest {
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
     svc.overlay = mock(CatalogOverlay.class);
+    svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     var tableId =
         ResourceId.newBuilder()
@@ -211,6 +214,7 @@ class SnapshotServiceImplTest {
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
     svc.overlay = mock(CatalogOverlay.class);
+    svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     var tableId =
         ResourceId.newBuilder()
@@ -245,9 +249,9 @@ class SnapshotServiceImplTest {
         .await()
         .indefinitely();
 
-    ArgumentCaptor<Table> cap = ArgumentCaptor.forClass(Table.class);
-    verify(svc.tableRepo).update(cap.capture(), eq(7L));
-    assertEquals("123", cap.getValue().getPropertiesMap().get("current-snapshot-id"));
+    ArgumentCaptor<Snapshot> cap = ArgumentCaptor.forClass(Snapshot.class);
+    verify(svc.currentSnapshotPointerService).maybeAdvance(eq(tableId), cap.capture(), eq("corr"));
+    assertEquals(123L, cap.getValue().getSnapshotId());
   }
 
   @Test
@@ -261,6 +265,7 @@ class SnapshotServiceImplTest {
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
     svc.overlay = mock(CatalogOverlay.class);
+    svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     var tableId =
         ResourceId.newBuilder()
@@ -314,6 +319,60 @@ class SnapshotServiceImplTest {
   }
 
   @Test
+  void createSnapshotSucceedsWhenPointerAdvanceFailsAfterCreate() {
+    var svc = new SnapshotServiceImpl();
+
+    svc.snapshotRepo = mock(SnapshotRepository.class);
+    svc.tableRepo = mock(TableRepository.class);
+    svc.statsStore = mock(StatsStore.class);
+    svc.principal = mock(PrincipalProvider.class);
+    svc.authz = mock(Authorizer.class);
+    svc.idempotencyStore = mock(IdempotencyRepository.class);
+    svc.overlay = mock(CatalogOverlay.class);
+    svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
+
+    var tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("t1")
+            .build();
+
+    when(svc.overlay.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    when(svc.tableRepo.getById(eq(tableId)))
+        .thenReturn(Optional.of(Table.newBuilder().setResourceId(tableId).build()));
+
+    var pc = mock(PrincipalContext.class);
+    when(svc.principal.get()).thenReturn(pc);
+    when(pc.getCorrelationId()).thenReturn("corr");
+    when(pc.getAccountId()).thenReturn("acct");
+    doNothing().when(svc.authz).require(any(), anyString());
+
+    when(svc.snapshotRepo.getById(eq(tableId), eq(123L))).thenReturn(Optional.empty());
+    doNothing().when(svc.snapshotRepo).create(any(Snapshot.class));
+    when(svc.snapshotRepo.metaForSafe(eq(tableId), eq(123L)))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(1).build());
+    doThrow(Status.ABORTED.asRuntimeException())
+        .when(svc.currentSnapshotPointerService)
+        .maybeAdvance(eq(tableId), any(Snapshot.class), eq("corr"));
+
+    var response =
+        svc.createSnapshot(
+                CreateSnapshotRequest.newBuilder()
+                    .setSpec(
+                        SnapshotSpec.newBuilder()
+                            .setTableId(tableId)
+                            .setSnapshotId(123L)
+                            .setSchemaJson("{}"))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(123L, response.getSnapshot().getSnapshotId());
+    verify(svc.snapshotRepo).create(any(Snapshot.class));
+  }
+
+  @Test
   void updateSnapshot_allowsDeltaVersionZero() {
     var svc = new SnapshotServiceImpl();
 
@@ -324,6 +383,7 @@ class SnapshotServiceImplTest {
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
     svc.overlay = mock(CatalogOverlay.class);
+    svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
     var tableId =
         ResourceId.newBuilder()
@@ -333,6 +393,11 @@ class SnapshotServiceImplTest {
             .build();
 
     when(svc.overlay.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    when(svc.tableRepo.getById(eq(tableId)))
+        .thenReturn(Optional.of(Table.newBuilder().setResourceId(tableId).build()));
+    when(svc.tableRepo.metaFor(eq(tableId)))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(3L).build());
+    when(svc.tableRepo.update(any(Table.class), eq(3L))).thenReturn(true);
 
     var pc = mock(PrincipalContext.class);
     when(svc.principal.get()).thenReturn(pc);
@@ -364,5 +429,188 @@ class SnapshotServiceImplTest {
             .build();
 
     assertDoesNotThrow(() -> svc.updateSnapshot(req).await().indefinitely());
+  }
+
+  @Test
+  void updateSnapshot_advancesCurrentSnapshotIdWhenPointerMissing() {
+    var svc = new SnapshotServiceImpl();
+
+    svc.snapshotRepo = mock(SnapshotRepository.class);
+    svc.tableRepo = mock(TableRepository.class);
+    svc.statsStore = mock(StatsStore.class);
+    svc.principal = mock(PrincipalProvider.class);
+    svc.authz = mock(Authorizer.class);
+    svc.idempotencyStore = mock(IdempotencyRepository.class);
+    svc.overlay = mock(CatalogOverlay.class);
+    svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
+
+    var tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("t1")
+            .build();
+
+    when(svc.overlay.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    when(svc.tableRepo.getById(eq(tableId)))
+        .thenReturn(Optional.of(Table.newBuilder().setResourceId(tableId).build()));
+    when(svc.tableRepo.metaFor(eq(tableId)))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(7L).build());
+    when(svc.tableRepo.update(any(Table.class), eq(7L))).thenReturn(true);
+
+    var pc = mock(PrincipalContext.class);
+    when(svc.principal.get()).thenReturn(pc);
+    when(pc.getCorrelationId()).thenReturn("corr");
+    doNothing().when(svc.authz).require(any(), anyString());
+
+    var existing =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(123L)
+            .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(1_000L))
+            .setSchemaJson("{}")
+            .build();
+    when(svc.snapshotRepo.metaFor(eq(tableId), eq(123L)))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(4L).build());
+    when(svc.snapshotRepo.getById(eq(tableId), eq(123L))).thenReturn(Optional.of(existing));
+
+    var req =
+        UpdateSnapshotRequest.newBuilder()
+            .setSpec(
+                SnapshotSpec.newBuilder()
+                    .setTableId(tableId)
+                    .setSnapshotId(123L)
+                    .setSchemaJson("{}"))
+            .setUpdateMask(FieldMask.newBuilder().addPaths("schema_json"))
+            .build();
+
+    svc.updateSnapshot(req).await().indefinitely();
+
+    ArgumentCaptor<Snapshot> cap = ArgumentCaptor.forClass(Snapshot.class);
+    verify(svc.currentSnapshotPointerService).maybeAdvance(eq(tableId), cap.capture(), eq("corr"));
+    assertEquals(123L, cap.getValue().getSnapshotId());
+  }
+
+  @Test
+  void updateSnapshotSucceedsWhenPointerAdvanceFailsAfterUpdate() {
+    var svc = new SnapshotServiceImpl();
+
+    svc.snapshotRepo = mock(SnapshotRepository.class);
+    svc.tableRepo = mock(TableRepository.class);
+    svc.statsStore = mock(StatsStore.class);
+    svc.principal = mock(PrincipalProvider.class);
+    svc.authz = mock(Authorizer.class);
+    svc.idempotencyStore = mock(IdempotencyRepository.class);
+    svc.overlay = mock(CatalogOverlay.class);
+    svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
+
+    var tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("t1")
+            .build();
+
+    when(svc.overlay.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    when(svc.tableRepo.getById(eq(tableId)))
+        .thenReturn(Optional.of(Table.newBuilder().setResourceId(tableId).build()));
+
+    var pc = mock(PrincipalContext.class);
+    when(svc.principal.get()).thenReturn(pc);
+    when(pc.getCorrelationId()).thenReturn("corr");
+    doNothing().when(svc.authz).require(any(), anyString());
+
+    var existing =
+        Snapshot.newBuilder().setTableId(tableId).setSnapshotId(123L).setSchemaJson("{}").build();
+    when(svc.snapshotRepo.metaFor(eq(tableId), eq(123L)))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(4L).build());
+    when(svc.snapshotRepo.getById(eq(tableId), eq(123L))).thenReturn(Optional.of(existing));
+    when(svc.snapshotRepo.update(any(Snapshot.class), eq(4L))).thenReturn(true);
+    when(svc.snapshotRepo.metaForSafe(eq(tableId), eq(123L)))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(5L).build());
+    doThrow(Status.ABORTED.asRuntimeException())
+        .when(svc.currentSnapshotPointerService)
+        .maybeAdvance(eq(tableId), any(Snapshot.class), eq("corr"));
+
+    var response =
+        svc.updateSnapshot(
+                UpdateSnapshotRequest.newBuilder()
+                    .setSpec(
+                        SnapshotSpec.newBuilder()
+                            .setTableId(tableId)
+                            .setSnapshotId(123L)
+                            .setSchemaJson("{\"type\":\"struct\"}"))
+                    .setUpdateMask(FieldMask.newBuilder().addPaths("schema_json"))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals("{\"type\":\"struct\"}", response.getSnapshot().getSchemaJson());
+    verify(svc.snapshotRepo).update(any(Snapshot.class), eq(4L));
+  }
+
+  @Test
+  void updateSnapshot_doesNotDowngradeCurrentSnapshotIdForOlderSnapshot() {
+    var svc = new SnapshotServiceImpl();
+
+    svc.snapshotRepo = mock(SnapshotRepository.class);
+    svc.tableRepo = mock(TableRepository.class);
+    svc.statsStore = mock(StatsStore.class);
+    svc.principal = mock(PrincipalProvider.class);
+    svc.authz = mock(Authorizer.class);
+    svc.idempotencyStore = mock(IdempotencyRepository.class);
+    svc.overlay = mock(CatalogOverlay.class);
+
+    var tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("t1")
+            .build();
+
+    when(svc.overlay.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    var tableRow =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .putProperties("current-snapshot-id", "200")
+            .build();
+    when(svc.tableRepo.getById(eq(tableId))).thenReturn(Optional.of(tableRow));
+
+    var pc = mock(PrincipalContext.class);
+    when(svc.principal.get()).thenReturn(pc);
+    when(pc.getCorrelationId()).thenReturn("corr");
+    doNothing().when(svc.authz).require(any(), anyString());
+
+    var older =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(100L)
+            .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(1_000L))
+            .setSchemaJson("{}")
+            .build();
+    var newer =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(200L)
+            .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(2_000L))
+            .build();
+    when(svc.snapshotRepo.metaFor(eq(tableId), eq(100L)))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(4L).build());
+    when(svc.snapshotRepo.getById(eq(tableId), eq(100L))).thenReturn(Optional.of(older));
+    when(svc.snapshotRepo.getById(eq(tableId), eq(200L))).thenReturn(Optional.of(newer));
+
+    var req =
+        UpdateSnapshotRequest.newBuilder()
+            .setSpec(
+                SnapshotSpec.newBuilder()
+                    .setTableId(tableId)
+                    .setSnapshotId(100L)
+                    .setSchemaJson("{}"))
+            .setUpdateMask(FieldMask.newBuilder().addPaths("schema_json"))
+            .build();
+
+    svc.updateSnapshot(req).await().indefinitely();
+
+    verify(svc.tableRepo, never()).update(any(Table.class), anyLong());
   }
 }

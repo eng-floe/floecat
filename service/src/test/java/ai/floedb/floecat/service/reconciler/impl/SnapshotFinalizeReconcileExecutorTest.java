@@ -22,7 +22,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
@@ -47,6 +49,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.impl.InMemoryReconcileJobStore;
+import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
@@ -160,9 +163,18 @@ class SnapshotFinalizeReconcileExecutorTest {
     executor.persistence = persistence(statsStore);
     executor.snapshotPlanBlobStore = snapshotPlanBlobStore;
     executor.coverageService = coverageService(snapshotPlanBlobStore);
+    executor.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
     childStateService.jobs = jobs;
     executor.childStateService = childStateService;
     return executor;
+  }
+
+  private static ResourceId tableId(String accountId, String tableId) {
+    return ResourceId.newBuilder()
+        .setAccountId(accountId)
+        .setKind(ResourceKind.RK_TABLE)
+        .setId(tableId)
+        .build();
   }
 
   private static ReconcileSnapshotTask persistedSnapshotPlan(
@@ -442,6 +454,67 @@ class SnapshotFinalizeReconcileExecutorTest {
                 new ReconcileJobStore.LeaseRequest(
                     null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
             .orElseThrow();
+
+    ExecutionResult result = executor.execute(context(finalizerLease));
+
+    assertTrue(result.success());
+    assertTrue(result.message.contains("direct stats"));
+    verify(executor.currentSnapshotPointerService)
+        .maybeAdvance(tableId(ACCOUNT_ID, TABLE_ID), SNAPSHOT_ID, finalizerLease.jobId);
+  }
+
+  @Test
+  void executeSucceedsWhenCurrentSnapshotAdvanceFailsAfterDirectStatsCompletion() {
+    var store = new InMemoryReconcileJobStore();
+    var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var executor = executor(store, statsStore, snapshotPlanBlobStore());
+
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+            "",
+            0,
+            0,
+            "",
+            0);
+    ReconcileScope scope = captureScope();
+    String parentJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            scope,
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    store.enqueueSnapshotFinalization(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.CAPTURE_ONLY,
+        scope,
+        snapshotTask,
+        ReconcileExecutionPolicy.defaults(),
+        parentJobId,
+        "");
+
+    ReconcileJobStore.LeasedJob finalizerLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+            .orElseThrow();
+    doThrow(new RuntimeException("pointer conflict"))
+        .when(executor.currentSnapshotPointerService)
+        .maybeAdvance(tableId(ACCOUNT_ID, TABLE_ID), SNAPSHOT_ID, finalizerLease.jobId);
 
     ExecutionResult result = executor.execute(context(finalizerLease));
 
@@ -828,6 +901,8 @@ class SnapshotFinalizeReconcileExecutorTest {
             .orElseThrow()
             .getTable()
             .getRowCount());
+    verify(executor.currentSnapshotPointerService)
+        .maybeAdvance(tableId, SNAPSHOT_ID, finalizerLease.jobId);
   }
 
   @Test

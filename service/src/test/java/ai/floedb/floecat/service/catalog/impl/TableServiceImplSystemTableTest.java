@@ -44,12 +44,16 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
+import ai.floedb.floecat.scanner.spi.TopologyGraph;
+import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
+import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
+import ai.floedb.floecat.types.ManagedTableProperties;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -57,6 +61,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -67,6 +72,9 @@ class TableServiceImplSystemTableTest {
   private TableRepository tableRepo;
   private PrincipalProvider principal;
   private Authorizer authz;
+  private EngineHintSchemaCleaner hintCleaner;
+  private TopologyGraph topology;
+  private UserGraph metadataGraph;
 
   private TestCatalogOverlay overlay;
 
@@ -78,6 +86,9 @@ class TableServiceImplSystemTableTest {
     tableRepo = mock(TableRepository.class);
     principal = mock(PrincipalProvider.class);
     authz = mock(Authorizer.class);
+    hintCleaner = mock(EngineHintSchemaCleaner.class);
+    topology = mock(TopologyGraph.class);
+    metadataGraph = mock(UserGraph.class);
 
     overlay = new TestCatalogOverlay();
 
@@ -86,6 +97,9 @@ class TableServiceImplSystemTableTest {
     svc.principal = principal;
     svc.authz = authz;
     svc.overlay = overlay;
+    svc.hintCleaner = hintCleaner;
+    svc.topology = topology;
+    svc.metadataGraph = metadataGraph;
 
     // Minimal principal + authz behavior
     var pc = mock(PrincipalContext.class);
@@ -93,6 +107,7 @@ class TableServiceImplSystemTableTest {
     when(pc.getCorrelationId()).thenReturn("corr");
     when(pc.getAccountId()).thenReturn("acct");
     doNothing().when(authz).require(any(), anyString());
+    when(hintCleaner.shouldClearHints(any())).thenReturn(false);
   }
 
   @Test
@@ -330,6 +345,79 @@ class TableServiceImplSystemTableTest {
 
     assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
     verify(tableRepo, never()).update(any(), anyLong());
+  }
+
+  @Test
+  void updateTable_propertiesPreservesManagedPropertiesWhenOmitted() {
+    ResourceId userCatalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat_user_props")
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns_user_props")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl_user_props")
+            .build();
+
+    overlay.addNode(
+        new NamespaceNode(
+            namespaceId,
+            1L,
+            Instant.now(),
+            userCatalogId,
+            List.of(),
+            "public",
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Map.of()));
+    overlay.addNode(userTableNode(tableId, userCatalogId, namespaceId));
+
+    Table current =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(userCatalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders")
+            .setSchemaJson("{}")
+            .putProperties(ManagedTableProperties.CURRENT_SNAPSHOT_ID, "200")
+            .putProperties(ManagedTableProperties.FORMAT_VERSION, "2")
+            .putProperties("external", "old")
+            .build();
+    when(tableRepo.metaFor(tableId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(7L).build());
+    when(tableRepo.getById(tableId)).thenReturn(Optional.of(current));
+    when(tableRepo.metaForSafe(tableId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(8L).build());
+    when(tableRepo.update(any(Table.class), anyLong())).thenReturn(true);
+
+    var req =
+        UpdateTableRequest.newBuilder()
+            .setTableId(tableId)
+            .setSpec(
+                TableSpec.newBuilder()
+                    .putProperties("external", "new")
+                    .putProperties(ManagedTableProperties.CURRENT_SNAPSHOT_ID, "100")
+                    .build())
+            .setUpdateMask(FieldMask.newBuilder().addPaths("properties").build())
+            .build();
+
+    svc.updateTable(req).await().indefinitely();
+
+    ArgumentCaptor<Table> tableCaptor = ArgumentCaptor.forClass(Table.class);
+    verify(tableRepo).update(tableCaptor.capture(), anyLong());
+    Table updated = tableCaptor.getValue();
+    assertEquals("new", updated.getPropertiesMap().get("external"));
+    assertEquals("200", updated.getPropertiesMap().get(ManagedTableProperties.CURRENT_SNAPSHOT_ID));
+    assertEquals("2", updated.getPropertiesMap().get(ManagedTableProperties.FORMAT_VERSION));
   }
 
   private UserTableNode userTableNode(

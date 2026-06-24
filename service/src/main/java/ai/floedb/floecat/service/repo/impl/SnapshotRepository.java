@@ -26,15 +26,24 @@ import ai.floedb.floecat.service.repo.model.SnapshotKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.telemetry.StoreOperationSummary;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.locks.LockSupport;
 
 @ApplicationScoped
 public class SnapshotRepository {
+  public enum CurrentSnapshotPointerUpdateResult {
+    UPDATED,
+    UNCHANGED,
+    TABLE_MISSING,
+    CONFLICT
+  }
 
   private final GenericResourceRepository<Snapshot, SnapshotKey> repo;
   private final TableRepository tableRepo;
@@ -76,6 +85,74 @@ public class SnapshotRepository {
     return repo.getByKey(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
   }
 
+  public CurrentSnapshotPointerUpdateResult maybeAdvanceCurrentSnapshotPointer(
+      ResourceId tableId, Snapshot candidate) {
+    for (int attempt = 0; attempt < 4; attempt++) {
+      Optional<Table> table = tableRepo.getById(tableId);
+      if (table.isEmpty()) {
+        return CurrentSnapshotPointerUpdateResult.TABLE_MISSING;
+      }
+      if (!shouldAdvanceCurrentSnapshot(tableId, table.get(), candidate)) {
+        return CurrentSnapshotPointerUpdateResult.UNCHANGED;
+      }
+
+      long expectedVersion = tableRepo.metaFor(tableId).getPointerVersion();
+      Table updated =
+          table.get().toBuilder()
+              .putProperties("current-snapshot-id", Long.toString(candidate.getSnapshotId()))
+              .build();
+      if (tableRepo.update(updated, expectedVersion)) {
+        return CurrentSnapshotPointerUpdateResult.UPDATED;
+      }
+      backoffCurrentPointerAdvance(attempt);
+    }
+    return CurrentSnapshotPointerUpdateResult.CONFLICT;
+  }
+
+  private static void backoffCurrentPointerAdvance(int attempt) {
+    long baseNanos = (1L << Math.min(attempt, 5)) * 1_000_000L;
+    long jitterNanos = ThreadLocalRandom.current().nextLong(250_000L, 1_000_001L);
+    LockSupport.parkNanos(baseNanos + jitterNanos);
+  }
+
+  private boolean shouldAdvanceCurrentSnapshot(
+      ResourceId tableId, Table table, Snapshot candidateSnapshot) {
+    String currentSnapshotId = table.getPropertiesMap().get("current-snapshot-id");
+    if (currentSnapshotId == null || currentSnapshotId.isBlank()) {
+      return true;
+    }
+
+    long currentId;
+    try {
+      currentId = Long.parseLong(currentSnapshotId);
+    } catch (NumberFormatException e) {
+      return true;
+    }
+
+    if (currentId == candidateSnapshot.getSnapshotId()) {
+      return false;
+    }
+
+    Snapshot currentSnapshot = getById(tableId, currentId).orElse(null);
+    if (currentSnapshot == null) {
+      return true;
+    }
+
+    long currentMs =
+        currentSnapshot.hasUpstreamCreatedAt()
+            ? Timestamps.toMillis(currentSnapshot.getUpstreamCreatedAt())
+            : Long.MIN_VALUE;
+    long candidateMs =
+        candidateSnapshot.hasUpstreamCreatedAt()
+            ? Timestamps.toMillis(candidateSnapshot.getUpstreamCreatedAt())
+            : Long.MIN_VALUE;
+
+    if (candidateMs != currentMs) {
+      return candidateMs > currentMs;
+    }
+    return candidateSnapshot.getSnapshotId() > currentSnapshot.getSnapshotId();
+  }
+
   public static String metadataLocation(Snapshot snapshot) {
     if (snapshot == null || !snapshot.hasMetadataLocation()) {
       return null;
@@ -94,18 +171,30 @@ public class SnapshotRepository {
     }
     String currentSnapshotId = table.get().getPropertiesMap().get("current-snapshot-id");
     if (currentSnapshotId == null || currentSnapshotId.isBlank()) {
+      StoreOperationSummary.put("current_snapshot_source", "fallback");
+      StoreOperationSummary.fallback("current_snapshot");
       return latestSnapshotByTime(tableId);
     }
     long snapshotId;
     try {
       snapshotId = Long.parseLong(currentSnapshotId);
     } catch (NumberFormatException e) {
+      StoreOperationSummary.put("current_snapshot_source", "fallback");
+      StoreOperationSummary.fallback("current_snapshot_invalid_property");
       return latestSnapshotByTime(tableId);
     }
+    // Iceberg uses -1 as the no-current-snapshot sentinel; valid snapshot ids are non-negative.
     if (snapshotId < 0) {
+      StoreOperationSummary.put("current_snapshot_source", "fallback");
+      StoreOperationSummary.fallback("current_snapshot_invalid_property");
       return latestSnapshotByTime(tableId);
     }
     Optional<Snapshot> current = getById(tableId, snapshotId);
+    StoreOperationSummary.put(
+        "current_snapshot_source", current.isPresent() ? "property" : "fallback");
+    if (current.isEmpty()) {
+      StoreOperationSummary.fallback("current_snapshot_missing_property_target");
+    }
     return current.isPresent() ? current : latestSnapshotByTime(tableId);
   }
 
