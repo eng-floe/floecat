@@ -1903,6 +1903,7 @@ connector update glue-iceberg --policy-latest-n 5
 connector update glue-iceberg --policy-all
 connector update glue-iceberg --policy-capture stats,index
 connector update glue-iceberg --policy-capture index --policy-default-cols explicit-only
+connector update glue-iceberg --policy-capture none
 </code></pre></div>
 <ul>
 <li><strong>Triggering a connector to read an upstream table</strong></li>
@@ -1914,7 +1915,8 @@ connector trigger glue-iceberg --full --current --mode metadata-and-capture --ca
 </code></pre></div>
 <p>For capture modes, trigger-time <code>--capture</code> flags are optional. If omitted, the run inherits the
   connector's persisted auto-capture policy when present, otherwise it falls back to the default
-  stats capture policy. Trigger-time capture flags override the connector default for that run.</p>
+  stats capture policy. Trigger-time capture flags override the connector default for that run.
+  Use <code>connector update ... --policy-capture none</code> to clear a persisted auto-capture policy.</p>
 <ul>
 <li><strong>Creating a storage authority for Iceberg REST credential vending</strong></li>
 </ul>
