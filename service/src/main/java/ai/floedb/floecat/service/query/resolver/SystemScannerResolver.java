@@ -25,6 +25,7 @@ import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
@@ -51,7 +52,7 @@ public final class SystemScannerResolver {
    * propagated by {@code InboundContextInterceptor}.
    */
   public SystemObjectScanner resolve(String correlationId, ResourceId tableId) {
-    return resolve(correlationId, tableId, engine.engineContext());
+    return resolve(correlationId, tableId, engine.engineContext(), PhaseDiagnostics.NOOP);
   }
 
   /**
@@ -61,11 +62,21 @@ public final class SystemScannerResolver {
    * the gRPC thread-local context is not available.
    */
   public SystemObjectScanner resolve(String correlationId, ResourceId tableId, EngineContext ctx) {
+    return resolve(correlationId, tableId, ctx, PhaseDiagnostics.NOOP);
+  }
+
+  public SystemObjectScanner resolve(
+      String correlationId, ResourceId tableId, EngineContext ctx, PhaseDiagnostics diagnostics) {
+    PhaseDiagnostics safeDiagnostics =
+        diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
     String engineKind = ctx.effectiveEngineKind();
     String engineVersion = ctx.normalizedVersion();
+    safeDiagnostics.put("system_scanner_engine_kind", engineKind);
+    safeDiagnostics.put("system_scanner_engine_version", engineVersion);
+    safeDiagnostics.put("system_scanner_table_id", tableId == null ? "" : tableId.getId());
 
     Optional<SystemTableNode.FloeCatSystemTableNode> nodeOptional =
-        resolveSystemTable(graph, tableId, engineKind);
+        safeDiagnostics.time("system_scanner_graph_resolve", () -> resolveSystemTable(graph, tableId, engineKind));
     var node =
         nodeOptional.orElseThrow(
             () ->
@@ -75,19 +86,25 @@ public final class SystemScannerResolver {
                     Map.of("table_id", tableId.getId())));
 
     String scannerId = node.scannerId();
+    safeDiagnostics.put("system_scanner_id", scannerId);
     if (scannerId == null || scannerId.isBlank()) {
       throw GrpcErrors.internal(
           correlationId, SYSTEM_SCAN_MISSING_SCANNER, Map.of("table_id", tableId.getId()));
     }
 
     for (var provider : providers) {
+      safeDiagnostics.count("system_scanner_provider_checks");
       if (!provider.supportsEngine(engineKind)) {
         continue;
       }
 
-      var scanner = provider.provide(scannerId, engineKind, engineVersion);
+      var scanner =
+          safeDiagnostics.time(
+              "system_scanner_provider_provide",
+              () -> provider.provide(scannerId, engineKind, engineVersion));
 
       if (scanner.isPresent()) {
+        safeDiagnostics.count("system_scanner_provider_matches");
         return scanner.get();
       }
     }

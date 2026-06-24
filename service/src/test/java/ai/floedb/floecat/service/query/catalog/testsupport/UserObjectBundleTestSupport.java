@@ -38,6 +38,7 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -390,6 +391,18 @@ public final class UserObjectBundleTestSupport {
         }
       }
       return new ResolutionResult(resolved, pins.build(), null);
+    }
+
+    @Override
+    public ResolutionResult resolveInputs(
+        String correlationId,
+        List<QueryInput> inputs,
+        Optional<Timestamp> asOfDefault,
+        Optional<ResourceId> defaultCatalogId,
+        Map<ResourceId, SnapshotPin> currentSnapshotPinCache,
+        PhaseDiagnostics diagnostics) {
+      return resolveInputs(
+          correlationId, inputs, asOfDefault, defaultCatalogId, currentSnapshotPinCache);
     }
   }
 

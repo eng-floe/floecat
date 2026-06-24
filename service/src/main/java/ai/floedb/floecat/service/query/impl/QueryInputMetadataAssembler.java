@@ -24,10 +24,13 @@ import ai.floedb.floecat.query.rpc.TableObligations;
 import ai.floedb.floecat.service.query.resolver.ObligationsResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.query.resolver.ViewExpansionResolver;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Optional;
 
@@ -37,6 +40,7 @@ public class QueryInputMetadataAssembler {
   @Inject QueryInputResolver inputResolver;
   @Inject ViewExpansionResolver expansions;
   @Inject ObligationsResolver obligations;
+  @Inject Observability observability;
 
   /**
    * Combines the existing resolvers to build the lifecycle metadata that BeginQuery should store
@@ -47,21 +51,63 @@ public class QueryInputMetadataAssembler {
       List<QueryInput> inputs,
       Optional<Timestamp> asOfDefault,
       ResourceId defaultCatalogId) {
+    PhaseDiagnostics diagnostics = diagnostics("query_input_metadata");
+    long startedNanos = System.nanoTime();
+    String outcome = "completed";
+    diagnostics.put("correlation_id", correlationId);
+    diagnostics.put("inputs", inputs.size());
     if (inputs.isEmpty()) {
-      return QueryInputMetadata.empty();
+      try {
+        outcome = "empty";
+        return QueryInputMetadata.empty();
+      } finally {
+        diagnostics.put("outcome", outcome);
+        diagnostics.nanos("total", System.nanoTime() - startedNanos);
+        diagnostics.emit("floecat.query_input_metadata.summary");
+      }
     }
 
-    var resolution =
-        inputResolver.resolveInputs(
-            correlationId, inputs, asOfDefault, Optional.of(defaultCatalogId));
-    SnapshotSet snapshotSet = resolution.snapshotSet();
-    ExpansionMap expansionMap =
-        expansions.computeExpansion(correlationId, List.copyOf(resolution.resolved()));
-    var obligationsResult =
-        obligations.resolveObligations(correlationId, snapshotSet.getPinsList());
+    try {
+      var resolution =
+          diagnostics.time(
+              "resolve_inputs",
+              () ->
+                  inputResolver.resolveInputs(
+                      correlationId,
+                      inputs,
+                      asOfDefault,
+                      Optional.of(defaultCatalogId),
+                      new LinkedHashMap<>(),
+                      diagnostics));
+      diagnostics.put("resolved_inputs", resolution.resolved().size());
+      SnapshotSet snapshotSet = resolution.snapshotSet();
+      diagnostics.put("snapshot_pins", snapshotSet.getPinsCount());
+      ExpansionMap expansionMap =
+          diagnostics.time(
+              "compute_expansion",
+              () ->
+                  expansions.computeExpansion(
+                      correlationId, List.copyOf(resolution.resolved()), diagnostics));
+      var obligationsResult =
+          diagnostics.time(
+              "resolve_obligations",
+              () ->
+                  obligations.resolveObligations(
+                      correlationId, snapshotSet.getPinsList(), diagnostics));
+      diagnostics.put("obligations", obligationsResult.obligations().size());
+      diagnostics.put("obligation_bytes", obligationsResult.bytes().length);
 
-    return new QueryInputMetadata(
-        snapshotSet, expansionMap, obligationsResult.bytes(), obligationsResult.obligations());
+      return new QueryInputMetadata(
+          snapshotSet, expansionMap, obligationsResult.bytes(), obligationsResult.obligations());
+    } catch (RuntimeException | Error e) {
+      outcome = "failed";
+      diagnostics.put("error", e.getClass().getSimpleName());
+      throw e;
+    } finally {
+      diagnostics.put("outcome", outcome);
+      diagnostics.nanos("total", System.nanoTime() - startedNanos);
+      diagnostics.emit("floecat.query_input_metadata.summary");
+    }
   }
 
   /**
@@ -83,5 +129,11 @@ public class QueryInputMetadataAssembler {
           new byte[0],
           Collections.emptyList());
     }
+  }
+
+  private PhaseDiagnostics diagnostics(String operation) {
+    return observability == null
+        ? PhaseDiagnostics.NOOP
+        : observability.diagnostics("service", operation);
   }
 }

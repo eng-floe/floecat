@@ -44,6 +44,7 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
+import ai.floedb.floecat.telemetry.StoreOperationSummary;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.subscription.MultiEmitter;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -82,12 +83,16 @@ public class ScanBundleService {
 
   /** Loads table and snapshot metadata and builds the initial TableInfo for a scan handle. */
   public InitData initScan(String correlationId, ResourceId tableId, long snapshotId) {
+    long initStartedNanos = System.nanoTime();
+    long tableStartedNanos = initStartedNanos;
     Table table =
         tables
             .getById(tableId)
             .orElseThrow(
                 () -> GrpcErrors.notFound(correlationId, TABLE, Map.of("id", tableId.getId())));
+    StoreOperationSummary.nanos("table_load", System.nanoTime() - tableStartedNanos);
 
+    long snapshotStartedNanos = System.nanoTime();
     Snapshot snapshot =
         snapshots
             .getById(tableId, snapshotId)
@@ -101,8 +106,10 @@ public class ScanBundleService {
                             tableId.getId(),
                             "snapshot_id",
                             Long.toString(snapshotId))));
+    StoreOperationSummary.nanos("snapshot_load", System.nanoTime() - snapshotStartedNanos);
 
     TableInfo info = buildTableInfo(table, snapshot, snapshotId);
+    StoreOperationSummary.nanos("scan_init", System.nanoTime() - initStartedNanos);
     return new InitData(tableId, snapshotId, info);
   }
 

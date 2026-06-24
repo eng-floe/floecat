@@ -72,7 +72,8 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
-import io.opentelemetry.api.common.Attributes;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import io.opentelemetry.api.trace.Span;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -121,6 +122,8 @@ public class UserObjectBundleService {
   private final LogicalSchemaMapper logicalSchemaMapper = new LogicalSchemaMapper();
   private final FlightEndpointRef floecatFlightEndpoint;
 
+  @Inject Observability observability;
+
   private static void warnFlightHost(String flightHost, String quarkusProfile) {
     if (flightHost == null) {
       return;
@@ -141,6 +144,12 @@ public class UserObjectBundleService {
               + " workers can connect.",
           flightHost, normalized);
     }
+  }
+
+  private PhaseDiagnostics diagnostics(String operation) {
+    return observability == null
+        ? PhaseDiagnostics.NOOP
+        : observability.diagnostics("service", operation);
   }
 
   @Inject
@@ -306,30 +315,42 @@ public class UserObjectBundleService {
       String correlationId,
       QueryContext ctx,
       List<ResolvedRelation> relations,
-      Map<ResourceId, SnapshotPin> currentSnapshotPinCache) {
+      Map<ResourceId, SnapshotPin> currentSnapshotPinCache,
+      PhaseDiagnostics diagnostics) {
     if (relations == null || relations.isEmpty()) {
       return SnapshotSet.getDefaultInstance();
     }
+    diagnostics.add("pin.relations", relations.size());
     List<QueryInput> inputs = new ArrayList<>(relations.size());
+    long buildInputsStartNs = System.nanoTime();
     for (ResolvedRelation relation : relations) {
       QueryInput input = buildCanonicalQueryInput(relation);
       if (input != null) {
         inputs.add(input);
       }
     }
+    diagnostics.nanos("pin.build_inputs", System.nanoTime() - buildInputsStartNs);
+    diagnostics.add("pin.inputs", inputs.size());
     if (inputs.isEmpty()) {
       return SnapshotSet.getDefaultInstance();
     }
+    long asOfStartNs = System.nanoTime();
     var asOfDefault = ctx.parseAsOfDefault(correlationId);
+    diagnostics.nanos("pin.asof_default", System.nanoTime() - asOfStartNs);
+    long resolverStartNs = System.nanoTime();
     var resolution =
         inputResolver.resolveInputs(
             correlationId,
             inputs,
             asOfDefault,
             Optional.of(ctx.getQueryDefaultCatalogId()),
-            currentSnapshotPinCache);
+            currentSnapshotPinCache,
+            diagnostics);
+    diagnostics.nanos("pin.resolver", System.nanoTime() - resolverStartNs);
     SnapshotSet incoming = resolution.snapshotSet();
-    return incoming == null ? SnapshotSet.getDefaultInstance() : incoming;
+    SnapshotSet pins = incoming == null ? SnapshotSet.getDefaultInstance() : incoming;
+    diagnostics.add("pin.output_pins", pins.getPinsCount());
+    return pins;
   }
 
   private UserObjectsBundleChunk headerChunk(String queryId, int seq) {
@@ -1273,6 +1294,7 @@ public class UserObjectBundleService {
     private final Map<RelationCacheKey, RelationInfo> relationInfoCache = new HashMap<>();
     private final Map<ResourceId, SnapshotPin> currentSnapshotPinCache = new HashMap<>();
     private final TimingAccumulator timings = new TimingAccumulator();
+    private final PhaseDiagnostics diagnostics = diagnostics("get_user_objects");
     private final long streamStartNs = System.nanoTime();
     private final Span parentSpan = Span.current();
     private SnapshotSet pendingChunkPins = SnapshotSet.getDefaultInstance();
@@ -1288,11 +1310,21 @@ public class UserObjectBundleService {
     private boolean defaultCatalogResolved = false;
     private String defaultCatalogName = "";
     private long resolveNanos = 0L;
+    private long normalizeNanos = 0L;
+    private long selectRelationNanos = 0L;
+    private long defaultCatalogNanos = 0L;
+    private long nameResolveNanos = 0L;
+    private long nodeResolveNanos = 0L;
     private long baseInjectNanos = 0L;
     private long pinCollectNanos = 0L;
     private long pinCommitNanos = 0L;
     private long relationBuildNanos = 0L;
     private long decorationNanos = 0L;
+    private long defaultCatalogLookups = 0L;
+    private long nameResolutionCacheHits = 0L;
+    private long nameResolutionCacheMisses = 0L;
+    private long nodeResolutionCacheHits = 0L;
+    private long nodeResolutionCacheMisses = 0L;
 
     UserObjectBundleIterator(
         String correlationId, QueryContext ctx, List<TableReferenceCandidate> tables) {
@@ -1311,6 +1343,7 @@ public class UserObjectBundleService {
               Objects.requireNonNull(ctx.getQueryDefaultCatalogId(), "query default catalog id"),
               requestEngine,
               statsProvider);
+      initializeParentSpan();
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
             "Initialized bundle iterator query_id=%s correlation_id=%s resolution_count=%d"
@@ -1373,7 +1406,19 @@ public class UserObjectBundleService {
       if (!toPin.isEmpty()) {
         long pinStartNs = System.nanoTime();
         try {
-          accumulateChunkPins(collectChunkPins(correlationId, ctx, toPin, currentSnapshotPinCache));
+          SnapshotSet chunkPins =
+              collectChunkPins(
+                  correlationId,
+                  ctx,
+                  toPin,
+                  currentSnapshotPinCache,
+                  diagnostics);
+          long accumulateStartNs = System.nanoTime();
+          try {
+            accumulateChunkPins(chunkPins);
+          } finally {
+            diagnostics.nanos("pin.accumulate", System.nanoTime() - accumulateStartNs);
+          }
         } finally {
           pinCollectNanos += System.nanoTime() - pinStartNs;
         }
@@ -1450,16 +1495,17 @@ public class UserObjectBundleService {
               "Resolving candidate query_id=%s input_index=%d candidate_count=%d",
               ctx.getQueryId(), inputIndex, candidate.getCandidatesCount());
         }
-        List<QueryInput> normalized =
-            normalizeCandidates(correlationId, candidate, this::defaultCatalogName);
+        List<QueryInput> normalized;
+        long normalizeStartNs = System.nanoTime();
         try {
+          normalized = normalizeCandidates(correlationId, candidate, this::defaultCatalogName);
+        } finally {
+          normalizeNanos += System.nanoTime() - normalizeStartNs;
+        }
+        try {
+          long selectStartNs = System.nanoTime();
           Optional<ResolvedRelation> resolved =
-              selectResolvedRelation(
-                  correlationId,
-                  candidate,
-                  normalized,
-                  this::resolveNameCached,
-                  this::resolveNodeCached);
+              selectResolvedRelationTimed(correlationId, candidate, normalized, selectStartNs);
           if (resolved.isPresent()) {
             foundCount++;
             if (LOG.isTraceEnabled()) {
@@ -1610,11 +1656,12 @@ public class UserObjectBundleService {
                   - relationBuildNanos
                   - decorationNanos
                   - timings.statsLookupNanos());
-      emitSummaryEvent(outcome);
-
       double totalMs = totalNanos / 1_000_000.0;
+      double pinMs = (pinCollectNanos + pinCommitNanos) / 1_000_000.0;
+      emitSummaryEvent(outcome, totalMs, pinMs, schedulingNanos / 1_000_000.0);
+      updateParentSpanSummary(outcome, totalMs);
+
       if (totalMs >= slowRpcMs) {
-        double pinMs = (pinCollectNanos + pinCommitNanos) / 1_000_000.0;
         LOG.infof(
             "op=GetUserObjects slow query_id=%s correlation_id=%s totalMs=%.1f"
                 + " resolveMs=%.1f baseInjectMs=%.1f pinMs=%.1f relationBuildMs=%.1f"
@@ -1651,30 +1698,75 @@ public class UserObjectBundleService {
       }
     }
 
-    // The GetUserObjects RPC has many internal sub-phases (resolve, decoration, ...). We do NOT
-    // emit a span per phase -- they are not RPCs and only add noise to the trace. Per-phase
-    // timings remain available in the slow-query log; here we keep a single summary EVENT on the
-    // GetUserObjects RPC span itself (not a sub-span).
-    private void emitSummaryEvent(String outcome) {
+    private void initializeParentSpan() {
       if (!parentSpan.getSpanContext().isValid()) {
         return;
       }
-      parentSpan.addEvent(
-          "floecat.get_user_objects.summary",
-          Attributes.builder()
-              .put("query_id", ctx.getQueryId())
-              .put("correlation_id", correlationId)
-              .put("candidates", resolutionCount)
-              .put("chunks", emittedResolutionChunks)
-              .put("found", foundCount)
-              .put("not_found", notFoundCount)
-              .put("decorator_warm_hits", timings.decorateColumnWarmHits())
-              .put(
-                  "hint_persist_ms",
-                  (timings.decoratePersistRelationNanos() + timings.decoratePersistColumnsNanos())
-                      / 1_000_000.0)
-              .put("outcome", safe(outcome))
-              .build());
+      parentSpan.setAttribute("correlation_id", correlationId);
+      parentSpan.setAttribute("floecat.get_user_objects.candidates", resolutionCount);
+      parentSpan.setAttribute(
+          "floecat.get_user_objects.default_catalog_id", defaultCatalogId.getId());
+      parentSpan.setAttribute("floecat.get_user_objects.engine_kind", safe(engineKind));
+      parentSpan.setAttribute("floecat.get_user_objects.engine_version", safe(engineVersion));
+    }
+
+    private void updateParentSpanSummary(String outcome, double totalMs) {
+      if (!parentSpan.getSpanContext().isValid()) {
+        return;
+      }
+      parentSpan.setAttribute("floecat.get_user_objects.outcome", safe(outcome));
+      parentSpan.setAttribute("floecat.get_user_objects.duration_ms", totalMs);
+      parentSpan.setAttribute("floecat.get_user_objects.chunks", emittedResolutionChunks);
+      parentSpan.setAttribute("floecat.get_user_objects.found", foundCount);
+      parentSpan.setAttribute("floecat.get_user_objects.not_found", notFoundCount);
+    }
+
+    // The GetUserObjects RPC has many internal sub-phases (resolve, decoration, ...). We do NOT
+    // emit a span per phase -- they are not RPCs and only add noise to the trace. Per-phase
+    // timings are attached as one summary event on the GetUserObjects RPC span, so Jaeger stays
+    // readable for small catalog lookups.
+    private void emitSummaryEvent(
+        String outcome, double totalMs, double pinMs, double schedulingMs) {
+      diagnostics.put("query_id", ctx.getQueryId());
+      diagnostics.put("correlation_id", correlationId);
+      diagnostics.put("candidates", resolutionCount);
+      diagnostics.put("chunks", emittedResolutionChunks);
+      diagnostics.put("found", foundCount);
+      diagnostics.put("not_found", notFoundCount);
+      diagnostics.put("total_ms", totalMs);
+      diagnostics.nanos("resolve", resolveNanos);
+      diagnostics.nanos("normalize", normalizeNanos);
+      diagnostics.nanos("select_relation", selectRelationNanos);
+      diagnostics.nanos("default_catalog", defaultCatalogNanos);
+      diagnostics.nanos("name_resolve", nameResolveNanos);
+      diagnostics.nanos("node_resolve", nodeResolveNanos);
+      diagnostics.nanos("base_inject", baseInjectNanos);
+      diagnostics.nanos("pin_collect", pinCollectNanos);
+      diagnostics.nanos("pin_commit", pinCommitNanos);
+      diagnostics.put("pin_ms", pinMs);
+      diagnostics.nanos("relation_build", relationBuildNanos);
+      diagnostics.nanos("decoration", decorationNanos);
+      diagnostics.nanos("stats_lookup", timings.statsLookupNanos());
+      diagnostics.nanos("decorate_relation", timings.decorateRelationNanos());
+      diagnostics.nanos("decorate_view", timings.decorateViewNanos());
+      diagnostics.nanos("decorate_columns", timings.decorateColumnsNanos());
+      diagnostics.nanos("decorate_column_invoke", timings.decorateColumnInvokeNanos());
+      diagnostics.nanos("decorate_complete", timings.decorateCompleteNanos());
+      diagnostics.put("scheduling_ms", schedulingMs);
+      diagnostics.put("decorator_warm_hits", timings.decorateColumnWarmHits());
+      diagnostics.nanos(
+          "hint_persist",
+          timings.decoratePersistRelationNanos() + timings.decoratePersistColumnsNanos());
+      diagnostics.put("default_catalog_lookups", defaultCatalogLookups);
+      diagnostics.put("name_cache_hits", nameResolutionCacheHits);
+      diagnostics.put("name_cache_misses", nameResolutionCacheMisses);
+      diagnostics.put("node_cache_hits", nodeResolutionCacheHits);
+      diagnostics.put("node_cache_misses", nodeResolutionCacheMisses);
+      diagnostics.put("name_cache_entries", nameResolutionCache.size());
+      diagnostics.put("node_cache_entries", nodeResolutionCache.size());
+      diagnostics.put("relation_cache_entries", relationInfoCache.size());
+      diagnostics.put("outcome", safe(outcome));
+      diagnostics.emit("floecat.get_user_objects.summary");
     }
 
     private RelationCacheKey relationCacheKey(ResolvedRelation relation) {
@@ -1698,9 +1790,15 @@ public class UserObjectBundleService {
 
     private String defaultCatalogName() {
       if (!defaultCatalogResolved) {
-        defaultCatalogName =
-            overlay.catalog(defaultCatalogId).map(CatalogNode::displayName).orElse("");
-        defaultCatalogResolved = true;
+        long startNs = System.nanoTime();
+        try {
+          defaultCatalogName =
+              overlay.catalog(defaultCatalogId).map(CatalogNode::displayName).orElse("");
+          defaultCatalogResolved = true;
+          defaultCatalogLookups++;
+        } finally {
+          defaultCatalogNanos += System.nanoTime() - startNs;
+        }
       }
       return defaultCatalogName;
     }
@@ -1711,12 +1809,52 @@ public class UserObjectBundleService {
 
     private Optional<ResourceId> resolveNameCached(NameRef ref) {
       NormalizedNameRef key = normalizedNameRef(ref);
-      return nameResolutionCache.computeIfAbsent(
-          key, ignored -> overlay.resolveName(correlationId, ref));
+      // Stored values are non-null Optional instances; null means cache miss.
+      Optional<ResourceId> cached = nameResolutionCache.get(key);
+      if (cached != null) {
+        nameResolutionCacheHits++;
+        return cached;
+      }
+      long startNs = System.nanoTime();
+      try {
+        Optional<ResourceId> resolved = overlay.resolveName(correlationId, ref);
+        nameResolutionCache.put(key, resolved);
+        nameResolutionCacheMisses++;
+        return resolved;
+      } finally {
+        nameResolveNanos += System.nanoTime() - startNs;
+      }
     }
 
     private Optional<GraphNode> resolveNodeCached(ResourceId id) {
-      return nodeResolutionCache.computeIfAbsent(id, overlay::resolve);
+      // Stored values are non-null Optional instances; null means cache miss.
+      Optional<GraphNode> cached = nodeResolutionCache.get(id);
+      if (cached != null) {
+        nodeResolutionCacheHits++;
+        return cached;
+      }
+      long startNs = System.nanoTime();
+      try {
+        Optional<GraphNode> resolved = overlay.resolve(id);
+        nodeResolutionCache.put(id, resolved);
+        nodeResolutionCacheMisses++;
+        return resolved;
+      } finally {
+        nodeResolveNanos += System.nanoTime() - startNs;
+      }
+    }
+
+    private Optional<ResolvedRelation> selectResolvedRelationTimed(
+        String correlationId,
+        TableReferenceCandidate candidate,
+        List<QueryInput> normalized,
+        long selectStartNs) {
+      try {
+        return selectResolvedRelation(
+            correlationId, candidate, normalized, this::resolveNameCached, this::resolveNodeCached);
+      } finally {
+        selectRelationNanos += System.nanoTime() - selectStartNs;
+      }
     }
 
     private NormalizedNameRef normalizedNameRef(NameRef ref) {

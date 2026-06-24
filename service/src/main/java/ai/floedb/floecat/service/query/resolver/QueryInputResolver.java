@@ -30,6 +30,7 @@ import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.ViewContextUtils;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -114,16 +115,19 @@ public class QueryInputResolver {
     final Map<ResourceId, SnapshotPin> pinByTableId = new LinkedHashMap<>();
     // Request-local cache for current-snapshot table pins (no override, no as-of).
     final Map<ResourceId, SnapshotPin> currentSnapshotPinCache;
+    final PhaseDiagnostics diagnostics;
 
     ResolutionState(
         String correlationId,
         Optional<Timestamp> asOfDefault,
         Optional<String> defaultCatalog,
-        Map<ResourceId, SnapshotPin> currentSnapshotPinCache) {
+        Map<ResourceId, SnapshotPin> currentSnapshotPinCache,
+        PhaseDiagnostics diagnostics) {
       this.correlationId = correlationId;
       this.asOfDefault = asOfDefault;
       this.defaultCatalog = defaultCatalog;
       this.currentSnapshotPinCache = currentSnapshotPinCache;
+      this.diagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
     }
   }
 
@@ -161,23 +165,44 @@ public class QueryInputResolver {
       Optional<Timestamp> asOfDefault,
       Optional<ResourceId> defaultCatalogId,
       Map<ResourceId, SnapshotPin> currentSnapshotPinCache) {
+    return resolveInputs(
+        correlationId, inputs, asOfDefault, defaultCatalogId, currentSnapshotPinCache, null);
+  }
+
+  public ResolutionResult resolveInputs(
+      String correlationId,
+      List<QueryInput> inputs,
+      Optional<Timestamp> asOfDefault,
+      Optional<ResourceId> defaultCatalogId,
+      Map<ResourceId, SnapshotPin> currentSnapshotPinCache,
+      PhaseDiagnostics diagnostics) {
+    PhaseDiagnostics diag = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
 
     // Resolve catalog display-name once up-front — used to fill in blank catalog fields in
     // view base-relation NameRefs so they re-resolve exactly as they did at view-creation time.
-    Optional<String> defaultCatalog =
-        metadataGraph == null
-            ? Optional.empty()
-            : defaultCatalogId.flatMap(
-                id -> metadataGraph.catalog(id).map(CatalogNode::displayName));
+    Optional<String> defaultCatalog = Optional.empty();
+    if (metadataGraph != null && defaultCatalogId.isPresent()) {
+      diag.count("pin.default_catalog_lookups");
+      long defaultCatalogStartNs = System.nanoTime();
+      try {
+        defaultCatalog = metadataGraph.catalog(defaultCatalogId.get()).map(CatalogNode::displayName);
+      } finally {
+        diag.nanos("pin.default_catalog_resolve", System.nanoTime() - defaultCatalogStartNs);
+      }
+    }
 
     var state =
-        new ResolutionState(correlationId, asOfDefault, defaultCatalog, currentSnapshotPinCache);
+        new ResolutionState(
+            correlationId, asOfDefault, defaultCatalog, currentSnapshotPinCache, diag);
 
     for (QueryInput in : inputs) {
+      diag.count("pin.resolver_inputs");
       SnapshotRef override = in.getSnapshot();
 
       switch (in.getTargetCase()) {
         case NAME -> {
+          diag.count("pin.name_inputs");
+          long nameResolveStartNs = System.nanoTime();
           ResourceId rid =
               metadataGraph
                   .resolveName(correlationId, in.getName())
@@ -187,20 +212,29 @@ public class QueryInputResolver {
                               correlationId,
                               QUERY_INPUT_UNRESOLVED,
                               Map.of("name", in.getName().toString())));
+          diag.nanos("pin.input_name_resolve", System.nanoTime() - nameResolveStartNs);
           addResolvedAndPins(state, rid, override);
         }
 
-        case TABLE_ID -> addResolvedAndPins(state, in.getTableId(), override);
+        case TABLE_ID -> {
+          diag.count("pin.table_id_inputs");
+          addResolvedAndPins(state, in.getTableId(), override);
+        }
 
-        case VIEW_ID -> addResolvedAndPins(state, in.getViewId(), override);
+        case VIEW_ID -> {
+          diag.count("pin.view_id_inputs");
+          addResolvedAndPins(state, in.getViewId(), override);
+        }
 
         default -> throw GrpcErrors.invalidArgument(correlationId, QUERY_INPUT_INVALID, Map.of());
       }
     }
 
+    SnapshotSet snapshotSet = SnapshotSet.newBuilder().addAllPins(state.pinByTableId.values()).build();
+    diag.add("pin.resolver_output_pins", snapshotSet.getPinsCount());
     return new ResolutionResult(
         state.resolved,
-        SnapshotSet.newBuilder().addAllPins(state.pinByTableId.values()).build(),
+        snapshotSet,
         asOfDefault.map(Timestamp::toByteArray).orElse(null));
   }
 
@@ -248,14 +282,26 @@ public class QueryInputResolver {
     if (usesCurrentSnapshotFallback(override, asOfDefault)) {
       SnapshotPin cached = state.currentSnapshotPinCache.get(rid);
       if (cached != null) {
+        state.diagnostics.count("pin.current_snapshot_cache_hits");
         return cached;
       }
+      state.diagnostics.count("pin.current_snapshot_cache_misses");
+      long snapshotPinStartNs = System.nanoTime();
       SnapshotPin resolved =
           metadataGraph.snapshotPinFor(state.correlationId, rid, override, asOfDefault);
+      state.diagnostics.count("pin.snapshot_calls");
+      state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
       state.currentSnapshotPinCache.put(rid, resolved);
       return resolved;
     }
-    return metadataGraph.snapshotPinFor(state.correlationId, rid, override, asOfDefault);
+    state.diagnostics.count("pin.explicit_snapshot_pins", override != null && override.hasSnapshotId());
+    state.diagnostics.count(
+        "pin.asof_snapshot_pins", (override != null && override.hasAsOf()) || asOfDefault.isPresent());
+    long snapshotPinStartNs = System.nanoTime();
+    SnapshotPin resolved = metadataGraph.snapshotPinFor(state.correlationId, rid, override, asOfDefault);
+    state.diagnostics.count("pin.snapshot_calls");
+    state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
+    return resolved;
   }
 
   private boolean usesCurrentSnapshotFallback(
@@ -294,21 +340,28 @@ public class QueryInputResolver {
       mergePin(state.pinByTableId, pinForResource(state, relationId, null, effectiveAsOf));
       return;
     }
-    metadataGraph
+    long viewResolveStartNs = System.nanoTime();
+    Optional<ViewNode> view =
+        metadataGraph
         .resolve(relationId)
         .filter(ViewNode.class::isInstance)
-        .map(ViewNode.class::cast)
-        .ifPresent(
-            view -> {
-              for (var base : view.baseRelations()) {
-                metadataGraph
-                    .resolveName(
-                        state.correlationId,
-                        ViewContextUtils.enrichForViewContext(
-                            base, view, state.defaultCatalog.orElse("")))
-                    .ifPresent(rid -> collectBaseTables(state, rid, effectiveAsOf, seen));
-              }
-            });
+        .map(ViewNode.class::cast);
+    state.diagnostics.nanos("pin.view_node_resolve", System.nanoTime() - viewResolveStartNs);
+    view.ifPresent(
+        resolvedView -> {
+          for (var base : resolvedView.baseRelations()) {
+            state.diagnostics.count("pin.view_base_name_resolutions");
+            long baseNameStartNs = System.nanoTime();
+            Optional<ResourceId> baseId =
+                metadataGraph.resolveName(
+                    state.correlationId,
+                    ViewContextUtils.enrichForViewContext(
+                        base, resolvedView, state.defaultCatalog.orElse("")));
+            state.diagnostics.nanos(
+                "pin.view_base_name_resolve", System.nanoTime() - baseNameStartNs);
+            baseId.ifPresent(rid -> collectBaseTables(state, rid, effectiveAsOf, seen));
+          }
+        });
   }
 
   private static String pinKey(ResourceId rid) {

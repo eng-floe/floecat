@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
+import ai.floedb.floecat.telemetry.StoreOperationSummary;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.LinkedHashMap;
@@ -51,7 +52,11 @@ public class ServerSideFileIoPropertiesResolver {
       return Map.of();
     }
 
+    long storageAuthorityStartedNanos = System.nanoTime();
     var authorities = repo.list(tableId.getAccountId(), Integer.MAX_VALUE, "", new StringBuilder());
+    StoreOperationSummary.nanos(
+        "storage_authority", System.nanoTime() - storageAuthorityStartedNanos);
+    StoreOperationSummary.put("storage_authority_source", "load");
     var authority = StorageAuthorityResolver.resolveBest(authorities, locationPrefix).orElse(null);
     ResolveStorageAuthorityResponse response =
         resolver.buildResponse(
