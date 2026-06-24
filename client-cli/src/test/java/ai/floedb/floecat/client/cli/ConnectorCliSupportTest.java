@@ -49,6 +49,8 @@ import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
 import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsResponse;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
+import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
+import ai.floedb.floecat.connector.rpc.UpdateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorResponse;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
@@ -274,6 +276,63 @@ class ConnectorCliSupportTest {
               .getPolicy()
               .getAutoCapturePolicy()
               .getOutputsList());
+    }
+  }
+
+  @Test
+  void connectorCreateRejectsPolicyColumnsWithoutCaptureOutputs() throws Exception {
+    try (Harness h = new Harness()) {
+      IllegalArgumentException ex =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  ConnectorCliSupport.handle(
+                      "connector",
+                      List.of(
+                          "create",
+                          "new-conn",
+                          "ICEBERG",
+                          "s3://bucket",
+                          "src.ns",
+                          "dest-cat",
+                          "--policy-enabled",
+                          "--policy-columns",
+                          "c1"),
+                      new PrintStream(new ByteArrayOutputStream()),
+                      h.connectorsStub,
+                      h.reconcileControlStub,
+                      h.directoryStub,
+                      () -> "acct-1"));
+
+      assertTrue(ex.getMessage().contains("--policy-capture is required"));
+      assertEquals(0, h.connectorsService.createConnectorCalls.get());
+    }
+  }
+
+  @Test
+  void connectorUpdateCanClearPersistedAutoCapturePolicy() throws Exception {
+    try (Harness h = new Harness()) {
+      h.connectorsService.connectorToReturn =
+          Connector.newBuilder().setResourceId(connectorId()).setDisplayName("test-conn").build();
+
+      ConnectorCliSupport.handle(
+          "connector",
+          List.of("update", CONNECTOR_UUID, "--policy-capture", "none"),
+          new PrintStream(new ByteArrayOutputStream()),
+          h.connectorsStub,
+          h.reconcileControlStub,
+          h.directoryStub,
+          () -> "acct-1");
+
+      assertEquals(1, h.connectorsService.updateConnectorCalls.get());
+      assertTrue(
+          h.connectorsService
+              .lastUpdateRequest
+              .getUpdateMask()
+              .getPathsList()
+              .contains("policy.auto_capture_policy"));
+      assertFalse(
+          h.connectorsService.lastUpdateRequest.getSpec().getPolicy().hasAutoCapturePolicy());
     }
   }
 
@@ -1316,11 +1375,13 @@ class ConnectorCliSupportTest {
     final AtomicInteger listConnectorsCalls = new AtomicInteger();
     final AtomicInteger getConnectorCalls = new AtomicInteger();
     final AtomicInteger createConnectorCalls = new AtomicInteger();
+    final AtomicInteger updateConnectorCalls = new AtomicInteger();
     final AtomicInteger deleteConnectorCalls = new AtomicInteger();
     final AtomicInteger validateConnectorCalls = new AtomicInteger();
     final List<Connector> connectorsToReturn = new ArrayList<>();
     Connector connectorToReturn = Connector.getDefaultInstance();
     CreateConnectorRequest lastCreateRequest;
+    UpdateConnectorRequest lastUpdateRequest;
 
     @Override
     public void listConnectors(
@@ -1347,6 +1408,16 @@ class ConnectorCliSupportTest {
       lastCreateRequest = request;
       responseObserver.onNext(
           CreateConnectorResponse.newBuilder().setConnector(connectorToReturn).build());
+      responseObserver.onCompleted();
+    }
+
+    @Override
+    public void updateConnector(
+        UpdateConnectorRequest request, StreamObserver<UpdateConnectorResponse> responseObserver) {
+      updateConnectorCalls.incrementAndGet();
+      lastUpdateRequest = request;
+      responseObserver.onNext(
+          UpdateConnectorResponse.newBuilder().setConnector(connectorToReturn).build());
       responseObserver.onCompleted();
     }
 

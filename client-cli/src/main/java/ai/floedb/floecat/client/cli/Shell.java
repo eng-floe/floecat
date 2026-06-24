@@ -581,7 +581,7 @@ public class Shell implements Runnable {
              [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
              [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-mode incremental|full]
              [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
-             [--policy-capture stats|table-stats|file-stats|column-stats|index,...]
+             [--policy-capture stats|table-stats|file-stats|column-stats|index,...|none]
              [--policy-columns c1,#id2,...] [--policy-default-cols first-n|all|explicit-only]
              [--policy-max-default-cols <n>]
              [--policy-not-before-epoch <sec>] [--props k=v ...] [--etag <etag>]

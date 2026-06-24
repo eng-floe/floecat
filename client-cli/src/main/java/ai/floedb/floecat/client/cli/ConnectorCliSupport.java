@@ -253,6 +253,10 @@ final class ConnectorCliSupport {
             parseReconcileMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--policy-mode", "")));
         PolicyScopeOptions policyScope = parsePolicyScopeOptions(args);
         PolicyCaptureOptions policyCapture = parsePolicyCaptureOptions(args);
+        if (policyCapture.clear()) {
+          throw new IllegalArgumentException(
+              "--policy-capture none is only supported on connector update");
+        }
         int maxPar = CliArgs.parseIntFlag(args, "--policy-max-par", 0);
         long notBeforeSec = CliArgs.parseLongFlag(args, "--policy-not-before-epoch", 0L);
         Map<String, String> properties = CliUtils.parseKeyValueList(args, "--props");
@@ -309,7 +313,7 @@ final class ConnectorCliSupport {
                   + " [--policy-interval-sec <n>] [--policy-mode incremental|full]"
                   + " [--policy-current|--policy-all|--policy-latest-n <n>]"
                   + " [--policy-max-par <n>] [--policy-capture"
-                  + " stats|table-stats|file-stats|column-stats|index,...]"
+                  + " stats|table-stats|file-stats|column-stats|index,...|none]"
                   + " [--policy-columns c1,#id2,...]"
                   + " [--policy-default-cols first-n|all|explicit-only]"
                   + " [--policy-max-default-cols <n>]"
@@ -524,6 +528,10 @@ final class ConnectorCliSupport {
             parseReconcileMode(Quotes.unquote(CliArgs.parseStringFlag(args, "--policy-mode", "")));
         PolicyScopeOptions policyScope = parsePolicyScopeOptions(args);
         PolicyCaptureOptions policyCapture = parsePolicyCaptureOptions(args);
+        if (policyCapture.clear()) {
+          throw new IllegalArgumentException(
+              "--policy-capture none is only supported on connector update");
+        }
         int maxPar = CliArgs.parseIntFlag(args, "--policy-max-par", 0);
         long notBeforeSec = CliArgs.parseLongFlag(args, "--policy-not-before-epoch", 0L);
         Map<String, String> properties = CliUtils.parseKeyValueList(args, "--props");
@@ -1087,7 +1095,7 @@ final class ConnectorCliSupport {
 
   private record PolicyScopeOptions(ReconcileSnapshotScope scope, int latestN) {}
 
-  private record PolicyCaptureOptions(CapturePolicy capturePolicy, boolean isSet) {}
+  private record PolicyCaptureOptions(CapturePolicy capturePolicy, boolean isSet, boolean clear) {}
 
   private static PolicyScopeOptions parsePolicyScopeOptions(List<String> args) {
     boolean policyCurrent = CliArgs.hasFlag(args, "--policy-current");
@@ -1126,7 +1134,17 @@ final class ConnectorCliSupport {
             || args.contains("--policy-default-cols")
             || args.contains("--policy-max-default-cols");
     if (!captureSet) {
-      return new PolicyCaptureOptions(null, false);
+      return new PolicyCaptureOptions(null, false, false);
+    }
+    boolean clear = captureToken.trim().equalsIgnoreCase("none");
+    if (clear) {
+      if (!columns.isEmpty()
+          || args.contains("--policy-default-cols")
+          || args.contains("--policy-max-default-cols")) {
+        throw new IllegalArgumentException(
+            "--policy-capture none cannot be combined with --policy-columns, --policy-default-cols, or --policy-max-default-cols");
+      }
+      return new PolicyCaptureOptions(null, true, true);
     }
     if (args.contains("--policy-max-default-cols") && maxDefaultColumns <= 0) {
       throw new IllegalArgumentException("--policy-max-default-cols must be greater than 0");
@@ -1134,6 +1152,10 @@ final class ConnectorCliSupport {
     DefaultColumnScope defaultColumnScope = CliUtils.parseDefaultColumnScope(defaultColsToken);
     java.util.LinkedHashSet<CaptureOutput> outputs =
         new java.util.LinkedHashSet<>(CliUtils.parseCaptureOutputs(captureToken));
+    if (outputs.isEmpty()) {
+      throw new IllegalArgumentException(
+          "--policy-capture is required when using --policy-columns, --policy-default-cols, or --policy-max-default-cols");
+    }
     CapturePolicy.Builder policy =
         CapturePolicy.newBuilder()
             .addAllOutputs(outputs)
@@ -1151,7 +1173,7 @@ final class ConnectorCliSupport {
               .setCaptureIndex(outputs.contains(CaptureOutput.CO_PARQUET_PAGE_INDEX))
               .build());
     }
-    return new PolicyCaptureOptions(policy.build(), true);
+    return new PolicyCaptureOptions(policy.build(), true, false);
   }
 
   private static SnapshotSelection buildSnapshotSelection(
