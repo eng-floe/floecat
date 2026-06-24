@@ -102,7 +102,7 @@ connector update <display_name|id> [--display <name>] [--kind <kind>] [--uri <ur
     [--cred-type <type>] [--cred k=v ...] [--cred-head k=v ...]
     [--policy-enabled true|false] [--policy-interval-sec <n>] [--policy-mode incremental|full]
     [--policy-current|--policy-all|--policy-latest-n <n>] [--policy-max-par <n>]
-    [--policy-capture stats|table-stats|file-stats|column-stats|index,...]
+    [--policy-capture stats|table-stats|file-stats|column-stats|index,...|none]
     [--policy-columns c1,#id2,...] [--policy-default-cols first-n|all|explicit-only]
     [--policy-max-default-cols <n>]
     [--policy-not-before-epoch <sec>] [--props k=v ...] [--etag <etag>]
@@ -184,6 +184,7 @@ Connector policy examples:
 - `connector update demo-iceberg --policy-all`
 - `connector update demo-iceberg --policy-capture stats,index`
 - `connector update demo-iceberg --policy-capture index --policy-default-cols explicit-only`
+- `connector update demo-iceberg --policy-capture none`
 
 Trigger notes:
 - `--mode` is required on `connector trigger`.
@@ -191,6 +192,7 @@ Trigger notes:
 - If `--capture` is omitted for a capture mode, the run inherits `connector.policy.auto_capture_policy`
   when set, otherwise it falls back to the default stats capture policy.
 - `--columns`, `--default-cols`, and `--max-default-cols` require an explicit `--capture` override.
+- `connector update --policy-capture none` clears a persisted auto-capture policy.
 - Metadata reconcile runs require exactly one traversal flag (`--full` or `--incremental`) and,
   unless `--dest-view` is used, exactly one snapshot scope flag (`--current`, `--latest-n`,
   `--snapshot`, or `--all`).
