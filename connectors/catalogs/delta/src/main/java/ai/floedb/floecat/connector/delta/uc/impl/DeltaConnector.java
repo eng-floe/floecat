@@ -118,8 +118,8 @@ abstract class DeltaConnector implements FloecatConnector {
       ResourceId destinationTableId,
       FloecatConnector.SnapshotEnumerationOptions options) {
 
-    final String tableRoot = storageLocation(namespaceFq, tableName);
-    final Table table = loadTable(tableRoot);
+    final String storageLocation = storageLocation(namespaceFq, tableName);
+    final Table table = loadTable(storageLocation);
     boolean fullRescan = options == null || options.fullRescan();
     Set<Long> knownSnapshotIds = options == null ? Set.of() : options.knownSnapshotIds();
     Set<Long> targetSnapshotIds = options == null ? Set.of() : options.targetSnapshotIds();
@@ -150,7 +150,7 @@ abstract class DeltaConnector implements FloecatConnector {
       SnapshotLoadResult snapshotResult =
           version == latestVersion
               ? SnapshotLoadResult.snapshot(latestSnapshot)
-              : loadSnapshotAsOfVersion(table, version, tableRoot, earliestAvailableVersion);
+              : loadSnapshotAsOfVersion(table, version, storageLocation, earliestAvailableVersion);
       if (snapshotResult.earliestAvailableVersion() > earliestAvailableVersion) {
         earliestAvailableVersion = snapshotResult.earliestAvailableVersion();
       }
@@ -158,7 +158,7 @@ abstract class DeltaConnector implements FloecatConnector {
       if (snapshot == null) {
         continue;
       }
-      bundles.add(buildSnapshotBundle(tableRoot, version, snapshot));
+      bundles.add(buildSnapshotBundle(storageLocation, version, snapshot));
     }
     return List.copyOf(bundles);
   }
@@ -213,14 +213,14 @@ abstract class DeltaConnector implements FloecatConnector {
     if (snapshotId < 0) {
       return List.of();
     }
-    final String tableRoot = storageLocation(namespaceFq, tableName);
-    final Table table = loadTable(tableRoot);
+    final String storageLocation = storageLocation(namespaceFq, tableName);
+    final Table table = loadTable(storageLocation);
     Snapshot snapshot = table.getSnapshotAsOfVersion(engine, snapshotId);
     if (snapshot == null) {
       return List.of();
     }
     return buildTargetStats(
-        tableRoot,
+        storageLocation,
         destinationTableId,
         includeColumns,
         columnSelectorPolicy,
@@ -251,8 +251,8 @@ abstract class DeltaConnector implements FloecatConnector {
       return Optional.of(DirectSnapshotStatsCapture.of(List.of(), 0));
     }
 
-    final String tableRoot = storageLocation(namespaceFq, tableName);
-    final Table table = loadTable(tableRoot);
+    final String storageLocation = storageLocation(namespaceFq, tableName);
+    final Table table = loadTable(storageLocation);
     Snapshot snapshot = table.getSnapshotAsOfVersion(engine, snapshotId);
     if (snapshot == null) {
       return Optional.empty();
@@ -268,7 +268,7 @@ abstract class DeltaConnector implements FloecatConnector {
         new DeltaPlanner(
             this.engine,
             this.parquetInput,
-            tableRoot,
+            storageLocation,
             snapshotId,
             includeNames,
             Set.of(),
@@ -327,7 +327,7 @@ abstract class DeltaConnector implements FloecatConnector {
     return Optional.of(
         DirectSnapshotStatsCapture.of(
             buildTargetStats(
-                tableRoot,
+                storageLocation,
                 destinationTableId,
                 includeColumns,
                 columnSelectorPolicy,
@@ -375,15 +375,15 @@ abstract class DeltaConnector implements FloecatConnector {
     if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
       return FileGroupCaptureResult.empty();
     }
-    final String tableRoot = storageLocation(namespaceFq, tableName);
-    final Table table = loadTable(tableRoot);
+    final String storageLocation = storageLocation(namespaceFq, tableName);
+    final Table table = loadTable(storageLocation);
     Snapshot snapshot = table.getSnapshotAsOfVersion(engine, snapshotId);
     if (snapshot == null) {
       return FileGroupCaptureResult.empty();
     }
     List<TargetStatsRecord> stats =
         buildTargetStats(
-            tableRoot,
+            storageLocation,
             destinationTableId,
             includeColumns,
             columnSelectorPolicy,
@@ -406,8 +406,8 @@ abstract class DeltaConnector implements FloecatConnector {
     if (snapshotId < 0) {
       return Optional.empty();
     }
-    final String tableRoot = storageLocation(namespaceFq, tableName);
-    final Table table = loadTable(tableRoot);
+    final String storageLocation = storageLocation(namespaceFq, tableName);
+    final Table table = loadTable(storageLocation);
     Snapshot snapshot = table.getSnapshotAsOfVersion(engine, snapshotId);
     if (snapshot == null) {
       return Optional.empty();
@@ -417,7 +417,7 @@ abstract class DeltaConnector implements FloecatConnector {
         new DeltaPlanner(
             engine,
             parquetInput,
-            tableRoot,
+            storageLocation,
             snapshotId,
             Set.of(),
             Set.of(),
@@ -485,8 +485,8 @@ abstract class DeltaConnector implements FloecatConnector {
         planned.sequenceNumber());
   }
 
-  protected Table loadTable(String tableRoot) {
-    return Table.forPath(engine, tableRoot);
+  protected Table loadTable(String storageLocation) {
+    return Table.forPath(engine, storageLocation);
   }
 
   private static Map<String, String> requestedColumnTypes(
@@ -505,27 +505,27 @@ abstract class DeltaConnector implements FloecatConnector {
     return typed;
   }
 
-  protected String describeTableSchemaJson(String tableRoot) {
-    Table table = loadTable(tableRoot);
+  protected String describeTableSchemaJson(String storageLocation) {
+    Table table = loadTable(storageLocation);
     Snapshot snapshot = table.getLatestSnapshot(engine);
     if (snapshot == null) {
-      throw new IllegalStateException("Delta table has no latest snapshot at " + tableRoot);
+      throw new IllegalStateException("Delta table has no latest snapshot at " + storageLocation);
     }
     return snapshotSchemaJson(snapshot);
   }
 
   protected TableDescriptor describeFromDelta(
-      String tableRoot, String namespaceFq, String tableName) {
+      String storageLocation, String namespaceFq, String tableName) {
     try {
       Map<String, String> props = new LinkedHashMap<>();
       props.put("data_source_format", "DELTA");
-      props.put("storage_location", tableRoot);
+      props.put("storage_location", storageLocation);
 
       return new TableDescriptor(
           namespaceFq,
           tableName,
-          tableRoot,
-          describeTableSchemaJson(tableRoot),
+          storageLocation,
+          describeTableSchemaJson(storageLocation),
           List.of(),
           ColumnIdAlgorithm.CID_PATH_ORDINAL,
           props);
@@ -542,7 +542,7 @@ abstract class DeltaConnector implements FloecatConnector {
       List<DeletionVectorDescriptor> deletionVectors) {}
 
   protected EngineOut runEngine(
-      String tableRoot,
+      String storageLocation,
       long version,
       Set<String> includeNames,
       Set<String> plannedFilePaths,
@@ -566,7 +566,7 @@ abstract class DeltaConnector implements FloecatConnector {
         new DeltaPlanner(
             this.engine,
             this.parquetInput,
-            tableRoot,
+            storageLocation,
             version,
             includeNames,
             plannedFilePaths,
@@ -637,7 +637,7 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   private SnapshotLoadResult loadSnapshotAsOfVersion(
-      Table table, long version, String tableRoot, long currentEarliestAvailableVersion) {
+      Table table, long version, String storageLocation, long currentEarliestAvailableVersion) {
     try {
       return SnapshotLoadResult.snapshot(table.getSnapshotAsOfVersion(engine, version));
     } catch (KernelException e) {
@@ -645,7 +645,7 @@ abstract class DeltaConnector implements FloecatConnector {
       if (earliest.present() && version < earliest.value()) {
         LOG.debugf(
             "Skipping Delta snapshot version %d for %s because retained history starts at %d",
-            Long.valueOf(version), tableRoot, Long.valueOf(earliest.value()));
+            Long.valueOf(version), storageLocation, Long.valueOf(earliest.value()));
         return SnapshotLoadResult.skipUntil(earliest.value());
       }
       if (version < currentEarliestAvailableVersion) {
@@ -742,7 +742,8 @@ abstract class DeltaConnector implements FloecatConnector {
     return List.copyOf(out);
   }
 
-  private SnapshotBundle buildSnapshotBundle(String tableRoot, long version, Snapshot snapshot) {
+  private SnapshotBundle buildSnapshotBundle(
+      String storageLocation, long version, Snapshot snapshot) {
     final long createdMs = snapshot.getTimestamp(engine);
     final long parent = Math.max(0L, version - 1L);
 
@@ -754,7 +755,7 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   private List<TargetStatsRecord> buildTargetStats(
-      String tableRoot,
+      String storageLocation,
       ResourceId destinationTableId,
       Set<String> includeColumns,
       ColumnSelectorPolicy columnSelectorPolicy,
@@ -763,7 +764,7 @@ abstract class DeltaConnector implements FloecatConnector {
       Set<StatsTargetKind> includeTargetKinds,
       Set<String> plannedFilePaths) {
     return buildTargetStats(
-        tableRoot,
+        storageLocation,
         destinationTableId,
         includeColumns,
         columnSelectorPolicy,
@@ -775,7 +776,7 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   private List<TargetStatsRecord> buildTargetStats(
-      String tableRoot,
+      String storageLocation,
       ResourceId destinationTableId,
       Set<String> includeColumns,
       ColumnSelectorPolicy columnSelectorPolicy,
@@ -800,7 +801,12 @@ abstract class DeltaConnector implements FloecatConnector {
 
     EngineOut engineOut =
         runEngine(
-            tableRoot, version, includeNames, plannedFilePaths, nameToType, allowFooterFallback);
+            storageLocation,
+            version,
+            includeNames,
+            plannedFilePaths,
+            nameToType,
+            allowFooterFallback);
     if (engineOut.hasInlineDeletionVectors()) {
       throw new UnsupportedOperationException(
           "Delta table uses inline deletion vectors; not supported for snapshot " + version);

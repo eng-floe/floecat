@@ -28,6 +28,7 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
+import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableResponse;
 import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
@@ -84,8 +85,93 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class GrpcReconcilerBackendTest {
+  @Test
+  void ensureTablePersistsStorageLocationFromDescriptorWhenMissingFromProperties() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.directory =
+        mock(ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc.DirectoryServiceBlockingStub.class);
+    backend.namespace =
+        mock(ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc.NamespaceServiceBlockingStub.class);
+    backend.table =
+        mock(ai.floedb.floecat.catalog.rpc.TableServiceGrpc.TableServiceBlockingStub.class);
+    when(backend.directory.withInterceptors(any())).thenReturn(backend.directory);
+    when(backend.namespace.withInterceptors(any())).thenReturn(backend.namespace);
+    when(backend.table.withInterceptors(any())).thenReturn(backend.table);
+
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat")
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl")
+            .build();
+
+    when(backend.directory.lookupTableByRef(any()))
+        .thenReturn(LookupTableByRefResponse.getDefaultInstance());
+    when(backend.namespace.getNamespace(any()))
+        .thenReturn(
+            GetNamespaceResponse.newBuilder()
+                .setNamespace(
+                    ai.floedb.floecat.catalog.rpc.Namespace.newBuilder()
+                        .setResourceId(namespaceId)
+                        .setCatalogId(catalogId)
+                        .build())
+                .build());
+    when(backend.table.createTable(any()))
+        .thenReturn(
+            CreateTableResponse.newBuilder()
+                .setTable(Table.newBuilder().setResourceId(tableId).build())
+                .build());
+
+    TableSpecDescriptor descriptor =
+        new TableSpecDescriptor(
+            "main.sales",
+            "orders",
+            "s3://warehouse/main.db/orders",
+            "{\"type\":\"struct\",\"fields\":[]}",
+            Map.of("write.parquet.compression-codec", "zstd"),
+            List.of(),
+            ColumnIdAlgorithm.CID_FIELD_ID,
+            ConnectorFormat.CF_ICEBERG,
+            ResourceId.newBuilder()
+                .setAccountId("acct")
+                .setKind(ResourceKind.RK_CONNECTOR)
+                .setId("conn")
+                .build(),
+            "https://glue.us-east-1.amazonaws.com/iceberg/",
+            "main.sales",
+            "orders");
+
+    backend.ensureTable(
+        reconcileContext(),
+        namespaceId,
+        NameRef.newBuilder().setCatalog("main").addPath("sales").setName("orders").build(),
+        descriptor);
+
+    ArgumentCaptor<CreateTableRequest> requestCaptor =
+        ArgumentCaptor.forClass(CreateTableRequest.class);
+    verify(backend.table).createTable(requestCaptor.capture());
+    assertThat(requestCaptor.getValue().getSpec().getPropertiesMap())
+        .containsEntry("storage_location", "s3://warehouse/main.db/orders")
+        .containsEntry("write.parquet.compression-codec", "zstd");
+  }
+
   @Test
   void withBearerPrefixLeavesExistingBearer() {
     String token = GrpcReconcilerBackend.withBearerPrefix("Bearer abc123");
@@ -391,6 +477,7 @@ class GrpcReconcilerBackendTest {
             new ReconcilerBackend.TableSpecDescriptor(
                 "cat.ns",
                 "tbl",
+                "",
                 "{\"type\":\"struct\",\"fields\":[]}",
                 Map.of(),
                 List.of(),
@@ -856,6 +943,7 @@ class GrpcReconcilerBackendTest {
             new TableSpecDescriptor(
                 "main",
                 "orders",
+                "",
                 "{}",
                 Map.of("reconciled", "true"),
                 List.of(),

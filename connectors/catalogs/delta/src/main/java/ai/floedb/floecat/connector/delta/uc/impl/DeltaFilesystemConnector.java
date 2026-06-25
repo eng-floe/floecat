@@ -26,7 +26,7 @@ final class DeltaFilesystemConnector extends DeltaConnector {
 
   private final String namespaceFq;
   private final String tableName;
-  private final String tableRoot;
+  private final String storageLocation;
 
   DeltaFilesystemConnector(
       String connectorId,
@@ -35,11 +35,11 @@ final class DeltaFilesystemConnector extends DeltaConnector {
       boolean ndvEnabled,
       double ndvSampleFraction,
       long ndvMaxFiles,
-      String tableRoot,
+      String storageLocation,
       String namespaceFq,
       String tableName) {
     super(connectorId, engine, parquetInput, ndvEnabled, ndvSampleFraction, ndvMaxFiles);
-    this.tableRoot = tableRoot;
+    this.storageLocation = storageLocation;
     this.namespaceFq = namespaceFq == null ? "" : namespaceFq;
     this.tableName = tableName == null ? "" : tableName;
   }
@@ -64,12 +64,12 @@ final class DeltaFilesystemConnector extends DeltaConnector {
   public TableDescriptor describe(String namespaceFq, String tableName) {
     String effectiveNs = this.namespaceFq.isBlank() ? namespaceFq : this.namespaceFq;
     String effectiveTable = this.tableName.isBlank() ? tableName : this.tableName;
-    return describeFromDelta(tableRoot, effectiveNs, effectiveTable);
+    return describeFromDelta(storageLocation, effectiveNs, effectiveTable);
   }
 
   @Override
   protected String storageLocation(String namespaceFq, String tableName) {
-    return tableRoot;
+    return storageLocation;
   }
 
   /**

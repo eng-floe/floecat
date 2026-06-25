@@ -415,8 +415,7 @@ public class ScanBundleService {
 
     String metadataLocation = SnapshotRepository.metadataLocation(snapshot);
     Map<String, String> tableProperties =
-        fileIoPropertiesResolver.applyToTableProperties(
-            table, metadataLocation, table.getPropertiesMap());
+        fileIoPropertiesResolver.applyToTableProperties(table, null, table.getPropertiesMap());
     if (deltaTable
         && rawSchemaJson != null
         && !rawSchemaJson.isBlank()

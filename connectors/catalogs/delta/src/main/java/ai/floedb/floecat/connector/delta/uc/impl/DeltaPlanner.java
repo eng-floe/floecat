@@ -96,7 +96,7 @@ final class DeltaPlanner implements Planner<String> {
   private final boolean allowFooterFallback;
   private final Engine engine;
   private final Snapshot snapshot;
-  private final String tableRoot;
+  private final String storageLocation;
   private final List<DeletionVectorDescriptor> diskDeletionVectors = new ArrayList<>();
   private final List<String> missingLogStatsSamplePaths = new ArrayList<>();
   private final List<String> checkpointStructRecoverySamplePaths = new ArrayList<>();
@@ -113,7 +113,7 @@ final class DeltaPlanner implements Planner<String> {
   DeltaPlanner(
       Engine engine,
       Function<String, InputFile> parquetInput,
-      String tableRoot,
+      String storageLocation,
       long version,
       Set<String> includeColumns,
       Set<String> plannedFilePaths,
@@ -124,13 +124,13 @@ final class DeltaPlanner implements Planner<String> {
     this.engine = engine;
     this.ndvProvider = ndvProvider;
     this.allowFooterFallback = allowFooterFallback;
-    this.tableRoot = Objects.requireNonNull(tableRoot);
+    this.storageLocation = Objects.requireNonNull(storageLocation);
     this.plannedFilePaths =
         plannedFilePaths == null || plannedFilePaths.isEmpty()
             ? Collections.emptySet()
             : Collections.unmodifiableSet(new LinkedHashSet<>(plannedFilePaths));
 
-    final Table table = Table.forPath(engine, Objects.requireNonNull(tableRoot));
+    final Table table = Table.forPath(engine, Objects.requireNonNull(storageLocation));
     final Snapshot snapshot = table.getSnapshotAsOfVersion(engine, version);
     this.snapshot = snapshot;
 
@@ -435,7 +435,7 @@ final class DeltaPlanner implements Planner<String> {
             if (pathOrdinal < 0 || addRow.isNullAt(pathOrdinal)) {
               continue;
             }
-            String resolvedPath = absoluteDataPath(tableRoot, addRow.getString(pathOrdinal));
+            String resolvedPath = absoluteDataPath(storageLocation, addRow.getString(pathOrdinal));
             if (!plannedFilePaths.isEmpty() && !plannedFilePaths.contains(resolvedPath)) {
               continue;
             }
@@ -514,7 +514,7 @@ final class DeltaPlanner implements Planner<String> {
     return projected;
   }
 
-  static String absoluteDataPath(String tableRoot, String addPath) {
+  static String absoluteDataPath(String storageLocation, String addPath) {
     if (addPath == null || addPath.isBlank()) {
       return addPath;
     }
@@ -522,7 +522,7 @@ final class DeltaPlanner implements Planner<String> {
     if (candidate.isAbsolute()) {
       return candidate.toString();
     }
-    return new Path(new Path(tableRoot), candidate).toString();
+    return new Path(new Path(storageLocation), candidate).toString();
   }
 
   private static Map<Column, Literal> readLiteralStruct(
