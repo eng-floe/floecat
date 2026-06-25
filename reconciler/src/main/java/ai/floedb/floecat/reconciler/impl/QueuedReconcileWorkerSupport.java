@@ -1202,6 +1202,7 @@ class QueuedReconcileWorkerSupport {
     return new TableSpecDescriptor(
         landingView.namespaceFq(),
         landingView.tableName(),
+        landingView.storageLocation(),
         landingView.schemaJson(),
         landingView.properties(),
         landingView.partitionKeys(),
@@ -1450,7 +1451,7 @@ class QueuedReconcileWorkerSupport {
     return new FloecatConnector.TableDescriptor(
         destNamespace != null ? destNamespace : upstream.namespaceFq(),
         destTable != null ? destTable : upstream.tableName(),
-        upstream.location(),
+        upstream.storageLocation(),
         upstream.schemaJson(),
         upstream.partitionKeys(),
         upstream.columnIdAlgorithm(),

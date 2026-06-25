@@ -429,7 +429,7 @@ class DeltaConnectorTest {
     }
 
     @Override
-    protected Table loadTable(String tableRoot) {
+    protected Table loadTable(String storageLocation) {
       return table;
     }
 
@@ -483,7 +483,7 @@ class DeltaConnectorTest {
     }
 
     @Override
-    protected Table loadTable(String tableRoot) {
+    protected Table loadTable(String storageLocation) {
       return table;
     }
 

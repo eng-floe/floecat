@@ -549,7 +549,7 @@ public interface FloecatConnector extends Closeable {
   record TableDescriptor(
       String namespaceFq,
       String tableName,
-      String location,
+      String storageLocation,
       String schemaJson,
       List<String> partitionKeys,
       ColumnIdAlgorithm columnIdAlgorithm,

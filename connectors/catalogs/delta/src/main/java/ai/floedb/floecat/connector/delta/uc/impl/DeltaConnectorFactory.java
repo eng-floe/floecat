@@ -61,8 +61,8 @@ final class DeltaConnectorFactory {
     Map<String, String> effectiveAuthProps = authProps == null ? Map.of() : authProps;
 
     DeltaSource source = selectSource(effectiveOptions);
-    String tableRoot = effectiveOptions.getOrDefault("delta.table-root", "");
-    validateOptions(source, tableRoot);
+    String storageLocation = effectiveOptions.getOrDefault("delta.table-root", "");
+    validateOptions(source, storageLocation);
 
     EngineContext engineContext = buildEngine(effectiveOptions);
     boolean ndvEnabled =
@@ -89,7 +89,7 @@ final class DeltaConnectorFactory {
       case FILESYSTEM -> {
         String namespaceFq = effectiveOptions.getOrDefault("external.namespace", "");
         String tableName =
-            effectiveOptions.getOrDefault("external.table-name", deriveTableName(tableRoot));
+            effectiveOptions.getOrDefault("external.table-name", deriveTableName(storageLocation));
         yield new DeltaFilesystemConnector(
             "delta-filesystem",
             engineContext.engine(),
@@ -97,7 +97,7 @@ final class DeltaConnectorFactory {
             ndvEnabled,
             ndvSampleFraction,
             ndvMaxFiles,
-            tableRoot,
+            storageLocation,
             namespaceFq,
             tableName);
       }
@@ -151,8 +151,8 @@ final class DeltaConnectorFactory {
     return DeltaSource.UNITY;
   }
 
-  static void validateOptions(DeltaSource source, String tableRoot) {
-    boolean hasTableRoot = tableRoot != null && !tableRoot.isBlank();
+  static void validateOptions(DeltaSource source, String storageLocation) {
+    boolean hasTableRoot = storageLocation != null && !storageLocation.isBlank();
     if (source == DeltaSource.FILESYSTEM && !hasTableRoot) {
       throw new IllegalArgumentException(
           "delta.table-root is required for delta.source=filesystem");
@@ -243,12 +243,14 @@ final class DeltaConnectorFactory {
     return defaultValue;
   }
 
-  private static String deriveTableName(String tableRoot) {
-    if (tableRoot == null || tableRoot.isBlank()) {
+  private static String deriveTableName(String storageLocation) {
+    if (storageLocation == null || storageLocation.isBlank()) {
       return "";
     }
     String trimmed =
-        tableRoot.endsWith("/") ? tableRoot.substring(0, tableRoot.length() - 1) : tableRoot;
+        storageLocation.endsWith("/")
+            ? storageLocation.substring(0, storageLocation.length() - 1)
+            : storageLocation;
     int slash = trimmed.lastIndexOf('/');
     if (slash < 0 || slash == trimmed.length() - 1) {
       return trimmed;

@@ -289,6 +289,7 @@ public interface ReconcilerBackend {
   record TableSpecDescriptor(
       String namespaceFq,
       String displayName,
+      String storageLocation,
       String schemaJson,
       Map<String, String> properties,
       List<String> partitionKeys,

@@ -1436,7 +1436,17 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   }
 
   private Map<String, String> safeProperties(TableSpecDescriptor descriptor) {
-    return descriptor.properties() != null ? descriptor.properties() : Map.of();
+    Map<String, String> source =
+        descriptor.properties() != null ? descriptor.properties() : Map.of();
+    String storageLocation = descriptor.storageLocation();
+    if (storageLocation == null
+        || storageLocation.isBlank()
+        || source.containsKey("storage_location")) {
+      return source;
+    }
+    LinkedHashMap<String, String> merged = new LinkedHashMap<>(source);
+    merged.put("storage_location", storageLocation);
+    return Map.copyOf(merged);
   }
 
   private UpstreamRef buildUpstream(TableSpecDescriptor descriptor) {
