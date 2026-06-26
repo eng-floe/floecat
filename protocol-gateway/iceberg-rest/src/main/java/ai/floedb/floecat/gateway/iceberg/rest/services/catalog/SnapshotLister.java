@@ -29,8 +29,12 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import io.grpc.StatusRuntimeException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -49,7 +53,7 @@ public final class SnapshotLister {
       ResourceId tableId = table == null ? null : table.getResourceId();
       List<Snapshot> snapshots = fetchAllSnapshots(snapshotClient, tableId);
       if (mode == Mode.REFS) {
-        Set<Long> refIds = referencedSnapshotIds(snapshotClient, table);
+        Set<Long> refIds = referencedSnapshotIds(snapshotClient, table, snapshots);
         if (refIds.isEmpty()) {
           return List.of();
         }
@@ -63,11 +67,12 @@ public final class SnapshotLister {
     }
   }
 
-  private static Set<Long> referencedSnapshotIds(GrpcServiceFacade snapshotClient, Table table) {
+  private static Set<Long> referencedSnapshotIds(
+      GrpcServiceFacade snapshotClient, Table table, List<Snapshot> snapshots) {
     if (table == null) {
       return Set.of();
     }
-    Set<Long> refIds =
+    Set<Long> refHeads =
         RefPropertyUtil.decode(table.getPropertiesMap().get(RefPropertyUtil.PROPERTY_KEY))
             .values()
             .stream()
@@ -76,9 +81,34 @@ public final class SnapshotLister {
             .collect(Collectors.toSet());
     Long currentSnapshotId = currentSnapshotId(snapshotClient, table.getResourceId());
     if (currentSnapshotId != null && currentSnapshotId >= 0L) {
-      refIds.add(currentSnapshotId);
+      refHeads.add(currentSnapshotId);
     }
-    return refIds;
+    return reachableSnapshotIds(refHeads, snapshots);
+  }
+
+  private static Set<Long> reachableSnapshotIds(Set<Long> refHeads, List<Snapshot> snapshots) {
+    if (refHeads == null || refHeads.isEmpty() || snapshots == null || snapshots.isEmpty()) {
+      return Set.of();
+    }
+    Map<Long, Snapshot> byId = new HashMap<>();
+    for (Snapshot snapshot : snapshots) {
+      if (snapshot != null && snapshot.getSnapshotId() >= 0L) {
+        byId.put(snapshot.getSnapshotId(), snapshot);
+      }
+    }
+    Set<Long> reachable = new HashSet<>();
+    ArrayDeque<Long> pending = new ArrayDeque<>(refHeads);
+    while (!pending.isEmpty()) {
+      Long id = pending.removeFirst();
+      if (id == null || !reachable.add(id)) {
+        continue;
+      }
+      Snapshot snapshot = byId.get(id);
+      if (snapshot != null && snapshot.hasParentSnapshotId()) {
+        pending.addLast(snapshot.getParentSnapshotId());
+      }
+    }
+    return reachable;
   }
 
   private static Long currentSnapshotId(GrpcServiceFacade snapshotClient, ResourceId tableId) {

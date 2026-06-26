@@ -33,7 +33,7 @@ import org.junit.jupiter.api.Test;
 class SnapshotListerTest {
 
   @Test
-  void refsModeIncludesPointerCurrentSnapshotInsteadOfTableProperty() {
+  void refsModeIncludesPointerCurrentSnapshotHistoryInsteadOfTableProperty() {
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId("acct")
@@ -46,16 +46,27 @@ class SnapshotListerTest {
             .putProperties("current-snapshot-id", "10")
             .build();
     Snapshot stale = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(10).build();
-    Snapshot current = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(20).build();
+    Snapshot base = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(20).build();
+    Snapshot middle =
+        Snapshot.newBuilder().setTableId(tableId).setSnapshotId(30).setParentSnapshotId(20).build();
+    Snapshot current =
+        Snapshot.newBuilder().setTableId(tableId).setSnapshotId(40).setParentSnapshotId(30).build();
+    Snapshot orphan = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(50).build();
     GrpcServiceFacade grpc = mock(GrpcServiceFacade.class);
     when(grpc.listSnapshots(any()))
         .thenReturn(
-            ListSnapshotsResponse.newBuilder().addSnapshots(stale).addSnapshots(current).build());
+            ListSnapshotsResponse.newBuilder()
+                .addSnapshots(stale)
+                .addSnapshots(base)
+                .addSnapshots(middle)
+                .addSnapshots(current)
+                .addSnapshots(orphan)
+                .build());
     when(grpc.getSnapshot(any()))
         .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(current).build());
 
     List<Snapshot> snapshots = SnapshotLister.fetchSnapshots(grpc, table, SnapshotLister.Mode.REFS);
 
-    assertEquals(List.of(current), snapshots);
+    assertEquals(List.of(base, middle, current), snapshots);
   }
 }
