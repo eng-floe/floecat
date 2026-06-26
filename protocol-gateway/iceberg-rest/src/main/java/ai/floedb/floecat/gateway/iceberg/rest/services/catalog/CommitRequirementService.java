@@ -135,7 +135,7 @@ public class CommitRequirementService {
             // Compatibility: clients may omit snapshot-id for this assertion.
             continue;
           }
-          Long actual = resolveRefSnapshotId(table, refName);
+          Long actual = resolveRefSnapshotId(tableSupport, table, refName);
           if (actual == null) {
             // Compatibility: skip strict check when current ref snapshot cannot be resolved.
             continue;
@@ -169,9 +169,10 @@ public class CommitRequirementService {
     return null;
   }
 
-  private static Long resolveRefSnapshotId(Table table, String refName) {
+  private static Long resolveRefSnapshotId(
+      TableGatewaySupport tableSupport, Table table, String refName) {
     if ("main".equals(refName) && table != null) {
-      return asLong(table.getPropertiesMap().get("current-snapshot-id"));
+      return tableSupport == null ? null : tableSupport.loadCurrentSnapshotId(table);
     }
     if (table == null) {
       return null;

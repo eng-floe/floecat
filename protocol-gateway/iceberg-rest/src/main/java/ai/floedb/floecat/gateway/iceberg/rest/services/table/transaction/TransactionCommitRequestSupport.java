@@ -205,10 +205,8 @@ final class TransactionCommitRequestSupport {
     if (table == null) {
       return false;
     }
-    if ("main".equals(refName)
-        && TableMappingUtil.asLong(table.getPropertiesMap().get("current-snapshot-id")) != null
-        && TableMappingUtil.asLong(table.getPropertiesMap().get("current-snapshot-id")) >= 0L) {
-      return true;
+    if ("main".equals(refName)) {
+      return tableSupport != null && tableSupport.hasSnapshotRef(table, refName);
     }
     String encodedRefs = table.getPropertiesMap().get(RefPropertyUtil.PROPERTY_KEY);
     if (encodedRefs == null || encodedRefs.isBlank()) {

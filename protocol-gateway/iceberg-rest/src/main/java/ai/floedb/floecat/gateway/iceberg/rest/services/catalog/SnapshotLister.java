@@ -16,12 +16,15 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
+import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
@@ -46,7 +49,7 @@ public final class SnapshotLister {
       ResourceId tableId = table == null ? null : table.getResourceId();
       List<Snapshot> snapshots = fetchAllSnapshots(snapshotClient, tableId);
       if (mode == Mode.REFS) {
-        Set<Long> refIds = referencedSnapshotIds(table);
+        Set<Long> refIds = referencedSnapshotIds(snapshotClient, table);
         if (refIds.isEmpty()) {
           return List.of();
         }
@@ -60,7 +63,7 @@ public final class SnapshotLister {
     }
   }
 
-  private static Set<Long> referencedSnapshotIds(Table table) {
+  private static Set<Long> referencedSnapshotIds(GrpcServiceFacade snapshotClient, Table table) {
     if (table == null) {
       return Set.of();
     }
@@ -71,12 +74,33 @@ public final class SnapshotLister {
             .map(ref -> TableMappingUtil.asLong(ref.get("snapshot-id")))
             .filter(id -> id != null && id >= 0L)
             .collect(Collectors.toSet());
-    Long currentSnapshotId =
-        TableMappingUtil.asLong(table.getPropertiesMap().get("current-snapshot-id"));
+    Long currentSnapshotId = currentSnapshotId(snapshotClient, table.getResourceId());
     if (currentSnapshotId != null && currentSnapshotId >= 0L) {
       refIds.add(currentSnapshotId);
     }
     return refIds;
+  }
+
+  private static Long currentSnapshotId(GrpcServiceFacade snapshotClient, ResourceId tableId) {
+    if (snapshotClient == null || tableId == null) {
+      return null;
+    }
+    try {
+      var request =
+          GetSnapshotRequest.newBuilder()
+              .setTableId(tableId)
+              .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
+              .build();
+      var response = snapshotClient.getSnapshot(request);
+      if (response == null
+          || !response.hasSnapshot()
+          || response.getSnapshot().getSnapshotId() < 0) {
+        return null;
+      }
+      return response.getSnapshot().getSnapshotId();
+    } catch (StatusRuntimeException e) {
+      return null;
+    }
   }
 
   private static List<Snapshot> fetchAllSnapshots(
