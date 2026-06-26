@@ -155,8 +155,16 @@ public class SnapshotRepository {
           return CurrentSnapshotPointerUpdateResult.UPDATED;
         }
       } else {
-        long expectedVersion = currentPointerRepo.metaFor(tableId).getPointerVersion();
-        if (currentPointerRepo.update(next, expectedVersion)) {
+        Optional<CurrentSnapshotPointerObservation> observed =
+            currentPointerForUpdate(tableId, currentPointer.get());
+        if (observed.isEmpty()) {
+          backoffCurrentPointerAdvance(attempt);
+          continue;
+        }
+        if (!shouldAdvanceCurrentSnapshot(observed.get().pointer(), candidate)) {
+          return CurrentSnapshotPointerUpdateResult.UNCHANGED;
+        }
+        if (currentPointerRepo.update(next, observed.get().pointerVersion())) {
           return CurrentSnapshotPointerUpdateResult.UPDATED;
         }
       }
@@ -164,6 +172,24 @@ public class SnapshotRepository {
     }
     return CurrentSnapshotPointerUpdateResult.CONFLICT;
   }
+
+  private Optional<CurrentSnapshotPointerObservation> currentPointerForUpdate(
+      ResourceId tableId, CurrentSnapshotPointer expectedPointer) {
+    long expectedVersion;
+    try {
+      expectedVersion = currentPointerRepo.metaFor(tableId).getPointerVersion();
+    } catch (BaseResourceRepository.NotFoundException e) {
+      return Optional.empty();
+    }
+    Optional<CurrentSnapshotPointer> afterMeta = currentPointerRepo.get(tableId);
+    if (afterMeta.isEmpty() || !afterMeta.get().equals(expectedPointer)) {
+      return Optional.empty();
+    }
+    return Optional.of(new CurrentSnapshotPointerObservation(afterMeta.get(), expectedVersion));
+  }
+
+  private record CurrentSnapshotPointerObservation(
+      CurrentSnapshotPointer pointer, long pointerVersion) {}
 
   private static void backoffCurrentPointerAdvance(int attempt) {
     long baseNanos = (1L << Math.min(attempt, 5)) * 1_000_000L;

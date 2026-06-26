@@ -24,6 +24,7 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -42,6 +43,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 import org.junit.jupiter.api.BeforeEach;
@@ -287,6 +289,44 @@ class SnapshotRepositoryTest {
   }
 
   @Test
+  void maybeAdvanceCurrentSnapshotPointerRetriesWhenPointerChangesBeforeCas() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    tableRepo.create(table(account, tableRid));
+
+    long newestCreatedMs = clock.millis() - 10_000;
+    long middleCreatedMs = newestCreatedMs - 10_000;
+    long oldestCreatedMs = middleCreatedMs - 10_000;
+    AdvancingOnMetaCurrentSnapshotPointerRepository currentRepo =
+        new AdvancingOnMetaCurrentSnapshotPointerRepository(ptr, blobs);
+    SnapshotRepository repo = new SnapshotRepository(ptr, blobs, tableRepo, currentRepo);
+
+    seedSnapshot(repo, account, tableRid, 100, clock.millis(), oldestCreatedMs);
+    seedSnapshot(repo, account, tableRid, 200, clock.millis(), middleCreatedMs);
+    seedSnapshot(repo, account, tableRid, 300, clock.millis(), newestCreatedMs);
+    repo.maybeAdvanceCurrentSnapshotPointer(tableRid, repo.getById(tableRid, 100).orElseThrow());
+    currentRepo.advanceDuringMetaFor(
+        tableRid,
+        CurrentSnapshotPointer.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(300)
+            .setUpstreamCreatedAt(Timestamps.fromMillis(newestCreatedMs))
+            .setUpdatedAt(Timestamps.fromMillis(clock.millis()))
+            .build());
+
+    assertEquals(
+        SnapshotRepository.CurrentSnapshotPointerUpdateResult.UNCHANGED,
+        repo.maybeAdvanceCurrentSnapshotPointer(
+            tableRid, repo.getById(tableRid, 200).orElseThrow()));
+    assertEquals(300L, repo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId());
+  }
+
+  @Test
   void maybeAdvanceCurrentSnapshotPointerReturnsConflictAfterBoundedCasRetries() {
     String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var tableRid =
@@ -380,6 +420,32 @@ class SnapshotRepositoryTest {
     public boolean createIfAbsent(CurrentSnapshotPointer pointer) {
       createAttempts.incrementAndGet();
       return false;
+    }
+  }
+
+  private static final class AdvancingOnMetaCurrentSnapshotPointerRepository
+      extends CurrentSnapshotPointerRepository {
+    private final AtomicBoolean advanced = new AtomicBoolean();
+    private ResourceId tableId;
+    private CurrentSnapshotPointer nextPointer;
+
+    private AdvancingOnMetaCurrentSnapshotPointerRepository(
+        PointerStore pointerStore, BlobStore blobStore) {
+      super(pointerStore, blobStore);
+    }
+
+    void advanceDuringMetaFor(ResourceId tableId, CurrentSnapshotPointer nextPointer) {
+      this.tableId = tableId;
+      this.nextPointer = nextPointer;
+    }
+
+    @Override
+    public MutationMeta metaFor(ResourceId requestedTableId) {
+      if (requestedTableId.equals(tableId) && advanced.compareAndSet(false, true)) {
+        long expectedVersion = super.metaFor(requestedTableId).getPointerVersion();
+        assertTrue(super.update(nextPointer, expectedVersion));
+      }
+      return super.metaFor(requestedTableId);
     }
   }
 
