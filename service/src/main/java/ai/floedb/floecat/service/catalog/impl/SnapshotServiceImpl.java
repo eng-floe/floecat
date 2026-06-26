@@ -85,15 +85,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
       LOG.debug("Current snapshot pointer service is unavailable; skipping pointer advance");
       return;
     }
-    try {
-      currentSnapshotPointerService.maybeAdvance(tableId, candidate, corr);
-    } catch (RuntimeException e) {
-      LOG.debugf(
-          e,
-          "Could not advance current snapshot pointer for table %s snapshot %d",
-          tableId == null ? "" : tableId.getId(),
-          candidate == null ? -1L : candidate.getSnapshotId());
-    }
+    currentSnapshotPointerService.maybeAdvance(tableId, candidate, corr);
   }
 
   private void ensureTableVisible(ResourceId tableId, String corr) {

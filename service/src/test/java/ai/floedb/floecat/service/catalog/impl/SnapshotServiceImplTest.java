@@ -319,7 +319,7 @@ class SnapshotServiceImplTest {
   }
 
   @Test
-  void createSnapshotSucceedsWhenPointerAdvanceFailsAfterCreate() {
+  void createSnapshotFailsWhenPointerAdvanceFailsAfterCreate() {
     var svc = new SnapshotServiceImpl();
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
@@ -356,19 +356,22 @@ class SnapshotServiceImplTest {
         .when(svc.currentSnapshotPointerService)
         .maybeAdvance(eq(tableId), any(Snapshot.class), eq("corr"));
 
-    var response =
-        svc.createSnapshot(
-                CreateSnapshotRequest.newBuilder()
-                    .setSpec(
-                        SnapshotSpec.newBuilder()
-                            .setTableId(tableId)
-                            .setSnapshotId(123L)
-                            .setSchemaJson("{}"))
-                    .build())
-            .await()
-            .indefinitely();
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                svc.createSnapshot(
+                        CreateSnapshotRequest.newBuilder()
+                            .setSpec(
+                                SnapshotSpec.newBuilder()
+                                    .setTableId(tableId)
+                                    .setSnapshotId(123L)
+                                    .setSchemaJson("{}"))
+                            .build())
+                    .await()
+                    .indefinitely());
 
-    assertEquals(123L, response.getSnapshot().getSnapshotId());
+    assertEquals(Status.Code.ABORTED, ex.getStatus().getCode());
     verify(svc.snapshotRepo).create(any(Snapshot.class));
   }
 
@@ -492,7 +495,7 @@ class SnapshotServiceImplTest {
   }
 
   @Test
-  void updateSnapshotSucceedsWhenPointerAdvanceFailsAfterUpdate() {
+  void updateSnapshotFailsWhenPointerAdvanceFailsAfterUpdate() {
     var svc = new SnapshotServiceImpl();
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
@@ -532,20 +535,23 @@ class SnapshotServiceImplTest {
         .when(svc.currentSnapshotPointerService)
         .maybeAdvance(eq(tableId), any(Snapshot.class), eq("corr"));
 
-    var response =
-        svc.updateSnapshot(
-                UpdateSnapshotRequest.newBuilder()
-                    .setSpec(
-                        SnapshotSpec.newBuilder()
-                            .setTableId(tableId)
-                            .setSnapshotId(123L)
-                            .setSchemaJson("{\"type\":\"struct\"}"))
-                    .setUpdateMask(FieldMask.newBuilder().addPaths("schema_json"))
-                    .build())
-            .await()
-            .indefinitely();
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                svc.updateSnapshot(
+                        UpdateSnapshotRequest.newBuilder()
+                            .setSpec(
+                                SnapshotSpec.newBuilder()
+                                    .setTableId(tableId)
+                                    .setSnapshotId(123L)
+                                    .setSchemaJson("{\"type\":\"struct\"}"))
+                            .setUpdateMask(FieldMask.newBuilder().addPaths("schema_json"))
+                            .build())
+                    .await()
+                    .indefinitely());
 
-    assertEquals("{\"type\":\"struct\"}", response.getSnapshot().getSchemaJson());
+    assertEquals(Status.Code.ABORTED, ex.getStatus().getCode());
     verify(svc.snapshotRepo).update(any(Snapshot.class), eq(4L));
   }
 

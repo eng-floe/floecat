@@ -154,7 +154,10 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
             requestsStatsOutputs
                 ? ingestDirectStats(snapshotTask, tableId, lease.fullRescan, aggregateKinds)
                 : snapshotTask.directStatsRecordCount();
-        advanceCurrentSnapshot(tableId, snapshotTask, lease);
+        RuntimeException pointerFailure = advanceCurrentSnapshot(tableId, snapshotTask, lease);
+        if (pointerFailure != null) {
+          return currentSnapshotAdvanceFailure(snapshotTask, pointerFailure);
+        }
         return ExecutionResult.success(
             0,
             0,
@@ -202,7 +205,10 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           requestsStatsOutputs
               ? persistEmptySnapshotCompletionMarker(lease, snapshotTask, tableId)
               : 0L;
-      advanceCurrentSnapshot(tableId, snapshotTask, lease);
+      RuntimeException pointerFailure = advanceCurrentSnapshot(tableId, snapshotTask, lease);
+      if (pointerFailure != null) {
+        return currentSnapshotAdvanceFailure(snapshotTask, pointerFailure);
+      }
       return ExecutionResult.success(
           0,
           0,
@@ -313,7 +319,10 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           new IllegalStateException("snapshot file-group child jobs missing"));
     }
     if (!requestsStatsOutputs) {
-      advanceCurrentSnapshot(tableId, snapshotTask, lease);
+      RuntimeException pointerFailure = advanceCurrentSnapshot(tableId, snapshotTask, lease);
+      if (pointerFailure != null) {
+        return currentSnapshotAdvanceFailure(snapshotTask, pointerFailure);
+      }
       return ExecutionResult.success(
           0,
           0,
@@ -335,7 +344,10 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
                     .flatMap(group -> group.partialAggregateRecords().stream())
                     .toList());
     if (aggregateKinds.isEmpty()) {
-      advanceCurrentSnapshot(tableId, snapshotTask, lease);
+      RuntimeException pointerFailure = advanceCurrentSnapshot(tableId, snapshotTask, lease);
+      if (pointerFailure != null) {
+        return currentSnapshotAdvanceFailure(snapshotTask, pointerFailure);
+      }
       return ExecutionResult.success(
           0,
           0,
@@ -347,7 +359,10 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           "Skipped snapshot finalization " + snapshotTask.snapshotId() + " (no aggregate outputs)");
     }
     persistence.persistStats(aggregateStats);
-    advanceCurrentSnapshot(tableId, snapshotTask, lease);
+    RuntimeException pointerFailure = advanceCurrentSnapshot(tableId, snapshotTask, lease);
+    if (pointerFailure != null) {
+      return currentSnapshotAdvanceFailure(snapshotTask, pointerFailure);
+    }
     return ExecutionResult.success(
         0,
         0,
@@ -359,21 +374,42 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         "Finalized snapshot capture " + snapshotTask.snapshotId());
   }
 
-  private void advanceCurrentSnapshot(
+  private RuntimeException advanceCurrentSnapshot(
       ResourceId tableId, ReconcileSnapshotTask snapshotTask, ReconcileJobStore.LeasedJob lease) {
     if (currentSnapshotPointerService == null) {
-      return;
+      return null;
     }
     String corr = lease == null || lease.jobId == null ? "" : lease.jobId;
     try {
       currentSnapshotPointerService.maybeAdvance(tableId, snapshotTask.snapshotId(), corr);
+      return null;
     } catch (RuntimeException e) {
       LOG.debugf(
           e,
           "Could not advance current snapshot pointer for finalized table %s snapshot %d",
           tableId == null ? "" : tableId.getId(),
           snapshotTask == null ? -1L : snapshotTask.snapshotId());
+      return e;
     }
+  }
+
+  private ExecutionResult currentSnapshotAdvanceFailure(
+      ReconcileSnapshotTask snapshotTask, RuntimeException error) {
+    long snapshotId = snapshotTask == null ? -1L : snapshotTask.snapshotId();
+    return ExecutionResult.failure(
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        ExecutionResult.FailureKind.INTERNAL,
+        "Current snapshot pointer advance failed for snapshot "
+            + snapshotId
+            + ": "
+            + (error == null ? "" : error.getMessage()),
+        error);
   }
 
   private long persistEmptySnapshotCompletionMarker(

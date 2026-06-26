@@ -464,7 +464,7 @@ class SnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
-  void executeSucceedsWhenCurrentSnapshotAdvanceFailsAfterDirectStatsCompletion() {
+  void executeFailsRetryablyWhenCurrentSnapshotAdvanceFailsAfterDirectStatsCompletion() {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var executor = executor(store, statsStore, snapshotPlanBlobStore());
@@ -518,8 +518,10 @@ class SnapshotFinalizeReconcileExecutorTest {
 
     ExecutionResult result = executor.execute(context(finalizerLease));
 
-    assertTrue(result.success());
-    assertTrue(result.message.contains("direct stats"));
+    assertFalse(result.success());
+    assertEquals(ExecutionResult.JobOutcome.RETRYABLE_FAILURE, result.outcome);
+    assertEquals(ExecutionResult.FailureKind.INTERNAL, result.failureKind);
+    assertTrue(result.message.contains("Current snapshot pointer advance failed"));
   }
 
   @Test
