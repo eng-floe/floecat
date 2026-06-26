@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.catalog.impl;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.SNAPSHOT;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.TABLE;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -31,10 +32,17 @@ public class CurrentSnapshotPointerService {
   @Inject SnapshotRepository snapshotRepo;
 
   public void maybeAdvance(ResourceId tableId, long snapshotId, String corr) {
-    Snapshot candidate = snapshotRepo.getById(tableId, snapshotId).orElse(null);
-    if (candidate == null) {
-      return;
-    }
+    Snapshot candidate =
+        snapshotRepo
+            .getById(tableId, snapshotId)
+            .orElseThrow(
+                () ->
+                    GrpcErrors.notFound(
+                        corr,
+                        SNAPSHOT,
+                        Map.of(
+                            "table_id", tableId.getId(),
+                            "id", Long.toString(snapshotId))));
     maybeAdvance(tableId, candidate, corr);
   }
 
