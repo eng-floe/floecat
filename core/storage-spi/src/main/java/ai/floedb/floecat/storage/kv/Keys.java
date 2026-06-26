@@ -122,6 +122,13 @@ public final class Keys {
         encodeSegment(aid), encodeSegment(tid), inverted, invertedSnapshotId);
   }
 
+  public static String currentSnapshotPointerByTable(String accountId, String tableId) {
+    String aid = req("account_id", accountId);
+    String tid = req("table_id", tableId);
+    return String.format(
+        "/accounts/%s/tables/%s/snapshots/current", encodeSegment(aid), encodeSegment(tid));
+  }
+
   public static String connectorPointerById(String accountId, String connectorId) {
     String aid = req("account_id", accountId);
     String cid = req("connector_id", connectorId);

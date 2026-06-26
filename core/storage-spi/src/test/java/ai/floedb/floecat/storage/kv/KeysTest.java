@@ -62,6 +62,13 @@ public class KeysTest {
   }
 
   @Test
+  void currentSnapshotPointerByTableUsesPathSafeEncoding() {
+    assertEquals(
+        "/accounts/acct%20id/tables/table%20id/snapshots/current",
+        Keys.currentSnapshotPointerByTable("acct id", "table id"));
+  }
+
+  @Test
   void encodeSegmentUsesRfc3986PathSegmentRules() {
     assertEquals("a%20b", Keys.encodeSegment("a b"));
     assertEquals("a%2Bb", Keys.encodeSegment("a+b"));
