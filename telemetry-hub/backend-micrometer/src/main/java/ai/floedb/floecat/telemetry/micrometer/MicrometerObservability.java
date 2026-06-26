@@ -744,9 +744,7 @@ public final class MicrometerObservability implements Observability {
         return;
       }
       AttributesBuilder builder =
-          Attributes.builder()
-              .put("component", safe(component))
-              .put("operation", safe(operation));
+          Attributes.builder().put("component", safe(component)).put("operation", safe(operation));
       for (Tag tag : tags) {
         if (tag != null) {
           builder.put("tag_" + fieldKey(tag.key()), safe(tag.value()));

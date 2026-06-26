@@ -38,8 +38,7 @@ public class ViewExpansionResolver {
 
   public ExpansionMap computeExpansion(
       String correlationId, List<ResourceId> resolvedInputs, PhaseDiagnostics diagnostics) {
-    PhaseDiagnostics safeDiagnostics =
-        diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
+    PhaseDiagnostics safeDiagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
     safeDiagnostics.add("expansion_inputs", resolvedInputs == null ? 0 : resolvedInputs.size());
     if (safeDiagnostics != PhaseDiagnostics.NOOP && resolvedInputs != null) {
       for (ResourceId input : resolvedInputs) {

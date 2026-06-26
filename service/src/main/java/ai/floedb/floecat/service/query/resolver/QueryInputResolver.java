@@ -185,7 +185,8 @@ public class QueryInputResolver {
       diag.count("pin.default_catalog_lookups");
       long defaultCatalogStartNs = System.nanoTime();
       try {
-        defaultCatalog = metadataGraph.catalog(defaultCatalogId.get()).map(CatalogNode::displayName);
+        defaultCatalog =
+            metadataGraph.catalog(defaultCatalogId.get()).map(CatalogNode::displayName);
       } finally {
         diag.nanos("pin.default_catalog_resolve", System.nanoTime() - defaultCatalogStartNs);
       }
@@ -230,12 +231,11 @@ public class QueryInputResolver {
       }
     }
 
-    SnapshotSet snapshotSet = SnapshotSet.newBuilder().addAllPins(state.pinByTableId.values()).build();
+    SnapshotSet snapshotSet =
+        SnapshotSet.newBuilder().addAllPins(state.pinByTableId.values()).build();
     diag.add("pin.resolver_output_pins", snapshotSet.getPinsCount());
     return new ResolutionResult(
-        state.resolved,
-        snapshotSet,
-        asOfDefault.map(Timestamp::toByteArray).orElse(null));
+        state.resolved, snapshotSet, asOfDefault.map(Timestamp::toByteArray).orElse(null));
   }
 
   // =============================================================================
@@ -294,11 +294,14 @@ public class QueryInputResolver {
       state.currentSnapshotPinCache.put(rid, resolved);
       return resolved;
     }
-    state.diagnostics.count("pin.explicit_snapshot_pins", override != null && override.hasSnapshotId());
     state.diagnostics.count(
-        "pin.asof_snapshot_pins", (override != null && override.hasAsOf()) || asOfDefault.isPresent());
+        "pin.explicit_snapshot_pins", override != null && override.hasSnapshotId());
+    state.diagnostics.count(
+        "pin.asof_snapshot_pins",
+        (override != null && override.hasAsOf()) || asOfDefault.isPresent());
     long snapshotPinStartNs = System.nanoTime();
-    SnapshotPin resolved = metadataGraph.snapshotPinFor(state.correlationId, rid, override, asOfDefault);
+    SnapshotPin resolved =
+        metadataGraph.snapshotPinFor(state.correlationId, rid, override, asOfDefault);
     state.diagnostics.count("pin.snapshot_calls");
     state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
     return resolved;
@@ -343,9 +346,9 @@ public class QueryInputResolver {
     long viewResolveStartNs = System.nanoTime();
     Optional<ViewNode> view =
         metadataGraph
-        .resolve(relationId)
-        .filter(ViewNode.class::isInstance)
-        .map(ViewNode.class::cast);
+            .resolve(relationId)
+            .filter(ViewNode.class::isInstance)
+            .map(ViewNode.class::cast);
     state.diagnostics.nanos("pin.view_node_resolve", System.nanoTime() - viewResolveStartNs);
     view.ifPresent(
         resolvedView -> {

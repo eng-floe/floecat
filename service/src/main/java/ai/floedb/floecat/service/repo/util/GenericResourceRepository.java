@@ -83,35 +83,40 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     observeRepository(
         "create",
         () -> {
-    K key = schema.keyFromValue.apply(value);
-    String canonicalPointer = schema.canonicalPointerForKey.apply(key);
-    String blobUri = schema.blobUriForKey.apply(key);
+          K key = schema.keyFromValue.apply(value);
+          String canonicalPointer = schema.canonicalPointerForKey.apply(key);
+          String blobUri = schema.blobUriForKey.apply(key);
 
-    putBlob(blobUri, value);
+          putBlob(blobUri, value);
 
-    Map<String, String> secondaries = schema.secondaryPointersFromValue.apply(value);
-    // Canonical first, then secondaries, de-duplicated: some schemas (e.g. snapshots) expose the
-    // canonical by-id pointer as a secondary too, and a transactional batch must not contain two
-    // operations on the same key (DynamoDB rejects duplicate items within a transaction). All ops
-    // for a given key target the same blob, so dropping the duplicate is loss-free.
-    LinkedHashSet<String> uniqueKeys = new LinkedHashSet<>(1 + secondaries.size());
-    uniqueKeys.add(canonicalPointer);
-    uniqueKeys.addAll(secondaries.values());
-    List<String> pointerKeys = new ArrayList<>(uniqueKeys);
+          Map<String, String> secondaries = schema.secondaryPointersFromValue.apply(value);
+          // Canonical first, then secondaries, de-duplicated: some schemas (e.g. snapshots) expose
+          // the
+          // canonical by-id pointer as a secondary too, and a transactional batch must not contain
+          // two
+          // operations on the same key (DynamoDB rejects duplicate items within a transaction). All
+          // ops
+          // for a given key target the same blob, so dropping the duplicate is loss-free.
+          LinkedHashSet<String> uniqueKeys = new LinkedHashSet<>(1 + secondaries.size());
+          uniqueKeys.add(canonicalPointer);
+          uniqueKeys.addAll(secondaries.values());
+          List<String> pointerKeys = new ArrayList<>(uniqueKeys);
 
-    List<PointerStore.CasOp> ops = new ArrayList<>(pointerKeys.size());
-    for (String pointerKey : pointerKeys) {
-      ops.add(new PointerStore.CasUpsert(pointerKey, 0L, reserve(pointerKey, blobUri, value)));
-    }
+          List<PointerStore.CasOp> ops = new ArrayList<>(pointerKeys.size());
+          for (String pointerKey : pointerKeys) {
+            ops.add(
+                new PointerStore.CasUpsert(pointerKey, 0L, reserve(pointerKey, blobUri, value)));
+          }
 
-    if (pointerStore.compareAndSetBatch(ops)) {
-      return;
-    }
+          if (pointerStore.compareAndSetBatch(ops)) {
+            return;
+          }
 
-    // The batch committed nothing (atomic) because at least one pointer already existed. Read back
-    // and classify, walking canonical-then-secondary order so a conflict reports the same
-    // key/message as before.
-    classifyCreateConflict(blobUri, pointerKeys);
+          // The batch committed nothing (atomic) because at least one pointer already existed. Read
+          // back
+          // and classify, walking canonical-then-secondary order so a conflict reports the same
+          // key/message as before.
+          classifyCreateConflict(blobUri, pointerKeys);
         });
   }
 
@@ -180,31 +185,33 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return observeRepository(
         "create_if_absent",
         () -> {
-    K key = schema.keyFromValue.apply(value);
-    String canonicalPointer = schema.canonicalPointerForKey.apply(key);
-    String blobUri = schema.blobUriForKey.apply(key);
-    boolean blobExistedBefore = blobStore.head(blobUri).isPresent();
+          K key = schema.keyFromValue.apply(value);
+          String canonicalPointer = schema.canonicalPointerForKey.apply(key);
+          String blobUri = schema.blobUriForKey.apply(key);
+          boolean blobExistedBefore = blobStore.head(blobUri).isPresent();
 
-    putBlob(blobUri, value);
+          putBlob(blobUri, value);
 
-    Map<String, String> secondaries = schema.secondaryPointersFromValue.apply(value);
-    // Canonical first, then secondaries, de-duplicated (a schema may expose the canonical pointer
-    // as a secondary too, and a transactional batch must not repeat a key). See create().
-    LinkedHashSet<String> uniqueKeys = new LinkedHashSet<>(1 + secondaries.size());
-    uniqueKeys.add(canonicalPointer);
-    uniqueKeys.addAll(secondaries.values());
-    List<String> pointerKeys = new ArrayList<>(uniqueKeys);
+          Map<String, String> secondaries = schema.secondaryPointersFromValue.apply(value);
+          // Canonical first, then secondaries, de-duplicated (a schema may expose the canonical
+          // pointer
+          // as a secondary too, and a transactional batch must not repeat a key). See create().
+          LinkedHashSet<String> uniqueKeys = new LinkedHashSet<>(1 + secondaries.size());
+          uniqueKeys.add(canonicalPointer);
+          uniqueKeys.addAll(secondaries.values());
+          List<String> pointerKeys = new ArrayList<>(uniqueKeys);
 
-    List<PointerStore.CasOp> ops = new ArrayList<>(pointerKeys.size());
-    for (String pointerKey : pointerKeys) {
-      ops.add(new PointerStore.CasUpsert(pointerKey, 0L, reserve(pointerKey, blobUri, value)));
-    }
+          List<PointerStore.CasOp> ops = new ArrayList<>(pointerKeys.size());
+          for (String pointerKey : pointerKeys) {
+            ops.add(
+                new PointerStore.CasUpsert(pointerKey, 0L, reserve(pointerKey, blobUri, value)));
+          }
 
-    if (pointerStore.compareAndSetBatch(ops)) {
-      return true;
-    }
-    return classifyCreateIfAbsentConflict(
-        canonicalPointer, blobUri, pointerKeys, blobExistedBefore);
+          if (pointerStore.compareAndSetBatch(ops)) {
+            return true;
+          }
+          return classifyCreateIfAbsentConflict(
+              canonicalPointer, blobUri, pointerKeys, blobExistedBefore);
         });
   }
 
@@ -314,96 +321,104 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return observeRepository(
         "update",
         () -> {
-    K key = schema.keyFromValue.apply(updatedValue);
-    String canonicalPointer = schema.canonicalPointerForKey.apply(key);
-    String blobUri = schema.blobUriForKey.apply(key);
+          K key = schema.keyFromValue.apply(updatedValue);
+          String canonicalPointer = schema.canonicalPointerForKey.apply(key);
+          String blobUri = schema.blobUriForKey.apply(key);
 
-    T currentValue =
-        getByKey(key)
-            .orElseThrow(
-                () ->
-                    new NotFoundException(
-                        schema.resourceName + " not found for canonical: " + canonicalPointer));
-    String currentBlobUri = schema.blobUriForKey.apply(schema.keyFromValue.apply(currentValue));
+          T currentValue =
+              getByKey(key)
+                  .orElseThrow(
+                      () ->
+                          new NotFoundException(
+                              schema.resourceName
+                                  + " not found for canonical: "
+                                  + canonicalPointer));
+          String currentBlobUri =
+              schema.blobUriForKey.apply(schema.keyFromValue.apply(currentValue));
 
-    Set<String> currentSecondary =
-        new HashSet<>(schema.secondaryPointersFromValue.apply(currentValue).values());
-    Set<String> nextSecondary =
-        new HashSet<>(schema.secondaryPointersFromValue.apply(updatedValue).values());
+          Set<String> currentSecondary =
+              new HashSet<>(schema.secondaryPointersFromValue.apply(currentValue).values());
+          Set<String> nextSecondary =
+              new HashSet<>(schema.secondaryPointersFromValue.apply(updatedValue).values());
 
-    Set<String> toAdd = new HashSet<>(nextSecondary);
-    toAdd.removeAll(currentSecondary);
-    Set<String> toDelete = new HashSet<>(currentSecondary);
-    toDelete.removeAll(nextSecondary);
-    Set<String> kept = new HashSet<>(nextSecondary);
-    kept.removeAll(toAdd);
+          Set<String> toAdd = new HashSet<>(nextSecondary);
+          toAdd.removeAll(currentSecondary);
+          Set<String> toDelete = new HashSet<>(currentSecondary);
+          toDelete.removeAll(nextSecondary);
+          Set<String> kept = new HashSet<>(nextSecondary);
+          kept.removeAll(toAdd);
 
-    putBlob(blobUri, updatedValue);
+          putBlob(blobUri, updatedValue);
 
-    boolean blobChanged = schema.casBlobs && !Objects.equals(currentBlobUri, blobUri);
+          boolean blobChanged = schema.casBlobs && !Objects.equals(currentBlobUri, blobUri);
 
-    // Build a single all-or-nothing batch covering every pointer mutation this update implies. Ops
-    // are de-duplicated by key (a schema may expose the canonical pointer as a secondary too) with
-    // the canonical advance taking precedence. Because the batch is atomic the update can never
-    // leave partial pointer state; a conflict commits nothing and is classified below.
-    Set<String> batchedKeys = new HashSet<>();
-    List<PointerStore.CasOp> ops = new ArrayList<>();
+          // Build a single all-or-nothing batch covering every pointer mutation this update
+          // implies. Ops
+          // are de-duplicated by key (a schema may expose the canonical pointer as a secondary too)
+          // with
+          // the canonical advance taking precedence. Because the batch is atomic the update can
+          // never
+          // leave partial pointer state; a conflict commits nothing and is classified below.
+          Set<String> batchedKeys = new HashSet<>();
+          List<PointerStore.CasOp> ops = new ArrayList<>();
 
-    batchedKeys.add(canonicalPointer);
-    ops.add(
-        new PointerStore.CasUpsert(
-            canonicalPointer,
-            expectedCanonicalVersion,
-            reserve(canonicalPointer, blobUri, updatedValue)));
-
-    for (String p : toAdd) {
-      if (!batchedKeys.add(p)) {
-        continue;
-      }
-      Pointer existing = pointerStore.get(p).orElse(null);
-      if (existing == null) {
-        ops.add(new PointerStore.CasUpsert(p, 0L, reserve(p, blobUri, updatedValue)));
-      } else if (!blobUri.equals(existing.getBlobUri())) {
-        // The new name already belongs to a different blob. Nothing has been committed, so failing
-        // fast here leaves no partial state.
-        throw new NameConflictException("pointer bound to different blob: " + p);
-      }
-      // else: already reserved to our blob — idempotent, no op needed.
-    }
-
-    if (blobChanged) {
-      // Kept secondaries still point at the old content-addressed blob; advance each onto the new
-      // one (or reserve it if a legacy gap left it absent).
-      for (String p : kept) {
-        if (!batchedKeys.add(p)) {
-          continue;
-        }
-        Pointer existing = pointerStore.get(p).orElse(null);
-        if (existing == null) {
-          ops.add(new PointerStore.CasUpsert(p, 0L, reserve(p, blobUri, updatedValue)));
-        } else if (!blobUri.equals(existing.getBlobUri())) {
+          batchedKeys.add(canonicalPointer);
           ops.add(
               new PointerStore.CasUpsert(
-                  p, existing.getVersion(), reserve(p, blobUri, updatedValue)));
-        }
-        // else: already on the new blob — no op needed.
-      }
-    }
+                  canonicalPointer,
+                  expectedCanonicalVersion,
+                  reserve(canonicalPointer, blobUri, updatedValue)));
 
-    for (String p : toDelete) {
-      if (!batchedKeys.add(p)) {
-        continue;
-      }
-      Pointer existing = pointerStore.get(p).orElse(null);
-      if (existing != null) {
-        ops.add(new PointerStore.CasDelete(p, existing.getVersion()));
-      }
-    }
+          for (String p : toAdd) {
+            if (!batchedKeys.add(p)) {
+              continue;
+            }
+            Pointer existing = pointerStore.get(p).orElse(null);
+            if (existing == null) {
+              ops.add(new PointerStore.CasUpsert(p, 0L, reserve(p, blobUri, updatedValue)));
+            } else if (!blobUri.equals(existing.getBlobUri())) {
+              // The new name already belongs to a different blob. Nothing has been committed, so
+              // failing
+              // fast here leaves no partial state.
+              throw new NameConflictException("pointer bound to different blob: " + p);
+            }
+            // else: already reserved to our blob — idempotent, no op needed.
+          }
 
-    if (pointerStore.compareAndSetBatch(ops)) {
-      return true;
-    }
-    return classifyUpdateConflict(canonicalPointer, expectedCanonicalVersion, blobUri, toAdd);
+          if (blobChanged) {
+            // Kept secondaries still point at the old content-addressed blob; advance each onto the
+            // new
+            // one (or reserve it if a legacy gap left it absent).
+            for (String p : kept) {
+              if (!batchedKeys.add(p)) {
+                continue;
+              }
+              Pointer existing = pointerStore.get(p).orElse(null);
+              if (existing == null) {
+                ops.add(new PointerStore.CasUpsert(p, 0L, reserve(p, blobUri, updatedValue)));
+              } else if (!blobUri.equals(existing.getBlobUri())) {
+                ops.add(
+                    new PointerStore.CasUpsert(
+                        p, existing.getVersion(), reserve(p, blobUri, updatedValue)));
+              }
+              // else: already on the new blob — no op needed.
+            }
+          }
+
+          for (String p : toDelete) {
+            if (!batchedKeys.add(p)) {
+              continue;
+            }
+            Pointer existing = pointerStore.get(p).orElse(null);
+            if (existing != null) {
+              ops.add(new PointerStore.CasDelete(p, existing.getVersion()));
+            }
+          }
+
+          if (pointerStore.compareAndSetBatch(ops)) {
+            return true;
+          }
+          return classifyUpdateConflict(canonicalPointer, expectedCanonicalVersion, blobUri, toAdd);
         });
   }
 
@@ -432,36 +447,36 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return observeRepository(
         "delete",
         () -> {
-    String canonicalPointer = schema.canonicalPointerForKey.apply(key);
-    var canonicalPtr = pointerStore.get(canonicalPointer).orElse(null);
-    if (canonicalPtr == null) {
-      return false;
-    }
-    String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
+          String canonicalPointer = schema.canonicalPointerForKey.apply(key);
+          var canonicalPtr = pointerStore.get(canonicalPointer).orElse(null);
+          if (canonicalPtr == null) {
+            return false;
+          }
+          String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
 
-    Optional<T> currentValue;
-    try {
-      currentValue = getByKey(key);
-    } catch (CorruptionException e) {
-      currentValue = Optional.empty();
-    }
-    Set<String> currentSecondary =
-        currentValue
-            .map(schema.secondaryPointersFromValue)
-            .map(m -> new HashSet<>(m.values()))
-            .orElseGet(HashSet::new);
+          Optional<T> currentValue;
+          try {
+            currentValue = getByKey(key);
+          } catch (CorruptionException e) {
+            currentValue = Optional.empty();
+          }
+          Set<String> currentSecondary =
+              currentValue
+                  .map(schema.secondaryPointersFromValue)
+                  .map(m -> new HashSet<>(m.values()))
+                  .orElseGet(HashSet::new);
 
-    if (!compareAndDeleteOrFalse(canonicalPointer, canonicalPtr.getVersion())) {
-      return false;
-    }
-    for (String p : currentSecondary) {
-      pointerStore.get(p).ifPresent(ptr -> compareAndDeleteOrFalse(p, ptr.getVersion()));
-    }
+          if (!compareAndDeleteOrFalse(canonicalPointer, canonicalPtr.getVersion())) {
+            return false;
+          }
+          for (String p : currentSecondary) {
+            pointerStore.get(p).ifPresent(ptr -> compareAndDeleteOrFalse(p, ptr.getVersion()));
+          }
 
-    if (!schema.casBlobs && !blobUri.isBlank()) {
-      deleteQuietly(() -> blobStore.delete(blobUri));
-    }
-    return true;
+          if (!schema.casBlobs && !blobUri.isBlank()) {
+            deleteQuietly(() -> blobStore.delete(blobUri));
+          }
+          return true;
         });
   }
 
@@ -469,33 +484,33 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return observeRepository(
         "delete_with_precondition",
         () -> {
-    String canonicalPointer = schema.canonicalPointerForKey.apply(key);
-    String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
+          String canonicalPointer = schema.canonicalPointerForKey.apply(key);
+          String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
 
-    Optional<T> currentValue;
-    try {
-      currentValue = getByKey(key);
-    } catch (CorruptionException e) {
-      currentValue = Optional.empty();
-    }
-    Set<String> currentSecondary =
-        currentValue
-            .map(schema.secondaryPointersFromValue)
-            .map(m -> new HashSet<>(m.values()))
-            .orElseGet(HashSet::new);
+          Optional<T> currentValue;
+          try {
+            currentValue = getByKey(key);
+          } catch (CorruptionException e) {
+            currentValue = Optional.empty();
+          }
+          Set<String> currentSecondary =
+              currentValue
+                  .map(schema.secondaryPointersFromValue)
+                  .map(m -> new HashSet<>(m.values()))
+                  .orElseGet(HashSet::new);
 
-    if (!compareAndDeleteOrFalse(canonicalPointer, expectedCanonicalVersion)) {
-      return false;
-    }
+          if (!compareAndDeleteOrFalse(canonicalPointer, expectedCanonicalVersion)) {
+            return false;
+          }
 
-    for (String p : currentSecondary) {
-      pointerStore.get(p).ifPresent(ptr -> compareAndDeleteOrFalse(p, ptr.getVersion()));
-    }
+          for (String p : currentSecondary) {
+            pointerStore.get(p).ifPresent(ptr -> compareAndDeleteOrFalse(p, ptr.getVersion()));
+          }
 
-    if (!schema.casBlobs && !blobUri.isBlank()) {
-      deleteQuietly(() -> blobStore.delete(blobUri));
-    }
-    return true;
+          if (!schema.casBlobs && !blobUri.isBlank()) {
+            deleteQuietly(() -> blobStore.delete(blobUri));
+          }
+          return true;
         });
   }
 
@@ -507,15 +522,18 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return observeRepository(
         "meta_for",
         () -> {
-    String canonicalPointer = schema.canonicalPointerForKey.apply(key);
-    var pointer =
-        pointerStore
-            .get(canonicalPointer)
-            .orElseThrow(
-                () ->
-                    new NotFoundException(
-                    "Pointer missing for " + schema.resourceName + ": " + canonicalPointer));
-    return safeMetaOrDefault(canonicalPointer, pointer.getBlobUri(), nowTs);
+          String canonicalPointer = schema.canonicalPointerForKey.apply(key);
+          var pointer =
+              pointerStore
+                  .get(canonicalPointer)
+                  .orElseThrow(
+                      () ->
+                          new NotFoundException(
+                              "Pointer missing for "
+                                  + schema.resourceName
+                                  + ": "
+                                  + canonicalPointer));
+          return safeMetaOrDefault(canonicalPointer, pointer.getBlobUri(), nowTs);
         });
   }
 
@@ -527,27 +545,27 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return observeRepository(
         "meta_for_safe",
         () -> {
-    String canonical = schema.canonicalPointerForKey.apply(key);
-    var ptrOpt = pointerStore.get(canonical);
-    if (schema.casBlobs && ptrOpt.isEmpty()) {
-      return MutationMeta.newBuilder()
-          .setPointerKey(canonical)
-          .setBlobUri("")
-          .setPointerVersion(0L)
-          .setEtag("")
-          .setUpdatedAt(nowTs)
-          .build();
-    }
-    String blobUri;
-    if (schema.casBlobs) {
-      blobUri =
-          (ptrOpt.isPresent() && ptrOpt.get().getBlobUri() != null)
-              ? ptrOpt.get().getBlobUri()
-              : "";
-    } else {
-      blobUri = schema.blobUriForKey.apply(key);
-    }
-    return safeMetaOrDefault(canonical, blobUri, nowTs);
+          String canonical = schema.canonicalPointerForKey.apply(key);
+          var ptrOpt = pointerStore.get(canonical);
+          if (schema.casBlobs && ptrOpt.isEmpty()) {
+            return MutationMeta.newBuilder()
+                .setPointerKey(canonical)
+                .setBlobUri("")
+                .setPointerVersion(0L)
+                .setEtag("")
+                .setUpdatedAt(nowTs)
+                .build();
+          }
+          String blobUri;
+          if (schema.casBlobs) {
+            blobUri =
+                (ptrOpt.isPresent() && ptrOpt.get().getBlobUri() != null)
+                    ? ptrOpt.get().getBlobUri()
+                    : "";
+          } else {
+            blobUri = schema.blobUriForKey.apply(key);
+          }
+          return safeMetaOrDefault(canonical, blobUri, nowTs);
         });
   }
 

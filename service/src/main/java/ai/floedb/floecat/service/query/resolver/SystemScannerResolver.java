@@ -25,11 +25,11 @@ import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
@@ -67,8 +67,7 @@ public final class SystemScannerResolver {
 
   public SystemObjectScanner resolve(
       String correlationId, ResourceId tableId, EngineContext ctx, PhaseDiagnostics diagnostics) {
-    PhaseDiagnostics safeDiagnostics =
-        diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
+    PhaseDiagnostics safeDiagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
     String engineKind = ctx.effectiveEngineKind();
     String engineVersion = ctx.normalizedVersion();
     safeDiagnostics.put("system_scanner_engine_kind", engineKind);
@@ -76,7 +75,8 @@ public final class SystemScannerResolver {
     safeDiagnostics.put("system_scanner_table_id", tableId == null ? "" : tableId.getId());
 
     Optional<SystemTableNode.FloeCatSystemTableNode> nodeOptional =
-        safeDiagnostics.time("system_scanner_graph_resolve", () -> resolveSystemTable(graph, tableId, engineKind));
+        safeDiagnostics.time(
+            "system_scanner_graph_resolve", () -> resolveSystemTable(graph, tableId, engineKind));
     var node =
         nodeOptional.orElseThrow(
             () ->

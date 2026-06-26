@@ -47,13 +47,13 @@ import ai.floedb.floecat.service.query.system.SystemRowMappers;
 import ai.floedb.floecat.service.query.system.SystemRowProjector;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import ai.floedb.floecat.telemetry.Observability;
-import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import ai.floedb.floecat.system.rpc.OutputFormat;
 import ai.floedb.floecat.system.rpc.QuerySystemScanService;
 import ai.floedb.floecat.system.rpc.ScanSystemTableChunk;
 import ai.floedb.floecat.system.rpc.ScanSystemTableRequest;
 import ai.floedb.floecat.system.rpc.SystemTableRow;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.infrastructure.Infrastructure;
@@ -135,9 +135,7 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
       SystemObjectScanner scanner =
           diagnostics.time(
               "scanner_resolve",
-              () ->
-                  scanners.resolve(
-                      correlationIdHolder.get(), tableId, engineCtx, diagnostics));
+              () -> scanners.resolve(correlationIdHolder.get(), tableId, engineCtx, diagnostics));
       var statsProvider =
           diagnostics.time(
               "stats_provider",

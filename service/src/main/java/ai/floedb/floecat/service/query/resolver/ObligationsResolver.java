@@ -41,8 +41,7 @@ public class ObligationsResolver {
 
   public Result resolveObligations(
       String correlationId, List<SnapshotPin> pins, PhaseDiagnostics diagnostics) {
-    PhaseDiagnostics safeDiagnostics =
-        diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
+    PhaseDiagnostics safeDiagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
     safeDiagnostics.add("obligation_pins", pins == null ? 0 : pins.size());
     // TODO: load obligations from governance service
     return new Result(List.of(), new byte[0]);

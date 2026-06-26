@@ -86,7 +86,8 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                   diagnostics.put("inputs", request.getInputsCount());
 
                   try {
-                    var ctxOpt = diagnostics.time("query_context_get", () -> queryStore.get(queryId));
+                    var ctxOpt =
+                        diagnostics.time("query_context_get", () -> queryStore.get(queryId));
                     if (ctxOpt.isEmpty()) {
                       throw GrpcErrors.notFound(
                           correlationId(), QUERY_NOT_FOUND, java.util.Map.of("query_id", queryId));
@@ -94,9 +95,11 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                     var ctx = ctxOpt.get();
 
                     var asOfDefault =
-                        diagnostics.time("parse_asof_default", () -> ctx.parseAsOfDefault(correlationId()));
+                        diagnostics.time(
+                            "parse_asof_default", () -> ctx.parseAsOfDefault(correlationId()));
 
-                    // Resolve inputs → resolved ids + snapshot pins (tables and/or view base tables)
+                    // Resolve inputs → resolved ids + snapshot pins (tables and/or view base
+                    // tables)
                     var rr =
                         diagnostics.time(
                             "resolve_inputs",
@@ -142,7 +145,8 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                     var obligationsResult =
                         diagnostics.time(
                             "resolve_obligations",
-                            () -> obligations.resolveObligations(correlationId(), pins, diagnostics));
+                            () ->
+                                obligations.resolveObligations(correlationId(), pins, diagnostics));
                     byte[] obligationsBytes = obligationsResult.bytes();
                     diagnostics.put("obligations", obligationsResult.obligations().size());
                     diagnostics.put("obligation_bytes", obligationsBytes.length);

@@ -70,10 +70,10 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
-import ai.floedb.floecat.types.LogicalType;
-import ai.floedb.floecat.types.LogicalTypeFormat;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
+import ai.floedb.floecat.types.LogicalType;
+import ai.floedb.floecat.types.LogicalTypeFormat;
 import io.opentelemetry.api.trace.Span;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -1407,12 +1407,7 @@ public class UserObjectBundleService {
         long pinStartNs = System.nanoTime();
         try {
           SnapshotSet chunkPins =
-              collectChunkPins(
-                  correlationId,
-                  ctx,
-                  toPin,
-                  currentSnapshotPinCache,
-                  diagnostics);
+              collectChunkPins(correlationId, ctx, toPin, currentSnapshotPinCache, diagnostics);
           long accumulateStartNs = System.nanoTime();
           try {
             accumulateChunkPins(chunkPins);

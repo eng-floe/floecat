@@ -484,8 +484,7 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
     if (!parent.getSpanContext().isValid() || !parent.isRecording()) {
       return null;
     }
-    var builder =
-        tracer().spanBuilder(name).setAttribute("floecat.component", "flight");
+    var builder = tracer().spanBuilder(name).setAttribute("floecat.component", "flight");
     if (tableName != null && !tableName.isBlank()) {
       builder.setAttribute("system.table", tableName);
     }
@@ -562,7 +561,11 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
   }
 
   private static <T> T withSpan(
-      String name, String tableName, String queryId, ResolvedCallContext context, SpanSupplier<T> op) {
+      String name,
+      String tableName,
+      String queryId,
+      ResolvedCallContext context,
+      SpanSupplier<T> op) {
     Span span = startSpan(name, tableName, queryId, context);
     if (span == null) {
       return op.get();

@@ -44,9 +44,11 @@ public class SnapshotResolver {
   }
 
   public List<SnapshotPin> resolvePins(
-      String correlationId, QueryContext ctx, List<QueryInput> inputs, PhaseDiagnostics diagnostics) {
-    PhaseDiagnostics safeDiagnostics =
-        diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
+      String correlationId,
+      QueryContext ctx,
+      List<QueryInput> inputs,
+      PhaseDiagnostics diagnostics) {
+    PhaseDiagnostics safeDiagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
     safeDiagnostics.add("snapshot_inputs", inputs == null ? 0 : inputs.size());
 
     List<SnapshotPin> out = new ArrayList<>(inputs.size());
@@ -84,8 +86,7 @@ public class SnapshotResolver {
 
         case AS_OF -> {
           safeDiagnostics.count("snapshot_asof_overrides");
-          out.add(
-              SnapshotPin.newBuilder().setTableId(tableId).setAsOf(override.getAsOf()).build());
+          out.add(SnapshotPin.newBuilder().setTableId(tableId).setAsOf(override.getAsOf()).build());
         }
 
         case SPECIAL -> {
