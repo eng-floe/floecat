@@ -45,7 +45,6 @@ import ai.floedb.floecat.connector.spi.ConnectorNotReadyException;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind;
 import ai.floedb.floecat.types.LogicalType;
-import ai.floedb.floecat.types.ManagedTableProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
 import java.io.IOException;
@@ -222,13 +221,6 @@ public abstract class IcebergConnector implements FloecatConnector {
     if (table.location() != null && !table.location().isBlank()) {
       properties.put("storage_location", table.location());
     }
-    Snapshot currentSnapshot = table.currentSnapshot();
-    // Iceberg uses -1 as the no-current-snapshot sentinel.
-    if (currentSnapshot != null && currentSnapshot.snapshotId() >= 0) {
-      properties.put(
-          ManagedTableProperties.CURRENT_SNAPSHOT_ID, Long.toString(currentSnapshot.snapshotId()));
-    }
-
     return new TableDescriptor(
         namespaceFq,
         tableName,

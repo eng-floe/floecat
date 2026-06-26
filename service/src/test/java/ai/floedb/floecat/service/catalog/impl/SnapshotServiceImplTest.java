@@ -255,7 +255,7 @@ class SnapshotServiceImplTest {
   }
 
   @Test
-  void createSnapshot_doesNotDowngradeCurrentSnapshotIdForOlderSnapshot() {
+  void createSnapshot_doesNotMutateTablePropertiesForCurrentPointer() {
     var svc = new SnapshotServiceImpl();
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
@@ -276,11 +276,7 @@ class SnapshotServiceImplTest {
 
     when(svc.overlay.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
 
-    var tableRow =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .putProperties("current-snapshot-id", "200")
-            .build();
+    var tableRow = Table.newBuilder().setResourceId(tableId).build();
     when(svc.tableRepo.getById(eq(tableId))).thenReturn(Optional.of(tableRow));
 
     var pc = mock(PrincipalContext.class);
@@ -556,7 +552,7 @@ class SnapshotServiceImplTest {
   }
 
   @Test
-  void updateSnapshot_doesNotDowngradeCurrentSnapshotIdForOlderSnapshot() {
+  void updateSnapshot_doesNotMutateTablePropertiesForCurrentPointer() {
     var svc = new SnapshotServiceImpl();
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
@@ -575,11 +571,7 @@ class SnapshotServiceImplTest {
             .build();
 
     when(svc.overlay.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
-    var tableRow =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .putProperties("current-snapshot-id", "200")
-            .build();
+    var tableRow = Table.newBuilder().setResourceId(tableId).build();
     when(svc.tableRepo.getById(eq(tableId))).thenReturn(Optional.of(tableRow));
 
     var pc = mock(PrincipalContext.class);

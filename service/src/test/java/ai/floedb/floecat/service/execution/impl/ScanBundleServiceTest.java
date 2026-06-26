@@ -54,7 +54,6 @@ class ScanBundleServiceTest {
             .setResourceId(tableId)
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
             .putProperties("storage_location", "s3://bucket/table")
-            .putProperties("current-snapshot-id", "42")
             .build();
     var snapshot =
         Snapshot.newBuilder()

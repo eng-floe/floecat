@@ -52,8 +52,9 @@ defensive copies to guarantee immutability.
 - `CatalogNode` – Lightweight display + connector/policy metadata. Optionally exposes namespace IDs
   for listing RPCs.
 - `NamespaceNode` – Captures catalog ancestry, path segments, display name, and optional child IDs.
-- `TableNode` – Holds logical schema JSON, partition keys, field-ID map, snapshot pointers (current,
-  previous, resolved sets), optional stats summary, dependent view IDs, and engine hints.
+- `TableNode` – Holds logical schema JSON, partition keys, field-ID map, snapshot references
+  (current, previous, resolved sets), optional stats summary, dependent view IDs, and engine hints.
+  The persisted current snapshot is stored as a dedicated current-snapshot pointer resource.
 - `ViewNode` – Stores SQL text, dialect, output columns, base relation IDs, creation search path, and
   optional owner.
 - `SystemViewNode` – Reserved for virtual/system relations (e.g., `$files`, `$snapshots`).

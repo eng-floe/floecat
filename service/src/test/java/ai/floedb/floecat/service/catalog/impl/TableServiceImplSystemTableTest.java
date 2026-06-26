@@ -388,7 +388,6 @@ class TableServiceImplSystemTableTest {
             .setNamespaceId(namespaceId)
             .setDisplayName("orders")
             .setSchemaJson("{}")
-            .putProperties(ManagedTableProperties.CURRENT_SNAPSHOT_ID, "200")
             .putProperties(ManagedTableProperties.FORMAT_VERSION, "2")
             .putProperties("external", "old")
             .build();
@@ -405,7 +404,7 @@ class TableServiceImplSystemTableTest {
             .setSpec(
                 TableSpec.newBuilder()
                     .putProperties("external", "new")
-                    .putProperties(ManagedTableProperties.CURRENT_SNAPSHOT_ID, "100")
+                    .putProperties(ManagedTableProperties.FORMAT_VERSION, "1")
                     .build())
             .setUpdateMask(FieldMask.newBuilder().addPaths("properties").build())
             .build();
@@ -416,7 +415,6 @@ class TableServiceImplSystemTableTest {
     verify(tableRepo).update(tableCaptor.capture(), anyLong());
     Table updated = tableCaptor.getValue();
     assertEquals("new", updated.getPropertiesMap().get("external"));
-    assertEquals("200", updated.getPropertiesMap().get(ManagedTableProperties.CURRENT_SNAPSHOT_ID));
     assertEquals("2", updated.getPropertiesMap().get(ManagedTableProperties.FORMAT_VERSION));
   }
 

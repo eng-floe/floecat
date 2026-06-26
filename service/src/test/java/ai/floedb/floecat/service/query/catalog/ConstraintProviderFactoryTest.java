@@ -133,10 +133,11 @@ class ConstraintProviderFactoryTest {
                     .setKind(ResourceKind.RK_NAMESPACE)
                     .build())
             .setDisplayName("users")
-            .putProperties("current-snapshot-id", "200")
             .build());
     snapshots.create(snapshot(USER_TABLE, 100L, 1_000L, 1_000L));
     snapshots.create(snapshot(USER_TABLE, 200L, 2_000L, 2_000L));
+    snapshots.maybeAdvanceCurrentSnapshotPointer(
+        USER_TABLE, snapshots.getById(USER_TABLE, 200L).orElseThrow());
 
     ConstraintProvider provider = factory.provider();
     var latest = provider.latestConstraints(USER_TABLE).orElseThrow();

@@ -28,7 +28,6 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.FloecatConnector.FileGroupCaptureResult;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
-import ai.floedb.floecat.types.ManagedTableProperties;
 import java.lang.reflect.Proxy;
 import java.util.HashMap;
 import java.util.List;
@@ -214,7 +213,6 @@ class IcebergConnectorIssuesTest {
     assertEquals(
         "s3://warehouse/tpch_1.db/nation", descriptor.properties().get("storage_location"));
     assertEquals("zstd", descriptor.properties().get("write.parquet.compression-codec"));
-    assertEquals("42", descriptor.properties().get(ManagedTableProperties.CURRENT_SNAPSHOT_ID));
   }
 
   @Test

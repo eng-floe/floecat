@@ -28,7 +28,6 @@ public final class ManagedTableProperties {
   public static final String DEFAULT_SPEC_ID = "default-spec-id";
   public static final String LAST_PARTITION_ID = "last-partition-id";
   public static final String DEFAULT_SORT_ORDER_ID = "default-sort-order-id";
-  public static final String CURRENT_SNAPSHOT_ID = "current-snapshot-id";
   public static final String LAST_SEQUENCE_NUMBER = "last-sequence-number";
   public static final String METADATA_REFS = "metadata.refs";
 
@@ -41,7 +40,6 @@ public final class ManagedTableProperties {
           DEFAULT_SPEC_ID,
           LAST_PARTITION_ID,
           DEFAULT_SORT_ORDER_ID,
-          CURRENT_SNAPSHOT_ID,
           LAST_SEQUENCE_NUMBER,
           METADATA_REFS);
 
