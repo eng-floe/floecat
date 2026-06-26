@@ -19,6 +19,8 @@ package ai.floedb.floecat.arrow;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
@@ -27,12 +29,16 @@ import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.BitVector;
 import org.apache.arrow.vector.DateDayVector;
+import org.apache.arrow.vector.Decimal256Vector;
+import org.apache.arrow.vector.DecimalVector;
 import org.apache.arrow.vector.Float8Vector;
 import org.apache.arrow.vector.IntVector;
 import org.apache.arrow.vector.TimeStampMicroTZVector;
 import org.apache.arrow.vector.VarBinaryVector;
 import org.apache.arrow.vector.VarCharVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.types.pojo.ArrowType;
+import org.apache.arrow.vector.types.pojo.Field;
 import org.junit.jupiter.api.Test;
 
 class ArrowRecordWritersTest {
@@ -109,6 +115,97 @@ class ArrowRecordWritersTest {
   }
 
   @Test
+  void fromRecordClass_writesAnnotatedDecimalColumns() {
+    ArrowRecordWriter<DecimalRow> writer = ArrowRecordWriters.fromRecordClass(DecimalRow.class);
+
+    Field field = writer.schema().findField("amount");
+    assertThat(field.getType()).isInstanceOf(ArrowType.Decimal.class);
+    ArrowType.Decimal type = (ArrowType.Decimal) field.getType();
+    assertThat(type.getPrecision()).isEqualTo(18);
+    assertThat(type.getScale()).isEqualTo(3);
+
+    try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        VectorSchemaRoot root = VectorSchemaRoot.create(writer.schema(), allocator)) {
+      writer.write(
+          root,
+          List.of(
+              new DecimalRow(new BigDecimal("12.5")),
+              new DecimalRow(new BigDecimal("1.2345")),
+              new DecimalRow(null)));
+
+      DecimalVector amount = (DecimalVector) root.getVector("amount");
+      assertThat(amount.getObject(0)).isEqualByComparingTo(new BigDecimal("12.500"));
+      // Excess scale is rounded HALF_UP to the column scale.
+      assertThat(amount.getObject(1)).isEqualByComparingTo(new BigDecimal("1.235"));
+      assertThat(amount.isNull(2)).isTrue();
+      assertThat(root.getRowCount()).isEqualTo(3);
+    }
+  }
+
+  @Test
+  void fromRecordClass_writesDecimal256ForHighPrecision() {
+    ArrowRecordWriter<Decimal256Row> writer =
+        ArrowRecordWriters.fromRecordClass(Decimal256Row.class);
+
+    ArrowType.Decimal type = (ArrowType.Decimal) writer.schema().findField("amount").getType();
+    assertThat(type.getPrecision()).isEqualTo(50);
+    assertThat(type.getBitWidth()).isEqualTo(256);
+
+    try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        VectorSchemaRoot root = VectorSchemaRoot.create(writer.schema(), allocator)) {
+      // 40 significant digits — does not fit in a 128-bit decimal, so the writer must use the
+      // Decimal256Vector path rather than casting to DecimalVector.
+      BigDecimal big = new BigDecimal("12345678901234567890123456789012345678.99");
+      writer.write(root, List.of(new Decimal256Row(big), new Decimal256Row(null)));
+
+      Decimal256Vector amount = (Decimal256Vector) root.getVector("amount");
+      assertThat(amount.getObject(0)).isEqualByComparingTo(big);
+      assertThat(amount.isNull(1)).isTrue();
+    }
+  }
+
+  @Test
+  void defaultRounding_padsLosslessly() {
+    ArrowRecordWriter<DefaultRoundingDecimalRow> writer =
+        ArrowRecordWriters.fromRecordClass(DefaultRoundingDecimalRow.class);
+    try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        VectorSchemaRoot root = VectorSchemaRoot.create(writer.schema(), allocator)) {
+      writer.write(root, List.of(new DefaultRoundingDecimalRow(new BigDecimal("5"))));
+
+      DecimalVector amount = (DecimalVector) root.getVector("amount");
+      assertThat(amount.getObject(0)).isEqualByComparingTo(new BigDecimal("5.000"));
+    }
+  }
+
+  @Test
+  void defaultRounding_rejectsExcessScaleAtWriteTime() {
+    ArrowRecordWriter<DefaultRoundingDecimalRow> writer =
+        ArrowRecordWriters.fromRecordClass(DefaultRoundingDecimalRow.class);
+    try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        VectorSchemaRoot root = VectorSchemaRoot.create(writer.schema(), allocator)) {
+      assertThatThrownBy(
+              () ->
+                  writer.write(
+                      root, List.of(new DefaultRoundingDecimalRow(new BigDecimal("1.2345")))))
+          .isInstanceOf(ArithmeticException.class);
+    }
+  }
+
+  @Test
+  void fromRecordClass_rejectsUnannotatedDecimal() {
+    assertThatThrownBy(() -> ArrowRecordWriters.fromRecordClass(UnannotatedDecimalRow.class))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("@ArrowDecimal");
+  }
+
+  @Test
+  void fromRecordClass_rejectsInvalidDecimalPrecisionScale() {
+    assertThatThrownBy(() -> ArrowRecordWriters.fromRecordClass(InvalidDecimalRow.class))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("DECIMAL");
+  }
+
+  @Test
   void fromRecordClass_rejectsUnsupportedTypes() {
     assertThatThrownBy(() -> ArrowRecordWriters.fromRecordClass(UnsupportedRow.class))
         .isInstanceOf(IllegalArgumentException.class)
@@ -130,5 +227,18 @@ class ArrowRecordWritersTest {
       UUID uuidValue,
       byte[] bytesValue) {}
 
-  private record UnsupportedRow(java.math.BigDecimal unsupported) {}
+  private record DecimalRow(
+      @ArrowDecimal(precision = 18, scale = 3, rounding = RoundingMode.HALF_UP)
+          BigDecimal amount) {}
+
+  private record DefaultRoundingDecimalRow(
+      @ArrowDecimal(precision = 18, scale = 3) BigDecimal amount) {}
+
+  private record Decimal256Row(@ArrowDecimal(precision = 50, scale = 2) BigDecimal amount) {}
+
+  private record InvalidDecimalRow(@ArrowDecimal(precision = 5, scale = 7) BigDecimal amount) {}
+
+  private record UnannotatedDecimalRow(BigDecimal amount) {}
+
+  private record UnsupportedRow(Object unsupported) {}
 }

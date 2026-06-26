@@ -16,10 +16,13 @@
 
 package ai.floedb.floecat.arrow;
 
+import ai.floedb.floecat.types.LogicalType;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.RecordComponent;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -31,6 +34,8 @@ import java.util.UUID;
 import org.apache.arrow.vector.BigIntVector;
 import org.apache.arrow.vector.BitVector;
 import org.apache.arrow.vector.DateDayVector;
+import org.apache.arrow.vector.Decimal256Vector;
+import org.apache.arrow.vector.DecimalVector;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.FixedSizeBinaryVector;
 import org.apache.arrow.vector.Float8Vector;
@@ -183,6 +188,44 @@ public final class ArrowRecordWriters {
                 v.setNull(i);
               } else {
                 v.setSafe(i, val);
+              }
+            };
+      } else if (jt == BigDecimal.class) {
+        ArrowDecimal decimal = comp.getAnnotation(ArrowDecimal.class);
+        if (decimal == null) {
+          throw new IllegalArgumentException(
+              "BigDecimal component " + name + " must be annotated with @ArrowDecimal");
+        }
+        int precision = decimal.precision();
+        int scale = decimal.scale();
+        RoundingMode rounding = decimal.rounding();
+        // Validate precision/scale through floecat's canonical decimal rules before building
+        // the Arrow type (ArrowType.Decimal itself does not validate these).
+        LogicalType.decimal(precision, scale);
+        field = field(name, ArrowDecimalTypes.decimalType(precision, scale));
+        writer =
+            (root, i, row) -> {
+              BigDecimal val = get(getter, row, BigDecimal.class);
+              // Padding to a larger scale is lossless; excess scale uses the annotation's rounding
+              // mode (UNNECESSARY by default, which throws rather than silently dropping
+              // precision).
+              BigDecimal scaled = (val == null) ? null : val.setScale(scale, rounding);
+              // ArrowDecimalTypes uses a 256-bit vector for precision > 38, a 128-bit one
+              // otherwise.
+              FieldVector v = root.getVector(name);
+              if (v instanceof Decimal256Vector decimal256) {
+                if (scaled == null) {
+                  decimal256.setNull(i);
+                } else {
+                  decimal256.setSafe(i, scaled);
+                }
+              } else {
+                DecimalVector decimal128 = (DecimalVector) v;
+                if (scaled == null) {
+                  decimal128.setNull(i);
+                } else {
+                  decimal128.setSafe(i, scaled);
+                }
               }
             };
       } else if (jt == Instant.class) {
