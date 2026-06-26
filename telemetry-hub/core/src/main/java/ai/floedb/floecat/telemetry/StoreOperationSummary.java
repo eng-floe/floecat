@@ -52,6 +52,23 @@ public final class StoreOperationSummary {
     }
   }
 
+  public static boolean enterScope() {
+    Mutable current = current();
+    if (current == null) {
+      return true;
+    }
+    boolean outermost = current.activeScopes == 0;
+    current.activeScopes++;
+    return outermost;
+  }
+
+  public static void exitScope() {
+    Mutable current = current();
+    if (current != null && current.activeScopes > 0) {
+      current.activeScopes--;
+    }
+  }
+
   public static void put(String key, String value) {
     Mutable current = current();
     if (current != null && key != null && !key.isBlank() && value != null && !value.isBlank()) {
@@ -155,6 +172,7 @@ public final class StoreOperationSummary {
     private long repoCounts;
     private long repoWrites;
     private long fallbacks;
+    private int activeScopes;
 
     private void reset() {
       operationCounts.clear();
@@ -168,6 +186,7 @@ public final class StoreOperationSummary {
       repoCounts = 0L;
       repoWrites = 0L;
       fallbacks = 0L;
+      activeScopes = 0;
     }
 
     private void record(String component, String operation, Duration elapsed, boolean success) {

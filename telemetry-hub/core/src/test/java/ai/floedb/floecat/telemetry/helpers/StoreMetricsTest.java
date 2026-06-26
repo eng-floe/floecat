@@ -88,6 +88,35 @@ class StoreMetricsTest {
   }
 
   @Test
+  void storeSummaryCountsOnlyOutermostNestedStoreScope() {
+    TestObservability observability = new TestObservability();
+    try (Scope ignored = StoreOperationSummary.start(Context.current(), true).makeCurrent()) {
+      StoreMetrics outer = new StoreMetrics(observability, "repository", "table.get_by_key");
+      StoreMetrics inner = new StoreMetrics(observability, "repository", "table.get");
+      ObservationScope outerScope = outer.observe();
+      ObservationScope innerScope = inner.observe();
+      innerScope.success();
+      innerScope.close();
+      outerScope.success();
+      outerScope.close();
+
+      List<TestStoreTraceScope> traceScopes =
+          observability.storeTraceScopes().get(Observability.Category.STORE.name());
+      assertThat(traceScopes).hasSize(2);
+
+      PhaseDiagnostics diagnostics = observability.diagnostics("repository", "table.get_by_key");
+      StoreOperationSummary.addTo(diagnostics);
+      diagnostics.emit("summary");
+      assertThat(observability.diagnosticEvents().get(0).fields())
+          .containsEntry("store_operations", 1L)
+          .containsEntry("store_errors", 0L)
+          .containsEntry("repo_gets", 1L)
+          .containsEntry("repo_table_get_by_key_count", 1L)
+          .doesNotContainKey("repo_table_get_count");
+    }
+  }
+
+  @Test
   void storeMetricsNotifiesTraceScopeError() {
     TestObservability observability = new TestObservability();
     StoreMetrics metrics = new StoreMetrics(observability, "svc", "op");

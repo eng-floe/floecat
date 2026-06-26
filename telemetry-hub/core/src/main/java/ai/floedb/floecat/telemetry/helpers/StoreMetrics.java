@@ -64,6 +64,7 @@ public final class StoreMetrics extends BaseMetrics {
     private final StoreTraceScope traceScope;
     private final String component;
     private final String operation;
+    private final boolean recordInSummary;
     private final long startNanos = System.nanoTime();
     private Throwable error;
 
@@ -76,6 +77,7 @@ public final class StoreMetrics extends BaseMetrics {
       this.traceScope = traceScope;
       this.component = component;
       this.operation = operation;
+      this.recordInSummary = StoreOperationSummary.enterScope();
     }
 
     @Override
@@ -104,15 +106,21 @@ public final class StoreMetrics extends BaseMetrics {
 
     @Override
     public void close() {
-      StoreOperationSummary.record(
-          component,
-          operation,
-          Duration.ofNanos(Math.max(0L, System.nanoTime() - startNanos)),
-          error == null);
       try {
-        metricsScope.close();
+        if (recordInSummary) {
+          StoreOperationSummary.record(
+              component,
+              operation,
+              Duration.ofNanos(Math.max(0L, System.nanoTime() - startNanos)),
+              error == null);
+        }
+        try {
+          metricsScope.close();
+        } finally {
+          traceScope.close();
+        }
       } finally {
-        traceScope.close();
+        StoreOperationSummary.exitScope();
       }
     }
   }
