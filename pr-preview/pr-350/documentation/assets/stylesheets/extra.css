@@ -21,6 +21,21 @@
   --md-accent-fg-color: #0b5f80;
 }
 
+/*
+ * Accessibility (WCAG AA contrast). Material's default
+ * --md-default-fg-color--light (black @ 54%) is the muted color behind code
+ * comment/variable/punctuation syntax tokens and blockquote text. Over the
+ * light docs backgrounds (#f5f5f5 code, #f0ecec content) it composites to
+ * ~#717171 / #6e6d6d — a 4.4:1 ratio that fails Lighthouse's color-contrast
+ * audit (AA needs 4.5:1). Darken it so every dependent token clears AA with
+ * margin (~5.9:1) while staying visibly muted. The selector must match the
+ * body-level [data-md-color-scheme] that the bundled palette uses, otherwise a
+ * :root override is shadowed for everything inside <body>.
+ */
+[data-md-color-scheme="default"] {
+  --md-default-fg-color--light: rgba(0, 0, 0, 0.62);
+}
+
 /* Keep docs palette close to Floecat site tones. */
 .md-header,
 .md-tabs {
@@ -162,4 +177,17 @@
 .md-footer-meta a,
 .md-footer-meta a:visited {
   color: #f8f2ef;
+}
+
+/*
+ * Accessibility (touch targets). Material's desktop sidebar nav links render
+ * ~18px tall with ~22px of safe clickable spacing, below the 24x24 minimum
+ * Lighthouse's target-size audit expects. Add vertical padding so each link is
+ * a >=24px target without changing the nav's visual rhythm noticeably.
+ */
+@media screen and (min-width: 76.25em) {
+  .md-sidebar--primary .md-nav__link {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+  }
 }

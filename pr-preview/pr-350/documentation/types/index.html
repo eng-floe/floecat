@@ -1207,6 +1207,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Arrow Mapping Contract">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#record-reflection-writer-arrowrecordwriters" class="md-nav__link">
+    <span class="md-ellipsis">
+      Record reflection writer (ArrowRecordWriters)
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1840,6 +1855,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Arrow Mapping Contract">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#record-reflection-writer-arrowrecordwriters" class="md-nav__link">
+    <span class="md-ellipsis">
+      Record reflection writer (ArrowRecordWriters)
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2153,6 +2183,18 @@ arbitrary engine-native type systems.</p>
 </ul>
 <p>If external Flight providers want to reuse <code>core/arrow</code>, they should first map their source type
 surface into Floecat logical types.</p>
+<h3 id="record-reflection-writer-arrowrecordwriters">Record reflection writer (<code>ArrowRecordWriters</code>)<a class="headerlink" href="#record-reflection-writer-arrowrecordwriters" title="Permanent link">&para;</a></h3>
+<p><code>ArrowRecordWriters.fromRecordClass(...)</code> builds an Arrow schema + writer directly from a Java
+<code>record</code> (used by Flight system-table producers). Component types map to Arrow as above, with one
+extra rule for decimals: a <code>BigDecimal</code> carries no precision/scale, so a <code>BigDecimal</code> component
+<strong>must</strong> be annotated <code>@ArrowDecimal(precision, scale)</code> — an unannotated one is rejected. Precision
+and scale are validated through <code>LogicalType.decimal(...)</code> (<code>precision ≥ 1</code>, <code>0 ≤ scale ≤ precision</code>),
+and the column uses <code>Decimal128</code> for precision ≤ 38 and <code>Decimal256</code> for 39..76.</p>
+<p>Rounding is explicit. <code>@ArrowDecimal(rounding = ...)</code> controls how an input whose scale exceeds the
+column scale is coerced; it defaults to <code>RoundingMode.UNNECESSARY</code>, so excess scale throws rather
+than silently dropping precision. Padding a value to a larger scale is always lossless. Callers that
+intend lossy rounding opt in explicitly, e.g.
+<code>@ArrowDecimal(precision = 18, scale = 3, rounding = RoundingMode.HALF_UP)</code>.</p>
 <h2 id="source-format-alias-lookup">Source-Format Alias Lookup<a class="headerlink" href="#source-format-alias-lookup" title="Permanent link">&para;</a></h2>
 <p><code>LogicalKind.fromName(String candidate)</code> resolves source-format type names to canonical kinds:</p>
 <div class="highlight"><pre><span></span><code><span class="n">LogicalKind</span><span class="p">.</span><span class="na">fromName</span><span class="p">(</span><span class="s">&quot;bigint&quot;</span><span class="p">)</span><span class="w">               </span><span class="c1">// → INT</span>
