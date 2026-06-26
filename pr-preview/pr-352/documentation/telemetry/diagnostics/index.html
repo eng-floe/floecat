@@ -1798,7 +1798,7 @@ in its own summary event.</p>
 </tr>
 <tr>
 <td><code>current_snapshot_source</code></td>
-<td><code>property</code> when the table <code>current-snapshot-id</code> property resolved the snapshot; <code>fallback</code> when the code had to scan latest-by-time. Fallback is read-only: it diagnoses missing/stale pointer state but does not repair the table property during query reads.</td>
+<td><code>pointer</code> when the dedicated current-snapshot pointer resolved the snapshot; <code>fallback</code> when the code had to scan latest-by-time. Fallback is read-only: it diagnoses missing/stale pointer state but does not repair state during query reads.</td>
 </tr>
 <tr>
 <td><code>snapshot_pin_source</code></td>
@@ -1829,7 +1829,7 @@ in its own summary event.</p>
 <p>How to read it:</p>
 <ul>
 <li>If <code>repo_lists &gt; 0</code> on a warm point lookup, the request is still doing scan-shaped repository work.</li>
-<li>If <code>current_snapshot_source=fallback</code>, the table did not use the O(1) current-snapshot property path. Repair should happen through metadata ingestion/reconcile paths, not as a side effect of the read.</li>
+<li>If <code>current_snapshot_source=fallback</code>, the table did not use the O(1) current-snapshot pointer path. Repair should happen through metadata ingestion/reconcile paths, not as a side effect of the read.</li>
 <li>If <code>storage_authority_source=load</code> and <code>storage_authority_ms</code> is material, storage authority lookup is a candidate for caching or direct lookup.</li>
 <li>If <code>store_ms</code> is small but <code>duration_ms</code> is large, look at the domain summary or caller-side spans.</li>
 </ul>
