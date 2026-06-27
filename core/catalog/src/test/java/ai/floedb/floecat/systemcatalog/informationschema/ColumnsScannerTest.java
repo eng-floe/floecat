@@ -25,11 +25,13 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
+import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -196,6 +198,24 @@ class ColumnsScannerTest {
   }
 
   @Test
+  void scan_reportsUserTablesWithBrokenSchemas() {
+    SystemObjectScanContext ctx = contextWithBrokenTableBeforeGoodTable();
+
+    var rows = new ColumnsScanner().scan(ctx).map(r -> Arrays.asList(r.values())).toList();
+
+    assertThat(rows)
+        .containsExactly(
+            List.of(
+                "marketing",
+                "finance.sales",
+                "bad_orders",
+                "__schema_error__",
+                "ERROR: Failed to parse Delta schema JSON",
+                0),
+            List.of("marketing", "finance.sales", "good_orders", "id", "long", 1));
+  }
+
+  @Test
   void scanArrow_matchesRowPath() {
     var builder = TestTableScanContextBuilder.builder("marketing");
     var ns = builder.addNamespace("finance.sales");
@@ -251,6 +271,36 @@ class ColumnsScannerTest {
     }
   }
 
+  @Test
+  void scanArrow_reportsUserTablesWithBrokenSchemas() {
+    SystemObjectScanContext ctx = contextWithBrokenTableBeforeGoodTable();
+
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
+      List<List<String>> arrowRows =
+          new ColumnsScanner()
+              .scanArrow(ctx, null, List.of(), allocator)
+              .map(
+                  batch -> {
+                    try (batch) {
+                      return toRows(batch.root());
+                    }
+                  })
+              .flatMap(List::stream)
+              .toList();
+
+      assertThat(arrowRows)
+          .containsExactly(
+              List.of(
+                  "marketing",
+                  "finance.sales",
+                  "bad_orders",
+                  "__schema_error__",
+                  "ERROR: Failed to parse Delta schema JSON",
+                  "0"),
+              List.of("marketing", "finance.sales", "good_orders", "id", "long", "1"));
+    }
+  }
+
   private static List<List<String>> toRows(VectorSchemaRoot root) {
     int rowCount = root.getRowCount();
     List<FieldVector> vectors = root.getFieldVectors();
@@ -291,10 +341,94 @@ class ColumnsScannerTest {
     return ResourceId.newBuilder().setAccountId("account").setId(id).setKind(kind).build();
   }
 
+  private static SystemObjectScanContext contextWithBrokenTableBeforeGoodTable() {
+    ResourceId catalogId = rid("marketing", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid("finance.sales", ResourceKind.RK_NAMESPACE);
+    ResourceId brokenTableId = rid("bad_orders", ResourceKind.RK_TABLE);
+    ResourceId goodTableId = rid("good_orders", ResourceKind.RK_TABLE);
+    var overlay = new BrokenSchemaOverlay(brokenTableId);
+
+    overlay.addNode(
+        new CatalogNode(
+            catalogId,
+            1,
+            Instant.EPOCH,
+            "marketing",
+            Map.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of()));
+    overlay.addNode(
+        new NamespaceNode(
+            namespaceId,
+            1,
+            Instant.EPOCH,
+            catalogId,
+            List.of("finance"),
+            "sales",
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Map.of()));
+    overlay.addRelation(
+        namespaceId, userTable(catalogId, namespaceId, brokenTableId, "bad_orders"));
+    overlay.addRelation(namespaceId, userTable(catalogId, namespaceId, goodTableId, "good_orders"));
+    overlay.setTableSchema(
+        goodTableId,
+        List.of(
+            SchemaColumn.newBuilder()
+                .setName("id")
+                .setLogicalType("long")
+                .setFieldId(1)
+                .setNullable(false)
+                .build()));
+
+    return new SystemObjectScanContext(
+        overlay, NameRef.getDefaultInstance(), catalogId, EngineContext.empty());
+  }
+
+  private static UserTableNode userTable(
+      ResourceId catalogId, ResourceId namespaceId, ResourceId tableId, String name) {
+    return new UserTableNode(
+        tableId,
+        1,
+        Instant.EPOCH,
+        catalogId,
+        namespaceId,
+        name,
+        TableFormat.TF_DELTA,
+        ColumnIdAlgorithm.CID_FIELD_ID,
+        "",
+        Map.of(),
+        List.of(),
+        Optional.empty(),
+        Optional.empty(),
+        Optional.empty(),
+        List.of(),
+        Map.of(),
+        Map.of());
+  }
+
   private static final class NamespaceListingFailsOverlay extends TestRefCatalogOverlay {
     @Override
     public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
       throw new AssertionError("ref scan should not materialize namespaces");
+    }
+  }
+
+  private static final class BrokenSchemaOverlay extends TestCatalogOverlay {
+    private final ResourceId brokenTableId;
+
+    private BrokenSchemaOverlay(ResourceId brokenTableId) {
+      this.brokenTableId = brokenTableId;
+    }
+
+    @Override
+    public List<SchemaColumn> tableSchema(ResourceId tableId) {
+      if (brokenTableId.equals(tableId)) {
+        throw new IllegalArgumentException("Failed to parse Delta schema JSON");
+      }
+      return super.tableSchema(tableId);
     }
   }
 }

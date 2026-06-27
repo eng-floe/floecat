@@ -104,6 +104,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
 
   private static final Schema ARROW_SCHEMA = ArrowSchemaUtil.toArrowSchema(SCHEMA);
   private static final int ARROW_BATCH_SIZE = 512;
+  private static final String SCHEMA_ERROR_COLUMN_NAME = "__schema_error__";
 
   @Override
   public Stream<SystemObjectRow> scan(SystemObjectScanContext ctx) {
@@ -234,9 +235,22 @@ public final class ColumnsScanner implements SystemObjectScanner {
 
     String schemaName = namespace.schemaName();
 
-    List<SchemaColumn> columns = ctx.graph().tableSchema(table.id());
-
     if (table instanceof UserTableNode) {
+      List<SchemaColumn> columns;
+      try {
+        columns = ctx.graph().tableSchema(table.id());
+      } catch (RuntimeException e) {
+        return Stream.of(
+            new SystemObjectRow(
+                new Object[] {
+                  catalogName,
+                  schemaName,
+                  table.displayName(),
+                  SCHEMA_ERROR_COLUMN_NAME,
+                  schemaErrorDataType(e),
+                  0
+                }));
+      }
       return columns.stream()
           .sorted(Comparator.comparingInt(SchemaColumn::getFieldId))
           .map(
@@ -253,6 +267,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
     }
 
     // System tables (no field ids) – preserve declared order
+    List<SchemaColumn> columns = ctx.graph().tableSchema(table.id());
     List<SystemObjectRow> rows = new ArrayList<>(columns.size());
     int ordinal = 1;
     for (SchemaColumn col : columns) {
@@ -305,6 +320,14 @@ public final class ColumnsScanner implements SystemObjectScanner {
     return value == null || value.isBlank() ? null : value;
   }
 
+  private static String schemaErrorDataType(RuntimeException e) {
+    String message = e.getMessage();
+    if (message == null || message.isBlank()) {
+      message = e.getClass().getSimpleName();
+    }
+    return "ERROR: " + message;
+  }
+
   private List<ColumnEntry> columnsForRelation(
       SystemObjectScanContext ctx,
       NamespaceEntry namespace,
@@ -316,8 +339,20 @@ public final class ColumnsScanner implements SystemObjectScanner {
     String schemaName = namespace.schemaName();
 
     if (node instanceof TableNode table) {
-      List<SchemaColumn> columns = ctx.graph().tableSchema(table.id());
       if (table instanceof UserTableNode) {
+        List<SchemaColumn> columns;
+        try {
+          columns = ctx.graph().tableSchema(table.id());
+        } catch (RuntimeException e) {
+          return List.of(
+              ColumnEntry.of(
+                  catalogName,
+                  schemaName,
+                  table.displayName(),
+                  SCHEMA_ERROR_COLUMN_NAME,
+                  schemaErrorDataType(e),
+                  0));
+        }
         return columns.stream()
             .sorted(Comparator.comparingInt(SchemaColumn::getFieldId))
             .map(
@@ -331,6 +366,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
                         col.getFieldId()))
             .toList();
       }
+      List<SchemaColumn> columns = ctx.graph().tableSchema(table.id());
       List<ColumnEntry> entries = new ArrayList<>(columns.size());
       int ordinal = 1;
       for (SchemaColumn col : columns) {
