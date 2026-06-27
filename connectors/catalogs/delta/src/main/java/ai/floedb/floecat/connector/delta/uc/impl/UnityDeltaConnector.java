@@ -191,7 +191,11 @@ public final class UnityDeltaConnector extends DeltaConnector {
       out.sort((a, b) -> a.name().compareTo(b.name()));
       return out;
     } catch (Exception e) {
-      throw new RuntimeException("listViewDescriptors failed", e);
+      // Include the namespace and underlying cause; a bare "listViewDescriptors
+      // failed" hides the real error (e.g. a UC API auth/HTTP failure) and makes
+      // connector-planning failures undiagnosable.
+      throw new RuntimeException(
+          "listViewDescriptors failed for namespace=" + namespaceFq + ": " + e, e);
     }
   }
 

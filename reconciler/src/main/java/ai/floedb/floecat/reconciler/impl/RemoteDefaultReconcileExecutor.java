@@ -30,9 +30,14 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
+  // Surfaces table-planning execution failures, which were previously not logged
+  // anywhere (a failing job would silently requeue and retry).
+  private static final Logger LOG = Logger.getLogger(RemoteDefaultReconcileExecutor.class);
+
   private final ReconcilerService reconcilerService;
   private final QueuedReconcileWorkerSupport queuedWorkerSupport;
   private final RemotePlannerWorkerClient workerClient;
@@ -122,6 +127,14 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
       return result;
     }
     if (result.error != null) {
+      LOG.warnf(
+          result.error,
+          "PLAN_TABLE execution failed jobId=%s connectorId=%s failureKind=%s retryDisposition=%s message=%s",
+          lease.jobId,
+          connectorId,
+          result.failureKind,
+          result.retryDisposition,
+          result.message);
       workerClient.submitPlanTableFailure(
           remoteLease,
           result.failureKind,
