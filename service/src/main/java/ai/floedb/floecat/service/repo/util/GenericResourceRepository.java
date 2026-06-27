@@ -57,7 +57,11 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   public Optional<T> getByKey(K key) {
-    return observeRepository("get_by_key", () -> get(schema.canonicalPointerForKey.apply(key)));
+    return observeRepository("get_by_key", () -> getByKeyUnobserved(key));
+  }
+
+  private Optional<T> getByKeyUnobserved(K key) {
+    return read(schema.canonicalPointerForKey.apply(key));
   }
 
   /**
@@ -87,7 +91,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           String blobUri = schema.blobUriForKey.apply(key);
 
-          putBlob(blobUri, value);
+          writeBlob(blobUri, value);
 
           Map<String, String> secondaries = schema.secondaryPointersFromValue.apply(value);
           // Canonical first, then secondaries, de-duplicated: some schemas (e.g. snapshots) expose
@@ -190,7 +194,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           String blobUri = schema.blobUriForKey.apply(key);
           boolean blobExistedBefore = blobStore.head(blobUri).isPresent();
 
-          putBlob(blobUri, value);
+          writeBlob(blobUri, value);
 
           Map<String, String> secondaries = schema.secondaryPointersFromValue.apply(value);
           // Canonical first, then secondaries, de-duplicated (a schema may expose the canonical
@@ -326,7 +330,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           String blobUri = schema.blobUriForKey.apply(key);
 
           T currentValue =
-              getByKey(key)
+              getByKeyUnobserved(key)
                   .orElseThrow(
                       () ->
                           new NotFoundException(
@@ -348,7 +352,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           Set<String> kept = new HashSet<>(nextSecondary);
           kept.removeAll(toAdd);
 
-          putBlob(blobUri, updatedValue);
+          writeBlob(blobUri, updatedValue);
 
           boolean blobChanged = schema.casBlobs && !Objects.equals(currentBlobUri, blobUri);
 
@@ -456,7 +460,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
           Optional<T> currentValue;
           try {
-            currentValue = getByKey(key);
+            currentValue = getByKeyUnobserved(key);
           } catch (CorruptionException e) {
             currentValue = Optional.empty();
           }
@@ -466,11 +470,13 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
                   .map(m -> new HashSet<>(m.values()))
                   .orElseGet(HashSet::new);
 
-          if (!compareAndDeleteOrFalse(canonicalPointer, canonicalPtr.getVersion())) {
+          if (!compareAndDeleteOrFalseUnobserved(canonicalPointer, canonicalPtr.getVersion())) {
             return false;
           }
           for (String p : currentSecondary) {
-            pointerStore.get(p).ifPresent(ptr -> compareAndDeleteOrFalse(p, ptr.getVersion()));
+            pointerStore
+                .get(p)
+                .ifPresent(ptr -> compareAndDeleteOrFalseUnobserved(p, ptr.getVersion()));
           }
 
           if (!schema.casBlobs && !blobUri.isBlank()) {
@@ -489,7 +495,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
           Optional<T> currentValue;
           try {
-            currentValue = getByKey(key);
+            currentValue = getByKeyUnobserved(key);
           } catch (CorruptionException e) {
             currentValue = Optional.empty();
           }
@@ -499,12 +505,14 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
                   .map(m -> new HashSet<>(m.values()))
                   .orElseGet(HashSet::new);
 
-          if (!compareAndDeleteOrFalse(canonicalPointer, expectedCanonicalVersion)) {
+          if (!compareAndDeleteOrFalseUnobserved(canonicalPointer, expectedCanonicalVersion)) {
             return false;
           }
 
           for (String p : currentSecondary) {
-            pointerStore.get(p).ifPresent(ptr -> compareAndDeleteOrFalse(p, ptr.getVersion()));
+            pointerStore
+                .get(p)
+                .ifPresent(ptr -> compareAndDeleteOrFalseUnobserved(p, ptr.getVersion()));
           }
 
           if (!schema.casBlobs && !blobUri.isBlank()) {
@@ -533,7 +541,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
                                   + schema.resourceName
                                   + ": "
                                   + canonicalPointer));
-          return safeMetaOrDefault(canonicalPointer, pointer.getBlobUri(), nowTs);
+          return readMetaOrDefault(canonicalPointer, pointer.getBlobUri(), nowTs);
         });
   }
 
@@ -565,7 +573,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           } else {
             blobUri = schema.blobUriForKey.apply(key);
           }
-          return safeMetaOrDefault(canonical, blobUri, nowTs);
+          return readMetaOrDefault(canonical, blobUri, nowTs);
         });
   }
 

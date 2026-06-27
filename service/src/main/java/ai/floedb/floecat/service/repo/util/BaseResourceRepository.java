@@ -121,40 +121,40 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
   @Override
   public Optional<T> get(String key) {
-    return observeRepository(
-        "get",
-        () -> {
-          var pointerStoreOpt = pointerStore.get(key);
-          if (pointerStoreOpt.isEmpty()) {
-            return Optional.empty();
-          }
+    return observeRepository("get", () -> read(key));
+  }
 
-          var pointer = pointerStoreOpt.get();
-          String blobUri = requireBlobReference(pointer, key);
-          byte[] bytes;
+  protected Optional<T> read(String key) {
+    var pointerStoreOpt = pointerStore.get(key);
+    if (pointerStoreOpt.isEmpty()) {
+      return Optional.empty();
+    }
 
-          try {
-            bytes = blobStore.get(blobUri);
-            if (bytes == null) {
-              if (pointerChangedOrDeleted(key, pointer)) {
-                return Optional.empty();
-              }
-              throw new CorruptionException("dangling pointer, missing blob: " + blobUri, null);
-            }
-            return Optional.of(parser.parse(bytes));
-          } catch (StorageNotFoundException snf) {
-            if (pointerChangedOrDeleted(key, pointer)) {
-              return Optional.empty();
-            }
-            throw new CorruptionException("dangling pointer, missing blob: " + blobUri, snf);
-          } catch (InvalidProtocolBufferException ipbe) {
-            throw new CorruptionException("parse failed: " + blobUri, ipbe);
-          } catch (StorageAbortRetryableException sar) {
-            throw new AbortRetryableException("blob read retryable: " + blobUri);
-          } catch (Exception e) {
-            throw new CorruptionException("parse failed: " + blobUri, e);
-          }
-        });
+    var pointer = pointerStoreOpt.get();
+    String blobUri = requireBlobReference(pointer, key);
+    byte[] bytes;
+
+    try {
+      bytes = blobStore.get(blobUri);
+      if (bytes == null) {
+        if (pointerChangedOrDeleted(key, pointer)) {
+          return Optional.empty();
+        }
+        throw new CorruptionException("dangling pointer, missing blob: " + blobUri, null);
+      }
+      return Optional.of(parser.parse(bytes));
+    } catch (StorageNotFoundException snf) {
+      if (pointerChangedOrDeleted(key, pointer)) {
+        return Optional.empty();
+      }
+      throw new CorruptionException("dangling pointer, missing blob: " + blobUri, snf);
+    } catch (InvalidProtocolBufferException ipbe) {
+      throw new CorruptionException("parse failed: " + blobUri, ipbe);
+    } catch (StorageAbortRetryableException sar) {
+      throw new AbortRetryableException("blob read retryable: " + blobUri);
+    } catch (Exception e) {
+      throw new CorruptionException("parse failed: " + blobUri, e);
+    }
   }
 
   private boolean pointerChangedOrDeleted(String key, Pointer before) {
@@ -206,42 +206,42 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
   @Override
   public void putBlob(String blobUri, T value) {
-    observeRepository(
-        "put_blob",
-        () -> {
-          byte[] bytes = toBytes.apply(value);
-          String want = sha256B64(bytes);
-          var before = blobStore.head(blobUri);
+    observeRepository("put_blob", () -> writeBlob(blobUri, value));
+  }
 
-          if (before.isPresent() && want.equals(before.get().getEtag())) {
-            return;
-          }
+  protected void writeBlob(String blobUri, T value) {
+    byte[] bytes = toBytes.apply(value);
+    String want = sha256B64(bytes);
+    var before = blobStore.head(blobUri);
 
-          blobStore.put(blobUri, bytes, contentType);
-          var after = blobStore.head(blobUri);
+    if (before.isPresent() && want.equals(before.get().getEtag())) {
+      return;
+    }
 
-          if (after.isEmpty() || !want.equals(after.get().getEtag())) {
-            throw new AbortRetryableException("blob write verification failed: " + blobUri);
-          }
-        });
+    blobStore.put(blobUri, bytes, contentType);
+    var after = blobStore.head(blobUri);
+
+    if (after.isEmpty() || !want.equals(after.get().getEtag())) {
+      throw new AbortRetryableException("blob write verification failed: " + blobUri);
+    }
   }
 
   protected void putBlobStrictBytes(String blobUri, byte[] bytes) {
-    observeRepository(
-        "put_blob_strict",
-        () -> {
-          final String want = sha256B64(bytes);
+    observeRepository("put_blob_strict", () -> writeBlobStrictBytes(blobUri, bytes));
+  }
 
-          if (blobStore.head(blobUri).map(h -> want.equals(h.getEtag())).orElse(false)) {
-            return;
-          }
+  protected void writeBlobStrictBytes(String blobUri, byte[] bytes) {
+    final String want = sha256B64(bytes);
 
-          blobStore.put(blobUri, bytes, contentType);
+    if (blobStore.head(blobUri).map(h -> want.equals(h.getEtag())).orElse(false)) {
+      return;
+    }
 
-          if (!blobStore.head(blobUri).map(h -> want.equals(h.getEtag())).orElse(false)) {
-            throw new AbortRetryableException("blob write verification failed: " + blobUri);
-          }
-        });
+    blobStore.put(blobUri, bytes, contentType);
+
+    if (!blobStore.head(blobUri).map(h -> want.equals(h.getEtag())).orElse(false)) {
+      throw new AbortRetryableException("blob write verification failed: " + blobUri);
+    }
   }
 
   @Override
@@ -381,22 +381,22 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected MutationMeta safeMetaOrDefault(String pointerKey, String blobUri, Timestamp nowTs) {
-    return observeRepository(
-        "meta",
-        () -> {
-          var pointerOpt = pointerStore.get(pointerKey);
-          var header = blobStore.head(blobUri);
-          long version = pointerOpt.map(Pointer::getVersion).orElse(0L);
-          String etag = header.map(BlobHeader::getEtag).orElse("");
+    return observeRepository("meta", () -> readMetaOrDefault(pointerKey, blobUri, nowTs));
+  }
 
-          return MutationMeta.newBuilder()
-              .setPointerKey(pointerKey)
-              .setBlobUri(blobUri)
-              .setPointerVersion(version)
-              .setEtag(etag)
-              .setUpdatedAt(nowTs)
-              .build();
-        });
+  protected MutationMeta readMetaOrDefault(String pointerKey, String blobUri, Timestamp nowTs) {
+    var pointerOpt = pointerStore.get(pointerKey);
+    var header = blobStore.head(blobUri);
+    long version = pointerOpt.map(Pointer::getVersion).orElse(0L);
+    String etag = header.map(BlobHeader::getEtag).orElse("");
+
+    return MutationMeta.newBuilder()
+        .setPointerKey(pointerKey)
+        .setBlobUri(blobUri)
+        .setPointerVersion(version)
+        .setEtag(etag)
+        .setUpdatedAt(nowTs)
+        .build();
   }
 
   protected static void deleteQuietly(Runnable runnable) {
@@ -408,31 +408,36 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected void compareAndDeleteOrThrow(String key, long expectedVersion) {
-    observeRepository(
-        "compare_delete",
-        () -> {
-          boolean ok = pointerStore.compareAndDelete(key, expectedVersion);
-          if (!ok) {
-            var cur = pointerStore.get(key).orElse(null);
+    observeRepository("compare_delete", () -> deletePointerOrThrow(key, expectedVersion));
+  }
 
-            if (cur == null) {
-              throw new NotFoundException("pointer already deleted: " + key);
-            }
+  protected void deletePointerOrThrow(String key, long expectedVersion) {
+    boolean ok = pointerStore.compareAndDelete(key, expectedVersion);
+    if (!ok) {
+      var cur = pointerStore.get(key).orElse(null);
 
-            throw new PreconditionFailedException(
-                "delete version mismatch for "
-                    + key
-                    + " expected="
-                    + expectedVersion
-                    + " actual="
-                    + cur.getVersion());
-          }
-        });
+      if (cur == null) {
+        throw new NotFoundException("pointer already deleted: " + key);
+      }
+
+      throw new PreconditionFailedException(
+          "delete version mismatch for "
+              + key
+              + " expected="
+              + expectedVersion
+              + " actual="
+              + cur.getVersion());
+    }
   }
 
   protected boolean compareAndDeleteOrFalse(String key, long expectedVersion) {
+    return observeRepository(
+        "compare_delete", () -> compareAndDeleteOrFalseUnobserved(key, expectedVersion));
+  }
+
+  protected boolean compareAndDeleteOrFalseUnobserved(String key, long expectedVersion) {
     try {
-      compareAndDeleteOrThrow(key, expectedVersion);
+      deletePointerOrThrow(key, expectedVersion);
       return true;
     } catch (PreconditionFailedException | NotFoundException e) {
       return false;
