@@ -57,44 +57,41 @@ public final class StoreOperationSummary {
     if (current == null) {
       return true;
     }
-    boolean outermost = current.activeScopes == 0;
-    current.activeScopes++;
-    return outermost;
+    return current.enterScope();
   }
 
   public static void exitScope() {
     Mutable current = current();
-    if (current != null && current.activeScopes > 0) {
-      current.activeScopes--;
+    if (current != null) {
+      current.exitScope();
     }
   }
 
   public static void put(String key, String value) {
     Mutable current = current();
     if (current != null && key != null && !key.isBlank() && value != null && !value.isBlank()) {
-      current.values.put(key, value);
+      current.put(key, value);
     }
   }
 
   public static void put(String key, long value) {
     Mutable current = current();
     if (current != null && key != null && !key.isBlank()) {
-      current.values.put(key, value);
+      current.put(key, value);
     }
   }
 
   public static void nanos(String key, long nanos) {
     Mutable current = current();
     if (current != null && key != null && !key.isBlank()) {
-      current.values.put(key + "_ms", Math.max(0L, nanos) / 1_000_000.0);
+      current.put(key + "_ms", Math.max(0L, nanos) / 1_000_000.0);
     }
   }
 
   public static void fallback(String key) {
     Mutable current = current();
     if (current != null && key != null && !key.isBlank()) {
-      current.fallbacks++;
-      current.add("fallback_" + sanitize(key), 1L);
+      current.fallback(key);
     }
   }
 
@@ -172,9 +169,9 @@ public final class StoreOperationSummary {
     private long repoCounts;
     private long repoWrites;
     private long fallbacks;
-    private int activeScopes;
+    private final ThreadLocal<Integer> activeScopes = ThreadLocal.withInitial(() -> 0);
 
-    private void reset() {
+    private synchronized void reset() {
       operationCounts.clear();
       operationNanos.clear();
       values.clear();
@@ -186,10 +183,26 @@ public final class StoreOperationSummary {
       repoCounts = 0L;
       repoWrites = 0L;
       fallbacks = 0L;
-      activeScopes = 0;
+      activeScopes.remove();
     }
 
-    private void record(String component, String operation, Duration elapsed, boolean success) {
+    private boolean enterScope() {
+      int depth = activeScopes.get();
+      activeScopes.set(depth + 1);
+      return depth == 0;
+    }
+
+    private void exitScope() {
+      int depth = activeScopes.get();
+      if (depth <= 1) {
+        activeScopes.remove();
+      } else {
+        activeScopes.set(depth - 1);
+      }
+    }
+
+    private synchronized void record(
+        String component, String operation, Duration elapsed, boolean success) {
       operations++;
       if (!success) {
         errors++;
@@ -202,6 +215,15 @@ public final class StoreOperationSummary {
       if ("repository".equals(sanitize(component))) {
         classifyRepositoryOperation(operation);
       }
+    }
+
+    private synchronized void put(String key, Object value) {
+      values.put(key, value);
+    }
+
+    private synchronized void fallback(String key) {
+      fallbacks++;
+      add("fallback_" + sanitize(key), 1L);
     }
 
     private void classifyRepositoryOperation(String operation) {
@@ -220,7 +242,7 @@ public final class StoreOperationSummary {
       }
     }
 
-    private void add(String key, long amount) {
+    private synchronized void add(String key, long amount) {
       values.merge(
           key,
           amount,
@@ -228,7 +250,7 @@ public final class StoreOperationSummary {
               left instanceof Number number ? number.longValue() + (Long) right : right);
     }
 
-    private Snapshot snapshot() {
+    private synchronized Snapshot snapshot() {
       return new Snapshot(
           operations,
           errors,

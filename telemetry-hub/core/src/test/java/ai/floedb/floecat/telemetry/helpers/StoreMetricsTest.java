@@ -31,6 +31,10 @@ import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 class StoreMetricsTest {
@@ -88,6 +92,24 @@ class StoreMetricsTest {
   }
 
   @Test
+  void storeSummaryDoesNotTreatImplicitCloseAsSuccess() {
+    TestObservability observability = new TestObservability();
+    try (Scope ignored = StoreOperationSummary.start(Context.current(), true).makeCurrent()) {
+      StoreMetrics metrics = new StoreMetrics(observability, "svc", "op");
+      ObservationScope scope = metrics.observe(Tag.of(TagKey.ACCOUNT, "acct"));
+      scope.close();
+
+      PhaseDiagnostics diagnostics = observability.diagnostics("svc", "op");
+      StoreOperationSummary.addTo(diagnostics);
+      diagnostics.emit("summary");
+      assertThat(observability.diagnosticEvents().get(0).fields())
+          .containsEntry("store_operations", 1L)
+          .containsEntry("store_errors", 1L)
+          .containsEntry("svc_op_count", 1L);
+    }
+  }
+
+  @Test
   void storeSummaryCountsOnlyOutermostNestedStoreScope() {
     TestObservability observability = new TestObservability();
     try (Scope ignored = StoreOperationSummary.start(Context.current(), true).makeCurrent()) {
@@ -113,6 +135,56 @@ class StoreMetricsTest {
           .containsEntry("repo_gets", 1L)
           .containsEntry("repo_table_get_by_key_count", 1L)
           .doesNotContainKey("repo_table_get_count");
+    }
+  }
+
+  @Test
+  void storeSummaryCountsParallelSiblingStoreScopes() throws Exception {
+    TestObservability observability = new TestObservability();
+    Context context = StoreOperationSummary.start(Context.current(), true);
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    CountDownLatch bothScopesOpen = new CountDownLatch(2);
+    CountDownLatch releaseScopes = new CountDownLatch(1);
+    try (Scope ignored = context.makeCurrent()) {
+      Runnable work =
+          () -> {
+            try (Scope workerScope = context.makeCurrent()) {
+              StoreMetrics metrics = new StoreMetrics(observability, "repository", "table.get");
+              ObservationScope scope = metrics.observe();
+              bothScopesOpen.countDown();
+              try {
+                if (!bothScopesOpen.await(5, TimeUnit.SECONDS)) {
+                  throw new AssertionError("parallel store scopes did not overlap");
+                }
+                if (!releaseScopes.await(5, TimeUnit.SECONDS)) {
+                  throw new AssertionError("parallel store scopes were not released");
+                }
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(e);
+              }
+              scope.success();
+              scope.close();
+            }
+          };
+
+      var first = executor.submit(work);
+      var second = executor.submit(work);
+      assertThat(bothScopesOpen.await(5, TimeUnit.SECONDS)).isTrue();
+      releaseScopes.countDown();
+      first.get(5, TimeUnit.SECONDS);
+      second.get(5, TimeUnit.SECONDS);
+
+      PhaseDiagnostics diagnostics = observability.diagnostics("repository", "table.get");
+      StoreOperationSummary.addTo(diagnostics);
+      diagnostics.emit("summary");
+      assertThat(observability.diagnosticEvents().get(0).fields())
+          .containsEntry("store_operations", 2L)
+          .containsEntry("store_errors", 0L)
+          .containsEntry("repo_gets", 2L)
+          .containsEntry("repo_table_get_count", 2L);
+    } finally {
+      executor.shutdownNow();
     }
   }
 

@@ -67,6 +67,7 @@ public final class StoreMetrics extends BaseMetrics {
     private final boolean recordInSummary;
     private final long startNanos = System.nanoTime();
     private Throwable error;
+    private boolean successCalled;
 
     StoreObservationScope(
         ObservationScope metricsScope,
@@ -83,6 +84,7 @@ public final class StoreMetrics extends BaseMetrics {
     @Override
     public void success() {
       error = null;
+      successCalled = true;
       metricsScope.success();
       traceScope.success();
     }
@@ -112,7 +114,7 @@ public final class StoreMetrics extends BaseMetrics {
               component,
               operation,
               Duration.ofNanos(Math.max(0L, System.nanoTime() - startNanos)),
-              error == null);
+              successCalled && error == null);
         }
         try {
           metricsScope.close();
