@@ -16,9 +16,11 @@
 package ai.floedb.floecat.storage.kv.dynamodb.ps;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 /**
  * Synchronous adapter that preserves the existing {@link PointerStore} contract while delegating
@@ -34,27 +36,27 @@ public abstract class KvPointerStore implements PointerStore {
 
   @Override
   public Optional<Pointer> get(String key) {
-    return pointers.get(key).await().indefinitely();
+    return await(() -> pointers.get(key).await().indefinitely());
   }
 
   @Override
   public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
-    return pointers.compareAndSet(key, expectedVersion, next).await().indefinitely();
+    return await(() -> pointers.compareAndSet(key, expectedVersion, next).await().indefinitely());
   }
 
   @Override
   public boolean delete(String key) {
-    return pointers.delete(key).await().indefinitely();
+    return await(() -> pointers.delete(key).await().indefinitely());
   }
 
   @Override
   public boolean compareAndDelete(String key, long expectedVersion) {
-    return pointers.compareAndDelete(key, expectedVersion).await().indefinitely();
+    return await(() -> pointers.compareAndDelete(key, expectedVersion).await().indefinitely());
   }
 
   @Override
   public boolean compareAndSetBatch(List<CasOp> ops) {
-    return pointers.compareAndSetBatch(ops).await().indefinitely();
+    return await(() -> pointers.compareAndSetBatch(ops).await().indefinitely());
   }
 
   @Override
@@ -63,7 +65,7 @@ public abstract class KvPointerStore implements PointerStore {
     Optional<String> token =
         (pageToken == null || pageToken.isBlank()) ? Optional.empty() : Optional.of(pageToken);
 
-    var page = pointers.listByPrefix(prefix, limit, token).await().indefinitely();
+    var page = await(() -> pointers.listByPrefix(prefix, limit, token).await().indefinitely());
 
     if (nextTokenOut != null) {
       nextTokenOut.setLength(0);
@@ -75,7 +77,7 @@ public abstract class KvPointerStore implements PointerStore {
 
   @Override
   public int deleteByPrefix(String prefix) {
-    return pointers.deleteByPrefix(prefix).await().indefinitely();
+    return await(() -> pointers.deleteByPrefix(prefix).await().indefinitely());
   }
 
   @Override
@@ -84,7 +86,9 @@ public abstract class KvPointerStore implements PointerStore {
 
     Optional<String> token = Optional.empty();
     do {
-      var page = pointers.listKeysByPrefix(prefix, 500, token).await().indefinitely();
+      Optional<String> pageToken = token;
+      var page =
+          await(() -> pointers.listKeysByPrefix(prefix, 500, pageToken).await().indefinitely());
 
       count += page.items().size();
       token = page.nextToken();
@@ -100,6 +104,20 @@ public abstract class KvPointerStore implements PointerStore {
 
   @Override
   public void dump(String header) {
-    pointers.getKvStore().dump(header).await().indefinitely();
+    await(
+        () -> {
+          pointers.getKvStore().dump(header).await().indefinitely();
+          return null;
+        });
+  }
+
+  private static <T> T await(Supplier<T> operation) {
+    try {
+      return operation.get();
+    } catch (StorageAbortRetryableException e) {
+      throw e;
+    } catch (RuntimeException e) {
+      throw new StorageAbortRetryableException("DynamoDB pointer store operation failed", e);
+    }
   }
 }

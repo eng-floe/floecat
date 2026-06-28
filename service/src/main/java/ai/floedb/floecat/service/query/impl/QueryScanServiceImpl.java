@@ -67,43 +67,50 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
    */
   public Uni<InitScanResponse> initScan(InitScanRequest request) {
     var L = LogHelper.start(LOG, "InitScan");
-    return run(() -> {
-          String correlationId = principal.get().getCorrelationId();
-          authz.require(principal.get(), "catalog.read");
-          String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
-          if (!request.hasTableId()) {
-            throw GrpcErrors.invalidArgument(
-                correlationId, QUERY_TABLE_ID_REQUIRED, Map.of("query_id", queryId));
-          }
-          var ctx =
-              queryStore
-                  .get(queryId)
-                  .orElseThrow(
-                      () ->
-                          GrpcErrors.notFound(
-                              correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId)));
-          ResourceId tableId = request.getTableId();
-          var pin = ctx.requireSnapshotPin(tableId, correlationId);
-          var initData = scanBundles.initScan(correlationId, tableId, pin.getSnapshotId());
-          var session =
-              ScanSession.builder()
-                  .queryId(queryId)
-                  .tableId(tableId)
-                  .snapshotId(initData.snapshotId())
-                  .tableInfo(initData.tableInfo())
-                  .includeColumnStats(request.getIncludeColumnStats())
-                  .excludePartitionDataJson(request.getExcludePartitionDataJson())
-                  .targetBatchItems(capped(request.getTargetBatchItems(), defaultBatchItems))
-                  .targetBatchBytes(capped(request.getTargetBatchBytes(), defaultBatchBytes))
-                  .requiredColumns(request.getRequiredColumnsList())
-                  .predicates(request.getPredicatesList())
-                  .build();
-          ScanHandle handle = queryStore.createScanSession(correlationId, session);
-          return InitScanResponse.newBuilder()
-              .setHandle(handle)
-              .setTableInfo(initData.tableInfo())
-              .build();
-        })
+    var init =
+        runWithRetry(
+                () -> {
+                  String correlationId = principal.get().getCorrelationId();
+                  authz.require(principal.get(), "catalog.read");
+                  String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+                  if (!request.hasTableId()) {
+                    throw GrpcErrors.invalidArgument(
+                        correlationId, QUERY_TABLE_ID_REQUIRED, Map.of("query_id", queryId));
+                  }
+                  var ctx =
+                      queryStore
+                          .get(queryId)
+                          .orElseThrow(
+                              () ->
+                                  GrpcErrors.notFound(
+                                      correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId)));
+                  ResourceId tableId = request.getTableId();
+                  var pin = ctx.requireSnapshotPin(tableId, correlationId);
+                  var initData = scanBundles.initScan(correlationId, tableId, pin.getSnapshotId());
+                  var session =
+                      ScanSession.builder()
+                          .queryId(queryId)
+                          .tableId(tableId)
+                          .snapshotId(initData.snapshotId())
+                          .tableInfo(initData.tableInfo())
+                          .includeColumnStats(request.getIncludeColumnStats())
+                          .excludePartitionDataJson(request.getExcludePartitionDataJson())
+                          .targetBatchItems(
+                              capped(request.getTargetBatchItems(), defaultBatchItems))
+                          .targetBatchBytes(
+                              capped(request.getTargetBatchBytes(), defaultBatchBytes))
+                          .requiredColumns(request.getRequiredColumnsList())
+                          .predicates(request.getPredicatesList())
+                          .build();
+                  ScanHandle handle = queryStore.createScanSession(correlationId, session);
+                  return InitScanResponse.newBuilder()
+                      .setHandle(handle)
+                      .setTableInfo(initData.tableInfo())
+                      .build();
+                })
+            .onFailure()
+            .invoke(t -> logInitScanFailure(request, t));
+    return mapFailures(init, correlationId())
         .onFailure()
         .invoke(L::fail)
         .onItem()
@@ -132,6 +139,8 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
                           .invoke(e -> markPlanningFailed(session, correlationId))
                           .onFailure()
                           .invoke(e -> queryStore.removeScanSession(handle))
+                          .onFailure()
+                          .transform(e -> toStatus(e, correlationId))
                           .onCompletion()
                           .invoke(L::ok);
                     }))
@@ -161,6 +170,8 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
                           .invoke(e -> markPlanningFailed(session, correlationId))
                           .onFailure()
                           .invoke(e -> queryStore.removeScanSession(handle))
+                          .onFailure()
+                          .transform(e -> toStatus(e, correlationId))
                           .onCompletion()
                           .invoke(
                               () -> {
@@ -182,14 +193,17 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
    */
   public Uni<Empty> closeScan(ScanHandle handle) {
     var L = LogHelper.start(LOG, "CloseScan");
-    return run(() -> {
-          String correlationId = principal.get().getCorrelationId();
-          queryStore
-              .getScanSession(handle)
-              .ifPresent(session -> markPlanningCompleted(session, correlationId));
-          queryStore.removeScanSession(handle);
-          return Empty.newBuilder().build();
-        })
+    return mapFailures(
+            run(
+                () -> {
+                  String correlationId = principal.get().getCorrelationId();
+                  queryStore
+                      .getScanSession(handle)
+                      .ifPresent(session -> markPlanningCompleted(session, correlationId));
+                  queryStore.removeScanSession(handle);
+                  return Empty.newBuilder().build();
+                }),
+            correlationId())
         .onFailure()
         .invoke(L::fail)
         .onItem()
@@ -202,6 +216,31 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
         .orElseThrow(
             () ->
                 GrpcErrors.notFound(correlationId, SCAN_HANDLE, Map.of("handle", handle.getId())));
+  }
+
+  private void logInitScanFailure(InitScanRequest request, Throwable failure) {
+    String tableAccountId = "-";
+    String tableKind = "-";
+    String tableId = "-";
+    if (request != null && request.hasTableId()) {
+      ResourceId resourceId = request.getTableId();
+      tableAccountId = logValue(resourceId.getAccountId());
+      tableKind = logValue(resourceId.getKind().name());
+      tableId = logValue(resourceId.getId());
+    }
+    LOG.errorf(
+        failure,
+        "InitScan failed before gRPC error mapping query_id=%s table_account_id=%s table_kind=%s"
+            + " table_id=%s correlation_id=%s",
+        logValue(request == null ? "" : request.getQueryId()),
+        tableAccountId,
+        tableKind,
+        tableId,
+        logValue(correlationId()));
+  }
+
+  private static String logValue(String value) {
+    return value == null || value.isBlank() ? "-" : value;
   }
 
   private void markPlanningFailed(ScanSession session, String correlationId) {

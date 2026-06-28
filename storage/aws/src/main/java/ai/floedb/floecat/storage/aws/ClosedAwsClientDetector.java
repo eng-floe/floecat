@@ -14,14 +14,23 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.storage.errors;
+package ai.floedb.floecat.storage.aws;
 
-public final class StorageAbortRetryableException extends StorageException {
-  public StorageAbortRetryableException(String message) {
-    super(message);
-  }
+public final class ClosedAwsClientDetector {
 
-  public StorageAbortRetryableException(String message, Throwable cause) {
-    super(message, cause);
+  static final String CONNECTION_POOL_SHUT_DOWN = "Connection pool shut down";
+
+  private ClosedAwsClientDetector() {}
+
+  public static boolean isConnectionPoolShutdown(Throwable failure) {
+    Throwable current = failure;
+    while (current != null) {
+      String message = current.getMessage();
+      if (message != null && message.contains(CONNECTION_POOL_SHUT_DOWN)) {
+        return true;
+      }
+      current = current.getCause();
+    }
+    return false;
   }
 }
