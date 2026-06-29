@@ -196,11 +196,6 @@ class TableRepositoryTest {
             .build();
     snapshotRepo.create(snap);
 
-    var tableMeta = tableRepo.metaFor(tableId);
-    var updatedTable =
-        foundTable.toBuilder().putProperties("current-snapshot-id", Long.toString(42L)).build();
-    assertTrue(tableRepo.update(updatedTable, tableMeta.getPointerVersion()));
-
     var fetched = tableRepo.getById(tableId).orElseThrow();
     assertEquals("line_item", fetched.getDisplayName());
 
@@ -209,6 +204,9 @@ class TableRepositoryTest {
             account, catalogId.getId(), namespaceId.getId(), Integer.MAX_VALUE, null, null);
     assertEquals(1, list.size());
 
+    assertEquals(
+        SnapshotRepository.CurrentSnapshotPointerUpdateResult.UPDATED,
+        snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, snap));
     var cur = snapshotRepo.getCurrentSnapshot(tableId).orElseThrow();
     assertEquals(42, cur.getSnapshotId());
   }

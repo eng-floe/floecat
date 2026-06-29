@@ -96,7 +96,7 @@ class ServerSideFileIoPropertiesResolverTest {
   @Test
   void resolveFallsBackToSnapshotMetadataRootWhenNoTableRootExists() {
     when(repo.list(eq("acct"), anyInt(), eq(""), any())).thenReturn(List.of(databricksAuthority()));
-    when(snapshotRepo.getById(tableWithSnapshotMetadataOnly().getResourceId(), 77L))
+    when(snapshotRepo.getCurrentSnapshot(tableWithSnapshotMetadataOnly().getResourceId()))
         .thenReturn(
             Optional.of(
                 Snapshot.newBuilder()
@@ -183,7 +183,6 @@ class ServerSideFileIoPropertiesResolverTest {
                 .setKind(ResourceKind.RK_TABLE)
                 .setId("tbl-1")
                 .build())
-        .putProperties("current-snapshot-id", "77")
         .build();
   }
 

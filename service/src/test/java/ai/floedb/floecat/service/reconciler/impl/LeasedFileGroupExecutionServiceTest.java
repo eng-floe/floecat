@@ -524,15 +524,10 @@ class LeasedFileGroupExecutionServiceTest {
                         1),
                     ReconcileFileGroupTask.empty(),
                     "")));
-    when(tableRepo.getById(tableId()))
-        .thenReturn(
-            Optional.of(
-                table().toBuilder()
-                    .putProperties("current-snapshot-id", Long.toString(SNAPSHOT_ID))
-                    .build()));
+    when(tableRepo.getById(tableId())).thenReturn(Optional.of(table()));
     when(connectorRepo.getById(connectorId()))
         .thenReturn(Optional.of(connector().toBuilder().setKind(ConnectorKind.CK_ICEBERG).build()));
-    when(snapshotRepo.getById(tableId(), SNAPSHOT_ID))
+    when(snapshotRepo.getCurrentSnapshot(tableId()))
         .thenReturn(
             Optional.of(
                 Snapshot.newBuilder()

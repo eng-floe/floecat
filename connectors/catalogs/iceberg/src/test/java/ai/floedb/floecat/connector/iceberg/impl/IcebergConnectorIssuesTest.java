@@ -164,6 +164,16 @@ class IcebergConnectorIssuesTest {
     PartitionSpec spec = PartitionSpec.unpartitioned();
     Map<String, String> tableProperties = new HashMap<>();
     tableProperties.put("write.parquet.compression-codec", "zstd");
+    Snapshot currentSnapshot =
+        (Snapshot)
+            Proxy.newProxyInstance(
+                Snapshot.class.getClassLoader(),
+                new Class<?>[] {Snapshot.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "snapshotId" -> 42L;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
 
     Table table =
         (Table)
@@ -176,6 +186,7 @@ class IcebergConnectorIssuesTest {
                       case "spec" -> spec;
                       case "location" -> "s3://warehouse/tpch_1.db/nation";
                       case "properties" -> tableProperties;
+                      case "currentSnapshot" -> currentSnapshot;
                       default -> throw new UnsupportedOperationException(method.getName());
                     });
 

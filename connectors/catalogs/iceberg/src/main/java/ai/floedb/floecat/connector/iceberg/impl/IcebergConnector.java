@@ -221,7 +221,6 @@ public abstract class IcebergConnector implements FloecatConnector {
     if (table.location() != null && !table.location().isBlank()) {
       properties.put("storage_location", table.location());
     }
-
     return new TableDescriptor(
         namespaceFq,
         tableName,

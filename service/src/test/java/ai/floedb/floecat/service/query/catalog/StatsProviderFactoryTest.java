@@ -406,18 +406,15 @@ class StatsProviderFactoryTest {
 
     long snapshotId = 777L;
     when(snapshotTableRepository.getById(TABLE))
-        .thenReturn(
-            Optional.of(
-                Table.newBuilder()
-                    .setResourceId(TABLE)
-                    .putProperties("current-snapshot-id", Long.toString(snapshotId))
-                    .build()));
+        .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE).build()));
     snapshots.create(
         Snapshot.newBuilder()
             .setTableId(TABLE)
             .setSnapshotId(snapshotId)
             .setUpstreamCreatedAt(Timestamps.fromMillis(1_700_000_000_000L))
             .build());
+    snapshots.maybeAdvanceCurrentSnapshotPointer(
+        TABLE, snapshots.getById(TABLE, snapshotId).orElseThrow());
     repository.putTargetStats(
         TargetStatsRecords.tableRecord(
             TABLE,
@@ -450,12 +447,7 @@ class StatsProviderFactoryTest {
     long olderSnapshotId = 700L;
     long latestSnapshotId = 701L;
     when(snapshotTableRepository.getById(TABLE))
-        .thenReturn(
-            Optional.of(
-                Table.newBuilder()
-                    .setResourceId(TABLE)
-                    .putProperties("current-snapshot-id", Long.toString(latestSnapshotId))
-                    .build()));
+        .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE).build()));
     snapshots.create(
         Snapshot.newBuilder()
             .setTableId(TABLE)
@@ -468,6 +460,8 @@ class StatsProviderFactoryTest {
             .setSnapshotId(latestSnapshotId)
             .setUpstreamCreatedAt(Timestamps.fromMillis(1_700_000_000_100L))
             .build());
+    snapshots.maybeAdvanceCurrentSnapshotPointer(
+        TABLE, snapshots.getById(TABLE, latestSnapshotId).orElseThrow());
     repository.putTargetStats(
         TargetStatsRecords.tableRecord(
             TABLE,

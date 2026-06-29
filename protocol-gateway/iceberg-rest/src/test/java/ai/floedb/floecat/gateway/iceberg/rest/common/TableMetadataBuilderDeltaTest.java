@@ -53,7 +53,7 @@ class TableMetadataBuilderDeltaTest {
     Map<String, String> props = new LinkedHashMap<>();
 
     TableMetadataView metadata =
-        TableMetadataBuilder.fromCatalog("call_center", table, props, List.of(snapshot), null);
+        TableMetadataBuilder.fromCatalog("call_center", table, props, List.of(snapshot), null, 11L);
 
     assertEquals(2, metadata.lastColumnId());
     assertEquals(11L, metadata.currentSnapshotId());

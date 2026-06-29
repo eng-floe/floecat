@@ -19,10 +19,12 @@ package ai.floedb.floecat.service.repo.impl;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -41,6 +43,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.LongAdder;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -111,9 +115,8 @@ class SnapshotRepositoryTest {
         snapshotRepo, account, tableRid, 199, clock.millis() - 20_000, clock.millis() - 60_000);
     seedSnapshot(
         snapshotRepo, account, tableRid, 200, clock.millis() - 10_000, clock.millis() - 50_000);
-    tableRepo.update(
-        td.toBuilder().putProperties("current-snapshot-id", "200").build(),
-        tableRepo.metaFor(tableRid).getPointerVersion());
+    snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
+        tableRid, snapshotRepo.getById(tableRid, 200).orElseThrow());
 
     StringBuilder next = new StringBuilder();
     var page1 = snapshotRepo.list(tableRid, 1, "", next);
@@ -134,7 +137,7 @@ class SnapshotRepositoryTest {
   }
 
   @Test
-  void getCurrentSnapshotUsesTableCurrentSnapshotId() {
+  void getCurrentSnapshotUsesCurrentPointer() {
     String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var tableRid =
         ResourceId.newBuilder()
@@ -142,14 +145,39 @@ class SnapshotRepositoryTest {
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_TABLE)
             .build();
-    tableRepo.create(tableWithCurrentSnapshot(account, tableRid, 1L));
+    tableRepo.create(table(account, tableRid));
 
     long createdMs = clock.millis() - 10_000;
     seedSnapshot(snapshotRepo, account, tableRid, 0, clock.millis(), createdMs);
     seedSnapshot(snapshotRepo, account, tableRid, 1, clock.millis(), createdMs);
+    snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
+        tableRid, snapshotRepo.getById(tableRid, 1).orElseThrow());
 
     Snapshot current = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
     assertEquals(1L, current.getSnapshotId());
+  }
+
+  @Test
+  void maybeAdvanceCurrentSnapshotPointerCreatesPointerWithoutMutatingTable() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    tableRepo.create(table(account, tableRid));
+
+    long createdMs = clock.millis() - 10_000;
+    seedSnapshot(snapshotRepo, account, tableRid, 1, clock.millis(), createdMs);
+    Snapshot snapshot = snapshotRepo.getById(tableRid, 1).orElseThrow();
+
+    assertEquals(
+        SnapshotRepository.CurrentSnapshotPointerUpdateResult.UPDATED,
+        snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableRid, snapshot));
+
+    assertEquals(1L, snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId());
+    assertTrue(tableRepo.getById(tableRid).orElseThrow().getPropertiesMap().isEmpty());
   }
 
   @Test
@@ -174,7 +202,7 @@ class SnapshotRepositoryTest {
   }
 
   @Test
-  void getCurrentSnapshotIgnoresByTimeOrderingWhenTableCurrentSnapshotIsOlder() {
+  void getCurrentSnapshotUsesPointerEvenWhenSnapshotIsNotNewestByTime() {
     String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var tableRid =
         ResourceId.newBuilder()
@@ -182,7 +210,7 @@ class SnapshotRepositoryTest {
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_TABLE)
             .build();
-    tableRepo.create(tableWithCurrentSnapshot(account, tableRid, 999L));
+    tableRepo.create(table(account, tableRid));
 
     long newestCreatedMs = clock.millis() - 5_000;
     long olderCreatedMs = newestCreatedMs - 1_000;
@@ -190,6 +218,8 @@ class SnapshotRepositoryTest {
     seedSnapshot(snapshotRepo, account, tableRid, 0, clock.millis(), newestCreatedMs);
     seedSnapshot(snapshotRepo, account, tableRid, 1, clock.millis(), newestCreatedMs);
     seedSnapshot(snapshotRepo, account, tableRid, 999, clock.millis(), olderCreatedMs);
+    snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
+        tableRid, snapshotRepo.getById(tableRid, 999).orElseThrow());
 
     Snapshot current = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
     assertEquals(999L, current.getSnapshotId());
@@ -197,7 +227,7 @@ class SnapshotRepositoryTest {
   }
 
   @Test
-  void getCurrentSnapshotFallsBackToLatestSnapshotWhenTableCurrentSnapshotIdMissing() {
+  void getCurrentSnapshotFallsBackToLatestSnapshotWhenCurrentPointerIsMissing() {
     String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var tableRid =
         ResourceId.newBuilder()
@@ -205,11 +235,12 @@ class SnapshotRepositoryTest {
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_TABLE)
             .build();
-    tableRepo.create(tableWithCurrentSnapshot(account, tableRid, null));
+    tableRepo.create(table(account, tableRid));
     seedSnapshot(snapshotRepo, account, tableRid, 204, clock.millis(), clock.millis() - 10_000);
 
     Snapshot fallback = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
     assertEquals(204L, fallback.getSnapshotId());
+    assertTrue(tableRepo.getById(tableRid).orElseThrow().getPropertiesMap().isEmpty());
   }
 
   @Test
@@ -221,12 +252,104 @@ class SnapshotRepositoryTest {
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_TABLE)
             .build();
-    tableRepo.create(tableWithCurrentSnapshot(account, tableRid, 999_999L));
+    tableRepo.create(table(account, tableRid));
+    seedCurrentPointer(tableRid, 999_999L, clock.millis());
     seedSnapshot(snapshotRepo, account, tableRid, 101, clock.millis(), clock.millis() - 20_000);
     seedSnapshot(snapshotRepo, account, tableRid, 204, clock.millis(), clock.millis() - 10_000);
 
     Snapshot fallback = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
     assertEquals(204L, fallback.getSnapshotId());
+    assertTrue(tableRepo.getById(tableRid).orElseThrow().getPropertiesMap().isEmpty());
+  }
+
+  @Test
+  void maybeAdvanceCurrentSnapshotPointerDoesNotDowngradeNewerPointer() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    tableRepo.create(table(account, tableRid));
+
+    long newerCreatedMs = clock.millis() - 10_000;
+    long olderCreatedMs = newerCreatedMs - 10_000;
+    seedSnapshot(snapshotRepo, account, tableRid, 100, clock.millis(), olderCreatedMs);
+    seedSnapshot(snapshotRepo, account, tableRid, 200, clock.millis(), newerCreatedMs);
+    snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
+        tableRid, snapshotRepo.getById(tableRid, 200).orElseThrow());
+
+    var older =
+        snapshotRepo.getById(tableRid, 100).orElseThrow(() -> new AssertionError("missing older"));
+    assertEquals(
+        SnapshotRepository.CurrentSnapshotPointerUpdateResult.UNCHANGED,
+        snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableRid, older));
+    assertEquals(200L, snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId());
+  }
+
+  @Test
+  void maybeAdvanceCurrentSnapshotPointerRetriesWhenPointerChangesBeforeCas() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    tableRepo.create(table(account, tableRid));
+
+    long newestCreatedMs = clock.millis() - 10_000;
+    long middleCreatedMs = newestCreatedMs - 10_000;
+    long oldestCreatedMs = middleCreatedMs - 10_000;
+    AdvancingOnMetaCurrentSnapshotPointerRepository currentRepo =
+        new AdvancingOnMetaCurrentSnapshotPointerRepository(ptr, blobs);
+    SnapshotRepository repo = new SnapshotRepository(ptr, blobs, tableRepo, currentRepo);
+
+    seedSnapshot(repo, account, tableRid, 100, clock.millis(), oldestCreatedMs);
+    seedSnapshot(repo, account, tableRid, 200, clock.millis(), middleCreatedMs);
+    seedSnapshot(repo, account, tableRid, 300, clock.millis(), newestCreatedMs);
+    repo.maybeAdvanceCurrentSnapshotPointer(tableRid, repo.getById(tableRid, 100).orElseThrow());
+    currentRepo.advanceDuringMetaFor(
+        tableRid,
+        CurrentSnapshotPointer.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(300)
+            .setUpstreamCreatedAt(Timestamps.fromMillis(newestCreatedMs))
+            .setUpdatedAt(Timestamps.fromMillis(clock.millis()))
+            .build());
+
+    assertEquals(
+        SnapshotRepository.CurrentSnapshotPointerUpdateResult.UNCHANGED,
+        repo.maybeAdvanceCurrentSnapshotPointer(
+            tableRid, repo.getById(tableRid, 200).orElseThrow()));
+    assertEquals(300L, repo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId());
+  }
+
+  @Test
+  void maybeAdvanceCurrentSnapshotPointerReturnsConflictAfterBoundedCasRetries() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    tableRepo.create(table(account, tableRid));
+    FailingCurrentSnapshotPointerRepository failingCurrentRepo =
+        new FailingCurrentSnapshotPointerRepository(ptr, blobs);
+    SnapshotRepository repo = new SnapshotRepository(ptr, blobs, tableRepo, failingCurrentRepo);
+    Snapshot candidate =
+        Snapshot.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(100L)
+            .setUpstreamCreatedAt(Timestamps.fromMillis(clock.millis()))
+            .build();
+
+    assertEquals(
+        SnapshotRepository.CurrentSnapshotPointerUpdateResult.CONFLICT,
+        repo.maybeAdvanceCurrentSnapshotPointer(tableRid, candidate));
+    assertEquals(4, failingCurrentRepo.createAttempts.get());
   }
 
   private void seedSnapshot(
@@ -247,35 +370,83 @@ class SnapshotRepositoryTest {
     snapshotRepo.create(snap);
   }
 
-  private Table tableWithCurrentSnapshot(
-      String account, ResourceId tableId, Long currentSnapshotId) {
-    Table.Builder builder =
-        Table.newBuilder()
-            .setResourceId(tableId)
-            .setDisplayName("orders")
-            .setCatalogId(
-                ResourceId.newBuilder()
-                    .setAccountId(account)
-                    .setId(UUID.randomUUID().toString())
-                    .setKind(ResourceKind.RK_CATALOG)
-                    .build())
-            .setNamespaceId(
-                ResourceId.newBuilder()
-                    .setAccountId(account)
-                    .setId(UUID.randomUUID().toString())
-                    .setKind(ResourceKind.RK_NAMESPACE)
-                    .build())
-            .setUpstream(
-                UpstreamRef.newBuilder()
-                    .setFormat(TableFormat.TF_ICEBERG)
-                    .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
-                    .setUri("s3://warehouse/orders/")
-                    .build())
-            .setCreatedAt(Timestamps.fromMillis(clock.millis()));
-    if (currentSnapshotId != null) {
-      builder.putProperties("current-snapshot-id", Long.toString(currentSnapshotId));
+  private void seedCurrentPointer(ResourceId tableId, long snapshotId, long upstreamCreatedAtMs) {
+    new CurrentSnapshotPointerRepository(ptr, blobs)
+        .createIfAbsent(
+            CurrentSnapshotPointer.newBuilder()
+                .setTableId(tableId)
+                .setSnapshotId(snapshotId)
+                .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreatedAtMs))
+                .setUpdatedAt(Timestamps.fromMillis(clock.millis()))
+                .build());
+  }
+
+  private Table table(String account, ResourceId tableId) {
+    return Table.newBuilder()
+        .setResourceId(tableId)
+        .setDisplayName("orders")
+        .setCatalogId(
+            ResourceId.newBuilder()
+                .setAccountId(account)
+                .setId(UUID.randomUUID().toString())
+                .setKind(ResourceKind.RK_CATALOG)
+                .build())
+        .setNamespaceId(
+            ResourceId.newBuilder()
+                .setAccountId(account)
+                .setId(UUID.randomUUID().toString())
+                .setKind(ResourceKind.RK_NAMESPACE)
+                .build())
+        .setUpstream(
+            UpstreamRef.newBuilder()
+                .setFormat(TableFormat.TF_ICEBERG)
+                .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+                .setUri("s3://warehouse/orders/")
+                .build())
+        .setCreatedAt(Timestamps.fromMillis(clock.millis()))
+        .build();
+  }
+
+  private static final class FailingCurrentSnapshotPointerRepository
+      extends CurrentSnapshotPointerRepository {
+    private final AtomicInteger createAttempts = new AtomicInteger();
+
+    private FailingCurrentSnapshotPointerRepository(
+        PointerStore pointerStore, BlobStore blobStore) {
+      super(pointerStore, blobStore);
     }
-    return builder.build();
+
+    @Override
+    public boolean createIfAbsent(CurrentSnapshotPointer pointer) {
+      createAttempts.incrementAndGet();
+      return false;
+    }
+  }
+
+  private static final class AdvancingOnMetaCurrentSnapshotPointerRepository
+      extends CurrentSnapshotPointerRepository {
+    private final AtomicBoolean advanced = new AtomicBoolean();
+    private ResourceId tableId;
+    private CurrentSnapshotPointer nextPointer;
+
+    private AdvancingOnMetaCurrentSnapshotPointerRepository(
+        PointerStore pointerStore, BlobStore blobStore) {
+      super(pointerStore, blobStore);
+    }
+
+    void advanceDuringMetaFor(ResourceId tableId, CurrentSnapshotPointer nextPointer) {
+      this.tableId = tableId;
+      this.nextPointer = nextPointer;
+    }
+
+    @Override
+    public MutationMeta metaFor(ResourceId requestedTableId) {
+      if (requestedTableId.equals(tableId) && advanced.compareAndSet(false, true)) {
+        long expectedVersion = super.metaFor(requestedTableId).getPointerVersion();
+        assertTrue(super.update(nextPointer, expectedVersion));
+      }
+      return super.metaFor(requestedTableId);
+    }
   }
 
   private static boolean isExpectedRepoAbort(Throwable t) {
@@ -293,7 +464,7 @@ class SnapshotRepositoryTest {
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_TABLE)
             .build();
-    tableRepo.create(tableWithCurrentSnapshot(account, tblId, null));
+    tableRepo.create(table(account, tblId));
 
     int WORKERS = 24;
     int OPS = 200;

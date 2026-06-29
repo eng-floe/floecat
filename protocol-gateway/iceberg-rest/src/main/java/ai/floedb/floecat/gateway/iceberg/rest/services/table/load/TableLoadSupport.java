@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.common.IcebergHttpUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMetadataUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
@@ -38,6 +39,8 @@ public class TableLoadSupport {
 
   LoadData loadData(
       Table tableRecord, SnapshotLister.Mode snapshotMode, TableGatewaySupport tableSupport) {
+    Snapshot currentSnapshot = tableSupport.loadCurrentSnapshot(tableRecord);
+    Long currentSnapshotId = currentSnapshotId(currentSnapshot);
     String metadataLocation;
     List<Snapshot> snapshotList;
     if (deltaCompatEnabled(tableRecord)) {
@@ -45,10 +48,10 @@ public class TableLoadSupport {
       snapshotList = SnapshotLister.fetchSnapshots(snapshotClient, tableRecord, snapshotMode);
       snapshotList = deltaManifestMaterializer.materialize(tableRecord, snapshotList);
     } else {
-      metadataLocation = tableSupport.loadCurrentMetadataLocation(tableRecord);
+      metadataLocation = SnapshotMetadataUtil.metadataLocation(currentSnapshot);
       snapshotList = SnapshotLister.fetchSnapshots(snapshotClient, tableRecord, snapshotMode);
     }
-    return new LoadData(metadataLocation, snapshotList);
+    return new LoadData(metadataLocation, currentSnapshotId, snapshotList);
   }
 
   SnapshotLister.Mode parseSnapshotMode(String raw) {
@@ -119,5 +122,12 @@ public class TableLoadSupport {
         && tableFormatSupport.isDelta(table);
   }
 
-  record LoadData(String metadataLocation, List<Snapshot> snapshots) {}
+  private Long currentSnapshotId(Snapshot snapshot) {
+    if (snapshot == null || snapshot.getSnapshotId() < 0) {
+      return null;
+    }
+    return snapshot.getSnapshotId();
+  }
+
+  record LoadData(String metadataLocation, Long currentSnapshotId, List<Snapshot> snapshots) {}
 }

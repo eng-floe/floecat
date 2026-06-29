@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.model;
 
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.catalog.rpc.Catalog;
+import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.catalog.rpc.Namespace;
@@ -153,6 +154,22 @@ public final class Schemas {
                     v.getTableId().getAccountId(), v.getTableId().getId(), v.getSnapshotId(), sha);
               })
           .withCasBlobs();
+
+  public static final ResourceSchema<CurrentSnapshotPointer, CurrentSnapshotPointerKey>
+      CURRENT_SNAPSHOT_POINTER =
+          ResourceSchema.<CurrentSnapshotPointer, CurrentSnapshotPointerKey>of(
+                  "current-snapshot-pointer",
+                  key -> Keys.currentSnapshotPointerByTable(key.accountId(), key.tableId()),
+                  key ->
+                      Keys.currentSnapshotPointerBlobUri(
+                          key.accountId(), key.tableId(), key.sha256()),
+                  v -> Map.of(),
+                  v -> {
+                    var sha = Hashing.sha256Hex(v.toByteArray());
+                    return new CurrentSnapshotPointerKey(
+                        v.getTableId().getAccountId(), v.getTableId().getId(), sha);
+                  })
+              .withCasBlobs();
 
   public static final ResourceSchema<TargetStatsRecord, TargetStatsKey> TARGET_STATS =
       ResourceSchema.<TargetStatsRecord, TargetStatsKey>of(

@@ -63,6 +63,7 @@ import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.types.ManagedTableProperties;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
@@ -70,6 +71,7 @@ import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -792,7 +794,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
     }
 
     if (maskTargets(mask, "properties")) {
-      b.clearProperties().putAllProperties(spec.getPropertiesMap());
+      b.clearProperties().putAllProperties(mergeTableProperties(current, spec.getPropertiesMap()));
     }
 
     boolean catalogChanged = false;
@@ -917,6 +919,19 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
     }
 
     return b.build();
+  }
+
+  private Map<String, String> mergeTableProperties(Table current, Map<String, String> requested) {
+    var merged = new LinkedHashMap<String, String>();
+    if (requested != null) {
+      merged.putAll(requested);
+    }
+    for (String key : ManagedTableProperties.engineManagedKeys()) {
+      if (current.containsProperties(key)) {
+        merged.put(key, current.getPropertiesOrThrow(key));
+      }
+    }
+    return merged;
   }
 
   private static boolean upstreamTouched(FieldMask mask) {

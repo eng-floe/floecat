@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
@@ -31,7 +32,9 @@ import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
+import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMetadataUtil;
+import ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationProperties;
 import ai.floedb.floecat.gateway.iceberg.rest.config.StorageAwsConfig;
@@ -267,6 +270,38 @@ public class TableGatewaySupport {
   }
 
   public String loadCurrentMetadataLocation(Table table) {
+    Snapshot snapshot = loadCurrentSnapshot(table);
+    return snapshot == null ? null : SnapshotMetadataUtil.metadataLocation(snapshot);
+  }
+
+  public Long loadCurrentSnapshotId(Table table) {
+    Snapshot snapshot = loadCurrentSnapshot(table);
+    if (snapshot == null || snapshot.getSnapshotId() < 0) {
+      return null;
+    }
+    return snapshot.getSnapshotId();
+  }
+
+  public boolean hasSnapshotRef(Table table, String refName) {
+    if (refName == null || refName.isBlank() || table == null) {
+      return false;
+    }
+    if ("main".equals(refName)) {
+      return loadCurrentSnapshotId(table) != null;
+    }
+    String encodedRefs = table.getPropertiesMap().get(RefPropertyUtil.PROPERTY_KEY);
+    if (encodedRefs == null || encodedRefs.isBlank()) {
+      return false;
+    }
+    Map<String, Map<String, Object>> refs = RefPropertyUtil.decode(encodedRefs);
+    if (!refs.containsKey(refName)) {
+      return false;
+    }
+    Long snapshotId = TableMappingUtil.asLong(refs.get(refName).get("snapshot-id"));
+    return snapshotId != null && snapshotId >= 0L;
+  }
+
+  public Snapshot loadCurrentSnapshot(Table table) {
     if (table == null || !table.hasResourceId()) {
       return null;
     }
@@ -278,7 +313,7 @@ public class TableGatewaySupport {
       if (response == null || !response.hasSnapshot()) {
         return null;
       }
-      return SnapshotMetadataUtil.metadataLocation(response.getSnapshot());
+      return response.getSnapshot();
     } catch (StatusRuntimeException e) {
       return null;
     }

@@ -178,21 +178,15 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     if (!location.isBlank()) {
       return location;
     }
-    String currentSnapshotId = firstNonBlank(table.getPropertiesMap().get("current-snapshot-id"));
-    if (currentSnapshotId != null && snapshotRepo != null) {
-      try {
-        long snapshotId = Long.parseLong(currentSnapshotId);
-        location =
-            snapshotRepo
-                .getById(table.getResourceId(), snapshotId)
-                .map(SnapshotRepository::metadataLocation)
-                .map(LeasedFileGroupExecutionService::deriveTableRootLocation)
-                .orElse("");
-        if (!location.isBlank()) {
-          return location;
-        }
-      } catch (NumberFormatException ignored) {
-        // Fall through to upstream URI when the snapshot id is not parseable.
+    if (snapshotRepo != null) {
+      location =
+          snapshotRepo
+              .getCurrentSnapshot(table.getResourceId())
+              .map(SnapshotRepository::metadataLocation)
+              .map(LeasedFileGroupExecutionService::deriveTableRootLocation)
+              .orElse("");
+      if (!location.isBlank()) {
+        return location;
       }
     }
     return firstNonBlank(table.hasUpstream() ? table.getUpstream().getUri() : null, "");

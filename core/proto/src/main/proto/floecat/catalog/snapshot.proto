@@ -40,6 +40,13 @@ message Snapshot {
   optional string metadata_location = 12;
 }
 
+message CurrentSnapshotPointer {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  google.protobuf.Timestamp upstream_created_at = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
 message ListSnapshotsRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   ai.floedb.floecat.common.PageRequest page = 2;

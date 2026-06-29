@@ -68,19 +68,10 @@ final class TableStorageLocationResolver {
     if (table == null || snapshotRepo == null) {
       return null;
     }
-    String currentSnapshotId = table.getPropertiesMap().get("current-snapshot-id");
-    if (currentSnapshotId == null || currentSnapshotId.isBlank()) {
-      return null;
-    }
-    try {
-      long snapshotId = Long.parseLong(currentSnapshotId);
-      return snapshotRepo
-          .getById(table.getResourceId(), snapshotId)
-          .map(SnapshotRepository::metadataLocation)
-          .orElse(null);
-    } catch (NumberFormatException ignored) {
-      return null;
-    }
+    return snapshotRepo
+        .getCurrentSnapshot(table.getResourceId())
+        .map(SnapshotRepository::metadataLocation)
+        .orElse(null);
   }
 
   static String deriveTableRootLocation(String location) {

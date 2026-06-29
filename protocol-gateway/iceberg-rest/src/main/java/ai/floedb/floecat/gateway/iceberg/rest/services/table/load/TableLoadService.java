@@ -87,6 +87,7 @@ public class TableLoadService {
                 rewriteDeltaVariantSchemas(tableRecord),
                 rewriteDeltaVariantSchemas(tableRecord, loadData.snapshots()),
                 loadData.metadataLocation(),
+                loadData.currentSnapshotId(),
                 tableSupport.defaultTableConfig(tableRecord),
                 credentials));
     if (etagValue != null) {
@@ -176,6 +177,7 @@ public class TableLoadService {
                 rewriteDeltaVariantSchemas(tableRecord),
                 rewriteDeltaVariantSchemas(tableRecord, loadData.snapshots()),
                 loadData.metadataLocation(),
+                loadData.currentSnapshotId(),
                 tableSupport.defaultTableConfig(tableRecord),
                 credentials));
     if (etagValue != null) {

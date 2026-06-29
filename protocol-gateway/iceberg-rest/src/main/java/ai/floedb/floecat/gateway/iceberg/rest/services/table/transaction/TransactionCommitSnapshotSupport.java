@@ -18,6 +18,7 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.table.transaction;
 
 import static ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil.asStringMap;
 
+import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -77,12 +78,14 @@ public class TransactionCommitSnapshotSupport {
         resolvedAccountId.equals(tableId.getAccountId())
             ? tableId
             : tableId.toBuilder().setAccountId(resolvedAccountId).build();
-    String requestedMetadataLocation =
-        CommitUpdateInspector.inspectUpdates(updates).requestedMetadataLocation();
+    CommitUpdateInspector.Parsed parsed = CommitUpdateInspector.inspectUpdates(updates);
+    String requestedMetadataLocation = parsed.requestedMetadataLocation();
     String resolvedMetadataLocation =
         firstNonBlank(trimToNull(metadataLocation), requestedMetadataLocation);
     List<ai.floedb.floecat.transaction.rpc.TxChange> out = new ArrayList<>();
     boolean writesNewSnapshot = false;
+    Long targetCurrentSnapshotId = targetCurrentSnapshotId(table, tableSupport, parsed);
+    Snapshot currentSnapshotCandidate = null;
     if (updates != null && !updates.isEmpty()) {
       for (Map<String, Object> update : updates) {
         String action = CommitUpdateInspector.actionOf(update);
@@ -144,6 +147,26 @@ public class TransactionCommitSnapshotSupport {
                 .setTargetPointerKey(byTimeKey)
                 .setPayload(payload)
                 .build());
+        if (targetCurrentSnapshotId != null
+            && targetCurrentSnapshotId == snapshot.getSnapshotId()) {
+          currentSnapshotCandidate = snapshot;
+        }
+      }
+    }
+    if (targetCurrentSnapshotId != null && targetCurrentSnapshotId >= 0L) {
+      if (currentSnapshotCandidate == null) {
+        SnapshotChangePlan loadPlan =
+            loadSnapshotForCurrentPointer(scopedTableId, targetCurrentSnapshotId);
+        if (loadPlan.error() != null) {
+          return loadPlan;
+        }
+        if (!loadPlan.txChanges().isEmpty()) {
+          out.addAll(loadPlan.txChanges());
+        }
+      } else {
+        out.add(
+            currentSnapshotPointerChange(
+                resolvedAccountId, scopedTableId, currentSnapshotCandidate));
       }
     }
     if (!writesNewSnapshot
@@ -216,6 +239,92 @@ public class TransactionCommitSnapshotSupport {
       }
     }
     return new SnapshotChangePlan(out, null);
+  }
+
+  private SnapshotChangePlan loadSnapshotForCurrentPointer(ResourceId tableId, long snapshotId) {
+    try {
+      var response =
+          grpcClient.getSnapshot(
+              GetSnapshotRequest.newBuilder()
+                  .setTableId(tableId)
+                  .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
+                  .build());
+      if (response == null || !response.hasSnapshot()) {
+        return new SnapshotChangePlan(List.of(), null);
+      }
+      return new SnapshotChangePlan(
+          List.of(
+              currentSnapshotPointerChange(
+                  tableId.getAccountId(), tableId, response.getSnapshot())),
+          null);
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return new SnapshotChangePlan(List.of(), null);
+      }
+      return new SnapshotChangePlan(
+          List.of(), transactionCommitExecutionSupport.mapPrepareFailure(e));
+    } catch (RuntimeException e) {
+      return new SnapshotChangePlan(
+          List.of(),
+          IcebergErrorResponses.failure(
+              "failed to load snapshot payload for current pointer",
+              "CommitStateUnknownException",
+              Response.Status.SERVICE_UNAVAILABLE));
+    }
+  }
+
+  private Long targetCurrentSnapshotId(
+      Table table, TableGatewaySupport tableSupport, CommitUpdateInspector.Parsed parsed) {
+    Long existingCurrentSnapshotId = currentSnapshotId(table, tableSupport);
+    Long requestedMainSnapshotId = parsed.requestedMainRefSnapshotId();
+    if (shouldApplyRequestedMainSnapshotId(
+        parsed, existingCurrentSnapshotId, requestedMainSnapshotId)) {
+      return requestedMainSnapshotId;
+    }
+    if (requestedMainSnapshotId != null) {
+      return null;
+    }
+    if (existingCurrentSnapshotId == null || existingCurrentSnapshotId <= 0) {
+      return parsed.latestAddedSnapshotId();
+    }
+    return null;
+  }
+
+  private Long currentSnapshotId(Table table, TableGatewaySupport tableSupport) {
+    if (table == null || tableSupport == null) {
+      return null;
+    }
+    return tableSupport.loadCurrentSnapshotId(table);
+  }
+
+  private boolean shouldApplyRequestedMainSnapshotId(
+      CommitUpdateInspector.Parsed parsed, Long existingCurrentSnapshotId, Long candidate) {
+    if (candidate == null || candidate <= 0) {
+      return false;
+    }
+    if (existingCurrentSnapshotId == null || existingCurrentSnapshotId <= 0) {
+      return true;
+    }
+    if (existingCurrentSnapshotId.equals(candidate)) {
+      return true;
+    }
+    return parsed != null && parsed.addedSnapshotIds().contains(candidate);
+  }
+
+  private ai.floedb.floecat.transaction.rpc.TxChange currentSnapshotPointerChange(
+      String accountId, ResourceId tableId, Snapshot snapshot) {
+    CurrentSnapshotPointer.Builder pointer =
+        CurrentSnapshotPointer.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshot.getSnapshotId())
+            .setUpdatedAt(Timestamps.fromMillis(clockMillis()));
+    if (snapshot.hasUpstreamCreatedAt()) {
+      pointer.setUpstreamCreatedAt(snapshot.getUpstreamCreatedAt());
+    }
+    return ai.floedb.floecat.transaction.rpc.TxChange.newBuilder()
+        .setTargetPointerKey(Keys.currentSnapshotPointerByTable(accountId, tableId.getId()))
+        .setPayload(ByteString.copyFrom(pointer.build().toByteArray()))
+        .build();
   }
 
   private SnapshotChangePlan planCurrentSnapshotMetadataLocationUpdate(

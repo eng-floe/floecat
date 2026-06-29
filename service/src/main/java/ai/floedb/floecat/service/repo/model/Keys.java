@@ -428,6 +428,21 @@ public final class Keys {
     return String.format("/accounts/%s/tables/%s/snapshots/", encode(tid), encode(tbid));
   }
 
+  public static String currentSnapshotPointerByTable(String accountId, String tableId) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    return String.format("/accounts/%s/tables/%s/snapshots/current", encode(tid), encode(tbid));
+  }
+
+  public static String currentSnapshotPointerBlobUri(
+      String accountId, String tableId, String sha256) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/tables/%s/snapshots/current/%s.pb", encode(tid), encode(tbid), encode(sha));
+  }
+
   public static String snapshotPointerByTime(
       String accountId, String tableId, long snapshotId, long upstreamCreatedAtMs) {
     String tid = req("account_id", accountId);

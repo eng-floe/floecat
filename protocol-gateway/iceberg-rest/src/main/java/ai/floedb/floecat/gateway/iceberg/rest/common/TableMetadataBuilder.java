@@ -59,17 +59,13 @@ public final class TableMetadataBuilder {
   private TableMetadataBuilder() {}
 
   public static TableMetadataView fromCatalog(
-      String tableName, Table table, Map<String, String> props, List<Snapshot> snapshots) {
-    return fromCatalog(tableName, table, props, snapshots, null);
-  }
-
-  public static TableMetadataView fromCatalog(
       String tableName,
       Table table,
       Map<String, String> props,
       List<Snapshot> snapshots,
-      String metadataLocation) {
-    return buildMetadata(tableName, table, props, snapshots, metadataLocation);
+      String metadataLocation,
+      Long currentSnapshotId) {
+    return buildMetadata(tableName, table, props, snapshots, metadataLocation, currentSnapshotId);
   }
 
   public static TableMetadataView fromCreateRequest(
@@ -82,7 +78,8 @@ public final class TableMetadataBuilder {
       Table table,
       Map<String, String> props,
       List<Snapshot> snapshots,
-      String metadataLocation) {
+      String metadataLocation,
+      Long explicitCurrentSnapshotId) {
     boolean deltaTable = DeltaSchemaNormalizer.isDeltaTable(table, props);
     String location = props.get("location");
     if (!hasText(location) && table.hasUpstream()) {
@@ -90,7 +87,7 @@ public final class TableMetadataBuilder {
     }
     location = hasText(location) ? location : null;
     Long lastUpdatedMs = null;
-    Long currentSnapshotId = null;
+    Long currentSnapshotId = explicitCurrentSnapshotId;
     Long lastSequenceNumber = null;
     Integer lastColumnId = null;
     Integer currentSchemaId = null;
@@ -136,9 +133,6 @@ public final class TableMetadataBuilder {
     if (lastUpdatedMs == null || lastUpdatedMs <= 0) {
       lastUpdatedMs = System.currentTimeMillis();
     }
-    if (currentSnapshotId == null) {
-      currentSnapshotId = asLong(props.get("current-snapshot-id"));
-    }
     if (lastSequenceNumber == null) {
       lastSequenceNumber = asLong(props.get("last-sequence-number"));
     }
@@ -146,11 +140,6 @@ public final class TableMetadataBuilder {
       lastSequenceNumber = 0L;
     }
     Snapshot currentSnapshot = resolveCurrentSnapshot(snapshots, currentSnapshotId);
-    if (currentSnapshotId == null
-        && currentSnapshot != null
-        && currentSnapshot.getSnapshotId() >= 0) {
-      currentSnapshotId = currentSnapshot.getSnapshotId();
-    }
     List<Map<String, Object>> schemaList = schemasFromSnapshot(currentSnapshot, table, deltaTable);
     if (!schemaList.isEmpty()) {
       Map<String, Object> currentSchema = schemaList.get(0);
@@ -228,12 +217,6 @@ public final class TableMetadataBuilder {
     if ((refs == null || refs.isEmpty()) && currentSnapshotId != null && currentSnapshotId >= 0) {
       refs = Map.of("main", Map.of("snapshot-id", currentSnapshotId, "type", "branch"));
     }
-    if (currentSnapshotId == null || currentSnapshotId < 0) {
-      Long mainRefSnapshotId = mainRefSnapshotId(refs);
-      if (mainRefSnapshotId != null && snapshotIds.contains(mainRefSnapshotId)) {
-        currentSnapshotId = mainRefSnapshotId;
-      }
-    }
     refs = sanitizeRefs(refs, snapshotIds, currentSnapshotId);
     syncProperty(props, "table-uuid", tableUuid);
     syncOrRemove(props, "current-snapshot-id", currentSnapshotId);
@@ -281,6 +264,7 @@ public final class TableMetadataBuilder {
           return snapshot;
         }
       }
+      return null;
     }
     return snapshots.stream()
         .filter(snapshot -> snapshot != null)
@@ -718,17 +702,6 @@ public final class TableMetadataBuilder {
       out.put("main", Map.of("snapshot-id", currentSnapshotId, "type", "branch"));
     }
     return out;
-  }
-
-  private static Long mainRefSnapshotId(Map<String, Object> refs) {
-    if (refs == null || refs.isEmpty()) {
-      return null;
-    }
-    Object main = refs.get("main");
-    if (!(main instanceof Map<?, ?> map)) {
-      return null;
-    }
-    return asLong(map.get("snapshot-id"));
   }
 
   private static String formatVersionProperty(Map<String, String> props) {

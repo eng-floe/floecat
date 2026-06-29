@@ -65,7 +65,8 @@ class TableLoadServiceTest {
     Snapshot snapshot = Snapshot.newBuilder().setSnapshotId(249933L).build();
 
     when(service.loadSupport.loadData(table, SnapshotLister.Mode.ALL, tableSupport))
-        .thenReturn(new TableLoadSupport.LoadData(null, List.of(snapshot)));
+        .thenReturn(
+            new TableLoadSupport.LoadData(null, snapshot.getSnapshotId(), List.of(snapshot)));
     when(service.loadSupport.deltaCompatEnabled(table)).thenReturn(true);
     when(tableSupport.credentialsForAccessDelegation(table, "vended-credentials"))
         .thenReturn(
@@ -124,7 +125,8 @@ class TableLoadServiceTest {
     Snapshot snapshot = Snapshot.newBuilder().setSnapshotId(249950L).build();
 
     when(service.loadSupport.loadData(table, SnapshotLister.Mode.ALL, tableSupport))
-        .thenReturn(new TableLoadSupport.LoadData(null, List.of(snapshot)));
+        .thenReturn(
+            new TableLoadSupport.LoadData(null, snapshot.getSnapshotId(), List.of(snapshot)));
     when(service.loadSupport.deltaCompatEnabled(table)).thenReturn(true);
     when(tableSupport.usesVendedCredentials("vended_credentials")).thenReturn(true);
     when(tableSupport.credentialsForAccessDelegation(table, "vended_credentials"))
@@ -188,7 +190,8 @@ class TableLoadServiceTest {
         Snapshot.newBuilder().setSnapshotId(1L).setSchemaJson(variantSchemaJson).build();
 
     when(service.loadSupport.loadData(table, SnapshotLister.Mode.ALL, tableSupport))
-        .thenReturn(new TableLoadSupport.LoadData(null, List.of(snapshot)));
+        .thenReturn(
+            new TableLoadSupport.LoadData(null, snapshot.getSnapshotId(), List.of(snapshot)));
     when(service.loadSupport.deltaCompatEnabled(table)).thenReturn(true);
     when(tableSupport.credentialsForAccessDelegation(table, "none")).thenReturn(null);
     when(tableSupport.defaultTableConfig(table)).thenReturn(Map.of());
@@ -240,7 +243,8 @@ class TableLoadServiceTest {
         Snapshot.newBuilder().setSnapshotId(1L).setSchemaJson(variantSchemaJson).build();
 
     when(service.loadSupport.loadData(table, SnapshotLister.Mode.ALL, tableSupport))
-        .thenReturn(new TableLoadSupport.LoadData(null, List.of(snapshot)));
+        .thenReturn(
+            new TableLoadSupport.LoadData(null, snapshot.getSnapshotId(), List.of(snapshot)));
     when(service.loadSupport.deltaCompatEnabled(table)).thenReturn(true);
     when(tableSupport.credentialsForAccessDelegation(table, "none")).thenReturn(null);
     when(tableSupport.defaultTableConfig(table)).thenReturn(Map.of());
@@ -254,5 +258,45 @@ class TableLoadServiceTest {
     @SuppressWarnings("unchecked")
     List<Map<String, Object>> fields = (List<Map<String, Object>>) schema.get("fields");
     assertEquals("variant", fields.get(0).get("type"));
+  }
+
+  @Test
+  void loadResolvedTableUsesPointerBackedCurrentSnapshotId() {
+    TableLoadService service = new TableLoadService();
+    service.tableLifecycleService = mock(TableLifecycleService.class);
+    service.loadSupport = mock(TableLoadSupport.class);
+    service.grpcClient = mock(GrpcServiceFacade.class);
+
+    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct-1")
+                    .setKind(ResourceKind.RK_TABLE)
+                    .setId("tbl-1")
+                    .build())
+            .putProperties("current-snapshot-id", "200")
+            .build();
+    Snapshot current = Snapshot.newBuilder().setSnapshotId(100L).setSequenceNumber(100L).build();
+    Snapshot newer = Snapshot.newBuilder().setSnapshotId(200L).setSequenceNumber(200L).build();
+
+    when(service.loadSupport.loadData(table, SnapshotLister.Mode.ALL, tableSupport))
+        .thenReturn(
+            new TableLoadSupport.LoadData(
+                "s3://warehouse/orders/metadata/00001-current.metadata.json",
+                100L,
+                List.of(current, newer)));
+    when(tableSupport.credentialsForAccessDelegation(table, "none")).thenReturn(null);
+    when(tableSupport.defaultTableConfig(table)).thenReturn(Map.of());
+
+    Response response = service.loadResolvedTable("orders", table, "none", tableSupport);
+
+    LoadTableResultDto entity = (LoadTableResultDto) response.getEntity();
+    assertNotNull(entity);
+    assertEquals(100L, entity.metadata().currentSnapshotId());
+    @SuppressWarnings("unchecked")
+    Map<String, Object> main = (Map<String, Object>) entity.metadata().refs().get("main");
+    assertEquals(100L, main.get("snapshot-id"));
   }
 }

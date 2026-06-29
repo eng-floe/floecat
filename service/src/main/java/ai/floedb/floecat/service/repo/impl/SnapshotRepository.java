@@ -16,32 +16,48 @@
 
 package ai.floedb.floecat.service.repo.impl;
 
+import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
-import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.SnapshotKey;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.telemetry.StoreOperationSummary;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.time.Clock;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.locks.LockSupport;
 
 @ApplicationScoped
 public class SnapshotRepository {
+  public enum CurrentSnapshotPointerUpdateResult {
+    UPDATED,
+    UNCHANGED,
+    TABLE_MISSING,
+    CONFLICT
+  }
 
   private final GenericResourceRepository<Snapshot, SnapshotKey> repo;
   private final TableRepository tableRepo;
+  private final CurrentSnapshotPointerRepository currentPointerRepo;
+  private final Clock clock;
 
   @Inject
   public SnapshotRepository(
-      PointerStore pointerStore, BlobStore blobStore, TableRepository tableRepo) {
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      TableRepository tableRepo,
+      CurrentSnapshotPointerRepository currentPointerRepo) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -51,6 +67,36 @@ public class SnapshotRepository {
             Snapshot::toByteArray,
             "application/x-protobuf");
     this.tableRepo = tableRepo;
+    this.currentPointerRepo = currentPointerRepo;
+    this.clock = Clock.systemUTC();
+  }
+
+  public SnapshotRepository(
+      PointerStore pointerStore, BlobStore blobStore, TableRepository tableRepo) {
+    this(
+        pointerStore,
+        blobStore,
+        tableRepo,
+        new CurrentSnapshotPointerRepository(pointerStore, blobStore));
+  }
+
+  public SnapshotRepository(
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      TableRepository tableRepo,
+      CurrentSnapshotPointerRepository currentPointerRepo,
+      Clock clock) {
+    this.repo =
+        new GenericResourceRepository<>(
+            pointerStore,
+            blobStore,
+            Schemas.SNAPSHOT,
+            Snapshot::parseFrom,
+            Snapshot::toByteArray,
+            "application/x-protobuf");
+    this.tableRepo = tableRepo;
+    this.currentPointerRepo = currentPointerRepo;
+    this.clock = clock;
   }
 
   public void create(Snapshot snapshot) {
@@ -58,22 +104,122 @@ public class SnapshotRepository {
   }
 
   public boolean update(Snapshot snapshot, long expectedPointerVersion) {
-    return repo.update(snapshot, expectedPointerVersion);
+    boolean updated = repo.update(snapshot, expectedPointerVersion);
+    if (updated) {
+      maybeAdvanceCurrentSnapshotPointer(snapshot.getTableId(), snapshot);
+    }
+    return updated;
   }
 
   public boolean delete(ResourceId tableId, long snapshotId) {
-    return repo.delete(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
+    boolean deleted =
+        repo.delete(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
+    if (deleted) {
+      deleteCurrentPointerIfCurrent(tableId, snapshotId);
+    }
+    return deleted;
   }
 
   public boolean deleteWithPrecondition(
       ResourceId tableId, long snapshotId, long expectedPointerVersion) {
-    return repo.deleteWithPrecondition(
-        new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId),
-        expectedPointerVersion);
+    boolean deleted =
+        repo.deleteWithPrecondition(
+            new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId),
+            expectedPointerVersion);
+    if (deleted) {
+      deleteCurrentPointerIfCurrent(tableId, snapshotId);
+    }
+    return deleted;
   }
 
   public Optional<Snapshot> getById(ResourceId tableId, long snapshotId) {
     return repo.getByKey(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
+  }
+
+  public CurrentSnapshotPointerUpdateResult maybeAdvanceCurrentSnapshotPointer(
+      ResourceId tableId, Snapshot candidate) {
+    var table = tableRepo.getById(tableId);
+    if (table.isEmpty()) {
+      return CurrentSnapshotPointerUpdateResult.TABLE_MISSING;
+    }
+
+    for (int attempt = 0; attempt < 4; attempt++) {
+      Optional<CurrentSnapshotPointer> currentPointer = currentPointerRepo.get(tableId);
+      if (!shouldAdvanceCurrentSnapshot(currentPointer.orElse(null), candidate)) {
+        return CurrentSnapshotPointerUpdateResult.UNCHANGED;
+      }
+
+      CurrentSnapshotPointer next = buildCurrentPointer(tableId, candidate);
+      if (currentPointer.isEmpty()) {
+        if (currentPointerRepo.createIfAbsent(next)) {
+          return CurrentSnapshotPointerUpdateResult.UPDATED;
+        }
+      } else {
+        Optional<CurrentSnapshotPointerObservation> observed =
+            currentPointerForUpdate(tableId, currentPointer.get());
+        if (observed.isEmpty()) {
+          backoffCurrentPointerAdvance(attempt);
+          continue;
+        }
+        if (!shouldAdvanceCurrentSnapshot(observed.get().pointer(), candidate)) {
+          return CurrentSnapshotPointerUpdateResult.UNCHANGED;
+        }
+        if (currentPointerRepo.update(next, observed.get().pointerVersion())) {
+          return CurrentSnapshotPointerUpdateResult.UPDATED;
+        }
+      }
+      backoffCurrentPointerAdvance(attempt);
+    }
+    return CurrentSnapshotPointerUpdateResult.CONFLICT;
+  }
+
+  private Optional<CurrentSnapshotPointerObservation> currentPointerForUpdate(
+      ResourceId tableId, CurrentSnapshotPointer expectedPointer) {
+    long expectedVersion;
+    try {
+      expectedVersion = currentPointerRepo.metaFor(tableId).getPointerVersion();
+    } catch (BaseResourceRepository.NotFoundException e) {
+      return Optional.empty();
+    }
+    Optional<CurrentSnapshotPointer> afterMeta = currentPointerRepo.get(tableId);
+    if (afterMeta.isEmpty() || !afterMeta.get().equals(expectedPointer)) {
+      return Optional.empty();
+    }
+    return Optional.of(new CurrentSnapshotPointerObservation(afterMeta.get(), expectedVersion));
+  }
+
+  private record CurrentSnapshotPointerObservation(
+      CurrentSnapshotPointer pointer, long pointerVersion) {}
+
+  private static void backoffCurrentPointerAdvance(int attempt) {
+    long baseNanos = (1L << Math.min(attempt, 5)) * 1_000_000L;
+    long jitterNanos = ThreadLocalRandom.current().nextLong(250_000L, 1_000_001L);
+    LockSupport.parkNanos(baseNanos + jitterNanos);
+  }
+
+  private boolean shouldAdvanceCurrentSnapshot(
+      CurrentSnapshotPointer currentPointer, Snapshot candidateSnapshot) {
+    if (currentPointer == null) {
+      return true;
+    }
+
+    long currentMs =
+        currentPointer.hasUpstreamCreatedAt()
+            ? Timestamps.toMillis(currentPointer.getUpstreamCreatedAt())
+            : Long.MIN_VALUE;
+    long candidateMs =
+        candidateSnapshot.hasUpstreamCreatedAt()
+            ? Timestamps.toMillis(candidateSnapshot.getUpstreamCreatedAt())
+            : Long.MIN_VALUE;
+
+    if (currentPointer.getSnapshotId() == candidateSnapshot.getSnapshotId()) {
+      return currentMs != candidateMs;
+    }
+
+    if (candidateMs != currentMs) {
+      return candidateMs > currentMs;
+    }
+    return candidateSnapshot.getSnapshotId() > currentPointer.getSnapshotId();
   }
 
   public static String metadataLocation(Snapshot snapshot) {
@@ -88,25 +234,61 @@ public class SnapshotRepository {
     if (tableId == null) {
       return Optional.empty();
     }
-    Optional<Table> table = tableRepo.getById(tableId);
-    if (table.isEmpty()) {
+    Optional<CurrentSnapshotPointer> pointer = currentPointerRepo.get(tableId);
+    String fallbackReason = "current_snapshot";
+    if (pointer.isPresent()) {
+      long snapshotId = pointer.get().getSnapshotId();
+      if (snapshotId < 0) {
+        fallbackReason = "current_snapshot_invalid_pointer";
+      } else {
+        Optional<Snapshot> current = getById(tableId, snapshotId);
+        StoreOperationSummary.put(
+            "current_snapshot_source", current.isPresent() ? "pointer" : "fallback");
+        if (current.isPresent()) {
+          return current;
+        }
+        fallbackReason = "current_snapshot_missing_pointer_target";
+      }
+    }
+
+    if (tableRepo.getById(tableId).isEmpty()) {
       return Optional.empty();
     }
-    String currentSnapshotId = table.get().getPropertiesMap().get("current-snapshot-id");
-    if (currentSnapshotId == null || currentSnapshotId.isBlank()) {
-      return latestSnapshotByTime(tableId);
+    StoreOperationSummary.put("current_snapshot_source", "fallback");
+    StoreOperationSummary.fallback(fallbackReason);
+    return latestSnapshotByTime(tableId);
+  }
+
+  private CurrentSnapshotPointer buildCurrentPointer(ResourceId tableId, Snapshot snapshot) {
+    CurrentSnapshotPointer.Builder builder =
+        CurrentSnapshotPointer.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshot.getSnapshotId())
+            .setUpdatedAt(Timestamps.fromMillis(clock.millis()));
+    if (snapshot.hasUpstreamCreatedAt()) {
+      builder.setUpstreamCreatedAt(snapshot.getUpstreamCreatedAt());
     }
-    long snapshotId;
+    return builder.build();
+  }
+
+  private void deleteCurrentPointerIfCurrent(ResourceId tableId, long snapshotId) {
+    Optional<CurrentSnapshotPointer> before = currentPointerRepo.get(tableId);
+    if (before.isEmpty() || before.get().getSnapshotId() != snapshotId) {
+      return;
+    }
+    long expectedVersion;
     try {
-      snapshotId = Long.parseLong(currentSnapshotId);
-    } catch (NumberFormatException e) {
-      return latestSnapshotByTime(tableId);
+      expectedVersion = currentPointerRepo.metaFor(tableId).getPointerVersion();
+    } catch (BaseResourceRepository.NotFoundException e) {
+      return;
     }
-    if (snapshotId < 0) {
-      return latestSnapshotByTime(tableId);
+    Optional<CurrentSnapshotPointer> afterMeta = currentPointerRepo.get(tableId);
+    if (afterMeta.isEmpty()
+        || afterMeta.get().getSnapshotId() != snapshotId
+        || !afterMeta.get().equals(before.get())) {
+      return;
     }
-    Optional<Snapshot> current = getById(tableId, snapshotId);
-    return current.isPresent() ? current : latestSnapshotByTime(tableId);
+    currentPointerRepo.deleteWithPrecondition(tableId, expectedVersion);
   }
 
   public Optional<Snapshot> getAsOf(ResourceId tableId, Timestamp asOf) {

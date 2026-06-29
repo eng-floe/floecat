@@ -16,18 +16,25 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
+import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.gateway.iceberg.rest.common.RefPropertyUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableMappingUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import io.grpc.StatusRuntimeException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -46,7 +53,7 @@ public final class SnapshotLister {
       ResourceId tableId = table == null ? null : table.getResourceId();
       List<Snapshot> snapshots = fetchAllSnapshots(snapshotClient, tableId);
       if (mode == Mode.REFS) {
-        Set<Long> refIds = referencedSnapshotIds(table);
+        Set<Long> refIds = referencedSnapshotIds(snapshotClient, table, snapshots);
         if (refIds.isEmpty()) {
           return List.of();
         }
@@ -60,23 +67,70 @@ public final class SnapshotLister {
     }
   }
 
-  private static Set<Long> referencedSnapshotIds(Table table) {
+  private static Set<Long> referencedSnapshotIds(
+      GrpcServiceFacade snapshotClient, Table table, List<Snapshot> snapshots) {
     if (table == null) {
       return Set.of();
     }
-    Set<Long> refIds =
+    Set<Long> refHeads =
         RefPropertyUtil.decode(table.getPropertiesMap().get(RefPropertyUtil.PROPERTY_KEY))
             .values()
             .stream()
             .map(ref -> TableMappingUtil.asLong(ref.get("snapshot-id")))
             .filter(id -> id != null && id >= 0L)
             .collect(Collectors.toSet());
-    Long currentSnapshotId =
-        TableMappingUtil.asLong(table.getPropertiesMap().get("current-snapshot-id"));
+    Long currentSnapshotId = currentSnapshotId(snapshotClient, table.getResourceId());
     if (currentSnapshotId != null && currentSnapshotId >= 0L) {
-      refIds.add(currentSnapshotId);
+      refHeads.add(currentSnapshotId);
     }
-    return refIds;
+    return reachableSnapshotIds(refHeads, snapshots);
+  }
+
+  private static Set<Long> reachableSnapshotIds(Set<Long> refHeads, List<Snapshot> snapshots) {
+    if (refHeads == null || refHeads.isEmpty() || snapshots == null || snapshots.isEmpty()) {
+      return Set.of();
+    }
+    Map<Long, Snapshot> byId = new HashMap<>();
+    for (Snapshot snapshot : snapshots) {
+      if (snapshot != null && snapshot.getSnapshotId() >= 0L) {
+        byId.put(snapshot.getSnapshotId(), snapshot);
+      }
+    }
+    Set<Long> reachable = new HashSet<>();
+    ArrayDeque<Long> pending = new ArrayDeque<>(refHeads);
+    while (!pending.isEmpty()) {
+      Long id = pending.removeFirst();
+      if (id == null || !reachable.add(id)) {
+        continue;
+      }
+      Snapshot snapshot = byId.get(id);
+      if (snapshot != null && snapshot.hasParentSnapshotId()) {
+        pending.addLast(snapshot.getParentSnapshotId());
+      }
+    }
+    return reachable;
+  }
+
+  private static Long currentSnapshotId(GrpcServiceFacade snapshotClient, ResourceId tableId) {
+    if (snapshotClient == null || tableId == null) {
+      return null;
+    }
+    try {
+      var request =
+          GetSnapshotRequest.newBuilder()
+              .setTableId(tableId)
+              .setSnapshot(SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
+              .build();
+      var response = snapshotClient.getSnapshot(request);
+      if (response == null
+          || !response.hasSnapshot()
+          || response.getSnapshot().getSnapshotId() < 0) {
+        return null;
+      }
+      return response.getSnapshot().getSnapshotId();
+    } catch (StatusRuntimeException e) {
+      return null;
+    }
   }
 
   private static List<Snapshot> fetchAllSnapshots(
