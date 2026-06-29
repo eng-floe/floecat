@@ -716,7 +716,8 @@ class ReconcileControlImplTest {
                             .setMode(
                                 ai.floedb.floecat.reconciler.rpc.CaptureMode
                                     .CM_METADATA_AND_CAPTURE)
-                            .setScope(CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                            .setScope(
+                                CaptureScope.newBuilder().setConnectorId(connectorId()).build())
                             .build())
                     .await()
                     .indefinitely());

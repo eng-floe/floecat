@@ -148,7 +148,7 @@ final class StatsCliSupport {
       Function<String, ResourceId> resolveTableId) {
     if (args.isEmpty()) {
       out.println(
-          "usage: stats table <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] [--json] (defaults to"
+          "usage: stats table <tableFQ> [--snapshot <id>|--current] [--json] (defaults to"
               + " --current)");
       return;
     }
@@ -182,7 +182,7 @@ final class StatsCliSupport {
       Function<String, ResourceId> resolveTableId) {
     if (args.isEmpty()) {
       out.println(
-          "usage: stats columns <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] (defaults to --current)"
+          "usage: stats columns <tableFQ> [--snapshot <id>|--current] (defaults to --current)"
               + " [--limit N] [--json]");
       return;
     }
@@ -287,7 +287,7 @@ final class StatsCliSupport {
       Function<String, ResourceId> resolveTableId) {
     if (args.isEmpty()) {
       out.println(
-          "usage: stats files <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] (defaults to --current)"
+          "usage: stats files <tableFQ> [--snapshot <id>|--current] (defaults to --current)"
               + " [--limit N]");
       return;
     }
@@ -360,7 +360,7 @@ final class StatsCliSupport {
     }
     if (args.isEmpty()) {
       out.println(
-          "usage: stats index <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] (defaults to --current)"
+          "usage: stats index <tableFQ> [--snapshot <id>|--current] (defaults to --current)"
               + " [--limit N] [--json]");
       return;
     }
