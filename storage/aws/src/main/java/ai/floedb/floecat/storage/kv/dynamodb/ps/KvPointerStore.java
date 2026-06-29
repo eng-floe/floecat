@@ -16,6 +16,7 @@
 package ai.floedb.floecat.storage.kv.dynamodb.ps;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.storage.aws.ClosedAwsClientDetector;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
@@ -117,6 +118,9 @@ public abstract class KvPointerStore implements PointerStore {
     } catch (StorageAbortRetryableException e) {
       throw e;
     } catch (RuntimeException e) {
+      if (!ClosedAwsClientDetector.isConnectionPoolShutdown(e)) {
+        throw e;
+      }
       throw new StorageAbortRetryableException("DynamoDB pointer store operation failed", e);
     }
   }

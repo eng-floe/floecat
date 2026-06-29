@@ -61,10 +61,14 @@ public class KvStoreProducer {
   @KvTable("floecat")
   KvStore coreKvStore(
       DynamoDbAsyncClient ddb, @ConfigProperty(name = "floecat.kv.table") String table) {
-    var manager = Arc.container().select(DynamoDbAsyncClientManager.class);
-    if (manager.isResolvable()) {
-      DynamoDbAsyncClientManager clientManager = manager.get();
-      return new DynamoDbKvStore(clientManager::current, table, clientManager::refreshAfterFailure);
+    var container = Arc.container();
+    if (container != null) {
+      var manager = container.select(DynamoDbAsyncClientManager.class);
+      if (manager.isResolvable()) {
+        DynamoDbAsyncClientManager clientManager = manager.get();
+        return new DynamoDbKvStore(
+            clientManager::current, table, clientManager::refreshAfterFailure);
+      }
     }
     return new DynamoDbKvStore(ddb, table);
   }
