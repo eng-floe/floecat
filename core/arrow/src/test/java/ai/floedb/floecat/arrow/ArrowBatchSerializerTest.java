@@ -68,6 +68,18 @@ class ArrowBatchSerializerTest {
   }
 
   @Test
+  void schemaColumnsFor_projection_reordersFiltersAndDeduplicates() {
+    List<SchemaColumn> scannerSchema =
+        List.of(col("id", "INT"), col("name", "VARCHAR"), col("status", "VARCHAR"));
+
+    List<SchemaColumn> result =
+        ArrowBatchSerializer.schemaColumnsFor(
+            scannerSchema, List.of("status", "id", "missing", "status"));
+
+    assertThat(result).extracting(SchemaColumn::getName).containsExactly("status", "id");
+  }
+
+  @Test
   void schemaForColumns_unknownColumnsSilentlyDropped() {
     List<SchemaColumn> scannerSchema = List.of(col("id", "INT"), col("name", "VARCHAR"));
     Schema result =

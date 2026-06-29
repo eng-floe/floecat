@@ -81,14 +81,14 @@ class SystemRowProjectorTest {
   }
 
   @Test
-  void project_duplicateRequestedColumns_areRepeatedInOutput() {
+  void project_duplicateRequestedColumns_areDeduplicatedInOutput() {
     var schema = List.of(col("a"), col("b"));
     var row = new SystemObjectRow(new Object[] {"1", "2"});
 
     var out = SystemRowProjector.project(List.of(row), schema, List.of("a", "a", "b"));
 
     assertThat(out).hasSize(1);
-    assertThat(out.get(0).values()).containsExactly("1", "1", "2");
+    assertThat(out.get(0).values()).containsExactly("1", "2");
   }
 
   @Test

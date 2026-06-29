@@ -18,7 +18,10 @@ package ai.floedb.floecat.service.query.system;
 
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.SequencedSet;
 import java.util.stream.Stream;
 
 public final class SystemRowProjector {
@@ -37,9 +40,26 @@ public final class SystemRowProjector {
     if (requiredColumns.isEmpty()) return rows;
 
     int[] indexes =
-        requiredColumns.stream().mapToInt(c -> indexOf(schema, c)).filter(i -> i >= 0).toArray();
+        normalizedRequiredColumns(requiredColumns).stream()
+            .mapToInt(c -> indexOf(schema, c))
+            .filter(i -> i >= 0)
+            .toArray();
 
     return rows.map(r -> projectRow(r, indexes));
+  }
+
+  private static SequencedSet<String> normalizedRequiredColumns(List<String> requiredColumns) {
+    SequencedSet<String> normalized = new LinkedHashSet<>();
+    for (String column : requiredColumns) {
+      if (column == null) {
+        continue;
+      }
+      String name = column.trim().toLowerCase(Locale.ROOT);
+      if (!name.isEmpty()) {
+        normalized.add(name);
+      }
+    }
+    return normalized;
   }
 
   private static SystemObjectRow projectRow(SystemObjectRow row, int[] idxs) {

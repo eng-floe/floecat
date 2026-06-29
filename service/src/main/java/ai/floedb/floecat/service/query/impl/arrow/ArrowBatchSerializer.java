@@ -100,8 +100,13 @@ public final class ArrowBatchSerializer {
    */
   public static Schema schemaForColumns(
       List<SchemaColumn> scannerSchema, List<String> requiredColumns) {
+    return ArrowSchemaUtil.toArrowSchema(schemaColumnsFor(scannerSchema, requiredColumns));
+  }
+
+  public static List<SchemaColumn> schemaColumnsFor(
+      List<SchemaColumn> scannerSchema, List<String> requiredColumns) {
     if (requiredColumns == null || requiredColumns.isEmpty()) {
-      return ArrowSchemaUtil.toArrowSchema(scannerSchema);
+      return scannerSchema;
     }
     // Build ordered de-duplicated set of lower-cased requested column names.
     SequencedSet<String> requested = new LinkedHashSet<>();
@@ -111,7 +116,7 @@ public final class ArrowBatchSerializer {
       }
     }
     if (requested.isEmpty()) {
-      return ArrowSchemaUtil.toArrowSchema(scannerSchema);
+      return scannerSchema;
     }
     // Build a lookup map once to avoid re-scanning the schema for each requested column.
     Map<String, SchemaColumn> schemaByName = new HashMap<>(scannerSchema.size());
@@ -126,6 +131,6 @@ public final class ArrowBatchSerializer {
       }
       // unknown names are silently dropped
     }
-    return ArrowSchemaUtil.toArrowSchema(projected);
+    return projected;
   }
 }
