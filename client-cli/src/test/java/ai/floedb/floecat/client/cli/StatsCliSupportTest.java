@@ -49,6 +49,7 @@ import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
+import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
@@ -228,6 +229,49 @@ class StatsCliSupportTest {
     }
   }
 
+  @Test
+  void statsColumnsLimitStopsPagingAfterRequestedRows() throws Exception {
+    try (Harness h = new Harness()) {
+      h.statisticsService.listTargetStatsPages =
+          List.of(
+              ListTargetStatsResponse.newBuilder()
+                  .addRecords(
+                      TargetStatsRecord.newBuilder()
+                          .setTableId(tableId())
+                          .setScalar(ai.floedb.floecat.catalog.rpc.ScalarStats.getDefaultInstance())
+                          .build())
+                  .addRecords(
+                      TargetStatsRecord.newBuilder()
+                          .setTableId(tableId())
+                          .setScalar(ai.floedb.floecat.catalog.rpc.ScalarStats.getDefaultInstance())
+                          .build())
+                  .setPage(PageResponse.newBuilder().setNextPageToken("page-2").build())
+                  .build(),
+              ListTargetStatsResponse.newBuilder()
+                  .addRecords(
+                      TargetStatsRecord.newBuilder()
+                          .setTableId(tableId())
+                          .setScalar(ai.floedb.floecat.catalog.rpc.ScalarStats.getDefaultInstance())
+                          .build())
+                  .build());
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      StatsCliSupport.handle(
+          "stats",
+          List.of("columns", "catalog.ns.tbl", "--limit", "2"),
+          new PrintStream(buf),
+          h.statisticsStub,
+          h.indexesStub,
+          h.tablesStub,
+          h.namespacesStub,
+          h.reconcileControlStub,
+          ignored -> tableId());
+
+      assertEquals(1, h.statisticsService.listTargetStatsCalls.get());
+      assertTrue(buf.toString().contains("Showing first 2 column stats."));
+    }
+  }
+
   // --- stats files ---
 
   @Test
@@ -269,6 +313,52 @@ class StatsCliSupportTest {
           h.reconcileControlStub,
           ignored -> tableId());
       assertTrue(buf.toString().contains("usage:"));
+    }
+  }
+
+  @Test
+  void statsFilesLimitStopsPagingAfterRequestedRows() throws Exception {
+    try (Harness h = new Harness()) {
+      h.statisticsService.listTargetStatsPages =
+          List.of(
+              ListTargetStatsResponse.newBuilder()
+                  .addRecords(
+                      TargetStatsRecord.newBuilder()
+                          .setTableId(tableId())
+                          .setFile(
+                              ai.floedb.floecat.catalog.rpc.FileTargetStats.getDefaultInstance())
+                          .build())
+                  .addRecords(
+                      TargetStatsRecord.newBuilder()
+                          .setTableId(tableId())
+                          .setFile(
+                              ai.floedb.floecat.catalog.rpc.FileTargetStats.getDefaultInstance())
+                          .build())
+                  .setPage(PageResponse.newBuilder().setNextPageToken("page-2").build())
+                  .build(),
+              ListTargetStatsResponse.newBuilder()
+                  .addRecords(
+                      TargetStatsRecord.newBuilder()
+                          .setTableId(tableId())
+                          .setFile(
+                              ai.floedb.floecat.catalog.rpc.FileTargetStats.getDefaultInstance())
+                          .build())
+                  .build());
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      StatsCliSupport.handle(
+          "stats",
+          List.of("files", "catalog.ns.tbl", "--limit", "2"),
+          new PrintStream(buf),
+          h.statisticsStub,
+          h.indexesStub,
+          h.tablesStub,
+          h.namespacesStub,
+          h.reconcileControlStub,
+          ignored -> tableId());
+
+      assertEquals(1, h.statisticsService.listTargetStatsCalls.get());
+      assertTrue(buf.toString().contains("Showing first 2 file stats."));
     }
   }
 
@@ -392,6 +482,73 @@ class StatsCliSupportTest {
           ignored -> tableId());
 
       assertTrue(buf.toString().contains("Showing first 1000 index artifacts."));
+    }
+  }
+
+  @Test
+  void statsIndexLimitStopsPagingAfterRequestedRows() throws Exception {
+    try (Harness h = new Harness()) {
+      h.indexService.listIndexArtifactsPages =
+          List.of(
+              ListIndexArtifactsResponse.newBuilder()
+                  .addRecords(
+                      IndexArtifactRecord.newBuilder()
+                          .setTableId(tableId())
+                          .setSnapshotId(7L)
+                          .setTarget(
+                              IndexTarget.newBuilder()
+                                  .setFile(
+                                      IndexFileTarget.newBuilder()
+                                          .setFilePath("file-2.parquet")
+                                          .build())
+                                  .build())
+                          .setArtifactUri("file-2.idx")
+                          .build())
+                  .addRecords(
+                      IndexArtifactRecord.newBuilder()
+                          .setTableId(tableId())
+                          .setSnapshotId(7L)
+                          .setTarget(
+                              IndexTarget.newBuilder()
+                                  .setFile(
+                                      IndexFileTarget.newBuilder()
+                                          .setFilePath("file-1.parquet")
+                                          .build())
+                                  .build())
+                          .setArtifactUri("file-1.idx")
+                          .build())
+                  .setPage(PageResponse.newBuilder().setNextPageToken("page-2").build())
+                  .build(),
+              ListIndexArtifactsResponse.newBuilder()
+                  .addRecords(
+                      IndexArtifactRecord.newBuilder()
+                          .setTableId(tableId())
+                          .setSnapshotId(7L)
+                          .setTarget(
+                              IndexTarget.newBuilder()
+                                  .setFile(
+                                      IndexFileTarget.newBuilder()
+                                          .setFilePath("file-0.parquet")
+                                          .build())
+                                  .build())
+                          .setArtifactUri("file-0.idx")
+                          .build())
+                  .build());
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      StatsCliSupport.handle(
+          "stats",
+          List.of("index", "catalog.ns.tbl", "--limit", "2"),
+          new PrintStream(buf),
+          h.statisticsStub,
+          h.indexesStub,
+          h.tablesStub,
+          h.namespacesStub,
+          h.reconcileControlStub,
+          ignored -> tableId());
+
+      assertEquals(1, h.indexService.listIndexArtifactsCalls.get());
+      assertTrue(buf.toString().contains("Showing first 2 index artifacts."));
     }
   }
 
@@ -695,6 +852,7 @@ class StatsCliSupportTest {
     GetTargetStatsRequest lastTargetStatsRequest;
     ListTargetStatsRequest lastListTargetStatsRequest;
     TargetStatsRecord tableStatsToReturn = TargetStatsRecord.getDefaultInstance();
+    List<ListTargetStatsResponse> listTargetStatsPages = List.of();
 
     @Override
     public void getTargetStats(
@@ -711,7 +869,12 @@ class StatsCliSupportTest {
         ListTargetStatsRequest request, StreamObserver<ListTargetStatsResponse> responseObserver) {
       listTargetStatsCalls.incrementAndGet();
       lastListTargetStatsRequest = request;
-      responseObserver.onNext(ListTargetStatsResponse.getDefaultInstance());
+      if (!listTargetStatsPages.isEmpty()) {
+        int index = Math.min(listTargetStatsCalls.get() - 1, listTargetStatsPages.size() - 1);
+        responseObserver.onNext(listTargetStatsPages.get(index));
+      } else {
+        responseObserver.onNext(ListTargetStatsResponse.getDefaultInstance());
+      }
       responseObserver.onCompleted();
     }
   }
@@ -721,6 +884,7 @@ class StatsCliSupportTest {
     final AtomicInteger listIndexArtifactsCalls = new AtomicInteger();
     ListIndexArtifactsRequest lastListIndexArtifactsRequest;
     List<IndexArtifactRecord> recordsToReturn = List.of();
+    List<ListIndexArtifactsResponse> listIndexArtifactsPages = List.of();
 
     @Override
     public void listIndexArtifacts(
@@ -728,8 +892,13 @@ class StatsCliSupportTest {
         StreamObserver<ListIndexArtifactsResponse> responseObserver) {
       listIndexArtifactsCalls.incrementAndGet();
       lastListIndexArtifactsRequest = request;
-      responseObserver.onNext(
-          ListIndexArtifactsResponse.newBuilder().addAllRecords(recordsToReturn).build());
+      if (!listIndexArtifactsPages.isEmpty()) {
+        int index = Math.min(listIndexArtifactsCalls.get() - 1, listIndexArtifactsPages.size() - 1);
+        responseObserver.onNext(listIndexArtifactsPages.get(index));
+      } else {
+        responseObserver.onNext(
+            ListIndexArtifactsResponse.newBuilder().addAllRecords(recordsToReturn).build());
+      }
       responseObserver.onCompleted();
     }
   }

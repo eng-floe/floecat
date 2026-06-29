@@ -46,10 +46,9 @@ final class StorageAuthorityCliSupport {
       Supplier<String> getCurrentAccountId) {
     switch (command) {
       case "storage-authorities" -> {
-        int pageSize = CliArgs.parseIntFlag(args, "--page-size", DEFAULT_PAGE_SIZE);
         printAuthoritiesHeader(out);
         CliArgs.forEachPage(
-            pageSize,
+            DEFAULT_PAGE_SIZE,
             pr ->
                 authorities.listStorageAuthorities(
                     ListStorageAuthoritiesRequest.newBuilder().setPage(pr).build()),
@@ -74,10 +73,9 @@ final class StorageAuthorityCliSupport {
     }
     switch (args.get(0)) {
       case "list" -> {
-        int pageSize = CliArgs.parseIntFlag(args, "--page-size", DEFAULT_PAGE_SIZE);
         printAuthoritiesHeader(out);
         CliArgs.forEachPage(
-            pageSize,
+            DEFAULT_PAGE_SIZE,
             pr ->
                 authorities.listStorageAuthorities(
                     ListStorageAuthoritiesRequest.newBuilder().setPage(pr).build()),

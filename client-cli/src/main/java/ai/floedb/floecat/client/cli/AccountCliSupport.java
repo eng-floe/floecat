@@ -35,7 +35,7 @@ import java.util.function.Supplier;
 /** CLI support for the {@code account} command. */
 final class AccountCliSupport {
 
-  private static final int DEFAULT_PAGE_SIZE = 1000;
+  private static final int DEFAULT_PAGE_SIZE = 100;
 
   private AccountCliSupport() {}
 

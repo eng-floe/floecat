@@ -90,7 +90,7 @@ import java.util.stream.Collectors;
 /** CLI support for the {@code connectors} and {@code connector} commands. */
 final class ConnectorCliSupport {
 
-  private static final int DEFAULT_PAGE_SIZE = 1000;
+  private static final int DEFAULT_PAGE_SIZE = 100;
   private static final String TABLE_TARGET_SPEC = "table";
   private static final int CONNECTOR_W_ID = 36;
   private static final int CONNECTOR_W_KIND = 10;
@@ -171,13 +171,12 @@ final class ConnectorCliSupport {
     switch (sub) {
       case "list" -> {
         String kindStr = Quotes.unquote(CliArgs.parseStringFlag(args, "--kind", ""));
-        int pageSize = CliArgs.parseIntFlag(args, "--page-size", DEFAULT_PAGE_SIZE);
         ConnectorKind filter = parseConnectorKind(kindStr);
         filter = (filter == ConnectorKind.CK_UNSPECIFIED && kindStr.isBlank()) ? null : filter;
         final ConnectorKind kindFilter = filter;
         printConnectorsHeader(out);
         CliArgs.forEachPage(
-            pageSize,
+            DEFAULT_PAGE_SIZE,
             pr -> connectors.listConnectors(ListConnectorsRequest.newBuilder().setPage(pr).build()),
             r ->
                 kindFilter == null
@@ -700,7 +699,7 @@ final class ConnectorCliSupport {
         }
       }
       case "jobs" -> {
-        int pageSize = CliArgs.parseIntFlag(args, "--page-size", DEFAULT_PAGE_SIZE);
+        int limit = Math.max(1, CliArgs.parseIntFlag(args, "--limit", Integer.MAX_VALUE));
         String childJobId = Quotes.unquote(CliArgs.parseStringFlag(args, "--child", ""));
         boolean printJson = args.contains("--json");
         String connectorRef = Quotes.unquote(CliArgs.parseStringFlag(args, "--connector", ""));
@@ -708,7 +707,7 @@ final class ConnectorCliSupport {
         if (printJson) {
           if (childJobId.isBlank()) {
             streamJsonJobs(
-                pageSize,
+                limit,
                 connectorRef,
                 stateArg,
                 connectors,
@@ -727,7 +726,7 @@ final class ConnectorCliSupport {
         } else {
           if (childJobId.isBlank()) {
             streamReconcileJobsTable(
-                pageSize,
+                limit,
                 connectorRef,
                 stateArg,
                 connectors,
@@ -904,7 +903,7 @@ final class ConnectorCliSupport {
   }
 
   private static void streamReconcileJobsTable(
-      int pageSize,
+      int limit,
       String connectorRef,
       String stateArg,
       ConnectorsGrpc.ConnectorsBlockingStub connectors,
@@ -913,8 +912,10 @@ final class ConnectorCliSupport {
       PrintStream out) {
     final boolean[] printedAny = {false};
     final boolean[] printedHeader = {false};
-    CliArgs.forEachPage(
-        pageSize,
+    final int[] remaining = {limit};
+    final boolean[] truncated = {false};
+    CliArgs.forEachPageUntil(
+        DEFAULT_PAGE_SIZE,
         pageRequest -> {
           var req = ListReconcileJobsRequest.newBuilder().setPage(pageRequest).setRootsOnly(true);
           if (!connectorRef.isBlank()) {
@@ -931,23 +932,33 @@ final class ConnectorCliSupport {
         },
         response -> response.getJobsList(),
         response -> response.hasPage() ? response.getPage().getNextPageToken() : "",
-        jobs -> {
-          if (!jobs.isEmpty()) {
+        (response, jobs) -> {
+          List<GetReconcileJobResponse> page = jobs.stream().limit(remaining[0]).toList();
+          if (!page.isEmpty()) {
             if (!printedHeader[0]) {
               printReconcileJobsTableHeader(out);
               printedHeader[0] = true;
             }
-            printReconcileJobsTableRows(jobs, out);
+            printReconcileJobsTableRows(page, out);
             printedAny[0] = true;
+            remaining[0] -= page.size();
           }
+          if (remaining[0] <= 0) {
+            truncated[0] = jobs.size() > page.size() || response.hasPage();
+            return false;
+          }
+          return true;
         });
     if (!printedAny[0]) {
       out.println("no reconcile jobs");
+    } else if (truncated[0]) {
+      out.printf(
+          "Showing first %d reconcile jobs. Re-run with --limit <n> to fetch more.%n", limit);
     }
   }
 
   private static void streamJsonJobs(
-      int pageSize,
+      int limit,
       String connectorRef,
       String stateArg,
       ConnectorsGrpc.ConnectorsBlockingStub connectors,
@@ -956,8 +967,9 @@ final class ConnectorCliSupport {
       PrintStream out) {
     try {
       JsonArrayWriter writer = new JsonArrayWriter("jobs", out);
-      CliArgs.forEachPage(
-          pageSize,
+      final int[] remaining = {limit};
+      CliArgs.forEachPageUntil(
+          DEFAULT_PAGE_SIZE,
           pageRequest -> {
             var req = ListReconcileJobsRequest.newBuilder().setPage(pageRequest).setRootsOnly(true);
             if (!connectorRef.isBlank()) {
@@ -974,12 +986,18 @@ final class ConnectorCliSupport {
           },
           response -> response.getJobsList(),
           response -> response.hasPage() ? response.getPage().getNextPageToken() : "",
-          jobs -> {
+          (response, jobs) -> {
+            List<GetReconcileJobResponse> page = jobs.stream().limit(remaining[0]).toList();
+            if (page.isEmpty()) {
+              return remaining[0] > 0;
+            }
             try {
-              writer.write(jobs);
+              writer.write(page);
             } catch (InvalidProtocolBufferException e) {
               throw new JsonStreamRuntimeException(e);
             }
+            remaining[0] -= page.size();
+            return remaining[0] > 0;
           });
       writer.finish();
     } catch (JsonStreamRuntimeException e) {

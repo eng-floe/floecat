@@ -36,7 +36,7 @@ import java.util.function.Function;
 /** CLI support for {@code snapshots} and {@code snapshot} commands. */
 final class SnapshotCliSupport {
 
-  private static final int DEFAULT_PAGE_SIZE = 1000;
+  private static final int DEFAULT_PAGE_SIZE = 100;
 
   private SnapshotCliSupport() {}
 
@@ -68,19 +68,36 @@ final class SnapshotCliSupport {
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService,
       Function<String, ResourceId> resolveTableId) {
     if (args.isEmpty()) {
-      out.println("usage: snapshots <tableFQ>");
+      out.println("usage: snapshots <tableFQ> [--limit N]");
       return;
     }
+    int limit = Math.max(1, CliArgs.parseIntFlag(args, "--limit", Integer.MAX_VALUE));
     ResourceId tableId = resolveTableId.apply(args.get(0));
     printSnapshotsHeader(out);
-    CliArgs.forEachPage(
+    var remaining = new int[] {limit};
+    var truncated = new boolean[] {false};
+    CliArgs.forEachPageUntil(
         DEFAULT_PAGE_SIZE,
         pr ->
             snapshotsService.listSnapshots(
                 ListSnapshotsRequest.newBuilder().setTableId(tableId).setPage(pr).build()),
         r -> r.getSnapshotsList(),
         r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
-        snaps -> printSnapshotsRows(snaps, out));
+        (response, snaps) -> {
+          List<Snapshot> page = snaps.stream().limit(remaining[0]).toList();
+          if (!page.isEmpty()) {
+            printSnapshotsRows(page, out);
+            remaining[0] -= page.size();
+          }
+          if (remaining[0] <= 0) {
+            truncated[0] = snaps.size() > page.size() || response.hasPage();
+            return false;
+          }
+          return true;
+        });
+    if (truncated[0]) {
+      out.printf("Showing first %d snapshots. Re-run with --limit <n> to fetch more.%n", limit);
+    }
   }
 
   private static void snapshotCrud(

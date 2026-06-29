@@ -44,7 +44,7 @@ import java.util.function.Supplier;
 /** CLI support for the {@code views} and {@code view} commands. */
 final class ViewCliSupport {
 
-  private static final int DEFAULT_PAGE_SIZE = 1000;
+  private static final int DEFAULT_PAGE_SIZE = 100;
 
   private ViewCliSupport() {}
 

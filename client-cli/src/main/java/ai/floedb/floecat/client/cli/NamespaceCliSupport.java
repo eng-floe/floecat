@@ -45,7 +45,7 @@ import java.util.stream.Collectors;
 /** CLI support for the {@code namespaces} and {@code namespace} commands. */
 final class NamespaceCliSupport {
 
-  private static final int DEFAULT_PAGE_SIZE = 1000;
+  private static final int DEFAULT_PAGE_SIZE = 100;
 
   private NamespaceCliSupport() {}
 

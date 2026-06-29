@@ -43,7 +43,7 @@ import java.util.function.Supplier;
 /** CLI support for the {@code catalogs} and {@code catalog} commands. */
 final class CatalogCliSupport {
 
-  private static final int DEFAULT_PAGE_SIZE = 1000;
+  private static final int DEFAULT_PAGE_SIZE = 100;
 
   private CatalogCliSupport() {}
 

@@ -27,6 +27,7 @@ import java.io.PrintStream;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import picocli.CommandLine;
 
 class ShellFqQuoteTest {
 
@@ -399,6 +400,30 @@ class ShellFqQuoteTest {
             "[--snapshot <id>|--current] [--mode metadata-only|metadata-and-capture|capture-only]"));
     assertTrue(help.contains("[--capture stats|table-stats|file-stats|column-stats|index,...]"));
     assertTrue(help.contains("[--wait-seconds <n>]"));
+  }
+
+  @Test
+  void commandLineHelpIncludesLimitCommands() {
+    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    PrintStream original = System.out;
+    int exitCode;
+    try {
+      System.setOut(new PrintStream(baos));
+      CommandLine cmd = new CommandLine(shell);
+      exitCode = cmd.execute("--help");
+    } finally {
+      System.setOut(original);
+    }
+
+    assertEquals(0, exitCode);
+    String help = baos.toString();
+    assertTrue(help.contains("snapshots <tableFQ> [--limit N]"));
+    assertTrue(help.contains("stats columns <tableFQ> [--snapshot <id>|--current] [--limit N]"));
+    assertTrue(help.contains("stats files <tableFQ> [--snapshot <id>|--current] [--limit N]"));
+    assertTrue(help.contains("stats index <tableFQ> [--snapshot <id>|--current] [--limit N]"));
+    assertTrue(
+        help.contains(
+            "connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--limit N] [--json]"));
   }
 
   @Test

@@ -62,11 +62,20 @@ import picocli.CommandLine;
 @TopCommand
 @CommandLine.Command(
     name = "floecat-shell",
-    mixinStandardHelpOptions = true,
     version = "floecat-shell 0.1",
     description = "Interactive CLI to browse and manage catalogs/namespaces/tables/connectors")
 @jakarta.inject.Singleton
 public class Shell implements Runnable {
+
+  @CommandLine.Option(
+      names = {"-h", "--help"},
+      description = "Show this help message and exit")
+  boolean helpRequested;
+
+  @CommandLine.Option(
+      names = {"-V", "--version"},
+      description = "Print version information and exit")
+  boolean versionRequested;
 
   @CommandLine.Option(
       names = {"--host"},
@@ -217,6 +226,14 @@ public class Shell implements Runnable {
 
   @Override
   public void run() {
+    if (versionRequested) {
+      out.println("floecat-shell 0.1");
+      return;
+    }
+    if (helpRequested) {
+      printHelp();
+      return;
+    }
     initAuthConfig();
     out.println("Floecat Shell (type 'help' for commands, 'quit' to exit).");
     try {
@@ -511,7 +528,7 @@ public class Shell implements Runnable {
          view delete <id|fq>
          resolve table <fq> | resolve view <fq> | resolve catalog <name> | resolve namespace <fq>
          describe table <fq>
-         snapshots <tableFQ>
+         snapshots <tableFQ> [--limit N]
          snapshot get <id|catalog.ns[.ns...].table> <snapshot_id>
          snapshot delete <id|catalog.ns[.ns...].table> <snapshot_id> [--etag <etag>]
          stats table <tableFQ> [--snapshot <id>|--current] [--json] (defaults to --current)
@@ -543,7 +560,7 @@ public class Shell implements Runnable {
          query get <query_id>
          query fetch-scan <query_id> <table_id>
          connectors
-         connector list [--kind <KIND>] [--page-size <N>]
+         connector list [--kind <KIND>]
          connector get <display_name|id>
          connector create <display_name> <source_type (ICEBERG|DELTA|GLUE|UNITY)> <uri> <source_namespace (a[.b[.c]...])> <destination_catalog (name)>
              [--source-table <name>] [--source-cols c1,#id2,...]
@@ -577,13 +594,13 @@ public class Shell implements Runnable {
              [--default-cols first-n|all|explicit-only] [--max-default-cols <n>]
              # Defaults to --default-cols first-n --max-default-cols 32 when --columns is not set.
          connector job <jobId> [--json]
-         connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>] [--json]
-         connector jobs --child <parentJobId> [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--page-size <N>] [--json]
+         connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--limit N] [--json]
+         connector jobs --child <parentJobId> [--json]
          connector cancel <jobId> [--reason <text>]
          connector settings get
          connector settings update [--auto-enabled true|false] [--default-interval-sec <n>] [--default-mode incremental|full] [--finished-job-retention-sec <n>]
          storage-authorities
-         storage-authority list [--page-size <N>]
+         storage-authority list
          storage-authority get <display_name|id>
          storage-authority create <display_name> --location-prefix <uri-prefix>
              [--desc <text>] [--enabled true|false] [--type <type>]
