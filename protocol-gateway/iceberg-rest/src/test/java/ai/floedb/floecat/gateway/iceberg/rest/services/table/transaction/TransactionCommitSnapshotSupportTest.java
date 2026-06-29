@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import java.util.List;
 import java.util.Map;
@@ -139,17 +140,17 @@ class TransactionCommitSnapshotSupportTest {
         Mockito.mock(TransactionCommitExecutionSupport.class);
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build();
+    Table table = Table.newBuilder().setResourceId(tableId).build();
+    TableGatewaySupport tableSupport = Mockito.mock(TableGatewaySupport.class);
+    Mockito.when(tableSupport.loadCurrentSnapshotId(table)).thenReturn(2000L);
 
     var result =
         support.planAtomicSnapshotChanges(
             "acct-1",
             "tx-1",
             tableId,
-            Table.newBuilder()
-                .setResourceId(tableId)
-                .putProperties("current-snapshot-id", "2000")
-                .build(),
-            null,
+            table,
+            tableSupport,
             null,
             List.of(
                 Map.of(
@@ -175,17 +176,17 @@ class TransactionCommitSnapshotSupportTest {
         Mockito.mock(TransactionCommitExecutionSupport.class);
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build();
+    Table table = Table.newBuilder().setResourceId(tableId).build();
+    TableGatewaySupport tableSupport = Mockito.mock(TableGatewaySupport.class);
+    Mockito.when(tableSupport.loadCurrentSnapshotId(table)).thenReturn(2000L);
 
     var result =
         support.planAtomicSnapshotChanges(
             "acct-1",
             "tx-1",
             tableId,
-            Table.newBuilder()
-                .setResourceId(tableId)
-                .putProperties("current-snapshot-id", "2000")
-                .build(),
-            null,
+            table,
+            tableSupport,
             null,
             List.of(
                 Map.of(

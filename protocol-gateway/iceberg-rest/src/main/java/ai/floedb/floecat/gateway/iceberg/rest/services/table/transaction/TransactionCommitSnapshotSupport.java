@@ -84,7 +84,7 @@ public class TransactionCommitSnapshotSupport {
         firstNonBlank(trimToNull(metadataLocation), requestedMetadataLocation);
     List<ai.floedb.floecat.transaction.rpc.TxChange> out = new ArrayList<>();
     boolean writesNewSnapshot = false;
-    Long targetCurrentSnapshotId = targetCurrentSnapshotId(table, parsed);
+    Long targetCurrentSnapshotId = targetCurrentSnapshotId(table, tableSupport, parsed);
     Snapshot currentSnapshotCandidate = null;
     if (updates != null && !updates.isEmpty()) {
       for (Map<String, Object> update : updates) {
@@ -273,8 +273,9 @@ public class TransactionCommitSnapshotSupport {
     }
   }
 
-  private Long targetCurrentSnapshotId(Table table, CommitUpdateInspector.Parsed parsed) {
-    Long existingCurrentSnapshotId = currentSnapshotId(table);
+  private Long targetCurrentSnapshotId(
+      Table table, TableGatewaySupport tableSupport, CommitUpdateInspector.Parsed parsed) {
+    Long existingCurrentSnapshotId = currentSnapshotId(table, tableSupport);
     Long requestedMainSnapshotId = parsed.requestedMainRefSnapshotId();
     if (shouldApplyRequestedMainSnapshotId(
         parsed, existingCurrentSnapshotId, requestedMainSnapshotId)) {
@@ -289,11 +290,11 @@ public class TransactionCommitSnapshotSupport {
     return null;
   }
 
-  private Long currentSnapshotId(Table table) {
-    if (table == null || table.getPropertiesMap().isEmpty()) {
+  private Long currentSnapshotId(Table table, TableGatewaySupport tableSupport) {
+    if (table == null || tableSupport == null) {
       return null;
     }
-    return TableMappingUtil.asLong(table.getPropertiesMap().get("current-snapshot-id"));
+    return tableSupport.loadCurrentSnapshotId(table);
   }
 
   private boolean shouldApplyRequestedMainSnapshotId(
