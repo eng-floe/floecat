@@ -43,10 +43,10 @@ snapshots <catalog.ns[.ns...].table>
 snapshot get <table> <snapshot_id>
 snapshot delete <table> <snapshot_id> [--etag <etag>]
 
-stats table <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] [--json]
-stats columns <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] [--limit N] [--json]
-stats files <id|catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N]
-stats index <id|catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N] [--json]
+stats table <catalog.ns[.ns...].table> [--snapshot <id>|--current] [--json]
+stats columns <catalog.ns[.ns...].table> [--snapshot <id>|--current] [--limit N] [--json]
+stats files <catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N]
+stats index <catalog.ns[.ns...].table> [--snapshot <id|current>] [--limit N] [--json]
 analyze <tableFQ> [--columns c1,c2,...] [--default-cols first-n|all|explicit-only] [--max-default-cols <n>]
     [--snapshot <id>|--current] [--mode metadata-only|metadata-and-capture|capture-only]
     [--capture stats|table-stats|file-stats|column-stats|index,...]

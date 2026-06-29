@@ -501,24 +501,23 @@ public class Shell implements Runnable {
          table create <catalog.ns[.ns...].name> [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...]
              [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]
          table get <id|catalog.ns[.ns...].table>
-         table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>]
-             [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...]
-             [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>] [--etag <etag>]
+         table update <id|fq> [--catalog <catalogName|id>] [--namespace <namespaceFQ|id>] [--name <name>] [--desc <text>] [--root <uri>] [--schema <json>] [--parts k1,k2,...] [--format ICEBERG|DELTA] [--props k=v ...] [--etag <etag>]
+             [--up-connector <id|name>] [--up-ns <a.b[.c]>] [--up-table <name>]
          table delete <id|fq> [--etag <etag>]
          views <catalog.ns[.ns...]>
          view create <catalog.ns[.ns...].name> [--sql <text>] [--desc <text>] [--props k=v ...]
          view get <id|catalog.ns[.ns...].name>
          view update <id|fq> [--display <name>] [--namespace <catalog.ns[.ns...]>] [--sql <text>] [--desc <text>] [--props k=v ...]
          view delete <id|fq>
-         resolve table|view|catalog|namespace <fq-or-name>
+         resolve table <fq> | resolve view <fq> | resolve catalog <name> | resolve namespace <fq>
          describe table <fq>
          snapshots <tableFQ>
          snapshot get <id|catalog.ns[.ns...].table> <snapshot_id>
          snapshot delete <id|catalog.ns[.ns...].table> <snapshot_id> [--etag <etag>]
-         stats table <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] [--json] (defaults to --current)
-         stats columns <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] (defaults to --current) [--limit N] [--json]
-         stats files <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] (defaults to --current) [--limit N]
-         stats index <id|catalog.ns[.ns...].table> [--snapshot <id>|--current] (defaults to --current) [--limit N] [--json]
+         stats table <tableFQ> [--snapshot <id>|--current] [--json] (defaults to --current)
+         stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] [--json] defaults to --current
+         stats files <tableFQ> [--snapshot <id>|--current] [--limit N] defaults to --current
+         stats index <tableFQ> [--snapshot <id>|--current] [--limit N] [--json] defaults to --current
          constraints get <id|catalog.ns[.ns...].table> [--snapshot <id>] [--json] (defaults to current snapshot)
          constraints list <id|catalog.ns[.ns...].table> [--limit N] [--json]
          constraints put <id|catalog.ns[.ns...].table> [--snapshot <id>] --file <snapshot_constraints_json> [--idempotency <key>] [--json]      (replace bundle)
@@ -603,9 +602,9 @@ public class Shell implements Runnable {
              [--assume-role-arn <arn>] [--assume-role-external-id <id>]
              [--assume-role-session-name <name>] [--duration-seconds <n>]
              [--cred-type aws|aws-assume-role|aws-web-identity] [--cred k=v ...] [--cred-head k=v ...]
-         storage-authority update <display_name|id> [--display <name>]
-             [--location-prefix <uri-prefix>] [--desc <text>] [--enabled true|false]
-             [--type <type>] [--region <region>] [--endpoint <uri>]
+         storage-authority update <display_name|id>
+             [--display <name>] [--location-prefix <uri-prefix>] [--desc <text>]
+             [--enabled true|false] [--type <type>] [--region <region>] [--endpoint <uri>]
              [--path-style-access true|false] [--assume-role-arn <arn>]
              [--assume-role-external-id <id>] [--assume-role-session-name <name>]
              [--duration-seconds <n>] [--cred-type aws|aws-assume-role|aws-web-identity]
