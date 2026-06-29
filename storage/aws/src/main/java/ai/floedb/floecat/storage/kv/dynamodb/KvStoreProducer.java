@@ -15,8 +15,10 @@
  */
 package ai.floedb.floecat.storage.kv.dynamodb;
 
+import ai.floedb.floecat.storage.aws.DynamoDbAsyncClientManager;
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.cdi.KvTable;
+import io.quarkus.arc.Arc;
 import io.quarkus.arc.properties.IfBuildProperty;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.annotation.Priority;
@@ -59,6 +61,15 @@ public class KvStoreProducer {
   @KvTable("floecat")
   KvStore coreKvStore(
       DynamoDbAsyncClient ddb, @ConfigProperty(name = "floecat.kv.table") String table) {
+    var container = Arc.container();
+    if (container != null) {
+      var manager = container.select(DynamoDbAsyncClientManager.class);
+      if (manager.isResolvable()) {
+        DynamoDbAsyncClientManager clientManager = manager.get();
+        return new DynamoDbKvStore(
+            clientManager::current, table, clientManager::refreshAfterFailure);
+      }
+    }
     return new DynamoDbKvStore(ddb, table);
   }
 }

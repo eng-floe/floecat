@@ -86,6 +86,10 @@ public class AwsClients {
   @Produces
   @Singleton
   public DynamoDbAsyncClient dynamoDbAsyncClient() {
+    return newDynamoDbAsyncClient();
+  }
+
+  public DynamoDbAsyncClient newDynamoDbAsyncClient() {
     var builder =
         DynamoDbAsyncClient.builder()
             .region(region)
@@ -98,6 +102,10 @@ public class AwsClients {
   @Produces
   @Singleton
   S3Client s3Client() {
+    return newS3Client();
+  }
+
+  public S3Client newS3Client() {
     var s3Cfg = S3Configuration.builder().pathStyleAccessEnabled(forcePathStyle).build();
     var builder =
         S3Client.builder()

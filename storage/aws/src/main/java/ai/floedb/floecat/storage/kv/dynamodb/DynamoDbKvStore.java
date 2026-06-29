@@ -29,18 +29,27 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
 public final class DynamoDbKvStore implements KvStore, KvAttributes {
   static final int DELETE_BATCH_LIMIT = Integer.getInteger("floedb.floecat.delete.batch.size", 25);
-  private final DynamoDbAsyncClient ddb;
+  private final Supplier<DynamoDbAsyncClient> ddb;
+  private final Consumer<Throwable> clientFailureHandler;
   private final String table;
 
   public DynamoDbKvStore(DynamoDbAsyncClient ddb, String table) {
+    this(() -> ddb, table, failure -> {});
+  }
+
+  public DynamoDbKvStore(
+      Supplier<DynamoDbAsyncClient> ddb, String table, Consumer<Throwable> clientFailureHandler) {
     this.ddb = ddb;
     this.table = table;
+    this.clientFailureHandler = clientFailureHandler;
   }
 
   String getTable() {
@@ -174,6 +183,28 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
     return current;
   }
 
+  private DynamoDbAsyncClient ddb() {
+    return ddb.get();
+  }
+
+  private <T> Uni<T> dynamo(Supplier<CompletionStage<T>> operation) {
+    try {
+      return fromStage(operation.get()).onFailure().invoke(clientFailureHandler::accept);
+    } catch (Throwable failure) {
+      clientFailureHandler.accept(failure);
+      throw failure;
+    }
+  }
+
+  private <T> T dynamoBlocking(Supplier<T> operation) {
+    try {
+      return operation.get();
+    } catch (Throwable failure) {
+      clientFailureHandler.accept(failure);
+      throw failure;
+    }
+  }
+
   // ---- KvStore (reads)
 
   @Override
@@ -181,7 +212,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
     var req =
         GetItemRequest.builder().tableName(table).key(keyMap(key)).consistentRead(true).build();
 
-    return fromStage(ddb.getItem(req))
+    return dynamo(() -> ddb().getItem(req))
         .map(resp -> resp.hasItem() ? Optional.of(avToRecord(resp.item())) : Optional.empty());
   }
 
@@ -208,7 +239,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
           .expressionAttributeValues(Map.of(":ev", N(expectedVersion)));
     }
 
-    return fromStage(ddb.putItem(b.build()))
+    return dynamo(() -> ddb().putItem(b.build()))
         .replaceWith(true)
         .onFailure(ConditionalCheckFailedException.class)
         .recoverWithItem(false);
@@ -229,7 +260,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
             .expressionAttributeValues(Map.of(":ev", N(expectedVersion)))
             .build();
 
-    return fromStage(ddb.deleteItem(req))
+    return dynamo(() -> ddb().deleteItem(req))
         .replaceWith(true)
         .onFailure(ConditionalCheckFailedException.class)
         .recoverWithItem(false);
@@ -261,7 +292,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
     decodeToken(pageToken).ifPresent(qb::exclusiveStartKey);
 
-    return fromStage(ddb.query(qb.build()))
+    return dynamo(() -> ddb().query(qb.build()))
         .map(
             resp -> {
               var items = new ArrayList<Record>(resp.items().size());
@@ -305,7 +336,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
                             ":skp", S(sortKeyPrefix)));
               }
 
-              return fromStage(ddb.query(qb.build()));
+              return dynamo(() -> ddb().query(qb.build()));
             })
         .whilst(resp -> resp.lastEvaluatedKey() != null && !resp.lastEvaluatedKey().isEmpty())
         .onItem()
@@ -343,9 +374,11 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
     }
 
     // Attempt to delete this batch.
-    return fromStage(
-            ddb.batchWriteItem(
-                BatchWriteItemRequest.builder().requestItems(Map.of(table, batch)).build()))
+    return dynamo(
+            () ->
+                ddb()
+                    .batchWriteItem(
+                        BatchWriteItemRequest.builder().requestItems(Map.of(table, batch)).build()))
         .onItem()
         .transformToUni(
             resp -> {
@@ -419,7 +452,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
     var req = TransactWriteItemsRequest.builder().transactItems(tx).build();
 
-    return fromStage(ddb.transactWriteItems(req))
+    return dynamo(() -> ddb().transactWriteItems(req))
         .replaceWith(true)
         .onFailure(TransactionCanceledException.class)
         .recoverWithItem(
@@ -463,7 +496,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
             .limit(1) // only need to find one item
             .build();
 
-    return fromStage(ddb.scan(req).thenApply(r -> r.items().isEmpty()));
+    return dynamo(() -> ddb().scan(req).thenApply(r -> r.items().isEmpty()));
   }
 
   @Override
@@ -485,7 +518,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
               .limit(100) // keep logs sane
               .build();
 
-      var resp = ddb.scan(req).get();
+      var resp = ddb().scan(req).get();
 
       System.out.println("\n=== DUMP TABLE: " + this.table + " " + header + " ===");
 
@@ -502,10 +535,12 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
       System.out.println("=== END TABLE DUMP ===\n");
 
     } catch (ExecutionException e) {
+      clientFailureHandler.accept(e);
       // Table probably does not exist — safe to ignore in tests
       System.out.println("Table not found: " + this.table);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
+      clientFailureHandler.accept(e);
       throw new RuntimeException(e);
     }
   }
@@ -539,7 +574,9 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
   private void dropTableIfExists(String tableName) {
     try {
-      ddb.deleteTable(DeleteTableRequest.builder().tableName(tableName).build()).join();
+      dynamoBlocking(
+          () ->
+              ddb().deleteTable(DeleteTableRequest.builder().tableName(tableName).build()).join());
       // Wait until it's really gone (Local is fast, AWS would be slower)
       for (int i = 0; i < 50; i++) {
         if (!tableExists(tableName)) return;
@@ -575,12 +612,16 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
                     .build())
             .build();
 
-    ddb.createTable(req).join();
+    dynamoBlocking(() -> ddb().createTable(req).join());
   }
 
   private boolean tableExists(String tableName) {
     try {
-      ddb.describeTable(DescribeTableRequest.builder().tableName(tableName).build()).join();
+      dynamoBlocking(
+          () ->
+              ddb()
+                  .describeTable(DescribeTableRequest.builder().tableName(tableName).build())
+                  .join());
       return true;
     } catch (Throwable t) {
       return false;
@@ -592,7 +633,11 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
     while (System.currentTimeMillis() < deadline) {
       try {
         var resp =
-            ddb.describeTable(DescribeTableRequest.builder().tableName(tableName).build()).join();
+            dynamoBlocking(
+                () ->
+                    ddb()
+                        .describeTable(DescribeTableRequest.builder().tableName(tableName).build())
+                        .join());
         if (resp.table().tableStatus() == TableStatus.ACTIVE) return;
       } catch (Throwable ignored) {
       }
