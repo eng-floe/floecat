@@ -133,9 +133,6 @@ public final class TableMetadataBuilder {
     if (lastUpdatedMs == null || lastUpdatedMs <= 0) {
       lastUpdatedMs = System.currentTimeMillis();
     }
-    if (currentSnapshotId == null) {
-      currentSnapshotId = asLong(props.get("current-snapshot-id"));
-    }
     if (lastSequenceNumber == null) {
       lastSequenceNumber = asLong(props.get("last-sequence-number"));
     }
@@ -143,11 +140,6 @@ public final class TableMetadataBuilder {
       lastSequenceNumber = 0L;
     }
     Snapshot currentSnapshot = resolveCurrentSnapshot(snapshots, currentSnapshotId);
-    if (currentSnapshotId == null
-        && currentSnapshot != null
-        && currentSnapshot.getSnapshotId() >= 0) {
-      currentSnapshotId = currentSnapshot.getSnapshotId();
-    }
     List<Map<String, Object>> schemaList = schemasFromSnapshot(currentSnapshot, table, deltaTable);
     if (!schemaList.isEmpty()) {
       Map<String, Object> currentSchema = schemaList.get(0);
@@ -224,12 +216,6 @@ public final class TableMetadataBuilder {
     refs = mergePropertyRefs(props, refs);
     if ((refs == null || refs.isEmpty()) && currentSnapshotId != null && currentSnapshotId >= 0) {
       refs = Map.of("main", Map.of("snapshot-id", currentSnapshotId, "type", "branch"));
-    }
-    if (currentSnapshotId == null || currentSnapshotId < 0) {
-      Long mainRefSnapshotId = mainRefSnapshotId(refs);
-      if (mainRefSnapshotId != null && snapshotIds.contains(mainRefSnapshotId)) {
-        currentSnapshotId = mainRefSnapshotId;
-      }
     }
     refs = sanitizeRefs(refs, snapshotIds, currentSnapshotId);
     syncProperty(props, "table-uuid", tableUuid);
@@ -716,17 +702,6 @@ public final class TableMetadataBuilder {
       out.put("main", Map.of("snapshot-id", currentSnapshotId, "type", "branch"));
     }
     return out;
-  }
-
-  private static Long mainRefSnapshotId(Map<String, Object> refs) {
-    if (refs == null || refs.isEmpty()) {
-      return null;
-    }
-    Object main = refs.get("main");
-    if (!(main instanceof Map<?, ?> map)) {
-      return null;
-    }
-    return asLong(map.get("snapshot-id"));
   }
 
   private static String formatVersionProperty(Map<String, String> props) {

@@ -17,7 +17,9 @@
 package ai.floedb.floecat.gateway.iceberg.rest.common;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -54,5 +56,27 @@ class TableMetadataBuilderTest {
     Map<String, Object> main = (Map<String, Object>) metadata.refs().get("main");
     assertNotNull(main);
     assertEquals(100L, main.get("snapshot-id"));
+  }
+
+  @Test
+  void fromCatalogDoesNotFallbackToStaleCurrentSnapshotProperty() {
+    Snapshot current = Snapshot.newBuilder().setSnapshotId(100L).setSequenceNumber(100L).build();
+    Snapshot newer = Snapshot.newBuilder().setSnapshotId(200L).setSequenceNumber(200L).build();
+    Table table = Table.newBuilder().setDisplayName("orders").build();
+    Map<String, String> props = new LinkedHashMap<>();
+    props.put("current-snapshot-id", "200");
+
+    TableMetadataView metadata =
+        TableMetadataBuilder.fromCatalog(
+            "orders",
+            table,
+            props,
+            List.of(current, newer),
+            "s3://warehouse/orders/metadata/00001-current.metadata.json",
+            null);
+
+    assertNull(metadata.currentSnapshotId());
+    assertFalse(metadata.properties().containsKey("current-snapshot-id"));
+    assertFalse(metadata.refs().containsKey("main"));
   }
 }

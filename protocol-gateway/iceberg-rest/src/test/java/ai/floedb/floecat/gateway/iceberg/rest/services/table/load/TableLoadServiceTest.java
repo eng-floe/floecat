@@ -65,7 +65,8 @@ class TableLoadServiceTest {
     Snapshot snapshot = Snapshot.newBuilder().setSnapshotId(249933L).build();
 
     when(service.loadSupport.loadData(table, SnapshotLister.Mode.ALL, tableSupport))
-        .thenReturn(new TableLoadSupport.LoadData(null, List.of(snapshot)));
+        .thenReturn(
+            new TableLoadSupport.LoadData(null, snapshot.getSnapshotId(), List.of(snapshot)));
     when(service.loadSupport.deltaCompatEnabled(table)).thenReturn(true);
     when(tableSupport.credentialsForAccessDelegation(table, "vended-credentials"))
         .thenReturn(
@@ -124,7 +125,8 @@ class TableLoadServiceTest {
     Snapshot snapshot = Snapshot.newBuilder().setSnapshotId(249950L).build();
 
     when(service.loadSupport.loadData(table, SnapshotLister.Mode.ALL, tableSupport))
-        .thenReturn(new TableLoadSupport.LoadData(null, List.of(snapshot)));
+        .thenReturn(
+            new TableLoadSupport.LoadData(null, snapshot.getSnapshotId(), List.of(snapshot)));
     when(service.loadSupport.deltaCompatEnabled(table)).thenReturn(true);
     when(tableSupport.usesVendedCredentials("vended_credentials")).thenReturn(true);
     when(tableSupport.credentialsForAccessDelegation(table, "vended_credentials"))
@@ -188,7 +190,8 @@ class TableLoadServiceTest {
         Snapshot.newBuilder().setSnapshotId(1L).setSchemaJson(variantSchemaJson).build();
 
     when(service.loadSupport.loadData(table, SnapshotLister.Mode.ALL, tableSupport))
-        .thenReturn(new TableLoadSupport.LoadData(null, List.of(snapshot)));
+        .thenReturn(
+            new TableLoadSupport.LoadData(null, snapshot.getSnapshotId(), List.of(snapshot)));
     when(service.loadSupport.deltaCompatEnabled(table)).thenReturn(true);
     when(tableSupport.credentialsForAccessDelegation(table, "none")).thenReturn(null);
     when(tableSupport.defaultTableConfig(table)).thenReturn(Map.of());
@@ -240,7 +243,8 @@ class TableLoadServiceTest {
         Snapshot.newBuilder().setSnapshotId(1L).setSchemaJson(variantSchemaJson).build();
 
     when(service.loadSupport.loadData(table, SnapshotLister.Mode.ALL, tableSupport))
-        .thenReturn(new TableLoadSupport.LoadData(null, List.of(snapshot)));
+        .thenReturn(
+            new TableLoadSupport.LoadData(null, snapshot.getSnapshotId(), List.of(snapshot)));
     when(service.loadSupport.deltaCompatEnabled(table)).thenReturn(true);
     when(tableSupport.credentialsForAccessDelegation(table, "none")).thenReturn(null);
     when(tableSupport.defaultTableConfig(table)).thenReturn(Map.of());

@@ -39,6 +39,8 @@ public class TableLoadSupport {
 
   LoadData loadData(
       Table tableRecord, SnapshotLister.Mode snapshotMode, TableGatewaySupport tableSupport) {
+    Snapshot currentSnapshot = tableSupport.loadCurrentSnapshot(tableRecord);
+    Long currentSnapshotId = currentSnapshotId(currentSnapshot);
     String metadataLocation;
     List<Snapshot> snapshotList;
     if (deltaCompatEnabled(tableRecord)) {
@@ -46,17 +48,10 @@ public class TableLoadSupport {
       snapshotList = SnapshotLister.fetchSnapshots(snapshotClient, tableRecord, snapshotMode);
       snapshotList = deltaManifestMaterializer.materialize(tableRecord, snapshotList);
     } else {
-      Snapshot currentSnapshot = tableSupport.loadCurrentSnapshot(tableRecord);
       metadataLocation = SnapshotMetadataUtil.metadataLocation(currentSnapshot);
       snapshotList = SnapshotLister.fetchSnapshots(snapshotClient, tableRecord, snapshotMode);
-      return new LoadData(
-          metadataLocation,
-          currentSnapshot == null || currentSnapshot.getSnapshotId() < 0
-              ? null
-              : currentSnapshot.getSnapshotId(),
-          snapshotList);
     }
-    return new LoadData(metadataLocation, null, snapshotList);
+    return new LoadData(metadataLocation, currentSnapshotId, snapshotList);
   }
 
   SnapshotLister.Mode parseSnapshotMode(String raw) {
@@ -127,9 +122,12 @@ public class TableLoadSupport {
         && tableFormatSupport.isDelta(table);
   }
 
-  record LoadData(String metadataLocation, Long currentSnapshotId, List<Snapshot> snapshots) {
-    LoadData(String metadataLocation, List<Snapshot> snapshots) {
-      this(metadataLocation, null, snapshots);
+  private Long currentSnapshotId(Snapshot snapshot) {
+    if (snapshot == null || snapshot.getSnapshotId() < 0) {
+      return null;
     }
+    return snapshot.getSnapshotId();
   }
+
+  record LoadData(String metadataLocation, Long currentSnapshotId, List<Snapshot> snapshots) {}
 }
