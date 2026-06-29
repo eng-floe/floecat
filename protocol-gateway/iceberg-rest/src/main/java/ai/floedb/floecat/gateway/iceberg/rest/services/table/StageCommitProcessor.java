@@ -26,6 +26,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.dto.LoadTableResultDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.StorageCredentialDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.error.IcebergErrorResponse;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
+import ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMetadataUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.StageCommitException;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
@@ -141,13 +142,22 @@ public class StageCommitProcessor {
 
   private LoadTableResultDto toLoadResult(
       String tableName, Table tableRecord, String accessDelegationMode) {
-    String metadataLocation = tableSupport.loadCurrentMetadataLocation(tableRecord);
+    Snapshot currentSnapshot = tableSupport.loadCurrentSnapshot(tableRecord);
+    String metadataLocation = SnapshotMetadataUtil.metadataLocation(currentSnapshot);
     Map<String, String> tableConfig = tableSupport.defaultTableConfig(tableRecord);
     List<StorageCredentialDto> credentials =
         tableSupport.credentialsForAccessDelegation(tableRecord, accessDelegationMode);
     List<Snapshot> snapshots = loadSnapshots(tableRecord.getResourceId());
     return TableResponseMapper.toLoadResult(
-        tableName, tableRecord, snapshots, metadataLocation, tableConfig, credentials);
+        tableName,
+        tableRecord,
+        snapshots,
+        metadataLocation,
+        currentSnapshot == null || currentSnapshot.getSnapshotId() < 0
+            ? null
+            : currentSnapshot.getSnapshotId(),
+        tableConfig,
+        credentials);
   }
 
   private List<Snapshot> loadSnapshots(ResourceId tableId) {

@@ -59,17 +59,13 @@ public final class TableMetadataBuilder {
   private TableMetadataBuilder() {}
 
   public static TableMetadataView fromCatalog(
-      String tableName, Table table, Map<String, String> props, List<Snapshot> snapshots) {
-    return fromCatalog(tableName, table, props, snapshots, null);
-  }
-
-  public static TableMetadataView fromCatalog(
       String tableName,
       Table table,
       Map<String, String> props,
       List<Snapshot> snapshots,
-      String metadataLocation) {
-    return buildMetadata(tableName, table, props, snapshots, metadataLocation);
+      String metadataLocation,
+      Long currentSnapshotId) {
+    return buildMetadata(tableName, table, props, snapshots, metadataLocation, currentSnapshotId);
   }
 
   public static TableMetadataView fromCreateRequest(
@@ -82,7 +78,8 @@ public final class TableMetadataBuilder {
       Table table,
       Map<String, String> props,
       List<Snapshot> snapshots,
-      String metadataLocation) {
+      String metadataLocation,
+      Long explicitCurrentSnapshotId) {
     boolean deltaTable = DeltaSchemaNormalizer.isDeltaTable(table, props);
     String location = props.get("location");
     if (!hasText(location) && table.hasUpstream()) {
@@ -90,7 +87,7 @@ public final class TableMetadataBuilder {
     }
     location = hasText(location) ? location : null;
     Long lastUpdatedMs = null;
-    Long currentSnapshotId = null;
+    Long currentSnapshotId = explicitCurrentSnapshotId;
     Long lastSequenceNumber = null;
     Integer lastColumnId = null;
     Integer currentSchemaId = null;
@@ -281,6 +278,7 @@ public final class TableMetadataBuilder {
           return snapshot;
         }
       }
+      return null;
     }
     return snapshots.stream()
         .filter(snapshot -> snapshot != null)

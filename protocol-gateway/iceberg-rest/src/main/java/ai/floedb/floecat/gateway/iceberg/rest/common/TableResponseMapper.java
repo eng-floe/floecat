@@ -39,16 +39,8 @@ public final class TableResponseMapper {
       String tableName,
       Table table,
       List<Snapshot> snapshots,
-      Map<String, String> configOverrides,
-      List<StorageCredentialDto> storageCredentials) {
-    return toLoadResult(tableName, table, snapshots, null, configOverrides, storageCredentials);
-  }
-
-  public static LoadTableResultDto toLoadResult(
-      String tableName,
-      Table table,
-      List<Snapshot> snapshots,
       String metadataLocation,
+      Long currentSnapshotId,
       Map<String, String> configOverrides,
       List<StorageCredentialDto> storageCredentials) {
     LOG.debugf(
@@ -60,35 +52,24 @@ public final class TableResponseMapper {
         table.getPropertiesMap());
     Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
     TableMetadataView metadataView =
-        TableMetadataBuilder.fromCatalog(tableName, table, props, snapshots, metadataLocation);
+        TableMetadataBuilder.fromCatalog(
+            tableName, table, props, snapshots, metadataLocation, currentSnapshotId);
     Map<String, String> effectiveConfig =
         augmentConfigWithMetadataPath(configOverrides, metadataView);
     return new LoadTableResultDto(
         metadataView.metadataLocation(), metadataView, effectiveConfig, storageCredentials);
   }
 
-  public static Response toLoadResponse(
+  public static CommitTableResponseDto toCommitResponse(
       String tableName,
       Table table,
       List<Snapshot> snapshots,
       String metadataLocation,
-      Map<String, String> configOverrides,
-      List<StorageCredentialDto> storageCredentials) {
-    return withMetadataEtag(
-        toLoadResult(
-            tableName, table, snapshots, metadataLocation, configOverrides, storageCredentials));
-  }
-
-  public static CommitTableResponseDto toCommitResponse(
-      String tableName, Table table, List<Snapshot> snapshots) {
-    return toCommitResponse(tableName, table, snapshots, null);
-  }
-
-  public static CommitTableResponseDto toCommitResponse(
-      String tableName, Table table, List<Snapshot> snapshots, String metadataLocation) {
+      Long currentSnapshotId) {
     Map<String, String> props = new LinkedHashMap<>(table.getPropertiesMap());
     TableMetadataView metadataView =
-        TableMetadataBuilder.fromCatalog(tableName, table, props, snapshots, metadataLocation);
+        TableMetadataBuilder.fromCatalog(
+            tableName, table, props, snapshots, metadataLocation, currentSnapshotId);
     return new CommitTableResponseDto(metadataView.metadataLocation(), metadataView);
   }
 

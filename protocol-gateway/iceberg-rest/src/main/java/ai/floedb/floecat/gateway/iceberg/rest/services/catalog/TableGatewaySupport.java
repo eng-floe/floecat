@@ -301,7 +301,7 @@ public class TableGatewaySupport {
     return snapshotId != null && snapshotId >= 0L;
   }
 
-  private Snapshot loadCurrentSnapshot(Table table) {
+  public Snapshot loadCurrentSnapshot(Table table) {
     if (table == null || !table.hasResourceId()) {
       return null;
     }

@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.CommitTableResponseDto;
 import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
+import ai.floedb.floecat.gateway.iceberg.rest.common.SnapshotMetadataUtil;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TableResponseMapper;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.SnapshotLister;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
@@ -50,8 +51,10 @@ public class CommitResponseBuilder {
     CommitUpdateInspector.Parsed parsed = CommitUpdateInspector.inspect(req);
     List<Snapshot> snapshotList =
         SnapshotLister.fetchSnapshots(snapshotClient, committedTable, SnapshotLister.Mode.ALL);
-    String metadataLocation =
-        tableSupport == null ? null : tableSupport.loadCurrentMetadataLocation(committedTable);
+    Snapshot currentSnapshot =
+        tableSupport == null ? null : tableSupport.loadCurrentSnapshot(committedTable);
+    String metadataLocation = SnapshotMetadataUtil.metadataLocation(currentSnapshot);
+    Long currentSnapshotId = currentSnapshotId(currentSnapshot);
     Set<Long> removedSnapshotIds = parsed.removedSnapshotIdsSet();
     if (!removedSnapshotIds.isEmpty() && snapshotList != null && !snapshotList.isEmpty()) {
       snapshotList =
@@ -61,7 +64,7 @@ public class CommitResponseBuilder {
     }
     CommitTableResponseDto initialResponse =
         TableResponseMapper.toCommitResponse(
-            tableName, committedTable, snapshotList, metadataLocation);
+            tableName, committedTable, snapshotList, metadataLocation, currentSnapshotId);
     return applyRequestMetadataMutations(initialResponse, req);
   }
 
@@ -72,7 +75,10 @@ public class CommitResponseBuilder {
       TableRequests.Commit req,
       TableGatewaySupport tableSupport,
       Set<Long> removedSnapshotIds) {
-    String refreshedMetadataLocation = tableSupport.loadCurrentMetadataLocation(committedTable);
+    Snapshot currentSnapshot =
+        tableSupport == null ? null : tableSupport.loadCurrentSnapshot(committedTable);
+    String refreshedMetadataLocation = SnapshotMetadataUtil.metadataLocation(currentSnapshot);
+    Long currentSnapshotId = currentSnapshotId(currentSnapshot);
     List<Snapshot> refreshedSnapshots =
         SnapshotLister.fetchSnapshots(snapshotClient, committedTable, SnapshotLister.Mode.ALL);
     if (!removedSnapshotIds.isEmpty()
@@ -85,8 +91,19 @@ public class CommitResponseBuilder {
     }
     CommitTableResponseDto finalResponse =
         TableResponseMapper.toCommitResponse(
-            tableName, committedTable, refreshedSnapshots, refreshedMetadataLocation);
+            tableName,
+            committedTable,
+            refreshedSnapshots,
+            refreshedMetadataLocation,
+            currentSnapshotId);
     return applyRequestMetadataMutations(finalResponse, req);
+  }
+
+  private Long currentSnapshotId(Snapshot snapshot) {
+    if (snapshot == null || snapshot.getSnapshotId() < 0) {
+      return null;
+    }
+    return snapshot.getSnapshotId();
   }
 
   private CommitTableResponseDto applyRequestMetadataMutations(
