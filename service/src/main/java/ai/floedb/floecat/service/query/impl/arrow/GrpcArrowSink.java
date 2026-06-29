@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.query.impl.arrow;
 
+import ai.floedb.floecat.arrow.ArrowBatchSerializer;
 import ai.floedb.floecat.arrow.ArrowBatchSink;
 import ai.floedb.floecat.arrow.ArrowScanPlan;
 import ai.floedb.floecat.system.rpc.ScanSystemTableChunk;
