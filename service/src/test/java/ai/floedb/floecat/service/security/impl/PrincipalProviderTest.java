@@ -17,15 +17,23 @@
 package ai.floedb.floecat.service.security.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import io.grpc.Context;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.smallrye.common.vertx.VertxContext;
 import io.vertx.core.Vertx;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 /**
  * Unit coverage for the dual-channel principal carrier in {@link PrincipalProvider}.
@@ -119,6 +127,27 @@ class PrincipalProviderTest {
   void returnsDefaultWhenNoPrincipalAnywhere() throws Exception {
     PrincipalContext got = Context.ROOT.call(() -> new PrincipalProvider().get());
     assertEquals(PrincipalContext.getDefaultInstance(), got);
+  }
+
+  @Test
+  void rejectsUnknownAccountWhenServiceSideValidationEnabled() {
+    AccountRepository accounts = Mockito.mock(AccountRepository.class);
+    ResourceId accountId =
+        ResourceId.newBuilder()
+            .setId(PRINCIPAL.getAccountId())
+            .setKind(ResourceKind.RK_ACCOUNT)
+            .build();
+    Mockito.when(accounts.getById(accountId)).thenReturn(Optional.empty());
+
+    PrincipalProvider provider = new PrincipalProvider(accounts, true);
+    Context grpc = Context.current().withValue(PrincipalProvider.KEY, PRINCIPAL);
+    Context prev = grpc.attach();
+    try {
+      StatusRuntimeException error = assertThrows(StatusRuntimeException.class, provider::get);
+      assertEquals(Status.Code.UNAUTHENTICATED, error.getStatus().getCode());
+    } finally {
+      grpc.detach(prev);
+    }
   }
 
   /** Storing off a duplicated context is a safe no-op, not an exception. */
