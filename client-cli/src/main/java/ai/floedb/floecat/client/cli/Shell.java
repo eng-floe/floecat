@@ -62,11 +62,20 @@ import picocli.CommandLine;
 @TopCommand
 @CommandLine.Command(
     name = "floecat-shell",
-    mixinStandardHelpOptions = true,
     version = "floecat-shell 0.1",
     description = "Interactive CLI to browse and manage catalogs/namespaces/tables/connectors")
 @jakarta.inject.Singleton
 public class Shell implements Runnable {
+
+  @CommandLine.Option(
+      names = {"-h", "--help"},
+      description = "Show this help message and exit")
+  boolean helpRequested;
+
+  @CommandLine.Option(
+      names = {"-V", "--version"},
+      description = "Print version information and exit")
+  boolean versionRequested;
 
   @CommandLine.Option(
       names = {"--host"},
@@ -217,6 +226,14 @@ public class Shell implements Runnable {
 
   @Override
   public void run() {
+    if (versionRequested) {
+      out.println("floecat-shell 0.1");
+      return;
+    }
+    if (helpRequested) {
+      printHelp();
+      return;
+    }
     initAuthConfig();
     out.println("Floecat Shell (type 'help' for commands, 'quit' to exit).");
     try {

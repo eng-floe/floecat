@@ -261,4 +261,16 @@ service Connectors {
   rpc DeleteConnector(DeleteConnectorRequest) returns (DeleteConnectorResponse);
 
   rpc ValidateConnector(ValidateConnectorRequest) returns (ValidateConnectorResponse);
+
+
+  rpc ListCatalogs(ListCatalogsRequest) returns (ListCatalogsResponse);
+  rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
+  rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
+
+  rpc AddTables(AddTablesRequest) returns (AddTablesResponse);
+  rpc RemoveTables(RemoveTablesRequest) returns (RemoveTablesResponse);
+
+  rpc ConnectorStatus(ConnectorStatusRequest) returns (ConnectorStatusResponse);
+  
+
 }
