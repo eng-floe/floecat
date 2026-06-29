@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
+import ai.floedb.floecat.connector.rpc.CapturePolicy;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
@@ -119,6 +120,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           "policy.mode",
           "policy.scope",
           "policy.latest_n",
+          "policy.auto_capture_policy",
           "state");
 
   private static final Logger LOG = Logger.getLogger(Connectors.class);
@@ -962,6 +964,35 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     if (policy.getScope() == ReconcileSnapshotScope.RSS_LATEST_N && policy.getLatestN() <= 0) {
       throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "policy.latest_n"));
     }
+    if (policy.hasAutoCapturePolicy()) {
+      validateCapturePolicy(policy.getAutoCapturePolicy(), corr, "policy.auto_capture_policy");
+    }
+  }
+
+  private static void validateCapturePolicy(CapturePolicy policy, String corr, String fieldName) {
+    if (policy == null) {
+      return;
+    }
+    if (policy.getOutputsCount() == 0) {
+      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", fieldName + ".outputs"));
+    }
+    if (policy.getMaxDefaultColumns() < 0) {
+      throw GrpcErrors.invalidArgument(
+          corr, null, Map.of("field", fieldName + ".max_default_columns"));
+    }
+    for (int i = 0; i < policy.getColumnsCount(); i++) {
+      var column = policy.getColumns(i);
+      String columnField = fieldName + ".columns[" + i + "]";
+      if (column.getSelector().isBlank()) {
+        throw GrpcErrors.invalidArgument(corr, null, Map.of("field", columnField + ".selector"));
+      }
+      if (!column.getCaptureStats() && !column.getCaptureIndex()) {
+        throw GrpcErrors.invalidArgument(
+            corr,
+            null,
+            Map.of("field", columnField, "reason", "column capture policy has no enabled outputs"));
+      }
+    }
   }
 
   private static void validateSecretBearingMap(
@@ -1279,6 +1310,13 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       if (maskTargets(mask, "policy.latest_n")) {
         pb.setLatestN(inPol.getLatestN());
       }
+      if (maskTargets(mask, "policy.auto_capture_policy")) {
+        if (inPol.hasAutoCapturePolicy()) {
+          pb.setAutoCapturePolicy(inPol.getAutoCapturePolicy());
+        } else {
+          pb.clearAutoCapturePolicy();
+        }
+      }
       b.setPolicy(pb.build());
     }
 
@@ -1393,7 +1431,30 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                 .scalar("scope", policy.getScope().name())
                 .scalar("latest_n", policy.getLatestN())
                 .scalar("not_before_seconds", policy.getNotBefore().getSeconds())
-                .scalar("not_before_nanos", policy.getNotBefore().getNanos()));
+                .scalar("not_before_nanos", policy.getNotBefore().getNanos())
+                .group(
+                    "auto_capture_policy",
+                    autoCaptureGroup -> {
+                      if (!policy.hasAutoCapturePolicy()) {
+                        return;
+                      }
+                      var capturePolicy = policy.getAutoCapturePolicy();
+                      autoCaptureGroup
+                          .list("outputs", capturePolicy.getOutputsList())
+                          .scalar(
+                              "default_column_scope", capturePolicy.getDefaultColumnScope().name())
+                          .scalar("max_default_columns", capturePolicy.getMaxDefaultColumns());
+                      for (int i = 0; i < capturePolicy.getColumnsCount(); i++) {
+                        var column = capturePolicy.getColumns(i);
+                        int index = i;
+                        autoCaptureGroup.group(
+                            "columns[" + index + "]",
+                            cg ->
+                                cg.scalar("selector", column.getSelector())
+                                    .scalar("capture_stats", column.getCaptureStats())
+                                    .scalar("capture_index", column.getCaptureIndex()));
+                      }
+                    }));
 
     c.scalar("state", s.getState().name());
     c.map("properties", s.getPropertiesMap());

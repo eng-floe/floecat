@@ -20,11 +20,11 @@ import ai.floedb.floecat.catalog.rpc.NdvApprox;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
-import ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy;
+import ai.floedb.floecat.connector.rpc.CaptureColumnPolicy;
+import ai.floedb.floecat.connector.rpc.CaptureOutput;
+import ai.floedb.floecat.connector.rpc.CapturePolicy;
+import ai.floedb.floecat.connector.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
-import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
-import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
-import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageOrBuilder;
 import com.google.protobuf.Timestamp;
@@ -269,7 +269,13 @@ public final class CliUtils {
     java.util.LinkedHashSet<CaptureOutput> outputs =
         new java.util.LinkedHashSet<>(requestedOutputs);
     if (outputs.isEmpty()) {
-      throw new IllegalArgumentException("--capture is required for capture modes");
+      if ((columns != null && !columns.isEmpty())
+          || defaultColumnScope != DefaultColumnScope.DCS_FIRST_N
+          || maxDefaultColumns != 32) {
+        throw new IllegalArgumentException(
+            "--capture is required when using --columns, --default-cols, or --max-default-cols");
+      }
+      return null;
     }
     CapturePolicy.Builder policy =
         CapturePolicy.newBuilder()
