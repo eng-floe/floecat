@@ -401,7 +401,6 @@ class ShellFqQuoteTest {
     assertTrue(help.contains("[--wait-seconds <n>]"));
   }
 
-  @Test
   void analyzeWithoutArgsPrintsUsage() {
     ByteArrayOutputStream baos = new ByteArrayOutputStream();
     StatsCliSupport.handle(

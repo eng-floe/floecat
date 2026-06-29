@@ -642,37 +642,24 @@ class ReconcileControlImplTest {
 
   @Test
   void captureNowRejectsCaptureModeWithoutCapturePolicy() {
-    when(service.jobs.enqueuePlan(
-            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
-        .thenReturn("job-1");
-    when(service.jobs.get("acct", "job-1"))
-        .thenReturn(Optional.of(job("job-1", "JS_SUCCEEDED", 0, 0, 0, "")));
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .captureNow(
+                        CaptureNowRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
+                            .setScope(CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                            .build())
+                    .await()
+                    .indefinitely());
 
-    service
-        .captureNow(
-            CaptureNowRequest.newBuilder()
-                .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
-                .setScope(CaptureScope.newBuilder().setConnectorId(connectorId()).build())
-                .build())
-        .await()
-        .indefinitely();
-
-    ArgumentCaptor<ReconcileScope> scopeCaptor = ArgumentCaptor.forClass(ReconcileScope.class);
-    verify(service.jobs)
-        .enqueuePlan(
-            anyString(),
-            anyString(),
-            anyBoolean(),
-            any(),
-            scopeCaptor.capture(),
-            any(),
-            anyString());
-    assertEquals(
-        java.util.Set.of(
-            ReconcileCapturePolicy.Output.TABLE_STATS,
-            ReconcileCapturePolicy.Output.FILE_STATS,
-            ReconcileCapturePolicy.Output.COLUMN_STATS),
-        scopeCaptor.getValue().capturePolicy().outputs());
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
 
   @Test

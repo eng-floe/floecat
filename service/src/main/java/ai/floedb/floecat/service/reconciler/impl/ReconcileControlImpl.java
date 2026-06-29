@@ -835,19 +835,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         && connector.getPolicy().hasAutoCapturePolicy()) {
       return connector.getPolicy().getAutoCapturePolicy();
     }
-    return defaultCapturePolicyProto();
-  }
-
-  private static CapturePolicy defaultCapturePolicyProto() {
-    return CapturePolicy.newBuilder()
-        .addAllOutputs(
-            List.of(
-                CaptureOutput.CO_TABLE_STATS,
-                CaptureOutput.CO_FILE_STATS,
-                CaptureOutput.CO_COLUMN_STATS))
-        .setDefaultColumnScope(DefaultColumnScope.DCS_FIRST_N)
-        .setMaxDefaultColumns(32)
-        .build();
+    return null;
   }
 
   private static void validateCaptureRequestScope(

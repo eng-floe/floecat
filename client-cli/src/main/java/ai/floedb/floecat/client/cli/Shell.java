@@ -583,7 +583,7 @@ public class Shell implements Runnable {
          connector trigger <display_name|id> (--full|--incremental)
              --mode metadata-only|metadata-and-capture|capture-only
              [--capture stats|table-stats|file-stats|column-stats|index,...]
-             # --mode is required. --capture overrides connector/default capture policy.
+             # --mode is required. --capture overrides connector policy for that run.
              [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]
              [--snapshot <id[,id...]>|--current|--latest-n <n>|--all] [--columns c1,#id2,...]
              [--default-cols first-n|all|explicit-only] [--max-default-cols <n>]
