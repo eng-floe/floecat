@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.query.resolver;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.ExpansionMap;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
 
@@ -32,6 +33,26 @@ import java.util.List;
 public class ViewExpansionResolver {
 
   public ExpansionMap computeExpansion(String correlationId, List<ResourceId> resolvedInputs) {
+    return computeExpansion(correlationId, resolvedInputs, PhaseDiagnostics.NOOP);
+  }
+
+  public ExpansionMap computeExpansion(
+      String correlationId, List<ResourceId> resolvedInputs, PhaseDiagnostics diagnostics) {
+    PhaseDiagnostics safeDiagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
+    safeDiagnostics.add("expansion_inputs", resolvedInputs == null ? 0 : resolvedInputs.size());
+    if (safeDiagnostics != PhaseDiagnostics.NOOP && resolvedInputs != null) {
+      for (ResourceId input : resolvedInputs) {
+        if (input == null) {
+          safeDiagnostics.count("expansion_null_inputs");
+          continue;
+        }
+        switch (input.getKind()) {
+          case RK_TABLE -> safeDiagnostics.count("expansion_table_inputs");
+          case RK_VIEW -> safeDiagnostics.count("expansion_view_inputs");
+          default -> safeDiagnostics.count("expansion_other_inputs");
+        }
+      }
+    }
     // TODO: full view expansion logic for internal planner
     return ExpansionMap.getDefaultInstance();
   }

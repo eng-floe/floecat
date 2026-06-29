@@ -42,6 +42,11 @@ public interface Observability {
 
   ObservationScope observe(Category category, String component, String operation, Tag... tags);
 
+  /** Starts a request-local phase diagnostic collector for a single trace summary event. */
+  default PhaseDiagnostics diagnostics(String component, String operation, Tag... tags) {
+    return PhaseDiagnostics.NOOP;
+  }
+
   /** Starts a store child span that parallels the store metrics scopes. */
   default StoreTraceScope storeTraceScope(String component, String operation, Tag... tags) {
     return StoreTraceScope.NOOP;

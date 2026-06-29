@@ -37,6 +37,8 @@ import ai.floedb.floecat.service.query.catalog.UserObjectBundleUtils;
 import ai.floedb.floecat.service.query.resolver.ObligationsResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.query.resolver.ViewExpansionResolver;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -67,6 +69,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   @Inject ViewExpansionResolver expansions;
   @Inject QueryContextStore queryStore;
   @Inject CatalogOverlay catalogOverlay;
+  @Inject Observability observability;
 
   @Override
   public Uni<DescribeInputsResponse> describeInputs(DescribeInputsRequest request) {
@@ -75,59 +78,99 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
     return mapFailures(
             run(
                 () -> {
+                  PhaseDiagnostics diagnostics = diagnostics("describe_inputs");
+                  long startedNanos = System.nanoTime();
+                  String outcome = "completed";
                   String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId());
+                  diagnostics.put("query_id", queryId);
+                  diagnostics.put("inputs", request.getInputsCount());
 
-                  var ctxOpt = queryStore.get(queryId);
-                  if (ctxOpt.isEmpty()) {
-                    throw GrpcErrors.notFound(
-                        correlationId(), QUERY_NOT_FOUND, java.util.Map.of("query_id", queryId));
+                  try {
+                    var ctxOpt =
+                        diagnostics.time("query_context_get", () -> queryStore.get(queryId));
+                    if (ctxOpt.isEmpty()) {
+                      throw GrpcErrors.notFound(
+                          correlationId(), QUERY_NOT_FOUND, java.util.Map.of("query_id", queryId));
+                    }
+                    var ctx = ctxOpt.get();
+
+                    var asOfDefault =
+                        diagnostics.time(
+                            "parse_asof_default", () -> ctx.parseAsOfDefault(correlationId()));
+
+                    // Resolve inputs → resolved ids + snapshot pins (tables and/or view base
+                    // tables)
+                    var rr =
+                        diagnostics.time(
+                            "resolve_inputs",
+                            () ->
+                                inputResolver.resolveInputs(
+                                    correlationId(),
+                                    request.getInputsList(),
+                                    asOfDefault,
+                                    Optional.of(ctx.getQueryDefaultCatalogId()),
+                                    new java.util.LinkedHashMap<>(),
+                                    diagnostics));
+                    diagnostics.put("resolved_inputs", rr.resolved().size());
+
+                    List<SnapshotPin> pins = rr.snapshotSet().getPinsList();
+                    diagnostics.put("snapshot_pins", pins.size());
+
+                    // Index pins by table_id for quick lookup when describing tables.
+                    Map<ResourceId, SnapshotPin> pinByTableId = new HashMap<>();
+                    for (SnapshotPin pin : pins) {
+                      pinByTableId.put(pin.getTableId(), pin);
+                    }
+
+                    DescribeInputsResponse.Builder out = DescribeInputsResponse.newBuilder();
+
+                    // IMPORTANT: one schema per input (resolved id), in order
+                    try (var ignored = diagnostics.timer("schema_describe")) {
+                      for (ResourceId rid : rr.resolved()) {
+                        out.addSchemas(schemaForResolvedInput(correlationId(), rid, pinByTableId));
+                      }
+                    }
+                    diagnostics.put("schemas", out.getSchemasCount());
+
+                    // Compute expansions + obligations and store updated context
+                    ExpansionMap expansionMap =
+                        diagnostics.time(
+                            "compute_expansion",
+                            () ->
+                                expansions.computeExpansion(
+                                    correlationId(), List.copyOf(rr.resolved()), diagnostics));
+                    byte[] expansionBytes = expansionMap.toByteArray();
+                    diagnostics.put("expansion_bytes", expansionBytes.length);
+
+                    var obligationsResult =
+                        diagnostics.time(
+                            "resolve_obligations",
+                            () ->
+                                obligations.resolveObligations(correlationId(), pins, diagnostics));
+                    byte[] obligationsBytes = obligationsResult.bytes();
+                    diagnostics.put("obligations", obligationsResult.obligations().size());
+                    diagnostics.put("obligation_bytes", obligationsBytes.length);
+
+                    var updated =
+                        ctx.toBuilder()
+                            .snapshotSet(rr.snapshotSet().toByteArray())
+                            .expansionMap(expansionBytes)
+                            .obligations(obligationsBytes)
+                            .version(ctx.getVersion() + 1)
+                            .build();
+
+                    diagnostics.time("query_context_replace", () -> queryStore.replace(updated));
+
+                    return out.build();
+                  } catch (RuntimeException | Error e) {
+                    outcome = "failed";
+                    diagnostics.put("error", e.getClass().getSimpleName());
+                    throw e;
+                  } finally {
+                    diagnostics.put("outcome", outcome);
+                    diagnostics.nanos("total", System.nanoTime() - startedNanos);
+                    diagnostics.emit("floecat.describe_inputs.summary");
                   }
-                  var ctx = ctxOpt.get();
-
-                  var asOfDefault = ctx.parseAsOfDefault(correlationId());
-
-                  // Resolve inputs → resolved ids + snapshot pins (tables and/or view base tables)
-                  var rr =
-                      inputResolver.resolveInputs(
-                          correlationId(),
-                          request.getInputsList(),
-                          asOfDefault,
-                          Optional.of(ctx.getQueryDefaultCatalogId()));
-
-                  List<SnapshotPin> pins = rr.snapshotSet().getPinsList();
-
-                  // Index pins by table_id for quick lookup when describing tables.
-                  Map<ResourceId, SnapshotPin> pinByTableId = new HashMap<>();
-                  for (SnapshotPin pin : pins) {
-                    pinByTableId.put(pin.getTableId(), pin);
-                  }
-
-                  DescribeInputsResponse.Builder out = DescribeInputsResponse.newBuilder();
-
-                  // IMPORTANT: one schema per input (resolved id), in order
-                  for (ResourceId rid : rr.resolved()) {
-                    out.addSchemas(schemaForResolvedInput(correlationId(), rid, pinByTableId));
-                  }
-
-                  // Compute expansions + obligations and store updated context
-                  ExpansionMap expansionMap =
-                      expansions.computeExpansion(correlationId(), List.copyOf(rr.resolved()));
-                  byte[] expansionBytes = expansionMap.toByteArray();
-
-                  var obligationsResult = obligations.resolveObligations(correlationId(), pins);
-                  byte[] obligationsBytes = obligationsResult.bytes();
-
-                  var updated =
-                      ctx.toBuilder()
-                          .snapshotSet(rr.snapshotSet().toByteArray())
-                          .expansionMap(expansionBytes)
-                          .obligations(obligationsBytes)
-                          .version(ctx.getVersion() + 1)
-                          .build();
-
-                  queryStore.replace(updated);
-
-                  return out.build();
                 }),
             correlationId())
         .onFailure()
@@ -187,5 +230,11 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                     GrpcErrors.notFound(correlationId, VIEW, java.util.Map.of("id", rid.getId())));
 
     return SchemaDescriptor.newBuilder().addAllColumns(viewNode.outputColumns()).build();
+  }
+
+  private PhaseDiagnostics diagnostics(String operation) {
+    return observability == null
+        ? PhaseDiagnostics.NOOP
+        : observability.diagnostics("service", operation);
   }
 }

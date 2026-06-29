@@ -24,6 +24,7 @@ import ai.floedb.floecat.query.rpc.QueryStatus;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.telemetry.StoreOperationSummary;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
 import java.time.Clock;
@@ -299,15 +300,20 @@ public final class QueryContext {
 
     SnapshotSet set = parseSnapshotSet(correlationId);
 
-    return set.getPinsList().stream()
-        .filter(pin -> pin.hasTableId() && tableIdMatches(pin.getTableId(), tableId))
-        .findFirst()
-        .orElseThrow(
-            () ->
-                GrpcErrors.notFound(
-                    correlationId,
-                    QUERY_TABLE_NOT_PINNED,
-                    Map.of("query_id", queryId, "table_id", tableId.getId())));
+    SnapshotPin pin =
+        set.getPinsList().stream()
+            .filter(
+                candidate ->
+                    candidate.hasTableId() && tableIdMatches(candidate.getTableId(), tableId))
+            .findFirst()
+            .orElseThrow(
+                () ->
+                    GrpcErrors.notFound(
+                        correlationId,
+                        QUERY_TABLE_NOT_PINNED,
+                        Map.of("query_id", queryId, "table_id", tableId.getId())));
+    StoreOperationSummary.put("snapshot_pin_source", "query_context");
+    return pin;
   }
 
   public Optional<SnapshotPin> findSnapshotPin(ResourceId tableId, String correlationId) {

@@ -65,6 +65,7 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.DecorationException;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
 import io.grpc.Context;
 import java.time.Instant;
@@ -417,6 +418,18 @@ class UserObjectBundleServiceTest {
               Map<ResourceId, SnapshotPin> currentSnapshotPinCache) {
             return new ResolutionResult(
                 List.of(inputs.get(0).getTableId()), SnapshotSet.getDefaultInstance(), null);
+          }
+
+          @Override
+          public ResolutionResult resolveInputs(
+              String correlationId,
+              List<QueryInput> inputs,
+              Optional<Timestamp> asOfDefault,
+              Optional<ResourceId> defaultCatalogId,
+              Map<ResourceId, SnapshotPin> currentSnapshotPinCache,
+              PhaseDiagnostics diagnostics) {
+            return resolveInputs(
+                correlationId, inputs, asOfDefault, defaultCatalogId, currentSnapshotPinCache);
           }
         };
     service =

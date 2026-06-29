@@ -20,6 +20,7 @@ import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Observability.Category;
 import ai.floedb.floecat.telemetry.ObservationScope;
+import ai.floedb.floecat.telemetry.StoreOperationSummary;
 import ai.floedb.floecat.telemetry.StoreTraceScope;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
@@ -55,26 +56,42 @@ public final class StoreMetrics extends BaseMetrics {
     ObservationScope metricsScope =
         observability.observe(Category.STORE, component(), operation(), tags);
     StoreTraceScope traceScope = observability.storeTraceScope(component(), operation(), tags);
-    return new StoreObservationScope(metricsScope, traceScope);
+    return new StoreObservationScope(metricsScope, traceScope, component(), operation());
   }
 
   private static final class StoreObservationScope implements ObservationScope {
     private final ObservationScope metricsScope;
     private final StoreTraceScope traceScope;
+    private final String component;
+    private final String operation;
+    private final boolean recordInSummary;
+    private final long startNanos = System.nanoTime();
+    private Throwable error;
+    private boolean successCalled;
 
-    StoreObservationScope(ObservationScope metricsScope, StoreTraceScope traceScope) {
+    StoreObservationScope(
+        ObservationScope metricsScope,
+        StoreTraceScope traceScope,
+        String component,
+        String operation) {
       this.metricsScope = metricsScope;
       this.traceScope = traceScope;
+      this.component = component;
+      this.operation = operation;
+      this.recordInSummary = StoreOperationSummary.enterScope();
     }
 
     @Override
     public void success() {
+      error = null;
+      successCalled = true;
       metricsScope.success();
       traceScope.success();
     }
 
     @Override
     public void error(Throwable throwable) {
+      error = throwable;
       metricsScope.error(throwable);
       traceScope.error(throwable);
     }
@@ -92,9 +109,20 @@ public final class StoreMetrics extends BaseMetrics {
     @Override
     public void close() {
       try {
-        metricsScope.close();
+        if (recordInSummary) {
+          StoreOperationSummary.record(
+              component,
+              operation,
+              Duration.ofNanos(Math.max(0L, System.nanoTime() - startNanos)),
+              successCalled && error == null);
+        }
+        try {
+          metricsScope.close();
+        } finally {
+          traceScope.close();
+        }
       } finally {
-        traceScope.close();
+        StoreOperationSummary.exitScope();
       }
     }
   }

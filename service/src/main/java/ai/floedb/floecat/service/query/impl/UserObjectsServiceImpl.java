@@ -30,6 +30,8 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleService;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.infrastructure.Infrastructure;
@@ -67,49 +69,53 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
     // throughout the entire streaming response — including lazy item emission from the
     // UserObjectBundleIterator, which calls principal.get() for name resolution.
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
+    Context otelCtx = Context.current();
 
     return Multi.createFrom()
         .<UserObjectsBundleChunk>emitter(
             emitter -> {
               grpcCtx.run(
                   () -> {
-                    workStartNs.compareAndSet(0L, System.nanoTime());
-                    var principalContext = principal.get();
-                    var contextCorrelationId = InboundContextInterceptor.CORR_KEY.get();
-                    var principalCorrelationId = principalContext.getCorrelationId();
-                    var correlationId =
-                        contextCorrelationId != null && !contextCorrelationId.isBlank()
-                            ? contextCorrelationId
-                            : principalCorrelationId;
-                    correlationRef.set(correlationId == null ? "" : correlationId);
-                    authz.require(principalContext, "catalog.read");
+                    try (Scope ignored = otelCtx.makeCurrent()) {
+                      workStartNs.compareAndSet(0L, System.nanoTime());
+                      var principalContext = principal.get();
+                      var contextCorrelationId = InboundContextInterceptor.CORR_KEY.get();
+                      var principalCorrelationId = principalContext.getCorrelationId();
+                      var correlationId =
+                          contextCorrelationId != null && !contextCorrelationId.isBlank()
+                              ? contextCorrelationId
+                              : principalCorrelationId;
+                      correlationRef.set(correlationId == null ? "" : correlationId);
+                      authz.require(principalContext, "catalog.read");
 
-                    String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
-                    var ctxOpt = queryStore.get(queryId);
-                    if (ctxOpt.isEmpty()) {
-                      emitter.fail(
-                          GrpcErrors.notFound(
-                              correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId)));
-                      return;
+                      String queryId =
+                          mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+                      var ctxOpt = queryStore.get(queryId);
+                      if (ctxOpt.isEmpty()) {
+                        emitter.fail(
+                            GrpcErrors.notFound(
+                                correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId)));
+                        return;
+                      }
+
+                      QueryContext ctx = ctxOpt.get();
+                      if (!ctx.isActive()) {
+                        emitter.fail(
+                            GrpcErrors.preconditionFailed(
+                                correlationId,
+                                QUERY_NOT_ACTIVE,
+                                Map.of("query_id", queryId, "state", ctx.getState().name())));
+                        return;
+                      }
+
+                      var subscription =
+                          bundles.stream(correlationId, ctx, request.getTablesList())
+                              .subscribe()
+                              .with(emitter::emit, emitter::fail, emitter::complete);
+
+                      emitter.onTermination(subscription::cancel);
+                      emitter.onCancellation(subscription::cancel);
                     }
-
-                    QueryContext ctx = ctxOpt.get();
-                    if (!ctx.isActive()) {
-                      emitter.fail(
-                          GrpcErrors.preconditionFailed(
-                              correlationId,
-                              QUERY_NOT_ACTIVE,
-                              Map.of("query_id", queryId, "state", ctx.getState().name())));
-                      return;
-                    }
-
-                    var subscription =
-                        bundles.stream(correlationId, ctx, request.getTablesList())
-                            .subscribe()
-                            .with(emitter::emit, emitter::fail, emitter::complete);
-
-                    emitter.onTermination(subscription::cancel);
-                    emitter.onCancellation(subscription::cancel);
                   });
             })
         .runSubscriptionOn(Infrastructure.getDefaultExecutor())

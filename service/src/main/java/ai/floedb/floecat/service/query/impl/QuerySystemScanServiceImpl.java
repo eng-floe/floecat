@@ -52,6 +52,8 @@ import ai.floedb.floecat.system.rpc.QuerySystemScanService;
 import ai.floedb.floecat.system.rpc.ScanSystemTableChunk;
 import ai.floedb.floecat.system.rpc.ScanSystemTableRequest;
 import ai.floedb.floecat.system.rpc.SystemTableRow;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.infrastructure.Infrastructure;
@@ -78,6 +80,7 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
   @Inject QueryContextStore queryStore;
   @Inject StatsProviderFactory statsFactory;
   @Inject ConstraintProviderFactory constraintFactory;
+  @Inject Observability observability;
 
   @ConfigProperty(name = "ai.floedb.floecat.arrow.max-bytes", defaultValue = "1073741824")
   long arrowMaxBytes;
@@ -104,13 +107,17 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
   private void execute(
       ScanSystemTableRequest request, MultiEmitter<? super ScanSystemTableChunk> emitter) {
     AtomicReference<String> correlationIdHolder = new AtomicReference<>("unknown");
+    PhaseDiagnostics diagnostics = diagnostics("system_scan");
+    long startedNanos = System.nanoTime();
+    String outcome = "completed";
     try {
-      var principalContext = principal.get();
+      var principalContext = diagnostics.time("principal_get", principal::get);
       correlationIdHolder.set(principalContext.getCorrelationId());
-      authz.require(principalContext, "catalog.read");
+      diagnostics.time("authz", () -> authz.require(principalContext, "catalog.read"));
 
       String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationIdHolder.get());
-      var ctxOpt = queryStore.get(queryId);
+      diagnostics.put("query_id", queryId);
+      var ctxOpt = diagnostics.time("query_context_get", () -> queryStore.get(queryId));
       if (ctxOpt.isEmpty()) {
         throw GrpcErrors.notFound(
             correlationIdHolder.get(), QUERY_NOT_FOUND, Map.of("query_id", queryId));
@@ -123,9 +130,16 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
       }
 
       ResourceId tableId = request.getTableId();
-      SystemObjectScanner scanner = scanners.resolve(correlationIdHolder.get(), tableId);
-      EngineContext engineCtx = engineContext.engineContext();
-      var statsProvider = statsFactory.forSystemScan(queryCtx, correlationIdHolder.get());
+      diagnostics.put("table_id", tableId.getId());
+      EngineContext engineCtx = diagnostics.time("engine_context", engineContext::engineContext);
+      SystemObjectScanner scanner =
+          diagnostics.time(
+              "scanner_resolve",
+              () -> scanners.resolve(correlationIdHolder.get(), tableId, engineCtx, diagnostics));
+      var statsProvider =
+          diagnostics.time(
+              "stats_provider",
+              () -> statsFactory.forSystemScan(queryCtx, correlationIdHolder.get()));
       SystemObjectScanContext ctx =
           new SystemObjectScanContext(
               graph,
@@ -134,10 +148,14 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
               engineCtx,
               statsProvider,
               constraintFactory.provider());
-      List<SchemaColumn> schema = scanner.schema();
+      List<SchemaColumn> schema = diagnostics.time("schema", scanner::schema);
       List<String> requiredColumns = request.getRequiredColumnsList();
       List<Predicate> predicates = request.getPredicatesList();
       OutputFormat format = request.getOutputFormat();
+      diagnostics.put("format", format.name());
+      diagnostics.put("schema_columns", schema.size());
+      diagnostics.put("required_columns", requiredColumns.size());
+      diagnostics.put("predicates", predicates.size());
       if (format == OutputFormat.UNRECOGNIZED) {
         throw GrpcErrors.invalidArgument(
             correlationIdHolder.get(),
@@ -145,37 +163,71 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
             Map.of("output_format", format.toString()));
       }
       boolean arrowRequested = format != OutputFormat.ROWS;
-      Expr predicateExpr = SystemRowFilter.EXPRESSION_PROVIDER.toExpr(predicates);
-      SystemScanRequest scanRequest = SystemScanRequest.of(predicateExpr, requiredColumns);
+      diagnostics.put("arrow_requested", arrowRequested);
+      Expr predicateExpr =
+          diagnostics.time(
+              "predicate_build", () -> SystemRowFilter.EXPRESSION_PROVIDER.toExpr(predicates));
+      SystemScanRequest scanRequest =
+          diagnostics.time(
+              "scan_request_build", () -> SystemScanRequest.of(predicateExpr, requiredColumns));
 
       if (arrowRequested) {
-        BufferAllocator allocator = new RootAllocator(arrowMaxBytes);
+        BufferAllocator allocator =
+            diagnostics.time("arrow_allocator", () -> new RootAllocator(arrowMaxBytes));
         ArrowScanPlan plan =
-            arrowPlanner.plan(
-                scanner, ctx, schema, predicates, requiredColumns, scanRequest, allocator);
-        arrowSink.sink(
-            emitter,
-            plan,
-            allocator,
-            t -> toStatus(t, requireNonNullElse(correlationIdHolder.get(), "unknown")));
+            diagnostics.time(
+                "arrow_plan",
+                () ->
+                    arrowPlanner.plan(
+                        scanner, ctx, schema, predicates, requiredColumns, scanRequest, allocator));
+        diagnostics.time(
+            "arrow_sink",
+            () ->
+                arrowSink.sink(
+                    emitter,
+                    plan,
+                    allocator,
+                    t -> toStatus(t, requireNonNullElse(correlationIdHolder.get(), "unknown"))));
+        if (emitter.isCancelled()) {
+          outcome = "cancelled";
+        }
         return;
       }
 
-      try (Stream<SystemObjectRow> rows = scanner.scan(ctx, scanRequest);
+      try (var ignored = diagnostics.timer("row_scan");
+          Stream<SystemObjectRow> rows = scanner.scan(ctx, scanRequest);
           Stream<SystemObjectRow> filtered = SystemRowFilter.filter(rows, schema, predicates);
           Stream<SystemObjectRow> projected =
               SystemRowProjector.project(filtered, schema, requiredColumns)) {
         Iterator<SystemObjectRow> iterator = projected.iterator();
+        long emittedRows = 0;
         while (!emitter.isCancelled() && iterator.hasNext()) {
           SystemTableRow row = SystemRowMappers.toProto(iterator.next());
           emitter.emit(ScanSystemTableChunk.newBuilder().setRow(row).build());
+          emittedRows++;
         }
+        diagnostics.put("rows_emitted", emittedRows);
         if (!emitter.isCancelled()) {
           emitter.complete();
+        } else {
+          outcome = "cancelled";
         }
       }
     } catch (Throwable t) {
+      outcome = "failed";
+      diagnostics.put("error", t.getClass().getSimpleName());
       emitter.fail(toStatus(t, requireNonNullElse(correlationIdHolder.get(), "unknown")));
+    } finally {
+      diagnostics.put("correlation_id", correlationIdHolder.get());
+      diagnostics.put("outcome", outcome);
+      diagnostics.nanos("total", System.nanoTime() - startedNanos);
+      diagnostics.emit("floecat.system_scan.summary");
     }
+  }
+
+  private PhaseDiagnostics diagnostics(String operation) {
+    return observability == null
+        ? PhaseDiagnostics.NOOP
+        : observability.diagnostics("service", operation);
   }
 }

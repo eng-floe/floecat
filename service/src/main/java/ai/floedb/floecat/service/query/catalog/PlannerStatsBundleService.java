@@ -48,6 +48,8 @@ import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsResolutionResult;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -88,6 +90,7 @@ public class PlannerStatsBundleService {
   private final int maxTables;
   private final int maxTargets;
   private final int maxResultsPerChunk;
+  @Inject Observability observability;
 
   private static final record PlannerStatsLimits(
       int maxTables, int maxTargets, int maxResultsPerChunk) {}
@@ -174,33 +177,61 @@ public class PlannerStatsBundleService {
 
   public Multi<TargetStatsBundleChunk> streamTargets(
       String correlationId, QueryContext ctx, FetchTargetStatsRequest request) {
+    PhaseDiagnostics diagnostics = diagnostics("planner_target_stats");
+    long startedNanos = System.nanoTime();
     FetchTargetStatsRequest safeRequest =
         request == null ? FetchTargetStatsRequest.getDefaultInstance() : request;
-    NormalizedRequest normalized = normalizeRequest(correlationId, safeRequest);
-    List<TableRequest> tableRequests = normalized.tables();
-    ConstraintProvider constraintProvider =
-        safeRequest.getIncludeConstraints()
-            ? constraintProviderSupplier.get()
-            : ConstraintProvider.NONE;
-    SnapshotPinLookup pinLookup = statsFactory.pinLookupForQuery(ctx, correlationId);
-    return Multi.createFrom()
-        .<TargetStatsBundleChunk>deferred(
-            () ->
-                Multi.createFrom()
-                    .iterable(
-                        () ->
-                            new TargetStatsIterator(
-                                ctx.getQueryId(),
-                                correlationId,
-                                tableRequests,
-                                pinLookup,
-                                constraintProvider,
-                                safeRequest.getIncludeConstraints(),
-                                constraintPrunerFactory,
-                                targetStatsLookup,
-                                maxResultsPerChunk,
-                                tableRequests.size(),
-                                normalized.requestedTargets())));
+    diagnostics.put("correlation_id", correlationId);
+    diagnostics.put("query_id", ctx == null ? "" : ctx.getQueryId());
+    diagnostics.put("include_constraints", safeRequest.getIncludeConstraints());
+    diagnostics.put("requested_tables_raw", safeRequest.getTablesCount());
+    try {
+      NormalizedRequest normalized =
+          diagnostics.time("normalize_request", () -> normalizeRequest(correlationId, safeRequest));
+      List<TableRequest> tableRequests = normalized.tables();
+      diagnostics.put("requested_tables", tableRequests.size());
+      diagnostics.put("requested_targets", normalized.requestedTargets());
+      diagnostics.put("max_results_per_chunk", maxResultsPerChunk);
+      ConstraintProvider constraintProvider =
+          diagnostics.time(
+              "constraint_provider",
+              () ->
+                  safeRequest.getIncludeConstraints()
+                      ? constraintProviderSupplier.get()
+                      : ConstraintProvider.NONE);
+      SnapshotPinLookup pinLookup =
+          diagnostics.time(
+              "pin_lookup_provider", () -> statsFactory.pinLookupForQuery(ctx, correlationId));
+      return Multi.createFrom()
+          .<TargetStatsBundleChunk>deferred(
+              () -> {
+                TargetStatsIterator iterator =
+                    new TargetStatsIterator(
+                        ctx.getQueryId(),
+                        correlationId,
+                        tableRequests,
+                        pinLookup,
+                        constraintProvider,
+                        safeRequest.getIncludeConstraints(),
+                        constraintPrunerFactory,
+                        targetStatsLookup,
+                        maxResultsPerChunk,
+                        tableRequests.size(),
+                        normalized.requestedTargets(),
+                        diagnostics,
+                        startedNanos);
+                return Multi.createFrom()
+                    .iterable(() -> iterator)
+                    .onCancellation()
+                    .invoke(iterator::emitCancelledSummary);
+              });
+    } catch (RuntimeException | Error e) {
+      diagnostics.put("outcome", "failed");
+      diagnostics.put("error", e.getClass().getSimpleName());
+      diagnostics.nanos("total", System.nanoTime() - startedNanos);
+      diagnostics.emit("floecat.planner_target_stats.summary");
+      throw e;
+    }
   }
 
   @FunctionalInterface
@@ -251,30 +282,57 @@ public class PlannerStatsBundleService {
 
   public Multi<TableConstraintsBundleChunk> streamConstraints(
       String correlationId, QueryContext ctx, FetchTableConstraintsRequest request) {
+    PhaseDiagnostics diagnostics = diagnostics("planner_constraints");
+    long startedNanos = System.nanoTime();
     FetchTableConstraintsRequest safeRequest =
         request == null ? FetchTableConstraintsRequest.getDefaultInstance() : request;
-    List<ResourceId> tableIds = normalizeConstraintsRequest(correlationId, safeRequest);
-    Set<String> requestedRelationKeys = new LinkedHashSet<>();
-    for (ResourceId tableId : tableIds) {
-      requestedRelationKeys.add(RequestScopeConstraintPruner.relationKey(tableId));
+    diagnostics.put("correlation_id", correlationId);
+    diagnostics.put("query_id", ctx == null ? "" : ctx.getQueryId());
+    diagnostics.put("requested_tables_raw", safeRequest.getTableIdsCount());
+    try {
+      List<ResourceId> tableIds =
+          diagnostics.time(
+              "normalize_request", () -> normalizeConstraintsRequest(correlationId, safeRequest));
+      diagnostics.put("requested_tables", tableIds.size());
+      diagnostics.put("max_results_per_chunk", maxResultsPerChunk);
+      Set<String> requestedRelationKeys = new LinkedHashSet<>();
+      for (ResourceId tableId : tableIds) {
+        requestedRelationKeys.add(RequestScopeConstraintPruner.relationKey(tableId));
+      }
+      ConstraintPruner constraintPruner =
+          diagnostics.time(
+              "constraint_pruner",
+              () -> constraintsOnlyPrunerFactory.apply(Set.copyOf(requestedRelationKeys)));
+      ConstraintProvider constraintProvider =
+          diagnostics.time("constraint_provider", constraintProviderSupplier::get);
+      SnapshotPinLookup pinLookup =
+          diagnostics.time(
+              "pin_lookup_provider", () -> statsFactory.pinLookupForQuery(ctx, correlationId));
+      return Multi.createFrom()
+          .<TableConstraintsBundleChunk>deferred(
+              () -> {
+                TableConstraintsIterator iterator =
+                    new TableConstraintsIterator(
+                        ctx.getQueryId(),
+                        tableIds,
+                        pinLookup,
+                        constraintProvider,
+                        constraintPruner,
+                        maxResultsPerChunk,
+                        diagnostics,
+                        startedNanos);
+                return Multi.createFrom()
+                    .iterable(() -> iterator)
+                    .onCancellation()
+                    .invoke(iterator::emitCancelledSummary);
+              });
+    } catch (RuntimeException | Error e) {
+      diagnostics.put("outcome", "failed");
+      diagnostics.put("error", e.getClass().getSimpleName());
+      diagnostics.nanos("total", System.nanoTime() - startedNanos);
+      diagnostics.emit("floecat.planner_constraints.summary");
+      throw e;
     }
-    ConstraintPruner constraintPruner =
-        constraintsOnlyPrunerFactory.apply(Set.copyOf(requestedRelationKeys));
-    ConstraintProvider constraintProvider = constraintProviderSupplier.get();
-    SnapshotPinLookup pinLookup = statsFactory.pinLookupForQuery(ctx, correlationId);
-    return Multi.createFrom()
-        .<TableConstraintsBundleChunk>deferred(
-            () ->
-                Multi.createFrom()
-                    .iterable(
-                        () ->
-                            new TableConstraintsIterator(
-                                ctx.getQueryId(),
-                                tableIds,
-                                pinLookup,
-                                constraintProvider,
-                                constraintPruner,
-                                maxResultsPerChunk)));
   }
 
   private NormalizedRequest normalizeRequest(
@@ -381,12 +439,24 @@ public class PlannerStatsBundleService {
   private abstract static class BundleIterator<C> implements Iterator<C> {
 
     protected final String queryId;
+    protected final PhaseDiagnostics diagnostics;
     protected long seq = 1;
+    private final String eventName;
+    private final long startedNanos;
+    private final long streamStartedNanos;
     private boolean headerEmitted = false;
     private boolean endEmitted = false;
+    private boolean summaryEmitted = false;
+    private long messages = 0;
+    private long chunks = 0;
 
-    protected BundleIterator(String queryId) {
+    protected BundleIterator(
+        String queryId, PhaseDiagnostics diagnostics, String eventName, long startedNanos) {
       this.queryId = queryId;
+      this.diagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
+      this.eventName = eventName;
+      this.startedNanos = startedNanos;
+      this.streamStartedNanos = System.nanoTime();
     }
 
     @Override
@@ -396,18 +466,49 @@ public class PlannerStatsBundleService {
 
     @Override
     public final C next() {
-      if (!headerEmitted) {
-        headerEmitted = true;
-        return header();
+      try {
+        C chunk;
+        if (!headerEmitted) {
+          chunk = header();
+          headerEmitted = true;
+        } else if (hasMoreWork()) {
+          chunk = batch();
+          chunks++;
+        } else if (!endEmitted) {
+          endEmitted = true;
+          chunk = end();
+          messages++;
+          emitSummary("completed", null);
+          return chunk;
+        } else {
+          throw new NoSuchElementException();
+        }
+        messages++;
+        return chunk;
+      } catch (RuntimeException | Error e) {
+        emitSummary("failed", e);
+        throw e;
       }
-      if (hasMoreWork()) {
-        return batch();
+    }
+
+    private void emitSummary(String outcome, Throwable error) {
+      if (summaryEmitted) {
+        return;
       }
-      if (!endEmitted) {
-        endEmitted = true;
-        return end();
+      summaryEmitted = true;
+      diagnostics.put("outcome", outcome);
+      if (error != null) {
+        diagnostics.put("error", error.getClass().getSimpleName());
       }
-      throw new NoSuchElementException();
+      diagnostics.put("chunks", chunks);
+      diagnostics.put("messages", messages);
+      diagnostics.nanos("total", System.nanoTime() - startedNanos);
+      diagnostics.nanos("stream", System.nanoTime() - streamStartedNanos);
+      diagnostics.emit(eventName);
+    }
+
+    void emitCancelledSummary() {
+      emitSummary("cancelled", null);
     }
 
     protected abstract C header();
@@ -452,8 +553,10 @@ public class PlannerStatsBundleService {
         TargetStatsLookup targetStatsLookup,
         int maxResultsPerChunk,
         long requestedTables,
-        long requestedTargets) {
-      super(queryId);
+        long requestedTargets,
+        PhaseDiagnostics diagnostics,
+        long startedNanos) {
+      super(queryId, diagnostics, "floecat.planner_target_stats.summary", startedNanos);
       this.correlationId = correlationId;
       this.pinLookup = pinLookup;
       this.constraintProvider = constraintProvider;
@@ -504,16 +607,18 @@ public class PlannerStatsBundleService {
     protected TargetStatsBundleChunk batch() {
       List<TargetStatsResult> out = new ArrayList<>(Math.min(maxResultsPerChunk, 16));
       List<TableConstraintsResult> constraintsOut = new ArrayList<>();
-      while (out.size() < maxResultsPerChunk && hasMoreWork()) {
-        TableWork work = tableWorks.get(nextTableIndex);
-        TargetStatsResult result = processNextTarget(work);
-        out.add(result);
-        if (includeConstraints && !work.constraintsEmitted()) {
-          constraintsOut.add(processConstraints(work));
-          work.markConstraintsEmitted();
-        }
-        if (!work.hasMoreTargets()) {
-          nextTableIndex++;
+      try (var ignored = diagnostics.timer("batch_build")) {
+        while (out.size() < maxResultsPerChunk && hasMoreWork()) {
+          TableWork work = tableWorks.get(nextTableIndex);
+          TargetStatsResult result = processNextTarget(work);
+          out.add(result);
+          if (includeConstraints && !work.constraintsEmitted()) {
+            constraintsOut.add(processConstraints(work));
+            work.markConstraintsEmitted();
+          }
+          if (!work.hasMoreTargets()) {
+            nextTableIndex++;
+          }
         }
       }
       TargetStatsBatch batch =
@@ -530,6 +635,11 @@ public class PlannerStatsBundleService {
 
     @Override
     protected TargetStatsBundleChunk end() {
+      diagnostics.put("requested_tables", requestedTables);
+      diagnostics.put("requested_targets", requestedTargets);
+      diagnostics.put("returned_targets", returnedTargets);
+      diagnostics.put("not_found_targets", notFoundTargets);
+      diagnostics.put("error_targets", errorTargets);
       TargetStatsBundleEnd end =
           TargetStatsBundleEnd.newBuilder()
               .setRequestedTables(requestedTables)
@@ -548,14 +658,16 @@ public class PlannerStatsBundleService {
     private TargetStatsResult processNextTarget(TableWork work) {
       StatsTarget target = work.targetAt(work.targetIndex());
       ResourceId tableId = work.tableId;
-      OptionalLong snapshot = resolveSnapshot(work);
+      OptionalLong snapshot = diagnostics.time("pin_resolve", () -> resolveSnapshot(work));
       TargetStatsResult result;
       if (snapshot.isEmpty()) {
         errorTargets++;
         result = pinMissingResult(tableId, target);
       } else {
         try {
-          work.ensureTargetBatchLoaded(targetStatsLookup, snapshot.getAsLong());
+          diagnostics.time(
+              "target_batch_lookup",
+              () -> work.ensureTargetBatchLoaded(targetStatsLookup, snapshot.getAsLong()));
           Optional<TargetStatsRecord> recordOpt = work.lookupTarget(target);
           if (recordOpt.isPresent()) {
             returnedTargets++;
@@ -578,8 +690,12 @@ public class PlannerStatsBundleService {
     }
 
     private TableConstraintsResult processConstraints(TableWork work) {
-      return resolveConstraintResult(
-              work.tableId, resolveSnapshot(work), constraintProvider, constraintPruner)
+      return diagnostics
+          .time(
+              "constraint_resolve",
+              () ->
+                  resolveConstraintResult(
+                      work.tableId, resolveSnapshot(work), constraintProvider, constraintPruner))
           .result();
     }
 
@@ -677,8 +793,10 @@ public class PlannerStatsBundleService {
         SnapshotPinLookup pinLookup,
         ConstraintProvider constraintProvider,
         ConstraintPruner constraintPruner,
-        int maxResultsPerChunk) {
-      super(queryId);
+        int maxResultsPerChunk,
+        PhaseDiagnostics diagnostics,
+        long startedNanos) {
+      super(queryId, diagnostics, "floecat.planner_constraints.summary", startedNanos);
       this.tableIds = tableIds;
       this.pinLookup = pinLookup;
       this.constraintProvider = constraintProvider;
@@ -703,8 +821,10 @@ public class PlannerStatsBundleService {
     @Override
     protected TableConstraintsBundleChunk batch() {
       List<TableConstraintsResult> out = new ArrayList<>(Math.min(maxResultsPerChunk, 16));
-      while (out.size() < maxResultsPerChunk && nextTableIndex < tableIds.size()) {
-        out.add(processTable(tableIds.get(nextTableIndex++)));
+      try (var ignored = diagnostics.timer("batch_build")) {
+        while (out.size() < maxResultsPerChunk && nextTableIndex < tableIds.size()) {
+          out.add(processTable(tableIds.get(nextTableIndex++)));
+        }
       }
       TableConstraintsBatch batch =
           TableConstraintsBatch.newBuilder().addAllConstraints(out).build();
@@ -717,6 +837,10 @@ public class PlannerStatsBundleService {
 
     @Override
     protected TableConstraintsBundleChunk end() {
+      diagnostics.put("requested_tables", tableIds.size());
+      diagnostics.put("returned_tables", returnedTables);
+      diagnostics.put("not_found_tables", notFoundTables);
+      diagnostics.put("error_tables", errorTables);
       TableConstraintsBundleEnd end =
           TableConstraintsBundleEnd.newBuilder()
               .setRequestedTables(tableIds.size())
@@ -733,8 +857,14 @@ public class PlannerStatsBundleService {
 
     private TableConstraintsResult processTable(ResourceId tableId) {
       ConstraintResolution result =
-          resolveConstraintResult(
-              tableId, pinLookup.pinnedSnapshotId(tableId), constraintProvider, constraintPruner);
+          diagnostics.time(
+              "constraint_resolve",
+              () ->
+                  resolveConstraintResult(
+                      tableId,
+                      diagnostics.time("pin_resolve", () -> pinLookup.pinnedSnapshotId(tableId)),
+                      constraintProvider,
+                      constraintPruner));
       switch (result.status()) {
         case FOUND -> returnedTables++;
         case NOT_FOUND -> notFoundTables++;
@@ -951,4 +1081,10 @@ public class PlannerStatsBundleService {
   private record TableRequest(ResourceId tableId, List<StatsTarget> targets) {}
 
   private record NormalizedRequest(List<TableRequest> tables, long requestedTargets) {}
+
+  private PhaseDiagnostics diagnostics(String operation) {
+    return observability == null
+        ? PhaseDiagnostics.NOOP
+        : observability.diagnostics("service", operation);
+  }
 }

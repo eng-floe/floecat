@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.impl.QueryContext;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.*;
 
@@ -39,6 +40,16 @@ public class SnapshotResolver {
 
   public List<SnapshotPin> resolvePins(
       String correlationId, QueryContext ctx, List<QueryInput> inputs) {
+    return resolvePins(correlationId, ctx, inputs, PhaseDiagnostics.NOOP);
+  }
+
+  public List<SnapshotPin> resolvePins(
+      String correlationId,
+      QueryContext ctx,
+      List<QueryInput> inputs,
+      PhaseDiagnostics diagnostics) {
+    PhaseDiagnostics safeDiagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
+    safeDiagnostics.add("snapshot_inputs", inputs == null ? 0 : inputs.size());
 
     List<SnapshotPin> out = new ArrayList<>(inputs.size());
 
@@ -46,31 +57,37 @@ public class SnapshotResolver {
 
       if (!in.hasTableId()) {
         if (in.hasViewId()) {
+          safeDiagnostics.count("snapshot_view_inputs");
           out.add(viewPin(in.getViewId()));
           continue;
         }
         throw GrpcErrors.invalidArgument(correlationId, QUERY_INPUT_NOT_TABLE, Map.of());
       }
 
+      safeDiagnostics.count("snapshot_table_inputs");
       ResourceId tableId = in.getTableId();
       SnapshotRef override = in.hasSnapshot() ? in.getSnapshot() : null;
 
       if (override == null || override.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
+        safeDiagnostics.count("snapshot_context_pins");
         out.add(ctx.requireSnapshotPin(tableId, correlationId));
         continue;
       }
 
       switch (override.getWhichCase()) {
-        case SNAPSHOT_ID ->
-            out.add(
-                SnapshotPin.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(override.getSnapshotId())
-                    .build());
+        case SNAPSHOT_ID -> {
+          safeDiagnostics.count("snapshot_id_overrides");
+          out.add(
+              SnapshotPin.newBuilder()
+                  .setTableId(tableId)
+                  .setSnapshotId(override.getSnapshotId())
+                  .build());
+        }
 
-        case AS_OF ->
-            out.add(
-                SnapshotPin.newBuilder().setTableId(tableId).setAsOf(override.getAsOf()).build());
+        case AS_OF -> {
+          safeDiagnostics.count("snapshot_asof_overrides");
+          out.add(SnapshotPin.newBuilder().setTableId(tableId).setAsOf(override.getAsOf()).build());
+        }
 
         case SPECIAL -> {
           // SS_CURRENT means "no override": use pinned snapshot for this query context.
@@ -78,6 +95,7 @@ public class SnapshotResolver {
           if (override.getSpecial() != SpecialSnapshot.SS_CURRENT) {
             throw GrpcErrors.invalidArgument(correlationId, SNAPSHOT_SPECIAL_MISSING, Map.of());
           }
+          safeDiagnostics.count("snapshot_special_current");
           out.add(ctx.requireSnapshotPin(tableId, correlationId));
         }
 

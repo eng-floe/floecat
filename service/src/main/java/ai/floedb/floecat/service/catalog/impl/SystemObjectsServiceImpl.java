@@ -31,6 +31,8 @@ import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -48,27 +50,50 @@ public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemO
   @Inject Authorizer authz;
   @Inject SystemNodeRegistry nodeRegistry;
   @Inject EngineContextProvider engineContextProvider;
+  @Inject Observability observability;
 
   @Override
   public Uni<GetSystemObjectsResponse> getSystemObjects(GetSystemObjectsRequest request) {
     return mapFailures(
         run(
             () -> {
-              var principalContext = principal.get();
-              authz.require(principalContext, "system-objects.read");
-              EngineContext ctx = engineContextProvider.engineContext();
-              RequestValidation.requireNonBlank(
-                  ctx.engineVersion(),
-                  "x-engine-version",
-                  correlationId(),
-                  "builtin.engine_version.required");
-              RequestValidation.requireNonBlank(
-                  ctx.engineKind(),
-                  "x-engine-kind",
-                  correlationId(),
-                  "builtin.engine_kind.required");
-              SystemObjectsRegistry registry = fetchSystemObjects(ctx);
-              return GetSystemObjectsResponse.newBuilder().setRegistry(registry).build();
+              PhaseDiagnostics diagnostics = diagnostics("get_system_objects");
+              long startedNanos = System.nanoTime();
+              String outcome = "completed";
+              try {
+                var principalContext = diagnostics.time("principal_get", principal::get);
+                diagnostics.time(
+                    "authz", () -> authz.require(principalContext, "system-objects.read"));
+                EngineContext ctx =
+                    diagnostics.time("engine_context", engineContextProvider::engineContext);
+                diagnostics.put("engine_kind", ctx.engineKind());
+                diagnostics.put("engine_version", ctx.engineVersion());
+                RequestValidation.requireNonBlank(
+                    ctx.engineVersion(),
+                    "x-engine-version",
+                    correlationId(),
+                    "builtin.engine_version.required");
+                RequestValidation.requireNonBlank(
+                    ctx.engineKind(),
+                    "x-engine-kind",
+                    correlationId(),
+                    "builtin.engine_kind.required");
+                SystemObjectsRegistry registry =
+                    diagnostics.time("fetch_system_objects", () -> fetchSystemObjects(ctx));
+                GetSystemObjectsResponse response =
+                    GetSystemObjectsResponse.newBuilder().setRegistry(registry).build();
+                diagnostics.put("registry_bytes", registry.getSerializedSize());
+                diagnostics.put("response_bytes", response.getSerializedSize());
+                return response;
+              } catch (RuntimeException | Error e) {
+                outcome = "failed";
+                diagnostics.put("error", e.getClass().getSimpleName());
+                throw e;
+              } finally {
+                diagnostics.put("outcome", outcome);
+                diagnostics.nanos("total", System.nanoTime() - startedNanos);
+                diagnostics.emit("floecat.get_system_objects.summary");
+              }
             }),
         correlationId());
   }
@@ -90,5 +115,11 @@ public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemO
         List.of(),
         List.of(),
         data.registryEngineSpecific());
+  }
+
+  private PhaseDiagnostics diagnostics(String operation) {
+    return observability == null
+        ? PhaseDiagnostics.NOOP
+        : observability.diagnostics("service", operation);
   }
 }

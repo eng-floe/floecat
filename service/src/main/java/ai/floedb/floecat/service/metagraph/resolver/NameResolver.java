@@ -29,6 +29,8 @@ import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -39,6 +41,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.Semaphore;
+import java.util.function.Supplier;
 import org.eclipse.microprofile.context.ManagedExecutor;
 
 /**
@@ -72,6 +75,7 @@ public final class NameResolver {
   private final NamespaceRepository namespaceRepository;
   private final TableRepository tableRepository;
   private final ViewRepository viewRepository;
+  @Inject Observability observability;
   private volatile Executor blockingExecutor = ForkJoinPool.commonPool();
 
   @Inject
@@ -99,95 +103,133 @@ public final class NameResolver {
   // ----------------------------------------------------------------------
 
   public Optional<ResourceId> resolveCatalogId(String cid, String accountId, String catalogName) {
-    return catalogByName(accountId, catalogName).map(Catalog::getResourceId);
+    return diagnose(
+        "resolve_catalog_id",
+        cid,
+        accountId,
+        () -> catalogByName(accountId, catalogName).map(Catalog::getResourceId));
   }
 
   public Optional<ResourceId> resolveNamespaceId(String cid, String accountId, NameRef ref) {
-    List<String> fullPath = namespacePath(ref);
+    return diagnose(
+        "resolve_namespace_id",
+        cid,
+        accountId,
+        () -> {
+          List<String> fullPath = namespacePath(ref);
 
-    return catalogByName(accountId, ref.getCatalog())
-        .flatMap(catalog -> namespaceByPath(accountId, catalog, fullPath))
-        .map(Namespace::getResourceId);
+          return catalogByName(accountId, ref.getCatalog())
+              .flatMap(catalog -> namespaceByPath(accountId, catalog, fullPath))
+              .map(Namespace::getResourceId);
+        });
   }
 
   public Optional<ResourceId> resolveTableId(String cid, String accountId, NameRef ref) {
-    return catalogByName(accountId, ref.getCatalog())
-        .flatMap(
-            catalog ->
-                namespaceByPath(accountId, catalog, ref.getPathList())
-                    .flatMap(
-                        ns ->
-                            tableRepository
-                                .getByName(
-                                    accountId,
-                                    catalog.getResourceId().getId(),
-                                    ns.getResourceId().getId(),
-                                    ref.getName())
-                                .map(Table::getResourceId)
-                                .map(this::requireCanonicalTableId)));
+    return diagnose(
+        "resolve_table_id",
+        cid,
+        accountId,
+        () ->
+            catalogByName(accountId, ref.getCatalog())
+                .flatMap(
+                    catalog ->
+                        namespaceByPath(accountId, catalog, ref.getPathList())
+                            .flatMap(
+                                ns ->
+                                    tableRepository
+                                        .getByName(
+                                            accountId,
+                                            catalog.getResourceId().getId(),
+                                            ns.getResourceId().getId(),
+                                            ref.getName())
+                                        .map(Table::getResourceId)
+                                        .map(this::requireCanonicalTableId))));
   }
 
   public Optional<ResourceId> resolveViewId(String cid, String accountId, NameRef ref) {
-    return catalogByName(accountId, ref.getCatalog())
-        .flatMap(
-            catalog ->
-                namespaceByPath(accountId, catalog, ref.getPathList())
-                    .flatMap(
-                        ns ->
-                            viewRepository
-                                .getByName(
-                                    accountId,
-                                    catalog.getResourceId().getId(),
-                                    ns.getResourceId().getId(),
-                                    ref.getName())
-                                .map(View::getResourceId)));
+    return diagnose(
+        "resolve_view_id",
+        cid,
+        accountId,
+        () ->
+            catalogByName(accountId, ref.getCatalog())
+                .flatMap(
+                    catalog ->
+                        namespaceByPath(accountId, catalog, ref.getPathList())
+                            .flatMap(
+                                ns ->
+                                    viewRepository
+                                        .getByName(
+                                            accountId,
+                                            catalog.getResourceId().getId(),
+                                            ns.getResourceId().getId(),
+                                            ref.getName())
+                                        .map(View::getResourceId))));
   }
 
   public Optional<ResolvedRelation> resolveTableRelation(String accountId, NameRef ref) {
-    if (!validCatalog(ref) || !validName(ref)) return Optional.empty();
+    return diagnose(
+        "resolve_table_relation",
+        "",
+        accountId,
+        () -> {
+          if (!validCatalog(ref) || !validName(ref)) return Optional.empty();
 
-    Optional<Catalog> catalogOpt = catalogRepository.getByName(accountId, ref.getCatalog());
-    if (catalogOpt.isEmpty()) return Optional.empty();
-    Catalog catalog = catalogOpt.get();
+          Optional<Catalog> catalogOpt = catalogRepository.getByName(accountId, ref.getCatalog());
+          if (catalogOpt.isEmpty()) return Optional.empty();
+          Catalog catalog = catalogOpt.get();
 
-    Optional<Namespace> nsOpt =
-        namespaceRepository.getByPath(
-            accountId, catalog.getResourceId().getId(), ref.getPathList());
-    if (nsOpt.isEmpty()) return Optional.empty();
-    Namespace ns = nsOpt.get();
+          Optional<Namespace> nsOpt =
+              namespaceRepository.getByPath(
+                  accountId, catalog.getResourceId().getId(), ref.getPathList());
+          if (nsOpt.isEmpty()) return Optional.empty();
+          Namespace ns = nsOpt.get();
 
-    return tableRepository
-        .getByName(
-            accountId, catalog.getResourceId().getId(), ns.getResourceId().getId(), ref.getName())
-        .map(
-            t -> {
-              ResourceId tableId = requireCanonicalTableId(t.getResourceId());
-              return new ResolvedRelation(
-                  tableId, canonicalName(catalog, ns, t.getDisplayName(), tableId));
-            });
+          return tableRepository
+              .getByName(
+                  accountId,
+                  catalog.getResourceId().getId(),
+                  ns.getResourceId().getId(),
+                  ref.getName())
+              .map(
+                  t -> {
+                    ResourceId tableId = requireCanonicalTableId(t.getResourceId());
+                    return new ResolvedRelation(
+                        tableId, canonicalName(catalog, ns, t.getDisplayName(), tableId));
+                  });
+        });
   }
 
   public Optional<ResolvedRelation> resolveViewRelation(String accountId, NameRef ref) {
-    if (!validCatalog(ref) || !validName(ref)) return Optional.empty();
+    return diagnose(
+        "resolve_view_relation",
+        "",
+        accountId,
+        () -> {
+          if (!validCatalog(ref) || !validName(ref)) return Optional.empty();
 
-    Optional<Catalog> catalogOpt = catalogRepository.getByName(accountId, ref.getCatalog());
-    if (catalogOpt.isEmpty()) return Optional.empty();
-    Catalog catalog = catalogOpt.get();
+          Optional<Catalog> catalogOpt = catalogRepository.getByName(accountId, ref.getCatalog());
+          if (catalogOpt.isEmpty()) return Optional.empty();
+          Catalog catalog = catalogOpt.get();
 
-    Optional<Namespace> nsOpt =
-        namespaceRepository.getByPath(
-            accountId, catalog.getResourceId().getId(), ref.getPathList());
-    if (nsOpt.isEmpty()) return Optional.empty();
-    Namespace ns = nsOpt.get();
+          Optional<Namespace> nsOpt =
+              namespaceRepository.getByPath(
+                  accountId, catalog.getResourceId().getId(), ref.getPathList());
+          if (nsOpt.isEmpty()) return Optional.empty();
+          Namespace ns = nsOpt.get();
 
-    return viewRepository
-        .getByName(
-            accountId, catalog.getResourceId().getId(), ns.getResourceId().getId(), ref.getName())
-        .map(
-            v ->
-                new ResolvedRelation(
-                    v.getResourceId(),
-                    canonicalName(catalog, ns, v.getDisplayName(), v.getResourceId())));
+          return viewRepository
+              .getByName(
+                  accountId,
+                  catalog.getResourceId().getId(),
+                  ns.getResourceId().getId(),
+                  ref.getName())
+              .map(
+                  v ->
+                      new ResolvedRelation(
+                          v.getResourceId(),
+                          canonicalName(catalog, ns, v.getDisplayName(), v.getResourceId())));
+        });
   }
 
   // ----------------------------------------------------------------------
@@ -251,24 +293,41 @@ public final class NameResolver {
   // ----------------------------------------------------------------------
 
   public List<ResourceId> listNamespaces(String accountId, String catalogId) {
-    return namespaceRepository.listIds(accountId, catalogId);
+    return diagnose(
+        "list_namespaces", "", accountId, () -> namespaceRepository.listIds(accountId, catalogId));
   }
 
   public List<ResourceId> listTableIds(String accountId, String catalogId) {
-    List<ResourceId> nsIds = namespaceRepository.listIds(accountId, catalogId);
-    if (nsIds.isEmpty()) return List.of();
-    if (nsIds.size() == 1) {
-      return listTableIdsInNamespace(accountId, catalogId, nsIds.get(0).getId());
-    }
-    return parallelScan(nsIds, ns -> listTableIdsInNamespace(accountId, catalogId, ns.getId()));
+    return diagnose(
+        "list_table_ids",
+        "",
+        accountId,
+        () -> {
+          List<ResourceId> nsIds = namespaceRepository.listIds(accountId, catalogId);
+          if (nsIds.isEmpty()) return List.of();
+          if (nsIds.size() == 1) {
+            return listTableIdsInNamespace(accountId, catalogId, nsIds.get(0).getId());
+          }
+          return parallelScan(
+              nsIds, ns -> listTableIdsInNamespace(accountId, catalogId, ns.getId()));
+        });
   }
 
   public List<ResourceId> listTableIdsInNamespace(
       String accountId, String catalogId, String namespaceId) {
-    List<Table> tables =
-        tableRepository.list(
-            accountId, catalogId, namespaceId, Integer.MAX_VALUE, "", new StringBuilder());
-    return tables.stream().map(Table::getResourceId).map(this::requireCanonicalTableId).toList();
+    return diagnose(
+        "list_table_ids_in_namespace",
+        "",
+        accountId,
+        () -> {
+          List<Table> tables =
+              tableRepository.list(
+                  accountId, catalogId, namespaceId, Integer.MAX_VALUE, "", new StringBuilder());
+          return tables.stream()
+              .map(Table::getResourceId)
+              .map(this::requireCanonicalTableId)
+              .toList();
+        });
   }
 
   /**
@@ -279,6 +338,7 @@ public final class NameResolver {
   private <T> List<T> parallelScan(
       List<ResourceId> nsIds, java.util.function.Function<ResourceId, List<T>> task) {
     Semaphore gate = new Semaphore(MAX_PARALLEL_NS_SCANS);
+    io.opentelemetry.context.Context otelContext = io.opentelemetry.context.Context.current();
     List<CompletableFuture<List<T>>> futures =
         nsIds.stream()
             .<CompletableFuture<List<T>>>map(
@@ -286,7 +346,7 @@ public final class NameResolver {
                     CompletableFuture.<List<T>>supplyAsync(
                         () -> {
                           gate.acquireUninterruptibly();
-                          try {
+                          try (io.opentelemetry.context.Scope ignored = otelContext.makeCurrent()) {
                             return task.apply(ns);
                           } finally {
                             gate.release();
@@ -319,19 +379,66 @@ public final class NameResolver {
   }
 
   public List<ResourceId> listViewIds(String accountId, String catalogId) {
-    List<ResourceId> nsIds = namespaceRepository.listIds(accountId, catalogId);
-    if (nsIds.isEmpty()) return List.of();
-    if (nsIds.size() == 1) {
-      return listViewIdsInNamespace(accountId, catalogId, nsIds.get(0).getId());
-    }
-    return parallelScan(nsIds, ns -> listViewIdsInNamespace(accountId, catalogId, ns.getId()));
+    return diagnose(
+        "list_view_ids",
+        "",
+        accountId,
+        () -> {
+          List<ResourceId> nsIds = namespaceRepository.listIds(accountId, catalogId);
+          if (nsIds.isEmpty()) return List.of();
+          if (nsIds.size() == 1) {
+            return listViewIdsInNamespace(accountId, catalogId, nsIds.get(0).getId());
+          }
+          return parallelScan(
+              nsIds, ns -> listViewIdsInNamespace(accountId, catalogId, ns.getId()));
+        });
   }
 
   public List<ResourceId> listViewIdsInNamespace(
       String accountId, String catalogId, String namespaceId) {
-    List<View> views =
-        viewRepository.list(
-            accountId, catalogId, namespaceId, Integer.MAX_VALUE, "", new StringBuilder());
-    return views.stream().map(View::getResourceId).toList();
+    return diagnose(
+        "list_view_ids_in_namespace",
+        "",
+        accountId,
+        () -> {
+          List<View> views =
+              viewRepository.list(
+                  accountId, catalogId, namespaceId, Integer.MAX_VALUE, "", new StringBuilder());
+          return views.stream().map(View::getResourceId).toList();
+        });
+  }
+
+  private <T> T diagnose(
+      String operation, String correlationId, String accountId, Supplier<T> work) {
+    PhaseDiagnostics diagnostics =
+        observability == null
+            ? PhaseDiagnostics.NOOP
+            : observability.diagnostics("metagraph", operation);
+    long startedNanos = System.nanoTime();
+    diagnostics.put("correlation_id", correlationId == null ? "" : correlationId);
+    diagnostics.put("account_id", accountId == null ? "" : accountId);
+    try {
+      T result = work.get();
+      diagnostics.put("outcome", "completed");
+      recordResult(diagnostics, result);
+      return result;
+    } catch (RuntimeException | Error e) {
+      diagnostics.put("outcome", "failed");
+      diagnostics.put("error", e.getClass().getSimpleName());
+      throw e;
+    } finally {
+      diagnostics.nanos("total", System.nanoTime() - startedNanos);
+      diagnostics.emit("floecat.metagraph.name_resolver.summary");
+    }
+  }
+
+  private static void recordResult(PhaseDiagnostics diagnostics, Object result) {
+    if (result instanceof Optional<?> optional) {
+      diagnostics.put("found", optional.isPresent());
+      return;
+    }
+    if (result instanceof List<?> list) {
+      diagnostics.put("result_count", list.size());
+    }
   }
 }

@@ -30,6 +30,12 @@ import ai.floedb.floecat.system.rpc.SystemTableFlightTicket;
 import ai.floedb.floecat.system.rpc.SystemTableTarget;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -66,6 +72,8 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
 
   private FlightAllocatorProvider allocatorProvider;
   private FlightExecutor flightExecutor;
+
+  @Inject Observability observability;
 
   protected SystemTableFlightProducerBase() {}
 
@@ -105,6 +113,12 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
 
   protected Logger logger() {
     return Logger.getLogger(getClass());
+  }
+
+  private PhaseDiagnostics diagnostics(String operation) {
+    return observability == null
+        ? PhaseDiagnostics.NOOP
+        : observability.diagnostics("flight", operation);
   }
 
   // -----------------------------------------------------------------------
@@ -299,6 +313,11 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
     Throwable failure = null;
     boolean cancelled = false;
     boolean streamStarted = false;
+    Span streamSpan = null;
+    Scope streamScope = null;
+    String effectiveQueryId = null;
+    FlightArrowBatchSink sink = null;
+    FlightStreamTelemetry telemetry = new FlightStreamTelemetry();
     try {
       snapshotScope = snapshot.apply();
       SystemTableFlightCommand command = decodeTicket(ticket);
@@ -311,35 +330,81 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
       tableName = handle.canonicalName();
       Optional<ResourceId> tableId = handle.tableId();
       String tableIdLog = tableId.map(ResourceId::getId).orElse("<name-only>");
-      String effectiveQueryId = requireQueryId(callCtx, command);
+      effectiveQueryId = requireQueryId(callCtx, command);
       logger()
           .debugf(
               "getStream table=%s name=%s query=%s correlation=%s",
               tableIdLog, tableName, effectiveQueryId, callCtx.correlationId());
+      streamSpan =
+          startSpan("floecat.flight.get_stream.worker", tableName, effectiveQueryId, callCtx);
+      if (streamSpan != null) {
+        streamScope = streamSpan.makeCurrent();
+      }
       streamStarted = true;
       String finalTableName = tableName;
       safeHook("onGetStreamStart", () -> onGetStreamStart(callCtx, finalTableName));
 
-      BufferAllocator allocator = createStreamAllocator();
-      FlightArrowBatchSink sink = new FlightArrowBatchSink(listener, allocator);
+      long allocatorStartNanos = System.nanoTime();
+      BufferAllocator allocator;
+      try {
+        allocator = createStreamAllocator();
+      } finally {
+        telemetry.addAllocatorNanos(System.nanoTime() - allocatorStartNanos);
+      }
+      sink = new FlightArrowBatchSink(listener, allocator);
+      FlightArrowBatchSink streamSink = sink;
       AtomicBoolean cleanupCalled = new AtomicBoolean(false);
+      BufferAllocator streamAllocator = allocator;
       Runnable cleanup =
           () -> {
             if (cleanupCalled.compareAndSet(false, true)) {
-              sink.close();
-              closeAllocator(allocator);
+              long cleanupStartNanos = System.nanoTime();
+              try {
+                streamSink.close();
+                closeAllocator(streamAllocator);
+              } finally {
+                telemetry.addCleanupNanos(System.nanoTime() - cleanupStartNanos);
+              }
             }
           };
-      ArrowScanPlan plan =
-          buildPlan(tableName, tableId, command, callCtx, allocator, listener::isCancelled);
+      ArrowScanPlan plan;
+      long buildPlanStartNanos = System.nanoTime();
       try {
-        ArrowBatchSerializer.serialize(plan, sink, listener::isCancelled, cleanup);
+        plan =
+            withSpan(
+                "floecat.flight.build_plan",
+                tableName,
+                effectiveQueryId,
+                callCtx,
+                () ->
+                    buildPlan(
+                        finalTableName,
+                        tableId,
+                        command,
+                        callCtx,
+                        allocator,
+                        listener::isCancelled));
+      } finally {
+        telemetry.addBuildPlanNanos(System.nanoTime() - buildPlanStartNanos);
+      }
+      long serializeStartNanos = System.nanoTime();
+      try {
+        runWithSpan(
+            "floecat.flight.serialize",
+            tableName,
+            effectiveQueryId,
+            callCtx,
+            () -> ArrowBatchSerializer.serialize(plan, streamSink, listener::isCancelled, cleanup));
+        telemetry.addSerializeNanos(System.nanoTime() - serializeStartNanos);
         cancelled = listener.isCancelled();
       } catch (Throwable t) {
+        telemetry.addSerializeNanos(System.nanoTime() - serializeStartNanos);
         failure = t;
         if (cleanupCalled.compareAndSet(false, true)) {
+          long cleanupStartNanos = System.nanoTime();
           sink.close();
           closeAllocator(allocator);
+          telemetry.addCleanupNanos(System.nanoTime() - cleanupStartNanos);
         }
         throw t;
       }
@@ -364,12 +429,231 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
         safeHook(
             "onGetStreamSuccess", () -> onGetStreamSuccess(callCtx, finalTableName, elapsedNanos));
       }
+      try {
+        if (streamSpan != null) {
+          streamSpan.setAttribute("flight.cancelled", cancelled);
+          if (failure != null) {
+            recordSpanError(streamSpan, failure);
+          }
+        }
+        PhaseDiagnostics diagnostics = diagnostics("get_stream");
+        emitFlightSummaryEvent(
+            diagnostics,
+            streamSpan,
+            callCtx,
+            finalTableName,
+            effectiveQueryId,
+            elapsedNanos,
+            cancelled,
+            failure,
+            sink,
+            telemetry);
+      } catch (Throwable telemetryFailure) {
+        logger().debugf(telemetryFailure, "Failed to finish Flight stream telemetry");
+      }
+      if (streamScope != null) {
+        try {
+          streamScope.close();
+        } catch (Throwable telemetryFailure) {
+          logger().debugf(telemetryFailure, "Failed to close Flight stream telemetry scope");
+        }
+      }
+      if (streamSpan != null) {
+        try {
+          streamSpan.end();
+        } catch (Throwable telemetryFailure) {
+          logger().debugf(telemetryFailure, "Failed to end Flight stream telemetry span");
+        }
+      }
       if (snapshotScope != null) {
         try {
           snapshotScope.close();
         } catch (Exception ignored) {
         }
       }
+    }
+  }
+
+  private static Tracer tracer() {
+    return io.opentelemetry.api.GlobalOpenTelemetry.getTracer("ai.floedb.floecat.flight");
+  }
+
+  private static Span startSpan(
+      String name, String tableName, String queryId, ResolvedCallContext context) {
+    Span parent = Span.current();
+    if (!parent.getSpanContext().isValid() || !parent.isRecording()) {
+      return null;
+    }
+    var builder = tracer().spanBuilder(name).setAttribute("floecat.component", "flight");
+    if (tableName != null && !tableName.isBlank()) {
+      builder.setAttribute("system.table", tableName);
+    }
+    if (queryId != null && !queryId.isBlank()) {
+      builder.setAttribute("query.id", queryId);
+    }
+    if (context != null && context.correlationId() != null && !context.correlationId().isBlank()) {
+      builder.setAttribute("correlation.id", context.correlationId());
+    }
+    return builder.startSpan();
+  }
+
+  private static void emitFlightSummaryEvent(
+      PhaseDiagnostics diagnostics,
+      Span span,
+      ResolvedCallContext context,
+      String tableName,
+      String queryId,
+      long elapsedNanos,
+      boolean cancelled,
+      Throwable failure,
+      FlightArrowBatchSink sink,
+      FlightStreamTelemetry telemetry) {
+    String outcome = failure == null ? (cancelled ? "cancelled" : "completed") : "failed";
+    long rows = sink == null ? 0L : sink.rows();
+    int batches = sink == null ? 0 : sink.batches();
+    long copyNanos = sink == null ? 0L : sink.copyNanos();
+    long putNextNanos = sink == null ? 0L : sink.putNextNanos();
+    long completeNanos = sink == null ? 0L : sink.completeNanos();
+    boolean emptyStream = sink != null && sink.completedEmptyStream();
+    long schedulingNanos =
+        Math.max(
+            0L,
+            elapsedNanos
+                - telemetry.allocatorNanos()
+                - telemetry.buildPlanNanos()
+                - telemetry.serializeNanos()
+                - telemetry.cleanupNanos());
+
+    if (span != null && span.getSpanContext().isValid()) {
+      span.setAttribute("floecat.flight.outcome", outcome);
+      span.setAttribute("floecat.flight.duration_ms", millis(elapsedNanos));
+      span.setAttribute("floecat.flight.rows", rows);
+      span.setAttribute("floecat.flight.batches", batches);
+      span.setAttribute("floecat.flight.empty_stream", emptyStream);
+    }
+
+    diagnostics.put("query_id", safe(queryId));
+    diagnostics.put("correlation_id", safe(context == null ? "" : context.correlationId()));
+    diagnostics.put("system_table", safe(tableName));
+    diagnostics.put("outcome", outcome);
+    diagnostics.put("cancelled", cancelled);
+    diagnostics.put("rows", rows);
+    diagnostics.put("batches", batches);
+    diagnostics.put("empty_stream", emptyStream);
+    diagnostics.nanos("total", elapsedNanos);
+    diagnostics.nanos("allocator", telemetry.allocatorNanos());
+    diagnostics.nanos("build_plan", telemetry.buildPlanNanos());
+    diagnostics.nanos("serialize", telemetry.serializeNanos());
+    diagnostics.nanos("sink_copy", copyNanos);
+    diagnostics.nanos("sink_put_next", putNextNanos);
+    diagnostics.nanos("sink_complete", completeNanos);
+    diagnostics.nanos("cleanup", telemetry.cleanupNanos());
+    diagnostics.nanos("scheduling", schedulingNanos);
+    diagnostics.emit("floecat.flight.summary");
+  }
+
+  private static double millis(long nanos) {
+    return Math.max(0L, nanos) / 1_000_000.0;
+  }
+
+  private static String safe(String value) {
+    return value == null ? "" : value;
+  }
+
+  private static <T> T withSpan(
+      String name,
+      String tableName,
+      String queryId,
+      ResolvedCallContext context,
+      SpanSupplier<T> op) {
+    Span span = startSpan(name, tableName, queryId, context);
+    if (span == null) {
+      return op.get();
+    }
+    try (Scope ignored = span.makeCurrent()) {
+      return op.get();
+    } catch (RuntimeException e) {
+      recordSpanError(span, e);
+      throw e;
+    } catch (Error e) {
+      recordSpanError(span, e);
+      throw e;
+    } finally {
+      span.end();
+    }
+  }
+
+  private static void runWithSpan(
+      String name, String tableName, String queryId, ResolvedCallContext context, SpanRunnable op) {
+    Span span = startSpan(name, tableName, queryId, context);
+    if (span == null) {
+      op.run();
+      return;
+    }
+    try (Scope ignored = span.makeCurrent()) {
+      op.run();
+    } catch (RuntimeException e) {
+      recordSpanError(span, e);
+      throw e;
+    } catch (Error e) {
+      recordSpanError(span, e);
+      throw e;
+    } finally {
+      span.end();
+    }
+  }
+
+  private static void recordSpanError(Span span, Throwable t) {
+    span.recordException(t);
+    span.setStatus(StatusCode.ERROR);
+  }
+
+  @FunctionalInterface
+  private interface SpanSupplier<T> {
+    T get();
+  }
+
+  @FunctionalInterface
+  private interface SpanRunnable {
+    void run();
+  }
+
+  private static final class FlightStreamTelemetry {
+    private long allocatorNanos;
+    private long buildPlanNanos;
+    private long serializeNanos;
+    private long cleanupNanos;
+
+    private void addAllocatorNanos(long nanos) {
+      allocatorNanos += Math.max(0L, nanos);
+    }
+
+    private long allocatorNanos() {
+      return allocatorNanos;
+    }
+
+    private void addBuildPlanNanos(long nanos) {
+      buildPlanNanos += Math.max(0L, nanos);
+    }
+
+    private long buildPlanNanos() {
+      return buildPlanNanos;
+    }
+
+    private void addSerializeNanos(long nanos) {
+      serializeNanos += Math.max(0L, nanos);
+    }
+
+    private long serializeNanos() {
+      return serializeNanos;
+    }
+
+    private void addCleanupNanos(long nanos) {
+      cleanupNanos += Math.max(0L, nanos);
+    }
+
+    private long cleanupNanos() {
+      return cleanupNanos;
     }
   }
 

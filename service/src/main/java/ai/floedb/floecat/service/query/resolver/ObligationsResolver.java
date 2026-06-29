@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.query.resolver;
 
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TableObligations;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
 
@@ -35,6 +36,13 @@ public class ObligationsResolver {
   public record Result(List<TableObligations> obligations, byte[] bytes) {}
 
   public Result resolveObligations(String correlationId, List<SnapshotPin> pins) {
+    return resolveObligations(correlationId, pins, PhaseDiagnostics.NOOP);
+  }
+
+  public Result resolveObligations(
+      String correlationId, List<SnapshotPin> pins, PhaseDiagnostics diagnostics) {
+    PhaseDiagnostics safeDiagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
+    safeDiagnostics.add("obligation_pins", pins == null ? 0 : pins.size());
     // TODO: load obligations from governance service
     return new Result(List.of(), new byte[0]);
   }

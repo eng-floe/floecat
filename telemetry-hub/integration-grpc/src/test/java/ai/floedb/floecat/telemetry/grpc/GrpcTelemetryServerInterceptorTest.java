@@ -15,6 +15,7 @@
  */
 package ai.floedb.floecat.telemetry.grpc;
 
+import ai.floedb.floecat.telemetry.StoreOperationSummary;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
@@ -24,8 +25,11 @@ import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.ServerCall;
 import io.grpc.Status;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import org.assertj.core.api.Assertions;
@@ -85,6 +89,137 @@ class GrpcTelemetryServerInterceptorTest {
     Assertions.assertThat(observability.counterValue(Telemetry.Metrics.RPC_REQUESTS)).isEqualTo(1);
     List<TestObservability.TestObservationScope> scopes = observability.scopes().get("RPC");
     Assertions.assertThat(scopes.get(0).isSuccess()).isTrue();
+    Assertions.assertThat(observability.diagnosticEvents()).hasSize(1);
+    TestObservability.TestDiagnosticEvent event = observability.diagnosticEvents().get(0);
+    Assertions.assertThat(event.eventName()).isEqualTo("floecat.rpc.summary");
+    Assertions.assertThat(event.fields())
+        .containsEntry("success", true)
+        .containsEntry("completed", true);
+  }
+
+  @Test
+  void keepsGenericSummaryForDomainSummaryRpc() {
+    TestObservability observability = new TestObservability();
+    GrpcTelemetryServerInterceptor interceptor =
+        new GrpcTelemetryServerInterceptor(observability, "svc");
+    TestServerCall call =
+        new TestServerCall("ai.floedb.floecat.query.UserObjectsService/GetUserObjects");
+    AtomicReference<ServerCall<Void, Void>> activeCall = new AtomicReference<>();
+    interceptor.interceptCall(
+        call,
+        new Metadata(),
+        (c, headers) -> {
+          activeCall.set(c);
+          return new ServerCall.Listener<>() {};
+        });
+    activeCall.get().close(Status.OK, new Metadata());
+
+    Assertions.assertThat(observability.counterValue(Telemetry.Metrics.RPC_REQUESTS)).isEqualTo(1);
+    Assertions.assertThat(observability.diagnosticEvents()).hasSize(1);
+    Assertions.assertThat(observability.diagnosticEvents().get(0).eventName())
+        .isEqualTo("floecat.rpc.summary");
+  }
+
+  @Test
+  void onCancelEmitsCancelledSummaryOnce() {
+    TestObservability observability = new TestObservability();
+    GrpcTelemetryServerInterceptor interceptor =
+        new GrpcTelemetryServerInterceptor(observability, "svc");
+    TestServerCall call = new TestServerCall("ai.floedb.Service/Method");
+    ServerCall.Listener<Void> listener =
+        interceptor.interceptCall(
+            call,
+            new Metadata(),
+            (c, headers) ->
+                new ServerCall.Listener<>() {
+                  @Override
+                  public void onCancel() {}
+                });
+
+    listener.onCancel();
+
+    Assertions.assertThat(observability.diagnosticEvents()).hasSize(1);
+    Assertions.assertThat(observability.diagnosticEvents().get(0).fields())
+        .containsEntry("status", "CANCELLED")
+        .containsEntry("success", false)
+        .containsEntry("cancelled", true);
+    Assertions.assertThat(observability.counterValue(Telemetry.Metrics.RPC_REQUESTS)).isEqualTo(1);
+  }
+
+  @Test
+  void rpcSummaryIncludesGenericStoreAggregate() {
+    TestObservability observability = new TestObservability();
+    GrpcTelemetryServerInterceptor interceptor =
+        new GrpcTelemetryServerInterceptor(observability, "svc");
+    TestServerCall call = new TestServerCall("ai.floedb.Service/Method");
+    AtomicReference<ServerCall<Void, Void>> activeCall = new AtomicReference<>();
+    interceptor.interceptCall(
+        call,
+        new Metadata(),
+        (c, headers) -> {
+          activeCall.set(c);
+          StoreOperationSummary.record(
+              "repository", "table.get_by_key", Duration.ofMillis(2), true);
+          StoreOperationSummary.put("current_snapshot_source", "property");
+          return new ServerCall.Listener<>() {};
+        });
+    activeCall.get().close(Status.OK, new Metadata());
+
+    Assertions.assertThat(observability.diagnosticEvents()).hasSize(1);
+    Assertions.assertThat(observability.diagnosticEvents().get(0).fields())
+        .containsEntry("store_operations", 1L)
+        .containsEntry("store_errors", 0L)
+        .containsEntry("repo_gets", 1L)
+        .containsEntry("repo_lists", 0L)
+        .containsEntry("current_snapshot_source", "property")
+        .containsEntry("repo_table_get_by_key_count", 1L);
+  }
+
+  @Test
+  void rpcSummaryIncludesStoreAggregateRecordedOnPropagatedWorkerThread() {
+    TestObservability observability = new TestObservability();
+    GrpcTelemetryServerInterceptor interceptor =
+        new GrpcTelemetryServerInterceptor(observability, "svc");
+    TestServerCall call = new TestServerCall("ai.floedb.Service/Method");
+    AtomicReference<ServerCall<Void, Void>> activeCall = new AtomicReference<>();
+    AtomicReference<Throwable> workerFailure = new AtomicReference<>();
+    interceptor.interceptCall(
+        call,
+        new Metadata(),
+        (c, headers) -> {
+          activeCall.set(c);
+          Context captured = Context.current();
+          Thread worker =
+              new Thread(
+                  () -> {
+                    try (Scope ignored = captured.makeCurrent()) {
+                      StoreOperationSummary.record(
+                          "repository", "table.get_by_key", Duration.ofMillis(2), true);
+                      StoreOperationSummary.put("current_snapshot_source", "property");
+                    } catch (Throwable t) {
+                      workerFailure.set(t);
+                    }
+                  });
+          worker.start();
+          try {
+            worker.join();
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(e);
+          }
+          return new ServerCall.Listener<>() {};
+        });
+    if (workerFailure.get() != null) {
+      throw new AssertionError(workerFailure.get());
+    }
+    activeCall.get().close(Status.OK, new Metadata());
+
+    Assertions.assertThat(observability.diagnosticEvents()).hasSize(1);
+    Assertions.assertThat(observability.diagnosticEvents().get(0).fields())
+        .containsEntry("store_operations", 1L)
+        .containsEntry("repo_gets", 1L)
+        .containsEntry("current_snapshot_source", "property")
+        .containsEntry("repo_table_get_by_key_count", 1L);
   }
 
   private static final class TestServerCall extends ServerCall<Void, Void> {
