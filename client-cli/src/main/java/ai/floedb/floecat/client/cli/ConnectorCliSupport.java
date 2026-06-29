@@ -596,7 +596,7 @@ final class ConnectorCliSupport {
                   + " [--columns c1,#id2,...]"
                   + " [--default-cols first-n|all|explicit-only]"
                   + " [--max-default-cols <n>]"
-                  + "  (--mode required; --capture overrides connector/default capture policy)");
+                  + "  (--mode required; --capture overrides connector policy for that run)");
           return;
         }
         boolean full = CliArgs.hasFlag(args, "--full");

@@ -190,7 +190,7 @@ Trigger notes:
 - `--mode` is required on `connector trigger`.
 - Trigger-time `--capture` flags override the connector's persisted auto-capture policy for that run.
 - If `--capture` is omitted for a capture mode, the run inherits `connector.policy.auto_capture_policy`
-  when set, otherwise it falls back to the default stats capture policy.
+  when set; otherwise the request is rejected.
 - `--columns`, `--default-cols`, and `--max-default-cols` require an explicit `--capture` override.
 - `connector update --policy-capture none` clears a persisted auto-capture policy.
 - Metadata reconcile runs require exactly one traversal flag (`--full` or `--incremental`) and,

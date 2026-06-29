@@ -271,7 +271,7 @@ perform a post-completion final lease confirmation after that RPC has durably co
 - **Incremental capture run**: operator triggers
   `connector trigger demo-glue --incremental --current --mode metadata-and-capture`.
   If the trigger omits `--capture`, the reconcile path inherits the connector's persisted
-  auto-capture policy when present, otherwise it falls back to the default stats capture policy.
+  auto-capture policy when present; otherwise the request is rejected.
   Trigger-time `--capture` flags remain available as one-off overrides.
 - **Incremental run**: `--incremental` restricts work to snapshots not already ingested, and the
   explicit snapshot scope (`--current`, `--latest-n`, `--snapshot`, or `--all`) controls which
