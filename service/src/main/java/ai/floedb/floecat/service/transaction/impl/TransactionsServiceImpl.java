@@ -97,8 +97,6 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   private static final int MAX_POINTER_TXN_OPS = 100;
   private static final int TABLE_NAME_REPLAY_SCAN_PAGE_SIZE = 200;
   private static final String CAPTURE_STATISTICS_PROPERTY = "floecat.connector.capture-statistics";
-  private static final String CONNECTOR_MODE_PROPERTY = "floecat.connector.mode";
-  private static final String CONNECTOR_MODE_CAPTURE_ONLY = "capture-only";
   private static final String RESERVED_TABLE_ID_PROPERTY_PREFIX =
       "floecat.transaction.reserved-table-id.";
   @Inject TransactionRepository txRepo;
@@ -974,7 +972,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         Connector connector = readConnector(intent.getBlobUri());
         if (connector == null
             || !connector.hasResourceId()
-            || !isGatewayManagedCaptureOnlyIcebergConnector(connector)
+            || !isGatewayManagedIcebergConnector(connector)
             || !connector.hasDestination()
             || !connector.getDestination().hasTableId()
             || connector.getDestination().getTableId().getId().isBlank()) {
@@ -1016,7 +1014,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       return null;
     }
     Connector connector = connectorRepo.getById(connectorId).orElse(null);
-    if (!isGatewayManagedCaptureOnlyIcebergConnector(connector)) {
+    if (!isGatewayManagedIcebergConnector(connector)) {
       return null;
     }
     return connector;
@@ -1048,7 +1046,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       if (current == null) {
         return null;
       }
-      if (!isGatewayManagedCaptureOnlyIcebergConnector(current)) {
+      if (!isGatewayManagedIcebergConnector(current)) {
         return null;
       }
       if (current.getState() == ConnectorState.CS_ACTIVE) {
@@ -1083,7 +1081,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         accountId,
         connector.getResourceId().getId(),
         false,
-        ReconcilerService.CaptureMode.CAPTURE_ONLY,
+        ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
         ReconcileScope.of(
             List.of(),
             tableId,
@@ -1101,15 +1099,11 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         txId, connector.getResourceId().getId(), tableId);
   }
 
-  private boolean isGatewayManagedCaptureOnlyIcebergConnector(Connector connector) {
+  private boolean isGatewayManagedIcebergConnector(Connector connector) {
     if (connector == null || !connector.hasResourceId()) {
       return false;
     }
     if (connector.getKind() != ConnectorKind.CK_ICEBERG) {
-      return false;
-    }
-    if (!CONNECTOR_MODE_CAPTURE_ONLY.equalsIgnoreCase(
-        connector.getPropertiesMap().get(CONNECTOR_MODE_PROPERTY))) {
       return false;
     }
     String captureStatistics = connector.getPropertiesMap().get(CAPTURE_STATISTICS_PROPERTY);

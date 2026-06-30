@@ -38,6 +38,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
+import ai.floedb.floecat.reconciler.impl.ReconcilerService;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
@@ -861,7 +863,6 @@ class TransactionsServiceImplTest {
                 .setDescription("Filesystem connector")
                 .putProperties("iceberg.source", "filesystem")
                 .putProperties("s3.region", "us-east-1")
-                .putProperties("floecat.connector.mode", "capture-only")
                 .build());
 
     assertEquals(ConnectorKind.CK_ICEBERG, connector.getKind());
@@ -984,6 +985,33 @@ class TransactionsServiceImplTest {
     verify(txRepo, never()).update(any(Transaction.class), anyLong());
   }
 
+  @Test
+  void enqueuePostCommitCaptureUsesMetadataAndCaptureMode() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var reconcileJobs = Mockito.mock(ReconcileJobStore.class);
+
+    inject(service, "reconcileJobs", reconcileJobs);
+
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(resourceId("conn-1", ResourceKind.RK_CONNECTOR))
+            .build();
+
+    invokeEnqueuePostCommitCapture(service, "acct", "tx-1", connector, "table-1");
+
+    verify(reconcileJobs)
+        .enqueuePlan(
+            org.mockito.ArgumentMatchers.eq("acct"),
+            org.mockito.ArgumentMatchers.eq("conn-1"),
+            org.mockito.ArgumentMatchers.eq(false),
+            org.mockito.ArgumentMatchers.eq(ReconcilerService.CaptureMode.METADATA_AND_CAPTURE),
+            org.mockito.ArgumentMatchers.any(
+                ai.floedb.floecat.reconciler.jobs.ReconcileScope.class),
+            org.mockito.ArgumentMatchers.any(
+                ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy.class),
+            org.mockito.ArgumentMatchers.eq(""));
+  }
+
   private static Transaction invokeCommitPrivate(
       TransactionsServiceImpl service,
       String accountId,
@@ -1069,6 +1097,27 @@ class TransactionsServiceImplTest {
     m.setAccessible(true);
     try {
       return (ResourceId) m.invoke(service, accountId, txId, tableFq, now);
+    } catch (InvocationTargetException e) {
+      if (e.getCause() instanceof Exception ex) {
+        throw ex;
+      }
+      throw e;
+    }
+  }
+
+  private static void invokeEnqueuePostCommitCapture(
+      TransactionsServiceImpl service,
+      String accountId,
+      String txId,
+      Connector connector,
+      String tableId)
+      throws Exception {
+    Method m =
+        TransactionsServiceImpl.class.getDeclaredMethod(
+            "enqueuePostCommitCapture", String.class, String.class, Connector.class, String.class);
+    m.setAccessible(true);
+    try {
+      m.invoke(service, accountId, txId, connector, tableId);
     } catch (InvocationTargetException e) {
       if (e.getCause() instanceof Exception ex) {
         throw ex;

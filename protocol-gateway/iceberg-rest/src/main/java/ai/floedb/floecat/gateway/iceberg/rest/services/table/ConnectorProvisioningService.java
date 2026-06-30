@@ -40,8 +40,6 @@ import org.jboss.logging.Logger;
 public class ConnectorProvisioningService {
   private static final Logger LOG = Logger.getLogger(ConnectorProvisioningService.class);
   private static final String CAPTURE_STATISTICS_PROPERTY = "floecat.connector.capture-statistics";
-  private static final String CONNECTOR_MODE_PROPERTY = "floecat.connector.mode";
-  private static final String CONNECTOR_MODE_CAPTURE_ONLY = "capture-only";
 
   @Inject GrpcServiceFacade grpcClient;
 
@@ -232,7 +230,6 @@ public class ConnectorProvisioningService {
     properties.put(
         CAPTURE_STATISTICS_PROPERTY,
         Boolean.toString(template == null || template.captureStatistics()));
-    properties.put(CONNECTOR_MODE_PROPERTY, CONNECTOR_MODE_CAPTURE_ONLY);
     return Map.copyOf(properties);
   }
 }
