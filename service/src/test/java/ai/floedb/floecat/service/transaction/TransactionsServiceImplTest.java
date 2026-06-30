@@ -863,7 +863,6 @@ class TransactionsServiceImplTest {
                 .setDescription("Filesystem connector")
                 .putProperties("iceberg.source", "filesystem")
                 .putProperties("s3.region", "us-east-1")
-                .putProperties("floecat.connector.mode", "capture-only")
                 .build());
 
     assertEquals(ConnectorKind.CK_ICEBERG, connector.getKind());
