@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.query.impl.arrow;
 
+import ai.floedb.floecat.arrow.ArrowBatchSerializer;
 import ai.floedb.floecat.arrow.ArrowScanPlan;
 import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.common.rpc.Predicate;
@@ -40,8 +41,9 @@ import org.apache.arrow.vector.types.pojo.Schema;
  * Builds the Arrow execution plan for a system scan request.
  *
  * <p>The planner prefers native Arrow-capable scanners but can wrap the legacy row stream via
- * {@link RowStreamToArrowBatchAdapter}. Every plan also runs the columnar filter/projection
- * operators so callers can rely on a consistent streaming schema.
+ * {@link RowStreamToArrowBatchAdapter}. Native Arrow scans run columnar filter/projection
+ * operators; row-backed scans filter/project before Arrow adaptation so callers still see a
+ * consistent streaming schema.
  */
 public final class ArrowScanPlanner {
   private static final int DEFAULT_ARROW_BATCH_SIZE = 512;
@@ -56,6 +58,8 @@ public final class ArrowScanPlanner {
       SystemScanRequest request,
       BufferAllocator allocator) {
     // Use the projected schema so plan.schema() matches the projected batch stream.
+    List<SchemaColumn> projectedSchemaColumns =
+        ArrowBatchSerializer.schemaColumnsFor(schemaColumns, requiredColumns);
     Schema schema = ArrowBatchSerializer.schemaForColumns(schemaColumns, requiredColumns);
     Expr arrowExpr = request.predicate();
     Stream<ColumnarBatch> batches;
@@ -72,12 +76,9 @@ public final class ArrowScanPlanner {
           SystemRowProjector.project(filtered, schemaColumns, requiredColumns);
 
       RowStreamToArrowBatchAdapter adapter =
-          new RowStreamToArrowBatchAdapter(allocator, schemaColumns, DEFAULT_ARROW_BATCH_SIZE);
-      Stream<ColumnarBatch> adapted =
-          adapter
-              .adapt(projected)
-              .map(batch -> ArrowFilterOperator.filter(batch, arrowExpr, allocator))
-              .map(batch -> ArrowProjectOperator.project(batch, requiredColumns, allocator));
+          new RowStreamToArrowBatchAdapter(
+              allocator, projectedSchemaColumns, DEFAULT_ARROW_BATCH_SIZE);
+      Stream<ColumnarBatch> adapted = adapter.adapt(projected);
       batches = adapted.onClose(projected::close).onClose(filtered::close).onClose(rows::close);
     }
     return ArrowScanPlan.of(schema, batches);

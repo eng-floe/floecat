@@ -19,6 +19,7 @@ package ai.floedb.floecat.flight;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.system.rpc.SystemTableFlightCommand;
 import ai.floedb.floecat.system.rpc.SystemTableTarget;
+import java.util.List;
 import java.util.Objects;
 import org.apache.arrow.flight.FlightDescriptor;
 
@@ -30,7 +31,17 @@ public final class SystemTableCommands {
     return FlightDescriptor.command(command(canonicalName, queryId).toByteArray());
   }
 
+  public static FlightDescriptor descriptor(
+      String canonicalName, String queryId, List<String> requiredColumns) {
+    return FlightDescriptor.command(command(canonicalName, queryId, requiredColumns).toByteArray());
+  }
+
   public static SystemTableFlightCommand command(String canonicalName, String queryId) {
+    return command(canonicalName, queryId, List.of());
+  }
+
+  public static SystemTableFlightCommand command(
+      String canonicalName, String queryId, List<String> requiredColumns) {
     Objects.requireNonNull(queryId, "queryId");
     if (queryId.isBlank()) {
       throw new IllegalArgumentException("queryId cannot be blank");
@@ -39,6 +50,10 @@ public final class SystemTableCommands {
         SystemTableTarget.newBuilder()
             .setName(NameRef.newBuilder().setName(canonicalName).build())
             .build();
-    return SystemTableFlightCommand.newBuilder().setTarget(target).setQueryId(queryId).build();
+    return SystemTableFlightCommand.newBuilder()
+        .setTarget(target)
+        .addAllRequiredColumns(requiredColumns == null ? List.of() : requiredColumns)
+        .setQueryId(queryId)
+        .build();
   }
 }
