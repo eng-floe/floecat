@@ -529,7 +529,7 @@ public class Shell implements Runnable {
          resolve table <fq> | resolve view <fq> | resolve catalog <name> | resolve namespace <fq>
          describe table <fq>
          snapshots <tableFQ> [--limit N]
-         snapshot get <id|catalog.ns[.ns...].table> <snapshot_id>
+         snapshot get <id|catalog.ns[.ns...].table> <snapshot_id|current>
          snapshot delete <id|catalog.ns[.ns...].table> <snapshot_id> [--etag <etag>]
          stats table <tableFQ> [--snapshot <id>|--current] [--json] (defaults to --current)
          stats columns <tableFQ> [--snapshot <id>|--current] [--limit N] [--json] defaults to --current

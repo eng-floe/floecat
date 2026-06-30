@@ -289,6 +289,48 @@ class SnapshotRepositoryTest {
   }
 
   @Test
+  void maybeAdvanceCurrentSnapshotPointerDoesNotRewriteSameSnapshotIdWhenTimestampDiffers() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    tableRepo.create(table(account, tableRid));
+
+    long originalCreatedMs = clock.millis() - 20_000;
+    long conflictingCreatedMs = clock.millis() - 10_000;
+    seedSnapshot(snapshotRepo, account, tableRid, 100, clock.millis(), originalCreatedMs);
+    snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
+        tableRid, snapshotRepo.getById(tableRid, 100).orElseThrow());
+
+    CurrentSnapshotPointerRepository currentRepo = new CurrentSnapshotPointerRepository(ptr, blobs);
+    MutationMeta beforeMeta = currentRepo.metaFor(tableRid);
+
+    Snapshot conflictingCandidate =
+        Snapshot.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(100L)
+            .setIngestedAt(Timestamps.fromMillis(clock.millis()))
+            .setUpstreamCreatedAt(Timestamps.fromMillis(conflictingCreatedMs))
+            .build();
+
+    assertEquals(
+        SnapshotRepository.CurrentSnapshotPointerUpdateResult.UNCHANGED,
+        snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableRid, conflictingCandidate));
+
+    CurrentSnapshotPointer currentPointer = currentRepo.get(tableRid).orElseThrow();
+    MutationMeta afterMeta = currentRepo.metaFor(tableRid);
+    assertEquals(100L, currentPointer.getSnapshotId());
+    assertEquals(Timestamps.fromMillis(originalCreatedMs), currentPointer.getUpstreamCreatedAt());
+    assertEquals(
+        beforeMeta.getPointerVersion(),
+        afterMeta.getPointerVersion(),
+        "same snapshot id must not rewrite the current pointer");
+  }
+
+  @Test
   void maybeAdvanceCurrentSnapshotPointerRetriesWhenPointerChangesBeforeCas() {
     String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var tableRid =

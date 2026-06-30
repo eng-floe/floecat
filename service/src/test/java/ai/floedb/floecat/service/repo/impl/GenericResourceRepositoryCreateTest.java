@@ -179,4 +179,56 @@ class GenericResourceRepositoryCreateTest {
     assertThatCode(() -> snapshotRepo.create(snapshot)).doesNotThrowAnyException();
     assertThat(snapshotRepo.getById(tableId, 42L)).isPresent();
   }
+
+  @Test
+  void delete_whenBatchThrows_leavesCanonicalAndSecondaryUntouched() {
+    var baseRepo = new AccountRepository(ptr, blobs);
+    var account = account("acct-1", "alpha", "");
+    baseRepo.create(account);
+
+    var failingRepo = new AccountRepository(new FailingBatchPointerStore(ptr), blobs);
+
+    assertThatThrownBy(() -> failingRepo.delete(account.getResourceId()))
+        .isInstanceOf(FailingBatchPointerStore.InjectedBatchFailure.class);
+
+    assertThat(ptr.get(Keys.accountPointerById("acct-1"))).isPresent();
+    assertThat(ptr.get(Keys.accountPointerByName("alpha"))).isPresent();
+    assertThat(baseRepo.getById(account.getResourceId())).isPresent();
+    assertThat(baseRepo.getByName("alpha")).isPresent();
+  }
+
+  @Test
+  void deleteWithPrecondition_whenBatchThrows_leavesCanonicalAndSecondaryUntouched() {
+    var baseRepo = new AccountRepository(ptr, blobs);
+    var account = account("acct-1", "alpha", "");
+    baseRepo.create(account);
+    long expectedVersion = ptr.get(Keys.accountPointerById("acct-1")).orElseThrow().getVersion();
+
+    var failingRepo = new AccountRepository(new FailingBatchPointerStore(ptr), blobs);
+
+    assertThatThrownBy(
+            () -> failingRepo.deleteWithPrecondition(account.getResourceId(), expectedVersion))
+        .isInstanceOf(FailingBatchPointerStore.InjectedBatchFailure.class);
+
+    assertThat(ptr.get(Keys.accountPointerById("acct-1"))).isPresent();
+    assertThat(ptr.get(Keys.accountPointerByName("alpha"))).isPresent();
+    assertThat(baseRepo.getById(account.getResourceId())).isPresent();
+    assertThat(baseRepo.getByName("alpha")).isPresent();
+  }
+
+  @Test
+  void delete_whenResourceBlobIsCorrupt_failsFast_withoutDeletingPointers() {
+    var repo = new AccountRepository(ptr, blobs);
+    var account = account("acct-1", "alpha", "");
+    repo.create(account);
+
+    String blobUri = ptr.get(Keys.accountPointerById("acct-1")).orElseThrow().getBlobUri();
+    assertThat(blobs.delete(blobUri)).isTrue();
+
+    assertThatThrownBy(() -> repo.delete(account.getResourceId()))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class);
+
+    assertThat(ptr.get(Keys.accountPointerById("acct-1"))).isPresent();
+    assertThat(ptr.get(Keys.accountPointerByName("alpha"))).isPresent();
+  }
 }

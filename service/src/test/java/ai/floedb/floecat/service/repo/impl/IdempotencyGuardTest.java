@@ -21,12 +21,14 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -44,6 +46,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
@@ -318,6 +321,65 @@ public class IdempotencyGuardTest {
     assertThat(repo.get(Keys.idempotencyKey(ACCOUNT, OP, idemKey))).isPresent();
   }
 
+  @Test
+  void delete_staleCleanupDoesNotDeleteNewerWinner() throws Exception {
+    InMemoryPointerStore rawPtr = new InMemoryPointerStore();
+    InMemoryBlobStore rawBlobs = new InMemoryBlobStore();
+    String idemKey = "stale-cleanup";
+    String key = Keys.idempotencyKey(ACCOUNT, OP, idemKey);
+    String requestHash = sha256B64("REQ".getBytes(StandardCharsets.UTF_8));
+    Timestamp expiresAt = Timestamps.add(NOW, Duration.newBuilder().setSeconds(300).build());
+
+    var racingPtr = new CompareDeleteRacePointerStore(rawPtr);
+    var racingRepo = new IdempotencyRepositoryImpl(racingPtr, rawBlobs);
+
+    assertThat(racingRepo.createPending(ACCOUNT, key, OP, requestHash, NOW, expiresAt)).isTrue();
+    racingRepo.finalizeSuccess(
+        ACCOUNT,
+        key,
+        OP,
+        requestHash,
+        resourceId("rid-old"),
+        meta(1),
+        "OLD".getBytes(StandardCharsets.UTF_8),
+        NOW,
+        expiresAt);
+
+    Pointer stalePointer = rawPtr.get(key).orElseThrow();
+    String winnerUri = Keys.idempotencyBlobUri(ACCOUNT, key, "success-race");
+    IdempotencyRecord winnerRecord =
+        IdempotencyRecord.newBuilder()
+            .setOpName(OP)
+            .setRequestHash(requestHash)
+            .setStatus(IdempotencyRecord.Status.SUCCEEDED)
+            .setResourceId(resourceId("rid-new"))
+            .setMeta(meta(2))
+            .setPayload(com.google.protobuf.ByteString.copyFromUtf8("WINNER"))
+            .setCreatedAt(NOW)
+            .setExpiresAt(expiresAt)
+            .build();
+
+    racingPtr.beforeNextCompareAndDelete(
+        key,
+        () -> {
+          rawBlobs.put(winnerUri, winnerRecord.toByteArray(), "application/x-protobuf");
+          assertThat(
+                  rawPtr.compareAndSet(
+                      key,
+                      stalePointer.getVersion(),
+                      PointerReferences.blobPointer(
+                          key, winnerUri, stalePointer.getVersion() + 1L)))
+              .isTrue();
+        });
+
+    assertThat(racingRepo.delete(key)).isFalse();
+    assertThat(rawPtr.get(key)).isPresent();
+    assertThat(rawPtr.get(key).orElseThrow().getBlobUri()).isEqualTo(winnerUri);
+    assertThat(rawBlobs.head(winnerUri)).isPresent();
+    assertThat(racingRepo.get(key)).isPresent();
+    assertThat(racingRepo.get(key).orElseThrow().getPayload().toStringUtf8()).isEqualTo("WINNER");
+  }
+
   private static Function<String, byte[]> strSer() {
     return s -> s.getBytes(StandardCharsets.UTF_8);
   }
@@ -379,5 +441,30 @@ public class IdempotencyGuardTest {
 
     var rec = repo.get(key).orElseThrow();
     assertThat(rec.getStatus()).isEqualTo(IdempotencyRecord.Status.SUCCEEDED);
+  }
+
+  private static final class CompareDeleteRacePointerStore
+      extends RepoTestPointerStores.DelegatingPointerStore {
+    private final AtomicBoolean injected = new AtomicBoolean();
+    private String targetKey;
+    private Runnable beforeDelete;
+
+    private CompareDeleteRacePointerStore(PointerStore delegate) {
+      super(delegate);
+    }
+
+    void beforeNextCompareAndDelete(String key, Runnable beforeDelete) {
+      this.targetKey = key;
+      this.beforeDelete = beforeDelete;
+      injected.set(false);
+    }
+
+    @Override
+    public boolean compareAndDelete(String key, long expectedVersion) {
+      if (key.equals(targetKey) && injected.compareAndSet(false, true) && beforeDelete != null) {
+        beforeDelete.run();
+      }
+      return super.compareAndDelete(key, expectedVersion);
+    }
   }
 }

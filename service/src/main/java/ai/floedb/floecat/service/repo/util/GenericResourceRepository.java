@@ -457,26 +457,20 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
             return false;
           }
           String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
+          T currentValue =
+              getByKeyUnobserved(key)
+                  .orElseThrow(
+                      () ->
+                          new NotFoundException(
+                              schema.resourceName
+                                  + " not found for canonical: "
+                                  + canonicalPointer));
 
-          Optional<T> currentValue;
-          try {
-            currentValue = getByKeyUnobserved(key);
-          } catch (CorruptionException e) {
-            currentValue = Optional.empty();
-          }
-          Set<String> currentSecondary =
-              currentValue
-                  .map(schema.secondaryPointersFromValue)
-                  .map(m -> new HashSet<>(m.values()))
-                  .orElseGet(HashSet::new);
-
-          if (!compareAndDeleteOrFalseUnobserved(canonicalPointer, canonicalPtr.getVersion())) {
+          if (!deleteAtomically(
+              canonicalPointer,
+              canonicalPtr.getVersion(),
+              new HashSet<>(schema.secondaryPointersFromValue.apply(currentValue).values()))) {
             return false;
-          }
-          for (String p : currentSecondary) {
-            pointerStore
-                .get(p)
-                .ifPresent(ptr -> compareAndDeleteOrFalseUnobserved(p, ptr.getVersion()));
           }
 
           if (!schema.casBlobs && !blobUri.isBlank()) {
@@ -492,27 +486,20 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         () -> {
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
+          T currentValue =
+              getByKeyUnobserved(key)
+                  .orElseThrow(
+                      () ->
+                          new NotFoundException(
+                              schema.resourceName
+                                  + " not found for canonical: "
+                                  + canonicalPointer));
 
-          Optional<T> currentValue;
-          try {
-            currentValue = getByKeyUnobserved(key);
-          } catch (CorruptionException e) {
-            currentValue = Optional.empty();
-          }
-          Set<String> currentSecondary =
-              currentValue
-                  .map(schema.secondaryPointersFromValue)
-                  .map(m -> new HashSet<>(m.values()))
-                  .orElseGet(HashSet::new);
-
-          if (!compareAndDeleteOrFalseUnobserved(canonicalPointer, expectedCanonicalVersion)) {
+          if (!deleteAtomically(
+              canonicalPointer,
+              expectedCanonicalVersion,
+              new HashSet<>(schema.secondaryPointersFromValue.apply(currentValue).values()))) {
             return false;
-          }
-
-          for (String p : currentSecondary) {
-            pointerStore
-                .get(p)
-                .ifPresent(ptr -> compareAndDeleteOrFalseUnobserved(p, ptr.getVersion()));
           }
 
           if (!schema.casBlobs && !blobUri.isBlank()) {
@@ -520,6 +507,27 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
           return true;
         });
+  }
+
+  private boolean deleteAtomically(
+      String canonicalPointer, long expectedCanonicalVersion, Set<String> currentSecondary) {
+    Set<String> batchedKeys = new HashSet<>();
+    List<PointerStore.CasOp> ops = new ArrayList<>();
+
+    batchedKeys.add(canonicalPointer);
+    ops.add(new PointerStore.CasDelete(canonicalPointer, expectedCanonicalVersion));
+
+    for (String pointerKey : currentSecondary) {
+      if (!batchedKeys.add(pointerKey)) {
+        continue;
+      }
+      Pointer secondary = pointerStore.get(pointerKey).orElse(null);
+      if (secondary != null) {
+        ops.add(new PointerStore.CasDelete(pointerKey, secondary.getVersion()));
+      }
+    }
+
+    return pointerStore.compareAndSetBatch(ops);
   }
 
   public MutationMeta metaFor(K key) {

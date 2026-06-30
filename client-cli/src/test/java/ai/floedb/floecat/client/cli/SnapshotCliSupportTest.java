@@ -29,6 +29,7 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import io.grpc.ManagedChannel;
 import io.grpc.Server;
 import io.grpc.Status;
@@ -130,6 +131,26 @@ class SnapshotCliSupportTest {
   }
 
   @Test
+  void snapshotGetCurrentCallsServiceWithSpecialCurrent() throws Exception {
+    try (Harness h = new Harness()) {
+      h.snapshotService.snapshotToReturn =
+          Snapshot.newBuilder().setSnapshotId(101L).setTableId(tableId()).build();
+
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      SnapshotCliSupport.handle(
+          "snapshot",
+          List.of("get", "catalog.ns.tbl", "current"),
+          new PrintStream(buf),
+          h.snapshotsStub,
+          ignored -> tableId());
+
+      assertEquals(1, h.snapshotService.getSnapshotCalls.get());
+      assertEquals(
+          SpecialSnapshot.SS_CURRENT, h.snapshotService.lastGetRequest.getSnapshot().getSpecial());
+    }
+  }
+
+  @Test
   void snapshotGetPrintsUsageWhenMissingArgs() throws Exception {
     try (Harness h = new Harness()) {
       ByteArrayOutputStream buf = new ByteArrayOutputStream();
@@ -139,7 +160,7 @@ class SnapshotCliSupportTest {
           new PrintStream(buf),
           h.snapshotsStub,
           ignored -> tableId());
-      assertTrue(buf.toString().contains("usage:"));
+      assertTrue(buf.toString().contains("<snapshot_id|current>"));
     }
   }
 
