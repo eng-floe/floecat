@@ -1083,7 +1083,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         accountId,
         connector.getResourceId().getId(),
         false,
-        ReconcilerService.CaptureMode.CAPTURE_ONLY,
+        ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
         ReconcileScope.of(
             List.of(),
             tableId,

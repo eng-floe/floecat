@@ -412,7 +412,8 @@ class BackendStorageIT {
     String canon2 = Keys.tablePointerById(cat.getResourceId().getAccountId(), tid2.getId());
 
     // Simulate canonical ptr missing
-    assertTrue(ptr.delete(canon2));
+    ptr.delete(canon2);
+    assertTrue(ptr.get(canon2).isEmpty());
     table.deleteTable(DeleteTableRequest.newBuilder().setTableId(tid2).build());
   }
 

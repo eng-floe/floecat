@@ -2634,6 +2634,37 @@ public class ConnectorIT {
   }
 
   @Test
+  void createConnectorRejectsAutoCapturePolicyWithUnspecifiedOutput() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-unspecified-create", "");
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setDisplayName("policy-unspecified-create")
+                                .setKind(ConnectorKind.CK_UNITY)
+                                .setUri("dummy://x")
+                                .setSource(source(List.of("a", "b")))
+                                .setDestination(dest("cat-policy-unspecified-create"))
+                                .setPolicy(
+                                    ReconcilePolicy.newBuilder()
+                                        .setAutoCapturePolicy(
+                                            CapturePolicy.newBuilder()
+                                                .addOutputs(CaptureOutput.CO_UNSPECIFIED)
+                                                .build())
+                                        .build())
+                                .build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
   void updateConnectorRejectsAutoCapturePolicyColumnWithoutEnabledOutputs() throws Exception {
     TestSupport.createCatalog(catalogService, "cat-policy-column-update", "");
     var connector =
@@ -2666,6 +2697,43 @@ public class ConnectorIT {
                                                         .setSelector("c1")
                                                         .build())
                                                 .build())
+                                        .build())
+                                .build())
+                        .setUpdateMask(
+                            FieldMask.newBuilder().addPaths("policy.auto_capture_policy").build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void updateConnectorRejectsAutoCapturePolicyWithUnknownOutputValue() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-unknown-update", "");
+    var connector =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("policy-unknown-update")
+                .setKind(ConnectorKind.CK_UNITY)
+                .setUri("dummy://x")
+                .setSource(source(List.of("a", "b")))
+                .setDestination(dest("cat-policy-unknown-update"))
+                .build());
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.updateConnector(
+                    UpdateConnectorRequest.newBuilder()
+                        .setConnectorId(connector.getResourceId())
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setPolicy(
+                                    ReconcilePolicy.newBuilder()
+                                        .setAutoCapturePolicy(
+                                            CapturePolicy.newBuilder().addOutputsValue(99).build())
                                         .build())
                                 .build())
                         .setUpdateMask(

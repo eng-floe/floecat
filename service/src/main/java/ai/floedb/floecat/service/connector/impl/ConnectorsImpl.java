@@ -976,6 +976,14 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     if (policy.getOutputsCount() == 0) {
       throw GrpcErrors.invalidArgument(corr, null, Map.of("field", fieldName + ".outputs"));
     }
+    for (int i = 0; i < policy.getOutputsCount(); i++) {
+      var output = policy.getOutputs(i);
+      if (output == ai.floedb.floecat.connector.rpc.CaptureOutput.CO_UNSPECIFIED
+          || output == ai.floedb.floecat.connector.rpc.CaptureOutput.UNRECOGNIZED) {
+        throw GrpcErrors.invalidArgument(
+            corr, null, Map.of("field", fieldName + ".outputs[" + i + "]"));
+      }
+    }
     if (policy.getMaxDefaultColumns() < 0) {
       throw GrpcErrors.invalidArgument(
           corr, null, Map.of("field", fieldName + ".max_default_columns"));
