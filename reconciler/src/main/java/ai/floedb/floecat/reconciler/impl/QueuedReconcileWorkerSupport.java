@@ -646,6 +646,8 @@ class QueuedReconcileWorkerSupport {
       boolean includeCoreMetadata =
           ReconcilerService.includesMetadata(captureMode)
               && !ReconcilerService.isCaptureOnlyConnector(active.connector());
+      boolean includeSnapshotConstraints =
+          ReconcilerService.allowsTableMetadataMutation(active.connector(), captureMode);
       TableExecutionOutcome outcome =
           executeResolvedTable(
               ctx,
@@ -654,6 +656,7 @@ class QueuedReconcileWorkerSupport {
               connector,
               fullRescan,
               includeCoreMetadata,
+              includeSnapshotConstraints,
               captureMode,
               scope,
               new ResolvedTable(
@@ -830,6 +833,8 @@ class QueuedReconcileWorkerSupport {
       boolean includeCoreMetadata =
           ReconcilerService.includesMetadata(captureMode)
               && !ReconcilerService.isCaptureOnlyConnector(active.connector());
+      boolean includeSnapshotConstraints =
+          ReconcilerService.allowsTableMetadataMutation(active.connector(), captureMode);
       TableExecutionOutcome outcome =
           executeResolvedTable(
               ctx,
@@ -838,6 +843,7 @@ class QueuedReconcileWorkerSupport {
               connector,
               fullRescan,
               includeCoreMetadata,
+              includeSnapshotConstraints,
               captureMode,
               scope,
               new ResolvedTable(
@@ -936,6 +942,7 @@ class QueuedReconcileWorkerSupport {
       FloecatConnector connector,
       boolean fullRescan,
       boolean includeCoreMetadata,
+      boolean includeSnapshotConstraints,
       CaptureMode captureMode,
       ReconcileScope scope,
       ResolvedTable table,
@@ -1050,6 +1057,7 @@ class QueuedReconcileWorkerSupport {
                 table.sourceTable(),
                 fullRescan,
                 includeCoreMetadata,
+                includeSnapshotConstraints,
                 knownSnapshotIds,
                 enumerationKnownSnapshotIds,
                 targetSnapshotIds,
@@ -1072,6 +1080,7 @@ class QueuedReconcileWorkerSupport {
               table.sourceTable(),
               fullRescan,
               includeCoreMetadata,
+              includeSnapshotConstraints,
               knownSnapshotIds,
               enumerationKnownSnapshotIds,
               targetSnapshotIds,
@@ -1234,6 +1243,7 @@ class QueuedReconcileWorkerSupport {
       List<FloecatConnector.SnapshotBundle> bundles,
       Set<Long> knownSnapshotIds,
       boolean includeCoreMetadata,
+      boolean includeSnapshotConstraints,
       BooleanSupplier cancelRequested,
       ProgressListener progress,
       String sourceNs,
@@ -1273,8 +1283,10 @@ class QueuedReconcileWorkerSupport {
             "Processing snapshot " + snapshotId + " for " + sourceNs + "." + sourceTable);
         boolean snapshotChanged = ensureSnapshot(ctx, tableId, snapshotBundle, existingSnapshot);
         boolean constraintsChanged =
-            maybeIngestSnapshotConstraints(
-                ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId);
+            includeSnapshotConstraints
+                ? maybeIngestSnapshotConstraints(
+                    ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId)
+                : false;
         if (snapshotChanged || constraintsChanged) {
           snapshotsProcessed++;
         }
@@ -1293,6 +1305,7 @@ class QueuedReconcileWorkerSupport {
       String sourceTable,
       boolean fullRescan,
       boolean includeCoreMetadata,
+      boolean includeSnapshotConstraints,
       Set<Long> knownSnapshotIds,
       Set<Long> enumerationKnownSnapshotIds,
       Set<Long> targetSnapshotIds,
@@ -1327,6 +1340,7 @@ class QueuedReconcileWorkerSupport {
             bundles,
             knownSnapshotIds,
             includeCoreMetadata,
+            includeSnapshotConstraints,
             cancelRequested,
             progress,
             sourceNs,
