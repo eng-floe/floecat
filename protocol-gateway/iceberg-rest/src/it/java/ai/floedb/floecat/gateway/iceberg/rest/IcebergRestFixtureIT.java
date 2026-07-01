@@ -1966,7 +1966,7 @@ class IcebergRestFixtureIT {
                   .forEach(
                       sketch ->
                           Assertions.assertFalse(
-                              sketch.getType().isBlank(),
+                              sketch.getSketchType().isBlank(),
                               () -> "Sketch type must be set: " + detail));
             }
           });
@@ -2830,9 +2830,11 @@ class IcebergRestFixtureIT {
               .setDisplayName(scalar.getDisplayName())
               .setLogicalType(scalar.getLogicalType())
               .setRowCount(scalar.getRowCount())
-              .setHistogram(scalar.getHistogram())
-              .setTdigest(scalar.getTdigest())
+              .addAllSketches(scalar.getSketchesList())
               .putAllProperties(scalar.getPropertiesMap());
+      if (scalar.hasAvgWidthBytes()) {
+        builder.setAvgWidthBytes(scalar.getAvgWidthBytes());
+      }
       if (scalar.hasUpstream()) {
         builder.setUpstream(scalar.getUpstream());
       }
