@@ -17,14 +17,19 @@
 package ai.floedb.floecat.stats.identity;
 
 import ai.floedb.floecat.catalog.rpc.ColumnStatsTarget;
+import ai.floedb.floecat.catalog.rpc.CompositeColumnStatsTarget;
 import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import ai.floedb.floecat.types.Hashing;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
+import java.util.TreeSet;
 
 /**
  * Stable identity helpers for table, file, column, and engine-scoped expression stats targets.
@@ -53,6 +58,7 @@ public final class StatsTargetIdentity {
   private static final String COLUMN_STORAGE_PREFIX = "column-";
   private static final String FILE_STORAGE_PREFIX = "file-";
   private static final String EXPRESSION_STORAGE_PREFIX = "expression-";
+  private static final String COMPOSITE_STORAGE_PREFIX = "composite-";
 
   private StatsTargetIdentity() {}
 
@@ -90,6 +96,7 @@ public final class StatsTargetIdentity {
       case FILE -> fileIdentityHashHex(target.getFile());
       case COLUMN -> columnIdentityHashHex(target.getColumn());
       case EXPRESSION -> expressionIdentityHashHex(target.getExpression());
+      case COMPOSITE -> compositeIdentityHashHex(target.getComposite());
       case TARGET_NOT_SET -> throw new IllegalArgumentException("StatsTarget target is not set");
     };
   }
@@ -179,6 +186,14 @@ public final class StatsTargetIdentity {
     return StatsTarget.newBuilder().setExpression(normalizeExpressionTarget(target)).build();
   }
 
+  public static StatsTarget compositeTarget(List<Long> columnIds) {
+    CompositeColumnStatsTarget.Builder builder = CompositeColumnStatsTarget.newBuilder();
+    for (long columnId : normalizeCompositeColumnIds(columnIds)) {
+      builder.addColumnIds(columnId);
+    }
+    return StatsTarget.newBuilder().setComposite(builder).build();
+  }
+
   /**
    * Stable storage identifier for target-keyed repository entries.
    *
@@ -205,8 +220,47 @@ public final class StatsTargetIdentity {
             + "-"
             + expressionIdentityHashHexNormalized(normalized);
       }
+      case COMPOSITE -> COMPOSITE_STORAGE_PREFIX + compositeIdentityHashHex(target.getComposite());
       case TARGET_NOT_SET -> throw new IllegalArgumentException("StatsTarget target is not set");
     };
+  }
+
+  /**
+   * Canonical identity hash for a composite column stats target.
+   *
+   * <p>Column IDs are sorted ascending before hashing so the identity is stable regardless of
+   * request order. Duplicate or non-positive column IDs are rejected.
+   */
+  public static String compositeIdentityHashHex(CompositeColumnStatsTarget target) {
+    Objects.requireNonNull(target, "target");
+    var sorted = normalizeCompositeColumnIds(target.getColumnIdsList());
+    ByteArrayOutputStream payload = new ByteArrayOutputStream();
+    payload.write('X');
+    for (long columnId : sorted) {
+      payload.write(SEP);
+      payload.writeBytes(Long.toString(columnId).getBytes(StandardCharsets.UTF_8));
+    }
+    return Hashing.sha256Hex(payload.toByteArray());
+  }
+
+  private static List<Long> normalizeCompositeColumnIds(List<Long> columnIds) {
+    if (columnIds == null || columnIds.size() < 2) {
+      throw new IllegalArgumentException("composite target requires at least 2 column_ids");
+    }
+    TreeSet<Long> sorted = new TreeSet<>();
+    for (Long columnId : columnIds) {
+      if (columnId == null || columnId <= 0L) {
+        throw new IllegalArgumentException("composite column_ids must be positive");
+      }
+      sorted.add(columnId);
+    }
+    if (sorted.size() != columnIds.size()) {
+      throw new IllegalArgumentException("composite column_ids must be distinct");
+    }
+    if (sorted.size() < 2) {
+      throw new IllegalArgumentException("composite target requires at least 2 column_ids");
+    }
+    return new ArrayList<>(sorted);
   }
 
   public static String columnStorageIdPrefix() {
@@ -219,6 +273,10 @@ public final class StatsTargetIdentity {
 
   public static String fileStorageIdPrefix() {
     return FILE_STORAGE_PREFIX;
+  }
+
+  public static String compositeStorageIdPrefix() {
+    return COMPOSITE_STORAGE_PREFIX;
   }
 
   public static String expressionStorageIdPrefix() {

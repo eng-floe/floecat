@@ -91,5 +91,15 @@ public interface StatsProvider {
 
     /** NDV summary (exact or approximate) if available. */
     Optional<Ndv> ndv();
+
+    /**
+     * Average compressed width in bytes per non-null value, when available.
+     *
+     * <p>Derived from Parquet footer ColumnChunk metadata. Provisional: compressed width
+     * underestimates PG uncompressed {@code stawidth} for variable-width types.
+     */
+    default OptionalLong avgWidthBytes() {
+      return OptionalLong.empty();
+    }
   }
 }

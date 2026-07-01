@@ -27,7 +27,9 @@ public enum StatsTargetType {
   /** Expression-derived statistics target. */
   EXPRESSION,
   /** File-level statistics target. */
-  FILE;
+  FILE,
+  /** Multi-column composite statistics target (NDV, functional dependencies). */
+  COMPOSITE;
 
   /**
    * Maps a proto {@link StatsTarget} to its canonical routing category.
@@ -40,6 +42,7 @@ public enum StatsTargetType {
       case COLUMN -> COLUMN;
       case EXPRESSION -> EXPRESSION;
       case FILE -> FILE;
+      case COMPOSITE -> COMPOSITE;
       case TARGET_NOT_SET -> throw new IllegalArgumentException("StatsTarget target is not set");
     };
   }

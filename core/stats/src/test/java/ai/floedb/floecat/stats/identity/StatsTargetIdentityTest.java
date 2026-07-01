@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
 import com.google.protobuf.ByteString;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class StatsTargetIdentityTest {
@@ -129,5 +130,30 @@ class StatsTargetIdentityTest {
   void filePathNormalizesWhitespace() {
     assertThat(StatsTargetIdentity.filePath(" /data/file.parquet "))
         .isEqualTo("/data/file.parquet");
+  }
+
+  @Test
+  void compositeTargetNormalizesColumnIds() {
+    var target = StatsTargetIdentity.compositeTarget(List.of(3L, 1L, 2L));
+
+    assertThat(target.getComposite().getColumnIdsList()).containsExactly(1L, 2L, 3L);
+    assertThat(StatsTargetIdentity.storageId(target)).startsWith("composite-");
+    assertThat(StatsTargetIdentity.identityHashHex(target))
+        .isEqualTo(
+            StatsTargetIdentity.identityHashHex(
+                StatsTargetIdentity.compositeTarget(List.of(1L, 2L, 3L))));
+  }
+
+  @Test
+  void invalidCompositeTargetsRejected() {
+    assertThatThrownBy(() -> StatsTargetIdentity.compositeTarget(List.of(1L)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("at least 2");
+    assertThatThrownBy(() -> StatsTargetIdentity.compositeTarget(List.of(1L, 1L)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("distinct");
+    assertThatThrownBy(() -> StatsTargetIdentity.compositeTarget(List.of(0L, 1L)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("positive");
   }
 }

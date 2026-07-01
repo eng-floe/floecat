@@ -28,7 +28,10 @@ import java.util.Optional;
  * {@link #stats()} directly; callers that need quality context should inspect {@link #outcome()}.
  */
 public record StatsResolutionResult(
-    Optional<TargetStatsRecord> stats, StatsSyncOutcome outcome, String outcomeDetail) {
+    Optional<TargetStatsRecord> stats,
+    StatsSyncOutcome outcome,
+    String outcomeDetail,
+    boolean stale) {
 
   public StatsResolutionResult {
     stats = Objects.requireNonNull(stats, "stats");
@@ -43,27 +46,39 @@ public record StatsResolutionResult(
 
   public static StatsResolutionResult hit(TargetStatsRecord record) {
     return new StatsResolutionResult(
-        Optional.of(Objects.requireNonNull(record, "record")), StatsSyncOutcome.HIT, "");
+        Optional.of(Objects.requireNonNull(record, "record")), StatsSyncOutcome.HIT, "", false);
+  }
+
+  /**
+   * Stats from a prior snapshot (stale fallback). The result is semantically a hit but the planner
+   * should mark it {@code HIT_STALE} in the response.
+   */
+  public static StatsResolutionResult staleHit(TargetStatsRecord record, String detail) {
+    return new StatsResolutionResult(
+        Optional.of(Objects.requireNonNull(record, "record")), StatsSyncOutcome.HIT, detail, true);
   }
 
   public static StatsResolutionResult captured(TargetStatsRecord record) {
     return new StatsResolutionResult(
-        Optional.of(Objects.requireNonNull(record, "record")), StatsSyncOutcome.CAPTURED, "");
+        Optional.of(Objects.requireNonNull(record, "record")),
+        StatsSyncOutcome.CAPTURED,
+        "",
+        false);
   }
 
   public static StatsResolutionResult partial(String detail) {
-    return new StatsResolutionResult(Optional.empty(), StatsSyncOutcome.PARTIAL, detail);
+    return new StatsResolutionResult(Optional.empty(), StatsSyncOutcome.PARTIAL, detail, false);
   }
 
   public static StatsResolutionResult timeout(String detail) {
-    return new StatsResolutionResult(Optional.empty(), StatsSyncOutcome.TIMEOUT, detail);
+    return new StatsResolutionResult(Optional.empty(), StatsSyncOutcome.TIMEOUT, detail, false);
   }
 
   public static StatsResolutionResult failed(String detail) {
-    return new StatsResolutionResult(Optional.empty(), StatsSyncOutcome.FAILED, detail);
+    return new StatsResolutionResult(Optional.empty(), StatsSyncOutcome.FAILED, detail, false);
   }
 
   public static StatsResolutionResult skipped(String reason) {
-    return new StatsResolutionResult(Optional.empty(), StatsSyncOutcome.SKIPPED, reason);
+    return new StatsResolutionResult(Optional.empty(), StatsSyncOutcome.SKIPPED, reason, false);
   }
 }

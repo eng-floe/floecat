@@ -91,19 +91,19 @@ class StatsSyncTypesTest {
   @Test
   void nullDetailDefaultsToEmpty() {
     StatsResolutionResult r =
-        new StatsResolutionResult(Optional.empty(), StatsSyncOutcome.SKIPPED, null);
+        new StatsResolutionResult(Optional.empty(), StatsSyncOutcome.SKIPPED, null, false);
     assertThat(r.outcomeDetail()).isEmpty();
   }
 
   @Test
   void nullStatsThrows() {
-    assertThatThrownBy(() -> new StatsResolutionResult(null, StatsSyncOutcome.SKIPPED, ""))
+    assertThatThrownBy(() -> new StatsResolutionResult(null, StatsSyncOutcome.SKIPPED, "", false))
         .isInstanceOf(NullPointerException.class);
   }
 
   @Test
   void nullOutcomeThrows() {
-    assertThatThrownBy(() -> new StatsResolutionResult(Optional.empty(), null, ""))
+    assertThatThrownBy(() -> new StatsResolutionResult(Optional.empty(), null, "", false))
         .isInstanceOf(NullPointerException.class);
   }
 
