@@ -20,8 +20,8 @@ import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.NdvApprox;
-import ai.floedb.floecat.catalog.rpc.NdvSketch;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.SketchPayload;
 import ai.floedb.floecat.catalog.rpc.StatsCoverage;
 import ai.floedb.floecat.catalog.rpc.StatsMetadata;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
@@ -74,8 +74,10 @@ final class StatsCanonicalizer {
             canonicalNdv(g, "ndv", scalar.hasNdv() ? scalar.getNdv() : null);
             g.scalar("min", scalar.getMin());
             g.scalar("max", scalar.getMax());
-            g.scalar("histogram_b64", bytesToB64(scalar.getHistogram().toByteArray()));
-            g.scalar("tdigest_b64", bytesToB64(scalar.getTdigest().toByteArray()));
+            if (scalar.hasAvgWidthBytes()) g.scalar("avg_width_bytes", scalar.getAvgWidthBytes());
+            var sketches = new ArrayList<>(scalar.getSketchesList());
+            sketches.sort(sketchOrder());
+            for (var sk : sketches) canonicalSketchPayload(g, sketchKey(sk), sk);
             g.map("properties", scalar.getPropertiesMap());
           });
     }
@@ -91,12 +93,13 @@ final class StatsCanonicalizer {
   /**
    * Computes canonical SHA-256 input bytes for scalar payload fingerprinting.
    *
-   * <p>Display name participates in identity so idempotent writes do not collapse named and unnamed
-   * variants of the same scalar payload.
+   * <p>display_name is intentionally excluded: stats.proto marks it cosmetic and forbids using it
+   * for identity/routing/storage keys. This matches both the record-level scalar path above and
+   * {@code TargetStatsRecords.contentHashImage}, so the idempotency key and the content-addressed
+   * blob key agree on identity. Keep these two canonicalizers in sync.
    */
   static byte[] canonicalFingerprint(ScalarStats stats) {
     var c = new Canonicalizer();
-    c.scalar("display_name", stats.getDisplayName());
     c.scalar("logical_type", stats.getLogicalType());
     canonicalUpstream(c, "upstream", stats.hasUpstream() ? stats.getUpstream() : null);
     c.scalar("row_count", stats.getRowCount());
@@ -105,8 +108,10 @@ final class StatsCanonicalizer {
     canonicalNdv(c, "ndv", stats.hasNdv() ? stats.getNdv() : null);
     c.scalar("min", stats.getMin());
     c.scalar("max", stats.getMax());
-    c.scalar("histogram_b64", bytesToB64(stats.getHistogram().toByteArray()));
-    c.scalar("tdigest_b64", bytesToB64(stats.getTdigest().toByteArray()));
+    if (stats.hasAvgWidthBytes()) c.scalar("avg_width_bytes", stats.getAvgWidthBytes());
+    var sketches = new ArrayList<>(stats.getSketchesList());
+    sketches.sort(sketchOrder());
+    for (var sk : sketches) canonicalSketchPayload(c, sketchKey(sk), sk);
     c.map("properties", stats.getPropertiesMap());
     return c.bytes();
   }
@@ -198,14 +203,9 @@ final class StatsCanonicalizer {
             canonicalNdvApprox(g, "approx", ndv.getApprox());
           }
           var sketches = new ArrayList<>(ndv.getSketchesList());
-          sketches.sort(
-              Comparator.comparing(NdvSketch::getType)
-                  .thenComparing(NdvSketch::getEncoding)
-                  .thenComparing(NdvSketch::getCompression)
-                  .thenComparingInt(NdvSketch::getVersion)
-                  .thenComparing(s -> bytesToB64(s.getData().toByteArray())));
+          sketches.sort(sketchOrder());
           for (var sketch : sketches) {
-            canonicalNdvSketch(g, "sketch_" + sketch.getType(), sketch);
+            canonicalSketchPayload(g, sketchKey(sketch), sketch);
           }
         });
   }
@@ -226,17 +226,40 @@ final class StatsCanonicalizer {
         });
   }
 
-  private static void canonicalNdvSketch(Canonicalizer c, String key, NdvSketch sketch) {
+  private static void canonicalSketchPayload(Canonicalizer c, String key, SketchPayload sketch) {
     c.group(
         key,
         g -> {
-          g.scalar("type", sketch.getType());
-          g.scalar("encoding", sketch.getEncoding());
-          g.scalar("compression", sketch.getCompression());
-          g.scalar("version", sketch.getVersion());
+          g.scalar("role", sketch.getRole().name());
+          g.scalar("sketch_type", sketch.getSketchType());
+          g.map("params", sketch.getParamsMap());
           g.scalar("data_b64", bytesToB64(sketch.getData().toByteArray()));
-          g.map("properties", sketch.getPropertiesMap());
         });
+  }
+
+  /**
+   * Canonical sort order for SketchPayload entries.
+   *
+   * <p>Sorts by role → sketch_type → sorted params entries → data bytes. Using only sketch_type was
+   * unstable: two sketches with the same type but different roles or params could be ordered
+   * non-deterministically, producing different fingerprints for identical payloads.
+   */
+  private static Comparator<SketchPayload> sketchOrder() {
+    return Comparator.<SketchPayload, String>comparing(s -> s.getRole().name())
+        .thenComparing(SketchPayload::getSketchType)
+        .thenComparing(s -> s.getParamsOrDefault("encoding", ""))
+        .thenComparing(s -> s.getParamsOrDefault("compression", ""))
+        .thenComparing(s -> s.getParamsOrDefault("version", ""))
+        .thenComparing(s -> bytesToB64(s.getData().toByteArray()));
+  }
+
+  /**
+   * Canonical fingerprint key for a SketchPayload. Includes both role and sketch_type so two
+   * sketches that share a type but differ by role (e.g. SKETCH_ROLE_NDV vs SKETCH_ROLE_MCV for a
+   * hypothetical shared type string) produce distinct keys.
+   */
+  private static String sketchKey(SketchPayload sketch) {
+    return "sketch_" + sketch.getRole().name() + "_" + sketch.getSketchType();
   }
 
   private static void canonicalStatsMetadata(Canonicalizer c, String key, StatsMetadata metadata) {

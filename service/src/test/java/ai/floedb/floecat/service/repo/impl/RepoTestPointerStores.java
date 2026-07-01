@@ -118,6 +118,26 @@ final class RepoTestPointerStores {
     }
   }
 
+  /** Counts legacy prefix scans so tests can assert O(1) index paths are used. */
+  static final class CountingPrefixScanPointerStore extends DelegatingPointerStore {
+    private int listPointersByPrefixCalls = 0;
+
+    CountingPrefixScanPointerStore(PointerStore delegate) {
+      super(delegate);
+    }
+
+    @Override
+    public List<Pointer> listPointersByPrefix(
+        String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+      listPointersByPrefixCalls++;
+      return super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+    }
+
+    int listPointersByPrefixCalls() {
+      return listPointersByPrefixCalls;
+    }
+  }
+
   /** Mimics DynamoDB: a transaction with two operations on the same key is rejected. */
   static final class DuplicateKeyRejectingPointerStore extends DelegatingPointerStore {
     DuplicateKeyRejectingPointerStore(PointerStore delegate) {

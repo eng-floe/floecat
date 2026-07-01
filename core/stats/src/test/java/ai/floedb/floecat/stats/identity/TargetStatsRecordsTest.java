@@ -119,6 +119,25 @@ class TargetStatsRecordsTest {
   }
 
   @Test
+  void contentHashImagePreservesMultiEntryProperties() {
+    // A record with a multi-entry properties map must hash DIFFERENTLY from one without it.
+    // Guards against canonicalization dropping the map instead of reordering it (a
+    // clear-before-copy
+    // bug would empty the live map view and delete it from the hash image).
+    TargetStatsRecord withProps = columnRecordWithScalarProperties(params("a", "1", "b", "2"));
+    TargetStatsRecord withoutProps =
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            55L,
+            7L,
+            ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(10).build(),
+            null);
+
+    assertThat(TargetStatsRecords.contentHashImage(withProps).toByteArray())
+        .isNotEqualTo(TargetStatsRecords.contentHashImage(withoutProps).toByteArray());
+  }
+
+  @Test
   void contentHashImageCanonicalizesNdvApproxPropertiesOrder() {
     TargetStatsRecord first = columnRecordWithNdvApproxProperties(params("x", "1", "y", "2"));
     TargetStatsRecord second = columnRecordWithNdvApproxProperties(params("y", "2", "x", "1"));

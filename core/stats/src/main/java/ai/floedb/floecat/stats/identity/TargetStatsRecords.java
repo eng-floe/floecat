@@ -228,8 +228,11 @@ public final class TargetStatsRecords {
   private static void canonicalizeMap(
       Map<String, String> current, Runnable clear, Consumer<Map<String, String>> putAll) {
     if (current.size() > 1) {
+      // Copy BEFORE clearing: getXMap() returns a live view over the builder's map, so clearing
+      // first would empty the copy and drop the map from the hash image entirely.
+      Map<String, String> sorted = new TreeMap<>(current);
       clear.run();
-      putAll.accept(new TreeMap<>(current));
+      putAll.accept(sorted);
     }
   }
 

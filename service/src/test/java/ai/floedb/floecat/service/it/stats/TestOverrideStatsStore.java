@@ -151,6 +151,7 @@ public class TestOverrideStatsStore implements StatsStore {
       case COLUMN -> target.hasColumn();
       case EXPRESSION -> target.hasExpression();
       case FILE -> target.hasFile();
+      case COMPOSITE -> target.hasComposite();
     };
   }
 

@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
@@ -41,6 +42,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
@@ -50,6 +52,7 @@ import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsSyncOutcome;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
@@ -589,6 +592,262 @@ class StatsOrchestratorTest {
                 .setConnectorId(
                     ResourceId.newBuilder().setAccountId("acct").setId(connectorId).build())
                 .build())
+        .build();
+  }
+
+  // ---------------------------------------------------------------------------
+  // resolvePlannerBatch — cache correctness tests
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void resolvePlannerBatch_firstCallHitsDynamoDB_secondCallHitsCache() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepo = Mockito.mock(TableRepository.class);
+    StatsSyncCapture syncCapture = Mockito.mock(StatsSyncCapture.class);
+    StatsOrchestrator o = orchestrator(store, jobStore, tableRepo, syncCapture);
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    TargetStatsRecord rec = columnRecord(req);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+
+    // First call: DynamoDB is queried.
+    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(rec)));
+    Map<String, StatsResolutionResult> result1 =
+        o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE);
+    assertThat(result1.get(storageId).stats()).isPresent().contains(rec);
+    verify(store, Mockito.times(1)).getTargetStatsBatch(any(), anyLong(), any());
+
+    // Second call (same snapshot): served from cache, store NOT called again.
+    Map<String, StatsResolutionResult> result2 =
+        o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE);
+    assertThat(result2.get(storageId).stats()).isPresent().contains(rec);
+    verify(store, Mockito.times(1)).getTargetStatsBatch(any(), anyLong(), any()); // still 1
+  }
+
+  @Test
+  void resolvePlannerBatch_differentSnapshotId_isCacheMiss_neverServesStaleStats() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest reqSnap42 = columnRequest(42L, 7L);
+    StatsCaptureRequest reqSnap99 = columnRequest(99L, 7L); // same column, DIFFERENT snapshot
+
+    TargetStatsRecord recSnap42 = columnRecord(reqSnap42);
+    TargetStatsRecord recSnap99 = columnRecord(reqSnap99);
+
+    String storageId = StatsTargetIdentity.storageId(reqSnap42.target());
+    when(store.getTargetStatsBatch(reqSnap42.tableId(), 42L, List.of(reqSnap42.target())))
+        .thenReturn(Map.of(storageId, Optional.of(recSnap42)));
+    when(store.getTargetStatsBatch(reqSnap99.tableId(), 99L, List.of(reqSnap99.target())))
+        .thenReturn(Map.of(storageId, Optional.of(recSnap99)));
+
+    // Prime cache with snapshot 42.
+    o.resolvePlannerBatch(List.of(reqSnap42), false, Long.MAX_VALUE);
+
+    // Query snapshot 99 — must NOT return snapshot-42 data.
+    Map<String, StatsResolutionResult> result =
+        o.resolvePlannerBatch(List.of(reqSnap99), false, Long.MAX_VALUE);
+    assertThat(result.get(storageId).stats()).isPresent().contains(recSnap99);
+    // Store was called once for snap42 and once for snap99 (cache miss for different snapshot).
+    verify(store, Mockito.times(2)).getTargetStatsBatch(any(), anyLong(), any());
+  }
+
+  @Test
+  void resolvePlannerBatch_differentTableId_isCacheMiss() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    ResourceId tableA = ResourceId.newBuilder().setAccountId("acct").setId("table-A").build();
+    ResourceId tableB = ResourceId.newBuilder().setAccountId("acct").setId("table-B").build();
+    StatsTarget colTarget = StatsTargetIdentity.columnTarget(1L);
+    String storageId = StatsTargetIdentity.storageId(colTarget);
+
+    StatsCaptureRequest reqA =
+        StatsCaptureRequest.builder(tableA, 42L, colTarget)
+            .executionMode(StatsExecutionMode.ASYNC)
+            .connectorType("iceberg")
+            .build();
+    StatsCaptureRequest reqB =
+        StatsCaptureRequest.builder(tableB, 42L, colTarget)
+            .executionMode(StatsExecutionMode.ASYNC)
+            .connectorType("iceberg")
+            .build();
+
+    TargetStatsRecord recA =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableA)
+            .setSnapshotId(42L)
+            .setTarget(colTarget)
+            .setTable(TableValueStats.newBuilder().setRowCount(1).build())
+            .build();
+    TargetStatsRecord recB =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableB)
+            .setSnapshotId(42L)
+            .setTarget(colTarget)
+            .setTable(TableValueStats.newBuilder().setRowCount(2).build())
+            .build();
+
+    when(store.getTargetStatsBatch(tableA, 42L, List.of(colTarget)))
+        .thenReturn(Map.of(storageId, Optional.of(recA)));
+    when(store.getTargetStatsBatch(tableB, 42L, List.of(colTarget)))
+        .thenReturn(Map.of(storageId, Optional.of(recB)));
+
+    o.resolvePlannerBatch(List.of(reqA), false, Long.MAX_VALUE);
+    Map<String, StatsResolutionResult> result =
+        o.resolvePlannerBatch(List.of(reqB), false, Long.MAX_VALUE);
+
+    // Table-B must return Table-B's row count, not Table-A's cached value.
+    assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(2L);
+    verify(store, Mockito.times(2)).getTargetStatsBatch(any(), anyLong(), any());
+  }
+
+  @Test
+  void resolvePlannerBatch_absentResultNotCached_storeQueriedNextTime() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+
+    // First call: store returns absent (stats not yet captured).
+    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.empty()));
+    o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE);
+
+    // Second call: store is queried AGAIN (absent not cached — stats may arrive via sync capture).
+    TargetStatsRecord rec = columnRecord(req);
+    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(rec)));
+    Map<String, StatsResolutionResult> result =
+        o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE);
+    assertThat(result.get(storageId).stats()).isPresent().contains(rec);
+    verify(store, Mockito.times(2)).getTargetStatsBatch(any(), anyLong(), any());
+  }
+
+  @Test
+  void invalidateStatsCacheForTargetForcesStoreRefresh() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+    TargetStatsRecord first = columnRecord(req, 1L);
+    TargetStatsRecord replacement = columnRecord(req, 2L);
+    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(first)))
+        .thenReturn(Map.of(storageId, Optional.of(replacement)));
+
+    assertThat(o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE).get(storageId).stats())
+        .contains(first);
+
+    o.invalidateStatsCache(req.tableId(), req.snapshotId(), req.target());
+
+    assertThat(o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE).get(storageId).stats())
+        .contains(replacement);
+    verify(store, Mockito.times(2)).getTargetStatsBatch(any(), anyLong(), any());
+  }
+
+  @Test
+  void invalidateStatsCacheForPersistedRecordsUsesExplicitTableSnapshot() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+    TargetStatsRecord first = columnRecord(req, 1L);
+    TargetStatsRecord replacement = columnRecord(req, 2L);
+    TargetStatsRecord targetOnlyRecord =
+        TargetStatsRecord.newBuilder().setTarget(req.target()).build();
+    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(first)))
+        .thenReturn(Map.of(storageId, Optional.of(replacement)));
+
+    assertThat(o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE).get(storageId).stats())
+        .contains(first);
+
+    o.invalidateStatsCache(req.tableId(), req.snapshotId(), List.of(targetOnlyRecord));
+
+    assertThat(o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE).get(storageId).stats())
+        .contains(replacement);
+    verify(store, Mockito.times(2)).getTargetStatsBatch(any(), anyLong(), any());
+  }
+
+  @Test
+  void invalidateStatsCacheForSnapshotForcesStoreRefresh() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+    TargetStatsRecord first = columnRecord(req, 1L);
+    TargetStatsRecord replacement = columnRecord(req, 2L);
+    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(first)))
+        .thenReturn(Map.of(storageId, Optional.of(replacement)));
+
+    assertThat(o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE).get(storageId).stats())
+        .contains(first);
+
+    o.invalidateStatsCache(req.tableId(), req.snapshotId());
+
+    assertThat(o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE).get(storageId).stats())
+        .contains(replacement);
+    verify(store, Mockito.times(2)).getTargetStatsBatch(any(), anyLong(), any());
+  }
+
+  private static StatsCaptureRequest columnRequest(long snapshotId, long columnId) {
+    return StatsCaptureRequest.builder(
+            ResourceId.newBuilder().setAccountId("acct").setId("table-1").build(),
+            snapshotId,
+            StatsTargetIdentity.columnTarget(columnId))
+        .executionMode(StatsExecutionMode.ASYNC)
+        .connectorType("iceberg")
+        .build();
+  }
+
+  private static TargetStatsRecord columnRecord(StatsCaptureRequest req) {
+    return columnRecord(req, 42L);
+  }
+
+  private static TargetStatsRecord columnRecord(StatsCaptureRequest req, long rowCount) {
+    return TargetStatsRecord.newBuilder()
+        .setTableId(req.tableId())
+        .setSnapshotId(req.snapshotId())
+        .setTarget(req.target())
+        .setTable(TableValueStats.newBuilder().setRowCount(rowCount).build())
         .build();
   }
 }

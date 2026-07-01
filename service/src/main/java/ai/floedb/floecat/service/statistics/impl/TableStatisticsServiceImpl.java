@@ -44,6 +44,7 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
@@ -68,6 +69,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
+  @Inject StatsOrchestrator statsOrchestrator;
 
   private static final Logger LOG = Logger.getLogger(TableStatisticsService.class);
 
@@ -272,6 +274,8 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
 
       if (next.idempotencyKey() == null) {
         statsStore.putTargetStats(targetRecord);
+        statsOrchestrator.invalidateStatsCache(
+            targetRecord.getTableId(), targetRecord.getSnapshotId(), targetRecord.getTarget());
         upserted.incrementAndGet();
         continue;
       }
@@ -287,6 +291,10 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                   () -> fingerprint,
                   () -> {
                     statsStore.putTargetStats(targetRecord);
+                    statsOrchestrator.invalidateStatsCache(
+                        targetRecord.getTableId(),
+                        targetRecord.getSnapshotId(),
+                        targetRecord.getTarget());
                     return new IdempotencyGuard.CreateResult<>(targetRecord, next.tableId());
                   },
                   rec ->
