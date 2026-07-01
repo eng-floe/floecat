@@ -846,6 +846,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       .setDirectStatsBlobUri(payload.directStatsBlobUri())
                       .setDirectStatsRecordCount(payload.directStatsRecordCount())
                       .setSourceFileCount(payload.sourceFileCount())
+                      .setSnapshotTask(toProtoSnapshotTask(payload.snapshotTask()))
                       .setFullRescan(payload.fullRescan());
               return GetLeasedSnapshotFinalizeInputResponse.newBuilder()
                   .setInput(inputBuilder.build())
@@ -886,6 +887,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         jobId,
                         leaseEpoch,
                         request.getSuccess().getResultId(),
+                        request.getSuccess().getChunkCount(),
                         request.getSuccess().getFileResultsList().stream()
                             .map(ReconcileExecutorControlImpl::fromProtoFileResult)
                             .toList());
@@ -1116,6 +1118,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
             effective.fileResults().stream()
                 .map(ReconcileExecutorControlImpl::toProtoFileResult)
                 .toList())
+        .addAllPartialAggregateRecords(effective.partialAggregateRecords())
         .build();
   }
 
@@ -1441,7 +1444,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         fileGroupTask.getFilePathsList(),
         fileGroupTask.getFileResultsList().stream()
             .map(ReconcileExecutorControlImpl::fromProtoFileResult)
-            .toList());
+            .toList(),
+        fileGroupTask.getPartialAggregateRecordsList());
   }
 
   private static ReconcileFileResult fromProtoFileResult(

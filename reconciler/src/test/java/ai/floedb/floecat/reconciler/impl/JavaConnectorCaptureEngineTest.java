@@ -263,7 +263,7 @@ class JavaConnectorCaptureEngineTest {
   }
 
   @Test
-  void captureReturnsOnlyFileStatsForFileGroupExecution() {
+  void captureReturnsAggregateAndFileStatsForFileGroupExecution() {
     FloecatConnector connector = Mockito.mock(FloecatConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
@@ -341,7 +341,16 @@ class JavaConnectorCaptureEngineTest {
     var result = engine.capture(request);
 
     assertThat(result).isPresent();
-    assertThat(result.get().statsRecords()).containsExactly(fileRecord);
+    assertThat(result.get().statsRecords()).contains(fileRecord);
+    assertThat(result.get().statsRecords())
+        .filteredOn(record -> record.getTarget().hasTable())
+        .hasSize(1);
+    assertThat(result.get().statsRecords())
+        .filteredOn(record -> record.getTarget().hasColumn())
+        .hasSize(1);
+    assertThat(result.get().statsRecords())
+        .filteredOn(record -> record.getTarget().hasFile())
+        .hasSize(1);
 
     verify(connector, never())
         .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
@@ -468,8 +477,15 @@ class JavaConnectorCaptureEngineTest {
     var result = engine.capture(request);
 
     assertThat(result).isPresent();
-    assertThat(result.get().statsRecords()).hasSize(2);
+    assertThat(result.get().statsRecords()).hasSize(3);
     assertThat(result.get().statsRecords())
+        .filteredOn(record -> record.getTarget().hasFile())
+        .hasSize(2);
+    assertThat(result.get().statsRecords())
+        .filteredOn(record -> record.getTarget().hasColumn())
+        .hasSize(1);
+    assertThat(result.get().statsRecords())
+        .filteredOn(record -> record.getTarget().hasFile())
         .extracting(record -> record.getFile().getColumns(0).getScalar().getNdv())
         .allSatisfy(
             ndv -> {
@@ -636,14 +652,20 @@ class JavaConnectorCaptureEngineTest {
           .setMethod(columnNdv.approx.method == null ? "" : columnNdv.approx.method);
     }
     columnNdv.sketches.forEach(
-        sketchModel ->
-            builder
-                .addSketchesBuilder()
-                .setType(sketchModel.type == null ? "" : sketchModel.type)
-                .setData(com.google.protobuf.ByteString.copyFrom(sketchModel.data))
-                .setEncoding(sketchModel.encoding == null ? "" : sketchModel.encoding)
-                .setCompression(sketchModel.compression == null ? "" : sketchModel.compression)
-                .setVersion(sketchModel.version == null ? 0 : sketchModel.version));
+        sketchModel -> {
+          var sb =
+              ai.floedb.floecat.catalog.rpc.SketchPayload.newBuilder()
+                  .setRole(ai.floedb.floecat.catalog.rpc.SketchRole.SKETCH_ROLE_NDV)
+                  .setSketchType(sketchModel.type == null ? "" : sketchModel.type)
+                  .setData(
+                      com.google.protobuf.ByteString.copyFrom(
+                          sketchModel.data == null ? new byte[0] : sketchModel.data));
+          if (sketchModel.encoding != null) sb.putParams("encoding", sketchModel.encoding);
+          if (sketchModel.compression != null) sb.putParams("compression", sketchModel.compression);
+          if (sketchModel.version != null)
+            sb.putParams("version", String.valueOf(sketchModel.version));
+          builder.addSketches(sb.build());
+        });
     return builder.build();
   }
 
@@ -759,6 +781,15 @@ class JavaConnectorCaptureEngineTest {
     var result = engine.capture(request);
 
     assertThat(result).isPresent();
-    assertThat(result.get().statsRecords()).containsExactly(fileRecordOne, fileRecordTwo);
+    assertThat(result.get().statsRecords()).contains(fileRecordOne, fileRecordTwo);
+    assertThat(result.get().statsRecords())
+        .filteredOn(record -> record.getTarget().hasTable())
+        .hasSize(1);
+    assertThat(result.get().statsRecords())
+        .filteredOn(record -> record.getTarget().hasColumn())
+        .hasSize(1);
+    assertThat(result.get().statsRecords())
+        .filteredOn(record -> record.getTarget().hasFile())
+        .hasSize(2);
   }
 }

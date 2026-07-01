@@ -31,7 +31,11 @@ import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
 import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
 import ai.floedb.floecat.catalog.rpc.IndexTarget;
+import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.PutIndexArtifactItem;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.SketchPayload;
+import ai.floedb.floecat.catalog.rpc.SketchRole;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -51,15 +55,20 @@ import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.ByteString;
 import io.grpc.StatusRuntimeException;
 import java.lang.reflect.Method;
@@ -67,6 +76,7 @@ import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class LeasedFileGroupExecutionServiceTest {
   private static final String ACCOUNT_ID = "acct";
@@ -83,7 +93,7 @@ class LeasedFileGroupExecutionServiceTest {
   private ConnectorRepository connectorRepo;
   private SnapshotRepository snapshotRepo;
   private CredentialResolver credentialResolver;
-  private SnapshotFinalizePersistenceService snapshotFinalizePersistence;
+  private IdempotencyRepository idempotencyStore;
   private PrincipalContext principal;
 
   @BeforeEach
@@ -94,15 +104,20 @@ class LeasedFileGroupExecutionServiceTest {
     connectorRepo = mock(ConnectorRepository.class);
     snapshotRepo = mock(SnapshotRepository.class);
     credentialResolver = mock(CredentialResolver.class);
-    snapshotFinalizePersistence = mock(SnapshotFinalizePersistenceService.class);
+    idempotencyStore = mock(IdempotencyRepository.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
     service.tableRepo = tableRepo;
     service.connectorRepo = connectorRepo;
     service.snapshotRepo = snapshotRepo;
     service.credentialResolver = credentialResolver;
-    service.snapshotFinalizePersistence = snapshotFinalizePersistence;
+    service.idempotencyStore = idempotencyStore;
     when(principal.getCorrelationId()).thenReturn("corr");
+    when(principal.getAccountId()).thenReturn(ACCOUNT_ID);
+    when(idempotencyStore.get(anyString())).thenReturn(Optional.empty());
+    when(idempotencyStore.createPending(
+            anyString(), anyString(), anyString(), anyString(), any(), any()))
+        .thenReturn(true);
   }
 
   @Test
@@ -176,7 +191,189 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   @Test
-  void mergedPartialAggregatesMergesPriorAggregateStateWithNewChunkOnly() throws Exception {
+  void persistChunkStagesPartialsWithoutMutatingTheJobRow() {
+    TargetStatsRecord partialAggregate =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableId())
+            .setSnapshotId(SNAPSHOT_ID)
+            .setTarget(
+                StatsTarget.newBuilder()
+                    .setTable(ai.floedb.floecat.catalog.rpc.TableStatsTarget.getDefaultInstance())
+                    .build())
+            .setTable(TableValueStats.newBuilder().setRowCount(1L).build())
+            .build();
+    ReconcileFileGroupTask plannedGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileJobStore.ReconcileJob childLeaseView =
+        job(
+            CHILD_JOB_ID,
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileSnapshotTask.empty(),
+            plannedGroup.asReference(),
+            PARENT_JOB_ID);
+    ReconcileJobStore.ReconcileJob parent =
+        job(
+            PARENT_JOB_ID,
+            ReconcileJobKind.PLAN_SNAPSHOT,
+            ReconcileSnapshotTask.of(
+                TABLE_ID,
+                SNAPSHOT_ID,
+                "db",
+                "events",
+                List.of(plannedGroup),
+                true,
+                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                1),
+            ReconcileFileGroupTask.empty(),
+            "");
+
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
+
+    boolean accepted =
+        service.persistChunk(
+            principal,
+            CHILD_JOB_ID,
+            LEASE_EPOCH,
+            "result-1",
+            0,
+            List.of(partialAggregate),
+            List.of());
+
+    assertTrue(accepted);
+    verify(jobs, never()).persistFileGroupResult(anyString(), anyString(), any());
+  }
+
+  @Test
+  void persistSuccessMergesStagedChunkPartialsOnceAtCompletion() {
+    TargetStatsRecord partialAggregate =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableId())
+            .setSnapshotId(SNAPSHOT_ID)
+            .setTarget(
+                StatsTarget.newBuilder()
+                    .setTable(ai.floedb.floecat.catalog.rpc.TableStatsTarget.getDefaultInstance())
+                    .build())
+            .setTable(TableValueStats.newBuilder().setRowCount(1L).build())
+            .build();
+    ReconcileFileGroupTask plannedGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileJobStore.ReconcileJob childLeaseView =
+        job(
+            CHILD_JOB_ID,
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileSnapshotTask.empty(),
+            plannedGroup.asReference(),
+            PARENT_JOB_ID);
+    ReconcileJobStore.ReconcileJob parent =
+        job(
+            PARENT_JOB_ID,
+            ReconcileJobKind.PLAN_SNAPSHOT,
+            ReconcileSnapshotTask.of(
+                TABLE_ID,
+                SNAPSHOT_ID,
+                "db",
+                "events",
+                List.of(plannedGroup),
+                true,
+                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                1),
+            ReconcileFileGroupTask.empty(),
+            "");
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
+    when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    when(idempotencyStore.get(chunkIdempotencyKey("result-1", 0)))
+        .thenReturn(Optional.of(stagedChunkRecord("result-1", 0, List.of(partialAggregate))));
+
+    boolean accepted =
+        service.persistSuccess(
+            principal,
+            CHILD_JOB_ID,
+            LEASE_EPOCH,
+            "result-1",
+            1,
+            List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 3L)));
+
+    assertTrue(accepted);
+    ArgumentCaptor<ReconcileFileGroupTask> persisted =
+        ArgumentCaptor.forClass(ReconcileFileGroupTask.class);
+    verify(jobs).persistFileGroupResult(eq(CHILD_JOB_ID), eq(LEASE_EPOCH), persisted.capture());
+    assertEquals(
+        List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 3L)),
+        persisted.getValue().fileResults());
+    assertEquals(List.of(partialAggregate), persisted.getValue().partialAggregateRecords());
+  }
+
+  @Test
+  void persistSuccessRejectsTooLowChunkCountThatWouldDropStagedChunks() {
+    TargetStatsRecord partialAggregate =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableId())
+            .setSnapshotId(SNAPSHOT_ID)
+            .setTarget(
+                StatsTarget.newBuilder()
+                    .setTable(ai.floedb.floecat.catalog.rpc.TableStatsTarget.getDefaultInstance())
+                    .build())
+            .setTable(TableValueStats.newBuilder().setRowCount(1L).build())
+            .build();
+    ReconcileFileGroupTask plannedGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileJobStore.ReconcileJob childLeaseView =
+        job(
+            CHILD_JOB_ID,
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileSnapshotTask.empty(),
+            plannedGroup.asReference(),
+            PARENT_JOB_ID);
+    ReconcileJobStore.ReconcileJob parent =
+        job(
+            PARENT_JOB_ID,
+            ReconcileJobKind.PLAN_SNAPSHOT,
+            ReconcileSnapshotTask.of(
+                TABLE_ID,
+                SNAPSHOT_ID,
+                "db",
+                "events",
+                List.of(plannedGroup),
+                true,
+                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                1),
+            ReconcileFileGroupTask.empty(),
+            "");
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
+    when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    // Two chunks staged (indices 0 and 1) but the success declares chunk_count=1: chunk 1's
+    // partials would be silently dropped. persistSuccess must reject the mismatch, not under-count.
+    when(idempotencyStore.get(chunkIdempotencyKey("result-1", 0)))
+        .thenReturn(Optional.of(stagedChunkRecord("result-1", 0, List.of(partialAggregate))));
+    when(idempotencyStore.get(chunkIdempotencyKey("result-1", 1)))
+        .thenReturn(Optional.of(stagedChunkRecord("result-1", 1, List.of(partialAggregate))));
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            service.persistSuccess(
+                principal,
+                CHILD_JOB_ID,
+                LEASE_EPOCH,
+                "result-1",
+                1,
+                List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 3L))));
+  }
+
+  @Test
+  void mergedPartialAggregatesReplacesExistingTargetWithLatestChunkPartial() throws Exception {
     TargetStatsRecord previousAggregate =
         TargetStatsRecord.newBuilder()
             .setTableId(tableId())
@@ -187,29 +384,9 @@ class LeasedFileGroupExecutionServiceTest {
                     .build())
             .setTable(TableValueStats.newBuilder().setRowCount(10L).build())
             .build();
-    TargetStatsRecord chunkFileStat =
-        TargetStatsRecord.newBuilder()
-            .setTableId(tableId())
-            .setSnapshotId(SNAPSHOT_ID)
-            .setTarget(
-                StatsTarget.newBuilder()
-                    .setFile(
-                        ai.floedb.floecat.catalog.rpc.FileStatsTarget.newBuilder()
-                            .setFilePath("s3://bucket/data/file-1.parquet"))
-                    .build())
-            .setFile(
-                ai.floedb.floecat.catalog.rpc.FileTargetStats.newBuilder()
-                    .setFilePath("s3://bucket/data/file-1.parquet")
-                    .setRowCount(5L)
-                    .build())
-            .build();
     TargetStatsRecord chunkAggregate =
         previousAggregate.toBuilder()
             .setTable(TableValueStats.newBuilder().setRowCount(5L).build())
-            .build();
-    TargetStatsRecord mergedAggregate =
-        previousAggregate.toBuilder()
-            .setTable(TableValueStats.newBuilder().setRowCount(15L).build())
             .build();
     ReconcileFileGroupTask plannedTask =
         ReconcileFileGroupTask.of(
@@ -219,100 +396,19 @@ class LeasedFileGroupExecutionServiceTest {
                 SNAPSHOT_ID,
                 List.of("s3://bucket/data/file-1.parquet"))
             .withPartialAggregateRecords(List.of(previousAggregate));
-    ReconcileScope scope =
-        ReconcileScope.of(
-            List.of(),
-            TABLE_ID,
-            List.of(),
-            ReconcileCapturePolicy.of(
-                List.of(),
-                java.util.Set.of(
-                    ReconcileCapturePolicy.Output.TABLE_STATS,
-                    ReconcileCapturePolicy.Output.FILE_STATS)));
-    ReconcileJobStore.LeasedJob lease =
-        new ReconcileJobStore.LeasedJob(
-            CHILD_JOB_ID,
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_ONLY,
-            scope,
-            ReconcileExecutionPolicy.defaults(),
-            LEASE_EPOCH,
-            "",
-            "",
-            ReconcileJobKind.EXEC_FILE_GROUP,
-            null,
-            null,
-            ReconcileSnapshotTask.of(
-                TABLE_ID,
-                SNAPSHOT_ID,
-                "db",
-                "events",
-                List.of(plannedTask),
-                true,
-                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-                "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
-                1),
-            plannedTask,
-            PARENT_JOB_ID);
-
-    when(snapshotFinalizePersistence.buildAggregateStats(
-            eq(tableId()), eq(SNAPSHOT_ID), any(), eq(List.of(chunkFileStat))))
-        .thenReturn(List.of(chunkAggregate));
-    when(snapshotFinalizePersistence.mergeAggregatePartials(
-            eq(tableId()), eq(SNAPSHOT_ID), any(), eq(List.of(previousAggregate, chunkAggregate))))
-        .thenReturn(List.of(mergedAggregate));
 
     List<TargetStatsRecord> merged =
-        invokeMergedPartialAggregates(
-            lease, tableId(), SNAPSHOT_ID, plannedTask, List.of(chunkFileStat));
+        invokeMergedPartialAggregates(plannedTask, List.of(chunkAggregate));
 
-    assertEquals(List.of(mergedAggregate), merged);
-    verify(snapshotFinalizePersistence)
-        .mergeAggregatePartials(
-            eq(tableId()), eq(SNAPSHOT_ID), any(), eq(List.of(previousAggregate, chunkAggregate)));
+    assertEquals(1, merged.size());
+    assertEquals(5L, merged.getFirst().getTable().getRowCount());
   }
 
   @Test
-  void mergedPartialAggregatesRejectsNonFileStatsInFileGroupChunks() throws Exception {
+  void mergedPartialAggregatesAcceptsNonFileStatsInFileGroupChunks() throws Exception {
     ReconcileFileGroupTask plannedTask =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
-    ReconcileScope scope =
-        ReconcileScope.of(
-            List.of(),
-            TABLE_ID,
-            List.of(),
-            ReconcileCapturePolicy.of(
-                List.of(), java.util.Set.of(ReconcileCapturePolicy.Output.TABLE_STATS)));
-    ReconcileJobStore.LeasedJob lease =
-        new ReconcileJobStore.LeasedJob(
-            CHILD_JOB_ID,
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_ONLY,
-            scope,
-            ReconcileExecutionPolicy.defaults(),
-            LEASE_EPOCH,
-            "",
-            "",
-            ReconcileJobKind.EXEC_FILE_GROUP,
-            null,
-            null,
-            ReconcileSnapshotTask.of(
-                TABLE_ID,
-                SNAPSHOT_ID,
-                "db",
-                "events",
-                List.of(plannedTask),
-                true,
-                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-                "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
-                1),
-            plannedTask,
-            PARENT_JOB_ID);
     TargetStatsRecord aggregateRecord =
         TargetStatsRecord.newBuilder()
             .setTableId(tableId())
@@ -324,17 +420,48 @@ class LeasedFileGroupExecutionServiceTest {
             .setTable(TableValueStats.newBuilder().setRowCount(5L).build())
             .build();
 
-    Throwable error =
-        assertThrows(
-            Throwable.class,
-            () ->
-                invokeMergedPartialAggregates(
-                    lease, tableId(), SNAPSHOT_ID, plannedTask, List.of(aggregateRecord)));
+    List<TargetStatsRecord> merged =
+        invokeMergedPartialAggregates(plannedTask, List.of(aggregateRecord));
 
-    assertTrue(error.getCause() instanceof StatusRuntimeException);
-    assertEquals(
-        "INVALID_ARGUMENT: file-group result stats_records must contain only file-target stats",
-        error.getCause().getMessage());
+    assertEquals(List.of(aggregateRecord), merged);
+  }
+
+  @Test
+  void mergedPartialAggregatesPreservesProducerOwnedSketchPayloads() throws Exception {
+    ReconcileFileGroupTask plannedTask =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    TargetStatsRecord aggregateRecord =
+        TargetStatsRecord.newBuilder()
+            .setTableId(tableId())
+            .setSnapshotId(SNAPSHOT_ID)
+            .setTarget(
+                StatsTarget.newBuilder()
+                    .setColumn(
+                        ai.floedb.floecat.catalog.rpc.ColumnStatsTarget.newBuilder()
+                            .setColumnId(1L)
+                            .build())
+                    .build())
+            .setScalar(
+                ScalarStats.newBuilder()
+                    .setRowCount(10L)
+                    .setNdv(
+                        Ndv.newBuilder()
+                            .addSketches(
+                                sketch(SketchRole.SKETCH_ROLE_NDV, "apache-datasketches-hll-v1")))
+                    .addSketches(
+                        sketch(SketchRole.SKETCH_ROLE_QUANTILES, "apache-datasketches-tdigest-v1"))
+                    .addSketches(
+                        sketch(
+                            SketchRole.SKETCH_ROLE_MCV, "apache-datasketches-frequencies-utf8-v1")))
+            .build();
+
+    List<TargetStatsRecord> merged =
+        invokeMergedPartialAggregates(plannedTask, List.of(aggregateRecord));
+
+    assertEquals(List.of(aggregateRecord), merged);
+    assertEquals(1, merged.getFirst().getScalar().getNdv().getSketchesCount());
+    assertEquals(2, merged.getFirst().getScalar().getSketchesCount());
   }
 
   @Test
@@ -695,23 +822,17 @@ class LeasedFileGroupExecutionServiceTest {
 
   @SuppressWarnings("unchecked")
   private List<TargetStatsRecord> invokeMergedPartialAggregates(
-      ReconcileJobStore.LeasedJob lease,
-      ResourceId tableId,
-      long snapshotId,
-      ReconcileFileGroupTask plannedTask,
-      List<TargetStatsRecord> chunkStats)
-      throws Exception {
+      ReconcileFileGroupTask plannedTask, List<TargetStatsRecord> chunkStats) throws Exception {
     Method method =
         LeasedFileGroupExecutionService.class.getDeclaredMethod(
             "mergedPartialAggregates",
-            ReconcileJobStore.LeasedJob.class,
             ResourceId.class,
             long.class,
             ReconcileFileGroupTask.class,
             List.class);
     method.setAccessible(true);
     return (List<TargetStatsRecord>)
-        method.invoke(service, lease, tableId, snapshotId, plannedTask, chunkStats);
+        method.invoke(service, tableId(), SNAPSHOT_ID, plannedTask, chunkStats);
   }
 
   private static ReconcileJobStore.ReconcileJob job(
@@ -780,6 +901,35 @@ class LeasedFileGroupExecutionServiceTest {
         .setAccountId(ACCOUNT_ID)
         .setKind(ResourceKind.RK_TABLE)
         .setId(TABLE_ID)
+        .build();
+  }
+
+  private static SketchPayload sketch(SketchRole role, String sketchType) {
+    return SketchPayload.newBuilder()
+        .setRole(role)
+        .setSketchType(sketchType)
+        .setData(ByteString.copyFrom(new byte[] {1, 2, 3}))
+        .build();
+  }
+
+  private static String chunkIdempotencyKey(String resultId, int chunkIndex) {
+    return Keys.idempotencyKey(
+        ACCOUNT_ID,
+        "SubmitLeasedFileGroupExecutionResult",
+        CHILD_JOB_ID + ":" + resultId + ":chunk:" + chunkIndex);
+  }
+
+  private static IdempotencyRecord stagedChunkRecord(
+      String resultId, int chunkIndex, List<TargetStatsRecord> statsRecords) {
+    return IdempotencyRecord.newBuilder()
+        .setStatus(IdempotencyRecord.Status.SUCCEEDED)
+        .setPayload(
+            SubmitLeasedFileGroupExecutionResultRequest.Chunk.newBuilder()
+                .setResultId(resultId)
+                .setChunkIndex(chunkIndex)
+                .addAllStatsRecords(statsRecords)
+                .build()
+                .toByteString())
         .build();
   }
 

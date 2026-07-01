@@ -23,6 +23,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -120,15 +123,16 @@ class LeasedSnapshotFinalizeInputServiceTest {
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/file-1.parquet"));
     ReconcileFileGroupTask persistedGroup =
         ReconcileFileGroupTask.of(
-            "plan-1",
-            "group-1",
-            TABLE_ID,
-            SNAPSHOT_ID,
-            1,
-            "/accounts/acct/reconcile/jobs/group-1/file-group-stats/result.json",
-            1,
-            List.of("s3://bucket/file-1.parquet"),
-            List.of(ReconcileFileResult.succeeded("s3://bucket/file-1.parquet", 1L)));
+                "plan-1",
+                "group-1",
+                TABLE_ID,
+                SNAPSHOT_ID,
+                1,
+                "/accounts/acct/reconcile/jobs/group-1/file-group-stats/result.json",
+                1,
+                List.of("s3://bucket/file-1.parquet"),
+                List.of(ReconcileFileResult.succeeded("s3://bucket/file-1.parquet", 1L)))
+            .withPartialAggregateRecords(List.of(partialAggregateRecord()));
     when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(FINALIZE_JOB_ID))
         .thenReturn(
@@ -165,6 +169,10 @@ class LeasedSnapshotFinalizeInputServiceTest {
         LeasedSnapshotFinalizeInputService.FinalizeMode.FILE_GROUPS_NON_EMPTY,
         payload.finalizeMode());
     assertFalse(payload.fullRescan());
+    assertEquals(1, payload.snapshotTask().fileGroups().size());
+    assertEquals(
+        List.of(partialAggregateRecord()),
+        payload.snapshotTask().fileGroups().get(0).partialAggregateRecords());
   }
 
   @Test
@@ -213,15 +221,16 @@ class LeasedSnapshotFinalizeInputServiceTest {
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/file-1.parquet"));
     ReconcileFileGroupTask persistedGroup =
         ReconcileFileGroupTask.of(
-            "plan-1",
-            "group-1",
-            TABLE_ID,
-            SNAPSHOT_ID,
-            1,
-            "/accounts/acct/reconcile/jobs/group-1/file-group-stats/result.json",
-            1,
-            List.of("s3://bucket/file-1.parquet"),
-            List.of(ReconcileFileResult.succeeded("s3://bucket/file-1.parquet", 1L)));
+                "plan-1",
+                "group-1",
+                TABLE_ID,
+                SNAPSHOT_ID,
+                1,
+                "/accounts/acct/reconcile/jobs/group-1/file-group-stats/result.json",
+                1,
+                List.of("s3://bucket/file-1.parquet"),
+                List.of(ReconcileFileResult.succeeded("s3://bucket/file-1.parquet", 1L)))
+            .withPartialAggregateRecords(List.of(partialAggregateRecord()));
     ReconcileSnapshotTask durableSnapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -253,6 +262,9 @@ class LeasedSnapshotFinalizeInputServiceTest {
     assertEquals(
         LeasedSnapshotFinalizeInputService.FinalizeMode.FILE_GROUPS_NON_EMPTY,
         payload.finalizeMode());
+    assertEquals(
+        List.of(partialAggregateRecord()),
+        payload.snapshotTask().fileGroups().get(0).partialAggregateRecords());
   }
 
   @Test
@@ -346,5 +358,12 @@ class LeasedSnapshotFinalizeInputServiceTest {
         ReconcileSnapshotTask.empty(),
         persistedTask.isEmpty() ? taskRef : persistedTask,
         PARENT_JOB_ID);
+  }
+
+  private static TargetStatsRecord partialAggregateRecord() {
+    return TargetStatsRecord.newBuilder()
+        .setSnapshotId(SNAPSHOT_ID)
+        .setTarget(StatsTarget.newBuilder().setTable(TableStatsTarget.getDefaultInstance()))
+        .build();
   }
 }

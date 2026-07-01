@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.reconciler.impl;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
@@ -43,7 +44,8 @@ public class LeasedSnapshotFinalizeInputService {
       boolean fullRescan,
       String directStatsBlobUri,
       int directStatsRecordCount,
-      int sourceFileCount) {}
+      int sourceFileCount,
+      ReconcileSnapshotTask snapshotTask) {}
 
   enum FinalizeMode {
     FILE_GROUPS_NON_EMPTY,
@@ -78,7 +80,8 @@ public class LeasedSnapshotFinalizeInputService {
           lease.fullRescan,
           requireDirectStatsBlobUri(snapshotTask),
           snapshotTask.directStatsRecordCount(),
-          snapshotTask.sourceFileCount());
+          snapshotTask.sourceFileCount(),
+          snapshotTask);
     }
     if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.EXPLICIT_EMPTY) {
       requireNoUnexpectedChildren(lease.accountId, lease.parentJobId, lease.jobId);
@@ -92,12 +95,15 @@ public class LeasedSnapshotFinalizeInputService {
           lease.fullRescan,
           "",
           0,
-          snapshotTask.sourceFileCount());
+          snapshotTask.sourceFileCount(),
+          snapshotTask);
     }
     SnapshotFinalizeChildStateService.ChildState childState =
         childStateService.childState(
             lease.accountId, lease.parentJobId, lease.jobId, coverage.expectedGroups());
     requireReadyForFinalize(childState);
+    ReconcileSnapshotTask effectiveSnapshotTask =
+        withCompletedFileGroups(snapshotTask, childState.completedGroupTasks());
     return new SnapshotFinalizeInput(
         lease.jobId,
         lease.leaseEpoch,
@@ -108,7 +114,27 @@ public class LeasedSnapshotFinalizeInputService {
         lease.fullRescan,
         "",
         0,
-        snapshotTask.sourceFileCount());
+        snapshotTask.sourceFileCount(),
+        effectiveSnapshotTask);
+  }
+
+  private static ReconcileSnapshotTask withCompletedFileGroups(
+      ReconcileSnapshotTask snapshotTask, List<ReconcileFileGroupTask> completedGroups) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    return ReconcileSnapshotTask.of(
+        effective.tableId(),
+        effective.snapshotId(),
+        effective.sourceNamespace(),
+        effective.sourceTable(),
+        completedGroups == null ? List.of() : completedGroups,
+        effective.fileGroupPlanRecorded(),
+        effective.completionMode(),
+        effective.fileGroupPlanBlobUri(),
+        effective.fileGroupCount(),
+        effective.sourceFileCount(),
+        effective.directStatsBlobUri(),
+        effective.directStatsRecordCount());
   }
 
   private static ResourceId tableId(

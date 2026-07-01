@@ -309,11 +309,13 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
         payload != null && payload.groupId() != null && !payload.groupId().isBlank()
             ? payload.groupId().trim()
             : (lease == null || lease.fileGroupTask == null ? "" : lease.fileGroupTask.groupId());
-    String suffix = outcome == null ? "" : outcome.trim();
-    if (!planId.isBlank() && !groupId.isBlank()) {
-      return jobId + ":" + planId + ":" + groupId + ":" + suffix;
-    }
     String leaseEpoch = lease == null || lease.leaseEpoch == null ? "" : lease.leaseEpoch.trim();
-    return jobId + ":" + leaseEpoch + ":" + suffix;
+    String suffix = outcome == null ? "" : outcome.trim();
+    // lease_epoch scopes the result_id to a single execution attempt: a re-leased retry
+    // re-executes and may stage byte-different (but logically equal) chunks, so without the
+    // epoch two attempts collide on the floecat idempotency key (jobId:resultId:chunk:idx)
+    // and the second submission is rejected with "Conflict detected". See
+    // docs/rust-remote-capture-executor.md for the result_id contract.
+    return jobId + ":" + planId + ":" + groupId + ":" + leaseEpoch + ":" + suffix;
   }
 }

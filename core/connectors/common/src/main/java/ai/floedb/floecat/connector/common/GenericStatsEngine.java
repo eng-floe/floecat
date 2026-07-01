@@ -43,6 +43,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
   private final ParquetAvgWidthProvider avgWidthProvider;
   private final Map<K, String> columnNames;
   private final Map<K, LogicalType> logicalTypes;
+  private final int thetaNominalEntries;
 
   public GenericStatsEngine(
       Planner<K> planner,
@@ -60,12 +61,33 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       ParquetAvgWidthProvider avgWidthProvider,
       Map<K, String> columnNames,
       Map<K, LogicalType> logicalTypes) {
+    this(
+        planner,
+        ndvProvider,
+        bootstrapNdv,
+        avgWidthProvider,
+        columnNames,
+        logicalTypes,
+        ColumnNdv.DEFAULT_NOMINAL_ENTRIES);
+  }
+
+  public GenericStatsEngine(
+      Planner<K> planner,
+      NdvProvider ndvProvider,
+      NdvProvider bootstrapNdv,
+      ParquetAvgWidthProvider avgWidthProvider,
+      Map<K, String> columnNames,
+      Map<K, LogicalType> logicalTypes,
+      int thetaNominalEntries) {
     this.planner = Objects.requireNonNull(planner);
     this.ndvProvider = ndvProvider;
     this.bootstrapNdv = bootstrapNdv;
     this.avgWidthProvider = avgWidthProvider;
     this.columnNames = columnNames == null ? Map.of() : Map.copyOf(columnNames);
     this.logicalTypes = logicalTypes == null ? Map.of() : Map.copyOf(logicalTypes);
+    // Size the merge union to the configured per-file theta_k so cross-file merges don't downsample
+    // below it (Union defaults to k=4096 otherwise).
+    this.thetaNominalEntries = thetaNominalEntries;
   }
 
   @Override
@@ -112,7 +134,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
           continue;
         }
 
-        ColumnNdv shared = new ColumnNdv();
+        ColumnNdv shared = new ColumnNdv(thetaNominalEntries);
         columnAgg.ndv = shared;
         ndvByKey.put(columnAggMap.getKey(), shared);
         ndvByName.put(name, shared);
@@ -189,7 +211,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
         try {
           Map<String, ColumnNdv> perFileByName = new LinkedHashMap<>();
           for (String name : ndvByName.keySet()) {
-            perFileByName.put(name, new ColumnNdv());
+            perFileByName.put(name, new ColumnNdv(thetaNominalEntries));
           }
           ndvProvider.contributeNdv(file.path(), perFileByName);
           /* Finalize per-file sketches, then merge their bytes into the cumulative union. */

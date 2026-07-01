@@ -824,7 +824,8 @@ class GrpcRemoteReconcileExecutorClient
                     .map(GrpcRemoteReconcileExecutorClient::fromProtoCaptureOutput)
                     .collect(java.util.stream.Collectors.toSet()),
                 fromProtoDefaultColumnScope(execution.getCapturePolicy().getDefaultColumnScope()),
-                execution.getCapturePolicy().getMaxDefaultColumns())
+                execution.getCapturePolicy().getMaxDefaultColumns(),
+                execution.getCapturePolicy().getPropertiesMap())
             : ReconcileCapturePolicy.empty());
   }
 
@@ -870,6 +871,7 @@ class GrpcRemoteReconcileExecutorClient
     SubmitLeasedFileGroupExecutionResultRequest.Success.Builder success =
         SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
             .setResultId(resultId)
+            .setChunkCount(chunks.size())
             .addAllFileResults(
                 FileGroupExecutionSupport.fileResultsForSuccess(
                         plannedTask, result.statsRecords(), result.stagedIndexArtifacts())
@@ -1190,7 +1192,8 @@ class GrpcRemoteReconcileExecutorClient
                     .map(GrpcRemoteReconcileExecutorClient::fromProtoCaptureOutput)
                     .collect(java.util.stream.Collectors.toSet()),
                 fromProtoDefaultColumnScope(scope.getCapturePolicy().getDefaultColumnScope()),
-                scope.getCapturePolicy().getMaxDefaultColumns())
+                scope.getCapturePolicy().getMaxDefaultColumns(),
+                scope.getCapturePolicy().getPropertiesMap())
             : ReconcileCapturePolicy.empty(),
         scope.hasSnapshotSelection()
             ? fromProtoSnapshotSelection(scope.getSnapshotSelection())
@@ -1325,6 +1328,7 @@ class GrpcRemoteReconcileExecutorClient
                 .toList())
         .setDefaultColumnScope(toProtoDefaultColumnScope(effective.defaultColumnScope()))
         .setMaxDefaultColumns(effective.maxDefaultColumns())
+        .putAllProperties(effective.properties())
         .build();
   }
 
@@ -1435,6 +1439,7 @@ class GrpcRemoteReconcileExecutorClient
             effective.fileResults().stream()
                 .map(GrpcRemoteReconcileExecutorClient::toProtoFileResult)
                 .toList())
+        .addAllPartialAggregateRecords(effective.partialAggregateRecords())
         .build();
   }
 
@@ -1628,7 +1633,8 @@ class GrpcRemoteReconcileExecutorClient
         fileGroupTask.getFilePathsList(),
         fileGroupTask.getFileResultsList().stream()
             .map(GrpcRemoteReconcileExecutorClient::fromProtoFileResult)
-            .toList());
+            .toList(),
+        fileGroupTask.getPartialAggregateRecordsList());
   }
 
   private static ReconcileFileResult fromProtoFileResult(

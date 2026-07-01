@@ -407,7 +407,7 @@ class ReconcileExecutorControlImplTest {
   @Test
   void submitLeasedFileGroupExecutionResultRoutesSuccessCompletion() {
     when(service.leasedFileGroupExecutionService.persistSuccess(
-            any(), eq("job-1"), eq("lease-1"), eq("result-1"), any()))
+            any(), eq("job-1"), eq("lease-1"), eq("result-1"), eq(2), any()))
         .thenReturn(true);
 
     var response =
@@ -419,6 +419,7 @@ class ReconcileExecutorControlImplTest {
                     .setSuccess(
                         SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
                             .setResultId("result-1")
+                            .setChunkCount(2)
                             .addFileResults(
                                 ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.newBuilder()
                                     .setFilePath("s3://bucket/file-1.parquet")
@@ -433,7 +434,7 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.leasedFileGroupExecutionService)
-        .persistSuccess(any(), eq("job-1"), eq("lease-1"), eq("result-1"), any());
+        .persistSuccess(any(), eq("job-1"), eq("lease-1"), eq("result-1"), eq(2), any());
   }
 
   @Test
@@ -454,7 +455,20 @@ class ReconcileExecutorControlImplTest {
                 false,
                 "",
                 0,
-                4));
+                4,
+                ReconcileSnapshotTask.of(
+                    "table-1",
+                    55L,
+                    "db",
+                    "events",
+                    List.of(
+                        ReconcileFileGroupTask.of(
+                            "plan-1",
+                            "group-1",
+                            "table-1",
+                            55L,
+                            List.of("s3://bucket/file-1.parquet"))),
+                    true)));
 
     var response =
         service
@@ -476,6 +490,8 @@ class ReconcileExecutorControlImplTest {
         response.getInput().getFinalizeMode());
     assertEquals(false, response.getInput().getFullRescan());
     assertEquals(4, response.getInput().getSourceFileCount());
+    assertEquals(1, response.getInput().getSnapshotTask().getFileGroupsCount());
+    assertEquals("group-1", response.getInput().getSnapshotTask().getFileGroups(0).getGroupId());
   }
 
   @Test
@@ -496,7 +512,15 @@ class ReconcileExecutorControlImplTest {
                 true,
                 "/accounts/acct/reconcile/jobs/plan-1/direct-stats/blob.json",
                 3,
-                6));
+                6,
+                ReconcileSnapshotTask.of(
+                    "table-1",
+                    55L,
+                    "db",
+                    "events",
+                    List.of(),
+                    true,
+                    ReconcileSnapshotTask.CompletionMode.DIRECT_STATS)));
 
     var response =
         service
@@ -517,6 +541,9 @@ class ReconcileExecutorControlImplTest {
         response.getInput().getDirectStatsBlobUri());
     assertEquals(3, response.getInput().getDirectStatsRecordCount());
     assertEquals(6, response.getInput().getSourceFileCount());
+    assertEquals(
+        ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode.RSCM_DIRECT_STATS,
+        response.getInput().getSnapshotTask().getCompletionMode());
   }
 
   @Test

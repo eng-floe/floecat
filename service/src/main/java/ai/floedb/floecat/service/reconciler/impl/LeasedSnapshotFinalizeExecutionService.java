@@ -176,7 +176,18 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     boolean requestsStatsOutputs = requestsStatsOutputs(lease);
     switch (coverage.state()) {
       case NON_EMPTY -> {
-        requireNoStatsRecords(statsRecords);
+        if (!requestsStatsOutputs) {
+          requireNoStatsRecords(statsRecords);
+          return;
+        }
+        List<TargetStatsRecord> aggregateStats =
+            persistence.validateAggregateStats(statsRecords, tableId, snapshotId);
+        if (aggregateStats.isEmpty()) {
+          return;
+        }
+        persistence.persistStats(aggregateStats);
+        jobs.persistSnapshotFinalizeDirectStatsProgress(
+            lease.jobId, lease.leaseEpoch, lease.fullRescan, chunkIndex, aggregateStats.size());
       }
       case DIRECT_STATS -> {
         if (!requestsStatsOutputs) {
@@ -223,19 +234,17 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         if (!requestsStatsOutputs) {
           return;
         }
+        if (snapshotTask.directStatsPersistedRecordCount() > 0) {
+          return;
+        }
         SnapshotFinalizeChildStateService.ChildState childState =
             requireReadyChildState(lease, coverage);
         Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
         List<TargetStatsRecord> mergedAggregates =
             aggregateKinds.isEmpty()
                 ? List.of()
-                : persistence.mergeAggregatePartials(
-                    tableId,
-                    snapshotId,
-                    aggregateKinds,
-                    childState.completedGroupTasks().stream()
-                        .flatMap(group -> group.partialAggregateRecords().stream())
-                        .toList());
+                : persistence.mergeCompletedGroupPartials(
+                    tableId, snapshotId, aggregateKinds, childState.completedGroupTasks());
         if (!mergedAggregates.isEmpty()) {
           persistence.persistStats(mergedAggregates);
         }
@@ -412,15 +421,6 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       SnapshotFinalizeCoverageService.ExpectedCoverage coverage) {
     if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.UNKNOWN) {
       throw Status.FAILED_PRECONDITION.withDescription(coverage.message()).asRuntimeException();
-    }
-  }
-
-  private static void requireValidCoverage(
-      SnapshotFinalizeCoverageService.CoverageValidation coverageValidation) {
-    if (!coverageValidation.valid()) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription(coverageValidation.message())
-          .asRuntimeException();
     }
   }
 

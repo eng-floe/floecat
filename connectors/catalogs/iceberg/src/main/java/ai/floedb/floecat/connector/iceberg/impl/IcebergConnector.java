@@ -1173,7 +1173,7 @@ public abstract class IcebergConnector implements FloecatConnector {
 
       var engine =
           new GenericStatsEngine<>(
-              planner, perFileNdv, bootstrap, avgWidth, colNames, logicalTypes);
+              planner, perFileNdv, bootstrap, avgWidth, colNames, logicalTypes, thetaK);
 
       var result = engine.compute();
       return new EngineOut(result, colNames, logicalTypes, planner.deleteFiles());

@@ -122,7 +122,8 @@ class RemoteFileGroupReconcileExecutorTest {
     assertFalse(result.ok());
     assertEquals("File-group capture failed: " + expectedDetail, result.message);
     verify(workerClient)
-        .submitFailure(eq(remoteLease), eq("job-1:plan-1:group-1:failure"), eq(expectedDetail));
+        .submitFailure(
+            eq(remoteLease), eq("job-1:plan-1:group-1:lease-1:failure"), eq(expectedDetail));
   }
 
   @Test
@@ -207,7 +208,7 @@ class RemoteFileGroupReconcileExecutorTest {
     verify(workerClient, never())
         .submitFailure(
             eq(remoteLease),
-            eq("job-1:plan-1:group-1:failure"),
+            eq("job-1:plan-1:group-1:lease-1:failure"),
             eq("IllegalStateException: capture exploded"));
     verify(workerClient, never()).submitSuccess(eq(remoteLease), any(), any());
   }
@@ -240,7 +241,7 @@ class RemoteFileGroupReconcileExecutorTest {
             eq(payload),
             eq(
                 new StandaloneFileGroupExecutionResult(
-                    "job-1:plan-1:group-1:success", List.of(), List.of())));
+                    "job-1:plan-1:group-1:lease-1:success", List.of(), List.of())));
   }
 
   @Test
@@ -302,7 +303,7 @@ class RemoteFileGroupReconcileExecutorTest {
             eq(payload),
             eq(
                 new StandaloneFileGroupExecutionResult(
-                    "job-1:plan-1:group-1:success", List.of(), List.of(artifact))));
+                    "job-1:plan-1:group-1:lease-1:success", List.of(), List.of(artifact))));
   }
 
   @Test
@@ -347,7 +348,7 @@ class RemoteFileGroupReconcileExecutorTest {
             eq(payload),
             eq(
                 new StandaloneFileGroupExecutionResult(
-                    "job-1:plan-1:group-1:success", List.of(fileStat), List.of())));
+                    "job-1:plan-1:group-1:lease-1:success", List.of(fileStat), List.of())));
   }
 
   private static ReconcileJobStore.LeasedJob leasedFileGroupJob() {

@@ -25,10 +25,27 @@ import org.apache.datasketches.theta.Sketches;
 import org.apache.datasketches.theta.Union;
 
 public final class ColumnNdv {
+  /** Apache Datasketches theta default (ThetaUtil.DEFAULT_NOMINAL_ENTRIES). */
+  public static final int DEFAULT_NOMINAL_ENTRIES = 4096;
+
   public NdvApprox approx;
   public List<NdvSketch> sketches = new ArrayList<>();
 
   public transient Union thetaUnion;
+
+  /**
+   * Nominal entries (k) for the merge union. Must be >= the per-file sketches' k, otherwise the
+   * union downsamples and caps the merged sketch's resolution below the configured theta_k.
+   */
+  private final int nominalEntries;
+
+  public ColumnNdv() {
+    this(DEFAULT_NOMINAL_ENTRIES);
+  }
+
+  public ColumnNdv(int nominalEntries) {
+    this.nominalEntries = nominalEntries >= 16 ? nominalEntries : DEFAULT_NOMINAL_ENTRIES;
+  }
 
   public void mergeApproxMetadata(ColumnNdv other) {
     if (other == null || other.approx == null) {
@@ -52,7 +69,7 @@ public final class ColumnNdv {
     }
 
     if (thetaUnion == null) {
-      thetaUnion = SetOperation.builder().buildUnion();
+      thetaUnion = SetOperation.builder().setNominalEntries(nominalEntries).buildUnion();
     }
 
     Memory sketchMemory = Memory.wrap(serializedSketch);
@@ -66,7 +83,7 @@ public final class ColumnNdv {
     }
 
     if (thetaUnion == null) {
-      thetaUnion = SetOperation.builder().buildUnion();
+      thetaUnion = SetOperation.builder().setNominalEntries(nominalEntries).buildUnion();
     }
     thetaUnion.union(incomingSketch);
   }
