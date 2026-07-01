@@ -34,6 +34,7 @@ import ai.floedb.floecat.connector.common.ParquetPageIndexReader;
 import ai.floedb.floecat.connector.common.PlannedFile;
 import ai.floedb.floecat.connector.common.StatsEngine;
 import ai.floedb.floecat.connector.common.ndv.NdvProvider;
+import ai.floedb.floecat.connector.common.ndv.ParquetAvgWidthProvider;
 import ai.floedb.floecat.connector.common.ndv.ParquetNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.floecat.connector.common.resolver.ColumnIdComputer;
@@ -552,6 +553,7 @@ abstract class DeltaConnector implements FloecatConnector {
     NdvProvider bootstrap = null;
 
     NdvProvider ndvProvider = null;
+    ParquetAvgWidthProvider avgWidthProvider = new ParquetAvgWidthProvider(parquetInput);
 
     if (ndvEnabled) {
       NdvProvider base = new ParquetNdvProvider(parquetInput);
@@ -579,7 +581,8 @@ abstract class DeltaConnector implements FloecatConnector {
       var logicalTypes = planner.logicalTypesByKey();
 
       var engine =
-          new GenericStatsEngine<>(planner, ndvProvider, bootstrap, columnNames, logicalTypes);
+          new GenericStatsEngine<>(
+              planner, ndvProvider, bootstrap, avgWidthProvider, columnNames, logicalTypes);
 
       var result = engine.compute();
       return new EngineOut(

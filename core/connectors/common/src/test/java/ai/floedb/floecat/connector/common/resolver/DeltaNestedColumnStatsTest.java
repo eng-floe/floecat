@@ -77,7 +77,7 @@ public class DeltaNestedColumnStatsTest {
   private static FloecatConnector.ColumnStatsView view(
       FloecatConnector.ColumnRef ref, Long rowCount) {
     return new FloecatConnector.ColumnStatsView(
-        ref, "int", rowCount, null, null, null, null, null, Map.of());
+        ref, "int", rowCount, null, null, null, null, null, null, Map.of());
   }
 
   @Test

@@ -29,4 +29,19 @@ public final class NdvApprox {
   public Long rowsTotal;
   public String method;
   public Map<String, String> params = new HashMap<>();
+
+  /** Returns an independent copy so mutations (e.g. finalizeTheta) don't alias a shared source. */
+  public NdvApprox copy() {
+    NdvApprox c = new NdvApprox();
+    c.estimate = estimate;
+    c.rse = rse;
+    c.ciLower = ciLower;
+    c.ciUpper = ciUpper;
+    c.ciLevel = ciLevel;
+    c.rowsSeen = rowsSeen;
+    c.rowsTotal = rowsTotal;
+    c.method = method;
+    c.params = new HashMap<>(params);
+    return c;
+  }
 }

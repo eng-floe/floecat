@@ -18,6 +18,7 @@ package ai.floedb.floecat.connector.common;
 
 import ai.floedb.floecat.connector.common.ndv.ColumnNdv;
 import ai.floedb.floecat.connector.common.ndv.NdvProvider;
+import ai.floedb.floecat.connector.common.ndv.ParquetAvgWidthProvider;
 import ai.floedb.floecat.types.LogicalCoercions;
 import ai.floedb.floecat.types.LogicalComparators;
 import ai.floedb.floecat.types.LogicalType;
@@ -31,12 +32,15 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiConsumer;
+import org.jboss.logging.Logger;
 
 public final class GenericStatsEngine<K> implements StatsEngine<K> {
+  private static final Logger LOG = Logger.getLogger(GenericStatsEngine.class);
 
   private final Planner<K> planner;
   private final NdvProvider ndvProvider;
   private final NdvProvider bootstrapNdv;
+  private final ParquetAvgWidthProvider avgWidthProvider;
   private final Map<K, String> columnNames;
   private final Map<K, LogicalType> logicalTypes;
 
@@ -46,9 +50,20 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       NdvProvider bootstrapNdv,
       Map<K, String> columnNames,
       Map<K, LogicalType> logicalTypes) {
+    this(planner, ndvProvider, bootstrapNdv, null, columnNames, logicalTypes);
+  }
+
+  public GenericStatsEngine(
+      Planner<K> planner,
+      NdvProvider ndvProvider,
+      NdvProvider bootstrapNdv,
+      ParquetAvgWidthProvider avgWidthProvider,
+      Map<K, String> columnNames,
+      Map<K, LogicalType> logicalTypes) {
     this.planner = Objects.requireNonNull(planner);
     this.ndvProvider = ndvProvider;
     this.bootstrapNdv = bootstrapNdv;
+    this.avgWidthProvider = avgWidthProvider;
     this.columnNames = columnNames == null ? Map.of() : Map.copyOf(columnNames);
     this.logicalTypes = logicalTypes == null ? Map.of() : Map.copyOf(logicalTypes);
   }
@@ -74,13 +89,26 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
 
     long files = 0, rows = 0, bytes = 0;
 
+    // Column names are not unique across a nested schema: Iceberg exposes leaf names, so struct
+    // fields such as a.name and b.name collide. The NDV/avg-width providers are name-keyed, so a
+    // duplicated name cannot be attributed to a single column K without cross-contaminating
+    // distinct columns. Exclude ambiguous names from name-keyed capture — those columns get no
+    // sketch/width rather than wrong ones. Unique names (the common flat-schema case) are
+    // unaffected.
+    final Set<String> ambiguousNames = duplicatedColumnNames(acc.columns);
+    if (!ambiguousNames.isEmpty()) {
+      LOG.warnf(
+          "Skipping NDV/avg-width capture for columns with non-unique names: %s", ambiguousNames);
+    }
+
     final Map<K, ColumnNdv> ndvByKey = new LinkedHashMap<>();
     final Map<String, ColumnNdv> ndvByName = new LinkedHashMap<>();
+    final Map<String, ParquetAvgWidthProvider.AvgWidthAcc> avgWidthByName = new LinkedHashMap<>();
     if (ndvProvider != null || bootstrapNdv != null) {
       for (var columnAggMap : acc.columns.entrySet()) {
         var columnAgg = columnAggMap.getValue();
         var name = columnAgg.name;
-        if (name == null || name.isBlank()) {
+        if (name == null || name.isBlank() || ambiguousNames.contains(name)) {
           continue;
         }
 
@@ -91,11 +119,49 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       }
     }
 
+    if (avgWidthProvider != null) {
+      for (var columnAggMap : acc.columns.entrySet()) {
+        var name = columnAggMap.getValue().name;
+        if (name != null && !name.isBlank() && !ambiguousNames.contains(name)) {
+          var widthAcc = new ParquetAvgWidthProvider.AvgWidthAcc();
+          columnAggMap.getValue().avgWidthAcc = widthAcc;
+          avgWidthByName.put(name, widthAcc);
+        }
+      }
+    }
+
     if (bootstrapNdv != null && !ndvByName.isEmpty()) {
       try {
         bootstrapNdv.contributeNdv("<bootstrap>", ndvByName);
       } catch (Exception ignore) {
         // ignore
+      }
+    }
+
+    /*
+     * Puffin-only NDV path: when ndvProvider == null (no per-file Parquet scan) but
+     * bootstrapNdv covered all columns (e.g. Iceberg Puffin stats), the cumulative
+     * ndvByName already has the correct table-level sketch.  Finalize it now and reuse
+     * it as the "per-file" NDV for every file record, so FileGroupTargetStatsRollup can
+     * merge it.
+     *
+     * Correctness: theta-union of N identical sketches is idempotent (S ∪ S = S),
+     * so the rollup result is the bootstrap sketch — which is correct.
+     *
+     * When ndvProvider != null, finalization happens after the file loop (normal path);
+     * finalizeTheta() is a no-op if thetaUnion is already null.
+     */
+    Map<K, ColumnNdv> bootstrapPerFileNdv = null;
+    if (ndvProvider == null && bootstrapNdv != null && !ndvByName.isEmpty()) {
+      for (var n : ndvByName.values()) {
+        n.finalizeTheta();
+      }
+      bootstrapPerFileNdv = new LinkedHashMap<>();
+      for (var colEntry : acc.columns.entrySet()) {
+        ColumnNdv n = ndvByName.get(colEntry.getValue().name);
+        if (n != null && !n.sketches.isEmpty()) {
+          bootstrapPerFileNdv.put(colEntry.getKey(), n);
+        }
       }
     }
 
@@ -112,15 +178,85 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       mergeBounds(acc.columns, file.lowerBounds(), true);
       mergeBounds(acc.columns, file.upperBounds(), false);
 
+      /*
+       * Per-file NDV: fresh ColumnNdv accumulators per file; merge serialized theta
+       * bytes into the cumulative union; pass finalized per-file ColumnNdv to
+       * buildFileColumnAggs() so file records carry a mergeable theta sketch.
+       * Falls back to bootstrapPerFileNdv when ndvProvider is absent (Puffin path).
+       */
+      Map<K, ColumnNdv> perFileNdvByKey = null;
       if (ndvProvider != null && !ndvByName.isEmpty()) {
         try {
-          ndvProvider.contributeNdv(file.path(), ndvByName);
+          Map<String, ColumnNdv> perFileByName = new LinkedHashMap<>();
+          for (String name : ndvByName.keySet()) {
+            perFileByName.put(name, new ColumnNdv());
+          }
+          ndvProvider.contributeNdv(file.path(), perFileByName);
+          /* Finalize per-file sketches, then merge their bytes into the cumulative union. */
+          for (var e : perFileByName.entrySet()) {
+            e.getValue().finalizeTheta();
+            ColumnNdv cumulative = ndvByName.get(e.getKey());
+            if (cumulative != null) {
+              cumulative.mergeApproxMetadata(e.getValue());
+              if (!e.getValue().sketches.isEmpty()) {
+                cumulative.mergeTheta(e.getValue().sketches.get(0).data);
+              }
+            }
+          }
+          /* Build K-keyed map for buildFileColumnAggs. */
+          perFileNdvByKey =
+              rekeyByColName(acc.columns, perFileByName, n -> n.sketches.isEmpty() ? null : n);
         } catch (Exception ignore) {
-          // ignore and continue
+          // NDV is best-effort; fall through with null perFileNdvByKey
         }
       }
 
-      Map<K, ColumnAgg> fileCols = buildFileColumnAggs(file);
+      /*
+       * Compute per-file avg_width using fresh per-file accumulators, then merge those
+       * into the cumulative accumulators so the table-level ColumnAgg stays correct.
+       * This gives us per-file avg_width values to include in the FileAgg records,
+       * which FileGroupTargetStatsRollup can then weighted-average into column-level stats.
+       */
+      Map<K, Long> perFileAvgWidths = null;
+      if (avgWidthProvider != null && !avgWidthByName.isEmpty() && isParquet(file)) {
+        LOG.debugf(
+            "[avg_width] starting footer scan for %s (provider=%s sinks=%s)",
+            file.path(), avgWidthProvider.getClass().getSimpleName(), avgWidthByName.keySet());
+        try {
+          Map<String, ParquetAvgWidthProvider.AvgWidthAcc> perFileByName = new LinkedHashMap<>();
+          for (String name : avgWidthByName.keySet()) {
+            perFileByName.put(name, new ParquetAvgWidthProvider.AvgWidthAcc());
+          }
+          avgWidthProvider.contributeAvgWidth(file.path(), perFileByName);
+          long matched =
+              perFileByName.values().stream().filter(a -> a.avgWidthBytes() != null).count();
+          if (matched == 0) {
+            LOG.warnf(
+                "[avg_width] no columns matched in footer for %s (sinks=%s)",
+                file.path(), perFileByName.keySet());
+          } else {
+            LOG.debugf(
+                "[avg_width] %d/%d columns matched in %s",
+                matched, perFileByName.size(), file.path());
+          }
+          /* Merge per-file into cumulative. */
+          for (var e : perFileByName.entrySet()) {
+            avgWidthByName.get(e.getKey()).merge(e.getValue());
+          }
+          /* Build K-keyed map for buildFileColumnAggs (null from avgWidthBytes = skip). */
+          perFileAvgWidths =
+              rekeyByColName(
+                  acc.columns, perFileByName, ParquetAvgWidthProvider.AvgWidthAcc::avgWidthBytes);
+        } catch (Exception ex) {
+          // avg_width is best-effort; log the failure so it is not silently swallowed
+          LOG.warnf("avg_width footer scan failed for file %s: %s", file.path(), ex.getMessage());
+        }
+      }
+
+      /* Use per-file NDV from scan, or bootstrap sketch when no scan was done (Puffin path). */
+      Map<K, ColumnNdv> ndvForFile =
+          perFileNdvByKey != null ? perFileNdvByKey : bootstrapPerFileNdv;
+      Map<K, ColumnAgg> fileCols = buildFileColumnAggs(file, ndvForFile, perFileAvgWidths);
       fileAggs.add(
           new FileAggImpl<>(
               file.path(),
@@ -165,6 +301,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     Object max;
     Long ndvExact;
     ColumnNdv ndv;
+    ParquetAvgWidthProvider.AvgWidthAcc avgWidthAcc;
 
     ColAcc(LogicalType type, String name) {
       this.type = type;
@@ -269,6 +406,7 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
       final Long fNan = nanCount;
       final Object fMin = min;
       final Object fMax = max;
+      final Long fAvgWidth = avgWidthAcc != null ? avgWidthAcc.avgWidthBytes() : null;
 
       return new ColumnAgg() {
         @Override
@@ -304,6 +442,11 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
         @Override
         public Object max() {
           return fMax;
+        }
+
+        @Override
+        public Long avgWidthBytes() {
+          return fAvgWidth;
         }
       };
     }
@@ -379,7 +522,16 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     }
   }
 
-  private Map<K, ColumnAgg> buildFileColumnAggs(PlannedFile<K> file) {
+  /**
+   * Builds per-file column aggregates for one Parquet file.
+   *
+   * @param file the planned file whose footer metrics to use
+   * @param perFileNdv K-keyed finalized ColumnNdv for this file only, or null if unavailable.
+   *     Carries a serialized theta sketch that FileGroupTargetStatsRollup can merge.
+   * @param perFileAvgWidths K-keyed avg_width_bytes for this file only, or null if unavailable
+   */
+  private Map<K, ColumnAgg> buildFileColumnAggs(
+      PlannedFile<K> file, Map<K, ColumnNdv> perFileNdv, Map<K, Long> perFileAvgWidths) {
     Map<K, ColumnAgg> out = new LinkedHashMap<>();
 
     Map<K, Long> rowCounts = file.rowCounts();
@@ -397,60 +549,93 @@ public final class GenericStatsEngine<K> implements StatsEngine<K> {
     if (uppers != null) keys.addAll(uppers.keySet());
 
     for (K key : keys) {
-      Long rc = rowCounts != null ? rowCounts.get(key) : null;
-      Long nc = nullCounts != null ? nullCounts.get(key) : null;
-      Long nn = nanCounts != null ? nanCounts.get(key) : null;
-      Object lo = lowers != null ? lowers.get(key) : null;
-      Object hi = uppers != null ? uppers.get(key) : null;
-
-      final Long fRc = rc;
-      final Long fNc = nc;
-      final Long fNn = nn;
-      final Object fLo = lo;
-      final Object fHi = hi;
-
-      ColumnAgg colAgg =
-          new ColumnAgg() {
-            @Override
-            public Long ndvExact() {
-              return null;
-            }
-
-            @Override
-            public ColumnNdv ndv() {
-              return null;
-            }
-
-            @Override
-            public Long rowCount() {
-              return fRc;
-            }
-
-            @Override
-            public Long nullCount() {
-              return fNc;
-            }
-
-            @Override
-            public Long nanCount() {
-              return fNn;
-            }
-
-            @Override
-            public Object min() {
-              return fLo;
-            }
-
-            @Override
-            public Object max() {
-              return fHi;
-            }
-          };
-
-      out.put(key, colAgg);
+      out.put(
+          key,
+          new FileColumnAgg(
+              rowCounts != null ? rowCounts.get(key) : null,
+              nullCounts != null ? nullCounts.get(key) : null,
+              nanCounts != null ? nanCounts.get(key) : null,
+              lowers != null ? lowers.get(key) : null,
+              uppers != null ? uppers.get(key) : null,
+              perFileNdv != null ? perFileNdv.get(key) : null,
+              perFileAvgWidths != null ? perFileAvgWidths.get(key) : null));
     }
 
     return Collections.unmodifiableMap(out);
+  }
+
+  /**
+   * Per-file column aggregate: holds the footer-derived metrics for one column in one Parquet file.
+   * ndvExact is always null at the file level (only the table-level ColAcc.freeze() can produce
+   * exact NDV from small distinct counts).
+   */
+  /**
+   * Re-keys a name-keyed accumulator map into the planner's K-keyed result map. {@code mapper}
+   * converts an accumulator entry to the desired value type, returning {@code null} to skip that
+   * column (e.g. when the value is not yet computed). Used to convert per-file NDV and avg_width
+   * maps from column-name keys (providers) to the planner's opaque K keys (buildFileColumnAggs).
+   */
+  /**
+   * The avg-width provider reads a Parquet footer, so it must only run on Parquet data files.
+   * Unlike NDV (wrapped in a suffix-filtering provider at the connector), avg-width is passed
+   * through directly, so an unfiltered scan would throw and warn per file on ORC/Avro tables. Trust
+   * {@code format()} when present, otherwise fall back to the path suffix.
+   */
+  private static boolean isParquet(PlannedFile<?> file) {
+    String format = file.format();
+    if (format != null && !format.isBlank()) {
+      return "PARQUET".equalsIgnoreCase(format);
+    }
+    String path = file.path();
+    return path != null && (path.endsWith(".parquet") || path.endsWith(".parq"));
+  }
+
+  /** Returns column names shared by more than one column key (ambiguous for name-keyed capture). */
+  private static <K> Set<String> duplicatedColumnNames(Map<K, ColAcc> columns) {
+    Map<String, Integer> counts = new LinkedHashMap<>();
+    for (ColAcc column : columns.values()) {
+      if (column.name != null && !column.name.isBlank()) {
+        counts.merge(column.name, 1, Integer::sum);
+      }
+    }
+    Set<String> duplicates = new LinkedHashSet<>();
+    counts.forEach(
+        (name, count) -> {
+          if (count > 1) {
+            duplicates.add(name);
+          }
+        });
+    return duplicates;
+  }
+
+  private static <K, A, V> Map<K, V> rekeyByColName(
+      Map<K, ColAcc> columns, Map<String, A> byName, java.util.function.Function<A, V> mapper) {
+    Map<K, V> out = new LinkedHashMap<>();
+    for (var e : columns.entrySet()) {
+      A acc = byName.get(e.getValue().name);
+      if (acc != null) {
+        V val = mapper.apply(acc);
+        if (val != null) {
+          out.put(e.getKey(), val);
+        }
+      }
+    }
+    return out;
+  }
+
+  private record FileColumnAgg(
+      Long rowCount,
+      Long nullCount,
+      Long nanCount,
+      Object min,
+      Object max,
+      ColumnNdv ndv,
+      Long avgWidthBytes)
+      implements ColumnAgg {
+    @Override
+    public Long ndvExact() {
+      return null;
+    }
   }
 
   private static final class ResultImpl<K> implements Result<K> {

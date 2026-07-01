@@ -93,10 +93,11 @@ public interface StatsProvider {
     Optional<Ndv> ndv();
 
     /**
-     * Average compressed width in bytes per non-null value, when available.
+     * Average uncompressed width in bytes per row, when available.
      *
-     * <p>Derived from Parquet footer ColumnChunk metadata. Provisional: compressed width
-     * underestimates PG uncompressed {@code stawidth} for variable-width types.
+     * <p>Derived from the Parquet footer as ceil(total uncompressed column size / row count),
+     * minimum 1. The denominator is total rows (not non-null values), so this is a per-row average
+     * and may differ from PG {@code stawidth} (per non-null value) for columns with nulls.
      */
     default OptionalLong avgWidthBytes() {
       return OptionalLong.empty();

@@ -30,6 +30,22 @@ public final class ColumnNdv {
 
   public transient Union thetaUnion;
 
+  public void mergeApproxMetadata(ColumnNdv other) {
+    if (other == null || other.approx == null) {
+      return;
+    }
+    if (approx == null) {
+      approx = new NdvApprox();
+    }
+    if (other.approx.rowsSeen != null) {
+      approx.rowsSeen = (approx.rowsSeen == null ? 0L : approx.rowsSeen) + other.approx.rowsSeen;
+    }
+    if (other.approx.rowsTotal != null) {
+      approx.rowsTotal =
+          (approx.rowsTotal == null ? 0L : approx.rowsTotal) + other.approx.rowsTotal;
+    }
+  }
+
   public void mergeTheta(byte[] serializedSketch) {
     if (serializedSketch == null || serializedSketch.length == 0) {
       return;
@@ -55,15 +71,16 @@ public final class ColumnNdv {
     thetaUnion.union(incomingSketch);
   }
 
+  /** Finalize the theta union. Idempotent when no transient theta union is present. */
   public void finalizeTheta() {
     if (thetaUnion == null) {
       return;
     }
 
+    sketches.clear();
+
     var compact = thetaUnion.getResult(true, null);
     byte[] bytes = compact.toByteArray();
-
-    sketches.clear();
     NdvSketch sk = new NdvSketch();
     sk.type = "apache-datasketches-theta-v1";
     sk.data = bytes;
@@ -71,11 +88,7 @@ public final class ColumnNdv {
     sk.compression = "none";
     sk.version = 1;
     sketches.add(sk);
-
-    if (approx == null) {
-      approx = new NdvApprox();
-    }
-
+    if (approx == null) approx = new NdvApprox();
     approx.estimate = compact.getEstimate();
     approx.method = "apache-datasketches-theta";
     thetaUnion = null;

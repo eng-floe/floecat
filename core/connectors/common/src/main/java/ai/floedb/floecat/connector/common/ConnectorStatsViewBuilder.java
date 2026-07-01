@@ -19,6 +19,9 @@ package ai.floedb.floecat.connector.common;
 import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.NdvApprox;
+import ai.floedb.floecat.catalog.rpc.SketchPayload;
+import ai.floedb.floecat.catalog.rpc.SketchRole;
+import ai.floedb.floecat.catalog.rpc.StatsCompleteness;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.connector.common.ndv.NdvSketch;
@@ -103,6 +106,7 @@ public final class ConnectorStatsViewBuilder {
         var model = agg.ndv();
         var ndvBuilder = Ndv.newBuilder();
         boolean hasPayload = false;
+        long capturedAtMs = System.currentTimeMillis();
 
         if (model.approx != null) {
           var ndvApprox = model.approx;
@@ -127,13 +131,17 @@ public final class ConnectorStatsViewBuilder {
 
         if (model.sketches != null && !model.sketches.isEmpty()) {
           for (NdvSketch s : model.sketches) {
-            var sb = ai.floedb.floecat.catalog.rpc.NdvSketch.newBuilder();
-            if (s.type != null) sb.setType(s.type);
+            var sb =
+                SketchPayload.newBuilder()
+                    .setRole(SketchRole.SKETCH_ROLE_NDV)
+                    .setCapturedAtMs(capturedAtMs)
+                    .setCompleteness(StatsCompleteness.SC_COMPLETE);
+            if (s.type != null) sb.setSketchType(s.type);
             if (s.data != null) sb.setData(ByteString.copyFrom(s.data));
-            if (s.encoding != null) sb.setEncoding(s.encoding);
-            if (s.compression != null) sb.setCompression(s.compression);
-            if (s.version != null) sb.setVersion(s.version);
-            if (s.params != null && !s.params.isEmpty()) sb.putAllProperties(s.params);
+            if (s.encoding != null) sb.putParams("encoding", s.encoding);
+            if (s.compression != null) sb.putParams("compression", s.compression);
+            if (s.version != null) sb.putParams("version", String.valueOf(s.version));
+            if (s.params != null && !s.params.isEmpty()) sb.putAllParams(s.params);
             ndvBuilder.addSketches(sb);
           }
           hasPayload = true;
@@ -154,6 +162,7 @@ public final class ConnectorStatsViewBuilder {
               min,
               max,
               ndv,
+              agg.avgWidthBytes(),
               Map.of()));
     }
     return out;

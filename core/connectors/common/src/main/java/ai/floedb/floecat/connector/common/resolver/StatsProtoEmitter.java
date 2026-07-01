@@ -32,6 +32,7 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -208,29 +209,6 @@ public final class StatsProtoEmitter {
         continue;
       }
 
-      ScalarStats.Builder scalar =
-          ScalarStats.newBuilder()
-              .setDisplayName(view.ref().name() == null ? "" : view.ref().name())
-              .setLogicalType(view.logicalType() == null ? "" : view.logicalType())
-              .setRowCount(view.rowCount())
-              .setUpstream(upstream)
-              .putAllProperties(view.properties() == null ? Map.of() : view.properties());
-      if (view.nullCount() != null) {
-        scalar.setNullCount(view.nullCount());
-      }
-      if (view.nanCount() != null) {
-        scalar.setNanCount(view.nanCount());
-      }
-      if (view.min() != null) {
-        scalar.setMin(view.min());
-      }
-      if (view.max() != null) {
-        scalar.setMax(view.max());
-      }
-      if (view.ndv() != null) {
-        scalar.setNdv(view.ndv());
-      }
-
       out.add(
           TargetStatsRecord.newBuilder()
               .setTableId(tableId)
@@ -239,7 +217,7 @@ public final class StatsProtoEmitter {
                   StatsTarget.newBuilder()
                       .setColumn(ColumnStatsTarget.newBuilder().setColumnId(columnId)))
               .setMetadata(metadata == null ? DEFAULT_CONNECTOR_METADATA : metadata)
-              .setScalar(scalar)
+              .setScalar(buildColumnScalar(view, upstream))
               .build());
     }
     return Collections.unmodifiableList(out);
@@ -295,23 +273,11 @@ public final class StatsProtoEmitter {
           if (colId == 0L) {
             continue;
           }
-          var b =
-              ScalarStats.newBuilder()
-                  .setDisplayName(v.ref().name() == null ? "" : v.ref().name())
-                  .setRowCount(v.rowCount())
-                  .setUpstream(upstream);
-          if (v.nullCount() != null) b.setNullCount(v.nullCount());
-          if (v.nanCount() != null) b.setNanCount(v.nanCount());
-          if (v.logicalType() != null && !v.logicalType().isBlank()) {
-            b.setLogicalType(v.logicalType());
-          }
-          if (v.min() != null) b.setMin(v.min());
-          if (v.max() != null) b.setMax(v.max());
-          if (v.ndv() != null) b.setNdv(v.ndv());
-          if (v.properties() != null && !v.properties().isEmpty()) {
-            b.putAllProperties(v.properties());
-          }
-          cols.add(FileColumnStats.newBuilder().setColumnId(colId).setScalar(b.build()).build());
+          cols.add(
+              FileColumnStats.newBuilder()
+                  .setColumnId(colId)
+                  .setScalar(buildColumnScalar(v, upstream))
+                  .build());
         }
       }
 
@@ -381,27 +347,6 @@ public final class StatsProtoEmitter {
       if (columnId <= 0L) {
         continue;
       }
-      ScalarStats.Builder scalar =
-          ScalarStats.newBuilder()
-              .setDisplayName(view.ref().name() == null ? "" : view.ref().name())
-              .setLogicalType(view.logicalType() == null ? "" : view.logicalType())
-              .setRowCount(view.rowCount())
-              .putAllProperties(view.properties() == null ? Map.of() : view.properties());
-      if (view.nullCount() != null) {
-        scalar.setNullCount(view.nullCount());
-      }
-      if (view.nanCount() != null) {
-        scalar.setNanCount(view.nanCount());
-      }
-      if (view.min() != null) {
-        scalar.setMin(view.min());
-      }
-      if (view.max() != null) {
-        scalar.setMax(view.max());
-      }
-      if (view.ndv() != null) {
-        scalar.setNdv(view.ndv());
-      }
 
       out.add(
           TargetStatsRecord.newBuilder()
@@ -411,7 +356,7 @@ public final class StatsProtoEmitter {
                   StatsTarget.newBuilder()
                       .setColumn(ColumnStatsTarget.newBuilder().setColumnId(columnId)))
               .setMetadata(metadata == null ? DEFAULT_CONNECTOR_METADATA : metadata)
-              .setScalar(scalar)
+              .setScalar(buildColumnScalar(view, null))
               .build());
     }
     return Collections.unmodifiableList(out);
@@ -455,30 +400,11 @@ public final class StatsProtoEmitter {
           if (columnId <= 0L) {
             continue;
           }
-          ScalarStats.Builder column =
-              ScalarStats.newBuilder()
-                  .setDisplayName(columnView.ref().name() == null ? "" : columnView.ref().name())
-                  .setLogicalType(columnView.logicalType() == null ? "" : columnView.logicalType())
-                  .setRowCount(columnView.rowCount())
-                  .putAllProperties(
-                      columnView.properties() == null ? Map.of() : columnView.properties());
-          if (columnView.nullCount() != null) {
-            column.setNullCount(columnView.nullCount());
-          }
-          if (columnView.nanCount() != null) {
-            column.setNanCount(columnView.nanCount());
-          }
-          if (columnView.min() != null) {
-            column.setMin(columnView.min());
-          }
-          if (columnView.max() != null) {
-            column.setMax(columnView.max());
-          }
-          if (columnView.ndv() != null) {
-            column.setNdv(columnView.ndv());
-          }
           columns.add(
-              FileColumnStats.newBuilder().setColumnId(columnId).setScalar(column.build()).build());
+              FileColumnStats.newBuilder()
+                  .setColumnId(columnId)
+                  .setScalar(buildColumnScalar(columnView, null))
+                  .build());
         }
       }
 
@@ -515,6 +441,38 @@ public final class StatsProtoEmitter {
               .build());
     }
     return Collections.unmodifiableList(out);
+  }
+
+  private static ScalarStats buildColumnScalar(
+      FloecatConnector.ColumnStatsView view, UpstreamStamp upstreamOrNull) {
+    ScalarStats.Builder scalar =
+        ScalarStats.newBuilder()
+            .setDisplayName(view.ref().name() == null ? "" : view.ref().name())
+            .setLogicalType(view.logicalType() == null ? "" : view.logicalType())
+            .setRowCount(view.rowCount())
+            .putAllProperties(view.properties() == null ? Map.of() : view.properties());
+    if (upstreamOrNull != null) {
+      scalar.setUpstream(upstreamOrNull);
+    }
+    if (view.nullCount() != null) {
+      scalar.setNullCount(view.nullCount());
+    }
+    if (view.nanCount() != null) {
+      scalar.setNanCount(view.nanCount());
+    }
+    if (view.min() != null) {
+      scalar.setMin(view.min());
+    }
+    if (view.max() != null) {
+      scalar.setMax(view.max());
+    }
+    if (view.ndv() != null) {
+      scalar.setNdv(view.ndv());
+    }
+    if (view.avgWidthBytes() != null) {
+      scalar.setAvgWidthBytes(view.avgWidthBytes());
+    }
+    return scalar.build();
   }
 
   /** Helper to convert ConnectorFormat to TableFormat proto. */
