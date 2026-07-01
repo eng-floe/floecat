@@ -16,12 +16,16 @@
 
 package ai.floedb.floecat.service.query.catalog;
 
+import ai.floedb.floecat.catalog.rpc.ColumnStatsTarget;
 import ai.floedb.floecat.catalog.rpc.ConstraintColumnRef;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -30,8 +34,9 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
 import ai.floedb.floecat.query.rpc.TableConstraintsResult;
-import ai.floedb.floecat.query.rpc.TableTargetStatsRequest;
+import ai.floedb.floecat.query.rpc.TableStatsRequest;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleChunk;
+import ai.floedb.floecat.query.rpc.TargetStatsNeed;
 import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
@@ -46,6 +51,7 @@ import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.mockito.Mockito;
 
@@ -70,6 +76,12 @@ abstract class PlannerStatsBundleServiceTestSupport {
           .setAccountId("acct")
           .setId("orders")
           .setKind(ResourceKind.RK_TABLE)
+          .build();
+
+  protected static final Table TABLE_RECORD =
+      Table.newBuilder()
+          .setResourceId(TABLE)
+          .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_ICEBERG))
           .build();
 
   protected static PlannerStatsBundleService createService(
@@ -97,6 +109,21 @@ abstract class PlannerStatsBundleServiceTestSupport {
         factory, constraintProvider, repository, maxTables, maxTargets, chunkSize);
   }
 
+  protected static PlannerStatsBundleService createServiceWithRealLookup(
+      StatsRepository repository,
+      UserObjectBundleTestSupport.TestQueryContextStore store,
+      int chunkSize,
+      int maxTables,
+      int maxTargets) {
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    Mockito.when(tableRepository.getById(TABLE)).thenReturn(Optional.of(TABLE_RECORD));
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(repository, Mockito.mock(ReconcileJobStore.class), tableRepository);
+    StatsProviderFactory factory = new StatsProviderFactory(orchestrator, tableRepository, store);
+    return PlannerStatsBundleService.forTestingWithRealLookup(
+        orchestrator, tableRepository, factory, maxTables, maxTargets, chunkSize);
+  }
+
   protected static StatsRepository createRepository() {
     return new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
   }
@@ -118,18 +145,23 @@ abstract class PlannerStatsBundleServiceTestSupport {
         .build();
   }
 
-  protected static TableTargetStatsRequest tableRequest(ResourceId tableId, List<Long> columnIds) {
-    List<StatsTarget> targets = new ArrayList<>(columnIds.size());
-    for (Long columnId : columnIds) {
-      targets.add(
-          StatsTarget.newBuilder()
-              .setColumn(
-                  ai.floedb.floecat.catalog.rpc.ColumnStatsTarget.newBuilder()
-                      .setColumnId(columnId)
-                      .build())
+  protected static TableStatsRequest tableRequest(ResourceId tableId, List<Long> columnIds) {
+    List<TargetStatsNeed> needs = new ArrayList<>(columnIds.size());
+    for (int i = 0; i < columnIds.size(); i++) {
+      needs.add(
+          TargetStatsNeed.newBuilder()
+              .setTarget(
+                  StatsTarget.newBuilder()
+                      .setColumn(ColumnStatsTarget.newBuilder().setColumnId(columnIds.get(i))))
+              .setPriority(i + 1)
               .build());
     }
-    return TableTargetStatsRequest.newBuilder().setTableId(tableId).addAllTargets(targets).build();
+    return TableStatsRequest.newBuilder().setTableId(tableId).addAllTargets(needs).build();
+  }
+
+  protected static TableStatsRequest tableRequestWithSnapshot(
+      ResourceId tableId, List<Long> columnIds, long snapshotId) {
+    return tableRequest(tableId, columnIds).toBuilder().setSnapshotId(snapshotId).build();
   }
 
   protected static QueryContext queryContextWithPin(String queryId, long snapshotId) {
@@ -280,6 +312,37 @@ abstract class PlannerStatsBundleServiceTestSupport {
     public Optional<TargetStatsRecord> getTargetStats(
         ResourceId tableId, long snapshotId, StatsTarget target) {
       throw new RuntimeException("boom");
+    }
+  }
+
+  protected static final class TargetedThrowingStatsRepository extends StatsRepository {
+    private final long failingColumnId;
+
+    protected TargetedThrowingStatsRepository(
+        InMemoryPointerStore pointerStore, InMemoryBlobStore blobStore, long failingColumnId) {
+      super(pointerStore, blobStore);
+      this.failingColumnId = failingColumnId;
+    }
+
+    @Override
+    public Map<String, Optional<TargetStatsRecord>> getTargetStatsBatch(
+        ResourceId tableId, long snapshotId, List<StatsTarget> targets) {
+      if (targets.stream()
+          .anyMatch(
+              target ->
+                  target.hasColumn() && target.getColumn().getColumnId() == failingColumnId)) {
+        throw new RuntimeException("batch boom");
+      }
+      return super.getTargetStatsBatch(tableId, snapshotId, targets);
+    }
+
+    @Override
+    public Optional<TargetStatsRecord> getTargetStats(
+        ResourceId tableId, long snapshotId, StatsTarget target) {
+      if (target.hasColumn() && target.getColumn().getColumnId() == failingColumnId) {
+        throw new RuntimeException("target boom");
+      }
+      return super.getTargetStats(tableId, snapshotId, target);
     }
   }
 }

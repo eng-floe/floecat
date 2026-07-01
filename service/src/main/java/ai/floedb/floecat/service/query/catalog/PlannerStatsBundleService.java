@@ -20,34 +20,32 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
-import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.BundleFailure;
 import ai.floedb.floecat.query.rpc.BundleResultStatus;
 import ai.floedb.floecat.query.rpc.FetchTableConstraintsRequest;
 import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
+import ai.floedb.floecat.query.rpc.StatsResultStatus;
 import ai.floedb.floecat.query.rpc.TableConstraintsBatch;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleEnd;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleHeader;
 import ai.floedb.floecat.query.rpc.TableConstraintsResult;
-import ai.floedb.floecat.query.rpc.TableTargetStatsRequest;
 import ai.floedb.floecat.query.rpc.TargetStatsBatch;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleChunk;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleEnd;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleHeader;
 import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
-import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
-import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsResolutionResult;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.stats.spi.StatsSyncOutcome;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import io.smallrye.mutiny.Multi;
@@ -80,6 +78,7 @@ public class PlannerStatsBundleService {
   private static final String TARGET_ERROR_CODE = "planner_stats.target_stats.error";
   private static final String CONSTRAINT_MISSING_CODE = "planner_stats.constraints.missing";
   private static final String CONSTRAINT_ERROR_CODE = "planner_stats.constraints.error";
+  private static final String CONSTRAINT_OMITTED_CODE = "planner_stats.constraints.omitted";
 
   private final StatsProviderFactory statsFactory;
   private final Supplier<ConstraintProvider> constraintProviderSupplier;
@@ -87,6 +86,7 @@ public class PlannerStatsBundleService {
       constraintPrunerFactory;
   private final Function<Set<String>, ConstraintPruner> constraintsOnlyPrunerFactory;
   private final TargetStatsLookup targetStatsLookup;
+  private final PlannerStatsRequestNormalizer requestNormalizer;
   private final int maxTables;
   private final int maxTargets;
   private final int maxResultsPerChunk;
@@ -103,7 +103,7 @@ public class PlannerStatsBundleService {
       StatsOrchestrator statsOrchestrator,
       TableRepository tableRepository,
       @ConfigProperty(name = "floecat.planner.stats.max-tables", defaultValue = "50") int maxTables,
-      @ConfigProperty(name = "floecat.planner.stats.max-targets", defaultValue = "1024")
+      @ConfigProperty(name = "floecat.planner.stats.max-targets", defaultValue = "10000")
           int maxTargets,
       @ConfigProperty(name = "floecat.planner.stats.max-results-per-chunk", defaultValue = "100")
           int maxResultsPerChunk) {
@@ -134,6 +134,28 @@ public class PlannerStatsBundleService {
     this.maxTables = Math.max(1, limits.maxTables);
     this.maxTargets = Math.max(1, limits.maxTargets);
     this.maxResultsPerChunk = Math.max(1, limits.maxResultsPerChunk);
+    this.requestNormalizer = new PlannerStatsRequestNormalizer(this.maxTables, this.maxTargets);
+  }
+
+  /**
+   * Test factory that wires through the real {@code providerLookup()} path — including {@link
+   * StatsOrchestrator#resolvePlannerBatch} with stale-before-sync ordering. Use this for
+   * integration tests that need to verify the full resolution chain.
+   */
+  static PlannerStatsBundleService forTestingWithRealLookup(
+      StatsOrchestrator orchestrator,
+      TableRepository tableRepository,
+      StatsProviderFactory statsFactory,
+      int maxTables,
+      int maxTargets,
+      int maxResultsPerChunk) {
+    return new PlannerStatsBundleService(
+        statsFactory,
+        () -> ConstraintProvider.NONE,
+        RequestScopeConstraintPruner::new,
+        RequestScopeConstraintPruner::forRequestedTablesOnly,
+        providerLookup(orchestrator, tableRepository),
+        new PlannerStatsLimits(maxTables, maxTargets, maxResultsPerChunk));
   }
 
   public static PlannerStatsBundleService forTesting(
@@ -163,12 +185,18 @@ public class PlannerStatsBundleService {
         () -> constraintProvider == null ? ConstraintProvider.NONE : constraintProvider,
         RequestScopeConstraintPruner::new,
         RequestScopeConstraintPruner::forRequestedTablesOnly,
-        (tableId, snapshotId, targets) -> {
-          Map<String, Optional<TargetStatsRecord>> byTarget = new LinkedHashMap<>();
-          for (StatsTarget target : targets) {
-            byTarget.put(
-                StatsTargetIdentity.storageId(target),
-                statsStore.getTargetStats(tableId, snapshotId, target));
+        (tableId, snapshotId, targets, policy, deadlineNanos) -> {
+          Map<String, PlannerTargetStatsLookupResult> byTarget = new LinkedHashMap<>();
+          for (PlannerStatsTargetNeed target : targets) {
+            PlannerTargetStatsLookupResult result =
+                statsStore
+                    .getTargetStats(tableId, snapshotId, target.target())
+                    .map(PlannerTargetStatsLookupResult::hit)
+                    .orElseGet(() -> PlannerTargetStatsLookupResult.skipped("test_store_miss"))
+                    .withStaleFallback(
+                        policy.staleOk(),
+                        () -> statsStore.getStaleTargetStats(tableId, snapshotId, target.target()));
+            byTarget.put(StatsTargetIdentity.storageId(target.target()), result);
           }
           return Map.copyOf(byTarget);
         },
@@ -186,9 +214,13 @@ public class PlannerStatsBundleService {
     diagnostics.put("include_constraints", safeRequest.getIncludeConstraints());
     diagnostics.put("requested_tables_raw", safeRequest.getTablesCount());
     try {
-      NormalizedRequest normalized =
-          diagnostics.time("normalize_request", () -> normalizeRequest(correlationId, safeRequest));
-      List<TableRequest> tableRequests = normalized.tables();
+      PlannerStatsNormalizedRequest normalized =
+          diagnostics.time(
+              "normalize_request",
+              () -> requestNormalizer.normalizeTargets(correlationId, safeRequest));
+      PlannerStatsServingPolicy servingPolicy =
+          PlannerStatsServingPolicy.from(safeRequest.getOptions(), maxTargets);
+      List<PlannerStatsTableRequest> tableRequests = normalized.tables();
       diagnostics.put("requested_tables", tableRequests.size());
       diagnostics.put("requested_targets", normalized.requestedTargets());
       diagnostics.put("max_results_per_chunk", maxResultsPerChunk);
@@ -207,7 +239,7 @@ public class PlannerStatsBundleService {
               () -> {
                 TargetStatsIterator iterator =
                     new TargetStatsIterator(
-                        ctx.getQueryId(),
+                        ctx == null ? "" : ctx.getQueryId(),
                         correlationId,
                         tableRequests,
                         pinLookup,
@@ -218,6 +250,9 @@ public class PlannerStatsBundleService {
                         maxResultsPerChunk,
                         tableRequests.size(),
                         normalized.requestedTargets(),
+                        normalized.omittedByBudget(),
+                        servingPolicy,
+                        System.nanoTime() + servingPolicy.latencyBudget().toNanos(),
                         diagnostics,
                         startedNanos);
                 return Multi.createFrom()
@@ -236,45 +271,54 @@ public class PlannerStatsBundleService {
 
   @FunctionalInterface
   private interface TargetStatsLookup {
-    Map<String, Optional<TargetStatsRecord>> get(
-        ResourceId tableId, long snapshotId, List<StatsTarget> targets);
+    Map<String, PlannerTargetStatsLookupResult> get(
+        ResourceId tableId,
+        long snapshotId,
+        List<PlannerStatsTargetNeed> targets,
+        PlannerStatsServingPolicy policy,
+        long deadlineNanos);
   }
 
   private static TargetStatsLookup providerLookup(
       StatsOrchestrator statsOrchestrator, TableRepository tableRepository) {
     Objects.requireNonNull(statsOrchestrator, "statsOrchestrator");
     Objects.requireNonNull(tableRepository, "tableRepository");
-    return (tableId, snapshotId, targets) -> {
+    return (tableId, snapshotId, targets, policy, deadlineNanos) -> {
       if (targets == null || targets.isEmpty()) {
         return Map.of();
       }
       String connectorType = ConnectorTypeResolver.connectorTypeFor(tableRepository, tableId);
-      List<StatsCaptureRequest> requests =
-          targets.stream()
-              .map(
-                  target ->
-                      StatsCaptureRequest.builder(tableId, snapshotId, target)
-                          .columnSelectors(Set.of())
-                          .requestedKinds(Set.of())
-                          .executionMode(StatsExecutionMode.SYNC)
-                          .connectorType(connectorType)
-                          .build())
-              .toList();
-      List<StatsResolutionResult> resolved =
-          statsOrchestrator.resolveBatch(StatsCaptureBatchRequest.of(requests));
-      Map<String, Optional<TargetStatsRecord>> byTarget = new LinkedHashMap<>();
-      for (int i = 0; i < requests.size(); i++) {
-        StatsResolutionResult r = i < resolved.size() ? resolved.get(i) : null;
-        if (r != null && !r.hasStats() && r.outcome().name().startsWith("TIMEOUT")) {
+      /* Build one StatsCaptureRequest per target, all sharing the same execution parameters.
+       * resolvePlannerBatch() will issue a single batch store read, apply stale-before-sync
+       * ordering, and only block on sync capture for targets still missing after the stale check.
+       * This replaces the old N×resolve() loop that made one store read + optional sync per target. */
+      List<StatsCaptureRequest> requests = new ArrayList<>(targets.size());
+      for (PlannerStatsTargetNeed target : targets) {
+        requests.add(
+            StatsCaptureRequest.builder(tableId, snapshotId, target.target())
+                .columnSelectors(Set.of())
+                .requestedKinds(Set.of())
+                .executionMode(
+                    policy.allowSyncCapture() ? StatsExecutionMode.SYNC : StatsExecutionMode.ASYNC)
+                .connectorType(connectorType)
+                .latencyBudget(
+                    Optional.empty()) /* managed via deadlineNanos in resolvePlannerBatch */
+                .samplingRequested(target.requestsAnySketchPayload())
+                .build());
+      }
+
+      java.util.Map<String, StatsResolutionResult> resolved =
+          statsOrchestrator.resolvePlannerBatch(requests, policy.staleOk(), deadlineNanos);
+
+      Map<String, PlannerTargetStatsLookupResult> byTarget = new LinkedHashMap<>(targets.size());
+      for (PlannerStatsTargetNeed target : targets) {
+        StatsResolutionResult r = resolved.get(target.storageId());
+        if (r != null && !r.hasStats() && r.outcome() == StatsSyncOutcome.TIMEOUT) {
           LOG.debugf(
               "planner_stats sync_timeout table=%s target=%s detail=%s",
-              requests.get(i).tableId(),
-              StatsTargetIdentity.storageId(requests.get(i).target()),
-              r.outcomeDetail());
+              tableId, target.storageId(), r.outcomeDetail());
         }
-        byTarget.put(
-            StatsTargetIdentity.storageId(requests.get(i).target()),
-            r != null ? r.stats() : Optional.empty());
+        byTarget.put(target.storageId(), PlannerTargetStatsLookupResult.fromResolution(r));
       }
       return Map.copyOf(byTarget);
     };
@@ -292,9 +336,12 @@ public class PlannerStatsBundleService {
     try {
       List<ResourceId> tableIds =
           diagnostics.time(
-              "normalize_request", () -> normalizeConstraintsRequest(correlationId, safeRequest));
+              "normalize_request",
+              () -> requestNormalizer.normalizeConstraints(correlationId, safeRequest));
       diagnostics.put("requested_tables", tableIds.size());
       diagnostics.put("max_results_per_chunk", maxResultsPerChunk);
+      PlannerConstraintServingPolicy servingPolicy =
+          PlannerConstraintServingPolicy.from(safeRequest.getOptions());
       Set<String> requestedRelationKeys = new LinkedHashSet<>();
       for (ResourceId tableId : tableIds) {
         requestedRelationKeys.add(RequestScopeConstraintPruner.relationKey(tableId));
@@ -313,12 +360,13 @@ public class PlannerStatsBundleService {
               () -> {
                 TableConstraintsIterator iterator =
                     new TableConstraintsIterator(
-                        ctx.getQueryId(),
+                        ctx == null ? "" : ctx.getQueryId(),
                         tableIds,
                         pinLookup,
                         constraintProvider,
                         constraintPruner,
                         maxResultsPerChunk,
+                        servingPolicy,
                         diagnostics,
                         startedNanos);
                 return Multi.createFrom()
@@ -333,103 +381,6 @@ public class PlannerStatsBundleService {
       diagnostics.emit("floecat.planner_constraints.summary");
       throw e;
     }
-  }
-
-  private NormalizedRequest normalizeRequest(
-      String correlationId, FetchTargetStatsRequest request) {
-    if (request.getTablesCount() == 0) {
-      throw GrpcErrors.invalidArgument(
-          correlationId, PLANNER_STATS_REQUEST_TABLES_MISSING, Map.of());
-    }
-    if (request.getTablesCount() > maxTables) {
-      throw GrpcErrors.invalidArgument(
-          correlationId,
-          PLANNER_STATS_REQUEST_TABLES_LIMIT,
-          Map.of("max_tables", Integer.toString(maxTables)));
-    }
-
-    List<TableRequest> normalized = new ArrayList<>(request.getTablesCount());
-    long totalTargets = 0;
-
-    for (int tableIndex = 0; tableIndex < request.getTablesCount(); tableIndex++) {
-      TableTargetStatsRequest table = request.getTables(tableIndex);
-      if (!table.hasTableId()) {
-        throw GrpcErrors.invalidArgument(
-            correlationId,
-            PLANNER_STATS_REQUEST_TABLE_ID_MISSING,
-            Map.of("table_index", Integer.toString(tableIndex)));
-      }
-      if (table.getTargetsCount() == 0) {
-        throw GrpcErrors.invalidArgument(
-            correlationId,
-            PLANNER_STATS_REQUEST_TARGETS_MISSING,
-            Map.of("table_id", table.getTableId().getId()));
-      }
-
-      List<StatsTarget> deduped =
-          dedupeTargets(correlationId, table.getTableId().getId(), table.getTargetsList());
-      if (deduped.isEmpty()) {
-        throw GrpcErrors.invalidArgument(
-            correlationId,
-            PLANNER_STATS_REQUEST_TARGETS_MISSING,
-            Map.of("table_id", table.getTableId().getId()));
-      }
-
-      normalized.add(new TableRequest(table.getTableId(), List.copyOf(deduped)));
-      totalTargets += deduped.size();
-      if (totalTargets > maxTargets) {
-        throw GrpcErrors.invalidArgument(
-            correlationId,
-            PLANNER_STATS_REQUEST_TARGETS_LIMIT,
-            Map.of("max_targets", Integer.toString(maxTargets)));
-      }
-    }
-
-    return new NormalizedRequest(List.copyOf(normalized), totalTargets);
-  }
-
-  private List<ResourceId> normalizeConstraintsRequest(
-      String correlationId, FetchTableConstraintsRequest request) {
-    if (request.getTableIdsCount() == 0) {
-      throw GrpcErrors.invalidArgument(
-          correlationId, PLANNER_STATS_REQUEST_TABLES_MISSING, Map.of());
-    }
-    if (request.getTableIdsCount() > maxTables) {
-      throw GrpcErrors.invalidArgument(
-          correlationId,
-          PLANNER_STATS_REQUEST_TABLES_LIMIT,
-          Map.of("max_tables", Integer.toString(maxTables)));
-    }
-
-    Map<String, ResourceId> deduped = new LinkedHashMap<>(request.getTableIdsCount());
-    for (int tableIndex = 0; tableIndex < request.getTableIdsCount(); tableIndex++) {
-      ResourceId tableId = request.getTableIds(tableIndex);
-      if (tableId.getId().isBlank()) {
-        throw GrpcErrors.invalidArgument(
-            correlationId,
-            PLANNER_STATS_REQUEST_TABLE_ID_MISSING,
-            Map.of("table_index", Integer.toString(tableIndex)));
-      }
-      deduped.putIfAbsent(RequestScopeConstraintPruner.relationKey(tableId), tableId);
-    }
-    return List.copyOf(deduped.values());
-  }
-
-  private static List<StatsTarget> dedupeTargets(
-      String correlationId, String tableId, List<StatsTarget> targets) {
-    Map<String, StatsTarget> deduped = new LinkedHashMap<>(targets.size());
-    for (StatsTarget target : targets) {
-      if (target == null || target.getTargetCase() == StatsTarget.TargetCase.TARGET_NOT_SET) {
-        throw GrpcErrors.invalidArgument(
-            correlationId, PLANNER_STATS_REQUEST_TARGET_INVALID, Map.of());
-      }
-      if (target.hasColumn() && target.getColumn().getColumnId() <= 0) {
-        throw GrpcErrors.invalidArgument(
-            correlationId, PLANNER_STATS_REQUEST_TARGET_INVALID, Map.of());
-      }
-      deduped.putIfAbsent(StatsTargetIdentity.storageId(target), target);
-    }
-    return new ArrayList<>(deduped.values());
   }
 
   // ---------------------------------------------------------------------------
@@ -469,26 +420,38 @@ public class PlannerStatsBundleService {
       try {
         C chunk;
         if (!headerEmitted) {
-          chunk = header();
           headerEmitted = true;
+          chunk = header();
         } else if (hasMoreWork()) {
           chunk = batch();
-          chunks++;
         } else if (!endEmitted) {
           endEmitted = true;
           chunk = end();
-          messages++;
-          emitSummary("completed", null);
-          return chunk;
+          emitSummary("success", null);
         } else {
           throw new NoSuchElementException();
         }
+        chunks++;
         messages++;
         return chunk;
       } catch (RuntimeException | Error e) {
         emitSummary("failed", e);
         throw e;
       }
+    }
+
+    protected abstract C header();
+
+    protected abstract C batch();
+
+    protected abstract C end();
+
+    protected abstract boolean hasMoreWork();
+
+    protected void putSummaryCounters() {}
+
+    protected void emitCancelledSummary() {
+      emitSummary("cancelled", null);
     }
 
     private void emitSummary(String outcome, Throwable error) {
@@ -500,24 +463,13 @@ public class PlannerStatsBundleService {
       if (error != null) {
         diagnostics.put("error", error.getClass().getSimpleName());
       }
+      putSummaryCounters();
       diagnostics.put("chunks", chunks);
       diagnostics.put("messages", messages);
       diagnostics.nanos("total", System.nanoTime() - startedNanos);
       diagnostics.nanos("stream", System.nanoTime() - streamStartedNanos);
       diagnostics.emit(eventName);
     }
-
-    void emitCancelledSummary() {
-      emitSummary("cancelled", null);
-    }
-
-    protected abstract C header();
-
-    protected abstract C batch();
-
-    protected abstract C end();
-
-    protected abstract boolean hasMoreWork();
   }
 
   // ---------------------------------------------------------------------------
@@ -537,15 +489,27 @@ public class PlannerStatsBundleService {
     private final long requestedTables;
     private final long requestedTargets;
 
+    /** Targets already dropped by the target-count cap in normalizeRequest(). */
+    private final long preOmittedByBudget;
+
+    private final PlannerStatsServingPolicy servingPolicy;
+    private final long requestDeadlineNanos;
+
     private int nextTableIndex = 0;
     private long returnedTargets = 0;
     private long notFoundTargets = 0;
     private long errorTargets = 0;
+    private long omittedByBudget = 0;
+    private long partialTargets = 0;
+    private long staleTargets = 0;
+    private long responseBytes = 0;
+    private long constraintBytes = 0;
+    private boolean byteBudgetExhausted = false;
 
     private TargetStatsIterator(
         String queryId,
         String correlationId,
-        List<TableRequest> tables,
+        List<PlannerStatsTableRequest> tables,
         SnapshotPinLookup pinLookup,
         ConstraintProvider constraintProvider,
         boolean includeConstraints,
@@ -554,6 +518,9 @@ public class PlannerStatsBundleService {
         int maxResultsPerChunk,
         long requestedTables,
         long requestedTargets,
+        long preOmittedByBudget,
+        PlannerStatsServingPolicy servingPolicy,
+        long requestDeadlineNanos,
         PhaseDiagnostics diagnostics,
         long startedNanos) {
       super(queryId, diagnostics, "floecat.planner_target_stats.summary", startedNanos);
@@ -565,20 +532,31 @@ public class PlannerStatsBundleService {
       this.maxResultsPerChunk = maxResultsPerChunk;
       this.requestedTables = requestedTables;
       this.requestedTargets = requestedTargets;
+      this.preOmittedByBudget = preOmittedByBudget;
+      this.servingPolicy = servingPolicy;
+      this.requestDeadlineNanos = requestDeadlineNanos;
+      /* omittedByBudget starts at 0; pre-omitted targets are drained via hasPreOmitted()
+       * and each increments omittedByBudget exactly once in processNextTarget(). */
+      this.omittedByBudget = 0;
       Set<String> requestedRelationKeys = new LinkedHashSet<>();
       Map<String, Set<Long>> requestedColumnsByRelationKey = new LinkedHashMap<>();
       this.tableWorks = new ArrayList<>(tables.size());
-      for (TableRequest table : tables) {
+      for (PlannerStatsTableRequest table : tables) {
         String key = RequestScopeConstraintPruner.relationKey(table.tableId());
         requestedRelationKeys.add(key);
         Set<Long> requestedColumnIds = new LinkedHashSet<>();
-        for (StatsTarget target : table.targets()) {
-          if (target.hasColumn()) {
-            requestedColumnIds.add(target.getColumn().getColumnId());
+        for (PlannerStatsTargetNeed target : table.targets()) {
+          if (target.target().hasColumn()) {
+            requestedColumnIds.add(target.target().getColumn().getColumnId());
           }
         }
         requestedColumnsByRelationKey.put(key, requestedColumnIds);
-        this.tableWorks.add(new TableWork(table.tableId(), table.targets()));
+        this.tableWorks.add(
+            new TableWork(
+                table.tableId(),
+                table.targets(),
+                table.omittedTargets(),
+                table.snapshotOverride()));
       }
       this.constraintPruner =
           constraintPrunerFactory.apply(
@@ -591,7 +569,7 @@ public class PlannerStatsBundleService {
 
     @Override
     protected boolean hasMoreWork() {
-      return nextTableIndex < tableWorks.size();
+      return nextTableIndex < tableWorks.size() && (!byteBudgetExhausted || includeConstraints);
     }
 
     @Override
@@ -607,18 +585,22 @@ public class PlannerStatsBundleService {
     protected TargetStatsBundleChunk batch() {
       List<TargetStatsResult> out = new ArrayList<>(Math.min(maxResultsPerChunk, 16));
       List<TableConstraintsResult> constraintsOut = new ArrayList<>();
-      try (var ignored = diagnostics.timer("batch_build")) {
-        while (out.size() < maxResultsPerChunk && hasMoreWork()) {
-          TableWork work = tableWorks.get(nextTableIndex);
-          TargetStatsResult result = processNextTarget(work);
+      while (out.size() + constraintsOut.size() < maxResultsPerChunk && hasMoreWork()) {
+        TableWork work = tableWorks.get(nextTableIndex);
+        TargetStatsResult result = work.hasMoreTargets() ? processNextTarget(work) : null;
+        if (result != null) {
           out.add(result);
-          if (includeConstraints && !work.constraintsEmitted()) {
-            constraintsOut.add(processConstraints(work));
-            work.markConstraintsEmitted();
-          }
-          if (!work.hasMoreTargets()) {
-            nextTableIndex++;
-          }
+        }
+        /* Emit constraints for this table even when target stats are omitted by budget.
+         * Constraint bytes are charged to max_constraint_bytes, not max_response_bytes,
+         * because constraints are relation metadata rather than column stats payload. */
+        if (includeConstraints && !work.constraintsEmitted()) {
+          var constraintResult = chargeConstraintResult(processConstraints(work));
+          constraintsOut.add(constraintResult);
+          work.markConstraintsEmitted();
+        }
+        if (!work.hasMoreTargets()) {
+          nextTableIndex++;
         }
       }
       TargetStatsBatch batch =
@@ -635,18 +617,16 @@ public class PlannerStatsBundleService {
 
     @Override
     protected TargetStatsBundleChunk end() {
-      diagnostics.put("requested_tables", requestedTables);
-      diagnostics.put("requested_targets", requestedTargets);
-      diagnostics.put("returned_targets", returnedTargets);
-      diagnostics.put("not_found_targets", notFoundTargets);
-      diagnostics.put("error_targets", errorTargets);
       TargetStatsBundleEnd end =
           TargetStatsBundleEnd.newBuilder()
               .setRequestedTables(requestedTables)
-              .setRequestedTargets(requestedTargets)
+              .setRequestedTargets(requestedTargets + preOmittedByBudget)
               .setReturnedTargets(returnedTargets)
               .setNotFoundTargets(notFoundTargets)
               .setErrorTargets(errorTargets)
+              .setOmittedByBudget(omittedByBudget)
+              .setPartialTargets(partialTargets)
+              .setStaleTargets(staleTargets)
               .build();
       return TargetStatsBundleChunk.newBuilder()
           .setQueryId(queryId)
@@ -655,51 +635,200 @@ public class PlannerStatsBundleService {
           .build();
     }
 
+    @Override
+    protected void putSummaryCounters() {
+      diagnostics.put("requested_tables", requestedTables);
+      diagnostics.put("requested_targets", requestedTargets);
+      diagnostics.put("returned_targets", returnedTargets);
+      diagnostics.put("not_found_targets", notFoundTargets);
+      diagnostics.put("error_targets", errorTargets);
+      diagnostics.put("omitted_by_budget", omittedByBudget);
+      diagnostics.put("partial_targets", partialTargets);
+      diagnostics.put("stale_targets", staleTargets);
+      diagnostics.put("response_bytes", responseBytes);
+      diagnostics.put("constraint_bytes", constraintBytes);
+    }
+
     private TargetStatsResult processNextTarget(TableWork work) {
-      StatsTarget target = work.targetAt(work.targetIndex());
+      /* Drain pre-omitted (count-cap) targets first with explicit per-target status. */
+      if (work.hasPreOmitted()) {
+        TargetStatsResult omitted =
+            omittedByBudgetResult(work.tableId, work.peekPreOmitted().target());
+        work.nextPreOmitted(); /* advance before omitAllRemainingByBudget for correct count */
+        omittedByBudget++;
+        if (!tryCharge(omitted)) {
+          /* Hyper-tight cap: even the ~50-byte accounting result doesn't fit. */
+          omitAllRemainingByBudget();
+          return null;
+        }
+        return omitted;
+      }
+
+      PlannerStatsTargetNeed need = work.targetAt(work.targetIndex());
+      StatsTarget target = need.target();
       ResourceId tableId = work.tableId;
-      OptionalLong snapshot = diagnostics.time("pin_resolve", () -> resolveSnapshot(work));
+
+      OptionalLong snapshot = resolveSnapshotTimed(work);
       TargetStatsResult result;
+      TargetResultCounter counter = TargetResultCounter.NONE;
       if (snapshot.isEmpty()) {
-        errorTargets++;
         result = pinMissingResult(tableId, target);
+        counter = TargetResultCounter.ERROR;
       } else {
         try {
-          diagnostics.time(
-              "target_batch_lookup",
-              () -> work.ensureTargetBatchLoaded(targetStatsLookup, snapshot.getAsLong()));
-          Optional<TargetStatsRecord> recordOpt = work.lookupTarget(target);
-          if (recordOpt.isPresent()) {
-            returnedTargets++;
-            result = buildFoundResult(recordOpt.get());
+          loadTargetBatchTimed(work, snapshot.getAsLong());
+          PlannerTargetStatsLookupResult lookupResult = work.lookupTarget(need.storageId());
+          if (lookupResult.stats().isPresent()) {
+            PlannerStatsResultMaterializer.Materialized materialized =
+                PlannerStatsResultMaterializer.materialize(need, lookupResult);
+            StatsResultStatus status = materialized.status();
+            counter =
+                switch (status) {
+                  case STATS_RESULT_HIT_STALE -> TargetResultCounter.STALE;
+                  case STATS_RESULT_HIT_PARTIAL -> TargetResultCounter.PARTIAL;
+                  default -> TargetResultCounter.RETURNED;
+                };
+            /* A result can be simultaneously stale AND partial; the primary status is STALE
+             * but partialTargets must also be incremented so the end chunk is accurate. */
+            if (status == StatsResultStatus.STATS_RESULT_HIT_STALE
+                && materialized.returnedStats().stream()
+                    .anyMatch(s -> s.getStatus() != StatsResultStatus.STATS_RESULT_HIT_COMPLETE)) {
+              partialTargets++;
+            }
+            result = PlannerStatsResultMaterializer.buildFoundResult(materialized);
           } else {
-            notFoundTargets++;
-            result =
-                notFoundResult(
-                    tableId, target, TARGET_MISSING_CODE, "target stats missing", snapshot);
+            if (lookupResult.outcome() == StatsSyncOutcome.FAILED) {
+              result =
+                  buildErrorResult(
+                      tableId,
+                      target,
+                      snapshot.getAsLong(),
+                      new RuntimeException(lookupResult.outcomeDetail()));
+              counter = TargetResultCounter.ERROR;
+            } else if (resultStatusForMiss(lookupResult)
+                == StatsResultStatus.STATS_RESULT_SYNC_CAPTURE_TIMEOUT) {
+              result = timeoutResult(tableId, target, snapshot, lookupResult.outcomeDetail());
+              counter = TargetResultCounter.ERROR;
+            } else {
+              result =
+                  notFoundResult(
+                      tableId, target, TARGET_MISSING_CODE, missingMessage(lookupResult), snapshot);
+              counter = TargetResultCounter.NOT_FOUND;
+            }
           }
         } catch (RuntimeException e) {
-          errorTargets++;
           result = buildErrorResult(tableId, target, snapshot.getAsLong(), e);
+          counter = TargetResultCounter.ERROR;
           LOG.debugf(
               e, "target stats lookup failed for %s snapshot %s", tableId, snapshot.getAsLong());
         }
       }
+      if (!tryCharge(result)) {
+        TargetStatsResult omitted = omittedByBudgetResult(tableId, target);
+        /* Advance first so omitAllRemainingByBudget's remainingTargetCount() excludes
+         * the current target (which we're already accounting for with omittedByBudget++). */
+        work.advanceTarget();
+        omittedByBudget++;
+        if (!tryCharge(omitted)) {
+          /* Hyper-tight cap: even the ~50-byte accounting result doesn't fit. */
+          omitAllRemainingByBudget();
+          return null;
+        }
+        /* Emit OMITTED_BY_BUDGET and batch-omit all remaining (avoids looping). */
+        omitAllRemainingByBudget();
+        return omitted;
+      }
+      incrementCounter(counter);
       work.advanceTarget();
       return result;
     }
 
+    private void incrementCounter(TargetResultCounter counter) {
+      switch (counter) {
+        case RETURNED -> returnedTargets++;
+        case NOT_FOUND -> notFoundTargets++;
+        case ERROR -> errorTargets++;
+        case PARTIAL -> {
+          returnedTargets++;
+          partialTargets++;
+        }
+        case STALE -> {
+          returnedTargets++;
+          staleTargets++;
+        }
+        case NONE -> {}
+      }
+    }
+
+    private boolean tryCharge(TargetStatsResult result) {
+      if (servingPolicy.maxResponseBytes() <= 0) {
+        return true;
+      }
+      // Unlike the constraint budget, the response budget charges every emitted result (incl.
+      // NOT_FOUND envelopes) for wire-size safety.
+      int candidateBytes = result.getSerializedSize() + RESULT_FRAMING_BYTES;
+      if (responseBytes + candidateBytes > servingPolicy.maxResponseBytes()) {
+        return false;
+      }
+      responseBytes += candidateBytes;
+      return true;
+    }
+
+    private void omitAllRemainingByBudget() {
+      omittedByBudget += remainingTargetCount();
+      byteBudgetExhausted = true;
+      for (int i = nextTableIndex; i < tableWorks.size(); i++) {
+        tableWorks.get(i).markTargetsOmitted();
+      }
+    }
+
+    private long remainingTargetCount() {
+      long remaining = 0;
+      for (int i = nextTableIndex; i < tableWorks.size(); i++) {
+        remaining += tableWorks.get(i).remainingTargetCount();
+      }
+      return remaining;
+    }
+
     private TableConstraintsResult processConstraints(TableWork work) {
-      return diagnostics
-          .time(
-              "constraint_resolve",
-              () ->
-                  resolveConstraintResult(
-                      work.tableId, resolveSnapshot(work), constraintProvider, constraintPruner))
-          .result();
+      return resolveConstraintsTimed(work).result();
+    }
+
+    private TableConstraintsResult chargeConstraintResult(TableConstraintsResult result) {
+      int charge =
+          constraintChargeBytes(result, constraintBytes, servingPolicy.maxConstraintBytes());
+      if (charge < 0) {
+        return constraintOmittedByBudgetResult(result.getTableId());
+      }
+      constraintBytes += charge;
+      return result;
+    }
+
+    private OptionalLong resolveSnapshotTimed(TableWork work) {
+      return diagnostics.time("pin_resolve", () -> resolveSnapshot(work));
+    }
+
+    private void loadTargetBatchTimed(TableWork work, long snapshotId) {
+      diagnostics.time(
+          "target_batch_lookup",
+          () ->
+              work.ensureTargetBatchLoaded(
+                  targetStatsLookup, snapshotId, servingPolicy, requestDeadlineNanos));
+    }
+
+    private ConstraintResolution resolveConstraintsTimed(TableWork work) {
+      return diagnostics.time(
+          "constraint_resolve",
+          () ->
+              resolveConstraintResult(
+                  work.tableId, resolveSnapshot(work), constraintProvider, constraintPruner));
     }
 
     private OptionalLong resolveSnapshot(TableWork work) {
+      /* Explicit snapshot_id in the request takes precedence over the query_id pin. */
+      if (work.snapshotOverride.isPresent()) {
+        return work.snapshotOverride;
+      }
       if (work.pinResolved) {
         return work.pinnedSnapshot;
       }
@@ -708,14 +837,26 @@ public class PlannerStatsBundleService {
       return work.pinnedSnapshot;
     }
 
-    private static TargetStatsResult buildFoundResult(TargetStatsRecord stats) {
+    private static TargetStatsResult omittedByBudgetResult(ResourceId tableId, StatsTarget target) {
       return TargetStatsResult.newBuilder()
-          .setTableId(stats.getTableId())
-          .setSnapshotId(stats.getSnapshotId())
-          .setTarget(stats.getTarget())
-          .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND)
-          .setStats(stats)
+          .setTableId(tableId)
+          .setTarget(target)
+          .setStatus(StatsResultStatus.STATS_RESULT_OMITTED_BY_BUDGET)
           .build();
+    }
+
+    private static StatsResultStatus resultStatusForMiss(
+        PlannerTargetStatsLookupResult lookupResult) {
+      return lookupResult.outcome() == StatsSyncOutcome.TIMEOUT
+          ? StatsResultStatus.STATS_RESULT_SYNC_CAPTURE_TIMEOUT
+          : StatsResultStatus.STATS_RESULT_NOT_FOUND;
+    }
+
+    private static String missingMessage(PlannerTargetStatsLookupResult lookupResult) {
+      if (lookupResult.outcomeDetail() == null || lookupResult.outcomeDetail().isBlank()) {
+        return "target stats missing";
+      }
+      return "target stats missing: " + lookupResult.outcomeDetail();
     }
 
     private TargetStatsResult buildErrorResult(
@@ -730,7 +871,7 @@ public class PlannerStatsBundleService {
           .setTableId(tableId)
           .setSnapshotId(snapshotId)
           .setTarget(target)
-          .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR)
+          .setStatus(StatsResultStatus.STATS_RESULT_ERROR)
           .setFailure(failure.build())
           .build();
     }
@@ -749,7 +890,26 @@ public class PlannerStatsBundleService {
           TargetStatsResult.newBuilder()
               .setTableId(tableId)
               .setTarget(target)
-              .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_NOT_FOUND)
+              .setStatus(StatsResultStatus.STATS_RESULT_NOT_FOUND)
+              .setFailure(failure.build());
+      snapshotId.ifPresent(builder::setSnapshotId);
+      return builder.build();
+    }
+
+    private TargetStatsResult timeoutResult(
+        ResourceId tableId, StatsTarget target, OptionalLong snapshotId, String detail) {
+      BundleFailure.Builder failure =
+          failureBase(tableId, TARGET_MISSING_CODE, "sync stats capture timed out")
+              .putDetails("target", StatsTargetIdentity.storageId(target));
+      snapshotId.ifPresent(id -> failure.putDetails("snapshot_id", Long.toString(id)));
+      if (detail != null && !detail.isBlank()) {
+        failure.putDetails("detail", detail);
+      }
+      TargetStatsResult.Builder builder =
+          TargetStatsResult.newBuilder()
+              .setTableId(tableId)
+              .setTarget(target)
+              .setStatus(StatsResultStatus.STATS_RESULT_SYNC_CAPTURE_TIMEOUT)
               .setFailure(failure.build());
       snapshotId.ifPresent(builder::setSnapshotId);
       return builder.build();
@@ -763,7 +923,7 @@ public class PlannerStatsBundleService {
       return TargetStatsResult.newBuilder()
           .setTableId(tableId)
           .setTarget(target)
-          .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR)
+          .setStatus(StatsResultStatus.STATS_RESULT_ERROR)
           .setFailure(failure)
           .build();
     }
@@ -781,11 +941,14 @@ public class PlannerStatsBundleService {
     private final ConstraintProvider constraintProvider;
     private final ConstraintPruner constraintPruner;
     private final int maxResultsPerChunk;
+    private final PlannerConstraintServingPolicy servingPolicy;
 
     private int nextTableIndex = 0;
     private long returnedTables = 0;
     private long notFoundTables = 0;
     private long errorTables = 0;
+    private long omittedTables = 0;
+    private long constraintBytes = 0;
 
     private TableConstraintsIterator(
         String queryId,
@@ -794,6 +957,7 @@ public class PlannerStatsBundleService {
         ConstraintProvider constraintProvider,
         ConstraintPruner constraintPruner,
         int maxResultsPerChunk,
+        PlannerConstraintServingPolicy servingPolicy,
         PhaseDiagnostics diagnostics,
         long startedNanos) {
       super(queryId, diagnostics, "floecat.planner_constraints.summary", startedNanos);
@@ -802,6 +966,7 @@ public class PlannerStatsBundleService {
       this.constraintProvider = constraintProvider;
       this.constraintPruner = constraintPruner;
       this.maxResultsPerChunk = maxResultsPerChunk;
+      this.servingPolicy = servingPolicy;
     }
 
     @Override
@@ -821,10 +986,8 @@ public class PlannerStatsBundleService {
     @Override
     protected TableConstraintsBundleChunk batch() {
       List<TableConstraintsResult> out = new ArrayList<>(Math.min(maxResultsPerChunk, 16));
-      try (var ignored = diagnostics.timer("batch_build")) {
-        while (out.size() < maxResultsPerChunk && nextTableIndex < tableIds.size()) {
-          out.add(processTable(tableIds.get(nextTableIndex++)));
-        }
+      while (out.size() < maxResultsPerChunk && nextTableIndex < tableIds.size()) {
+        out.add(processTable(tableIds.get(nextTableIndex++)));
       }
       TableConstraintsBatch batch =
           TableConstraintsBatch.newBuilder().addAllConstraints(out).build();
@@ -837,16 +1000,13 @@ public class PlannerStatsBundleService {
 
     @Override
     protected TableConstraintsBundleChunk end() {
-      diagnostics.put("requested_tables", tableIds.size());
-      diagnostics.put("returned_tables", returnedTables);
-      diagnostics.put("not_found_tables", notFoundTables);
-      diagnostics.put("error_tables", errorTables);
       TableConstraintsBundleEnd end =
           TableConstraintsBundleEnd.newBuilder()
               .setRequestedTables(tableIds.size())
               .setReturnedTables(returnedTables)
               .setNotFoundTables(notFoundTables)
               .setErrorTables(errorTables)
+              .setOmittedByBudget(omittedTables)
               .build();
       return TableConstraintsBundleChunk.newBuilder()
           .setQueryId(queryId)
@@ -855,22 +1015,50 @@ public class PlannerStatsBundleService {
           .build();
     }
 
+    @Override
+    protected void putSummaryCounters() {
+      diagnostics.put("requested_tables", tableIds.size());
+      diagnostics.put("returned_tables", returnedTables);
+      diagnostics.put("not_found_tables", notFoundTables);
+      diagnostics.put("error_tables", errorTables);
+      diagnostics.put("omitted_by_budget", omittedTables);
+      diagnostics.put("constraint_bytes", constraintBytes);
+    }
+
     private TableConstraintsResult processTable(ResourceId tableId) {
-      ConstraintResolution result =
-          diagnostics.time(
-              "constraint_resolve",
-              () ->
-                  resolveConstraintResult(
-                      tableId,
-                      diagnostics.time("pin_resolve", () -> pinLookup.pinnedSnapshotId(tableId)),
-                      constraintProvider,
-                      constraintPruner));
+      ConstraintResolution result = chargeConstraintResult(resolveConstraintsTimed(tableId));
       switch (result.status()) {
         case FOUND -> returnedTables++;
         case NOT_FOUND -> notFoundTables++;
         case ERROR -> errorTables++;
+        case OMITTED -> omittedTables++;
       }
       return result.result();
+    }
+
+    private ConstraintResolution chargeConstraintResult(ConstraintResolution resolution) {
+      TableConstraintsResult result = resolution.result();
+      int charge =
+          constraintChargeBytes(result, constraintBytes, servingPolicy.maxConstraintBytes());
+      if (charge < 0) {
+        return new ConstraintResolution(
+            constraintOmittedByBudgetResult(result.getTableId()),
+            ConstraintResolutionStatus.OMITTED);
+      }
+      constraintBytes += charge;
+      return resolution;
+    }
+
+    private ConstraintResolution resolveConstraintsTimed(ResourceId tableId) {
+      return diagnostics.time(
+          "constraint_resolve",
+          () ->
+              resolveConstraintResult(
+                  tableId, resolveSnapshotTimed(tableId), constraintProvider, constraintPruner));
+    }
+
+    private OptionalLong resolveSnapshotTimed(ResourceId tableId) {
+      return diagnostics.time("pin_resolve", () -> pinLookup.pinnedSnapshotId(tableId));
     }
   }
 
@@ -881,7 +1069,17 @@ public class PlannerStatsBundleService {
   private enum ConstraintResolutionStatus {
     FOUND,
     NOT_FOUND,
-    ERROR
+    ERROR,
+    OMITTED
+  }
+
+  private enum TargetResultCounter {
+    NONE,
+    RETURNED,
+    NOT_FOUND,
+    ERROR,
+    PARTIAL,
+    STALE
   }
 
   private record ConstraintResolution(
@@ -1018,30 +1216,95 @@ public class PlannerStatsBundleService {
         .build();
   }
 
+  /** Framing overhead (bytes) budgeted per emitted result, approximating proto/gRPC wrapping. */
+  private static final int RESULT_FRAMING_BYTES = 8;
+
+  /**
+   * Bytes to charge against the constraint byte budget for {@code result}, or {@code -1} if a FOUND
+   * result would exceed {@code maxBytes} (budget exhausted). Only FOUND results carry a constraint
+   * payload; failure envelopes (NOT_FOUND/ERROR/OMITTED) and an uncapped budget ({@code maxBytes <=
+   * 0}) return 0 — they fit and cost nothing, so a run of failing tables cannot starve a later
+   * table's real constraints.
+   */
+  private static int constraintChargeBytes(
+      TableConstraintsResult result, long usedBytes, long maxBytes) {
+    if (maxBytes <= 0 || result.getStatus() != BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND) {
+      return 0;
+    }
+    int candidate = result.getSerializedSize() + RESULT_FRAMING_BYTES;
+    return usedBytes + candidate <= maxBytes ? candidate : -1;
+  }
+
+  private static TableConstraintsResult constraintOmittedByBudgetResult(ResourceId tableId) {
+    BundleFailure failure =
+        failureBase(tableId, CONSTRAINT_OMITTED_CODE, "constraints omitted by budget").build();
+    return TableConstraintsResult.newBuilder()
+        .setTableId(tableId)
+        .setStatus(BundleResultStatus.BUNDLE_RESULT_STATUS_OMITTED_BY_BUDGET)
+        .setFailure(failure)
+        .build();
+  }
+
   // ---------------------------------------------------------------------------
   // Supporting types
   // ---------------------------------------------------------------------------
 
   private static final class TableWork {
     private final ResourceId tableId;
-    private final List<StatsTarget> targets;
+
+    /** Normal targets to serve after pre-omitted are drained. */
+    private final List<PlannerStatsTargetNeed> targets;
+
+    /** Targets dropped by the count cap; drained first as OMITTED_BY_BUDGET. */
+    private final List<PlannerStatsTargetNeed> preOmitted;
+
+    /** Explicit snapshot override from the request; takes precedence over the query_id pin. */
+    private final OptionalLong snapshotOverride;
+
     private OptionalLong pinnedSnapshot = OptionalLong.empty();
     private boolean pinResolved = false;
+
+    /** Cursor into preOmitted — independent of targetIndex. */
+    private int preOmittedIndex = 0;
+
+    /** Cursor into targets. */
     private int targetIndex = 0;
+
     private boolean constraintsEmitted = false;
     private OptionalLong loadedSnapshot = OptionalLong.empty();
-    private Map<String, Optional<TargetStatsRecord>> loadedTargetsById = Map.of();
+    private Map<String, PlannerTargetStatsLookupResult> loadedTargetsById = Map.of();
+    private RuntimeException loadFailure;
 
-    private TableWork(ResourceId tableId, List<StatsTarget> targets) {
+    private TableWork(
+        ResourceId tableId,
+        List<PlannerStatsTargetNeed> targets,
+        List<PlannerStatsTargetNeed> preOmitted,
+        OptionalLong snapshotOverride) {
       this.tableId = tableId;
       this.targets = targets;
+      this.preOmitted = preOmitted;
+      this.snapshotOverride = snapshotOverride != null ? snapshotOverride : OptionalLong.empty();
+    }
+
+    /** True when pre-omitted targets remain to drain. */
+    private boolean hasPreOmitted() {
+      return preOmittedIndex < preOmitted.size();
+    }
+
+    private PlannerStatsTargetNeed peekPreOmitted() {
+      return preOmitted.get(preOmittedIndex);
+    }
+
+    /** Returns the next pre-omitted target and advances the pre-omitted cursor. */
+    private PlannerStatsTargetNeed nextPreOmitted() {
+      return preOmitted.get(preOmittedIndex++);
     }
 
     private boolean hasMoreTargets() {
-      return targetIndex < targets.size();
+      return preOmittedIndex < preOmitted.size() || targetIndex < targets.size();
     }
 
-    private StatsTarget targetAt(int index) {
+    private PlannerStatsTargetNeed targetAt(int index) {
       return targets.get(index);
     }
 
@@ -1050,7 +1313,7 @@ public class PlannerStatsBundleService {
     }
 
     private int targetIndex() {
-      return targetIndex;
+      return targetIndex; /* direct — no arithmetic needed */
     }
 
     private boolean constraintsEmitted() {
@@ -1061,26 +1324,49 @@ public class PlannerStatsBundleService {
       this.constraintsEmitted = true;
     }
 
-    private void ensureTargetBatchLoaded(TargetStatsLookup lookup, long snapshotId) {
+    private void ensureTargetBatchLoaded(
+        TargetStatsLookup lookup,
+        long snapshotId,
+        PlannerStatsServingPolicy servingPolicy,
+        long deadlineNanos) {
       if (loadedSnapshot.isPresent() && loadedSnapshot.getAsLong() == snapshotId) {
+        if (loadFailure != null) {
+          throw loadFailure;
+        }
         return;
       }
-      loadedTargetsById = lookup.get(tableId, snapshotId, targets);
       loadedSnapshot = OptionalLong.of(snapshotId);
+      try {
+        loadedTargetsById = lookup.get(tableId, snapshotId, targets, servingPolicy, deadlineNanos);
+        loadFailure = null;
+      } catch (RuntimeException e) {
+        loadedTargetsById = Map.of();
+        loadFailure = e;
+        throw e;
+      }
     }
 
-    private Optional<TargetStatsRecord> lookupTarget(StatsTarget target) {
+    /**
+     * Look up stats using the pre-computed storageId from the PlannerStatsTargetNeed (avoids
+     * recomputing).
+     */
+    private PlannerTargetStatsLookupResult lookupTarget(String storageId) {
       if (loadedTargetsById == null || loadedTargetsById.isEmpty()) {
-        return Optional.empty();
+        return PlannerTargetStatsLookupResult.skipped("not_loaded");
       }
       return loadedTargetsById.getOrDefault(
-          StatsTargetIdentity.storageId(target), Optional.empty());
+          storageId, PlannerTargetStatsLookupResult.skipped("missing"));
+    }
+
+    private long remainingTargetCount() {
+      return (preOmitted.size() - preOmittedIndex) + (targets.size() - targetIndex);
+    }
+
+    private void markTargetsOmitted() {
+      preOmittedIndex = preOmitted.size();
+      targetIndex = targets.size();
     }
   }
-
-  private record TableRequest(ResourceId tableId, List<StatsTarget> targets) {}
-
-  private record NormalizedRequest(List<TableRequest> tables, long requestedTargets) {}
 
   private PhaseDiagnostics diagnostics(String operation) {
     return observability == null

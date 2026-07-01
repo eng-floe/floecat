@@ -286,7 +286,10 @@ public final class StatsProviderFactory {
           scalar.getLogicalType(),
           scalar.hasMin() ? Optional.of(scalar.getMin()) : Optional.empty(),
           scalar.hasMax() ? Optional.of(scalar.getMax()) : Optional.empty(),
-          scalar.hasNdv() ? scalar.getNdv() : null);
+          scalar.hasNdv() ? scalar.getNdv() : null,
+          scalar.hasAvgWidthBytes()
+              ? OptionalLong.of(scalar.getAvgWidthBytes())
+              : OptionalLong.empty());
     }
 
     private record TableStatsViewImpl(
@@ -313,7 +316,8 @@ public final class StatsProviderFactory {
         String logicalType,
         Optional<String> min,
         Optional<String> max,
-        Ndv ndvValue)
+        Ndv ndvValue,
+        OptionalLong avgWidth)
         implements StatsProvider.ColumnStatsView {
       @Override
       public OptionalLong nullCountValue() {
@@ -338,6 +342,11 @@ public final class StatsProviderFactory {
       @Override
       public Optional<Ndv> ndv() {
         return Optional.ofNullable(ndvValue);
+      }
+
+      @Override
+      public OptionalLong avgWidthBytes() {
+        return avgWidth;
       }
     }
   }

@@ -31,11 +31,13 @@ import ai.floedb.floecat.query.rpc.FetchTableConstraintsRequest;
 import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
+import ai.floedb.floecat.query.rpc.StatsResultStatus;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
 import ai.floedb.floecat.query.rpc.TableConstraintsResult;
-import ai.floedb.floecat.query.rpc.TableTargetStatsRequest;
+import ai.floedb.floecat.query.rpc.TableStatsRequest;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleChunk;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleEnd;
+import ai.floedb.floecat.query.rpc.TargetStatsNeed;
 import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.query.catalog.PlannerStatsBundleService;
@@ -297,7 +299,8 @@ class PlannerStatsServiceImplTest {
 
     List<TargetStatsResult> results = flatten(chunks);
     assertEquals(1, results.size());
-    assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND, results.get(0).getStatus());
+    assertEquals(StatsResultStatus.STATS_RESULT_HIT_COMPLETE, results.get(0).getStatus());
+    assertEquals(1L, results.get(0).getTarget().getColumn().getColumnId());
 
     TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
     assertEquals(1L, end.getReturnedTargets());
@@ -387,15 +390,18 @@ class PlannerStatsServiceImplTest {
         .build();
   }
 
-  private static TableTargetStatsRequest tableRequest(ResourceId tableId, List<Long> columnIds) {
-    List<StatsTarget> targets = new ArrayList<>(columnIds.size());
-    for (Long columnId : columnIds) {
-      targets.add(
-          StatsTarget.newBuilder()
-              .setColumn(ColumnStatsTarget.newBuilder().setColumnId(columnId).build())
+  private static TableStatsRequest tableRequest(ResourceId tableId, List<Long> columnIds) {
+    List<TargetStatsNeed> needs = new ArrayList<>(columnIds.size());
+    for (int i = 0; i < columnIds.size(); i++) {
+      needs.add(
+          TargetStatsNeed.newBuilder()
+              .setTarget(
+                  StatsTarget.newBuilder()
+                      .setColumn(ColumnStatsTarget.newBuilder().setColumnId(columnIds.get(i))))
+              .setPriority(i + 1)
               .build());
     }
-    return TableTargetStatsRequest.newBuilder().setTableId(tableId).addAllTargets(targets).build();
+    return TableStatsRequest.newBuilder().setTableId(tableId).addAllTargets(needs).build();
   }
 
   private static ScalarStats sampleStats(ResourceId tableId, long snapshotId, long columnId) {
