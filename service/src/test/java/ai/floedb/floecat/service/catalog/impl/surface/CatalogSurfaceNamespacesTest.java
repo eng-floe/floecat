@@ -119,6 +119,23 @@ class CatalogSurfaceNamespacesTest {
   }
 
   @Test
+  void listNamespacesRejectsMalformedServicePageToken() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                surface.listNamespaces(
+                    ListNamespacesRequest.newBuilder()
+                        .setCatalogId(catalogId)
+                        .setPage(PageRequest.newBuilder().setPageToken("ns:%%%"))
+                        .build(),
+                    ACCOUNT_ID,
+                    CORRELATION_ID));
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+  }
+
+  @Test
   void getNamespaceReadsSystemNamespaceFromCatalogSurface() {
     ResourceId namespaceId = systemNamespaceId("information_schema");
     overlay.addNode(namespaceNode(namespaceId, "information_schema", List.of()));

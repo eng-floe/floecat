@@ -37,7 +37,7 @@ import java.util.Map;
 import java.util.Objects;
 
 /** Catalog Surface policy for view RPCs. */
-public class CatalogSurfaceViews {
+public final class CatalogSurfaceViews {
 
   private static final String VIEW_TOKEN_PREFIX = "view:";
 

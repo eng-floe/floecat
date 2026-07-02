@@ -147,6 +147,23 @@ class CatalogSurfaceViewsTest {
   }
 
   @Test
+  void listViewsRejectsMalformedServicePageToken() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                surface.listViews(
+                    ListViewsRequest.newBuilder()
+                        .setNamespaceId(namespaceId)
+                        .setPage(PageRequest.newBuilder().setPageToken("view:%%%"))
+                        .build(),
+                    ACCOUNT_ID,
+                    CORRELATION_ID));
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+  }
+
+  @Test
   void getViewReadsSystemViewFromCatalogSurfaceWithoutRepoLookup() {
     var systemView = viewNode("engine_views", GraphNodeOrigin.SYSTEM);
     overlay.addRelation(namespaceId, systemView);

@@ -46,7 +46,9 @@ final class CatalogSurfaceRelationPager {
 
     final boolean isServiceToken = pageToken != null && pageToken.startsWith(serviceTokenPrefix);
     final String resumeAfterRel =
-        isServiceToken ? CatalogSurfaceSupport.decodeToken(serviceTokenPrefix, pageToken) : "";
+        isServiceToken
+            ? CatalogSurfaceSupport.decodeToken(serviceTokenPrefix, pageToken, corr)
+            : "";
     String repoCursor = isServiceToken ? "" : pageToken;
 
     var out = new ArrayList<P>(want);

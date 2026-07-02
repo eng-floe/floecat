@@ -39,7 +39,7 @@ import java.util.Map;
 import java.util.Optional;
 
 /** Catalog Surface policy for catalog RPCs. */
-public class CatalogSurfaceCatalogs {
+public final class CatalogSurfaceCatalogs {
 
   private static final String PAGE_TOKEN_PREFIX = "svc:catalogs:v1:";
   private static final String PAGE_TOKEN_SYSTEM_PAYLOAD = "s";

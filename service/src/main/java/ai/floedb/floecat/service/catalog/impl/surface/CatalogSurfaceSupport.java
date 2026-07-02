@@ -121,7 +121,7 @@ final class CatalogSurfaceSupport {
             .encodeToString(resumeAfterRel.getBytes(StandardCharsets.UTF_8));
   }
 
-  static String decodeToken(String prefix, String token) {
+  static String decodeToken(String prefix, String token, String corr) {
     if (token == null || token.isBlank() || !token.startsWith(prefix)) {
       return "";
     }
@@ -129,7 +129,12 @@ final class CatalogSurfaceSupport {
       return "";
     }
     var s = token.substring(prefix.length());
-    var bytes = Base64.getUrlDecoder().decode(s);
+    final byte[] bytes;
+    try {
+      bytes = Base64.getUrlDecoder().decode(s);
+    } catch (IllegalArgumentException badToken) {
+      throw GrpcErrors.invalidArgument(corr, PAGE_TOKEN_INVALID, Map.of("page_token", token));
+    }
     return new String(bytes, StandardCharsets.UTF_8);
   }
 }

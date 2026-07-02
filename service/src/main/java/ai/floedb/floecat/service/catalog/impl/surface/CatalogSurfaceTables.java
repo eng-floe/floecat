@@ -24,13 +24,10 @@ import ai.floedb.floecat.catalog.rpc.ListTablesResponse;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
-import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
-import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -39,24 +36,21 @@ import java.util.Map;
 import java.util.Objects;
 
 /** Catalog Surface policy for table RPCs. */
-public class CatalogSurfaceTables {
+public final class CatalogSurfaceTables {
 
   private static final String TBL_TOKEN_PREFIX = "tbl:";
 
   private final TableRepository tableRepo;
   private final CatalogOverlay overlay;
-
-  public CatalogSurfaceTables(CatalogOverlay overlay) {
-    this(null, overlay);
-  }
+  private final CatalogSurfaceTablePolicy tablePolicy;
 
   public CatalogSurfaceTables(TableRepository tableRepo, CatalogOverlay overlay) {
-    this.tableRepo = tableRepo;
+    this.tableRepo = Objects.requireNonNull(tableRepo, "table repository is required");
     this.overlay = overlay;
+    this.tablePolicy = new CatalogSurfaceTablePolicy(overlay);
   }
 
   public ListTablesResponse listTables(ListTablesRequest request, String accountId, String corr) {
-    var repo = tableRepo();
     var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
     final int want = Math.max(1, pageIn.limit);
 
@@ -72,8 +66,9 @@ public class CatalogSurfaceTables {
             pageIn.token,
             TBL_TOKEN_PREFIX,
             (limit, cursor, next) ->
-                repo.list(accountId, catalogId.getId(), namespaceId.getId(), limit, cursor, next),
-            () -> repo.count(accountId, catalogId.getId(), namespaceId.getId()),
+                tableRepo.list(
+                    accountId, catalogId.getId(), namespaceId.getId(), limit, cursor, next),
+            () -> tableRepo.count(accountId, catalogId.getId(), namespaceId.getId()),
             () ->
                 overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
                     .filter(TableNode.class::isInstance)
@@ -88,33 +83,22 @@ public class CatalogSurfaceTables {
   }
 
   public GetTableResponse getTable(GetTableRequest request, String corr) {
-    var repo = tableRepo();
     TableNode node = requireVisibleTable(request.getTableId(), corr);
     Table table = tableFromOverlayNodeOrRepo(node, request.getTableId(), corr);
     MutationMeta meta =
         node.origin() == GraphNodeOrigin.SYSTEM
             ? MutationMeta.getDefaultInstance()
-            : repo.metaForSafe(request.getTableId());
+            : tableRepo.metaForSafe(request.getTableId());
 
     return GetTableResponse.newBuilder().setTable(table).setMeta(meta).build();
   }
 
   public TableNode requireVisibleTable(ResourceId tableId, String corr) {
-    if (tableId == null) {
-      throw GrpcErrors.notFound(corr, TABLE, Map.of("id", "<missing_table_id>"));
-    }
-    CatalogSurfaceSupport.ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
-    return overlay
-        .resolve(tableId)
-        .filter(TableNode.class::isInstance)
-        .map(TableNode.class::cast)
-        .orElseThrow(() -> GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
+    return tablePolicy.requireVisibleTable(tableId, corr);
   }
 
   public TableNode requireWritableTable(ResourceId tableId, String corr) {
-    TableNode node = requireVisibleTable(tableId, corr);
-    enforceWritableTableNode(node, tableId, corr);
-    return node;
+    return tablePolicy.requireWritableTable(tableId, corr);
   }
 
   public CatalogNode requireWritableCatalog(ResourceId catalogId, String field, String corr) {
@@ -131,42 +115,7 @@ public class CatalogSurfaceTables {
   }
 
   public void requireWritableTableForDelete(ResourceId tableId, String corr, boolean callerCares) {
-    GraphNode node = resolveTableNode(tableId, corr, callerCares);
-
-    if (node == null) {
-      return;
-    }
-
-    enforceWritableTableNode(node, tableId, corr);
-  }
-
-  private GraphNode resolveTableNode(ResourceId tableId, String corr, boolean throwOnError) {
-    if (throwOnError) {
-      return requireVisibleTable(tableId, corr);
-    }
-    if (tableId == null) {
-      throw GrpcErrors.notFound(corr, TABLE, Map.of("id", "<missing_table_id>"));
-    }
-    CatalogSurfaceSupport.ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
-
-    try {
-      return overlay.resolve(tableId).orElse(null);
-    } catch (RuntimeException e) {
-      return null;
-    }
-  }
-
-  private void enforceWritableTableNode(GraphNode node, ResourceId tableId, String corr) {
-    if (node instanceof UserTableNode) {
-      return;
-    }
-
-    if (node != null && node.origin() == GraphNodeOrigin.SYSTEM) {
-      throw GrpcErrors.permissionDenied(
-          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", tableId.getId(), "kind", "table"));
-    }
-
-    throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
+    tablePolicy.requireWritableTableForDelete(tableId, corr, callerCares);
   }
 
   private Table tableFromOverlayNodeOrRepo(TableNode node, ResourceId tableId, String corr) {
@@ -174,13 +123,9 @@ public class CatalogSurfaceTables {
       return node.toTableProtoTable();
     }
 
-    return tableRepo()
+    return tableRepo
         .getById(tableId)
         .orElseThrow(() -> GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
-  }
-
-  private TableRepository tableRepo() {
-    return Objects.requireNonNull(tableRepo, "table repository is required for table reads");
   }
 
   private static String relativeTableKey(TableNode tn) {

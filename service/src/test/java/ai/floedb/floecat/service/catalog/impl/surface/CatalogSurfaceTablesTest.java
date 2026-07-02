@@ -144,6 +144,23 @@ class CatalogSurfaceTablesTest {
   }
 
   @Test
+  void listTablesRejectsMalformedServicePageToken() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                surface.listTables(
+                    ListTablesRequest.newBuilder()
+                        .setNamespaceId(namespaceId)
+                        .setPage(PageRequest.newBuilder().setPageToken("tbl:%%%"))
+                        .build(),
+                    ACCOUNT_ID,
+                    CORRELATION_ID));
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+  }
+
+  @Test
   void getTableReadsSystemTableFromCatalogSurfaceWithoutRepoLookup() {
     var systemTable = systemTable("engine_tables");
     overlay.addRelation(namespaceId, systemTable);
