@@ -33,29 +33,7 @@ import org.junit.jupiter.api.Test;
 class TransactionCommitRequestSupportTest {
 
   @Test
-  void nullMainSnapshotRefRequirementUsesPointerBackedRefExistence() {
-    Table table =
-        Table.newBuilder()
-            .setResourceId(
-                ResourceId.newBuilder()
-                    .setAccountId("acct")
-                    .setKind(ResourceKind.RK_TABLE)
-                    .setId("tbl")
-                    .build())
-            .putProperties("current-snapshot-id", "10")
-            .build();
-    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
-    when(tableSupport.hasSnapshotRef(table, "main")).thenReturn(false);
-
-    Response response =
-        TransactionCommitRequestSupport.validateNullSnapshotRefRequirements(
-            tableSupport, table, List.of(nullMainRefRequirement()));
-
-    assertNull(response);
-  }
-
-  @Test
-  void nullMainSnapshotRefRequirementConflictsWhenPointerBackedRefExists() {
+  void nullMainSnapshotRefRequirementIgnoresStaleCurrentSnapshotPointer() {
     Table table =
         Table.newBuilder()
             .setResourceId(
@@ -67,6 +45,27 @@ class TransactionCommitRequestSupportTest {
             .build();
     TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
     when(tableSupport.hasSnapshotRef(table, "main")).thenReturn(true);
+
+    Response response =
+        TransactionCommitRequestSupport.validateNullSnapshotRefRequirements(
+            tableSupport, table, List.of(nullMainRefRequirement()));
+
+    assertNull(response);
+  }
+
+  @Test
+  void nullMainSnapshotRefRequirementConflictsWhenTableMetadataHasCurrentSnapshot() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_TABLE)
+                    .setId("tbl")
+                    .build())
+            .putProperties("current-snapshot-id", "10")
+            .build();
+    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
 
     Response response =
         TransactionCommitRequestSupport.validateNullSnapshotRefRequirements(

@@ -34,7 +34,7 @@ class CommitRequirementServiceTest {
   private final CommitRequirementService service = new CommitRequirementService();
 
   @Test
-  void assertMainRefSnapshotIdUsesCurrentSnapshotPointer() {
+  void assertMainRefSnapshotIdUsesTableMetadataNotCurrentSnapshotPointer() {
     var table =
         Table.newBuilder()
             .setResourceId(
@@ -56,12 +56,11 @@ class CommitRequirementServiceTest {
             CommitRequirementServiceTest::validation,
             CommitRequirementServiceTest::conflict);
 
-    assertNotNull(error);
-    assertEquals(Response.Status.CONFLICT.getStatusCode(), error.getStatus());
+    assertNull(error);
   }
 
   @Test
-  void assertMainRefSnapshotIdIgnoresStaleTablePropertyWhenPointerMatches() {
+  void assertMainRefSnapshotIdConflictsWhenTableMetadataDiffersFromRequirement() {
     var table =
         Table.newBuilder()
             .setResourceId(
@@ -83,7 +82,8 @@ class CommitRequirementServiceTest {
             CommitRequirementServiceTest::validation,
             CommitRequirementServiceTest::conflict);
 
-    assertNull(error);
+    assertNotNull(error);
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), error.getStatus());
   }
 
   private static Response validation(String message) {
