@@ -381,6 +381,17 @@ class UserGraphTest {
   }
 
   @Test
+  void resolveNameMissCanBecomeHitWithoutInvalidation() {
+    NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("late").build();
+
+    assertThat(graph.resolveName("corr", ref)).isEmpty();
+
+    var ids = seedTable("late", "{}");
+
+    assertThat(graph.resolveName("corr", ref)).contains(ids.tableId());
+  }
+
+  @Test
   void resolveNameThrowsWhenAmbiguous() {
     seedTable("ambiguous", "{}");
     seedView("ambiguous");

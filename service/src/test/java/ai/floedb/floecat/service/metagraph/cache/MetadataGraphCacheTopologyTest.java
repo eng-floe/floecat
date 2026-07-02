@@ -75,6 +75,16 @@ class MetadataGraphCacheTopologyTest {
   }
 
   @Test
+  void resolveCatalogRefByName_doesNotCacheMisses() {
+    when(catalogRepository.refByName("acct", "missing")).thenReturn(Optional.empty());
+
+    assertThat(cache.resolveCatalogRefByName("acct", "missing")).isEmpty();
+    assertThat(cache.resolveCatalogRefByName("acct", "missing")).isEmpty();
+
+    verify(catalogRepository, times(2)).refByName("acct", "missing");
+  }
+
+  @Test
   void listNamespaceRefsByName_usesExactRepositoryLookupOnColdCache() {
     ResourceId catalogId = rid("acct", "cat", ResourceKind.RK_CATALOG);
     Set<String> names = Set.of("sales");
@@ -101,6 +111,18 @@ class MetadataGraphCacheTopologyTest {
     assertThat(cache.resolveNamespaceRefByPath(catalogId, List.of("sales"))).contains(ref);
 
     verify(namespaceRepository, times(1)).listRefsByName("acct", "cat", Set.of("sales"));
+  }
+
+  @Test
+  void resolveNamespaceRefByPath_doesNotCacheMisses() {
+    ResourceId catalogId = rid("acct", "cat", ResourceKind.RK_CATALOG);
+    when(namespaceRepository.listRefsByName("acct", "cat", Set.of("missing")))
+        .thenReturn(List.of());
+
+    assertThat(cache.resolveNamespaceRefByPath(catalogId, List.of("missing"))).isEmpty();
+    assertThat(cache.resolveNamespaceRefByPath(catalogId, List.of("missing"))).isEmpty();
+
+    verify(namespaceRepository, times(2)).listRefsByName("acct", "cat", Set.of("missing"));
   }
 
   @Test
@@ -144,6 +166,24 @@ class MetadataGraphCacheTopologyTest {
     assertThat(cached).isEqualTo(resolved);
     verify(tableRepository, times(1)).listRefsByName("acct", "cat", "ns", Set.of("orders"));
     verify(viewRepository, times(1)).listRefsByName("acct", "cat", "ns", Set.of("orders"));
+  }
+
+  @Test
+  void resolveRelationRefsByName_doesNotCacheMisses() {
+    ResourceId catalogId = rid("acct", "cat", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid("acct", "ns", ResourceKind.RK_NAMESPACE);
+    when(tableRepository.listRefsByName("acct", "cat", "ns", Set.of("missing")))
+        .thenReturn(List.of());
+    when(viewRepository.listRefsByName("acct", "cat", "ns", Set.of("missing")))
+        .thenReturn(List.of());
+
+    assertThat(cache.resolveRelationRefsByName(catalogId, namespaceId, "missing").isEmpty())
+        .isTrue();
+    assertThat(cache.resolveRelationRefsByName(catalogId, namespaceId, "missing").isEmpty())
+        .isTrue();
+
+    verify(tableRepository, times(2)).listRefsByName("acct", "cat", "ns", Set.of("missing"));
+    verify(viewRepository, times(2)).listRefsByName("acct", "cat", "ns", Set.of("missing"));
   }
 
   private static ResourceId rid(String accountId, String id, ResourceKind kind) {

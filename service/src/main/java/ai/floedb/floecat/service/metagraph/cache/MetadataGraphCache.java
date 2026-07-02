@@ -239,7 +239,7 @@ public class MetadataGraphCache {
     }
     nsCacheMetrics.recordMiss();
     Optional<CatalogRef> loaded = catalogRepo.refByName(accountId, name);
-    catalogNames.put(key, loaded);
+    loaded.ifPresent(ref -> catalogNames.put(key, Optional.of(ref)));
     return loaded;
   }
 
@@ -258,7 +258,7 @@ public class MetadataGraphCache {
     }
     nsCacheMetrics.recordMiss();
     Optional<NamespaceRef> loaded = loadNamespaceRefByPath(catalogId, pathSegments);
-    namespacePaths.put(key, loaded);
+    loaded.ifPresent(ref -> namespacePaths.put(key, Optional.of(ref)));
     return loaded;
   }
 
@@ -276,7 +276,9 @@ public class MetadataGraphCache {
     }
     relCacheMetrics.recordMiss();
     RelationNameResolution loaded = loadRelationName(catalogId, namespaceId, name);
-    relationNames.put(key, loaded);
+    if (!loaded.isEmpty()) {
+      relationNames.put(key, loaded);
+    }
     return loaded;
   }
 

@@ -397,11 +397,11 @@ public final class UserGraph {
     }
     var catalog = cache.resolveCatalogRefByName(accountId, ref.getCatalog());
     if (catalog.isEmpty()) {
-      return NameResolution.notFound();
+      return NameResolution.unanswered();
     }
     var namespace = cache.resolveNamespaceRefByPath(catalog.get().id(), ref.getPathList());
     if (namespace.isEmpty()) {
-      return NameResolution.notFound();
+      return NameResolution.unanswered();
     }
     var resolved =
         cache.resolveRelationRefsByName(catalog.get().id(), namespace.get().id(), ref.getName());
@@ -411,16 +411,15 @@ public final class UserGraph {
           GeneratedErrorMessages.MessageKey.QUERY_INPUT_AMBIGUOUS,
           Map.of("name", ref.toString()));
     }
+    if (resolved.isEmpty()) {
+      return NameResolution.unanswered();
+    }
     return NameResolution.answered(resolved.singleId());
   }
 
   private record NameResolution(boolean answered, Optional<ResourceId> resourceId) {
     private static NameResolution unanswered() {
       return new NameResolution(false, Optional.empty());
-    }
-
-    private static NameResolution notFound() {
-      return new NameResolution(true, Optional.empty());
     }
 
     private static NameResolution answered(Optional<ResourceId> resourceId) {
