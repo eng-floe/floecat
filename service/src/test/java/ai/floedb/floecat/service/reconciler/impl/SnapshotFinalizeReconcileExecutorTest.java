@@ -51,6 +51,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.impl.InMemoryReconcileJobStore;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
+import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsStore;
@@ -145,6 +146,7 @@ class SnapshotFinalizeReconcileExecutorTest {
   private static SnapshotFinalizePersistenceService persistence(StatsStore statsStore) {
     var persistence = new SnapshotFinalizePersistenceService();
     persistence.statsStore = statsStore;
+    persistence.statsOrchestrator = mock(StatsOrchestrator.class);
     return persistence;
   }
 
