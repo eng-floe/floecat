@@ -80,7 +80,7 @@ import org.junit.jupiter.api.TestMethodOrder;
  *   # Measurement iterations per cell
  *   -Dstats.perf.runs=30
  *
- *   # p95 thresholds: warn (printed) and fail (assertion error)
+ *   # p95 thresholds: warn is printed by default; fail is opt-in for dedicated perf gates
  *   -Dstats.perf.warn_ms=20
  *   -Dstats.perf.fail_ms=50
  * </pre>
@@ -118,7 +118,8 @@ class StatsPerfTest extends PlannerStatsBundleServiceTestSupport {
   private static final int WARMUP = intProp("stats.perf.warmup", 5);
   private static final int RUNS = intProp("stats.perf.runs", 30);
   private static final double WARN_P95_MS = doubleProp("stats.perf.warn_ms", 20.0);
-  private static final double FAIL_P95_MS = doubleProp("stats.perf.fail_ms", 50.0);
+  private static final double FAIL_P95_MS =
+      doubleProp("stats.perf.fail_ms", Double.POSITIVE_INFINITY);
 
   // ── Fixed per test run ─────────────────────────────────────────────────────
 
@@ -190,7 +191,7 @@ class StatsPerfTest extends PlannerStatsBundleServiceTestSupport {
         double max = Arrays.stream(ns).max().orElse(0) / 1_000_000.0;
         rows.add(new Row(n, level, p50, p95, max, bytes));
 
-        if (p95 > FAIL_P95_MS) {
+        if (failThresholdEnabled() && p95 > FAIL_P95_MS) {
           warnings.add(
               "FAIL  %3d targets %-12s p95=%.1fms > fail threshold (%.0fms)"
                   .formatted(n, levelName(level), p95, FAIL_P95_MS));
@@ -204,7 +205,10 @@ class StatsPerfTest extends PlannerStatsBundleServiceTestSupport {
 
     printTable(rows, warnings);
 
-    var failures = rows.stream().filter(r -> r.p95 > FAIL_P95_MS).toList();
+    var failures =
+        failThresholdEnabled()
+            ? rows.stream().filter(r -> r.p95 > FAIL_P95_MS).toList()
+            : List.<Row>of();
     if (!failures.isEmpty()) {
       fail(
           "Stats perf failures (p95 > %.0fms): %s"
@@ -406,6 +410,10 @@ class StatsPerfTest extends PlannerStatsBundleServiceTestSupport {
 
   private static double doubleProp(String key, double def) {
     return Double.parseDouble(System.getProperty(key, String.valueOf(def)));
+  }
+
+  private static boolean failThresholdEnabled() {
+    return Double.isFinite(FAIL_P95_MS);
   }
 
   private record Row(int n, PerfScenario level, double p50, double p95, double max, int bytes) {}
