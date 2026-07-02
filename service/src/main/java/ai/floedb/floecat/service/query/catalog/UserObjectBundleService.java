@@ -84,6 +84,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -1249,6 +1250,9 @@ public class UserObjectBundleService {
       RelationNode node,
       QueryInput selectedInput) {}
 
+  private record NormalizedCandidate(
+      int inputIndex, TableReferenceCandidate candidate, List<QueryInput> normalized) {}
+
   private record RelationCacheKey(
       ResourceId relationId,
       boolean wantsAllColumns,
@@ -1312,6 +1316,7 @@ public class UserObjectBundleService {
     private long resolveNanos = 0L;
     private long normalizeNanos = 0L;
     private long selectRelationNanos = 0L;
+    private long batchPrefetchNanos = 0L;
     private long defaultCatalogNanos = 0L;
     private long nameResolveNanos = 0L;
     private long nodeResolveNanos = 0L;
@@ -1392,8 +1397,12 @@ public class UserObjectBundleService {
     private void fillPending() {
       List<ResolvedRelation> toPin = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
       drainEagerBaseTables(toPin);
+      int batchStartIndex = nextInputIndex;
+      List<NormalizedCandidate> batch =
+          normalizeCandidateBatch(MAX_RESOLUTIONS_PER_CHUNK - pending.size());
+      prefetchCandidateBatch(batch);
       while (nextInputIndex < resolutionCount && pending.size() < MAX_RESOLUTIONS_PER_CHUNK) {
-        PendingItem item = resolveNextResolution();
+        PendingItem item = resolveNextResolution(batchStartIndex, batch);
         pending.add(item);
         if (item instanceof PendingFound found) {
           toPin.add(found.relation());
@@ -1418,6 +1427,78 @@ public class UserObjectBundleService {
           pinCollectNanos += System.nanoTime() - pinStartNs;
         }
       }
+    }
+
+    private List<NormalizedCandidate> normalizeCandidateBatch(int limit) {
+      if (limit <= 0 || nextInputIndex >= resolutionCount) {
+        return List.of();
+      }
+      int end = Math.min(resolutionCount, nextInputIndex + limit);
+      List<NormalizedCandidate> batch = new ArrayList<>(end - nextInputIndex);
+      for (int inputIndex = nextInputIndex; inputIndex < end; inputIndex++) {
+        TableReferenceCandidate candidate = tables.get(inputIndex);
+        long normalizeStartNs = System.nanoTime();
+        try {
+          batch.add(
+              new NormalizedCandidate(
+                  inputIndex,
+                  candidate,
+                  normalizeCandidates(correlationId, candidate, this::defaultCatalogName)));
+        } finally {
+          normalizeNanos += System.nanoTime() - normalizeStartNs;
+        }
+      }
+      return batch;
+    }
+
+    private void prefetchCandidateBatch(List<NormalizedCandidate> batch) {
+      if (batch.isEmpty()) {
+        return;
+      }
+      long prefetchStartNs = System.nanoTime();
+      try {
+        Set<ResourceId> relationIds = new LinkedHashSet<>();
+        for (NormalizedCandidate candidate : batch) {
+          ResourceId relationId = firstResolvableId(candidate.normalized());
+          if (relationId != null) {
+            relationIds.add(relationId);
+          }
+        }
+        for (ResourceId relationId : relationIds) {
+          try {
+            resolveNodeCached(relationId);
+          } catch (RuntimeException ignored) {
+            // Prefetch is opportunistic; ordered selection below owns error reporting.
+          }
+        }
+      } finally {
+        batchPrefetchNanos += System.nanoTime() - prefetchStartNs;
+      }
+    }
+
+    private ResourceId firstResolvableId(List<QueryInput> normalized) {
+      for (QueryInput input : normalized) {
+        ResourceId relationId;
+        try {
+          relationId = prefetchResourceId(input);
+        } catch (RuntimeException ignored) {
+          // Preserve existing ordered selection semantics for ambiguity and resolver errors.
+          return null;
+        }
+        if (relationId != null) {
+          return relationId;
+        }
+      }
+      return null;
+    }
+
+    private ResourceId prefetchResourceId(QueryInput input) {
+      return switch (input.getTargetCase()) {
+        case TABLE_ID -> input.getTableId();
+        case VIEW_ID -> input.getViewId();
+        case NAME -> resolveNameCached(input.getName()).orElse(null);
+        default -> null;
+      };
     }
 
     /**
@@ -1479,24 +1560,21 @@ public class UserObjectBundleService {
       return cursor.nextBaseIndex >= baseRelations.size();
     }
 
-    private PendingItem resolveNextResolution() {
+    private PendingItem resolveNextResolution(
+        int batchStartIndex, List<NormalizedCandidate> normalizedBatch) {
       long resolveStartNs = System.nanoTime();
       try {
-        TableReferenceCandidate candidate = tables.get(nextInputIndex);
-        int inputIndex = nextInputIndex;
+        NormalizedCandidate normalizedCandidate =
+            normalizedBatch.get(nextInputIndex - batchStartIndex);
+        int inputIndex = normalizedCandidate.inputIndex();
+        TableReferenceCandidate candidate = normalizedCandidate.candidate();
         nextInputIndex++;
         if (LOG.isTraceEnabled()) {
           LOG.tracef(
               "Resolving candidate query_id=%s input_index=%d candidate_count=%d",
               ctx.getQueryId(), inputIndex, candidate.getCandidatesCount());
         }
-        List<QueryInput> normalized;
-        long normalizeStartNs = System.nanoTime();
-        try {
-          normalized = normalizeCandidates(correlationId, candidate, this::defaultCatalogName);
-        } finally {
-          normalizeNanos += System.nanoTime() - normalizeStartNs;
-        }
+        List<QueryInput> normalized = normalizedCandidate.normalized();
         try {
           long selectStartNs = System.nanoTime();
           Optional<ResolvedRelation> resolved =
@@ -1645,6 +1723,8 @@ public class UserObjectBundleService {
               0L,
               totalNanos
                   - resolveNanos
+                  - normalizeNanos
+                  - batchPrefetchNanos
                   - baseInjectNanos
                   - pinCollectNanos
                   - pinCommitNanos
@@ -1659,13 +1739,16 @@ public class UserObjectBundleService {
       if (totalMs >= slowRpcMs) {
         LOG.infof(
             "op=GetUserObjects slow query_id=%s correlation_id=%s totalMs=%.1f"
-                + " resolveMs=%.1f baseInjectMs=%.1f pinMs=%.1f relationBuildMs=%.1f"
+                + " resolveMs=%.1f normalizeMs=%.1f batchPrefetchMs=%.1f baseInjectMs=%.1f"
+                + " pinMs=%.1f relationBuildMs=%.1f"
                 + " decorationMs=%.1f statsLookupMs=%.1f schedulingMs=%.1f"
                 + " candidates=%d chunks=%d found=%d notFound=%d outcome=%s",
             ctx.getQueryId(),
             correlationId,
             totalMs,
             resolveNanos / 1_000_000.0,
+            normalizeNanos / 1_000_000.0,
+            batchPrefetchNanos / 1_000_000.0,
             baseInjectNanos / 1_000_000.0,
             pinMs,
             relationBuildNanos / 1_000_000.0,
@@ -1732,6 +1815,7 @@ public class UserObjectBundleService {
       diagnostics.nanos("resolve", resolveNanos);
       diagnostics.nanos("normalize", normalizeNanos);
       diagnostics.nanos("select_relation", selectRelationNanos);
+      diagnostics.nanos("batch_prefetch", batchPrefetchNanos);
       diagnostics.nanos("default_catalog", defaultCatalogNanos);
       diagnostics.nanos("name_resolve", nameResolveNanos);
       diagnostics.nanos("node_resolve", nodeResolveNanos);
