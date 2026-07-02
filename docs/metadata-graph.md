@@ -29,8 +29,10 @@ facade sit inside `service/metagraph`. The split looks like this:
 - `core/metagraph/model/` – Immutable node records (`CatalogNode`, `NamespaceNode`, `TableNode`,
   `ViewNode`, `SystemViewNode`) plus shared enums (`GraphNodeKind`, `EngineKey`, `EngineHint`,
   `GraphNodeOrigin`, etc.).
-- `service/metagraph/cache/` – `GraphCacheManager` + `GraphCacheKey` implement the per-account
-  cache-of-caches and expose meters for hit/miss counts, account count, and total entries.
+- `service/metagraph/cache/` – `MetadataGraphCache` owns per-account graph node caches plus
+  lightweight catalog topology indexes, including exact catalog/name/path lookups used by hot name
+  resolution. It exposes meters for graph and topology cache hit/miss counts, account count, and
+  total entries.
 - `service/metagraph/loader/` – `NodeLoader` wraps the catalog/namespace/table/view repositories to
   hydrate immutable nodes from protobuf metadata (`metaForSafe` + pointer fetches).
 - `service/metagraph/resolver/` – `NameResolver` handles catalog/namespace/table/view lookups, while

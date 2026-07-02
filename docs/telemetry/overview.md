@@ -86,7 +86,7 @@ Use strict mode in local/dev/test profiles (`telemetry.strict=true`) to fail fas
 The hub ships several helper classes whose job is to translate your telemetry intent into the contract:
 
 - **`RpcMetrics`** powers gRPC + RPC-level instrumentation. It maintains the active request gauge (`floecat.core.rpc.active`), observes latency/error/retry metrics, normalizes component/operation tags, and exposes `observe(...)` and `recordRequest(...)` helpers so interceptors can focus on status parsing instead of meter plumbing.
-- **`CacheMetrics`** (and its derivatives like `GraphCacheManager` helpers) expose canonical cache gauges/counters such as hits, misses, size, and load latency. They automatically register the necessary meters, enforce the required tags, and forward every emission through the hub’s `Observability` so contract validation and strict/lenient policies apply.
+- **`CacheMetrics`** (and cache owners like `MetadataGraphCache`) expose canonical cache gauges/counters such as hits, misses, size, and load latency. They automatically register the necessary meters, enforce the required tags, and forward every emission through the hub’s `Observability` so contract validation and strict/lenient policies apply.
 - **`StoreMetrics`** wraps storage layer counters/timers (`bytes`, `requests`, `latency`) with the right tag set (`component`, `operation`, `result`, `status`). Callers record bytes or durations and the helper ensures every emission matches the `floecat.core.store.*` definitions.
 - **`GcMetrics`** handles scheduler health (enabled, running state, last tick timestamps) for pointer, CAS, and idempotency collectors. Each helper knows its `component`/`operation` pair and tags results/exceptions consistently.
 - **Scheduler-driven gauges** – the GC schedulers (`floecat.service.gc.*`) and storage refresher expose gauges that update when those schedulers run. The GC metrics (`enabled`, `running`, `last.tick.start.ms`, `last.tick.end.ms`) reflect the most recent tick and remain unchanged when the scheduler is disabled (`enabled=0`, `running=0`). The storage metrics update on the refresh schedule controlled by `floecat.metrics.storage.refresh` (default `30s`), so per-account gauges (`floecat.service.storage.account.*`) represent the last sampled snapshot rather than every write.
@@ -136,7 +136,7 @@ The exec plugin populates `docs/telemetry/contract.md` and `docs/telemetry/contr
 
 - The service sets `telemetry.strict` (true in `%dev`/`%test`, false in prod) so strict mode throws on contract violations while lenient mode only increments `floecat.core.observability.dropped.tags.total`.
 - Observability instrumentation should never refer to Micrometer directly; only the extensions (e.g., `telemetry-hub-backend-micrometer`, `telemetry-hub-integration-quarkus`) need backend dependencies.
-- Helpers like `GraphCacheManager`, `EngineHintManager`, and `StorageUsageMetrics` call into the hub’s `Observability` API and rely on the metric definitions described above.
+- Helpers like `MetadataGraphCache`, `EngineHintManager`, and `StorageUsageMetrics` call into the hub’s `Observability` API and rely on the metric definitions described above.
 
 ## Backend/exporter behavior
 
