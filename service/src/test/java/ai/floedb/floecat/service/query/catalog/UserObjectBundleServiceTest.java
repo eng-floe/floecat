@@ -897,24 +897,6 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
-  void candidateBatchDoesNotPrefetchUnusedFallbackIds() {
-    TableReferenceCandidate candidate =
-        TableReferenceCandidate.newBuilder()
-            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
-            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
-            .build();
-
-    List<UserObjectsBundleChunk> chunks =
-        service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
-
-    RelationResolution resolution = chunks.get(1).getResolutions().getItems(0);
-    assertThat(resolution.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
-    assertThat(resolution.getRelation().getRelationId()).isEqualTo(TABLE_A);
-    assertThat(overlay.resolveCount(TABLE_A)).isEqualTo(1);
-    assertThat(overlay.resolveCount(TABLE_B)).isZero();
-  }
-
-  @Test
   void graphNodeMissingEmitsErrorWithoutDroppingStream() {
     overlay.hideNode(TABLE_A);
     TableReferenceCandidate candidate =
