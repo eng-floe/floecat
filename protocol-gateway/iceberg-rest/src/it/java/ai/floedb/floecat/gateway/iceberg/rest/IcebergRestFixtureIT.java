@@ -1165,8 +1165,8 @@ class IcebergRestFixtureIT {
         .then()
         .statusCode(204);
 
-    Assertions.assertEquals(ownerA, fetchTableMetadataProperty(namespace, tableA, "owner"));
-    Assertions.assertEquals(ownerB, fetchTableMetadataProperty(namespace, tableB, "owner"));
+    awaitTableMetadataProperty(namespace, tableA, "owner", ownerA, Duration.ofSeconds(10));
+    awaitTableMetadataProperty(namespace, tableB, "owner", ownerB, Duration.ofSeconds(10));
   }
 
   @Test

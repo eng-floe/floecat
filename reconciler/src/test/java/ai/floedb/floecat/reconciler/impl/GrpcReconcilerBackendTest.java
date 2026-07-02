@@ -48,12 +48,14 @@ import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateViewResponse;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -939,7 +941,11 @@ class GrpcReconcilerBackendTest {
             .build();
 
     when(backend.table.getTable(any()))
-        .thenReturn(GetTableResponse.newBuilder().setTable(before).build());
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(before)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
     when(backend.table.updateTable(any()))
         .thenReturn(UpdateTableResponse.newBuilder().setTable(after).build());
 
@@ -964,13 +970,14 @@ class GrpcReconcilerBackendTest {
                 "orders"));
 
     assertThat(changed).isTrue();
-    ArgumentCaptor<ai.floedb.floecat.catalog.rpc.UpdateTableRequest> requestCaptor =
-        ArgumentCaptor.forClass(ai.floedb.floecat.catalog.rpc.UpdateTableRequest.class);
+    ArgumentCaptor<UpdateTableRequest> requestCaptor =
+        ArgumentCaptor.forClass(UpdateTableRequest.class);
     verify(backend.table).updateTable(requestCaptor.capture());
     assertThat(requestCaptor.getValue().getSpec().getPropertiesMap())
         .containsEntry("owner", "txn-owner")
         .containsEntry("reconciled", "true")
         .containsEntry("storage_location", "s3://new-location");
+    assertThat(requestCaptor.getValue().getPrecondition().getExpectedVersion()).isEqualTo(7L);
   }
 
   @Test
@@ -1010,7 +1017,16 @@ class GrpcReconcilerBackendTest {
     Table after = before.toBuilder().putProperties("reconciled", "true").build();
 
     when(backend.table.getTable(any()))
-        .thenReturn(GetTableResponse.newBuilder().setTable(before).build());
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(before)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build())
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(before.toBuilder().putProperties("owner", "txn-owner").build())
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(8L))
+                .build());
     when(backend.table.updateTable(any()))
         .thenThrow(
             new StatusRuntimeException(
@@ -1044,6 +1060,16 @@ class GrpcReconcilerBackendTest {
     assertThat(changed).isTrue();
     verify(backend.table, org.mockito.Mockito.times(2)).updateTable(any());
     verify(backend.table, org.mockito.Mockito.times(2)).getTable(any());
+    ArgumentCaptor<UpdateTableRequest> requestCaptor =
+        ArgumentCaptor.forClass(UpdateTableRequest.class);
+    verify(backend.table, org.mockito.Mockito.times(2)).updateTable(requestCaptor.capture());
+    assertThat(requestCaptor.getAllValues().get(0).getPrecondition().getExpectedVersion())
+        .isEqualTo(7L);
+    assertThat(requestCaptor.getAllValues().get(1).getPrecondition().getExpectedVersion())
+        .isEqualTo(8L);
+    assertThat(requestCaptor.getAllValues().get(1).getSpec().getPropertiesMap())
+        .containsEntry("owner", "txn-owner")
+        .containsEntry("reconciled", "true");
   }
 
   private static ReconcileContext reconcileContext() {

@@ -69,6 +69,7 @@ import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
+import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
@@ -343,8 +344,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       TableSpecDescriptor descriptor) {
     NameRef normalizedTable = NameRefNormalizer.normalize(tableRef);
     for (int attempt = 0; attempt < UPDATE_OCC_RETRIES; attempt++) {
-      var before =
-          table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
+      var beforeResponse =
+          table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build());
+      var before = beforeResponse.getTable();
       if (!before.getNamespaceId().equals(namespaceId)) {
         throw new IllegalArgumentException(
             "Destination table namespace mismatch for id: " + tableId.getId());
@@ -353,7 +355,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         throw new IllegalArgumentException(
             "Destination table display name mismatch for id: " + tableId.getId());
       }
-      UpdateTableRequest request =
+      UpdateTableRequest.Builder request =
           UpdateTableRequest.newBuilder()
               .setTableId(tableId)
               .setSpec(reconcileTableSpec(before, descriptor))
@@ -362,10 +364,14 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       .addPaths("schema_json")
                       .addPaths("upstream")
                       .addPaths("properties")
-                      .build())
-              .build();
+                      .build());
+      if (beforeResponse.hasMeta() && beforeResponse.getMeta().getPointerVersion() > 0L) {
+        request.setPrecondition(
+            Precondition.newBuilder()
+                .setExpectedVersion(beforeResponse.getMeta().getPointerVersion()));
+      }
       try {
-        var response = table(ctx).updateTable(request).getTable();
+        var response = table(ctx).updateTable(request.build()).getTable();
         return !response.equals(before);
       } catch (StatusRuntimeException e) {
         if (e.getStatus().getCode() != Status.Code.FAILED_PRECONDITION
