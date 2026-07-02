@@ -157,6 +157,21 @@ public final class GraphSnapshot {
   }
 
   /**
+   * Resolves a relation or namespace by canonical name, preserving table/view/namespace priority.
+   */
+  public Optional<ResourceId> resolveName(String canonical) {
+    ResourceId table = tableNames.get(canonical);
+    if (table != null) {
+      return Optional.of(table);
+    }
+    ResourceId view = viewNames.get(canonical);
+    if (view != null) {
+      return Optional.of(view);
+    }
+    return Optional.ofNullable(namespaceNames.get(canonical));
+  }
+
+  /**
    * Returns an empty snapshot used as a safe fallback when no system catalog exists for a given
    * engine/version.
    */

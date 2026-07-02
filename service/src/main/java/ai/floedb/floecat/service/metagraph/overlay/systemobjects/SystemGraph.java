@@ -256,10 +256,8 @@ public final class SystemGraph {
    * @return the resolved resource ID, or empty if not found
    */
   public Optional<ResourceId> resolveName(NameRef ref, EngineContext ctx) {
-    // For simplicity, try table, view, namespace in order
-    return resolveTable(ref, ctx)
-        .or(() -> resolveView(ref, ctx))
-        .or(() -> resolveNamespace(ref, ctx));
+    GraphSnapshot snapshot = snapshotFor(ctx);
+    return snapshot.resolveName(NameRefUtil.canonical(ref));
   }
 
   public Optional<ResourceId> resolveName(NameRef ref, String engineKind, String engineVersion) {

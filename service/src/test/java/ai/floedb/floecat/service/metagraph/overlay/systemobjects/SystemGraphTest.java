@@ -36,6 +36,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
+import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
 import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
@@ -62,6 +63,7 @@ class SystemGraphTest {
   private ResourceId wrongCatalogId;
   private ResourceId namespaceId;
   private ResourceId tableId;
+  private ResourceId viewId;
   private ResourceId defaultTableId;
 
   @BeforeEach
@@ -70,6 +72,7 @@ class SystemGraphTest {
 
     NameRef nsName = NameRefUtil.name("pg_catalog");
     NameRef tableName = NameRefUtil.name("pg_catalog", "pg_class");
+    NameRef viewName = NameRefUtil.name("pg_catalog", "pg_views");
 
     SystemCatalogData catalogData =
         new SystemCatalogData(
@@ -91,8 +94,14 @@ class SystemGraphTest {
                     "",
                     List.of(),
                     null)),
-            List.of() // views
-            ,
+            List.of(
+                new SystemViewDef(
+                    viewName,
+                    "pg_views",
+                    "select * from pg_catalog.pg_class",
+                    "sql",
+                    List.<SystemColumnDef>of(),
+                    List.of())),
             List.of());
 
     registry.register(ENGINE, catalogData);
@@ -116,6 +125,9 @@ class SystemGraphTest {
     tableId =
         SystemNodeRegistry.resourceId(
             ENGINE, ResourceKind.RK_TABLE, NameRefUtil.name("pg_catalog", "pg_class"));
+    viewId =
+        SystemNodeRegistry.resourceId(
+            ENGINE, ResourceKind.RK_VIEW, NameRefUtil.name("pg_catalog", "pg_views"));
     defaultTableId =
         SystemNodeRegistry.resourceId(
             EngineCatalogNames.FLOECAT_DEFAULT_CATALOG,
@@ -140,8 +152,7 @@ class SystemGraphTest {
   void listRelationsInNamespace_returnsRelations() {
     List<RelationNode> nodes =
         systemGraph.listRelationsInNamespace(systemCatalogId, namespaceId, ENGINE, VERSION);
-    assertThat(nodes).hasSize(1);
-    assertThat(nodes.get(0).id()).isEqualTo(tableId);
+    assertThat(nodes).extracting(GraphNode::id).containsExactlyInAnyOrder(tableId, viewId);
   }
 
   @Test
@@ -204,6 +215,16 @@ class SystemGraphTest {
   void resolveTable_returnsEmptyForUnknown() {
     NameRef ref = NameRefUtil.name("pg_catalog", "does_not_exist");
     assertThat(systemGraph.resolveTable(ref, ENGINE, VERSION)).isEmpty();
+  }
+
+  @Test
+  void resolveName_findsTablesViewsAndNamespaces() {
+    assertThat(systemGraph.resolveName(NameRefUtil.name("pg_catalog", "pg_class"), ENGINE, VERSION))
+        .contains(tableId);
+    assertThat(systemGraph.resolveName(NameRefUtil.name("pg_catalog", "pg_views"), ENGINE, VERSION))
+        .contains(viewId);
+    assertThat(systemGraph.resolveName(NameRefUtil.name("pg_catalog"), ENGINE, VERSION))
+        .contains(namespaceId);
   }
 
   @Test
