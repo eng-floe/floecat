@@ -100,6 +100,50 @@ class TableCommitMetadataMutatorTest {
   }
 
   @Test
+  void applyMergesPropertyUpdatesIntoMetadataView() {
+    TableMetadataView metadata =
+        new TableMetadataView(
+            2,
+            "tbl-uuid",
+            "s3://floecat/iceberg/orders",
+            "s3://floecat/iceberg/orders/metadata/00000-old.metadata.json",
+            1L,
+            Map.of(
+                "format-version", "2",
+                "owner", "integration",
+                "drop-me", "x"),
+            2,
+            0,
+            0,
+            0,
+            0,
+            null,
+            0L,
+            List.of(Map.of("schema-id", 0, "type", "struct", "fields", List.of())),
+            List.of(Map.of("spec-id", 0, "fields", List.of())),
+            List.of(Map.of("order-id", 0, "fields", List.of())),
+            Map.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of());
+
+    TableRequests.Commit request =
+        new TableRequests.Commit(
+            List.of(),
+            List.of(
+                Map.of("action", "set-properties", "updates", Map.of("owner", "team-a")),
+                Map.of("action", "remove-properties", "removals", List.of("drop-me"))));
+
+    TableMetadataView merged = mutator.apply(metadata, request);
+
+    assertEquals("team-a", merged.properties().get("owner"));
+    assertEquals(null, merged.properties().get("drop-me"));
+    assertEquals("2", merged.properties().get("format-version"));
+  }
+
+  @Test
   void applyPrefersCommittedCurrentSnapshotOverStaleMetadata() {
     long staleSnapshotId = 7105637631842704244L;
     long newSnapshotId = 1772624629860L;

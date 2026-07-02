@@ -140,13 +140,14 @@ public class TransactionCommitTablePlanningSupport {
     }
 
     return new PlannedExistingTableChange(
-        null,
-        0L,
-        null,
-        IcebergErrorResponses.failure(
-            "table changed during commit planning",
-            "CommitFailedException",
-            Response.Status.CONFLICT));
+        null, 0L, null, retryablePlanningConflict(currentState, txId));
+  }
+
+  private Response retryablePlanningConflict(TransactionState currentState, String txId) {
+    transactionCommitExecutionSupport.abortIfOpen(
+        currentState, txId, "table changed during commit planning");
+    return transactionCommitExecutionSupport.retryableConflict(
+        "table changed during commit planning");
   }
 
   Table normalizeTableIdentity(Table table, ResourceId tableId) {
@@ -216,6 +217,7 @@ public class TransactionCommitTablePlanningSupport {
     if (commitMetadata == null) {
       return new PreMaterializedTable(plannedTable, null, null);
     }
+    String commitMetadataLocation = commitMetadata.metadataLocation();
     Table canonicalizedTable =
         tablePropertyService.applyCanonicalMetadataProperties(plannedTable, commitMetadata);
     if (skipMaterialization) {
@@ -227,7 +229,7 @@ public class TransactionCommitTablePlanningSupport {
             tableName,
             canonicalizedTable,
             commitMetadata,
-            commitView.metadataLocation(),
+            commitMetadataLocation,
             tableExists);
     if (result == null) {
       return new PreMaterializedTable(canonicalizedTable, null, null);
@@ -235,11 +237,18 @@ public class TransactionCommitTablePlanningSupport {
     if (result.error() != null) {
       return new PreMaterializedTable(plannedTable, null, result.error());
     }
-    String location = result.metadataLocation();
+    TableMetadataView resolvedMetadata =
+        result.metadata() != null ? result.metadata() : commitMetadata;
+    Table resolvedTable =
+        tablePropertyService.applyCanonicalMetadataProperties(canonicalizedTable, resolvedMetadata);
+    String location = resolvedMetadata.metadataLocation();
     if (location == null || location.isBlank()) {
-      return new PreMaterializedTable(canonicalizedTable, null, null);
+      location = result.metadataLocation();
     }
-    return new PreMaterializedTable(canonicalizedTable, location, null);
+    if (location == null || location.isBlank()) {
+      return new PreMaterializedTable(resolvedTable, null, null);
+    }
+    return new PreMaterializedTable(resolvedTable, location, null);
   }
 
   private boolean isValidExplicitMetadataLocation(String metadataLocation) {

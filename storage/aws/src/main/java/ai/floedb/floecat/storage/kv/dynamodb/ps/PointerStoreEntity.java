@@ -261,6 +261,10 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
         txOps.add(new KvStore.TxnPut(rec, upsert.expectedVersion()));
       } else if (op instanceof PointerStore.CasDelete delete) {
         txOps.add(new KvStore.TxnDelete(pointerKey(delete.key()), delete.expectedVersion()));
+      } else if (op instanceof PointerStore.CasCheck check) {
+        txOps.add(new KvStore.TxnCheck(pointerKey(check.key()), check.expectedVersion()));
+      } else if (op instanceof PointerStore.CasCheckAbsent check) {
+        txOps.add(new KvStore.TxnCheckAbsent(pointerKey(check.key())));
       }
     }
     return kv.txnWriteCas(txOps);

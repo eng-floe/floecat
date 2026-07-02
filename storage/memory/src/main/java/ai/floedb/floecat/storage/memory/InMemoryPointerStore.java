@@ -193,6 +193,15 @@ public class InMemoryPointerStore implements PointerStore {
           if (cur == null || cur.getVersion() != delete.expectedVersion()) {
             return false;
           }
+        } else if (op instanceof CasCheck check) {
+          Pointer cur = map.get(check.key());
+          if (cur == null || cur.getVersion() != check.expectedVersion()) {
+            return false;
+          }
+        } else if (op instanceof CasCheckAbsent check) {
+          if (map.get(check.key()) != null) {
+            return false;
+          }
         }
       }
 

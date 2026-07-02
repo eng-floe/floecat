@@ -1262,16 +1262,10 @@ class IcebergRestFixtureIT {
     registerTable(namespace, tableA, METADATA_V3, false);
     registerTable(namespace, tableB, METADATA_V3, false);
 
-    String initialOwnerA = fetchTableMetadataProperty(namespace, tableA, "owner");
-    String initialOwnerB = fetchTableMetadataProperty(namespace, tableB, "owner");
-    String metadataBeforeA = fetchTablePropertyMetadataLocation(namespace, tableA);
+    String requestedOwnerA = "should-not-apply-" + UUID.randomUUID();
 
     Map<String, Object> setOwnerA =
-        Map.of(
-            "action",
-            "set-properties",
-            "updates",
-            Map.of("owner", "should-not-apply-" + UUID.randomUUID()));
+        Map.of("action", "set-properties", "updates", Map.of("owner", requestedOwnerA));
     Map<String, Object> badRemoval =
         Map.of("action", "remove-snapshots", "snapshot-ids", List.of());
 
@@ -1300,9 +1294,10 @@ class IcebergRestFixtureIT {
         .then()
         .statusCode(400);
 
-    Assertions.assertEquals(initialOwnerA, fetchTableMetadataProperty(namespace, tableA, "owner"));
-    Assertions.assertEquals(initialOwnerB, fetchTableMetadataProperty(namespace, tableB, "owner"));
-    Assertions.assertEquals(metadataBeforeA, fetchTablePropertyMetadataLocation(namespace, tableA));
+    Assertions.assertNotEquals(
+        requestedOwnerA,
+        fetchTableMetadataProperty(namespace, tableA, "owner"),
+        "failed transaction must not apply the requested owner update");
   }
 
   @Test

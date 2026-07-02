@@ -70,7 +70,7 @@ import org.mockito.Mockito;
 class TransactionsServiceImplTest {
 
   @Test
-  void commitAppliedCleansIntentsAfterStateUpdate() throws Exception {
+  void commitAppliedUsesAtomicApplyWithoutSeparateIntentCleanup() throws Exception {
     var service = new TransactionsServiceImpl();
     var txRepo = Mockito.mock(TransactionRepository.class);
     var intentRepo = Mockito.mock(TransactionIntentRepository.class);
@@ -97,12 +97,14 @@ class TransactionsServiceImplTest {
             .setCreatedAt(Timestamps.fromMillis(1))
             .build();
 
+    Transaction txnApplied = txn.toBuilder().setState(TransactionState.TS_APPLIED).build();
     when(txRepo.getById("acct", "tx-1"))
-        .thenReturn(Optional.of(txn), Optional.of(txn), Optional.of(txnApplying));
+        .thenReturn(
+            Optional.of(txn), Optional.of(txn), Optional.of(txnApplying), Optional.of(txnApplied));
     when(intentRepo.listByTx("acct", "tx-1")).thenReturn(List.of(intent));
     when(intentRepo.getByTarget("acct", "/accounts/acct/custom/key-1"))
         .thenReturn(Optional.of(intent));
-    when(applier.applyTransactionBestEffort(List.of(intent), intentRepo))
+    when(applier.applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any()))
         .thenReturn(TransactionIntentApplierSupport.ApplyOutcome.applied());
     when(txRepo.metaFor("acct", "tx-1"))
         .thenReturn(
@@ -113,13 +115,6 @@ class TransactionsServiceImplTest {
                 updated -> updated != null && updated.getState() == TransactionState.TS_APPLYING),
             anyLong()))
         .thenReturn(true);
-    when(txRepo.update(
-            argThat(
-                updated -> updated != null && updated.getState() == TransactionState.TS_APPLIED),
-            anyLong()))
-        .thenReturn(true);
-    when(intentRepo.deleteBothIndicesBestEffort(intent)).thenReturn(true);
-
     Transaction committed =
         invokeCommitPrivate(
             service,
@@ -128,14 +123,17 @@ class TransactionsServiceImplTest {
             Timestamps.fromMillis(10));
 
     assertEquals(TransactionState.TS_APPLIED, committed.getState());
-    InOrder ordered = inOrder(txRepo, intentRepo);
+    InOrder ordered = inOrder(txRepo, applier);
     ordered
         .verify(txRepo)
         .update(
             argThat(
-                updated -> updated != null && updated.getState() == TransactionState.TS_APPLIED),
+                updated -> updated != null && updated.getState() == TransactionState.TS_APPLYING),
             anyLong());
-    ordered.verify(intentRepo).deleteBothIndicesBestEffort(intent);
+    ordered
+        .verify(applier)
+        .applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any());
+    verify(intentRepo, never()).deleteBothIndicesBestEffort(intent);
   }
 
   @Test
@@ -171,7 +169,7 @@ class TransactionsServiceImplTest {
     when(intentRepo.listByTx("acct", "tx-1")).thenReturn(List.of(intent));
     when(intentRepo.getByTarget("acct", "/accounts/acct/custom/key-1"))
         .thenReturn(Optional.of(intent));
-    when(applier.applyTransactionBestEffort(List.of(intent), intentRepo))
+    when(applier.applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any()))
         .thenReturn(TransactionIntentApplierSupport.ApplyOutcome.retryable("X", "retry"));
     when(intentRepo.update(
             argThat(
@@ -211,6 +209,121 @@ class TransactionsServiceImplTest {
   }
 
   @Test
+  void commitRetryableReturnsAppliedWhenConcurrentCommitWinsBeforeFailureTransition()
+      throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
+
+    inject(service, "txRepo", txRepo);
+    inject(service, "intentRepo", intentRepo);
+    inject(service, "intentApplierSupport", applier);
+
+    Transaction txn =
+        Transaction.newBuilder()
+            .setAccountId("acct")
+            .setTxId("tx-1")
+            .setState(TransactionState.TS_PREPARED)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
+    Transaction txnApplied = txn.toBuilder().setState(TransactionState.TS_APPLIED).build();
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId("acct")
+            .setTxId("tx-1")
+            .setTargetPointerKey("/accounts/acct/custom/key-1")
+            .setBlobUri("s3://bucket/blob-1")
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    when(txRepo.getById("acct", "tx-1"))
+        .thenReturn(Optional.of(txn), Optional.of(txn), Optional.of(txnApplied));
+    when(intentRepo.listByTx("acct", "tx-1")).thenReturn(List.of(intent));
+    when(intentRepo.getByTarget("acct", "/accounts/acct/custom/key-1"))
+        .thenReturn(Optional.of(intent));
+    when(applier.applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any()))
+        .thenReturn(TransactionIntentApplierSupport.ApplyOutcome.retryable("X", "retry"));
+    when(txRepo.metaFor("acct", "tx-1"))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(14L).build());
+    when(txRepo.update(
+            argThat(
+                updated -> updated != null && updated.getState() == TransactionState.TS_APPLYING),
+            anyLong()))
+        .thenReturn(true);
+
+    Transaction committed =
+        invokeCommitPrivate(
+            service,
+            "acct",
+            CommitTransactionRequest.newBuilder().setTxId("tx-1").build(),
+            Timestamps.fromMillis(10));
+
+    assertEquals(TransactionState.TS_APPLIED, committed.getState());
+    verify(txRepo, never())
+        .update(
+            argThat(
+                updated ->
+                    updated != null
+                        && updated.getState() == TransactionState.TS_APPLY_FAILED_RETRYABLE),
+            anyLong());
+  }
+
+  @Test
+  void commitLockMismatchReturnsAppliedWhenConcurrentCommitWinsBeforeFailureTransition()
+      throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
+
+    inject(service, "txRepo", txRepo);
+    inject(service, "intentRepo", intentRepo);
+    inject(service, "intentApplierSupport", applier);
+
+    Transaction txn =
+        Transaction.newBuilder()
+            .setAccountId("acct")
+            .setTxId("tx-1")
+            .setState(TransactionState.TS_APPLYING)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    Transaction txnApplied = txn.toBuilder().setState(TransactionState.TS_APPLIED).build();
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId("acct")
+            .setTxId("tx-1")
+            .setTargetPointerKey("/accounts/acct/custom/key-1")
+            .setBlobUri("s3://bucket/blob-1")
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    when(txRepo.getById("acct", "tx-1")).thenReturn(Optional.of(txn), Optional.of(txnApplied));
+    when(intentRepo.listByTx("acct", "tx-1")).thenReturn(List.of(intent));
+    when(intentRepo.getByTarget("acct", "/accounts/acct/custom/key-1"))
+        .thenReturn(Optional.empty());
+
+    Transaction committed =
+        invokeCommitPrivate(
+            service,
+            "acct",
+            CommitTransactionRequest.newBuilder().setTxId("tx-1").build(),
+            Timestamps.fromMillis(10));
+
+    assertEquals(TransactionState.TS_APPLIED, committed.getState());
+    verify(applier, never())
+        .applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any());
+    verify(txRepo, never())
+        .update(
+            argThat(
+                updated ->
+                    updated != null
+                        && updated.getState() == TransactionState.TS_APPLY_FAILED_RETRYABLE),
+            anyLong());
+  }
+
+  @Test
   void commitFromRetryableCanTransitionToApplied() throws Exception {
     var service = new TransactionsServiceImpl();
     var txRepo = Mockito.mock(TransactionRepository.class);
@@ -238,12 +351,14 @@ class TransactionsServiceImplTest {
             .setCreatedAt(Timestamps.fromMillis(1))
             .build();
 
+    Transaction txnApplied = txn.toBuilder().setState(TransactionState.TS_APPLIED).build();
     when(txRepo.getById("acct", "tx-1"))
-        .thenReturn(Optional.of(txn), Optional.of(txn), Optional.of(txnApplying));
+        .thenReturn(
+            Optional.of(txn), Optional.of(txn), Optional.of(txnApplying), Optional.of(txnApplied));
     when(intentRepo.listByTx("acct", "tx-1")).thenReturn(List.of(intent));
     when(intentRepo.getByTarget("acct", "/accounts/acct/custom/key-1"))
         .thenReturn(Optional.of(intent));
-    when(applier.applyTransactionBestEffort(List.of(intent), intentRepo))
+    when(applier.applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any()))
         .thenReturn(TransactionIntentApplierSupport.ApplyOutcome.applied());
     when(txRepo.metaFor("acct", "tx-1"))
         .thenReturn(
@@ -254,13 +369,6 @@ class TransactionsServiceImplTest {
                 updated -> updated != null && updated.getState() == TransactionState.TS_APPLYING),
             anyLong()))
         .thenReturn(true);
-    when(txRepo.update(
-            argThat(
-                updated -> updated != null && updated.getState() == TransactionState.TS_APPLIED),
-            anyLong()))
-        .thenReturn(true);
-    when(intentRepo.deleteBothIndicesBestEffort(intent)).thenReturn(true);
-
     Transaction committed =
         invokeCommitPrivate(
             service,
@@ -269,7 +377,7 @@ class TransactionsServiceImplTest {
             Timestamps.fromMillis(10));
 
     assertEquals(TransactionState.TS_APPLIED, committed.getState());
-    verify(intentRepo).deleteBothIndicesBestEffort(intent);
+    verify(intentRepo, never()).deleteBothIndicesBestEffort(intent);
   }
 
   @Test
@@ -307,7 +415,7 @@ class TransactionsServiceImplTest {
     when(intentRepo.listByTx("acct", "tx-1")).thenReturn(List.of(intent));
     when(intentRepo.getByTarget("acct", "/accounts/acct/custom/key-1"))
         .thenReturn(Optional.of(intent));
-    when(applier.applyTransactionBestEffort(List.of(intent), intentRepo))
+    when(applier.applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any()))
         .thenReturn(
             TransactionIntentApplierSupport.ApplyOutcome.conflict(
                 "EXPECTED_VERSION_MISMATCH", "pointer version changed", 3L, 4L, null));
@@ -386,11 +494,13 @@ class TransactionsServiceImplTest {
             .setCreatedAt(Timestamps.fromMillis(1))
             .build();
 
-    when(txRepo.getById("acct", "tx-1")).thenReturn(Optional.of(txn), Optional.of(txn));
+    Transaction txnApplied = txn.toBuilder().setState(TransactionState.TS_APPLIED).build();
+    when(txRepo.getById("acct", "tx-1"))
+        .thenReturn(Optional.of(txn), Optional.of(txnApplied), Optional.of(txnApplied));
     when(intentRepo.listByTx("acct", "tx-1")).thenReturn(List.of(intent));
     when(intentRepo.getByTarget("acct", "/accounts/acct/custom/key-1"))
         .thenReturn(Optional.of(intent));
-    when(applier.applyTransactionBestEffort(List.of(intent), intentRepo))
+    when(applier.applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any()))
         .thenReturn(
             TransactionIntentApplierSupport.ApplyOutcome.conflict(
                 "EXPECTED_VERSION_MISMATCH", "pointer version changed", 1L, 2L, null));
@@ -401,11 +511,6 @@ class TransactionsServiceImplTest {
                     "/accounts/acct/custom/key-1", "s3://bucket/blob-1", 2L)));
     when(txRepo.metaFor("acct", "tx-1"))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(21L).build());
-    when(txRepo.update(
-            argThat(
-                updated -> updated != null && updated.getState() == TransactionState.TS_APPLIED),
-            anyLong()))
-        .thenReturn(true);
     when(intentRepo.deleteBothIndicesBestEffort(intent)).thenReturn(true);
 
     Transaction committed =
@@ -416,7 +521,7 @@ class TransactionsServiceImplTest {
             Timestamps.fromMillis(10));
 
     assertEquals(TransactionState.TS_APPLIED, committed.getState());
-    verify(intentRepo).deleteBothIndicesBestEffort(intent);
+    verify(intentRepo, never()).deleteBothIndicesBestEffort(intent);
     verify(intentRepo, never())
         .update(
             argThat(
@@ -455,20 +560,16 @@ class TransactionsServiceImplTest {
             .setCreatedAt(Timestamps.fromMillis(1))
             .build();
 
-    when(txRepo.getById("acct", "tx-1")).thenReturn(Optional.of(txn), Optional.of(txn));
+    Transaction txnApplied = txn.toBuilder().setState(TransactionState.TS_APPLIED).build();
+    when(txRepo.getById("acct", "tx-1"))
+        .thenReturn(Optional.of(txn), Optional.of(txn), Optional.of(txnApplied));
     when(intentRepo.listByTx("acct", "tx-1")).thenReturn(List.of(intent));
     when(intentRepo.getByTarget("acct", "/accounts/acct/custom/key-1"))
         .thenReturn(Optional.of(intent));
-    when(applier.applyTransactionBestEffort(List.of(intent), intentRepo))
+    when(applier.applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any()))
         .thenReturn(TransactionIntentApplierSupport.ApplyOutcome.applied());
     when(txRepo.metaFor("acct", "tx-1"))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(31L).build());
-    when(txRepo.update(
-            argThat(
-                updated -> updated != null && updated.getState() == TransactionState.TS_APPLIED),
-            anyLong()))
-        .thenReturn(true);
-    when(intentRepo.deleteBothIndicesBestEffort(intent)).thenReturn(true);
 
     Transaction committed =
         invokeCommitPrivate(
@@ -478,7 +579,7 @@ class TransactionsServiceImplTest {
             Timestamps.fromMillis(10));
 
     assertEquals(TransactionState.TS_APPLIED, committed.getState());
-    verify(intentRepo).deleteBothIndicesBestEffort(intent);
+    verify(intentRepo, never()).deleteBothIndicesBestEffort(intent);
   }
 
   @Test
@@ -514,12 +615,14 @@ class TransactionsServiceImplTest {
             .setCreatedAt(Timestamps.fromMillis(1))
             .build();
 
+    Transaction txnApplied = txn.toBuilder().setState(TransactionState.TS_APPLIED).build();
     when(txRepo.getById(accountId, txId))
-        .thenReturn(Optional.of(txn), Optional.of(txn), Optional.of(txnApplying));
+        .thenReturn(
+            Optional.of(txn), Optional.of(txn), Optional.of(txnApplying), Optional.of(txnApplied));
     when(intentRepo.listByTx(accountId, txId)).thenReturn(List.of(intent));
     when(intentRepo.getByTarget(accountId, intent.getTargetPointerKey()))
         .thenReturn(Optional.of(intent));
-    when(applier.applyTransactionBestEffort(List.of(intent), intentRepo))
+    when(applier.applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any()))
         .thenReturn(TransactionIntentApplierSupport.ApplyOutcome.applied());
     when(txRepo.metaFor(accountId, txId))
         .thenReturn(
@@ -530,13 +633,6 @@ class TransactionsServiceImplTest {
                 updated -> updated != null && updated.getState() == TransactionState.TS_APPLYING),
             anyLong()))
         .thenReturn(true);
-    when(txRepo.update(
-            argThat(
-                updated -> updated != null && updated.getState() == TransactionState.TS_APPLIED),
-            anyLong()))
-        .thenReturn(true);
-    when(intentRepo.deleteBothIndicesBestEffort(intent)).thenReturn(true);
-
     Transaction committed =
         invokeCommitPrivate(
             service,
@@ -611,6 +707,7 @@ class TransactionsServiceImplTest {
         invokePreparePrivate(service, accountId, request, Timestamps.fromMillis(10));
 
     assertEquals(TransactionState.TS_PREPARED, prepared.getState());
+    assertEquals("1", prepared.getPropertiesMap().get("floecat.transaction.prepared-intent-count"));
     verify(intentRepo)
         .create(
             argThat(
@@ -1010,6 +1107,58 @@ class TransactionsServiceImplTest {
             org.mockito.ArgumentMatchers.any(
                 ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy.class),
             org.mockito.ArgumentMatchers.eq(""));
+  }
+
+  @Test
+  void commitPreparedIntentCountMismatchFailsBeforeAtomicApply() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
+
+    inject(service, "txRepo", txRepo);
+    inject(service, "intentRepo", intentRepo);
+    inject(service, "intentApplierSupport", applier);
+
+    Transaction txn =
+        Transaction.newBuilder()
+            .setAccountId("acct")
+            .setTxId("tx-1")
+            .setState(TransactionState.TS_PREPARED)
+            .putProperties("floecat.transaction.prepared-intent-count", "2")
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId("acct")
+            .setTxId("tx-1")
+            .setTargetPointerKey("/accounts/acct/custom/key-1")
+            .setBlobUri("s3://bucket/blob-1")
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    when(txRepo.getById("acct", "tx-1")).thenReturn(Optional.of(txn), Optional.of(txn));
+    when(txRepo.metaFor("acct", "tx-1"))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(21L).build());
+    when(txRepo.update(
+            argThat(
+                updated ->
+                    updated != null
+                        && updated.getState() == TransactionState.TS_APPLY_FAILED_RETRYABLE),
+            anyLong()))
+        .thenReturn(true);
+    when(intentRepo.listByTx("acct", "tx-1")).thenReturn(List.of(intent));
+
+    Transaction committed =
+        invokeCommitPrivate(
+            service,
+            "acct",
+            CommitTransactionRequest.newBuilder().setTxId("tx-1").build(),
+            Timestamps.fromMillis(10));
+
+    assertEquals(TransactionState.TS_APPLY_FAILED_RETRYABLE, committed.getState());
+    verify(applier, never())
+        .applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any());
   }
 
   private static Transaction invokeCommitPrivate(
