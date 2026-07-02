@@ -32,9 +32,9 @@ import ai.floedb.floecat.catalog.rpc.ListCatalogsResponse;
 import ai.floedb.floecat.catalog.rpc.UpdateCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateCatalogResponse;
 import ai.floedb.floecat.common.rpc.MutationMeta;
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceCatalogs;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -51,19 +51,13 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import ai.floedb.floecat.systemcatalog.graph.SystemCatalogTranslator;
-import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import org.jboss.logging.Logger;
 
@@ -82,11 +76,6 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
 
   private static final Set<String> CATALOG_MUTABLE_PATHS =
       Set.of("display_name", "description", "connector_ref", "properties", "policy_ref");
-  private static final String PAGE_TOKEN_PREFIX = "svc:catalogs:v1:";
-  private static final String PAGE_TOKEN_SYSTEM_PAYLOAD = "s";
-  private static final String PAGE_TOKEN_USER_PAYLOAD_PREFIX = "u:";
-  private static final String SYSTEM_CATALOG_DESCRIPTION =
-      "System catalog (global; visible from all catalogs)";
 
   private static final Logger LOG = Logger.getLogger(CatalogService.class);
 
@@ -100,162 +89,14 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var principalContext = principal.get();
                   authz.require(principalContext, "catalog.read");
 
-                  var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
-                  var cursor = parseCatalogPageToken(pageIn.token, correlationId());
-                  int want = Math.max(1, pageIn.limit);
-                  var visibleSystemCatalog = visibleSystemCatalogForCurrentEngine();
-                  Catalog systemCatalog = visibleSystemCatalog.orElse(null);
-                  boolean hasSystemCatalog = systemCatalog != null;
-                  int userCount = catalogRepo.count(principalContext.getAccountId());
-                  int totalCount = userCount + (hasSystemCatalog ? 1 : 0);
-
-                  boolean systemPhase = cursor.systemPhase;
-                  if (systemPhase && !hasSystemCatalog) {
-                    throw GrpcErrors.invalidArgument(
-                        correlationId(), PAGE_TOKEN_INVALID, Map.of("page_token", pageIn.token));
-                  }
-
-                  List<Catalog> catalogs = new ArrayList<>(want);
-                  String nextToken = "";
-
-                  if (systemPhase) {
-                    catalogs.add(systemCatalog);
-                  } else {
-                    var next = new StringBuilder();
-                    List<Catalog> userCatalogs;
-                    try {
-                      userCatalogs =
-                          catalogRepo.list(
-                              principalContext.getAccountId(), want, cursor.repoToken, next);
-                    } catch (IllegalArgumentException badToken) {
-                      throw GrpcErrors.invalidArgument(
-                          correlationId(), PAGE_TOKEN_INVALID, Map.of("page_token", pageIn.token));
-                    }
-
-                    catalogs.addAll(userCatalogs);
-                    nextToken = encodeUserRepoPageToken(next.toString());
-                    if (nextToken.isBlank()) {
-                      if (hasSystemCatalog && catalogs.size() < want) {
-                        catalogs.add(systemCatalog);
-                      } else if (hasSystemCatalog) {
-                        nextToken = encodeSystemPageToken();
-                      }
-                    }
-                  }
-
-                  var page = MutationOps.pageOut(nextToken, totalCount);
-
-                  return ListCatalogsResponse.newBuilder()
-                      .addAllCatalogs(catalogs)
-                      .setPage(page)
-                      .build();
+                  return catalogSurface()
+                      .listCatalogs(request, principalContext.getAccountId(), correlationId());
                 }),
             correlationId())
         .onFailure()
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
-  }
-
-  private Catalog systemCatalogForCurrentEngine() {
-    String engineKind = engineContext.effectiveEngineKind();
-    return Catalog.newBuilder()
-        .setResourceId(SystemNodeRegistry.systemCatalogContainerId(engineKind))
-        .setDisplayName(engineKind)
-        .setDescription(SYSTEM_CATALOG_DESCRIPTION)
-        .build();
-  }
-
-  private CatalogPageCursor parseCatalogPageToken(String token, String corr) {
-    if (token == null || token.isBlank()) {
-      return CatalogPageCursor.user("");
-    }
-    if (!token.startsWith(PAGE_TOKEN_PREFIX)) {
-      // Backward-compatible path: pass raw repository tokens through unchanged.
-      return CatalogPageCursor.user(token);
-    }
-    String encodedPayload = token.substring(PAGE_TOKEN_PREFIX.length());
-    final String payload;
-    try {
-      payload = new String(Base64.getUrlDecoder().decode(encodedPayload), StandardCharsets.UTF_8);
-    } catch (IllegalArgumentException bad) {
-      throw GrpcErrors.invalidArgument(corr, PAGE_TOKEN_INVALID, Map.of("page_token", token));
-    }
-    if (PAGE_TOKEN_SYSTEM_PAYLOAD.equals(payload)) {
-      return CatalogPageCursor.system();
-    }
-    if (payload.startsWith(PAGE_TOKEN_USER_PAYLOAD_PREFIX)) {
-      return CatalogPageCursor.user(payload.substring(PAGE_TOKEN_USER_PAYLOAD_PREFIX.length()));
-    }
-    throw GrpcErrors.invalidArgument(corr, PAGE_TOKEN_INVALID, Map.of("page_token", token));
-  }
-
-  private static String encodeUserRepoPageToken(String repoToken) {
-    if (repoToken == null || repoToken.isBlank()) {
-      // Blank means the user-catalog repo has no more pages.
-      return "";
-    }
-    return encodeCatalogPageTokenPayload(PAGE_TOKEN_USER_PAYLOAD_PREFIX + repoToken);
-  }
-
-  private static String encodeSystemPageToken() {
-    return encodeCatalogPageTokenPayload(PAGE_TOKEN_SYSTEM_PAYLOAD);
-  }
-
-  private static String encodeCatalogPageTokenPayload(String payload) {
-    String encodedPayload =
-        Base64.getUrlEncoder()
-            .withoutPadding()
-            .encodeToString(payload.getBytes(StandardCharsets.UTF_8));
-    return PAGE_TOKEN_PREFIX + encodedPayload;
-  }
-
-  private static final class CatalogPageCursor {
-    final boolean systemPhase;
-    final String repoToken;
-
-    private CatalogPageCursor(boolean systemPhase, String repoToken) {
-      this.systemPhase = systemPhase;
-      this.repoToken = repoToken;
-    }
-
-    static CatalogPageCursor system() {
-      return new CatalogPageCursor(true, "");
-    }
-
-    static CatalogPageCursor user(String repoToken) {
-      return new CatalogPageCursor(false, repoToken);
-    }
-  }
-
-  private Optional<ResourceId> normalizedCurrentSystemCatalogId(ResourceId catalogId) {
-    ResourceId normalized = normalizedSystemCatalogIdOrNull(catalogId);
-    if (normalized == null) {
-      return Optional.empty();
-    }
-    String currentId =
-        SystemNodeRegistry.systemCatalogContainerId(engineContext.effectiveEngineKind()).getId();
-    return normalized.getId().equals(currentId) ? Optional.of(normalized) : Optional.empty();
-  }
-
-  private ResourceId normalizedSystemCatalogIdOrNull(ResourceId catalogId) {
-    if (catalogId == null || catalogId.getKind() != ResourceKind.RK_CATALOG) {
-      return null;
-    }
-    return SystemCatalogTranslator.normalizeSystemId(catalogId);
-  }
-
-  private boolean isCurrentSystemCatalog(ResourceId catalogId) {
-    return normalizedCurrentSystemCatalogId(catalogId).isPresent();
-  }
-
-  private Optional<Catalog> visibleSystemCatalogForCurrentEngine() {
-    Catalog systemCatalog = systemCatalogForCurrentEngine();
-    return overlay.catalog(systemCatalog.getResourceId()).map(ignored -> systemCatalog);
-  }
-
-  private boolean isVisibleSystemCatalog(ResourceId catalogId) {
-    return normalizedCurrentSystemCatalogId(catalogId).flatMap(overlay::catalog).isPresent();
   }
 
   @Override
@@ -269,20 +110,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
 
                   authz.require(principalContext, "catalog.read");
 
-                  Catalog catalog =
-                      catalogRepo
-                          .getById(request.getCatalogId())
-                          .orElseGet(
-                              () -> {
-                                if (isVisibleSystemCatalog(request.getCatalogId())) {
-                                  return systemCatalogForCurrentEngine();
-                                }
-                                throw GrpcErrors.notFound(
-                                    correlationId(),
-                                    CATALOG,
-                                    Map.of("id", request.getCatalogId().getId()));
-                              });
-                  return GetCatalogResponse.newBuilder().setCatalog(catalog).build();
+                  return catalogSurface().getCatalog(request, correlationId());
                 }),
             correlationId())
         .onFailure()
@@ -407,13 +235,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   authz.require(pctx, "catalog.write");
 
                   var catalogId = request.getCatalogId();
-                  ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", corr);
-                  if (isCurrentSystemCatalog(catalogId)) {
-                    throw GrpcErrors.permissionDenied(
-                        corr,
-                        SYSTEM_OBJECT_IMMUTABLE,
-                        Map.of("id", catalogId.getId(), "kind", "catalog"));
-                  }
+                  catalogSurface().requireWritableCatalog(catalogId, corr);
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
                     throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
@@ -512,13 +334,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var correlationId = principalContext.getCorrelationId();
                   authz.require(principalContext, "catalog.write");
                   var id = request.getCatalogId();
-                  ensureKind(id, ResourceKind.RK_CATALOG, "catalog_id", correlationId);
-                  if (isCurrentSystemCatalog(id)) {
-                    throw GrpcErrors.permissionDenied(
-                        correlationId,
-                        SYSTEM_OBJECT_IMMUTABLE,
-                        Map.of("id", id.getId(), "kind", "catalog"));
-                  }
+                  catalogSurface().requireWritableCatalog(id, correlationId);
                   long markerVersion = markerStore.catalogMarkerVersion(id);
 
                   MutationMeta meta;
@@ -569,6 +385,10 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  private CatalogSurfaceCatalogs catalogSurface() {
+    return new CatalogSurfaceCatalogs(catalogRepo, overlay, engineContext);
   }
 
   private Catalog applyCatalogSpecPatch(
