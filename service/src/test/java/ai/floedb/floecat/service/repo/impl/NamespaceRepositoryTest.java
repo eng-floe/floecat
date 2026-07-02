@@ -28,6 +28,7 @@ import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -124,5 +125,50 @@ class NamespaceRepositoryTest {
     assertEquals(List.of("a.b"), dotted.pathSegments());
     assertEquals(nestedRid, nested.id());
     assertEquals(List.of("a", "b"), nested.pathSegments());
+  }
+
+  @Test
+  void listRefsByNameDoesNotInterpretDotsAsOnlyPathSeparators() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var catRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+
+    var dottedRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    namespaceRepo.create(
+        Namespace.newBuilder()
+            .setResourceId(dottedRid)
+            .setDisplayName("a.b")
+            .setCatalogId(catRid)
+            .build());
+
+    var nestedRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    namespaceRepo.create(
+        Namespace.newBuilder()
+            .setResourceId(nestedRid)
+            .addParents("a")
+            .setDisplayName("b")
+            .setCatalogId(catRid)
+            .build());
+
+    var ids =
+        namespaceRepo.listRefsByName(account, catRid.getId(), Set.of("a.b")).stream()
+            .map(ref -> ref.id())
+            .collect(java.util.stream.Collectors.toSet());
+
+    assertEquals(Set.of(dottedRid, nestedRid), ids);
   }
 }

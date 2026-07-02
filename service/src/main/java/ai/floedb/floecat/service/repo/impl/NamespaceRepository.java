@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
+import ai.floedb.floecat.scanner.spi.TopologyNames;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.NamespaceKey;
 import ai.floedb.floecat.service.repo.model.Schemas;
@@ -34,6 +35,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class NamespaceRepository {
@@ -136,19 +138,20 @@ public class NamespaceRepository {
         .flatMap(p -> toNamespaceRef(accountId, catalogId, catalogResourceId, p));
   }
 
-  /** Reads exact information-schema namespace names and returns refs without fetching blobs. */
+  /** Reads information-schema namespace names and returns refs without fetching blobs. */
   public List<NamespaceRef> listRefsByName(String accountId, String catalogId, Set<String> names) {
     if (names == null || names.isEmpty()) {
       return List.of();
     }
-    List<NamespaceRef> refs = new ArrayList<>(names.size());
-    for (String name : names) {
-      if (name == null || name.isBlank()) {
-        continue;
-      }
-      refByPath(accountId, catalogId, List.of(name.split("\\.", -1))).ifPresent(refs::add);
+    Set<String> requested =
+        names.stream().filter(name -> name != null && !name.isBlank()).collect(Collectors.toSet());
+    if (requested.isEmpty()) {
+      return List.of();
     }
-    return refs;
+    return listRefs(accountId, catalogId).stream()
+        .filter(
+            ref -> requested.contains(TopologyNames.namespaceName(ref.pathSegments(), ref.name())))
+        .toList();
   }
 
   private static ResourceId catalogResourceId(String accountId, String catalogId) {
