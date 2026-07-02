@@ -20,12 +20,14 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.metagraph.cache.CatalogTopologyCache;
 import ai.floedb.floecat.service.metagraph.cache.GraphCacheManager;
 import ai.floedb.floecat.service.metagraph.hint.EngineHintManager;
 import ai.floedb.floecat.service.metagraph.loader.NodeLoader;
@@ -66,6 +68,7 @@ public final class UserGraph {
   // ----------------------------------------------------------------------
 
   private final GraphCacheManager cache;
+  private final CatalogTopologyCache topology;
   private final NodeLoader nodes;
   private final NameResolver names;
   private final FullyQualifiedResolver fq;
@@ -98,6 +101,7 @@ public final class UserGraph {
       SnapshotRepository snapshotRepo,
       TableRepository tableRepo,
       ViewRepository viewRepo,
+      CatalogTopologyCache topology,
       Observability observability,
       PrincipalProvider principal,
       @ConfigProperty(name = "floecat.metadata.graph.cache-max-size", defaultValue = "50000")
@@ -108,6 +112,7 @@ public final class UserGraph {
     this.cache =
         new GraphCacheManager(
             cacheMaxSize > 0, cacheMaxSize, Math.max(0L, metaCacheTtlSeconds), observability);
+    this.topology = topology;
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
@@ -133,6 +138,15 @@ public final class UserGraph {
         snapshotRepo,
         tableRepo,
         viewRepo,
+        new CatalogTopologyCache(
+            catalogRepo,
+            nsRepo,
+            tableRepo,
+            viewRepo,
+            observability,
+            cacheMaxSize,
+            cacheMaxSize,
+            15),
         observability,
         principal,
         cacheMaxSize,
@@ -154,6 +168,8 @@ public final class UserGraph {
         snapshotRepo,
         tableRepo,
         viewRepo,
+        new CatalogTopologyCache(
+            catalogRepo, nsRepo, tableRepo, viewRepo, observability, 1024L, 1024L, 15),
         observability,
         new PrincipalProvider() {
           @Override
@@ -168,6 +184,18 @@ public final class UserGraph {
 
   public void invalidate(ResourceId id) {
     cache.invalidate(id);
+    if (topology == null || id == null) {
+      return;
+    }
+    switch (id.getKind()) {
+      case RK_CATALOG -> {
+        topology.evictCatalogRefs(id.getAccountId());
+        topology.evictNamespaceRefs(id);
+      }
+      case RK_NAMESPACE -> topology.evictRelationRefs(id);
+      case RK_TABLE, RK_VIEW -> topology.evict(id);
+      default -> {}
+    }
   }
 
   /**
@@ -356,9 +384,19 @@ public final class UserGraph {
    */
   public Optional<ResourceId> resolveName(String cid, NameRef ref) {
     validateNameRef(cid, ref);
+    if (ref.hasResourceId()) {
+      ResourceId id = ref.getResourceId();
+      if (id.getKind() == ResourceKind.RK_TABLE || id.getKind() == ResourceKind.RK_VIEW) {
+        return Optional.of(id);
+      }
+    }
     String accountId = requireAccountId(cid);
 
-    // table / view?
+    NameResolution cached = resolveNameFromTopology(cid, accountId, ref);
+    if (cached.answered()) {
+      return cached.resourceId();
+    }
+
     Optional<ResolvedRelation> t = names.resolveTableRelation(accountId, ref);
     Optional<ResolvedRelation> v = names.resolveViewRelation(accountId, ref);
 
@@ -370,6 +408,43 @@ public final class UserGraph {
     }
 
     return t.map(ResolvedRelation::resourceId).or(() -> v.map(ResolvedRelation::resourceId));
+  }
+
+  private NameResolution resolveNameFromTopology(String cid, String accountId, NameRef ref) {
+    if (topology == null || ref.getName().isBlank() || ref.getPathList().isEmpty()) {
+      return NameResolution.unanswered();
+    }
+    var catalog = topology.resolveCatalogRefByName(accountId, ref.getCatalog());
+    if (catalog.isEmpty()) {
+      return NameResolution.notFound();
+    }
+    var namespace = topology.resolveNamespaceRefByPath(catalog.get().id(), ref.getPathList());
+    if (namespace.isEmpty()) {
+      return NameResolution.notFound();
+    }
+    var resolved =
+        topology.resolveRelationRefsByName(catalog.get().id(), namespace.get().id(), ref.getName());
+    if (resolved.isAmbiguous()) {
+      throw GrpcErrors.invalidArgument(
+          cid,
+          GeneratedErrorMessages.MessageKey.QUERY_INPUT_AMBIGUOUS,
+          Map.of("name", ref.toString()));
+    }
+    return NameResolution.answered(resolved.singleId());
+  }
+
+  private record NameResolution(boolean answered, Optional<ResourceId> resourceId) {
+    private static NameResolution unanswered() {
+      return new NameResolution(false, Optional.empty());
+    }
+
+    private static NameResolution notFound() {
+      return new NameResolution(true, Optional.empty());
+    }
+
+    private static NameResolution answered(Optional<ResourceId> resourceId) {
+      return new NameResolution(true, resourceId);
+    }
   }
 
   /**
