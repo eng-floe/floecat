@@ -25,6 +25,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
@@ -32,6 +33,7 @@ import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
+import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationTableMetadata;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -243,5 +245,62 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             any(), any(), any(), locationCaptor.capture(), eq(connector), any());
     assertThat(locationCaptor.getValue())
         .contains("s3://bucket/table/metadata/00001.metadata.json");
+  }
+
+  @Test
+  void tableScopedConfigPinsFilesystemIcebergToCommittedMetadataLocation() {
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setUri("s3://bucket/table")
+            .putProperties("iceberg.source", "filesystem")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(connectorId.getAccountId())
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table-1")
+            .build();
+    service.backend =
+        new DefaultBackend() {
+          @Override
+          public Connector lookupConnector(ReconcileContext ctx, ResourceId requestedConnectorId) {
+            return connector;
+          }
+
+          @Override
+          public Optional<DestinationTableMetadata> lookupDestinationTableMetadata(
+              ReconcileContext ctx, ResourceId requestedTableId) {
+            return Optional.of(
+                new DestinationTableMetadata(
+                    ResourceId.newBuilder()
+                        .setAccountId(requestedTableId.getAccountId())
+                        .setKind(ResourceKind.RK_CATALOG)
+                        .setId("cat-1")
+                        .build(),
+                    ResourceId.newBuilder()
+                        .setAccountId(requestedTableId.getAccountId())
+                        .setKind(ResourceKind.RK_NAMESPACE)
+                        .setId("ns-1")
+                        .build(),
+                    "orders",
+                    "iceberg",
+                    "orders",
+                    connectorId,
+                    "s3://bucket/table",
+                    "s3://bucket/table/metadata/00001-committed.metadata.json"));
+          }
+        };
+
+    ReconcileContext ctx =
+        new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.empty());
+    ReconcilerService.ActiveConnector active = service.activeConnectorForResult(ctx, connectorId);
+    ConnectorConfig scoped = service.tableScopedResolvedConfig(ctx, active, tableId);
+
+    assertThat(scoped.options())
+        .containsEntry(
+            "metadata-location", "s3://bucket/table/metadata/00001-committed.metadata.json");
   }
 }

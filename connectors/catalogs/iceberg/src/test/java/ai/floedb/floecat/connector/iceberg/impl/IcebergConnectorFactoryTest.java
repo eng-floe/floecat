@@ -237,6 +237,15 @@ class IcebergConnectorFactoryTest {
   }
 
   @Test
+  void filesystemMetadataResolutionPrefersCommittedMetadataLocation() {
+    String resolved =
+        IcebergConnector.resolveMetadataLocation(
+            "s3://bucket/table", null, "s3://bucket/table/metadata/00001-committed.metadata.json");
+
+    assertEquals("s3://bucket/table/metadata/00001-committed.metadata.json", resolved);
+  }
+
+  @Test
   void restCatalogPropsUseRefreshingProviderWhenPresent() {
     Map<String, String> props =
         IcebergConnectorFactory.buildCatalogProperties(

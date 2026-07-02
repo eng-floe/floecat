@@ -243,7 +243,27 @@ public interface ReconcilerBackend {
       String sourceNamespace,
       String sourceName,
       ResourceId sourceConnectorId,
-      String storageLocation) {
+      String storageLocation,
+      String metadataLocation) {
+    public DestinationTableMetadata(
+        ResourceId catalogId,
+        ResourceId namespaceId,
+        String displayName,
+        String sourceNamespace,
+        String sourceName,
+        ResourceId sourceConnectorId,
+        String storageLocation) {
+      this(
+          catalogId,
+          namespaceId,
+          displayName,
+          sourceNamespace,
+          sourceName,
+          sourceConnectorId,
+          storageLocation,
+          "");
+    }
+
     public DestinationTableMetadata(
         ResourceId catalogId,
         ResourceId namespaceId,

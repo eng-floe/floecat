@@ -316,7 +316,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
               sourceNamespace(resolved.hasUpstream() ? resolved.getUpstream() : null),
               sourceName(resolved.hasUpstream() ? resolved.getUpstream() : null),
               sourceConnectorId(resolved.hasUpstream() ? resolved.getUpstream() : null),
-              resolved.getPropertiesMap().getOrDefault("storage_location", "")));
+              resolved.getPropertiesMap().getOrDefault("storage_location", ""),
+              resolved.getPropertiesMap().getOrDefault("metadata-location", "")));
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
         return Optional.empty();

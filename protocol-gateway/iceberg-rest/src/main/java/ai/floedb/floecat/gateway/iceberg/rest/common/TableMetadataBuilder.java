@@ -228,7 +228,7 @@ public final class TableMetadataBuilder {
     syncProperty(props, "last-partition-id", lastPartitionId);
     syncProperty(props, "default-sort-order-id", defaultSortOrderId);
     props.remove("last-updated-ms");
-    removeMetadataLocation(props);
+    removeInternalLocationProperties(props);
     return new TableMetadataView(
         formatVersion,
         tableUuid,
@@ -418,7 +418,7 @@ public final class TableMetadataBuilder {
     props.putIfAbsent("default-sort-order-id", defaultSortOrderId.toString());
     long lastSequenceNumber = 0L;
     props.putIfAbsent("last-sequence-number", Long.toString(lastSequenceNumber));
-    removeMetadataLocation(props);
+    removeInternalLocationProperties(props);
     return new TableMetadataView(
         formatVersion,
         table.hasResourceId() ? table.getResourceId().getId() : tableName,
@@ -619,11 +619,12 @@ public final class TableMetadataBuilder {
     props.put("write.metadata.path", directory);
   }
 
-  private static void removeMetadataLocation(Map<String, String> props) {
+  private static void removeInternalLocationProperties(Map<String, String> props) {
     if (props == null || props.isEmpty()) {
       return;
     }
     props.remove(MetadataLocationUtil.PRIMARY_KEY);
+    props.remove("storage_location");
   }
 
   private static boolean hasText(String value) {

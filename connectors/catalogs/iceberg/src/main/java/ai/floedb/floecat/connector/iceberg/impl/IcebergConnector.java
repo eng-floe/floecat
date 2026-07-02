@@ -786,6 +786,7 @@ public abstract class IcebergConnector implements FloecatConnector {
       throw new IllegalArgumentException("location is required");
     }
     Map<String, String> opts = options == null ? Map.of() : options;
+    String committedMetadataLocation = opts.get("metadata-location");
     Map<String, String> ioProps = new HashMap<>();
     opts.forEach(
         (k, v) -> {
@@ -820,7 +821,8 @@ public abstract class IcebergConnector implements FloecatConnector {
     FileIO fileIO = instantiateFileIO(ioImpl);
     ioProps.remove("io-impl");
     fileIO.initialize(ioProps);
-    String resolvedMetadataLocation = resolveMetadataLocation(location, fileIO);
+    String resolvedMetadataLocation =
+        resolveMetadataLocation(location, fileIO, committedMetadataLocation);
     StaticTableOperations ops = new StaticTableOperations(resolvedMetadataLocation, fileIO);
     return new LoadedExternalTable(new BaseTable(ops, deriveTableName(location)), fileIO);
   }
@@ -865,7 +867,13 @@ public abstract class IcebergConnector implements FloecatConnector {
     }
   }
 
-  private static String resolveMetadataLocation(String input, FileIO fileIO) {
+  static String resolveMetadataLocation(
+      String input, FileIO fileIO, String committedMetadataLocation) {
+    if (committedMetadataLocation != null
+        && !committedMetadataLocation.isBlank()
+        && committedMetadataLocation.trim().endsWith(".json")) {
+      return committedMetadataLocation.trim();
+    }
     String trimmed = input.trim();
     if (trimmed.endsWith(".json")) {
       return trimmed;

@@ -79,4 +79,26 @@ class TableMetadataBuilderTest {
     assertFalse(metadata.properties().containsKey("current-snapshot-id"));
     assertFalse(metadata.refs().containsKey("main"));
   }
+
+  @Test
+  void fromCatalogOmitsInternalStorageProperties() {
+    Table table = Table.newBuilder().setDisplayName("orders").build();
+    Map<String, String> props = new LinkedHashMap<>();
+    props.put("location", "s3://warehouse/orders");
+    props.put("storage_location", "s3://warehouse/orders");
+    props.put("metadata-location", "s3://warehouse/orders/metadata/00001.metadata.json");
+
+    TableMetadataView metadata =
+        TableMetadataBuilder.fromCatalog(
+            "orders",
+            table,
+            props,
+            List.of(),
+            "s3://warehouse/orders/metadata/00001.metadata.json",
+            null);
+
+    assertFalse(metadata.properties().containsKey("storage_location"));
+    assertFalse(metadata.properties().containsKey("metadata-location"));
+    assertEquals("s3://warehouse/orders", metadata.properties().get("location"));
+  }
 }
