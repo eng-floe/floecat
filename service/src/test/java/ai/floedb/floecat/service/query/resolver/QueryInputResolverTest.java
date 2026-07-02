@@ -43,6 +43,8 @@ import org.junit.jupiter.api.Test;
 
 public class QueryInputResolverTest {
 
+  private static final String ACCOUNT_ID = "account";
+
   QueryInputResolver resolver;
   FakeGraph metadataGraph;
 
@@ -63,11 +65,19 @@ public class QueryInputResolverTest {
   }
 
   ResourceId rid(String id) {
-    return ResourceId.newBuilder().setId(id).setKind(ResourceKind.RK_TABLE).build();
+    return ResourceId.newBuilder()
+        .setAccountId(ACCOUNT_ID)
+        .setId(id)
+        .setKind(ResourceKind.RK_TABLE)
+        .build();
   }
 
   ResourceId viewRid(String id) {
-    return ResourceId.newBuilder().setId(id).setKind(ResourceKind.RK_VIEW).build();
+    return ResourceId.newBuilder()
+        .setAccountId(ACCOUNT_ID)
+        .setId(id)
+        .setKind(ResourceKind.RK_VIEW)
+        .build();
   }
 
   /** Resolving a name that maps only to a table should return the table id. */
@@ -474,6 +484,35 @@ public class QueryInputResolverTest {
     assertEquals("DIRECT", res.resolved().get(0).getId());
   }
 
+  @Test
+  void resolve_name_with_foreign_resource_id_does_not_short_circuit() {
+    ResourceId localId = rid("LOCAL");
+    ResourceId foreignId =
+        ResourceId.newBuilder()
+            .setAccountId("other-account")
+            .setId("FOREIGN")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    NameRef n =
+        NameRef.newBuilder()
+            .setCatalog("c")
+            .addPath("ns")
+            .setName("tbl")
+            .setResourceId(foreignId)
+            .build();
+    metadataGraph.bind(n, localId);
+    metadataGraph.setCurrentSnapshot(localId, 10);
+
+    var res =
+        resolver.resolveInputs(
+            "cid",
+            List.of(QueryInput.newBuilder().setName(n).build()),
+            Optional.empty(),
+            Optional.empty());
+
+    assertEquals("LOCAL", res.resolved().get(0).getId());
+  }
+
   /** Empty snapshot ref should behave like "no override" and fall back to CURRENT. */
   @Test
   void snapshot_empty_snapshotref_behaves_as_no_override() {
@@ -775,7 +814,11 @@ public class QueryInputResolverTest {
     @Override
     public Optional<ResourceId> resolveName(String correlationId, NameRef ref) {
       if (ref.hasResourceId()) {
-        return Optional.of(ref.getResourceId());
+        ResourceId id = ref.getResourceId();
+        if (ACCOUNT_ID.equals(id.getAccountId())
+            && (id.getKind() == ResourceKind.RK_TABLE || id.getKind() == ResourceKind.RK_VIEW)) {
+          return Optional.of(id);
+        }
       }
       RuntimeException failure = failures.get(ref);
       if (failure != null) {
