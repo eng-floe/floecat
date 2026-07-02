@@ -59,6 +59,7 @@ class TransactionCommitServiceTest {
     service.tableLifecycleService = Mockito.mock(TableLifecycleService.class);
     service.tableCreateTransactionMapper = Mockito.mock(TableCreateTransactionMapper.class);
     service.connectorProvisioningService = Mockito.mock(ConnectorProvisioningService.class);
+    configureFastRetries(service);
 
     TableGatewaySupport tableSupport = Mockito.mock(TableGatewaySupport.class);
     ResourceId catalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
@@ -410,6 +411,7 @@ class TransactionCommitServiceTest {
     TransactionCommitService service = baseService();
     service.transactionCommitExecutionSupport =
         Mockito.mock(TransactionCommitExecutionSupport.class, Mockito.CALLS_REAL_METHODS);
+    configureFastRetries(service);
     TableGatewaySupport tableSupport = Mockito.mock(TableGatewaySupport.class);
     ResourceId catalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
     ResourceId namespaceId = ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
@@ -457,6 +459,83 @@ class TransactionCommitServiceTest {
         .openTransaction(eq(null), eq(true), eq("examples"), any(), eq("tx-attempt-2"));
   }
 
+  @Test
+  void commitCanRetryPastThePreviousThreeAttemptBudget() {
+    TransactionCommitService service = baseService();
+    service.maxInternalReplanAttempts = 5;
+    service.internalReplanInitialSleepMs = 0;
+    service.internalReplanMaxSleepMs = 0;
+    TableGatewaySupport tableSupport = Mockito.mock(TableGatewaySupport.class);
+    ResourceId catalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
+    ResourceId namespaceId = ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl-1").build();
+    Table table = Table.newBuilder().setResourceId(tableId).build();
+    TransactionCommitRequest request = singlePropertyChangeRequest();
+
+    arrangeCommonSingleTablePlanning(service, tableSupport, catalogId, namespaceId, tableId, table);
+
+    var firstOpen =
+        new TransactionCommitExecutionSupport.OpenTransaction(
+            "tx-1", TransactionState.TS_OPEN, null, "tx-1");
+    var secondOpen =
+        new TransactionCommitExecutionSupport.OpenTransaction(
+            "tx-2", TransactionState.TS_OPEN, null, "tx-2");
+    var thirdOpen =
+        new TransactionCommitExecutionSupport.OpenTransaction(
+            "tx-3", TransactionState.TS_OPEN, null, "tx-3");
+    var fourthOpen =
+        new TransactionCommitExecutionSupport.OpenTransaction(
+            "tx-4", TransactionState.TS_OPEN, null, "tx-4");
+    when(service.transactionCommitExecutionSupport.openTransaction(
+            eq(null), eq(true), eq("examples"), any(), eq(null)))
+        .thenReturn(new TransactionCommitExecutionSupport.OpenTransactionResult(firstOpen, null));
+    when(service.transactionCommitExecutionSupport.openTransaction(
+            eq(null), eq(true), eq("examples"), any(), eq("tx-attempt-1")))
+        .thenReturn(new TransactionCommitExecutionSupport.OpenTransactionResult(secondOpen, null));
+    when(service.transactionCommitExecutionSupport.openTransaction(
+            eq(null), eq(true), eq("examples"), any(), eq("tx-attempt-2")))
+        .thenReturn(new TransactionCommitExecutionSupport.OpenTransactionResult(thirdOpen, null));
+    when(service.transactionCommitExecutionSupport.openTransaction(
+            eq(null), eq(true), eq("examples"), any(), eq("tx-attempt-3")))
+        .thenReturn(new TransactionCommitExecutionSupport.OpenTransactionResult(fourthOpen, null));
+
+    Response retryableConflict =
+        Response.status(Response.Status.CONFLICT)
+            .header(TransactionCommitExecutionSupport.RETRYABLE_CONFLICT_PROPERTY, "true")
+            .build();
+    when(service.transactionCommitExecutionSupport.apply(eq(firstOpen), any()))
+        .thenReturn(retryableConflict);
+    when(service.transactionCommitExecutionSupport.apply(eq(secondOpen), any()))
+        .thenReturn(retryableConflict);
+    when(service.transactionCommitExecutionSupport.apply(eq(thirdOpen), any()))
+        .thenReturn(retryableConflict);
+    when(service.transactionCommitExecutionSupport.apply(eq(fourthOpen), any()))
+        .thenReturn(Response.noContent().build());
+    when(service.transactionCommitExecutionSupport.isRetryableConflict(retryableConflict))
+        .thenReturn(true);
+
+    Response response = service.commit("examples", null, request, tableSupport);
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(service.transactionCommitExecutionSupport)
+        .openTransaction(eq(null), eq(true), eq("examples"), any(), eq("tx-attempt-3"));
+    verify(service.tablePlanningSupport, times(4))
+        .planExistingTableChange(
+            any(),
+            any(),
+            any(),
+            eq(tableId),
+            eq(catalogId),
+            eq(namespaceId),
+            eq("db"),
+            eq("orders"),
+            any(),
+            any(),
+            any(),
+            eq(tableSupport),
+            eq(true));
+  }
+
   private TransactionCommitService baseService() {
     TransactionCommitService service = new TransactionCommitService();
     service.accountContext = Mockito.mock(AccountContext.class);
@@ -468,7 +547,14 @@ class TransactionCommitServiceTest {
     service.tableLifecycleService = Mockito.mock(TableLifecycleService.class);
     service.tableCreateTransactionMapper = Mockito.mock(TableCreateTransactionMapper.class);
     service.connectorProvisioningService = Mockito.mock(ConnectorProvisioningService.class);
+    configureFastRetries(service);
     return service;
+  }
+
+  private void configureFastRetries(TransactionCommitService service) {
+    service.maxInternalReplanAttempts = 3;
+    service.internalReplanInitialSleepMs = 0;
+    service.internalReplanMaxSleepMs = 0;
   }
 
   private TransactionCommitRequest singlePropertyChangeRequest() {

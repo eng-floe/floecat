@@ -39,11 +39,14 @@ import jakarta.ws.rs.core.Response;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @ApplicationScoped
 public class TransactionCommitService {
   static final String TX_REQUEST_HASH_PROPERTY = "iceberg.commit.request-hash";
-  private static final int MAX_INTERNAL_REPLAN_ATTEMPTS = 3;
+  private static final int DEFAULT_INTERNAL_REPLAN_ATTEMPTS = 8;
+  private static final long DEFAULT_INTERNAL_REPLAN_INITIAL_SLEEP_MS = 50L;
+  private static final long DEFAULT_INTERNAL_REPLAN_MAX_SLEEP_MS = 500L;
   @Inject AccountContext accountContext;
   @Inject ResourceResolver resourceResolver;
   @Inject TransactionCommitExecutionSupport transactionCommitExecutionSupport;
@@ -52,6 +55,15 @@ public class TransactionCommitService {
   @Inject TableLifecycleService tableLifecycleService;
   @Inject TableCreateTransactionMapper tableCreateTransactionMapper;
   @Inject ConnectorProvisioningService connectorProvisioningService;
+
+  @ConfigProperty(name = "floecat.gateway.commit.replan.max-attempts", defaultValue = "8")
+  int maxInternalReplanAttempts = DEFAULT_INTERNAL_REPLAN_ATTEMPTS;
+
+  @ConfigProperty(name = "floecat.gateway.commit.replan.initial-sleep-ms", defaultValue = "50")
+  long internalReplanInitialSleepMs = DEFAULT_INTERNAL_REPLAN_INITIAL_SLEEP_MS;
+
+  @ConfigProperty(name = "floecat.gateway.commit.replan.max-sleep-ms", defaultValue = "500")
+  long internalReplanMaxSleepMs = DEFAULT_INTERNAL_REPLAN_MAX_SLEEP_MS;
 
   public Response commitCreate(
       String prefix,
@@ -115,8 +127,9 @@ public class TransactionCommitService {
     ResourceId catalogId = catalogContext.catalogId();
 
     String requestHash = TransactionCommitRequestSupport.requestHash(changes);
+    int maxAttempts = maxInternalReplanAttempts();
     attemptLoop:
-    for (int attempt = 0; attempt < MAX_INTERNAL_REPLAN_ATTEMPTS; attempt++) {
+    for (int attempt = 0; attempt < maxAttempts; attempt++) {
       String generatedBeginSuffix = attempt == 0 ? null : "tx-attempt-" + attempt;
       TransactionCommitExecutionSupport.OpenTransactionResult openResult =
           transactionCommitExecutionSupport.openTransaction(
@@ -136,7 +149,8 @@ public class TransactionCommitService {
       }
       if (currentState == TransactionState.TS_APPLY_FAILED_CONFLICT
           || currentState == TransactionState.TS_ABORTED) {
-        if (attempt + 1 < MAX_INTERNAL_REPLAN_ATTEMPTS) {
+        if (attempt + 1 < maxAttempts) {
+          sleepBeforeRetry(attempt);
           continue;
         }
         return IcebergErrorResponses.failure(
@@ -249,6 +263,7 @@ public class TransactionCommitService {
                     preMaterializeAssertCreate);
             if (plannedChangeResult.error() != null) {
               if (shouldRetryTransactionConflict(attempt, plannedChangeResult.error())) {
+                sleepBeforeRetry(attempt);
                 continue attemptLoop;
               }
               return plannedChangeResult.error();
@@ -340,6 +355,7 @@ public class TransactionCommitService {
             ? transactionCommitExecutionSupport.stripInternalRetryHeader(applyResponse)
             : applyResponse;
       }
+      sleepBeforeRetry(attempt);
     }
 
     return IcebergErrorResponses.failure(
@@ -374,10 +390,42 @@ public class TransactionCommitService {
   }
 
   private boolean shouldRetryTransactionConflict(int attempt, Response applyResponse) {
-    if (attempt + 1 >= MAX_INTERNAL_REPLAN_ATTEMPTS) {
+    if (attempt + 1 >= maxInternalReplanAttempts()) {
       return false;
     }
     return transactionCommitExecutionSupport.isRetryableConflict(applyResponse);
+  }
+
+  private int maxInternalReplanAttempts() {
+    return Math.max(1, maxInternalReplanAttempts);
+  }
+
+  private void sleepBeforeRetry(int attempt) {
+    long sleepMs = retrySleepMillis(attempt);
+    if (sleepMs <= 0) {
+      return;
+    }
+    try {
+      Thread.sleep(sleepMs);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  long retrySleepMillis(int attempt) {
+    long initialSleepMs = Math.max(0L, internalReplanInitialSleepMs);
+    if (initialSleepMs == 0L) {
+      return 0L;
+    }
+    long maxSleepMs = Math.max(initialSleepMs, internalReplanMaxSleepMs);
+    long sleepMs = initialSleepMs;
+    for (int i = 0; i < attempt; i++) {
+      if (sleepMs >= maxSleepMs) {
+        return maxSleepMs;
+      }
+      sleepMs = Math.min(maxSleepMs, sleepMs * 2L);
+    }
+    return sleepMs;
   }
 
   private String canonicalize(Object value) {

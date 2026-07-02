@@ -939,7 +939,6 @@ class GrpcReconcilerBackendTest {
             .putProperties("reconciled", "true")
             .putProperties("storage_location", "s3://new-location")
             .build();
-
     when(backend.table.getTable(any()))
         .thenReturn(
             GetTableResponse.newBuilder()
@@ -1015,7 +1014,6 @@ class GrpcReconcilerBackendTest {
             .setDisplayName("orders")
             .build();
     Table after = before.toBuilder().putProperties("reconciled", "true").build();
-
     when(backend.table.getTable(any()))
         .thenReturn(
             GetTableResponse.newBuilder()
