@@ -392,6 +392,49 @@ class UserGraphTest {
   }
 
   @Test
+  void resolveNameDistinguishesDottedNamespaceSegmentFromNestedPath() {
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
+    catalogRepository.put(
+        Catalog.newBuilder().setResourceId(catalogId).setDisplayName("cat").build(),
+        mutationMeta(1L, Instant.now()));
+
+    ResourceId dottedNamespaceId = rid("account", "ns-dotted", ResourceKind.RK_NAMESPACE);
+    namespaceRepository.put(
+        Namespace.newBuilder()
+            .setResourceId(dottedNamespaceId)
+            .setCatalogId(catalogId)
+            .setDisplayName("a.b")
+            .build(),
+        mutationMeta(1L, Instant.now()));
+    ResourceId dottedTableId = rid("account", "table-dotted", ResourceKind.RK_TABLE);
+    tableRepository.put(
+        table(dottedTableId, catalogId, dottedNamespaceId, "orders"),
+        mutationMeta(1L, Instant.now()));
+
+    ResourceId nestedNamespaceId = rid("account", "ns-nested", ResourceKind.RK_NAMESPACE);
+    namespaceRepository.put(
+        Namespace.newBuilder()
+            .setResourceId(nestedNamespaceId)
+            .setCatalogId(catalogId)
+            .addParents("a")
+            .setDisplayName("b")
+            .build(),
+        mutationMeta(1L, Instant.now()));
+    ResourceId nestedTableId = rid("account", "table-nested", ResourceKind.RK_TABLE);
+    tableRepository.put(
+        table(nestedTableId, catalogId, nestedNamespaceId, "orders"),
+        mutationMeta(1L, Instant.now()));
+
+    NameRef dottedRef =
+        NameRef.newBuilder().setCatalog("cat").addPath("a.b").setName("orders").build();
+    NameRef nestedRef =
+        NameRef.newBuilder().setCatalog("cat").addPath("a").addPath("b").setName("orders").build();
+
+    assertThat(graph.resolveName("corr", dottedRef)).contains(dottedTableId);
+    assertThat(graph.resolveName("corr", nestedRef)).contains(nestedTableId);
+  }
+
+  @Test
   void resolveNameThrowsWhenAmbiguous() {
     seedTable("ambiguous", "{}");
     seedView("ambiguous");
@@ -892,6 +935,23 @@ class UserGraphTest {
             .build(),
         mutationMeta(1L, Instant.now()));
     return new TableIds(catalogId, namespaceId, tableId);
+  }
+
+  private Table table(
+      ResourceId tableId, ResourceId catalogId, ResourceId namespaceId, String displayName) {
+    return Table.newBuilder()
+        .setResourceId(tableId)
+        .setCatalogId(catalogId)
+        .setNamespaceId(namespaceId)
+        .setDisplayName(displayName)
+        .setSchemaJson("{}")
+        .setUpstream(
+            UpstreamRef.newBuilder()
+                .setFormat(TableFormat.TF_ICEBERG)
+                .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+                .setUri("s3://x")
+                .build())
+        .build();
   }
 
   private ResourceId seedView(String name) {

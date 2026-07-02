@@ -393,10 +393,7 @@ public class MetadataGraphCache {
     if (cached != null) {
       return cached.stream().filter(ref -> ref.pathSegments().equals(pathSegments)).findFirst();
     }
-    String name = String.join(".", pathSegments);
-    return nsRepo.listRefsByName(catalogId.getAccountId(), catalogId.getId(), Set.of(name)).stream()
-        .filter(ref -> ref.pathSegments().equals(pathSegments))
-        .findFirst();
+    return nsRepo.refByPath(catalogId.getAccountId(), catalogId.getId(), pathSegments);
   }
 
   private RelationNameResolution loadRelationName(

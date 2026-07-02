@@ -79,6 +79,12 @@ public final class FakeNamespaceRepository extends NamespaceRepository {
   }
 
   @Override
+  public Optional<NamespaceRef> refByPath(
+      String accountId, String catalogId, List<String> pathSegments) {
+    return getByPath(accountId, catalogId, pathSegments).map(this::toRef);
+  }
+
+  @Override
   public List<NamespaceRef> listRefsByName(
       String accountId, String catalogId, java.util.Set<String> names) {
     return listRefs(accountId, catalogId).stream()

@@ -104,25 +104,49 @@ class MetadataGraphCacheTopologyTest {
     NamespaceRef ref =
         new NamespaceRef(
             rid("acct", "ns", ResourceKind.RK_NAMESPACE), "sales", catalogId, List.of("sales"));
-    when(namespaceRepository.listRefsByName("acct", "cat", Set.of("sales")))
-        .thenReturn(List.of(ref));
+    when(namespaceRepository.refByPath("acct", "cat", List.of("sales")))
+        .thenReturn(Optional.of(ref));
 
     assertThat(cache.resolveNamespaceRefByPath(catalogId, List.of("sales"))).contains(ref);
     assertThat(cache.resolveNamespaceRefByPath(catalogId, List.of("sales"))).contains(ref);
 
-    verify(namespaceRepository, times(1)).listRefsByName("acct", "cat", Set.of("sales"));
+    verify(namespaceRepository, times(1)).refByPath("acct", "cat", List.of("sales"));
+    verify(namespaceRepository, never()).listRefsByName(eq("acct"), eq("cat"), any());
   }
 
   @Test
   void resolveNamespaceRefByPath_doesNotCacheMisses() {
     ResourceId catalogId = rid("acct", "cat", ResourceKind.RK_CATALOG);
-    when(namespaceRepository.listRefsByName("acct", "cat", Set.of("missing")))
-        .thenReturn(List.of());
+    when(namespaceRepository.refByPath("acct", "cat", List.of("missing")))
+        .thenReturn(Optional.empty());
 
     assertThat(cache.resolveNamespaceRefByPath(catalogId, List.of("missing"))).isEmpty();
     assertThat(cache.resolveNamespaceRefByPath(catalogId, List.of("missing"))).isEmpty();
 
-    verify(namespaceRepository, times(2)).listRefsByName("acct", "cat", Set.of("missing"));
+    verify(namespaceRepository, times(2)).refByPath("acct", "cat", List.of("missing"));
+    verify(namespaceRepository, never()).listRefsByName(eq("acct"), eq("cat"), any());
+  }
+
+  @Test
+  void resolveNamespaceRefByPath_preservesDottedPathSegments() {
+    ResourceId catalogId = rid("acct", "cat", ResourceKind.RK_CATALOG);
+    NamespaceRef dotted =
+        new NamespaceRef(
+            rid("acct", "dotted", ResourceKind.RK_NAMESPACE), "a.b", catalogId, List.of("a.b"));
+    NamespaceRef nested =
+        new NamespaceRef(
+            rid("acct", "nested", ResourceKind.RK_NAMESPACE), "b", catalogId, List.of("a", "b"));
+    when(namespaceRepository.refByPath("acct", "cat", List.of("a.b")))
+        .thenReturn(Optional.of(dotted));
+    when(namespaceRepository.refByPath("acct", "cat", List.of("a", "b")))
+        .thenReturn(Optional.of(nested));
+
+    assertThat(cache.resolveNamespaceRefByPath(catalogId, List.of("a.b"))).contains(dotted);
+    assertThat(cache.resolveNamespaceRefByPath(catalogId, List.of("a", "b"))).contains(nested);
+
+    verify(namespaceRepository).refByPath("acct", "cat", List.of("a.b"));
+    verify(namespaceRepository).refByPath("acct", "cat", List.of("a", "b"));
+    verify(namespaceRepository, never()).listRefsByName(eq("acct"), eq("cat"), any());
   }
 
   @Test

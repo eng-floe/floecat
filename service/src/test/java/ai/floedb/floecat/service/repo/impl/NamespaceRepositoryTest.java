@@ -27,6 +27,7 @@ import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -77,5 +78,51 @@ class NamespaceRepositoryTest {
 
     var fetched = namespaceRepo.getById(nsRid).orElseThrow();
     assertEquals("core", fetched.getDisplayName());
+  }
+
+  @Test
+  void refByPathPreservesLiteralDotsInPathSegments() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var catRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+
+    var dottedRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    namespaceRepo.create(
+        Namespace.newBuilder()
+            .setResourceId(dottedRid)
+            .setDisplayName("a.b")
+            .setCatalogId(catRid)
+            .build());
+
+    var nestedRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    namespaceRepo.create(
+        Namespace.newBuilder()
+            .setResourceId(nestedRid)
+            .addParents("a")
+            .setDisplayName("b")
+            .setCatalogId(catRid)
+            .build());
+
+    var dotted = namespaceRepo.refByPath(account, catRid.getId(), List.of("a.b")).orElseThrow();
+    var nested = namespaceRepo.refByPath(account, catRid.getId(), List.of("a", "b")).orElseThrow();
+
+    assertEquals(dottedRid, dotted.id());
+    assertEquals(List.of("a.b"), dotted.pathSegments());
+    assertEquals(nestedRid, nested.id());
+    assertEquals(List.of("a", "b"), nested.pathSegments());
   }
 }

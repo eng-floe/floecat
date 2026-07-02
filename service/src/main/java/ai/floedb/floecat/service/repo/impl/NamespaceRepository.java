@@ -126,20 +126,27 @@ public class NamespaceRepository {
   }
 
   /** Reads exact by-path namespace pointers and returns refs without fetching blobs from S3. */
+  public Optional<NamespaceRef> refByPath(
+      String accountId, String catalogId, List<String> pathSegments) {
+    if (pathSegments == null || pathSegments.isEmpty()) {
+      return Optional.empty();
+    }
+    ResourceId catalogResourceId = catalogResourceId(accountId, catalogId);
+    return repo.refByPointer(Keys.namespacePointerByPath(accountId, catalogId, pathSegments))
+        .flatMap(p -> toNamespaceRef(accountId, catalogId, catalogResourceId, p));
+  }
+
+  /** Reads exact information-schema namespace names and returns refs without fetching blobs. */
   public List<NamespaceRef> listRefsByName(String accountId, String catalogId, Set<String> names) {
     if (names == null || names.isEmpty()) {
       return List.of();
     }
-    ResourceId catalogResourceId = catalogResourceId(accountId, catalogId);
     List<NamespaceRef> refs = new ArrayList<>(names.size());
     for (String name : names) {
       if (name == null || name.isBlank()) {
         continue;
       }
-      repo.refByPointer(
-              Keys.namespacePointerByPath(accountId, catalogId, List.of(name.split("\\.", -1))))
-          .flatMap(p -> toNamespaceRef(accountId, catalogId, catalogResourceId, p))
-          .ifPresent(refs::add);
+      refByPath(accountId, catalogId, List.of(name.split("\\.", -1))).ifPresent(refs::add);
     }
     return refs;
   }
