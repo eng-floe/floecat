@@ -43,7 +43,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
-import ai.floedb.floecat.service.catalog.impl.CatalogOverlayGuards;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceTables;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
@@ -79,6 +79,10 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
   @Inject CatalogOverlay overlay;
 
   private static final Logger LOG = Logger.getLogger(TableConstraintsServiceImpl.class);
+
+  private CatalogSurfaceTables catalogSurfaceTables() {
+    return new CatalogSurfaceTables(overlay);
+  }
 
   /** Returns snapshot-scoped constraints for one table snapshot. */
   @Override
@@ -719,16 +723,16 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
 
   /** Ensures the request table is visible through overlay resolution (user or system). */
   private void ensureTableVisible(ResourceId tableId) {
-    CatalogOverlayGuards.requireVisibleTableNode(overlay, tableId, correlationId());
+    catalogSurfaceTables().requireVisibleTable(tableId, correlationId());
   }
 
   /** Ensures the request table is mutable; system tables are immutable and rejected. */
   private void ensureTableWritable(ResourceId tableId) {
-    CatalogOverlayGuards.requireWritableTableNode(overlay, tableId, correlationId());
+    catalogSurfaceTables().requireWritableTable(tableId, correlationId());
   }
 
   private String writableTableCatalogName(ResourceId tableId) {
-    var table = CatalogOverlayGuards.requireWritableTableNode(overlay, tableId, correlationId());
+    var table = catalogSurfaceTables().requireWritableTable(tableId, correlationId());
     if (!(table instanceof UserTableNode userTable)) {
       return "";
     }
