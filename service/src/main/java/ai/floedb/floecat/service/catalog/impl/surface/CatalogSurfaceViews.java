@@ -39,41 +39,26 @@ import java.util.Objects;
 /** Catalog Surface policy for view RPCs. */
 public final class CatalogSurfaceViews {
 
-  private static final String VIEW_TOKEN_PREFIX = "view:";
-
   private final ViewRepository viewRepo;
   private final CatalogOverlay overlay;
 
   public CatalogSurfaceViews(ViewRepository viewRepo, CatalogOverlay overlay) {
-    this.viewRepo = viewRepo;
+    this.viewRepo = Objects.requireNonNull(viewRepo, "view repository is required");
     this.overlay = overlay;
   }
 
   public ListViewsResponse listViews(ListViewsRequest request, String accountId, String corr) {
-    var repo = viewRepo();
     var namespaceId = request.getNamespaceId();
     NamespaceNode nsNode =
         CatalogSurfaceSupport.requireVisibleNamespace(overlay, namespaceId, corr);
-    var catalogId = nsNode.catalogId();
 
     var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
     final int want = Math.max(1, pageIn.limit);
     var result =
         CatalogSurfaceRelationPager.list(
-            nsNode,
             want,
             pageIn.token,
-            VIEW_TOKEN_PREFIX,
-            (limit, cursor, next) ->
-                repo.list(accountId, catalogId.getId(), namespaceId.getId(), limit, cursor, next),
-            () -> repo.count(accountId, catalogId.getId(), namespaceId.getId()),
-            () ->
-                overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
-                    .filter(ViewNode.class::isInstance)
-                    .map(ViewNode.class::cast)
-                    .toList(),
-            CatalogSurfaceViews::relativeViewKey,
-            CatalogSurfaceViews::viewFromSystemNode,
+            new CatalogSurfaceViewPageSource(viewRepo, overlay, accountId, nsNode, namespaceId),
             corr);
 
     var page = MutationOps.pageOut(result.nextToken(), result.totalSize());
@@ -159,12 +144,12 @@ public final class CatalogSurfaceViews {
       return viewFromSystemNode(node);
     }
 
-    return viewRepo()
+    return viewRepo
         .getById(viewId)
         .orElseThrow(() -> GrpcErrors.notFound(corr, VIEW, Map.of("id", viewId.getId())));
   }
 
-  private static View viewFromSystemNode(ViewNode node) {
+  static View viewFromSystemNode(ViewNode node) {
     View.Builder builder =
         View.newBuilder()
             .setResourceId(node.id())
@@ -176,25 +161,10 @@ public final class CatalogSurfaceViews {
     return builder.build();
   }
 
-  private ViewRepository viewRepo() {
-    return Objects.requireNonNull(viewRepo, "view repository is required for view reads");
-  }
-
   private static boolean isSystemViewNode(GraphNode node) {
     if (node == null || node.id() == null) {
       return false;
     }
     return node.origin() == GraphNodeOrigin.SYSTEM;
-  }
-
-  private static String relativeViewKey(ViewNode node) {
-    if (node == null) {
-      return "";
-    }
-    var name = node.displayName();
-    if (name == null) {
-      name = "";
-    }
-    return CatalogSurfaceSupport.normalizeName(name);
   }
 }

@@ -38,8 +38,6 @@ import java.util.Objects;
 /** Catalog Surface policy for table RPCs. */
 public final class CatalogSurfaceTables {
 
-  private static final String TBL_TOKEN_PREFIX = "tbl:";
-
   private final TableRepository tableRepo;
   private final CatalogOverlay overlay;
   private final CatalogSurfaceTablePolicy tablePolicy;
@@ -57,25 +55,12 @@ public final class CatalogSurfaceTables {
     var namespaceId = request.getNamespaceId();
     NamespaceNode nsNode =
         CatalogSurfaceSupport.requireVisibleNamespace(overlay, namespaceId, corr);
-    ResourceId catalogId = nsNode.catalogId();
 
     var result =
         CatalogSurfaceRelationPager.list(
-            nsNode,
             want,
             pageIn.token,
-            TBL_TOKEN_PREFIX,
-            (limit, cursor, next) ->
-                tableRepo.list(
-                    accountId, catalogId.getId(), namespaceId.getId(), limit, cursor, next),
-            () -> tableRepo.count(accountId, catalogId.getId(), namespaceId.getId()),
-            () ->
-                overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
-                    .filter(TableNode.class::isInstance)
-                    .map(TableNode.class::cast)
-                    .toList(),
-            CatalogSurfaceTables::relativeTableKey,
-            node -> node.toTableProtoBuilder().setCatalogId(catalogId).build(),
+            new CatalogSurfaceTablePageSource(tableRepo, overlay, accountId, nsNode, namespaceId),
             corr);
 
     var page = MutationOps.pageOut(result.nextToken(), result.totalSize());
@@ -126,16 +111,5 @@ public final class CatalogSurfaceTables {
     return tableRepo
         .getById(tableId)
         .orElseThrow(() -> GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
-  }
-
-  private static String relativeTableKey(TableNode tn) {
-    if (tn == null) {
-      return "";
-    }
-    String name = tn.displayName();
-    if (name == null) {
-      name = "";
-    }
-    return CatalogSurfaceSupport.normalizeName(name);
   }
 }

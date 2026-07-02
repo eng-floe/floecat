@@ -24,30 +24,17 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
-import java.util.function.IntSupplier;
-import java.util.function.Supplier;
 
 final class CatalogSurfaceRelationPager {
 
   private CatalogSurfaceRelationPager() {}
 
-  static <P, N> Page<P> list(
-      NamespaceNode namespace,
-      int want,
-      String pageToken,
-      String serviceTokenPrefix,
-      RepoLister<P> repoLister,
-      IntSupplier repoCounter,
-      Supplier<List<N>> systemNodes,
-      Function<N, String> systemRelativeKey,
-      Function<N, P> systemMapper,
-      String corr) {
+  static <P, N> Page<P> list(int want, String pageToken, Source<P, N> source, String corr) {
 
-    final boolean isServiceToken = pageToken != null && pageToken.startsWith(serviceTokenPrefix);
+    final boolean isServiceToken = pageToken != null && pageToken.startsWith(source.tokenPrefix());
     final String resumeAfterRel =
         isServiceToken
-            ? CatalogSurfaceSupport.decodeToken(serviceTokenPrefix, pageToken, corr)
+            ? CatalogSurfaceSupport.decodeToken(source.tokenPrefix(), pageToken, corr)
             : "";
     String repoCursor = isServiceToken ? "" : pageToken;
 
@@ -55,11 +42,11 @@ final class CatalogSurfaceRelationPager {
     String lastEmittedRel = "";
 
     String repoNext = "";
-    if (namespace.origin() != GraphNodeOrigin.SYSTEM && !isServiceToken) {
+    if (source.namespace().origin() != GraphNodeOrigin.SYSTEM && !isServiceToken) {
       var next = new StringBuilder();
       final List<P> scanned;
       try {
-        scanned = repoLister.list(want, repoCursor, next);
+        scanned = source.listRepo(want, repoCursor, next);
       } catch (IllegalArgumentException badToken) {
         throw GrpcErrors.invalidArgument(
             corr, PAGE_TOKEN_INVALID, Map.of("page_token", repoCursor));
@@ -71,7 +58,7 @@ final class CatalogSurfaceRelationPager {
 
     int sysCount;
     var repoExhausted = repoNext.isBlank();
-    var sysNodes = systemNodes.get();
+    var sysNodes = source.systemNodes();
     sysCount = sysNodes.size();
 
     if (repoExhausted && out.size() < want && sysCount > 0) {
@@ -79,7 +66,7 @@ final class CatalogSurfaceRelationPager {
 
       var sysItems =
           sysNodes.stream()
-              .map(node -> new SysItem<>(node, systemRelativeKey.apply(node)))
+              .map(node -> new SysItem<>(node, source.systemRelativeKey(node)))
               .filter(it -> it.rel() != null && !it.rel().isBlank())
               .sorted(Comparator.comparing(SysItem::rel))
               .toList();
@@ -91,23 +78,35 @@ final class CatalogSurfaceRelationPager {
         if (out.size() >= want) {
           break;
         }
-        out.add(systemMapper.apply(it.node()));
+        out.add(source.mapSystemNode(it.node()));
         lastEmittedRel = it.rel();
       }
     }
 
     String nextToken = repoNext;
     if (nextToken.isBlank() && out.size() == want && sysCount > 0) {
-      nextToken = CatalogSurfaceSupport.encodeToken(serviceTokenPrefix, lastEmittedRel);
+      nextToken = CatalogSurfaceSupport.encodeToken(source.tokenPrefix(), lastEmittedRel);
     }
 
-    int repoCount = namespace.origin() == GraphNodeOrigin.SYSTEM ? 0 : repoCounter.getAsInt();
+    int repoCount = source.namespace().origin() == GraphNodeOrigin.SYSTEM ? 0 : source.countRepo();
 
     return new Page<>(out, nextToken, repoCount + sysCount);
   }
 
-  interface RepoLister<P> {
-    List<P> list(int limit, String cursor, StringBuilder next);
+  interface Source<P, N> {
+    NamespaceNode namespace();
+
+    String tokenPrefix();
+
+    List<P> listRepo(int limit, String cursor, StringBuilder next);
+
+    int countRepo();
+
+    List<N> systemNodes();
+
+    String systemRelativeKey(N node);
+
+    P mapSystemNode(N node);
   }
 
   record Page<P>(List<P> items, String nextToken, int totalSize) {}

@@ -18,15 +18,12 @@ package ai.floedb.floecat.service.catalog.impl.surface;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
 import ai.floedb.floecat.catalog.rpc.Namespace;
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Function;
 
 final class CatalogSurfaceNamespacePager {
 
@@ -34,18 +31,7 @@ final class CatalogSurfaceNamespacePager {
 
   private CatalogSurfaceNamespacePager() {}
 
-  static Page list(
-      NamespaceRepository namespaceRepo,
-      String accountId,
-      ResourceId catalogId,
-      List<String> parentPath,
-      String namePrefix,
-      boolean recursive,
-      int want,
-      String pageToken,
-      List<NamespaceNode> systemNamespaces,
-      Function<NamespaceNode, Namespace> systemMapper,
-      String corr) {
+  static Page list(int want, String pageToken, Source source, String corr) {
 
     final int batch = Math.max(want * 4, 64);
     final boolean isServiceToken = pageToken != null && pageToken.startsWith(NS_TOKEN_PREFIX);
@@ -61,18 +47,17 @@ final class CatalogSurfaceNamespacePager {
         var next = new StringBuilder();
         final List<Namespace> scanned;
         try {
-          scanned =
-              namespaceRepo.list(accountId, catalogId.getId(), parentPath, batch, cursor, next);
+          scanned = source.listRepo(batch, cursor, next);
         } catch (IllegalArgumentException badToken) {
           throw GrpcErrors.invalidArgument(corr, PAGE_TOKEN_INVALID, Map.of("page_token", cursor));
         }
 
         for (var ns : scanned) {
-          if (!matches(ns, parentPath, namePrefix, recursive)) {
+          if (!matches(ns, source)) {
             continue;
           }
 
-          var rel = relativeQualifiedName(ns, parentPath);
+          var rel = relativeQualifiedName(ns, source.parentPath());
           if (!resumeAfterRel.isBlank() && rel.compareTo(resumeAfterRel) <= 0) {
             continue;
           }
@@ -95,9 +80,9 @@ final class CatalogSurfaceNamespacePager {
       record SysItem(NamespaceNode namespace, String rel) {}
 
       var sysItems =
-          systemNamespaces.stream()
-              .filter(ns -> matches(ns, parentPath, namePrefix, recursive))
-              .map(ns -> new SysItem(ns, relativeQualifiedName(ns, parentPath)))
+          source.systemNamespaces().stream()
+              .filter(ns -> matches(ns, source))
+              .map(ns -> new SysItem(ns, relativeQualifiedName(ns, source.parentPath())))
               .sorted(Comparator.comparing(SysItem::rel))
               .toList();
 
@@ -108,7 +93,7 @@ final class CatalogSurfaceNamespacePager {
         if (out.size() >= want) {
           break;
         }
-        out.add(systemMapper.apply(it.namespace()));
+        out.add(source.mapSystemNode(it.namespace()));
         lastEmittedRel = it.rel();
       }
     }
@@ -118,29 +103,12 @@ final class CatalogSurfaceNamespacePager {
       nextToken = CatalogSurfaceSupport.encodeToken(NS_TOKEN_PREFIX, lastEmittedRel);
     }
 
-    int total =
-        countNamespaces(
-            namespaceRepo,
-            accountId,
-            catalogId.getId(),
-            parentPath,
-            namePrefix,
-            recursive,
-            systemNamespaces,
-            corr);
+    int total = countNamespaces(source, corr);
 
     return new Page(out, nextToken, total);
   }
 
-  private static int countNamespaces(
-      NamespaceRepository namespaceRepo,
-      String accountId,
-      String catalogId,
-      List<String> parentPath,
-      String namePrefix,
-      boolean recursive,
-      List<NamespaceNode> systemNamespaces,
-      String corr) {
+  private static int countNamespaces(Source source, String corr) {
 
     int count = 0;
     String cursor = "";
@@ -148,13 +116,13 @@ final class CatalogSurfaceNamespacePager {
       var next = new StringBuilder();
       final List<Namespace> page;
       try {
-        page = namespaceRepo.list(accountId, catalogId, parentPath, 1000, cursor, next);
+        page = source.listRepo(1000, cursor, next);
       } catch (IllegalArgumentException bad) {
         throw GrpcErrors.invalidArgument(corr, PAGE_TOKEN_INVALID, Map.of("page_token", cursor));
       }
 
       for (var ns : page) {
-        if (matches(ns, parentPath, namePrefix, recursive)) {
+        if (matches(ns, source)) {
           count++;
         }
       }
@@ -165,8 +133,8 @@ final class CatalogSurfaceNamespacePager {
       }
     }
 
-    for (var ns : systemNamespaces) {
-      if (matches(ns, parentPath, namePrefix, recursive)) {
+    for (var ns : source.systemNamespaces()) {
+      if (matches(ns, source)) {
         count++;
       }
     }
@@ -174,32 +142,30 @@ final class CatalogSurfaceNamespacePager {
     return count;
   }
 
-  private static boolean matches(
-      Namespace namespace, List<String> parentPath, String namePrefix, boolean recursive) {
+  private static boolean matches(Namespace namespace, Source source) {
     boolean matchesScope =
-        recursive
-            ? isDescendantOf(namespace.getParentsList(), parentPath)
-            : isImmediateChildOf(namespace.getParentsList(), parentPath);
+        source.recursive()
+            ? isDescendantOf(namespace.getParentsList(), source.parentPath())
+            : isImmediateChildOf(namespace.getParentsList(), source.parentPath());
     if (!matchesScope) {
       return false;
     }
 
-    return namePrefix.isBlank()
-        || relativeQualifiedName(namespace, parentPath).startsWith(namePrefix);
+    return source.namePrefix().isBlank()
+        || relativeQualifiedName(namespace, source.parentPath()).startsWith(source.namePrefix());
   }
 
-  private static boolean matches(
-      NamespaceNode namespace, List<String> parentPath, String namePrefix, boolean recursive) {
+  private static boolean matches(NamespaceNode namespace, Source source) {
     boolean matchesScope =
-        recursive
-            ? isDescendantOf(namespace.pathSegments(), parentPath)
-            : isImmediateChildOf(namespace.pathSegments(), parentPath);
+        source.recursive()
+            ? isDescendantOf(namespace.pathSegments(), source.parentPath())
+            : isImmediateChildOf(namespace.pathSegments(), source.parentPath());
     if (!matchesScope) {
       return false;
     }
 
-    return namePrefix.isBlank()
-        || relativeQualifiedName(namespace, parentPath).startsWith(namePrefix);
+    return source.namePrefix().isBlank()
+        || relativeQualifiedName(namespace, source.parentPath()).startsWith(source.namePrefix());
   }
 
   private static boolean isDescendantOf(List<String> namespaceParentPath, List<String> parentPath) {
@@ -257,6 +223,20 @@ final class CatalogSurfaceNamespacePager {
     }
 
     return String.join(".", segs);
+  }
+
+  interface Source {
+    List<String> parentPath();
+
+    String namePrefix();
+
+    boolean recursive();
+
+    List<Namespace> listRepo(int limit, String cursor, StringBuilder next);
+
+    List<NamespaceNode> systemNamespaces();
+
+    Namespace mapSystemNode(NamespaceNode namespace);
   }
 
   record Page(List<Namespace> items, String nextToken, int totalSize) {}

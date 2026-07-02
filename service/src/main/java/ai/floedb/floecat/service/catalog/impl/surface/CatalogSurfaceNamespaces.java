@@ -81,16 +81,16 @@ public final class CatalogSurfaceNamespaces {
     final int want = Math.max(1, pageIn.limit);
     var result =
         CatalogSurfaceNamespacePager.list(
-            namespaceRepo,
-            accountId,
-            catalogId,
-            parentPath,
-            namePrefix,
-            recursive,
             want,
             pageIn.token,
-            sysNamespaces,
-            CatalogSurfaceNamespaces::toProto,
+            new CatalogSurfaceNamespacePageSource(
+                namespaceRepo,
+                accountId,
+                catalogId,
+                parentPath,
+                namePrefix,
+                recursive,
+                sysNamespaces),
             corr);
 
     var page = MutationOps.pageOut(result.nextToken(), result.totalSize());
@@ -225,7 +225,7 @@ public final class CatalogSurfaceNamespaces {
     return pp;
   }
 
-  private static Namespace toProto(NamespaceNode n) {
+  static Namespace toProto(NamespaceNode n) {
     return Namespace.newBuilder()
         .setResourceId(n.id())
         .setCatalogId(n.catalogId())
