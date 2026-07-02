@@ -936,7 +936,7 @@ class GrpcReconcilerBackendTest {
             .build();
     Table after =
         before.toBuilder()
-            .putProperties("reconciled", "true")
+            .putProperties(ReconcilerBackend.SOURCE_NAMESPACE_PROPERTY, "src.ns")
             .putProperties("storage_location", "s3://new-location")
             .build();
     when(backend.table.getTable(any()))
@@ -959,7 +959,13 @@ class GrpcReconcilerBackendTest {
                 "orders",
                 "s3://new-location",
                 "{}",
-                Map.of("reconciled", "true"),
+                Map.of(
+                    "owner",
+                    "integration",
+                    "reconciled",
+                    "true",
+                    ReconcilerBackend.SOURCE_NAMESPACE_PROPERTY,
+                    "src.ns"),
                 List.of(),
                 ColumnIdAlgorithm.CID_FIELD_ID,
                 ConnectorFormat.CF_ICEBERG,
@@ -974,8 +980,11 @@ class GrpcReconcilerBackendTest {
     verify(backend.table).updateTable(requestCaptor.capture());
     assertThat(requestCaptor.getValue().getSpec().getPropertiesMap())
         .containsEntry("owner", "txn-owner")
-        .containsEntry("reconciled", "true")
+        .containsEntry(ReconcilerBackend.SOURCE_NAMESPACE_PROPERTY, "src.ns")
         .containsEntry("storage_location", "s3://new-location");
+    assertThat(requestCaptor.getValue().getSpec().getPropertiesMap())
+        .doesNotContainEntry("owner", "integration")
+        .doesNotContainEntry("reconciled", "true");
     assertThat(requestCaptor.getValue().getPrecondition().getExpectedVersion()).isEqualTo(7L);
   }
 
@@ -1013,7 +1022,7 @@ class GrpcReconcilerBackendTest {
             .setNamespaceId(namespaceId)
             .setDisplayName("orders")
             .build();
-    Table after = before.toBuilder().putProperties("reconciled", "true").build();
+    Table after = before.toBuilder().putProperties("storage_location", "s3://new-location").build();
     when(backend.table.getTable(any()))
         .thenReturn(
             GetTableResponse.newBuilder()
@@ -1040,9 +1049,9 @@ class GrpcReconcilerBackendTest {
             new TableSpecDescriptor(
                 "main",
                 "orders",
-                "",
+                "s3://new-location",
                 "{}",
-                Map.of("reconciled", "true"),
+                Map.of("owner", "integration", "reconciled", "true"),
                 List.of(),
                 ColumnIdAlgorithm.CID_FIELD_ID,
                 ConnectorFormat.CF_ICEBERG,
@@ -1067,7 +1076,10 @@ class GrpcReconcilerBackendTest {
         .isEqualTo(8L);
     assertThat(requestCaptor.getAllValues().get(1).getSpec().getPropertiesMap())
         .containsEntry("owner", "txn-owner")
-        .containsEntry("reconciled", "true");
+        .containsEntry("storage_location", "s3://new-location");
+    assertThat(requestCaptor.getAllValues().get(1).getSpec().getPropertiesMap())
+        .doesNotContainEntry("owner", "integration")
+        .doesNotContainEntry("reconciled", "true");
   }
 
   private static ReconcileContext reconcileContext() {

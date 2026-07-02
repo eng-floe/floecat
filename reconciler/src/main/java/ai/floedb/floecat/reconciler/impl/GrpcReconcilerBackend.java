@@ -134,6 +134,14 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   };
 
   private static final Logger LOG = Logger.getLogger(GrpcReconcilerBackend.class);
+  private static final Set<String> RECONCILE_MANAGED_TABLE_PROPERTIES =
+      Set.of(
+          "metadata-location",
+          "metadata_location",
+          "storage_location",
+          SOURCE_NAMESPACE_PROPERTY,
+          SOURCE_NAME_PROPERTY,
+          SOURCE_CONNECTOR_ID_PROPERTY);
 
   private static final Metadata.Key<String> AUTHORIZATION =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
@@ -401,7 +409,13 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (current != null) {
       merged.putAll(current.getPropertiesMap());
     }
-    merged.putAll(safeProperties(descriptor));
+    safeProperties(descriptor)
+        .forEach(
+            (key, value) -> {
+              if (RECONCILE_MANAGED_TABLE_PROPERTIES.contains(key)) {
+                merged.put(key, value);
+              }
+            });
     return Map.copyOf(merged);
   }
 
