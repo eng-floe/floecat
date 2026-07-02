@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import com.google.protobuf.ByteString;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class StatsTargetScopeCodecTest {
@@ -62,8 +63,19 @@ class StatsTargetScopeCodecTest {
   }
 
   @Test
+  void roundTripsCompositeTarget() {
+    StatsTarget target = StatsTargetIdentity.compositeTarget(List.of(3L, 1L, 2L));
+    String encoded = StatsTargetScopeCodec.encode(target);
+    assertEquals("composite:1:2:3", encoded);
+    assertEquals(target, StatsTargetScopeCodec.decode(encoded).orElseThrow());
+  }
+
+  @Test
   void returnsEmptyOnInvalid() {
     assertTrue(StatsTargetScopeCodec.decode("bogus").isEmpty());
     assertTrue(StatsTargetScopeCodec.decode("column:abc").isEmpty());
+    assertTrue(StatsTargetScopeCodec.decode("composite:1").isEmpty());
+    assertTrue(StatsTargetScopeCodec.decode("composite:1:1").isEmpty());
+    assertTrue(StatsTargetScopeCodec.decode("composite:0:1").isEmpty());
   }
 }

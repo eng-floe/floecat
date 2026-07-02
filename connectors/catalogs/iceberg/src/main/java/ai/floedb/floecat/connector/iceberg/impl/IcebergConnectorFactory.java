@@ -77,6 +77,13 @@ final class IcebergConnectorFactory {
       }
     } catch (NumberFormatException ignore) {
     }
+    // stats.ndv.theta_k is consumed by the Java connector path in ParquetNdvProvider.
+    int thetaK = 4096;
+    try {
+      int parsed = Integer.parseInt(cleanOpts.getOrDefault("stats.ndv.theta_k", "4096"));
+      if (parsed >= 16) thetaK = parsed;
+    } catch (NumberFormatException ignore) {
+    }
 
     validateOptions(source, uri, cleanOpts, authScheme);
     Map<String, String> baseProps = buildBaseIcebergProperties(cleanOpts);
@@ -100,6 +107,7 @@ final class IcebergConnectorFactory {
             ndvEnabled,
             ndvSampleFraction,
             ndvMaxFiles,
+            thetaK,
             fileIO);
       }
       case GLUE, REST -> {

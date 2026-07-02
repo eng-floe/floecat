@@ -26,6 +26,7 @@ import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.BundleResultStatus;
+import ai.floedb.floecat.query.rpc.ConstraintServingOptions;
 import ai.floedb.floecat.query.rpc.FetchTableConstraintsRequest;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleEnd;
@@ -100,6 +101,53 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
                     .await()
                     .indefinitely());
     assertEquals(Status.INVALID_ARGUMENT.getCode(), failure.getStatus().getCode());
+  }
+
+  @Test
+  void streamConstraintsAppliesTableLimitAfterDedupe() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    QueryContext ctx = queryContextWithPin("query-constraints-dedupe-before-cap", 498L);
+    store.seed(ctx);
+
+    ConstraintDefinition pkUsers =
+        constraint("pk_users_dedupe_before_cap", ConstraintType.CT_PRIMARY_KEY, List.of(1L));
+    ConstraintProvider provider =
+        new ConstraintProvider() {
+          @Override
+          public Optional<ConstraintSetView> constraints(
+              ResourceId relationId, OptionalLong snapshotId) {
+            if (relationId.equals(TABLE)
+                && snapshotId.isPresent()
+                && snapshotId.getAsLong() == 498L) {
+              return Optional.of(newConstraintSet(TABLE, List.of(pkUsers)));
+            }
+            return Optional.empty();
+          }
+        };
+    PlannerStatsBundleService service =
+        createService(
+            repository,
+            store,
+            provider,
+            /* chunkSize= */ 5,
+            /* maxTables= */ 1,
+            /* maxTargets= */ 10);
+
+    FetchTableConstraintsRequest request =
+        FetchTableConstraintsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTableIds(TABLE)
+            .addTableIds(TABLE)
+            .build();
+
+    List<TableConstraintsBundleChunk> chunks =
+        service.streamConstraints("corr", ctx, request).collect().asList().await().indefinitely();
+    List<TableConstraintsResult> results = flattenConstraintChunks(chunks);
+    assertEquals(1, results.size(), "duplicate table_ids should count once against maxTables");
+    assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND, results.get(0).getStatus());
+    assertEquals("pk_users_dedupe_before_cap", results.get(0).getConstraints(0).getName());
   }
 
   @Test
@@ -197,6 +245,109 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
     assertEquals(2L, end.getReturnedTables());
     assertEquals(0L, end.getNotFoundTables());
     assertEquals(0L, end.getErrorTables());
+  }
+
+  @Test
+  void streamConstraintsAppliesConstraintByteCap() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    QueryContext ctx = queryContextWithPin("query-constraints-split-byte-cap", 802L);
+    store.seed(ctx);
+
+    ConstraintProvider provider =
+        new ConstraintProvider() {
+          @Override
+          public Optional<ConstraintSetView> constraints(
+              ResourceId relationId, OptionalLong snapshotId) {
+            return Optional.of(
+                newConstraintSet(
+                    TABLE,
+                    List.of(
+                        constraint(
+                            "pk_split_constraint_that_exceeds_tiny_cap",
+                            ConstraintType.CT_PRIMARY_KEY,
+                            List.of(1L)))));
+          }
+        };
+
+    PlannerStatsBundleService service =
+        createService(
+            repository,
+            store,
+            provider,
+            /* chunkSize= */ 10,
+            /* maxTables= */ 10,
+            /* maxTargets= */ 20);
+    FetchTableConstraintsRequest request =
+        FetchTableConstraintsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTableIds(TABLE)
+            .setOptions(ConstraintServingOptions.newBuilder().setMaxConstraintBytes(1))
+            .build();
+
+    List<TableConstraintsBundleChunk> chunks =
+        service.streamConstraints("corr", ctx, request).collect().asList().await().indefinitely();
+    List<TableConstraintsResult> results = flattenConstraintChunks(chunks);
+    assertEquals(1, results.size());
+    assertEquals(
+        BundleResultStatus.BUNDLE_RESULT_STATUS_OMITTED_BY_BUDGET, results.get(0).getStatus());
+
+    TableConstraintsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(1L, end.getRequestedTables());
+    assertEquals(0L, end.getReturnedTables());
+    assertEquals(1L, end.getOmittedByBudget());
+  }
+
+  @Test
+  void streamConstraintsTreatsExplicitZeroConstraintByteCapAsUncapped() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    QueryContext ctx = queryContextWithPin("query-constraints-split-byte-cap-zero", 803L);
+    store.seed(ctx);
+
+    ConstraintProvider provider =
+        new ConstraintProvider() {
+          @Override
+          public Optional<ConstraintSetView> constraints(
+              ResourceId relationId, OptionalLong snapshotId) {
+            return Optional.of(
+                newConstraintSet(
+                    TABLE,
+                    List.of(
+                        constraint(
+                            "pk_split_constraint_that_exceeds_tiny_cap_but_zero_is_uncapped",
+                            ConstraintType.CT_PRIMARY_KEY,
+                            List.of(1L)))));
+          }
+        };
+
+    PlannerStatsBundleService service =
+        createService(
+            repository,
+            store,
+            provider,
+            /* chunkSize= */ 10,
+            /* maxTables= */ 10,
+            /* maxTargets= */ 20);
+    FetchTableConstraintsRequest request =
+        FetchTableConstraintsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTableIds(TABLE)
+            .setOptions(ConstraintServingOptions.newBuilder().setMaxConstraintBytes(0))
+            .build();
+
+    List<TableConstraintsBundleChunk> chunks =
+        service.streamConstraints("corr", ctx, request).collect().asList().await().indefinitely();
+    List<TableConstraintsResult> results = flattenConstraintChunks(chunks);
+    assertEquals(1, results.size());
+    assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND, results.get(0).getStatus());
+
+    TableConstraintsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(1L, end.getRequestedTables());
+    assertEquals(1L, end.getReturnedTables());
+    assertEquals(0L, end.getOmittedByBudget());
   }
 
   @Test

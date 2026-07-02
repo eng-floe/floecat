@@ -524,6 +524,56 @@ public final class Keys {
     return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "targets-active";
   }
 
+  /**
+   * Pointer key for the latest snapshot that has committed stats for a table.
+   *
+   * <p>Updated whenever a new stats generation is first created; enables O(1) stale lookups without
+   * scanning all snapshot manifest pointers.
+   */
+  public static String tableStatsLatestSnapshotPointer(String accountId, String tableId) {
+    return "/accounts/"
+        + encode(req("account_id", accountId))
+        + "/tables/"
+        + encode(req("table_id", tableId))
+        + "/stats/latest-snapshot";
+  }
+
+  public static String tableStatsLatestSnapshotBlobUri(
+      String accountId, String tableId, long snapshotId) {
+    return String.format(
+        "/accounts/%s/tables/%s/stats/latest-snapshot/%019d.pb",
+        encode(req("account_id", accountId)),
+        encode(req("table_id", tableId)),
+        reqNonNegative("snapshot_id", snapshotId));
+  }
+
+  /**
+   * Pointer key for the latest snapshot that has committed stats for a specific target (column).
+   *
+   * <p>Set on every write of a per-target stats record; enables O(1) per-column stale lookups for
+   * targets absent from the table-level latest snapshot (partial snapshots, new columns).
+   */
+  public static String targetStatsLatestSnapshotPointer(
+      String accountId, String tableId, String storageId) {
+    return "/accounts/"
+        + encode(req("account_id", accountId))
+        + "/tables/"
+        + encode(req("table_id", tableId))
+        + "/stats/targets/"
+        + encode(req("storage_id", storageId))
+        + "/latest-snapshot";
+  }
+
+  public static String targetStatsLatestSnapshotBlobUri(
+      String accountId, String tableId, String storageId, long snapshotId) {
+    return String.format(
+        "/accounts/%s/tables/%s/stats/targets/%s/latest-snapshot/%019d.pb",
+        encode(req("account_id", accountId)),
+        encode(req("table_id", tableId)),
+        encode(req("storage_id", storageId)),
+        reqNonNegative("snapshot_id", snapshotId));
+  }
+
   public static String snapshotTargetStatsGenerationRootPointer(
       String accountId, String tableId, long snapshotId) {
     return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "target-generations/";

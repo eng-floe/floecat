@@ -190,7 +190,8 @@ public final class DummyConnector implements FloecatConnector {
               c.colId // fieldId for Iceberg-style schemas
               );
 
-      cstats.add(new ColumnStatsView(ref, c.logical, 60L, 0L, null, null, null, null, Map.of()));
+      cstats.add(
+          new ColumnStatsView(ref, c.logical, 60L, 0L, null, null, null, null, null, Map.of()));
     }
 
     String basePath =
@@ -225,6 +226,7 @@ public final class DummyConnector implements FloecatConnector {
                     "f" + fileIndex + "_min_" + c.colId,
                     "f" + fileIndex + "_max_" + c.colId,
                     null,
+                    null, // avgWidthBytes
                     Map.of()));
           }
           return cols;

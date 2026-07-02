@@ -39,7 +39,8 @@ message Ndv {
     NdvApprox approx = 2;
   }
 
-  repeated NdvSketch sketches = 20;
+  // Raw sketch artifacts for replay/diagnostics. Role is always SKETCH_ROLE_NDV here.
+  repeated SketchPayload sketches = 20;
 }
 
 // Approximate NDV estimate plus confidence and sampling diagnostics.
@@ -55,14 +56,39 @@ message NdvApprox {
   map<string,string> properties = 99;
 }
 
-// Serialized NDV sketch artifact used for replay/diagnostics.
-message NdvSketch {
-  string type = 1;
-  bytes data = 2;
-  string encoding = 3;
-  string compression = 4;
-  uint32 version = 5;
-  map<string,string> properties = 99;
+// Semantic role of a sketch payload, used by the planner to dispatch to the correct
+// selectivity/estimation function without inspecting sketch_type.
+enum SketchRole {
+  SKETCH_ROLE_UNSPECIFIED = 0;
+  // Theta sketch for number-of-distinct-values estimation.
+  SKETCH_ROLE_NDV = 1;
+  // Tuple sketch carrying NDV + per-value duplicate count and width metadata.
+  // Experimental: not used by the planner in Stage 1.
+  SKETCH_ROLE_TUPLE_NDV = 2;
+  // Frequent-items sketch for most-common-value estimation (MCV).
+  SKETCH_ROLE_MCV = 3;
+  // Quantile / range-predicate sketch. Concrete sketch_type selects numeric,
+  // temporal, or string implementations.
+  SKETCH_ROLE_QUANTILES = 4;
+}
+
+// Typed sketch artifact carrying both the raw bytes and enough metadata for the consumer
+// to deserialize and dispatch without out-of-band knowledge.
+// Replaces the former NdvSketch type — used in Ndv.sketches and ScalarStats.sketches.
+message SketchPayload {
+  // Semantic role: drives planner-side dispatch. Always set.
+  SketchRole role = 1;
+  // Versioned format identifier, e.g. "apache-datasketches-theta-v4", "kll-floats-v1",
+  // "frequent-items-utf8-v1", "apache-datasketches-tuple-v4".
+  string sketch_type = 2;
+  // Compact serialized sketch bytes in the format described by sketch_type.
+  bytes data = 3;
+  // Construction parameters for diagnostics and re-use, e.g. {"k": "4096", "encoding": "raw"}.
+  map<string,string> params = 4;
+  // Wall-clock milliseconds when the sketch was captured. 0 when unknown.
+  int64 captured_at_ms = 5;
+  // Completeness of this specific sketch payload.
+  StatsCompleteness completeness = 6;
 }
 
 enum StatsProducer {
@@ -147,12 +173,23 @@ message FileStatsTarget {
   string file_path = 1;
 }
 
+// Two or more columns treated as a composite stat target.
+// Used for multi-column NDV, functional-dependency stats, and join-overlap sketches
+// over column pairs. Column IDs must be positive and in ascending order for stable identity.
+// Reserved for future use: Floecat stores these records today; the planner cannot consume
+// them until the stats library rewrites selectivity functions at the clause-list level.
+message CompositeColumnStatsTarget {
+  repeated int64 column_ids = 1;
+}
+
 message StatsTarget {
   oneof target {
     TableStatsTarget table = 1;
     ColumnStatsTarget column = 2;
     EngineExpressionStatsTarget expression = 3;
     FileStatsTarget file = 4;
+    // Multi-column target: composite NDV, functional dependencies, join-overlap sketches.
+    CompositeColumnStatsTarget composite = 5;
   }
 }
 
@@ -204,8 +241,16 @@ message ScalarStats {
   Ndv ndv = 7;
   optional string min = 8;
   optional string max = 9;
-  bytes histogram = 10;
-  bytes tdigest = 11;
+  // Average uncompressed width in bytes per row.
+  // In the Parquet-footer path: ceiling(getTotalUncompressedSize() / row_count),
+  // minimum 1.  Sub-byte-per-row encodings (bit-packed integers, dictionary strings)
+  // return 1 rather than 0.  Exact decoded width requires a full value-decoding capture.
+  optional int64 avg_width_bytes = 10;
+  // Typed sketch payloads for planner consumption. Each entry is identified by its role;
+  // at most one payload per role is expected. Absent when no sketches have been captured.
+  repeated SketchPayload sketches = 11;
+  // Connector-specific extension metadata. Core planner semantics should use
+  // typed fields above; properties are for producer-specific details only.
   map<string, string> properties = 99;
 }
 

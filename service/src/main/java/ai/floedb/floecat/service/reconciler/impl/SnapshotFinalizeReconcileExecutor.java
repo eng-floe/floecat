@@ -336,13 +336,11 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     List<TargetStatsRecord> aggregateStats =
         aggregateKinds.isEmpty()
             ? List.of()
-            : persistence.mergeAggregatePartials(
+            : persistence.mergeCompletedGroupPartials(
                 tableId,
                 snapshotTask.snapshotId(),
                 aggregateKinds,
-                childState.completedGroupTasks().stream()
-                    .flatMap(group -> group.partialAggregateRecords().stream())
-                    .toList());
+                childState.completedGroupTasks());
     if (aggregateKinds.isEmpty()) {
       RuntimeException pointerFailure = advanceCurrentSnapshot(tableId, snapshotTask, lease);
       if (pointerFailure != null) {

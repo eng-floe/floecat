@@ -65,7 +65,9 @@ class TableStatisticsServiceImplFingerprintTest {
   }
 
   @Test
-  void scalarFingerprintDistinguishesDisplayName() {
+  void scalarFingerprintIgnoresDisplayName() {
+    // display_name is cosmetic (stats.proto) and must not affect identity, matching the
+    // content-hash image. Two scalars differing only in display_name fingerprint identically.
     ScalarStats first =
         ScalarStats.newBuilder()
             .setDisplayName("col_a")
@@ -75,6 +77,6 @@ class TableStatisticsServiceImplFingerprintTest {
     ScalarStats second = first.toBuilder().setDisplayName("alias_name").build();
 
     assertThat(StatsCanonicalizer.canonicalFingerprint(first))
-        .isNotEqualTo(StatsCanonicalizer.canonicalFingerprint(second));
+        .isEqualTo(StatsCanonicalizer.canonicalFingerprint(second));
   }
 }

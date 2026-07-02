@@ -31,6 +31,28 @@ final class IcebergFilesystemConnector extends IcebergConnector {
       double ndvSampleFraction,
       long ndvMaxFiles,
       FileIO externalFileIO) {
+    this(
+        connectorId,
+        table,
+        namespaceFq,
+        tableName,
+        ndvEnabled,
+        ndvSampleFraction,
+        ndvMaxFiles,
+        4096,
+        externalFileIO);
+  }
+
+  IcebergFilesystemConnector(
+      String connectorId,
+      Table table,
+      String namespaceFq,
+      String tableName,
+      boolean ndvEnabled,
+      double ndvSampleFraction,
+      long ndvMaxFiles,
+      int thetaK,
+      FileIO externalFileIO) {
     super(
         connectorId,
         table,
@@ -39,6 +61,7 @@ final class IcebergFilesystemConnector extends IcebergConnector {
         ndvEnabled,
         ndvSampleFraction,
         ndvMaxFiles,
+        thetaK,
         externalFileIO);
   }
 

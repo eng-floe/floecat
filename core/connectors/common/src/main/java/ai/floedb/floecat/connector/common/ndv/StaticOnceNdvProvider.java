@@ -16,8 +16,6 @@
 
 package ai.floedb.floecat.connector.common.ndv;
 
-import java.util.ArrayList;
-import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -47,7 +45,9 @@ public final class StaticOnceNdvProvider implements NdvProvider {
       }
 
       if (sink.approx == null && from.approx != null) {
-        sink.approx = from.approx;
+        // Copy, don't alias: the sink's approx is later mutated in place by finalizeTheta, which
+        // would otherwise corrupt the shared static source.
+        sink.approx = from.approx.copy();
       }
 
       if (from.sketches != null && !from.sketches.isEmpty()) {
@@ -56,16 +56,9 @@ public final class StaticOnceNdvProvider implements NdvProvider {
             continue;
           }
 
-          String t = sk.type == null ? "" : sk.type.toLowerCase(Locale.ROOT);
-
+          String t = sk.type == null ? "" : sk.type.toLowerCase(java.util.Locale.ROOT);
           if (t.contains("datasketches") && t.contains("theta")) {
             sink.mergeTheta(sk.data);
-          } else {
-            if (sink.sketches == null) {
-              sink.sketches = new ArrayList<>();
-            }
-
-            sink.sketches.add(sk);
           }
         }
       }

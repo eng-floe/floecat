@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -55,9 +56,23 @@ final class JavaConnectorFileGroupCaptureAdapter {
     if (!request.requestsStats() || request.plannedFilePaths().isEmpty()) {
       return List.of();
     }
-    return capturedStats == null
-        ? List.of()
-        : capturedStats.stream().filter(record -> record != null && record.hasFile()).toList();
+    List<TargetStatsRecord> fileStats =
+        capturedStats == null
+            ? List.of()
+            : capturedStats.stream().filter(record -> record != null && record.hasFile()).toList();
+    if (fileStats.isEmpty()) {
+      return List.of();
+    }
+    List<TargetStatsRecord> partialAggregates =
+        FileGroupTargetStatsRollup.partialAggregatesFromFileRecords(
+            request.tableId(),
+            request.snapshotId(),
+            request.requestedStatsTargetKinds(),
+            fileStats);
+    List<TargetStatsRecord> out = new ArrayList<>(partialAggregates.size() + fileStats.size());
+    out.addAll(partialAggregates);
+    out.addAll(fileStats);
+    return List.copyOf(out);
   }
 
   private static List<FloecatConnector.ParquetPageIndexEntry> filterPageIndexEntries(

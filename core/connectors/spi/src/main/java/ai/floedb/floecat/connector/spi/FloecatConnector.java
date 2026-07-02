@@ -575,6 +575,8 @@ public interface FloecatConnector extends Closeable {
       String min,
       String max,
       Ndv ndv,
+      // Average uncompressed width in bytes per row, from the Parquet footer (ceil, min 1).
+      Long avgWidthBytes,
       Map<String, String> properties) {}
 
   record FileColumnStatsView(

@@ -21,6 +21,8 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.impl.FileGroupTargetStatsRollup;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsStore;
@@ -36,22 +38,29 @@ import java.util.Set;
 @ApplicationScoped
 public class SnapshotFinalizePersistenceService {
   @Inject StatsStore statsStore;
+  @Inject StatsOrchestrator statsOrchestrator;
 
   public long replaceAllStatsForSnapshot(
       ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {
     List<TargetStatsRecord> canonical = canonicalize(records);
     statsStore.replaceAllStatsForSnapshot(tableId, snapshotId, canonical);
+    statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
     return canonical.size();
   }
 
   public boolean deleteAllStatsForSnapshot(ResourceId tableId, long snapshotId) {
-    return statsStore.deleteAllStatsForSnapshot(tableId, snapshotId);
+    boolean deleted = statsStore.deleteAllStatsForSnapshot(tableId, snapshotId);
+    statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+    return deleted;
   }
 
   public long persistStats(List<TargetStatsRecord> records) {
     long processed = 0L;
-    for (TargetStatsRecord record : canonicalize(records)) {
+    List<TargetStatsRecord> canonical = canonicalize(records);
+    for (TargetStatsRecord record : canonical) {
       statsStore.putTargetStats(record);
+      statsOrchestrator.invalidateStatsCache(
+          record.getTableId(), record.getSnapshotId(), record.getTarget());
       processed++;
     }
     return processed;
@@ -72,6 +81,7 @@ public class SnapshotFinalizePersistenceService {
     if (fullRescan) {
       statsStore.replaceAllStatsForSnapshot(
           tableId, snapshotId, List.of(TargetStatsRecords.canonicalize(zeroMarker)));
+      statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
       return 1L;
     }
     if (statsStore
@@ -80,6 +90,7 @@ public class SnapshotFinalizePersistenceService {
       return 0L;
     }
     if (statsStore.putTargetStatsIfAbsent(zeroMarker)) {
+      statsOrchestrator.invalidateStatsCache(tableId, snapshotId, zeroMarker.getTarget());
       return 1L;
     }
     if (statsStore
@@ -154,82 +165,86 @@ public class SnapshotFinalizePersistenceService {
         .toList();
   }
 
-  public List<TargetStatsRecord> validateAggregateStats(
-      List<TargetStatsRecord> aggregateStats, ResourceId tableId, long snapshotId) {
-    if (aggregateStats == null || aggregateStats.isEmpty()) {
+  public List<TargetStatsRecord> mergeCompletedGroupPartials(
+      ResourceId tableId,
+      long snapshotId,
+      Set<FloecatConnector.StatsTargetKind> aggregateKinds,
+      List<ReconcileFileGroupTask> completedGroups) {
+    if (aggregateKinds == null
+        || aggregateKinds.isEmpty()
+        || completedGroups == null
+        || completedGroups.isEmpty()) {
       return List.of();
     }
-    List<TargetStatsRecord> validated =
-        aggregateStats.stream()
-            .filter(java.util.Objects::nonNull)
-            .map(TargetStatsRecords::canonicalize)
-            .peek(
-                record -> {
-                  if (!record.hasTarget()) {
-                    throw new IllegalArgumentException("aggregate stats target is required");
-                  }
-                  if (StatsTargetType.from(record.getTarget()) == StatsTargetType.FILE) {
-                    throw new IllegalArgumentException(
-                        "snapshot finalize submission must not include file-target stats");
-                  }
-                  if (!tableId.equals(record.getTableId())) {
-                    throw new IllegalArgumentException(
-                        "aggregate stats table_id does not match leased snapshot table");
-                  }
-                  if (record.getSnapshotId() != snapshotId) {
-                    throw new IllegalArgumentException(
-                        "aggregate stats snapshot_id does not match leased snapshot");
-                  }
-                })
-            .toList();
-    LinkedHashSet<String> targetIds = new LinkedHashSet<>();
-    for (TargetStatsRecord record : validated) {
-      String targetId = StatsTargetIdentity.storageId(record.getTarget());
-      if (!targetIds.add(targetId)) {
-        throw new IllegalArgumentException(
-            "duplicate aggregate stats target in snapshot finalize submission: " + targetId);
+    List<TargetStatsRecord> normalizedGroupPartials = new ArrayList<>();
+    for (ReconcileFileGroupTask group : completedGroups) {
+      if (group == null || group.partialAggregateRecords().isEmpty()) {
+        continue;
       }
+      normalizedGroupPartials.addAll(
+          FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(
+              tableId, snapshotId, aggregateKinds, group.partialAggregateRecords()));
     }
-    return validated;
+    return mergeAggregatePartials(tableId, snapshotId, aggregateKinds, normalizedGroupPartials);
+  }
+
+  public List<TargetStatsRecord> validateAggregateStats(
+      List<TargetStatsRecord> aggregateStats, ResourceId tableId, long snapshotId) {
+    return validateFinalizeStats(
+        aggregateStats,
+        tableId,
+        snapshotId,
+        "aggregate stats",
+        "aggregate stats target",
+        TargetTypeConstraint.NON_FILE,
+        "snapshot finalize submission must not include file-target stats");
   }
 
   public List<TargetStatsRecord> validateReplacementStats(
       List<TargetStatsRecord> records, ResourceId tableId, long snapshotId) {
-    if (records == null || records.isEmpty()) {
-      return List.of();
-    }
-    List<TargetStatsRecord> validated =
-        records.stream()
-            .filter(java.util.Objects::nonNull)
-            .map(TargetStatsRecords::canonicalize)
-            .peek(
-                record -> {
-                  if (!record.hasTarget()) {
-                    throw new IllegalArgumentException("replacement stats target is required");
-                  }
-                  if (!tableId.equals(record.getTableId())) {
-                    throw new IllegalArgumentException(
-                        "replacement stats table_id does not match leased snapshot table");
-                  }
-                  if (record.getSnapshotId() != snapshotId) {
-                    throw new IllegalArgumentException(
-                        "replacement stats snapshot_id does not match leased snapshot");
-                  }
-                })
-            .toList();
-    LinkedHashSet<String> targetIds = new LinkedHashSet<>();
-    for (TargetStatsRecord record : validated) {
-      String targetId = StatsTargetIdentity.storageId(record.getTarget());
-      if (!targetIds.add(targetId)) {
-        throw new IllegalArgumentException(
-            "duplicate replacement stats target in snapshot finalize submission: " + targetId);
-      }
-    }
-    return validated;
+    return validateFinalizeStats(
+        records,
+        tableId,
+        snapshotId,
+        "replacement stats",
+        "replacement stats target",
+        TargetTypeConstraint.ANY,
+        null);
   }
 
   public List<TargetStatsRecord> validateIncrementalDeltaFileStats(
       List<TargetStatsRecord> records, ResourceId tableId, long snapshotId) {
+    return validateFinalizeStats(
+        records,
+        tableId,
+        snapshotId,
+        "incremental delta stats",
+        "incremental file stats target",
+        TargetTypeConstraint.FILE_ONLY,
+        "incremental snapshot finalize submission must include only file-target stats");
+  }
+
+  /** Target-type rule applied to each record in a snapshot-finalize submission. */
+  private enum TargetTypeConstraint {
+    ANY,
+    NON_FILE,
+    FILE_ONLY
+  }
+
+  /**
+   * Canonicalizes and validates a snapshot-finalize submission: every record must have a target of
+   * the required kind, match the leased table/snapshot, and be unique by storage id. {@code label}
+   * and {@code duplicateLabel} shape the error messages; {@code typeErrorMessage} is thrown when
+   * the target-type constraint is violated.
+   */
+  private List<TargetStatsRecord> validateFinalizeStats(
+      List<TargetStatsRecord> records,
+      ResourceId tableId,
+      long snapshotId,
+      String label,
+      String duplicateLabel,
+      TargetTypeConstraint typeConstraint,
+      String typeErrorMessage) {
     if (records == null || records.isEmpty()) {
       return List.of();
     }
@@ -240,20 +255,20 @@ public class SnapshotFinalizePersistenceService {
             .peek(
                 record -> {
                   if (!record.hasTarget()) {
-                    throw new IllegalArgumentException(
-                        "incremental delta stats target is required");
+                    throw new IllegalArgumentException(label + " target is required");
                   }
-                  if (StatsTargetType.from(record.getTarget()) != StatsTargetType.FILE) {
-                    throw new IllegalArgumentException(
-                        "incremental snapshot finalize submission must include only file-target stats");
+                  boolean isFile = StatsTargetType.from(record.getTarget()) == StatsTargetType.FILE;
+                  if ((typeConstraint == TargetTypeConstraint.NON_FILE && isFile)
+                      || (typeConstraint == TargetTypeConstraint.FILE_ONLY && !isFile)) {
+                    throw new IllegalArgumentException(typeErrorMessage);
                   }
                   if (!tableId.equals(record.getTableId())) {
                     throw new IllegalArgumentException(
-                        "incremental delta stats table_id does not match leased snapshot table");
+                        label + " table_id does not match leased snapshot table");
                   }
                   if (record.getSnapshotId() != snapshotId) {
                     throw new IllegalArgumentException(
-                        "incremental delta stats snapshot_id does not match leased snapshot");
+                        label + " snapshot_id does not match leased snapshot");
                   }
                 })
             .toList();
@@ -262,7 +277,7 @@ public class SnapshotFinalizePersistenceService {
       String targetId = StatsTargetIdentity.storageId(record.getTarget());
       if (!targetIds.add(targetId)) {
         throw new IllegalArgumentException(
-            "duplicate incremental file stats target in snapshot finalize submission: " + targetId);
+            "duplicate " + duplicateLabel + " in snapshot finalize submission: " + targetId);
       }
     }
     return validated;

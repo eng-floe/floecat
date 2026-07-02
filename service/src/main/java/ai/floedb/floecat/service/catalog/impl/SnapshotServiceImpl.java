@@ -55,6 +55,7 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
@@ -77,6 +78,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   @Inject IdempotencyRepository idempotencyStore;
   @Inject CatalogOverlay overlay;
   @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
+  @Inject StatsOrchestrator statsOrchestrator;
 
   private static final Logger LOG = Logger.getLogger(SnapshotService.class);
 
@@ -420,6 +422,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                           correlationId, SNAPSHOT, Map.of("id", Long.toString(snapshotId)));
                     }
                     statsStore.deleteAllStatsForSnapshot(tableId, snapshotId);
+                    statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
                     return DeleteSnapshotResponse.newBuilder().build();
                   }
 
@@ -440,6 +443,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                     }
 
                     statsStore.deleteAllStatsForSnapshot(tableId, snapshotId);
+                    statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
                     throw GrpcErrors.preconditionFailed(

@@ -36,6 +36,7 @@ import ai.floedb.floecat.connector.common.StatsEngine;
 import ai.floedb.floecat.connector.common.ndv.ColumnNdv;
 import ai.floedb.floecat.connector.common.ndv.FilteringNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.NdvProvider;
+import ai.floedb.floecat.connector.common.ndv.ParquetAvgWidthProvider;
 import ai.floedb.floecat.connector.common.ndv.ParquetNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.StaticOnceNdvProvider;
@@ -94,6 +95,10 @@ public abstract class IcebergConnector implements FloecatConnector {
   private final boolean ndvEnabled;
   private final double ndvSampleFraction;
   private final long ndvMaxFiles;
+
+  /** Theta sketch k parameter for ParquetNdvProvider (Java capture path). Default 4096. */
+  private final int thetaK;
+
   private final FileIO externalFileIO;
 
   protected IcebergConnector(
@@ -105,6 +110,28 @@ public abstract class IcebergConnector implements FloecatConnector {
       double ndvSampleFraction,
       long ndvMaxFiles,
       FileIO externalFileIO) {
+    this(
+        connectorId,
+        singleTable,
+        singleNamespaceFq,
+        singleTableName,
+        ndvEnabled,
+        ndvSampleFraction,
+        ndvMaxFiles,
+        4096,
+        externalFileIO);
+  }
+
+  protected IcebergConnector(
+      String connectorId,
+      Table singleTable,
+      String singleNamespaceFq,
+      String singleTableName,
+      boolean ndvEnabled,
+      double ndvSampleFraction,
+      long ndvMaxFiles,
+      int thetaK,
+      FileIO externalFileIO) {
     this.connectorId = connectorId;
     this.singleTable = singleTable;
     this.singleNamespaceFq = singleNamespaceFq;
@@ -112,6 +139,7 @@ public abstract class IcebergConnector implements FloecatConnector {
     this.ndvEnabled = ndvEnabled;
     this.ndvSampleFraction = ndvSampleFraction;
     this.ndvMaxFiles = ndvMaxFiles;
+    this.thetaK = thetaK >= 16 ? thetaK : 4096;
     this.externalFileIO = externalFileIO;
   }
 
@@ -1090,11 +1118,12 @@ public abstract class IcebergConnector implements FloecatConnector {
 
       Map<Integer, String> colNames = planner.columnNamesByKey();
       Map<Integer, LogicalType> logicalTypes = planner.logicalTypesByKey();
+      var avgWidth = ParquetAvgWidthProvider.forIcebergIO(path -> table.io().newInputFile(path));
 
       if (!ndvEnabled) {
         NdvProvider none = null;
         StatsEngine<Integer> engine =
-            new GenericStatsEngine<>(planner, none, null, colNames, logicalTypes);
+            new GenericStatsEngine<>(planner, none, null, avgWidth, colNames, logicalTypes);
         var result = engine.compute();
         return new EngineOut(result, colNames, logicalTypes, planner.deleteFiles());
       }
@@ -1131,7 +1160,8 @@ public abstract class IcebergConnector implements FloecatConnector {
 
       NdvProvider perFileNdv = null;
       if (missing > 0) {
-        var parquetNdv = ParquetNdvProvider.forIcebergIO(path -> table.io().newInputFile(path));
+        var parquetNdv =
+            ParquetNdvProvider.forIcebergIO(path -> table.io().newInputFile(path), thetaK);
         NdvProvider base = FilteringNdvProvider.bySuffix(Set.of(".parquet", ".parq"), parquetNdv);
 
         if (ndvSampleFraction < 1.0 || ndvMaxFiles > 0) {
@@ -1141,7 +1171,9 @@ public abstract class IcebergConnector implements FloecatConnector {
         perFileNdv = base;
       }
 
-      var engine = new GenericStatsEngine<>(planner, perFileNdv, bootstrap, colNames, logicalTypes);
+      var engine =
+          new GenericStatsEngine<>(
+              planner, perFileNdv, bootstrap, avgWidth, colNames, logicalTypes, thetaK);
 
       var result = engine.compute();
       return new EngineOut(result, colNames, logicalTypes, planner.deleteFiles());

@@ -870,9 +870,11 @@ class StatsIT {
             .setDisplayName(columnStats.getDisplayName())
             .setLogicalType(columnStats.getLogicalType())
             .setRowCount(columnStats.getRowCount())
-            .setHistogram(columnStats.getHistogram())
-            .setTdigest(columnStats.getTdigest())
+            .addAllSketches(columnStats.getSketchesList())
             .putAllProperties(columnStats.getPropertiesMap());
+    if (columnStats.hasAvgWidthBytes()) {
+      scalar.setAvgWidthBytes(columnStats.getAvgWidthBytes());
+    }
     if (columnStats.hasUpstream()) {
       scalar.setUpstream(columnStats.getUpstream());
     }

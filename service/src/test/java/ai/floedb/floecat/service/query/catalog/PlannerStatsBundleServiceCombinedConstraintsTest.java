@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.BundleResultStatus;
 import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
+import ai.floedb.floecat.query.rpc.StatsServingOptions;
 import ai.floedb.floecat.query.rpc.TableConstraintsResult;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleChunk;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
@@ -187,6 +188,236 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
     assertEquals(1, constraints.size());
     assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND, constraints.get(0).getStatus());
     assertEquals("pk_users_chunked", constraints.get(0).getConstraints(0).getName());
+  }
+
+  @Test
+  void includeConstraintsDoesNotConsumeTargetStatsByteCap() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    QueryContext ctx = queryContextWithPin("query-constraints-byte-cap", 556L);
+    store.seed(ctx);
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 556L, 1L, sampleStats(TABLE, 556L, 1L), null));
+
+    ConstraintProvider provider =
+        new ConstraintProvider() {
+          @Override
+          public Optional<ConstraintSetView> constraints(
+              ResourceId relationId, OptionalLong snapshotId) {
+            return Optional.of(
+                newConstraintSet(
+                    TABLE,
+                    List.of(
+                        constraint(
+                            "pk_with_long_name_that_would_exceed_a_tiny_target_byte_cap",
+                            ConstraintType.CT_PRIMARY_KEY,
+                            List.of(1L)))));
+          }
+        };
+
+    PlannerStatsBundleService service =
+        createService(
+            repository,
+            store,
+            provider,
+            /* chunkSize= */ 10,
+            /* maxTables= */ 10,
+            /* maxTargets= */ 20);
+
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .setIncludeConstraints(true)
+            .setOptions(StatsServingOptions.newBuilder().setMaxResponseBytes(1))
+            .addTables(tableRequest(TABLE, List.of(1L)))
+            .build();
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+
+    assertEquals(1, flattenConstraints(chunks).size(), "constraints bypass target byte cap");
+    assertEquals(0, flatten(chunks).size(), "target stats remain capped independently");
+    assertEquals(1L, chunks.get(chunks.size() - 1).getEnd().getOmittedByBudget());
+  }
+
+  @Test
+  void includeConstraintsAppliesConstraintByteCapSeparately() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    QueryContext ctx = queryContextWithPin("query-constraints-own-byte-cap", 559L);
+    store.seed(ctx);
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 559L, 1L, sampleStats(TABLE, 559L, 1L), null));
+
+    ConstraintProvider provider =
+        new ConstraintProvider() {
+          @Override
+          public Optional<ConstraintSetView> constraints(
+              ResourceId relationId, OptionalLong snapshotId) {
+            return Optional.of(
+                newConstraintSet(
+                    TABLE,
+                    List.of(
+                        constraint(
+                            "pk_with_long_name_that_exceeds_tiny_constraint_cap",
+                            ConstraintType.CT_PRIMARY_KEY,
+                            List.of(1L)))));
+          }
+        };
+
+    PlannerStatsBundleService service =
+        createService(
+            repository,
+            store,
+            provider,
+            /* chunkSize= */ 10,
+            /* maxTables= */ 10,
+            /* maxTargets= */ 20);
+
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .setIncludeConstraints(true)
+            .setOptions(
+                StatsServingOptions.newBuilder()
+                    .setMaxResponseBytes(1024 * 1024)
+                    .setMaxConstraintBytes(1))
+            .addTables(tableRequest(TABLE, List.of(1L)))
+            .build();
+
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+    List<TableConstraintsResult> constraints = flattenConstraints(chunks);
+    assertEquals(1, constraints.size());
+    assertEquals(
+        BundleResultStatus.BUNDLE_RESULT_STATUS_OMITTED_BY_BUDGET, constraints.get(0).getStatus());
+    assertEquals(1, flatten(chunks).size(), "target stats should use their own byte cap");
+  }
+
+  @Test
+  void includeConstraintsTreatsExplicitZeroConstraintByteCapAsUncapped() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    QueryContext ctx = queryContextWithPin("query-constraints-own-byte-cap-zero", 556L);
+    store.seed(ctx);
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 556L, 1L, sampleStats(TABLE, 556L, 1L), null));
+
+    ConstraintProvider provider =
+        new ConstraintProvider() {
+          @Override
+          public Optional<ConstraintSetView> constraints(
+              ResourceId relationId, OptionalLong snapshotId) {
+            return Optional.of(
+                newConstraintSet(
+                    TABLE,
+                    List.of(
+                        constraint(
+                            "pk_with_long_name_that_exceeds_tiny_constraint_cap_but_zero_is_uncapped",
+                            ConstraintType.CT_PRIMARY_KEY,
+                            List.of(1L)))));
+          }
+        };
+
+    PlannerStatsBundleService service =
+        createService(
+            repository,
+            store,
+            provider,
+            /* chunkSize= */ 10,
+            /* maxTables= */ 10,
+            /* maxTargets= */ 20);
+
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .setIncludeConstraints(true)
+            .setOptions(
+                StatsServingOptions.newBuilder()
+                    .setMaxResponseBytes(1024 * 1024)
+                    .setMaxConstraintBytes(0))
+            .addTables(tableRequest(TABLE, List.of(1L)))
+            .build();
+
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+    List<TableConstraintsResult> constraints = flattenConstraints(chunks);
+    assertEquals(1, constraints.size());
+    assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND, constraints.get(0).getStatus());
+    assertEquals(1, flatten(chunks).size(), "target stats should still be returned");
+  }
+
+  @Test
+  void includeConstraintsContinuesAcrossTablesAfterTargetStatsByteCapIsExhausted() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    QueryContext ctx =
+        queryContextWithPins(
+            "query-constraints-byte-cap-multi", List.of(pin(TABLE, 557L), pin(TABLE_TWO, 558L)));
+    store.seed(ctx);
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 557L, 1L, sampleStats(TABLE, 557L, 1L), null));
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE_TWO, 558L, 2L, sampleStats(TABLE_TWO, 558L, 2L), null));
+
+    ConstraintProvider provider =
+        new ConstraintProvider() {
+          @Override
+          public Optional<ConstraintSetView> constraints(
+              ResourceId relationId, OptionalLong snapshotId) {
+            if (relationId.equals(TABLE)) {
+              return Optional.of(
+                  newConstraintSet(
+                      TABLE,
+                      List.of(
+                          constraint(
+                              "pk_users_after_cap", ConstraintType.CT_PRIMARY_KEY, List.of(1L)))));
+            }
+            if (relationId.equals(TABLE_TWO)) {
+              return Optional.of(
+                  newConstraintSet(
+                      TABLE_TWO,
+                      List.of(
+                          constraint(
+                              "pk_orders_after_cap", ConstraintType.CT_PRIMARY_KEY, List.of(2L)))));
+            }
+            return Optional.empty();
+          }
+        };
+
+    PlannerStatsBundleService service =
+        createService(
+            repository,
+            store,
+            provider,
+            /* chunkSize= */ 10,
+            /* maxTables= */ 10,
+            /* maxTargets= */ 20);
+
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .setIncludeConstraints(true)
+            .setOptions(StatsServingOptions.newBuilder().setMaxResponseBytes(1))
+            .addTables(tableRequest(TABLE, List.of(1L)))
+            .addTables(tableRequest(TABLE_TWO, List.of(2L)))
+            .build();
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+
+    List<TableConstraintsResult> constraints = flattenConstraints(chunks);
+    assertEquals(2, constraints.size(), "constraints should bypass target byte cap for all tables");
+    assertEquals(
+        2,
+        constraints.stream()
+            .filter(c -> c.getStatus() == BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND)
+            .count());
+    assertEquals(0, flatten(chunks).size(), "target stats remain capped independently");
+    assertEquals(2L, chunks.get(chunks.size() - 1).getEnd().getOmittedByBudget());
   }
 
   @Test

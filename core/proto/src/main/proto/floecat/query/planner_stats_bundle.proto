@@ -57,13 +57,13 @@ service PlannerStatsService {
   rpc GetTableConstraints(FetchTableConstraintsRequest) returns (stream TableConstraintsBundleChunk);
 }
 
-/** Request stats for a set of targets across one or more relations. */
+/** Request stats for a set of columns across one or more relations. */
 message FetchTargetStatsRequest {
   /** Query ID obtained from BeginQuery (and used for snapshot pins). */
   string query_id = 1;
 
-  /** Which targets the planner needs stats for. */
-  repeated TableTargetStatsRequest tables = 2;
+  /** Per-table column stat requests, in planner-determined priority order. */
+  repeated TableStatsRequest tables = 2;
 
   /**
    * When true, include table-scoped constraint bundles for requested tables.
@@ -73,6 +73,152 @@ message FetchTargetStatsRequest {
    * Defaults to false to preserve existing capture-only behavior for older clients.
    */
   bool include_constraints = 3;
+
+  /** QoS, payload caps, and sync-capture policy for this request. */
+  StatsServingOptions options = 4;
+}
+
+/** Per-table request identifying which targets the planner needs and which stats to return. */
+message TableStatsRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+
+  /**
+   * Snapshot override: when set, fetch stats at this snapshot instead of the query_id-pinned one.
+   * When absent, the query_id pin governs snapshot selection.
+   */
+  optional int64 snapshot_id = 2;
+
+  /**
+   * Stats the planner needs, in descending priority order (index 0 = highest priority).
+   * Floecat preserves this ordering when dropping targets under payload or time budget pressure.
+   *
+   * Supported target types today: ColumnStatsTarget, EngineExpressionStatsTarget.
+   * Future: CompositeColumnStatsTarget (multi-column NDV, functional dependencies).
+   * TableStatsTarget and FileStatsTarget are not served via this RPC.
+   */
+  repeated TargetStatsNeed targets = 3;
+}
+
+/**
+ * A single stat need from a stats client: what target, which concrete stats, and with what
+ * priority.
+ *
+ * Using StatsTarget (the existing catalog oneof) keeps this API compatible with expressions,
+ * composite columns, and any future target types without a proto change.
+ */
+message TargetStatsNeed {
+  /**
+   * The stat target. For the current milestone, only ColumnStatsTarget and
+   * EngineExpressionStatsTarget are accepted; others are rejected with INVALID_ARGUMENT.
+   * CompositeColumnStatsTarget will be accepted once the planner stats library can consume them.
+   */
+  ai.floedb.floecat.catalog.StatsTarget target = 1;
+
+  /**
+   * Concrete stats requested for this target, in client preference order.
+   *
+   * Floecat exact-matches role + sketch_type and never chooses an implicit fallback.
+   * Clients that accept alternatives should send multiple RequestedStat entries in priority order.
+   */
+  repeated RequestedStat requested_stats = 2;
+
+  /**
+   * Planner-assigned priority (1 = highest). Floecat uses this as a soft priority queue
+   * when it must drop or partially satisfy targets to meet max_response_bytes or latency_budget_ms.
+   */
+  int32 priority = 3;
+}
+
+/** Semantic stats role requested by a client. */
+enum StatRole {
+  STAT_ROLE_UNSPECIFIED = 0;
+  // Scalar column header: row_count, null_count, scalar NDV, avg_width, min, max.
+  STAT_ROLE_SCALAR = 1;
+  // NDV sketch payload, e.g. theta or HLL. Concrete type is selected by sketch_type.
+  STAT_ROLE_NDV = 2;
+  // Most-common-value / frequent-items sketch payload.
+  STAT_ROLE_MCV = 3;
+  // Range-distribution sketch payload. Concrete sketch_type selects numeric,
+  // temporal, or string implementations such as TDigest, KLL, or string histogram.
+  STAT_ROLE_QUANTILES = 4;
+  // Tuple sketch payload for join fanout/skew estimation.
+  STAT_ROLE_TUPLE_NDV = 5;
+}
+
+/**
+ * Client request for one concrete stat.
+ *
+ * For SCALAR, sketch_type must be empty. For sketch roles, sketch_type should be the exact stored
+ * SketchPayload.sketch_type the client can consume. Floecat does not infer or substitute sketch
+ * implementations.
+ */
+message RequestedStat {
+  // Requested stats family. SCALAR returns the scalar envelope; sketch roles return
+  // raw sketch payloads for that family.
+  StatRole role = 1;
+
+  // Exact SketchPayload.sketch_type to return for sketch roles. Must be empty for SCALAR;
+  // required for NDV, MCV, QUANTILES, and TUPLE_NDV.
+  string sketch_type = 2;
+
+  // Lower numbers are served first when request caps force omissions.
+  // Non-positive values use the server default priority.
+  int32 priority = 3;
+
+  // Optional per-sketch serialized-size cap. Zero means no per-stat cap.
+  uint32 max_bytes = 4;
+}
+
+/** QoS controls for a FetchTargetStatsRequest. All fields have server-side defaults. */
+message StatsServingOptions {
+  /**
+   * Maximum wall-clock milliseconds Floecat may spend before returning a partial response.
+   * Default: 20ms. The planner blocks for at most this long before planning continues
+   * with whatever stats have arrived.
+   */
+  uint32 latency_budget_ms = 1;
+
+  /**
+   * Soft cap on target-stats payload in bytes (column stats only).
+   * Floecat drops or downgrades columns (lowest priority first) to stay under this cap.
+   * Default: 8MiB. This is a per-request streamed target-stats budget, not a hard cap
+   * on total gRPC response bytes.
+   *
+   * Note: table-constraint results are gated separately by max_constraint_bytes.
+   */
+  uint32 max_response_bytes = 2;
+
+  /**
+   * Maximum number of targets for which scalar stats are returned.
+   * Default: 10,000. Targets beyond this cap are dropped (OMITTED_BY_BUDGET).
+   */
+  uint32 max_scalar_targets = 3;
+
+  /**
+   * Maximum number of targets for which raw sketch payloads are returned.
+   * Default: 256. Requested sketch stats beyond this cap are reported as OMITTED_BY_BUDGET
+   * in ReturnedStat; scalar stats for the target may still be returned if requested.
+   */
+  uint32 max_sketch_targets = 4;
+
+  /**
+   * When true and stats are missing, Floecat may trigger bounded sync capture within
+   * latency_budget_ms before returning NOT_FOUND. Default: true.
+   */
+  optional bool allow_sync_capture = 5;
+
+  /**
+   * When true, Floecat may return stats from a different snapshot if the pinned snapshot
+   * has no stats yet. Stale results carry HIT_STALE status. Default: true.
+   */
+  optional bool stale_ok = 6;
+
+  /**
+   * Soft cap on table-constraint payload bytes.
+   * Default when omitted: 1MiB. Explicit 0 means no cap. This is separate from
+   * max_response_bytes because constraints are relation metadata, not column stats payloads.
+   */
+  optional uint32 max_constraint_bytes = 7;
 }
 
 /** Request table-scoped constraints for one or more relations. */
@@ -86,18 +232,20 @@ message FetchTableConstraintsRequest {
    * This request is relation-scoped and does not include requested column IDs.
    */
   repeated ai.floedb.floecat.common.ResourceId table_ids = 2;
+
+  /** Constraint-specific serving controls for this request. */
+  ConstraintServingOptions options = 3;
 }
 
-/** Targets requested for one table. */
-message TableTargetStatsRequest {
-  ai.floedb.floecat.common.ResourceId table_id = 1;
-
+/** QoS controls for FetchTableConstraintsRequest. */
+message ConstraintServingOptions {
   /**
-   * Target identities to resolve for this table. Duplicates are deduped server-side.
-   * For column targets, column_id must be positive.
+   * Soft cap on table-constraint payload bytes.
+   * Default when omitted: 1MiB. Explicit 0 means no cap.
    */
-  repeated ai.floedb.floecat.catalog.StatsTarget targets = 2;
+  optional uint32 max_constraint_bytes = 1;
 }
+
 
 /** Streamed chunk for target stats bundles. */
 message TargetStatsBundleChunk {
@@ -132,6 +280,12 @@ message TargetStatsBundleEnd {
   uint64 returned_targets = 3;
   uint64 not_found_targets = 4;
   uint64 error_targets = 5;
+  // Targets dropped entirely because the payload or target cap was reached.
+  uint64 omitted_by_budget = 6;
+  // Targets for which at least one requested stat was missing or omitted.
+  uint64 partial_targets = 7;
+  // Targets returned from a different snapshot (stale_ok=true).
+  uint64 stale_targets = 8;
 }
 
 message TableConstraintsBundleEnd {
@@ -139,6 +293,7 @@ message TableConstraintsBundleEnd {
   uint64 returned_tables = 2;
   uint64 not_found_tables = 3;
   uint64 error_tables = 4;
+  uint64 omitted_by_budget = 5;
 }
 
 message StatsWarning {
@@ -169,24 +324,95 @@ message TableConstraintsBatch {
   repeated StatsWarning warnings = 2;
 }
 
+// Used by TableConstraintsResult. Kept separate from StatsResultStatus to avoid coupling.
 enum BundleResultStatus {
   BUNDLE_RESULT_STATUS_UNSPECIFIED = 0;
   BUNDLE_RESULT_STATUS_FOUND = 1;
   BUNDLE_RESULT_STATUS_NOT_FOUND = 2;
   BUNDLE_RESULT_STATUS_ERROR = 3;
+  BUNDLE_RESULT_STATUS_OMITTED_BY_BUDGET = 4;
+}
+
+// Per-target result status for TargetStatsResult. Richer than BundleResultStatus to convey
+// payload degradation and staleness signals the planner can act on.
+enum StatsResultStatus {
+  STATS_RESULT_UNSPECIFIED = 0;
+  // All requested stats returned for this target.
+  STATS_RESULT_HIT_COMPLETE = 1;
+  // Some requested stats returned; others missing or omitted.
+  STATS_RESULT_HIT_PARTIAL = 2;
+  // Stats returned from a different snapshot because stale_ok=true and pinned snapshot had none.
+  STATS_RESULT_HIT_STALE = 3;
+  // This column was dropped entirely to stay under max_response_bytes or target caps.
+  STATS_RESULT_OMITTED_BY_BUDGET = 4;
+  // Sync capture was triggered but did not complete within latency_budget_ms.
+  STATS_RESULT_SYNC_CAPTURE_TIMEOUT = 5;
+  // No stats exist for this column/snapshot and sync capture was not attempted or failed.
+  STATS_RESULT_NOT_FOUND = 6;
+  // Unexpected error reading or materializing stats for this column.
+  STATS_RESULT_ERROR = 7;
+}
+
+// Which stat kinds are absent from an otherwise-successful result.
+enum StatsResultDegradation {
+  STATS_DEGRADATION_UNSPECIFIED = 0;
+  STATS_DEGRADATION_STALE_SNAPSHOT = 1;
+  STATS_DEGRADATION_REDUCED_MCV_COUNT = 2;
+  STATS_DEGRADATION_REQUESTED_STAT_MISSING = 3;
+  STATS_DEGRADATION_REQUESTED_STAT_OMITTED_BY_BUDGET = 4;
+  STATS_DEGRADATION_UNSUPPORTED_STAT_ROLE = 5;
+  STATS_DEGRADATION_UNSUPPORTED_SKETCH_TYPE = 6;
+}
+
+/** Per-requested-stat result metadata. */
+message ReturnedStat {
+  // Requested stats family this result describes.
+  StatRole role = 1;
+
+  // Exact sketch type for sketch-role results, empty for scalar/constraint metadata.
+  string sketch_type = 2;
+
+  // Whether this requested stat was returned, omitted, or unavailable.
+  StatsResultStatus status = 3;
+
+  // Serialized bytes returned for this stat after materialization.
+  uint32 bytes = 4;
+
+  // Structured downgrade/omission reasons relevant to this requested stat.
+  repeated StatsResultDegradation degradations = 5;
+
+  // Stable human-readable reason for misses or policy omissions.
+  string reason = 6;
 }
 
 message TargetStatsResult {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   int64 snapshot_id = 2;
+
+  /**
+   * Echoes back the requested StatsTarget for correlation.
+   * Matches the target field from the TargetStatsNeed that generated this result.
+   * Using StatsTarget (not a raw column_id) keeps correlation correct for expression
+   * and composite targets, not just single columns.
+   */
   ai.floedb.floecat.catalog.StatsTarget target = 3;
 
-  BundleResultStatus status = 4;
+  StatsResultStatus status = 4;
 
-  /** Present when status == FOUND. */
+  // Which requested stats are absent from an otherwise-successful result.
+  repeated StatsResultDegradation degradations = 5;
+
+  /**
+   * Per requested-stat result. This is authoritative for distinguishing exact hits from
+   * missing/omitted stats. Floecat never records implicit fallback here; alternatives appear
+   * as separate RequestedStat entries with independent ReturnedStat statuses.
+   */
+  repeated ReturnedStat returned_stats = 6;
+
+  /** Present when status is HIT_COMPLETE, HIT_PARTIAL, or HIT_STALE. */
   ai.floedb.floecat.catalog.TargetStatsRecord stats = 10;
 
-  /** Present when status != FOUND. */
+  /** Present when status is NOT_FOUND, SYNC_CAPTURE_TIMEOUT, or ERROR. */
   BundleFailure failure = 11;
 }
 

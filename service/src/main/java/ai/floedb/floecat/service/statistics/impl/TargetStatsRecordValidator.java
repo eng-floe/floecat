@@ -144,6 +144,11 @@ final class TargetStatsRecordValidator {
                 .setFilePath(normalizedFilePath)
                 .build());
       }
+      case COMPOSITE ->
+          throw invalid(
+              correlationId,
+              "target.composite",
+              "COMPOSITE targets are recognized but not yet accepted by PutTargetStats");
       case TARGET_NOT_SET -> throw invalid(correlationId, "target", "target must be set");
     }
 

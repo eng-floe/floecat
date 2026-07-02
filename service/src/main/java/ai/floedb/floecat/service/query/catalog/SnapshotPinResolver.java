@@ -34,23 +34,33 @@ final class SnapshotPinResolver implements SnapshotPinLookup {
   SnapshotPinResolver(QueryContextStore queryStore, QueryContext ctx, String correlationId) {
     this.queryStore = queryStore;
     this.initialCtx = ctx;
-    this.queryId = ctx.getQueryId();
+    // ctx may be null (no query-scoped context on this request); tolerate it here and in
+    // liveContext() rather than NPE — an absent context simply means no snapshot pin.
+    this.queryId = ctx == null ? "" : ctx.getQueryId();
     this.correlationId = correlationId;
   }
 
   @Override
   public OptionalLong pinnedSnapshotId(ResourceId tableId) {
-    Optional<SnapshotPin> pin = liveContext().findSnapshotPin(tableId, correlationId);
+    QueryContext ctx = liveContext();
+    if (ctx == null) {
+      return OptionalLong.empty();
+    }
+    Optional<SnapshotPin> pin = ctx.findSnapshotPin(tableId, correlationId);
     return pin.isPresent() ? OptionalLong.of(pin.get().getSnapshotId()) : OptionalLong.empty();
   }
 
   <T> Optional<T> withPinnedSnapshot(
       ResourceId tableId, LongFunction<Optional<T>> snapshotScopedLookup) {
-    return liveContext()
-        .findSnapshotPin(tableId, correlationId)
+    QueryContext ctx = liveContext();
+    if (ctx == null) {
+      return Optional.empty();
+    }
+    return ctx.findSnapshotPin(tableId, correlationId)
         .flatMap(pin -> snapshotScopedLookup.apply(pin.getSnapshotId()));
   }
 
+  /** May return {@code null} when the request carried no context and the store has no entry. */
   private QueryContext liveContext() {
     return queryStore.get(queryId).orElse(initialCtx);
   }

@@ -20,7 +20,9 @@ import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import com.google.protobuf.ByteString;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 import java.util.Optional;
 
 /** String codec used to carry explicit stats targets through reconcile scope payloads. */
@@ -30,6 +32,7 @@ public final class StatsTargetScopeCodec {
   private static final String COLUMN_PREFIX = "column:";
   private static final String FILE_PREFIX = "file:";
   private static final String EXPRESSION_PREFIX = "expression:";
+  private static final String COMPOSITE_PREFIX = "composite:";
   private static final String SEP = ":";
 
   private StatsTargetScopeCodec() {}
@@ -49,6 +52,16 @@ public final class StatsTargetScopeCodec {
             + SEP
             + b64(normalized.getEngineVersion());
       }
+      case COMPOSITE ->
+          COMPOSITE_PREFIX
+              + StatsTargetIdentity.compositeTarget(target.getComposite().getColumnIdsList())
+                  .getComposite()
+                  .getColumnIdsList()
+                  .stream()
+                  .sorted()
+                  .map(String::valueOf)
+                  .reduce((a, b) -> a + SEP + b)
+                  .orElse("");
       case TARGET_NOT_SET -> throw new IllegalArgumentException("target is not set");
     };
   }
@@ -75,6 +88,22 @@ public final class StatsTargetScopeCodec {
       try {
         String filePath = b64String(encoded.substring(FILE_PREFIX.length()));
         return Optional.of(StatsTargetIdentity.fileTarget(filePath));
+      } catch (RuntimeException ignored) {
+        return Optional.empty();
+      }
+    }
+    if (encoded.startsWith(COMPOSITE_PREFIX)) {
+      try {
+        String payload = encoded.substring(COMPOSITE_PREFIX.length());
+        if (payload.isBlank()) {
+          return Optional.empty();
+        }
+        String[] parts = payload.split(SEP, -1);
+        List<Long> columnIds = new ArrayList<>(parts.length);
+        for (String part : parts) {
+          columnIds.add(Long.parseLong(part));
+        }
+        return Optional.of(StatsTargetIdentity.compositeTarget(columnIds));
       } catch (RuntimeException ignored) {
         return Optional.empty();
       }

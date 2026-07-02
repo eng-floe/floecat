@@ -261,6 +261,9 @@ public final class Schemas {
               "incompatible target/value: file target requires file value");
         }
       }
+      case COMPOSITE ->
+          throw new IllegalArgumentException(
+              "incompatible target/value: composite target values are not implemented");
       case TARGET_NOT_SET ->
           throw new IllegalArgumentException("target must be set on TargetStatsRecord");
     }

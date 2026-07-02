@@ -91,5 +91,16 @@ public interface StatsProvider {
 
     /** NDV summary (exact or approximate) if available. */
     Optional<Ndv> ndv();
+
+    /**
+     * Average uncompressed width in bytes per row, when available.
+     *
+     * <p>Derived from the Parquet footer as ceil(total uncompressed column size / row count),
+     * minimum 1. The denominator is total rows (not non-null values), so this is a per-row average
+     * and may differ from PG {@code stawidth} (per non-null value) for columns with nulls.
+     */
+    default OptionalLong avgWidthBytes() {
+      return OptionalLong.empty();
+    }
   }
 }

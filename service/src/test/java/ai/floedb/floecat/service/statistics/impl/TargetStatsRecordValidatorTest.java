@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import ai.floedb.floecat.catalog.rpc.ColumnStatsTarget;
+import ai.floedb.floecat.catalog.rpc.CompositeColumnStatsTarget;
 import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
@@ -142,6 +143,31 @@ class TargetStatsRecordValidatorTest {
 
     assertEquals(StatsTarget.TargetCase.EXPRESSION, normalized.getTarget().getTargetCase());
     assertEquals("duckdb", normalized.getTarget().getExpression().getEngineKind());
+  }
+
+  @Test
+  void rejectsCompositeTargetsUntilCompositeValuesAreImplemented() {
+    TargetStatsRecord input =
+        TargetStatsRecord.newBuilder()
+            .setTableId(TABLE_ID)
+            .setSnapshotId(SNAPSHOT_ID)
+            .setTarget(
+                StatsTarget.newBuilder()
+                    .setComposite(
+                        CompositeColumnStatsTarget.newBuilder().addColumnIds(1L).addColumnIds(2L)))
+            .setScalar(ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(1L))
+            .build();
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> TargetStatsRecordValidator.validateForPut(input, TABLE_ID, SNAPSHOT_ID, "corr"));
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    Map<String, String> params = errorParams(ex);
+    assertEquals("target.composite", params.get("field"));
+    assertEquals(
+        "COMPOSITE targets are recognized but not yet accepted by PutTargetStats",
+        params.get("reason"));
   }
 
   private static Map<String, String> errorParams(StatusRuntimeException ex) {

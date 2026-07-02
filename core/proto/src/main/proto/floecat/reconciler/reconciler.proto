@@ -83,6 +83,10 @@ message CapturePolicy {
   repeated CaptureOutput outputs = 2;
   DefaultColumnScope default_column_scope = 3;
   uint32 max_default_columns = 4;
+  // Generic key-value capture properties forwarded opaquely to the execution engine.
+  // Floecat does not interpret these; the engine reads whatever keys it understands.
+  // Example key shape: "stats.<engine-feature>.<parameter>".
+  map<string, string> properties = 5;
 }
 
 enum SnapshotSelectionKind {
@@ -245,6 +249,12 @@ message ReconcileFileGroupTask {
   repeated string file_paths = 5;
   // Per-file execution results persisted on the EXEC_FILE_GROUP job.
   repeated ReconcileFileResult file_results = 6;
+  // Engine-produced partial table/column aggregate stats for this file group.
+  //
+  // These records are opaque to Floecat. They are carried through snapshot finalization so the
+  // capture engine can merge engine-owned sketch formats without requiring standalone Floecat to
+  // understand those formats.
+  repeated ai.floedb.floecat.catalog.TargetStatsRecord partial_aggregate_records = 7;
 }
 
 // Scheduler hints that influence where and how a reconcile job should run.
@@ -472,6 +482,9 @@ message LeasedSnapshotFinalizeInput {
   string direct_stats_blob_uri = 7;
   uint32 direct_stats_record_count = 8;
   uint32 source_file_count = 9;
+  // Effective snapshot task for this finalize execution. For file-group snapshots this includes
+  // completed child group results and engine-produced partial aggregate stats.
+  ReconcileSnapshotTask snapshot_task = 10;
   bool full_rescan = 11;
 }
 
@@ -722,6 +735,9 @@ message SubmitLeasedFileGroupExecutionResultRequest {
   message Success {
     string result_id = 1;
     repeated ReconcileFileResult file_results = 2;
+    // Number of chunk messages successfully staged before this completion.
+    // Floecat reloads exactly these chunks and commits their aggregate state once.
+    uint32 chunk_count = 3;
   }
 
   message Failure {

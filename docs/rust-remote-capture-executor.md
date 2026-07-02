@@ -148,9 +148,19 @@ connector definition and auth material needed to read source files.
 
 Both require `result_id`.
 
+Stats records and index artifacts are streamed first as `chunk` messages; `success` then finalizes
+the result and tells the service how many chunks to reassemble.
+
 Success carries:
 
 - `result_id`
+- `file_results`
+- `chunk_count` (number of preceding `chunk` messages)
+
+Each preceding `chunk` carries:
+
+- `result_id`
+- `chunk_index`
 - `stats_records`
 - `index_artifacts`
 
@@ -164,20 +174,24 @@ idempotency for stats and artifact writes. This gives you safe replay semantics 
 the gRPC response and retries the same submission.
 
 ## Result ID Rules
-For the same durable outcome, reuse the same `result_id` on retries.
+Scope the `result_id` to a single **execution attempt** by including the `lease_epoch`. Within one
+lease — including network retries of the same submission — reuse the same `result_id`. A re-leased
+retry runs under a fresh `lease_epoch`, and therefore a fresh `result_id`.
 
-Recommended shape:
+Required shape:
 
 ```text
-<job_id>:<plan_id>:<group_id>:success
-<job_id>:<plan_id>:<group_id>:failure
+<job_id>:<plan_id>:<group_id>:<lease_epoch>:success
+<job_id>:<plan_id>:<group_id>:<lease_epoch>:failure
 ```
 
-That is the same stability rule the current Java file-group executor follows when `plan_id`
-and `group_id` are available.
+Both the Java file-group executor and the remote executor follow this shape.
 
-Do not reuse one `result_id` for different payloads. The control plane rejects replay with the
-same `result_id` if the full request payload changes.
+Do not reuse one `result_id` for different payloads. The control plane rejects replay with the same
+`result_id` if the full request payload changes — and because chunk payloads are not byte-stable
+across re-serializations (protobuf map ordering is not canonical), two different lease attempts must
+not share a `result_id`, or the second attempt's staged chunks collide with the first and are
+rejected with `Conflict detected`. Including the `lease_epoch` guarantees that.
 
 ## Idempotency and Retry Semantics
 The worker should assume the following:
@@ -190,7 +204,7 @@ The worker should assume the following:
 
 Recommended retry behavior:
 
-1. Generate one stable `result_id` per durable success or failure outcome.
+1. Generate one `result_id` per execution attempt (include the `lease_epoch`); a re-lease produces a new one.
 2. If the submit RPC times out or the response is lost, retry the same request unchanged.
 3. If `CompleteLeasedReconcileJob` times out after a successful submit, retry completion with the
    same terminal counters/message.

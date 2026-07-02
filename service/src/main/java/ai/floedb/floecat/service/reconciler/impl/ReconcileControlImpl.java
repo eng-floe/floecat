@@ -1275,6 +1275,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .addAllFilePaths(effective.filePaths())
         .addAllFileResults(
             effective.fileResults().stream().map(ReconcileControlImpl::toProtoFileResult).toList())
+        .addAllPartialAggregateRecords(effective.partialAggregateRecords())
         .build();
   }
 

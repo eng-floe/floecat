@@ -159,6 +159,28 @@ public record ReconcileFileGroupTask(
         planId, groupId, tableId, snapshotId, fileCount, "", 0, filePaths, fileResults, List.of());
   }
 
+  public static ReconcileFileGroupTask of(
+      String planId,
+      String groupId,
+      String tableId,
+      long snapshotId,
+      int fileCount,
+      List<String> filePaths,
+      List<ReconcileFileResult> fileResults,
+      List<TargetStatsRecord> partialAggregateRecords) {
+    return of(
+        planId,
+        groupId,
+        tableId,
+        snapshotId,
+        fileCount,
+        "",
+        0,
+        filePaths,
+        fileResults,
+        partialAggregateRecords);
+  }
+
   public static ReconcileFileGroupTask empty() {
     return new ReconcileFileGroupTask("", "", "", -1L, 0, "", 0, List.of(), List.of(), List.of());
   }

@@ -694,4 +694,294 @@ class StatsRepositoryTargetStorageTest {
         .extracting(ai.floedb.floecat.common.rpc.MutationMeta::getPointerVersion)
         .isEqualTo(1L);
   }
+
+  // ── getTargetStatsBatch ────────────────────────────────────────────────────
+
+  @Test
+  void batchReturnsAllRequestedTargetsInOneCall() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 9001L;
+
+    // Write 5 column stats.
+    for (long colId = 1; colId <= 5; colId++) {
+      repository.putTargetStats(
+          TargetStatsRecords.columnRecord(
+              TABLE_ID,
+              snapshotId,
+              colId,
+              ScalarStats.newBuilder()
+                  .setDisplayName("col" + colId)
+                  .setLogicalType("BIGINT")
+                  .setRowCount(colId * 10)
+                  .build(),
+              null));
+    }
+
+    var targets =
+        List.of(
+            StatsTargetIdentity.columnTarget(1L),
+            StatsTargetIdentity.columnTarget(3L),
+            StatsTargetIdentity.columnTarget(5L));
+    var batch = repository.getTargetStatsBatch(TABLE_ID, snapshotId, targets);
+
+    assertThat(batch).hasSize(3);
+    assertThat(batch.get(StatsTargetIdentity.storageId(StatsTargetIdentity.columnTarget(1L))))
+        .isPresent()
+        .get()
+        .extracting(r -> r.getScalar().getDisplayName())
+        .isEqualTo("col1");
+    assertThat(batch.get(StatsTargetIdentity.storageId(StatsTargetIdentity.columnTarget(3L))))
+        .isPresent()
+        .get()
+        .extracting(r -> r.getScalar().getRowCount())
+        .isEqualTo(30L);
+    assertThat(batch.get(StatsTargetIdentity.storageId(StatsTargetIdentity.columnTarget(5L))))
+        .isPresent();
+  }
+
+  @Test
+  void batchReturnsEmptyForUnknownSnapshot() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var targets = List.of(StatsTargetIdentity.columnTarget(1L));
+    var batch = repository.getTargetStatsBatch(TABLE_ID, 99999L, targets);
+    assertThat(batch).hasSize(1);
+    assertThat(batch.get(StatsTargetIdentity.storageId(StatsTargetIdentity.columnTarget(1L))))
+        .isEmpty();
+  }
+
+  @Test
+  void batchReturnsMissForUnwrittenTarget() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 9002L;
+    // Write col 1 only.
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            snapshotId,
+            1L,
+            ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(1L).build(),
+            null));
+
+    var batch =
+        repository.getTargetStatsBatch(
+            TABLE_ID,
+            snapshotId,
+            List.of(
+                StatsTargetIdentity.columnTarget(1L), // written
+                StatsTargetIdentity.columnTarget(2L))); // not written
+
+    assertThat(batch.get(StatsTargetIdentity.storageId(StatsTargetIdentity.columnTarget(1L))))
+        .isPresent();
+    assertThat(batch.get(StatsTargetIdentity.storageId(StatsTargetIdentity.columnTarget(2L))))
+        .isEmpty();
+  }
+
+  @Test
+  void batchHandlesEmptyTargetList() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    assertThat(repository.getTargetStatsBatch(TABLE_ID, 1L, List.of())).isEmpty();
+    assertThat(repository.getTargetStatsBatch(TABLE_ID, 1L, null)).isEmpty();
+  }
+
+  // ── getStaleTargetStatsBatch / latest-snapshot index ─────────────────────
+
+  @Test
+  void staleIndexAdvancesToNewerSnapshot() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+
+    // Write stats for snapshot 100, then snapshot 200.
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            100L,
+            1L,
+            ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(10L).build(),
+            null));
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            200L,
+            1L,
+            ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(20L).build(),
+            null));
+
+    // Asking for snapshot 300 (no exact stats) should return the latest — snapshot 200.
+    var target = StatsTargetIdentity.columnTarget(1L);
+    Optional<TargetStatsRecord> stale = repository.getStaleTargetStats(TABLE_ID, 300L, target);
+    assertThat(stale).isPresent();
+    assertThat(stale.get().getScalar().getRowCount()).isEqualTo(20L);
+  }
+
+  @Test
+  void staleBatchReturnsLatestSnapshotForAllTargets() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+
+    // Write 3 columns for snapshot 50, only col1+col2 for snapshot 60.
+    for (long colId = 1; colId <= 3; colId++) {
+      repository.putTargetStats(
+          TargetStatsRecords.columnRecord(
+              TABLE_ID,
+              50L,
+              colId,
+              ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(50L).build(),
+              null));
+    }
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            60L,
+            1L,
+            ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(60L).build(),
+            null));
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            60L,
+            2L,
+            ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(61L).build(),
+            null));
+
+    // Request stale for snapshot 999 (no exact stats). Index points to snapshot 60.
+    var targets =
+        List.of(
+            StatsTargetIdentity.columnTarget(1L),
+            StatsTargetIdentity.columnTarget(2L),
+            StatsTargetIdentity.columnTarget(3L));
+    var batch = repository.getStaleTargetStatsBatch(TABLE_ID, 999L, targets);
+
+    // col1 and col2 are in snapshot 60 (latest); col3 is absent from snapshot 60 but
+    // present in snapshot 50 — fallback scan must surface it.
+    assertThat(batch.get(StatsTargetIdentity.storageId(StatsTargetIdentity.columnTarget(1L))))
+        .isPresent()
+        .get()
+        .extracting(r -> r.getScalar().getRowCount())
+        .isEqualTo(60L);
+    assertThat(batch.get(StatsTargetIdentity.storageId(StatsTargetIdentity.columnTarget(2L))))
+        .isPresent()
+        .get()
+        .extracting(r -> r.getScalar().getRowCount())
+        .isEqualTo(61L);
+    assertThat(batch.get(StatsTargetIdentity.storageId(StatsTargetIdentity.columnTarget(3L))))
+        .isPresent()
+        .get()
+        .extracting(r -> r.getScalar().getRowCount())
+        .isEqualTo(50L);
+  }
+
+  @Test
+  void staleBatchMatchesSinglePathWhenPerTargetPointerIsNewer() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+
+    // Initial capture at snapshot 100 advances both the table-level and per-target pointers.
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            100L,
+            1L,
+            ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(100L).build(),
+            null));
+
+    // Replace advances the per-target pointer to 200 but NOT the table-level pointer. A
+    // table-level-first batch would then serve the older snapshot-100 stats while the single
+    // stale lookup (per-target-first) serves snapshot 200.
+    repository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        200L,
+        List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                200L,
+                1L,
+                ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(200L).build(),
+                null)));
+
+    var target = StatsTargetIdentity.columnTarget(1L);
+    Optional<TargetStatsRecord> single = repository.getStaleTargetStats(TABLE_ID, 999L, target);
+    var batch = repository.getStaleTargetStatsBatch(TABLE_ID, 999L, List.of(target));
+
+    assertThat(single).isPresent();
+    assertThat(single.get().getScalar().getRowCount()).isEqualTo(200L);
+    assertThat(batch.get(StatsTargetIdentity.storageId(target)))
+        .as("batch must resolve the same (newest) snapshot as the single stale lookup")
+        .isEqualTo(single);
+  }
+
+  @Test
+  void staleBatchUsesPerTargetIndexWrittenByBatchBeforeScanFallback() {
+    RepoTestPointerStores.CountingPrefixScanPointerStore pointerStore =
+        new RepoTestPointerStores.CountingPrefixScanPointerStore(new InMemoryPointerStore());
+    StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
+
+    repository.putTargetStatsBatch(
+        TABLE_ID,
+        100L,
+        List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                100L,
+                1L,
+                ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(100L).build(),
+                null),
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                100L,
+                2L,
+                ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(101L).build(),
+                null)));
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            200L,
+            1L,
+            ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(200L).build(),
+            null));
+
+    var target = StatsTargetIdentity.columnTarget(2L);
+    Optional<TargetStatsRecord> stale = repository.getStaleTargetStats(TABLE_ID, 999L, target);
+
+    assertThat(stale).isPresent();
+    assertThat(stale.get().getSnapshotId()).isEqualTo(100L);
+    assertThat(stale.get().getScalar().getRowCount()).isEqualTo(101L);
+    assertThat(pointerStore.listPointersByPrefixCalls())
+        .as("batch writes must populate the per-target stale index instead of relying on scan")
+        .isEqualTo(0);
+  }
+
+  @Test
+  void staleIndexDoesNotReturnNewerSnapshot() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+
+    // Write stats for snapshot 500 only.
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            500L,
+            1L,
+            ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(500L).build(),
+            null));
+
+    // Request stale for snapshot 100 — the index points to 500, which is NEWER than 100.
+    // Must return empty, not the snapshot-500 data.
+    var target = StatsTargetIdentity.columnTarget(1L);
+    assertThat(repository.getStaleTargetStats(TABLE_ID, 100L, target)).isEmpty();
+    var batch = repository.getStaleTargetStatsBatch(TABLE_ID, 100L, List.of(target));
+    assertThat(batch.get(StatsTargetIdentity.storageId(target))).isEmpty();
+  }
+
+  @Test
+  void staleBatchReturnsEmptyWhenNoStatsExist() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var target = StatsTargetIdentity.columnTarget(1L);
+    assertThat(repository.getStaleTargetStatsBatch(TABLE_ID, 999L, List.of(target)))
+        .containsEntry(StatsTargetIdentity.storageId(target), Optional.empty());
+  }
 }

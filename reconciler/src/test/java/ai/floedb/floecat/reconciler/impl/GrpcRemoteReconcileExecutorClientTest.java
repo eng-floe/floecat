@@ -608,6 +608,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             .orElseThrow()
             .getSuccess();
     assertThat(success.getResultId()).isEqualTo("result-1");
+    assertThat(success.getChunkCount()).isEqualTo(1);
   }
 
   @Test
@@ -654,6 +655,13 @@ class GrpcRemoteReconcileExecutorClientTest {
             .filter(SubmitLeasedFileGroupExecutionResultRequest::hasChunk)
             .count();
     assertThat(chunkCount).isGreaterThan(1L);
+    var success =
+        requestCaptor.getAllValues().stream()
+            .filter(SubmitLeasedFileGroupExecutionResultRequest::hasSuccess)
+            .findFirst()
+            .orElseThrow()
+            .getSuccess();
+    assertThat(success.getChunkCount()).isEqualTo((int) chunkCount);
   }
 
   private static ResourceId connectorId() {

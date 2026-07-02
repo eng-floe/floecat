@@ -41,8 +41,10 @@ import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.parquet.schema.Type;
+import org.jboss.logging.Logger;
 
 public final class ParquetNdvProvider implements NdvProvider {
+  private static final Logger LOG = Logger.getLogger(ParquetNdvProvider.class);
 
   private final Function<String, org.apache.parquet.io.InputFile> parquetLookup;
 
@@ -75,7 +77,13 @@ public final class ParquetNdvProvider implements NdvProvider {
 
   public static ParquetNdvProvider forIcebergIO(
       Function<String, org.apache.iceberg.io.InputFile> icebergLookup) {
-    return new ParquetNdvProvider(path -> new ParquetInputFileAdapter(icebergLookup.apply(path)));
+    return forIcebergIO(icebergLookup, 4096);
+  }
+
+  public static ParquetNdvProvider forIcebergIO(
+      Function<String, org.apache.iceberg.io.InputFile> icebergLookup, int thetaK) {
+    return new ParquetNdvProvider(
+        path -> new ParquetInputFileAdapter(icebergLookup.apply(path)), thetaK);
   }
 
   @Override
@@ -92,6 +100,12 @@ public final class ParquetNdvProvider implements NdvProvider {
       final List<String> present =
           sinks.keySet().stream().filter(fileSchema::containsField).collect(Collectors.toList());
       final List<String> limited = present.size() > 32 ? present.subList(0, 32) : present;
+      if (present.size() > 32) {
+        LOG.warnf(
+            "ParquetNdvProvider: NDV scan capped at 32 columns per file; %d columns silently"
+                + " skipped for %s. Raise the cap in ParquetNdvProvider if broader NDV is needed.",
+            present.size() - 32, filePath);
+      }
       if (limited.isEmpty()) {
         return;
       }
@@ -211,7 +225,7 @@ public final class ParquetNdvProvider implements NdvProvider {
     m.get(col).update(v == null ? "" : v);
   }
 
-  private static final class ParquetInputFileAdapter implements org.apache.parquet.io.InputFile {
+  static final class ParquetInputFileAdapter implements org.apache.parquet.io.InputFile {
     private final org.apache.iceberg.io.InputFile inputFile;
 
     ParquetInputFileAdapter(org.apache.iceberg.io.InputFile in) {

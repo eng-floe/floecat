@@ -62,6 +62,14 @@ public interface StatsEngine<K> {
     Object min();
 
     Object max();
+
+    // Average uncompressed width in bytes per row, from Parquet footer metadata.
+    // Uses getTotalUncompressedSize() per ColumnChunk; ceiling-divided by row count so
+    // sub-byte-per-row encodings (bit-packed integers, dictionary strings) return >= 1.
+    // Null when no width provider has been configured.
+    default Long avgWidthBytes() {
+      return null;
+    }
   }
 
   interface FileAgg<K> {

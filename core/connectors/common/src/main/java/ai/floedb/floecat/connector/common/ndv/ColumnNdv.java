@@ -25,10 +25,43 @@ import org.apache.datasketches.theta.Sketches;
 import org.apache.datasketches.theta.Union;
 
 public final class ColumnNdv {
+  /** Apache Datasketches theta default (ThetaUtil.DEFAULT_NOMINAL_ENTRIES). */
+  public static final int DEFAULT_NOMINAL_ENTRIES = 4096;
+
   public NdvApprox approx;
   public List<NdvSketch> sketches = new ArrayList<>();
 
   public transient Union thetaUnion;
+
+  /**
+   * Nominal entries (k) for the merge union. Must be >= the per-file sketches' k, otherwise the
+   * union downsamples and caps the merged sketch's resolution below the configured theta_k.
+   */
+  private final int nominalEntries;
+
+  public ColumnNdv() {
+    this(DEFAULT_NOMINAL_ENTRIES);
+  }
+
+  public ColumnNdv(int nominalEntries) {
+    this.nominalEntries = nominalEntries >= 16 ? nominalEntries : DEFAULT_NOMINAL_ENTRIES;
+  }
+
+  public void mergeApproxMetadata(ColumnNdv other) {
+    if (other == null || other.approx == null) {
+      return;
+    }
+    if (approx == null) {
+      approx = new NdvApprox();
+    }
+    if (other.approx.rowsSeen != null) {
+      approx.rowsSeen = (approx.rowsSeen == null ? 0L : approx.rowsSeen) + other.approx.rowsSeen;
+    }
+    if (other.approx.rowsTotal != null) {
+      approx.rowsTotal =
+          (approx.rowsTotal == null ? 0L : approx.rowsTotal) + other.approx.rowsTotal;
+    }
+  }
 
   public void mergeTheta(byte[] serializedSketch) {
     if (serializedSketch == null || serializedSketch.length == 0) {
@@ -36,7 +69,7 @@ public final class ColumnNdv {
     }
 
     if (thetaUnion == null) {
-      thetaUnion = SetOperation.builder().buildUnion();
+      thetaUnion = SetOperation.builder().setNominalEntries(nominalEntries).buildUnion();
     }
 
     Memory sketchMemory = Memory.wrap(serializedSketch);
@@ -50,20 +83,21 @@ public final class ColumnNdv {
     }
 
     if (thetaUnion == null) {
-      thetaUnion = SetOperation.builder().buildUnion();
+      thetaUnion = SetOperation.builder().setNominalEntries(nominalEntries).buildUnion();
     }
     thetaUnion.union(incomingSketch);
   }
 
+  /** Finalize the theta union. Idempotent when no transient theta union is present. */
   public void finalizeTheta() {
     if (thetaUnion == null) {
       return;
     }
 
+    sketches.clear();
+
     var compact = thetaUnion.getResult(true, null);
     byte[] bytes = compact.toByteArray();
-
-    sketches.clear();
     NdvSketch sk = new NdvSketch();
     sk.type = "apache-datasketches-theta-v1";
     sk.data = bytes;
@@ -71,11 +105,7 @@ public final class ColumnNdv {
     sk.compression = "none";
     sk.version = 1;
     sketches.add(sk);
-
-    if (approx == null) {
-      approx = new NdvApprox();
-    }
-
+    if (approx == null) approx = new NdvApprox();
     approx.estimate = compact.getEstimate();
     approx.method = "apache-datasketches-theta";
     thetaUnion = null;
