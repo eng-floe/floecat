@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.storage.impl;
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
+import ai.floedb.floecat.storage.aws.ClosedAwsClientDetector;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.StorageAuthority;
 import ai.floedb.floecat.storage.rpc.VendedStorageCredential;
@@ -200,11 +201,6 @@ public class StorageAuthorityResolver {
       StorageAuthority authority,
       AwsCredentialsProvider provider,
       List<String> sessionScopeLocations) {
-    var builder = StsClient.builder().credentialsProvider(provider);
-    if (authority.hasRegion() && !authority.getRegion().isBlank()) {
-      builder.region(Region.of(authority.getRegion()));
-    }
-
     Integer duration = authority.hasDurationSeconds() ? authority.getDurationSeconds() : null;
     AssumeRoleRequest request =
         AssumeRoleRequest.builder()
@@ -220,7 +216,27 @@ public class StorageAuthorityResolver {
             .policy(scopedSessionPolicy(sessionScopeLocations))
             .durationSeconds(duration != null && duration > 0 ? duration : null)
             .build();
+    return assumeRoleOnceWithRetry(authority, provider, request);
+  }
 
+  private ResolvedStorageCredentials assumeRoleOnceWithRetry(
+      StorageAuthority authority, AwsCredentialsProvider provider, AssumeRoleRequest request) {
+    try {
+      return assumeRoleOnce(authority, provider, request);
+    } catch (RuntimeException e) {
+      if (!ClosedAwsClientDetector.isConnectionPoolShutdown(e)) {
+        throw e;
+      }
+      return assumeRoleOnce(authority, provider, request);
+    }
+  }
+
+  private ResolvedStorageCredentials assumeRoleOnce(
+      StorageAuthority authority, AwsCredentialsProvider provider, AssumeRoleRequest request) {
+    var builder = StsClient.builder().credentialsProvider(provider);
+    if (authority.hasRegion() && !authority.getRegion().isBlank()) {
+      builder.region(Region.of(authority.getRegion()));
+    }
     try (StsClient sts = builder.build()) {
       Credentials credentials = sts.assumeRole(request).credentials();
       return new ResolvedStorageCredentials(
