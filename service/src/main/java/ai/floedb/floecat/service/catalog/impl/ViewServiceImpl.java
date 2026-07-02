@@ -33,15 +33,11 @@ import ai.floedb.floecat.catalog.rpc.ViewService;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.common.rpc.MutationMeta;
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.metagraph.model.GraphNode;
-import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
-import ai.floedb.floecat.metagraph.model.NamespaceNode;
-import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceViews;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -61,11 +57,7 @@ import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Base64;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -97,9 +89,12 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
           "output_columns",
           "base_relations",
           "creation_search_path");
-  private static final String VIEW_TOKEN_PREFIX = "view:";
 
   private static final Logger LOG = Logger.getLogger(ViewService.class);
+
+  private CatalogSurfaceViews catalogSurfaceViews() {
+    return new CatalogSurfaceViews(viewRepo, overlay);
+  }
 
   @Override
   public Uni<ListViewsResponse> listViews(ListViewsRequest request) {
@@ -111,102 +106,11 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   var principalContext = principal.get();
                   authz.require(principalContext, "view.read");
 
-                  var namespaceId = request.getNamespaceId();
-                  ensureKind(
-                      namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId());
-
-                  NamespaceNode nsNode =
-                      CatalogOverlayGuards.requireVisibleNamespaceNode(
-                          overlay, namespaceId, correlationId());
-                  var catalogId = nsNode.catalogId();
-
-                  var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
-                  final int want = Math.max(1, pageIn.limit);
-                  final boolean isServiceToken =
-                      pageIn.token != null && pageIn.token.startsWith(VIEW_TOKEN_PREFIX);
-                  final String resumeAfterRel = isServiceToken ? decodeViewToken(pageIn.token) : "";
-                  String repoCursor = isServiceToken ? "" : pageIn.token;
-
-                  var out = new ArrayList<View>(want);
-                  String lastEmittedRel = "";
-
-                  String repoNext = "";
-                  if (nsNode.origin() != GraphNodeOrigin.SYSTEM && !isServiceToken) {
-                    var next = new StringBuilder();
-                    final List<View> scanned;
-                    try {
-                      scanned =
-                          viewRepo.list(
-                              principalContext.getAccountId(),
-                              catalogId.getId(),
-                              namespaceId.getId(),
-                              want,
-                              repoCursor,
-                              next);
-                    } catch (IllegalArgumentException badToken) {
-                      throw GrpcErrors.invalidArgument(
-                          correlationId(), PAGE_TOKEN_INVALID, Map.of("page_token", repoCursor));
-                    }
-
-                    out.addAll(scanned);
-                    repoNext = next.toString();
-                  }
-
-                  int sysCount = 0;
-                  final boolean repoExhausted = repoNext.isBlank();
-                  if (repoExhausted) {
-                    var sysNodes =
-                        overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
-                            .filter(ViewNode.class::isInstance)
-                            .map(ViewNode.class::cast)
-                            .toList();
-                    sysCount = sysNodes.size();
-
-                    if (out.size() < want && sysCount > 0) {
-                      record SysItem(ViewNode node, String rel) {}
-
-                      var sysItems =
-                          sysNodes.stream()
-                              .map(node -> new SysItem(node, relativeViewKey(node)))
-                              .filter(it -> it.rel() != null && !it.rel().isBlank())
-                              .sorted(Comparator.comparing(SysItem::rel))
-                              .toList();
-
-                      for (var it : sysItems) {
-                        if (!resumeAfterRel.isBlank() && it.rel().compareTo(resumeAfterRel) <= 0) {
-                          continue;
-                        }
-                        if (out.size() >= want) {
-                          break;
-                        }
-                        out.add(viewFromSystemNode(it.node()));
-                        lastEmittedRel = it.rel();
-                      }
-                    }
-                  } else {
-                    sysCount =
-                        (int)
-                            overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
-                                .filter(ViewNode.class::isInstance)
-                                .count();
-                  }
-
-                  String nextToken = repoNext;
-                  if (nextToken.isBlank() && out.size() == want && sysCount > 0) {
-                    nextToken = encodeViewToken(lastEmittedRel);
-                  }
-
-                  int repoCount =
-                      (nsNode.origin() == GraphNodeOrigin.SYSTEM)
-                          ? 0
-                          : viewRepo.count(
-                              principalContext.getAccountId(),
-                              catalogId.getId(),
-                              namespaceId.getId());
-
-                  var page = MutationOps.pageOut(nextToken, repoCount + sysCount);
-
-                  return ListViewsResponse.newBuilder().addAllViews(out).setPage(page).build();
+                  return catalogSurfaceViews()
+                      .listViews(
+                          request,
+                          principalContext.getAccountId(),
+                          principalContext.getCorrelationId());
                 }),
             correlationId())
         .onFailure()
@@ -225,11 +129,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   var principalContext = principal.get();
                   authz.require(principalContext, "view.read");
 
-                  var viewId = request.getViewId();
-                  GraphNode node = requireVisibleViewNode(viewId, correlationId());
-                  var view = viewFromOverlayNodeOrRepo(node, viewId, correlationId());
-
-                  return GetViewResponse.newBuilder().setView(view).build();
+                  return catalogSurfaceViews()
+                      .getView(request, principalContext.getCorrelationId());
                 }),
             correlationId())
         .onFailure()
@@ -416,7 +317,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
                   var viewId = request.getViewId();
                   ensureKind(viewId, ResourceKind.RK_VIEW, "view_id", corr);
-                  ensureViewWritable(viewId, corr);
+                  catalogSurfaceViews().requireWritableView(viewId, corr);
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
                     throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
@@ -524,7 +425,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   var viewId = request.getViewId();
                   ensureKind(viewId, ResourceKind.RK_VIEW, "view_id", correlationId);
                   boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
-                  ensureViewWritableForDelete(viewId, correlationId, callerCares);
+                  catalogSurfaceViews()
+                      .requireWritableViewForDelete(viewId, correlationId, callerCares);
 
                   MutationMeta meta;
                   try {
@@ -560,119 +462,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
-  }
-
-  private GraphNode resolveViewNode(ResourceId viewId, String corr, boolean throwOnError) {
-    if (viewId == null) {
-      throw GrpcErrors.notFound(corr, VIEW, Map.of("id", "<missing_view_id>"));
-    }
-    ensureKind(viewId, ResourceKind.RK_VIEW, "view_id", corr);
-
-    try {
-      return overlay.resolve(viewId).orElse(null);
-    } catch (RuntimeException e) {
-      if (throwOnError) {
-        throw e;
-      }
-      return null;
-    }
-  }
-
-  private GraphNode requireVisibleViewNode(ResourceId viewId, String corr) {
-    GraphNode node = resolveViewNode(viewId, corr, true);
-    if (node == null) {
-      throw GrpcErrors.notFound(corr, VIEW, Map.of("id", viewId.getId()));
-    }
-    return node;
-  }
-
-  private void ensureViewWritable(ResourceId viewId, String corr) {
-    GraphNode node = requireVisibleViewNode(viewId, corr);
-    enforceWritableViewNode(node, viewId, corr);
-  }
-
-  private void ensureViewWritableForDelete(ResourceId viewId, String corr, boolean callerCares) {
-    GraphNode node = resolveViewNode(viewId, corr, callerCares);
-    if (node == null) {
-      return;
-    }
-    enforceWritableViewNode(node, viewId, corr);
-  }
-
-  private void enforceWritableViewNode(GraphNode node, ResourceId viewId, String corr) {
-    if (node instanceof ViewNode vn) {
-      if (isSystemViewNode(vn)) {
-        throw GrpcErrors.permissionDenied(
-            corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", viewId.getId(), "kind", "view"));
-      }
-      return;
-    }
-    throw GrpcErrors.notFound(corr, VIEW, Map.of("id", viewId.getId()));
-  }
-
-  private View viewFromOverlayNodeOrRepo(GraphNode node, ResourceId viewId, String corr) {
-    if (!(node instanceof ViewNode vn)) {
-      throw GrpcErrors.notFound(corr, VIEW, Map.of("id", viewId.getId()));
-    }
-
-    if (isSystemViewNode(node)) {
-      return viewFromSystemNode(vn);
-    }
-
-    return viewRepo
-        .getById(viewId)
-        .orElseThrow(() -> GrpcErrors.notFound(corr, VIEW, Map.of("id", viewId.getId())));
-  }
-
-  private static View viewFromSystemNode(ViewNode node) {
-    View.Builder builder =
-        View.newBuilder()
-            .setResourceId(node.id())
-            .setCatalogId(node.catalogId())
-            .setNamespaceId(node.namespaceId())
-            .setDisplayName(node.displayName())
-            .putAllProperties(node.properties());
-    builder.addAllSqlDefinitions(node.sqlDefinitions());
-    return builder.build();
-  }
-
-  private boolean isSystemViewNode(GraphNode node) {
-    if (node == null || node.id() == null) {
-      return false;
-    }
-    return node.origin() == GraphNodeOrigin.SYSTEM;
-  }
-
-  private String relativeViewKey(ViewNode node) {
-    if (node == null) {
-      return "";
-    }
-    var name = node.displayName();
-    if (name == null) {
-      name = "";
-    }
-    return normalizeName(name);
-  }
-
-  private static String encodeViewToken(String resumeAfterRel) {
-    if (resumeAfterRel == null) resumeAfterRel = "";
-    if (resumeAfterRel.isBlank()) {
-      return VIEW_TOKEN_PREFIX;
-    }
-    return VIEW_TOKEN_PREFIX
-        + Base64.getUrlEncoder()
-            .withoutPadding()
-            .encodeToString(resumeAfterRel.getBytes(StandardCharsets.UTF_8));
-  }
-
-  private static String decodeViewToken(String token) {
-    if (token == null || token.isBlank() || !token.startsWith(VIEW_TOKEN_PREFIX)) return "";
-    if (token.length() == VIEW_TOKEN_PREFIX.length()) {
-      return "";
-    }
-    var s = token.substring(VIEW_TOKEN_PREFIX.length());
-    var bytes = Base64.getUrlDecoder().decode(s);
-    return new String(bytes, StandardCharsets.UTF_8);
   }
 
   private static void validateViewMaskOrThrow(FieldMask mask, String corr) {
