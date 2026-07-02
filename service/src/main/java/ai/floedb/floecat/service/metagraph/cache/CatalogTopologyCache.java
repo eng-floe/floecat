@@ -20,6 +20,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
 import ai.floedb.floecat.scanner.spi.TopologyNames;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository.CatalogRef;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
@@ -34,6 +36,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -63,8 +66,12 @@ public class CatalogTopologyCache {
 
   private final Cache<NsCacheKey, List<NamespaceRef>> nsRefs;
   private final Cache<RelCacheKey, List<RelationRef>> relRefs;
+  private final Cache<CatalogNameKey, Optional<CatalogRef>> catalogNames;
+  private final Cache<NamespacePathKey, Optional<NamespaceRef>> namespacePaths;
+  private final Cache<RelationNameKey, RelationNameResolution> relationNames;
   private final ConcurrentMap<ResourceId, ResourceId> reverseMap;
 
+  private final CatalogRepository catalogRepo;
   private final NamespaceRepository nsRepo;
   private final TableRepository tableRepo;
   private final ViewRepository viewRepo;
@@ -74,6 +81,7 @@ public class CatalogTopologyCache {
 
   @Inject
   public CatalogTopologyCache(
+      CatalogRepository catalogRepo,
       NamespaceRepository nsRepo,
       TableRepository tableRepo,
       ViewRepository viewRepo,
@@ -84,6 +92,7 @@ public class CatalogTopologyCache {
           long relCacheSize,
       @ConfigProperty(name = "floecat.topology.cache-ttl-minutes", defaultValue = "15")
           long cacheTtlMinutes) {
+    this.catalogRepo = Objects.requireNonNull(catalogRepo, "catalogRepo");
     this.nsRepo = Objects.requireNonNull(nsRepo, "nsRepo");
     this.tableRepo = Objects.requireNonNull(tableRepo, "tableRepo");
     this.viewRepo = Objects.requireNonNull(viewRepo, "viewRepo");
@@ -91,6 +100,15 @@ public class CatalogTopologyCache {
     Duration ttl = Duration.ofMinutes(cacheTtlMinutes);
     this.nsRefs =
         Caffeine.newBuilder().maximumSize(Math.max(1L, nsCacheSize)).expireAfterAccess(ttl).build();
+    this.catalogNames =
+        Caffeine.newBuilder().maximumSize(Math.max(1L, nsCacheSize)).expireAfterAccess(ttl).build();
+    this.namespacePaths =
+        Caffeine.newBuilder().maximumSize(Math.max(1L, nsCacheSize)).expireAfterAccess(ttl).build();
+    this.relationNames =
+        Caffeine.newBuilder()
+            .maximumSize(Math.max(1L, relCacheSize))
+            .expireAfterAccess(ttl)
+            .build();
     this.reverseMap = new ConcurrentHashMap<>();
     this.relRefs =
         Caffeine.newBuilder()
@@ -113,6 +131,59 @@ public class CatalogTopologyCache {
 
     nsCacheMetrics.trackSize(nsRefs::estimatedSize, "ns-refs cache size");
     relCacheMetrics.trackSize(relRefs::estimatedSize, "rel-refs cache size");
+  }
+
+  public Optional<CatalogRef> resolveCatalogRefByName(String accountId, String name) {
+    if (accountId == null || accountId.isBlank() || name == null || name.isBlank()) {
+      return Optional.empty();
+    }
+    var key = new CatalogNameKey(accountId, name);
+    Optional<CatalogRef> cached = catalogNames.getIfPresent(key);
+    if (cached != null) {
+      nsCacheMetrics.recordHit();
+      return cached;
+    }
+    nsCacheMetrics.recordMiss();
+    Optional<CatalogRef> loaded = catalogRepo.refByName(accountId, name);
+    catalogNames.put(key, loaded);
+    return loaded;
+  }
+
+  public Optional<NamespaceRef> resolveNamespaceRefByPath(
+      ResourceId catalogId, List<String> pathSegments) {
+    if (catalogId == null || pathSegments == null || pathSegments.isEmpty()) {
+      return Optional.empty();
+    }
+    var key =
+        new NamespacePathKey(
+            catalogId.getAccountId(), catalogId.getId(), List.copyOf(pathSegments));
+    Optional<NamespaceRef> cached = namespacePaths.getIfPresent(key);
+    if (cached != null) {
+      nsCacheMetrics.recordHit();
+      return cached;
+    }
+    nsCacheMetrics.recordMiss();
+    Optional<NamespaceRef> loaded = loadNamespaceRefByPath(catalogId, pathSegments);
+    namespacePaths.put(key, loaded);
+    return loaded;
+  }
+
+  public RelationNameResolution resolveRelationRefsByName(
+      ResourceId catalogId, ResourceId namespaceId, String name) {
+    if (catalogId == null || namespaceId == null || name == null || name.isBlank()) {
+      return RelationNameResolution.empty();
+    }
+    var key =
+        new RelationNameKey(catalogId.getAccountId(), catalogId.getId(), namespaceId.getId(), name);
+    RelationNameResolution cached = relationNames.getIfPresent(key);
+    if (cached != null) {
+      relCacheMetrics.recordHit();
+      return cached;
+    }
+    relCacheMetrics.recordMiss();
+    RelationNameResolution loaded = loadRelationName(catalogId, namespaceId, name);
+    relationNames.put(key, loaded);
+    return loaded;
   }
 
   public List<NamespaceRef> listNamespaceRefs(ResourceId catalogId) {
@@ -192,20 +263,65 @@ public class CatalogTopologyCache {
     }
     ResourceId nsId = reverseMap.remove(resourceId);
     if (nsId != null) {
-      relRefs.invalidate(new RelCacheKey(nsId.getAccountId(), nsId.getId()));
+      evictRelationRefs(nsId);
     }
   }
 
   public void evictRelationRefs(ResourceId namespaceId) {
     if (namespaceId != null) {
-      relRefs.invalidate(new RelCacheKey(namespaceId.getAccountId(), namespaceId.getId()));
+      var key = new RelCacheKey(namespaceId.getAccountId(), namespaceId.getId());
+      relRefs.invalidate(key);
+      relationNames.asMap().keySet().removeIf(k -> k.matchesNamespace(namespaceId));
     }
   }
 
   public void evictNamespaceRefs(ResourceId catalogId) {
     if (catalogId != null) {
-      nsRefs.invalidate(new NsCacheKey(catalogId.getAccountId(), catalogId.getId()));
+      var key = new NsCacheKey(catalogId.getAccountId(), catalogId.getId());
+      nsRefs.invalidate(key);
+      namespacePaths.asMap().keySet().removeIf(k -> k.matchesCatalog(catalogId));
+      relationNames.asMap().keySet().removeIf(k -> k.matchesCatalog(catalogId));
     }
+  }
+
+  public void evictCatalogRefs(String accountId) {
+    if (accountId != null && !accountId.isBlank()) {
+      catalogNames.asMap().keySet().removeIf(k -> k.accountId().equals(accountId));
+    }
+  }
+
+  private Optional<NamespaceRef> loadNamespaceRefByPath(
+      ResourceId catalogId, List<String> pathSegments) {
+    var cached = nsRefs.getIfPresent(new NsCacheKey(catalogId.getAccountId(), catalogId.getId()));
+    if (cached != null) {
+      return cached.stream().filter(ref -> ref.pathSegments().equals(pathSegments)).findFirst();
+    }
+    String name = String.join(".", pathSegments);
+    return nsRepo.listRefsByName(catalogId.getAccountId(), catalogId.getId(), Set.of(name)).stream()
+        .filter(ref -> ref.pathSegments().equals(pathSegments))
+        .findFirst();
+  }
+
+  private RelationNameResolution loadRelationName(
+      ResourceId catalogId, ResourceId namespaceId, String name) {
+    var cached =
+        relRefs.getIfPresent(new RelCacheKey(namespaceId.getAccountId(), namespaceId.getId()));
+    List<RelationRef> refs;
+    if (cached != null) {
+      refs = cached.stream().filter(r -> name.equals(r.name())).toList();
+    } else {
+      refs = listRelationRefsByName(catalogId, namespaceId, Set.of(name));
+    }
+    ResourceId tableId = null;
+    ResourceId viewId = null;
+    for (RelationRef ref : refs) {
+      switch (ref.kind()) {
+        case RK_TABLE -> tableId = ref.id();
+        case RK_VIEW -> viewId = ref.id();
+        default -> {}
+      }
+    }
+    return new RelationNameResolution(tableId, viewId);
   }
 
   private List<RelationRef> loadRelationRefs(ResourceId catalogId, ResourceId namespaceId) {
@@ -217,6 +333,52 @@ public class CatalogTopologyCache {
     refs.addAll(tableRepo.listRefs(accountId, catId, nsId));
     refs.addAll(viewRepo.listRefs(accountId, catId, nsId));
     return refs;
+  }
+
+  public record RelationNameResolution(ResourceId tableId, ResourceId viewId) {
+    static RelationNameResolution empty() {
+      return new RelationNameResolution(null, null);
+    }
+
+    public boolean isEmpty() {
+      return tableId == null && viewId == null;
+    }
+
+    public boolean isAmbiguous() {
+      return tableId != null && viewId != null;
+    }
+
+    public Optional<ResourceId> singleId() {
+      if (isAmbiguous() || isEmpty()) {
+        return Optional.empty();
+      }
+      return Optional.of(tableId != null ? tableId : viewId);
+    }
+  }
+
+  private record CatalogNameKey(String accountId, String name) {}
+
+  private record NamespacePathKey(String accountId, String catalogId, List<String> pathSegments) {
+    private boolean matchesCatalog(ResourceId catalogId) {
+      return catalogId != null
+          && accountId.equals(catalogId.getAccountId())
+          && this.catalogId.equals(catalogId.getId());
+    }
+  }
+
+  private record RelationNameKey(
+      String accountId, String catalogId, String namespaceId, String name) {
+    private boolean matchesCatalog(ResourceId catalogId) {
+      return catalogId != null
+          && accountId.equals(catalogId.getAccountId())
+          && this.catalogId.equals(catalogId.getId());
+    }
+
+    private boolean matchesNamespace(ResourceId namespaceId) {
+      return namespaceId != null
+          && accountId.equals(namespaceId.getAccountId())
+          && this.namespaceId.equals(namespaceId.getId());
+    }
   }
 
   private record NsCacheKey(String accountId, String catalogId) {}

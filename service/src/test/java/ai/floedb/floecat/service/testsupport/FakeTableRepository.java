@@ -19,6 +19,8 @@ package ai.floedb.floecat.service.testsupport;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -29,6 +31,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 public final class FakeTableRepository extends TableRepository {
   private final Map<ResourceId, Table> entries = new HashMap<>();
@@ -108,6 +111,21 @@ public final class FakeTableRepository extends TableRepository {
   @Override
   public int count(String accountId, String catalogId, String namespaceId) {
     return matchingTables(accountId, catalogId, namespaceId).size();
+  }
+
+  @Override
+  public List<RelationRef> listRefs(String accountId, String catalogId, String namespaceId) {
+    return matchingTables(accountId, catalogId, namespaceId).stream()
+        .map(t -> new RelationRef(t.getResourceId(), t.getDisplayName(), ResourceKind.RK_TABLE))
+        .toList();
+  }
+
+  @Override
+  public List<RelationRef> listRefsByName(
+      String accountId, String catalogId, String namespaceId, Set<String> names) {
+    return listRefs(accountId, catalogId, namespaceId).stream()
+        .filter(ref -> names.contains(ref.name()))
+        .toList();
   }
 
   @Override

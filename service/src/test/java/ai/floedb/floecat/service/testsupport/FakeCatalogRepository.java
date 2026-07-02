@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository.CatalogRef;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -59,6 +60,12 @@ public final class FakeCatalogRepository extends CatalogRepository {
                 accountId.equals(c.getResourceId().getAccountId())
                     && displayName.equals(c.getDisplayName()))
         .findFirst();
+  }
+
+  @Override
+  public Optional<CatalogRef> refByName(String accountId, String displayName) {
+    return getByName(accountId, displayName)
+        .map(catalog -> new CatalogRef(catalog.getResourceId(), catalog.getDisplayName()));
   }
 
   @Override

@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
@@ -35,6 +36,8 @@ import java.util.Optional;
 public class CatalogRepository {
 
   private final GenericResourceRepository<Catalog, CatalogKey> repo;
+
+  public record CatalogRef(ResourceId id, String name) {}
 
   @Inject
   public CatalogRepository(PointerStore pointerStore, BlobStore blobStore) {
@@ -75,6 +78,12 @@ public class CatalogRepository {
     return repo.get(Keys.catalogPointerByName(accountId, displayName));
   }
 
+  /** Reads an exact by-name catalog pointer without fetching the catalog blob. */
+  public Optional<CatalogRef> refByName(String accountId, String displayName) {
+    return repo.refByPointer(Keys.catalogPointerByName(accountId, displayName))
+        .flatMap(p -> toCatalogRef(accountId, p));
+  }
+
   public List<Catalog> list(String accountId, int limit, String pageToken, StringBuilder nextOut) {
     return repo.listByPrefix(Keys.catalogPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
@@ -106,5 +115,27 @@ public class CatalogRepository {
       ids.add(c.getResourceId());
     }
     return ids;
+  }
+
+  private static Optional<CatalogRef> toCatalogRef(
+      String accountId, ai.floedb.floecat.common.rpc.Pointer pointer) {
+    String name =
+        !pointer.getDisplayName().isEmpty()
+            ? pointer.getDisplayName()
+            : Keys.extractLastSegment(pointer.getKey());
+    ResourceId rid = pointer.getResourceId();
+    if (rid.getId().isEmpty()) {
+      String rawId = Keys.extractResourceIdFromBlobUri(pointer.getBlobUri());
+      if (rawId.isEmpty()) {
+        return Optional.empty();
+      }
+      rid =
+          ResourceId.newBuilder()
+              .setAccountId(accountId)
+              .setId(rawId)
+              .setKind(ResourceKind.RK_CATALOG)
+              .build();
+    }
+    return Optional.of(new CatalogRef(rid, name));
   }
 }

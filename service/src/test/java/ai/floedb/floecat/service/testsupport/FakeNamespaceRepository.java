@@ -19,6 +19,8 @@ package ai.floedb.floecat.service.testsupport;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
+import ai.floedb.floecat.scanner.spi.TopologyNames;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -66,6 +68,25 @@ public final class FakeNamespaceRepository extends NamespaceRepository {
   }
 
   @Override
+  public List<NamespaceRef> listRefs(String accountId, String catalogId) {
+    return entries.values().stream()
+        .filter(
+            ns ->
+                accountId.equals(ns.getResourceId().getAccountId())
+                    && catalogId.equals(ns.getCatalogId().getId()))
+        .map(this::toRef)
+        .toList();
+  }
+
+  @Override
+  public List<NamespaceRef> listRefsByName(
+      String accountId, String catalogId, java.util.Set<String> names) {
+    return listRefs(accountId, catalogId).stream()
+        .filter(ref -> names.contains(TopologyNames.namespaceName(ref.pathSegments(), ref.name())))
+        .toList();
+  }
+
+  @Override
   public MutationMeta metaForSafe(ResourceId id) {
     MutationMeta meta = metas.get(id);
     if (meta == null) {
@@ -81,5 +102,14 @@ public final class FakeNamespaceRepository extends NamespaceRepository {
     List<String> parents = path.subList(0, path.size() - 1);
     String name = path.get(path.size() - 1);
     return parents.equals(namespace.getParentsList()) && name.equals(namespace.getDisplayName());
+  }
+
+  private NamespaceRef toRef(Namespace namespace) {
+    List<String> path = new java.util.ArrayList<>(namespace.getParentsList());
+    if (!namespace.getDisplayName().isBlank()) {
+      path.add(namespace.getDisplayName());
+    }
+    return new NamespaceRef(
+        namespace.getResourceId(), namespace.getDisplayName(), namespace.getCatalogId(), path);
   }
 }
