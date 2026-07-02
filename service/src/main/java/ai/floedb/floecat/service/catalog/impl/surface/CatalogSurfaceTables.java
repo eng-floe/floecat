@@ -34,9 +34,6 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
-import java.nio.charset.StandardCharsets;
-import java.text.Normalizer;
-import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -65,14 +62,14 @@ public class CatalogSurfaceTables {
     final int want = Math.max(1, pageIn.limit);
 
     var namespaceId = request.getNamespaceId();
-    ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
-
-    NamespaceNode nsNode = requireVisibleNamespaceNode(namespaceId, corr);
+    NamespaceNode nsNode =
+        CatalogSurfaceSupport.requireVisibleNamespace(overlay, namespaceId, corr);
     ResourceId catalogId = nsNode.catalogId();
 
     final boolean isServiceToken =
         pageIn.token != null && pageIn.token.startsWith(TBL_TOKEN_PREFIX);
-    final String resumeAfterRel = isServiceToken ? decodeTblToken(pageIn.token) : "";
+    final String resumeAfterRel =
+        isServiceToken ? CatalogSurfaceSupport.decodeToken(TBL_TOKEN_PREFIX, pageIn.token) : "";
     String repoCursor = isServiceToken ? "" : pageIn.token;
 
     var out = new java.util.ArrayList<Table>(want);
@@ -139,7 +136,7 @@ public class CatalogSurfaceTables {
     String nextToken = repoNext;
 
     if (nextToken.isBlank() && out.size() == want && sysCount > 0) {
-      nextToken = encodeTblToken(lastEmittedRel);
+      nextToken = CatalogSurfaceSupport.encodeToken(TBL_TOKEN_PREFIX, lastEmittedRel);
     }
 
     int repoCount =
@@ -168,7 +165,7 @@ public class CatalogSurfaceTables {
     if (tableId == null) {
       throw GrpcErrors.notFound(corr, TABLE, Map.of("id", "<missing_table_id>"));
     }
-    ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
+    CatalogSurfaceSupport.ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
     return overlay
         .resolve(tableId)
         .filter(TableNode.class::isInstance)
@@ -192,18 +189,6 @@ public class CatalogSurfaceTables {
     enforceWritableTableNode(node, tableId, corr);
   }
 
-  private NamespaceNode requireVisibleNamespaceNode(ResourceId namespaceId, String corr) {
-    if (namespaceId == null) {
-      throw GrpcErrors.notFound(corr, NAMESPACE, Map.of("id", "<missing_namespace_id>"));
-    }
-    ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
-    return overlay
-        .resolve(namespaceId)
-        .filter(NamespaceNode.class::isInstance)
-        .map(NamespaceNode.class::cast)
-        .orElseThrow(() -> GrpcErrors.notFound(corr, NAMESPACE, Map.of("id", namespaceId.getId())));
-  }
-
   private GraphNode resolveTableNode(ResourceId tableId, String corr, boolean throwOnError) {
     if (throwOnError) {
       return requireVisibleTable(tableId, corr);
@@ -211,7 +196,7 @@ public class CatalogSurfaceTables {
     if (tableId == null) {
       throw GrpcErrors.notFound(corr, TABLE, Map.of("id", "<missing_table_id>"));
     }
-    ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
+    CatalogSurfaceSupport.ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
 
     try {
       return overlay.resolve(tableId).orElse(null);
@@ -255,48 +240,6 @@ public class CatalogSurfaceTables {
     if (name == null) {
       name = "";
     }
-    return normalizeName(name);
-  }
-
-  private static String encodeTblToken(String resumeAfterRel) {
-    if (resumeAfterRel == null) {
-      resumeAfterRel = "";
-    }
-    if (resumeAfterRel.isBlank()) {
-      return TBL_TOKEN_PREFIX;
-    }
-    return TBL_TOKEN_PREFIX
-        + Base64.getUrlEncoder()
-            .withoutPadding()
-            .encodeToString(resumeAfterRel.getBytes(StandardCharsets.UTF_8));
-  }
-
-  private static String decodeTblToken(String token) {
-    if (token == null || token.isBlank() || !token.startsWith(TBL_TOKEN_PREFIX)) {
-      return "";
-    }
-    if (token.length() == TBL_TOKEN_PREFIX.length()) {
-      return "";
-    }
-    var s = token.substring(TBL_TOKEN_PREFIX.length());
-    var bytes = Base64.getUrlDecoder().decode(s);
-    return new String(bytes, StandardCharsets.UTF_8);
-  }
-
-  private static void ensureKind(
-      ResourceId resourceId, ResourceKind expected, String field, String corr) {
-    if (resourceId == null || resourceId.getKind() != expected) {
-      throw GrpcErrors.invalidArgument(corr, KIND, Map.of("field", field));
-    }
-  }
-
-  private static String normalizeName(String in) {
-    if (in == null) {
-      return "";
-    }
-
-    String t = Normalizer.normalize(in.trim(), Normalizer.Form.NFKC);
-    t = t.replaceAll("\\s+", " ");
-    return t;
+    return CatalogSurfaceSupport.normalizeName(name);
   }
 }

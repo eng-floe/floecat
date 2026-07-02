@@ -32,10 +32,7 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
-import java.nio.charset.StandardCharsets;
-import java.text.Normalizer;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -57,16 +54,16 @@ public class CatalogSurfaceViews {
   public ListViewsResponse listViews(ListViewsRequest request, String accountId, String corr) {
     var repo = viewRepo();
     var namespaceId = request.getNamespaceId();
-    ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
-
-    NamespaceNode nsNode = requireVisibleNamespaceNode(namespaceId, corr);
+    NamespaceNode nsNode =
+        CatalogSurfaceSupport.requireVisibleNamespace(overlay, namespaceId, corr);
     var catalogId = nsNode.catalogId();
 
     var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
     final int want = Math.max(1, pageIn.limit);
     final boolean isServiceToken =
         pageIn.token != null && pageIn.token.startsWith(VIEW_TOKEN_PREFIX);
-    final String resumeAfterRel = isServiceToken ? decodeViewToken(pageIn.token) : "";
+    final String resumeAfterRel =
+        isServiceToken ? CatalogSurfaceSupport.decodeToken(VIEW_TOKEN_PREFIX, pageIn.token) : "";
     String repoCursor = isServiceToken ? "" : pageIn.token;
 
     var out = new ArrayList<View>(want);
@@ -129,7 +126,7 @@ public class CatalogSurfaceViews {
 
     String nextToken = repoNext;
     if (nextToken.isBlank() && out.size() == want && sysCount > 0) {
-      nextToken = encodeViewToken(lastEmittedRel);
+      nextToken = CatalogSurfaceSupport.encodeToken(VIEW_TOKEN_PREFIX, lastEmittedRel);
     }
 
     int repoCount =
@@ -154,7 +151,7 @@ public class CatalogSurfaceViews {
     if (viewId == null) {
       throw GrpcErrors.notFound(corr, VIEW, Map.of("id", "<missing_view_id>"));
     }
-    ensureKind(viewId, ResourceKind.RK_VIEW, "view_id", corr);
+    CatalogSurfaceSupport.ensureKind(viewId, ResourceKind.RK_VIEW, "view_id", corr);
     return overlay
         .resolve(viewId)
         .filter(ViewNode.class::isInstance)
@@ -176,23 +173,11 @@ public class CatalogSurfaceViews {
     enforceWritableViewNode(node, viewId, corr);
   }
 
-  private NamespaceNode requireVisibleNamespaceNode(ResourceId namespaceId, String corr) {
-    if (namespaceId == null) {
-      throw GrpcErrors.notFound(corr, NAMESPACE, Map.of("id", "<missing_namespace_id>"));
-    }
-    ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
-    return overlay
-        .resolve(namespaceId)
-        .filter(NamespaceNode.class::isInstance)
-        .map(NamespaceNode.class::cast)
-        .orElseThrow(() -> GrpcErrors.notFound(corr, NAMESPACE, Map.of("id", namespaceId.getId())));
-  }
-
   private GraphNode resolveViewNode(ResourceId viewId, String corr, boolean throwOnError) {
     if (viewId == null) {
       throw GrpcErrors.notFound(corr, VIEW, Map.of("id", "<missing_view_id>"));
     }
-    ensureKind(viewId, ResourceKind.RK_VIEW, "view_id", corr);
+    CatalogSurfaceSupport.ensureKind(viewId, ResourceKind.RK_VIEW, "view_id", corr);
 
     try {
       return overlay.resolve(viewId).orElse(null);
@@ -256,48 +241,6 @@ public class CatalogSurfaceViews {
     if (name == null) {
       name = "";
     }
-    return normalizeName(name);
-  }
-
-  private static String encodeViewToken(String resumeAfterRel) {
-    if (resumeAfterRel == null) {
-      resumeAfterRel = "";
-    }
-    if (resumeAfterRel.isBlank()) {
-      return VIEW_TOKEN_PREFIX;
-    }
-    return VIEW_TOKEN_PREFIX
-        + Base64.getUrlEncoder()
-            .withoutPadding()
-            .encodeToString(resumeAfterRel.getBytes(StandardCharsets.UTF_8));
-  }
-
-  private static String decodeViewToken(String token) {
-    if (token == null || token.isBlank() || !token.startsWith(VIEW_TOKEN_PREFIX)) {
-      return "";
-    }
-    if (token.length() == VIEW_TOKEN_PREFIX.length()) {
-      return "";
-    }
-    var s = token.substring(VIEW_TOKEN_PREFIX.length());
-    var bytes = Base64.getUrlDecoder().decode(s);
-    return new String(bytes, StandardCharsets.UTF_8);
-  }
-
-  private static void ensureKind(
-      ResourceId resourceId, ResourceKind expected, String field, String corr) {
-    if (resourceId == null || resourceId.getKind() != expected) {
-      throw GrpcErrors.invalidArgument(corr, KIND, Map.of("field", field));
-    }
-  }
-
-  private static String normalizeName(String in) {
-    if (in == null) {
-      return "";
-    }
-
-    String t = Normalizer.normalize(in.trim(), Normalizer.Form.NFKC);
-    t = t.replaceAll("\\s+", " ");
-    return t;
+    return CatalogSurfaceSupport.normalizeName(name);
   }
 }
