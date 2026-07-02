@@ -176,6 +176,10 @@ public class TransactionCommitExecutionSupport {
           applied = true;
         } else {
           if (isDeterministicFailedState(commitState)) {
+            if (waitForAppliedState(txId)) {
+              applied = true;
+              return Response.noContent().build();
+            }
             return conflictResponse("transaction commit did not reach applied state", true);
           }
           if (shouldConfirmAmbiguousCommitState(commitState) && waitForAppliedState(txId)) {
@@ -189,6 +193,10 @@ public class TransactionCommitExecutionSupport {
         }
       } catch (StatusRuntimeException commitFailure) {
         if (isDeterministicCommitFailure(commitFailure)) {
+          if (waitForAppliedState(txId)) {
+            applied = true;
+            return Response.noContent().build();
+          }
           return conflictResponse(
               "transaction commit failed",
               extractFloecatErrorCode(commitFailure) == ErrorCode.MC_PRECONDITION_FAILED);

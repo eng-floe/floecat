@@ -20,12 +20,15 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionResponse;
+import ai.floedb.floecat.transaction.rpc.CommitTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.GetTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
@@ -104,5 +107,88 @@ class TransactionCommitExecutionSupportTest {
     assertEquals(null, result.error());
     assertEquals("tx-2", result.transaction().txId());
     assertEquals("tx-2", result.transaction().idempotencyBase());
+  }
+
+  @Test
+  void applyReturnsSuccessWhenDeterministicCommitFailureAlreadyApplied() {
+    TransactionCommitExecutionSupport support = new TransactionCommitExecutionSupport();
+    support.grpcClient = Mockito.mock(GrpcServiceFacade.class);
+
+    StatusRuntimeException commitFailure =
+        StatusProto.toStatusRuntimeException(
+            com.google.rpc.Status.newBuilder()
+                .setCode(com.google.rpc.Code.FAILED_PRECONDITION_VALUE)
+                .setMessage("precondition failed")
+                .addDetails(
+                    Any.pack(Error.newBuilder().setCode(ErrorCode.MC_PRECONDITION_FAILED).build()))
+                .build());
+
+    when(support.grpcClient.prepareTransaction(any()))
+        .thenReturn(
+            ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse.getDefaultInstance());
+    when(support.grpcClient.commitTransaction(any())).thenThrow(commitFailure);
+    when(support.grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("tx-1")
+                        .setState(TransactionState.TS_APPLIED)
+                        .build())
+                .build());
+
+    Response response =
+        support.apply(
+            new TransactionCommitExecutionSupport.OpenTransaction(
+                "tx-1", TransactionState.TS_OPEN, null, "tx-1"),
+            List.of(
+                TxChange.newBuilder()
+                    .setTargetPointerKey("/accounts/acct/tables/by-id/tbl-1")
+                    .setIntendedBlobUri("/accounts/acct/objects/blob-1")
+                    .build()));
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(support.grpcClient, times(1)).getTransaction(any());
+  }
+
+  @Test
+  void applyReturnsSuccessWhenConflictStateReadBackIsApplied() {
+    TransactionCommitExecutionSupport support = new TransactionCommitExecutionSupport();
+    support.grpcClient = Mockito.mock(GrpcServiceFacade.class);
+
+    when(support.grpcClient.prepareTransaction(any()))
+        .thenReturn(
+            ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse.getDefaultInstance());
+    when(support.grpcClient.commitTransaction(any()))
+        .thenReturn(
+            CommitTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("tx-1")
+                        .setState(TransactionState.TS_APPLY_FAILED_CONFLICT)
+                        .build())
+                .build());
+    when(support.grpcClient.getTransaction(any()))
+        .thenReturn(
+            GetTransactionResponse.newBuilder()
+                .setTransaction(
+                    Transaction.newBuilder()
+                        .setTxId("tx-1")
+                        .setState(TransactionState.TS_APPLIED)
+                        .build())
+                .build());
+
+    Response response =
+        support.apply(
+            new TransactionCommitExecutionSupport.OpenTransaction(
+                "tx-1", TransactionState.TS_OPEN, null, "tx-1"),
+            List.of(
+                TxChange.newBuilder()
+                    .setTargetPointerKey("/accounts/acct/tables/by-id/tbl-1")
+                    .setIntendedBlobUri("/accounts/acct/objects/blob-1")
+                    .build()));
+
+    assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
+    verify(support.grpcClient, times(1)).getTransaction(any());
   }
 }
