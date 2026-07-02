@@ -716,6 +716,30 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     }
                     purgeSnapshotsAndStats(tableId);
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
+                  } catch (BaseResourceRepository.CorruptionException corrupt) {
+                    var safe = tableRepo.metaForSafe(tableId);
+                    if (callerCares && safe.getPointerVersion() == 0L) {
+                      throw GrpcErrors.notFound(
+                          correlationId, TABLE, Map.of("id", tableId.getId()));
+                    }
+                    MutationOps.BaseServiceChecks.enforcePreconditions(
+                        correlationId, safe, request.getPrecondition());
+                    if (!tableRepo.deleteWithPrecondition(tableId, safe.getPointerVersion())) {
+                      if (callerCares) {
+                        throw GrpcErrors.preconditionFailed(
+                            correlationId,
+                            VERSION_MISMATCH,
+                            Map.of(
+                                "expected",
+                                Long.toString(safe.getPointerVersion()),
+                                "actual",
+                                Long.toString(tableRepo.metaForSafe(tableId).getPointerVersion())));
+                      }
+                    }
+                    topology.evict(tableId);
+                    metadataGraph.invalidate(tableId);
+                    purgeSnapshotsAndStats(tableId);
+                    return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   }
 
                   var out =

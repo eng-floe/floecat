@@ -270,7 +270,6 @@ assert_table_stats_available() {
   local out
   local snapshot_out
   local snapshot_id
-  local snapshot_ids
   local last_out=""
 
   echo "==> [SMOKE] waiting for stats for $table_fqn (retries=$retries sleep=${sleep_seconds}s)"
@@ -285,13 +284,15 @@ quit")
       return 0
     fi
 
-    # Current snapshot can briefly lag metrics writes; probe a few explicit snapshots as fallback.
+    # Resolve the exact current snapshot id, then probe that immutable snapshot directly.
     snapshot_out=$(run_cli_script "$compose_cmd" "account t-0001
-snapshots $table_fqn
+snapshot get $table_fqn current
 quit")
-    snapshot_ids=$(echo "$snapshot_out" | awk '/^[[:space:]]*[0-9]+[[:space:]]/ {print $1}' | head -n 5)
-
-    for snapshot_id in $snapshot_ids; do
+    snapshot_id=$(echo "$snapshot_out" | awk -F'"' '/"snapshotId"[[:space:]]*:/ {print $4; exit}')
+    if [ -n "$snapshot_id" ]; then
+      if [ "$attempt" -eq 1 ] || [ $((attempt % 5)) -eq 0 ] || [ "$attempt" -eq "$retries" ]; then
+        echo "==> [SMOKE] probing resolved current snapshot $snapshot_id for $table_fqn"
+      fi
       out=$(run_cli_script "$compose_cmd" "account t-0001
 stats files $table_fqn --snapshot $snapshot_id --limit 5
 quit")
@@ -301,7 +302,7 @@ quit")
         echo "[PASS] $label stats available for $table_fqn (snapshot=$snapshot_id)"
         return 0
       fi
-    done
+    fi
 
     if [ "$attempt" -eq 1 ] || [ $((attempt % 5)) -eq 0 ] || [ "$attempt" -eq "$retries" ]; then
       echo "==> [SMOKE] stats not ready for $table_fqn yet (attempt $attempt/$retries)"
@@ -326,7 +327,6 @@ assert_table_indexes_available() {
   local out
   local snapshot_out
   local snapshot_id
-  local snapshot_ids
   local last_out=""
 
   echo "==> [SMOKE] waiting for index artifacts for $table_fqn (retries=$retries sleep=${sleep_seconds}s)"
@@ -345,13 +345,15 @@ quit")
       return 0
     fi
 
-    # Current snapshot can briefly lag artifact registration; probe a few explicit snapshots as fallback.
+    # Resolve the exact current snapshot id, then probe that immutable snapshot directly.
     snapshot_out=$(run_cli_script "$compose_cmd" "account t-0001
-snapshots $table_fqn
+snapshot get $table_fqn current
 quit")
-    snapshot_ids=$(echo "$snapshot_out" | awk '/^[[:space:]]*[0-9]+[[:space:]]/ {print $1}' | head -n 5)
-
-    for snapshot_id in $snapshot_ids; do
+    snapshot_id=$(echo "$snapshot_out" | awk -F'"' '/"snapshotId"[[:space:]]*:/ {print $4; exit}')
+    if [ -n "$snapshot_id" ]; then
+      if [ "$attempt" -eq 1 ] || [ $((attempt % 5)) -eq 0 ] || [ "$attempt" -eq "$retries" ]; then
+        echo "==> [SMOKE] probing resolved current snapshot $snapshot_id for $table_fqn"
+      fi
       out=$(run_cli_script "$compose_cmd" "account t-0001
 stats index $table_fqn --snapshot $snapshot_id --limit 5
 quit")
@@ -365,7 +367,7 @@ quit")
         echo "[PASS] $label index artifacts available for $table_fqn (snapshot=$snapshot_id)"
         return 0
       fi
-    done
+    fi
 
     if [ "$attempt" -eq 1 ] || [ $((attempt % 5)) -eq 0 ] || [ "$attempt" -eq "$retries" ]; then
       echo "==> [SMOKE] index artifacts not ready for $table_fqn yet (attempt $attempt/$retries)"

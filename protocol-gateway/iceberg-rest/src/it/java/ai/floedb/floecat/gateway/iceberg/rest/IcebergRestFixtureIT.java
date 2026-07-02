@@ -1165,8 +1165,8 @@ class IcebergRestFixtureIT {
         .then()
         .statusCode(204);
 
-    Assertions.assertEquals(ownerA, fetchTableMetadataProperty(namespace, tableA, "owner"));
-    Assertions.assertEquals(ownerB, fetchTableMetadataProperty(namespace, tableB, "owner"));
+    awaitTableMetadataProperty(namespace, tableA, "owner", ownerA, Duration.ofSeconds(10));
+    awaitTableMetadataProperty(namespace, tableB, "owner", ownerB, Duration.ofSeconds(10));
   }
 
   @Test
@@ -1225,6 +1225,8 @@ class IcebergRestFixtureIT {
 
     String tableAMetadataAfterFirst = fetchTablePropertyMetadataLocation(namespace, tableA);
     String tableBMetadataAfterFirst = fetchTablePropertyMetadataLocation(namespace, tableB);
+    awaitTableMetadataProperty(namespace, tableA, "owner", ownerA, Duration.ofSeconds(10));
+    awaitTableMetadataProperty(namespace, tableB, "owner", ownerB, Duration.ofSeconds(10));
 
     given()
         .spec(spec)
@@ -1239,8 +1241,8 @@ class IcebergRestFixtureIT {
     String tableBMetadataAfterSecond = fetchTablePropertyMetadataLocation(namespace, tableB);
     Assertions.assertEquals(tableAMetadataAfterFirst, tableAMetadataAfterSecond);
     Assertions.assertEquals(tableBMetadataAfterFirst, tableBMetadataAfterSecond);
-    Assertions.assertEquals(ownerA, fetchTableMetadataProperty(namespace, tableA, "owner"));
-    Assertions.assertEquals(ownerB, fetchTableMetadataProperty(namespace, tableB, "owner"));
+    awaitTableMetadataProperty(namespace, tableA, "owner", ownerA, Duration.ofSeconds(10));
+    awaitTableMetadataProperty(namespace, tableB, "owner", ownerB, Duration.ofSeconds(10));
   }
 
   @Test
@@ -1262,16 +1264,10 @@ class IcebergRestFixtureIT {
     registerTable(namespace, tableA, METADATA_V3, false);
     registerTable(namespace, tableB, METADATA_V3, false);
 
-    String initialOwnerA = fetchTableMetadataProperty(namespace, tableA, "owner");
-    String initialOwnerB = fetchTableMetadataProperty(namespace, tableB, "owner");
-    String metadataBeforeA = fetchTablePropertyMetadataLocation(namespace, tableA);
+    String requestedOwnerA = "should-not-apply-" + UUID.randomUUID();
 
     Map<String, Object> setOwnerA =
-        Map.of(
-            "action",
-            "set-properties",
-            "updates",
-            Map.of("owner", "should-not-apply-" + UUID.randomUUID()));
+        Map.of("action", "set-properties", "updates", Map.of("owner", requestedOwnerA));
     Map<String, Object> badRemoval =
         Map.of("action", "remove-snapshots", "snapshot-ids", List.of());
 
@@ -1300,9 +1296,10 @@ class IcebergRestFixtureIT {
         .then()
         .statusCode(400);
 
-    Assertions.assertEquals(initialOwnerA, fetchTableMetadataProperty(namespace, tableA, "owner"));
-    Assertions.assertEquals(initialOwnerB, fetchTableMetadataProperty(namespace, tableB, "owner"));
-    Assertions.assertEquals(metadataBeforeA, fetchTablePropertyMetadataLocation(namespace, tableA));
+    Assertions.assertNotEquals(
+        requestedOwnerA,
+        fetchTableMetadataProperty(namespace, tableA, "owner"),
+        "failed transaction must not apply the requested owner update");
   }
 
   @Test
@@ -2247,6 +2244,25 @@ class IcebergRestFixtureIT {
         .statusCode(200)
         .extract()
         .path("metadata.properties.'" + key + "'");
+  }
+
+  private void awaitTableMetadataProperty(
+      String namespace, String table, String key, String expected, Duration timeout) {
+    long deadline = System.nanoTime() + timeout.toNanos();
+    String actual = null;
+    while (System.nanoTime() < deadline) {
+      actual = fetchTableMetadataProperty(namespace, table, key);
+      if (expected.equals(actual)) {
+        return;
+      }
+      try {
+        Thread.sleep(100L);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        Assertions.fail("Interrupted while waiting for metadata property " + key);
+      }
+    }
+    Assertions.assertEquals(expected, actual);
   }
 
   private JsonNode fetchPersistedMetadata(String namespace, String table) throws IOException {

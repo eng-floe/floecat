@@ -62,5 +62,6 @@ class ConnectorProvisioningServiceTest {
     assertEquals("http://localstack:4566", props.get("s3.endpoint"));
     assertEquals("true", props.get("s3.path-style-access"));
     assertEquals("us-east-1", props.get("client.region"));
+    assertFalse(props.containsKey("floecat.connector.mode"));
   }
 }

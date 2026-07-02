@@ -22,12 +22,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
+import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.transaction.impl.TransactionIntentApplierSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
+import ai.floedb.floecat.transaction.rpc.TransactionState;
 import com.google.protobuf.util.Timestamps;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
@@ -312,6 +315,285 @@ class TransactionIntentApplierSupportTest {
         tableAOriginalBlob,
         pointers.get(tableAByIdKey).orElseThrow().getBlobUri(),
         "table-by-id pointer must remain unchanged on name pointer conflict");
+  }
+
+  @Test
+  void applyTransactionAtomicallyLeavesTargetAndIntentsUnchangedWhenFinalizeCasFails()
+      throws Exception {
+    var pointers = new HookedPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var txRepo = new TransactionRepository(pointers, blobs);
+
+    var support = new TransactionIntentApplierSupport();
+    inject(support, "pointerStore", pointers);
+    inject(support, "blobStore", blobs);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    String targetKey = "/accounts/acct/custom/key-1";
+    String currentBlob = "s3://bucket/blob-current";
+    String nextBlob = "s3://bucket/blob-next";
+    pointers.compareAndSet(
+        targetKey, 0L, PointerReferences.blobPointer(targetKey, currentBlob, 1L));
+
+    Transaction currentTxn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_APPLYING)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    txRepo.create(currentTxn);
+    long txPointerVersion = txRepo.metaFor(accountId, txId).getPointerVersion();
+    String txKey = Keys.transactionPointerById(accountId, txId);
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setTargetPointerKey(targetKey)
+            .setBlobUri(nextBlob)
+            .setExpectedVersion(1L)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+    intentRepo.create(intent);
+
+    Transaction conflictingTxn =
+        currentTxn.toBuilder().setUpdatedAt(Timestamps.fromMillis(2)).build();
+    String conflictingBlob = Keys.transactionBlobUri(accountId, txId, "competing-finalize");
+    blobs.put(conflictingBlob, conflictingTxn.toByteArray(), "application/x-protobuf");
+    pointers.beforeBatch(
+        () ->
+            pointers.compareAndSet(
+                txKey,
+                txPointerVersion,
+                PointerReferences.blobPointer(txKey, conflictingBlob, 0L)));
+
+    Transaction appliedTxn =
+        currentTxn.toBuilder()
+            .setState(TransactionState.TS_APPLIED)
+            .setUpdatedAt(Timestamps.fromMillis(10))
+            .build();
+    var outcome =
+        support.applyTransactionAtomically(
+            appliedTxn, txPointerVersion, List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.RETRYABLE, outcome.status());
+    assertEquals(currentBlob, pointers.get(targetKey).orElseThrow().getBlobUri());
+    assertEquals(conflictingBlob, pointers.get(txKey).orElseThrow().getBlobUri());
+    assertTrue(intentRepo.getByTarget(accountId, targetKey).isPresent());
+    assertEquals(1, intentRepo.listByTx(accountId, txId).size());
+  }
+
+  @Test
+  void applyTransactionAtomicallyLeavesTargetAndTransactionUnchangedWhenIntentCleanupCasFails()
+      throws Exception {
+    var pointers = new HookedPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var txRepo = new TransactionRepository(pointers, blobs);
+
+    var support = new TransactionIntentApplierSupport();
+    inject(support, "pointerStore", pointers);
+    inject(support, "blobStore", blobs);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    String targetKey = "/accounts/acct/custom/key-1";
+    String currentBlob = "s3://bucket/blob-current";
+    String nextBlob = "s3://bucket/blob-next";
+    pointers.compareAndSet(
+        targetKey, 0L, PointerReferences.blobPointer(targetKey, currentBlob, 1L));
+
+    Transaction currentTxn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_APPLYING)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    txRepo.create(currentTxn);
+    long txPointerVersion = txRepo.metaFor(accountId, txId).getPointerVersion();
+    String txKey = Keys.transactionPointerById(accountId, txId);
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setTargetPointerKey(targetKey)
+            .setBlobUri(nextBlob)
+            .setExpectedVersion(1L)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+    intentRepo.create(intent);
+
+    String byTxKey = Keys.transactionIntentPointerByTx(accountId, txId, targetKey);
+    pointers.beforeBatch(
+        () -> {
+          var byTxPointer = pointers.get(byTxKey).orElseThrow();
+          pointers.compareAndSet(byTxKey, byTxPointer.getVersion(), byTxPointer);
+        });
+
+    Transaction appliedTxn =
+        currentTxn.toBuilder()
+            .setState(TransactionState.TS_APPLIED)
+            .setUpdatedAt(Timestamps.fromMillis(10))
+            .build();
+    var outcome =
+        support.applyTransactionAtomically(
+            appliedTxn, txPointerVersion, List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.RETRYABLE, outcome.status());
+    assertEquals(currentBlob, pointers.get(targetKey).orElseThrow().getBlobUri());
+    assertEquals(
+        TransactionState.TS_APPLYING,
+        readTransaction(blobs, pointers.get(txKey).orElseThrow().getBlobUri()).getState());
+    assertTrue(intentRepo.getByTarget(accountId, targetKey).isPresent());
+    assertEquals(1, intentRepo.listByTx(accountId, txId).size());
+  }
+
+  @Test
+  void applyTransactionAtomicallyProtectsNoOpTargetWithCasCheck() throws Exception {
+    var pointers = new HookedPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var txRepo = new TransactionRepository(pointers, blobs);
+
+    var support = new TransactionIntentApplierSupport();
+    inject(support, "pointerStore", pointers);
+    inject(support, "blobStore", blobs);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    String targetKey = "/accounts/acct/custom/key-1";
+    String desiredBlob = "s3://bucket/blob-desired";
+    String competingBlob = "s3://bucket/blob-competing";
+    pointers.compareAndSet(
+        targetKey, 0L, PointerReferences.blobPointer(targetKey, desiredBlob, 1L));
+
+    Transaction currentTxn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_APPLYING)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    txRepo.create(currentTxn);
+    long txPointerVersion = txRepo.metaFor(accountId, txId).getPointerVersion();
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setTargetPointerKey(targetKey)
+            .setBlobUri(desiredBlob)
+            .setExpectedVersion(1L)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+    intentRepo.create(intent);
+
+    pointers.beforeBatch(
+        () ->
+            pointers.compareAndSet(
+                targetKey, 1L, PointerReferences.blobPointer(targetKey, competingBlob, 0L)));
+
+    Transaction appliedTxn =
+        currentTxn.toBuilder()
+            .setState(TransactionState.TS_APPLIED)
+            .setUpdatedAt(Timestamps.fromMillis(10))
+            .build();
+    var outcome =
+        support.applyTransactionAtomically(
+            appliedTxn, txPointerVersion, List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("EXPECTED_VERSION_MISMATCH", outcome.errorCode());
+    assertEquals(competingBlob, pointers.get(targetKey).orElseThrow().getBlobUri());
+    assertTrue(intentRepo.getByTarget(accountId, targetKey).isPresent());
+    assertEquals(1, intentRepo.listByTx(accountId, txId).size());
+  }
+
+  @Test
+  void applyTransactionAtomicallyProtectsAbsentDeleteWithCasCheckAbsent() throws Exception {
+    var pointers = new HookedPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var txRepo = new TransactionRepository(pointers, blobs);
+
+    var support = new TransactionIntentApplierSupport();
+    inject(support, "pointerStore", pointers);
+    inject(support, "blobStore", blobs);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    String targetKey = "/accounts/acct/custom/key-1";
+    String competingBlob = "s3://bucket/blob-competing";
+
+    Transaction currentTxn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_APPLYING)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    txRepo.create(currentTxn);
+    long txPointerVersion = txRepo.metaFor(accountId, txId).getPointerVersion();
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setTargetPointerKey(targetKey)
+            .setBlobUri(Keys.transactionDeleteSentinelUri(accountId, txId, targetKey))
+            .setExpectedVersion(0L)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+    intentRepo.create(intent);
+
+    pointers.beforeBatch(
+        () ->
+            pointers.compareAndSet(
+                targetKey, 0L, PointerReferences.blobPointer(targetKey, competingBlob, 0L)));
+
+    Transaction appliedTxn =
+        currentTxn.toBuilder()
+            .setState(TransactionState.TS_APPLIED)
+            .setUpdatedAt(Timestamps.fromMillis(10))
+            .build();
+    var outcome =
+        support.applyTransactionAtomically(
+            appliedTxn, txPointerVersion, List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("EXPECTED_VERSION_MISMATCH", outcome.errorCode());
+    assertEquals(competingBlob, pointers.get(targetKey).orElseThrow().getBlobUri());
+    assertTrue(intentRepo.getByTarget(accountId, targetKey).isPresent());
+    assertEquals(1, intentRepo.listByTx(accountId, txId).size());
+  }
+
+  private static Transaction readTransaction(InMemoryBlobStore blobs, String blobUri)
+      throws Exception {
+    return Transaction.parseFrom(blobs.get(blobUri));
+  }
+
+  private static final class HookedPointerStore extends InMemoryPointerStore {
+    private Runnable beforeBatch;
+    private boolean ran;
+
+    void beforeBatch(Runnable hook) {
+      this.beforeBatch = hook;
+      this.ran = false;
+    }
+
+    @Override
+    public boolean compareAndSetBatch(List<ai.floedb.floecat.storage.spi.PointerStore.CasOp> ops) {
+      if (!ran && beforeBatch != null) {
+        ran = true;
+        beforeBatch.run();
+      }
+      return super.compareAndSetBatch(ops);
+    }
   }
 
   private static void inject(Object target, String field, Object value) throws Exception {

@@ -1218,11 +1218,32 @@ public class ReconcilerService {
       return active == null ? null : active.resolvedConfig();
     }
     DestinationTableMetadata metadata = requiredTableMetadata(ctx, tableId);
-    return resolveServerSideStorage(
-        ctx,
-        active.connector(),
-        active.resolvedConfig(),
-        Optional.ofNullable(metadata.storageLocation()).filter(location -> !location.isBlank()));
+    ConnectorConfig resolved =
+        resolveServerSideStorage(
+            ctx,
+            active.connector(),
+            active.resolvedConfig(),
+            Optional.ofNullable(metadata.storageLocation())
+                .filter(location -> !location.isBlank()));
+    return withCommittedMetadataLocation(resolved, metadata);
+  }
+
+  private ConnectorConfig withCommittedMetadataLocation(
+      ConnectorConfig config, DestinationTableMetadata metadata) {
+    if (config == null || config.kind() != ConnectorConfig.Kind.ICEBERG || metadata == null) {
+      return config;
+    }
+    String metadataLocation = firstNonBlank(metadata.metadataLocation());
+    if (metadataLocation == null) {
+      return config;
+    }
+    Map<String, String> options = new LinkedHashMap<>(config.options());
+    if (metadataLocation.equals(options.get("metadata-location"))) {
+      return config;
+    }
+    options.put("metadata-location", metadataLocation);
+    return new ConnectorConfig(
+        config.kind(), config.displayName(), config.uri(), options, config.auth());
   }
 
   ReconcileContext buildContext(PrincipalContext principal, Optional<String> bearerToken) {

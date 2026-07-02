@@ -21,7 +21,7 @@ import java.util.List;
 import java.util.Optional;
 
 public interface PointerStore {
-  sealed interface CasOp permits CasUpsert, CasDelete {}
+  sealed interface CasOp permits CasUpsert, CasDelete, CasCheck, CasCheckAbsent {}
 
   record CasUpsert(String key, long expectedVersion, Pointer next) implements CasOp {
     public CasUpsert {
@@ -44,6 +44,25 @@ public interface PointerStore {
       }
       if (expectedVersion <= 0) {
         throw new IllegalArgumentException("expectedVersion must be > 0");
+      }
+    }
+  }
+
+  record CasCheck(String key, long expectedVersion) implements CasOp {
+    public CasCheck {
+      if (key == null || key.isBlank()) {
+        throw new IllegalArgumentException("key must be non-blank");
+      }
+      if (expectedVersion <= 0) {
+        throw new IllegalArgumentException("expectedVersion must be > 0");
+      }
+    }
+  }
+
+  record CasCheckAbsent(String key) implements CasOp {
+    public CasCheckAbsent {
+      if (key == null || key.isBlank()) {
+        throw new IllegalArgumentException("key must be non-blank");
       }
     }
   }

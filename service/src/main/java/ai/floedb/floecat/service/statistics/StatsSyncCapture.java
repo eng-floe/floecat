@@ -93,7 +93,7 @@ class StatsSyncCapture {
               accountId, jobId, job.get().message);
           return StatsSyncOutcome.FAILED;
         }
-        case "JS_CANCELLED", "JS_CANCELLING" -> {
+        case "JS_CANCELLED" -> {
           LOG.debugf("stats_sync_capture job cancelled account=%s job=%s", accountId, jobId);
           return StatsSyncOutcome.FAILED;
         }

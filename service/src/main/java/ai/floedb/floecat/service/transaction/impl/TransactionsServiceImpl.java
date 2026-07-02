@@ -95,10 +95,13 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
 
   private static final Logger LOG = Logger.getLogger(TransactionsServiceImpl.class);
   private static final int MAX_POINTER_TXN_OPS = 100;
+  private static final int APPLY_OPS_PER_PLAIN_INTENT = 3;
+  private static final int APPLY_OPS_PER_TABLE_OR_CONNECTOR_INTENT = 5;
+  private static final int APPLY_OPS_FOR_TRANSACTION_FINALIZE = 1;
   private static final int TABLE_NAME_REPLAY_SCAN_PAGE_SIZE = 200;
   private static final String CAPTURE_STATISTICS_PROPERTY = "floecat.connector.capture-statistics";
-  private static final String CONNECTOR_MODE_PROPERTY = "floecat.connector.mode";
-  private static final String CONNECTOR_MODE_CAPTURE_ONLY = "capture-only";
+  private static final String PREPARED_INTENT_COUNT_PROPERTY =
+      "floecat.transaction.prepared-intent-count";
   private static final String RESERVED_TABLE_ID_PROPERTY_PREFIX =
       "floecat.transaction.reserved-table-id.";
   @Inject TransactionRepository txRepo;
@@ -423,6 +426,51 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     throw new PreconditionFailedException("transaction update conflict: " + txId);
   }
 
+  private Transaction transitionPreparedTransaction(
+      String accountId, String txId, int intentCount, Timestamp now) {
+    if (intentCount <= 0) {
+      throw new IllegalArgumentException("prepared transaction must include at least one intent");
+    }
+    for (int attempt = 0; attempt < 3; attempt++) {
+      Transaction current = getTransactionOrThrow(accountId, txId);
+      TransactionState currentState = current.getState();
+      if (currentState == TransactionState.TS_PREPARED) {
+        return current;
+      }
+      if (currentState != TransactionState.TS_OPEN) {
+        throw new PreconditionFailedException(
+            "cannot transition to prepared: tx=" + txId + " state=" + currentState.name());
+      }
+      long version = txRepo.metaFor(accountId, txId).getPointerVersion();
+      Transaction updated =
+          current.toBuilder()
+              .setState(TransactionState.TS_PREPARED)
+              .setUpdatedAt(now)
+              .putProperties(PREPARED_INTENT_COUNT_PROPERTY, Integer.toString(intentCount))
+              .build();
+      if (txRepo.update(updated, version)) {
+        return updated;
+      }
+    }
+    throw new PreconditionFailedException("transaction update conflict: " + txId);
+  }
+
+  private boolean hasExpectedPreparedIntentCount(Transaction txn, int actualIntentCount) {
+    if (txn == null) {
+      return false;
+    }
+    String raw = txn.getPropertiesMap().get(PREPARED_INTENT_COUNT_PROPERTY);
+    if (raw == null || raw.isBlank()) {
+      return true;
+    }
+    try {
+      return Integer.parseInt(raw) == actualIntentCount;
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException(
+          "invalid prepared intent count on transaction: " + txn.getTxId(), e);
+    }
+  }
+
   private ResourceId reserveTransactionTableId(
       String accountId, String txId, String tableFq, Timestamp now) {
     String normalizedTableFq = normalizeReservedTableFq(tableFq);
@@ -536,7 +584,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       if (!seenTargets.add(pointerKey)) {
         throw new IllegalArgumentException("duplicate change for " + pointerKey);
       }
-      estimatedOps += isTableByIdPointer(pointerKey) || isConnectorByIdPointer(pointerKey) ? 3 : 1;
+      estimatedOps +=
+          isTableByIdPointer(pointerKey) || isConnectorByIdPointer(pointerKey)
+              ? APPLY_OPS_PER_TABLE_OR_CONNECTOR_INTENT
+              : APPLY_OPS_PER_PLAIN_INTENT;
       if (estimatedOps > MAX_POINTER_TXN_OPS) {
         throw new IllegalArgumentException(
             "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations");
@@ -566,6 +617,11 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       TransactionIntent intent = intentBuilder.build();
       intents.add(intent);
     }
+    estimatedOps += APPLY_OPS_FOR_TRANSACTION_FINALIZE;
+    if (estimatedOps > MAX_POINTER_TXN_OPS) {
+      throw new IllegalArgumentException(
+          "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations");
+    }
 
     List<TransactionIntent> created = new ArrayList<>();
     try {
@@ -594,13 +650,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     }
 
     try {
-      return transitionTransactionState(
-          accountId,
-          txn.getTxId(),
-          Set.of(TransactionState.TS_OPEN),
-          TransactionState.TS_PREPARED,
-          now,
-          "cannot transition to prepared");
+      return transitionPreparedTransaction(accountId, txn.getTxId(), intents.size(), now);
     } catch (RuntimeException e) {
       for (var intent : created) {
         intentRepo.deleteBothIndices(intent);
@@ -631,6 +681,26 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
 
     List<TransactionIntent> intents =
         new ArrayList<>(intentRepo.listByTx(accountId, txn.getTxId()));
+    if (!hasExpectedPreparedIntentCount(txn, intents.size())) {
+      Transaction failed =
+          transitionApplyFailureOrReturnApplied(
+              accountId,
+              txn.getTxId(),
+              Set.of(TransactionState.TS_PREPARED, TransactionState.TS_APPLY_FAILED_RETRYABLE),
+              TransactionState.TS_APPLY_FAILED_RETRYABLE,
+              now,
+              "prepared intent set is incomplete");
+      if (failed.getState() == TransactionState.TS_APPLIED) {
+        return failed;
+      }
+      logCommitFailure(
+          accountId,
+          failed,
+          "PREPARED_INTENT_COUNT_MISMATCH",
+          "prepared transaction intent count does not match by-tx enumeration",
+          intents);
+      return failed;
+    }
     if (intents.isEmpty()) {
       throw new IllegalArgumentException("transaction has no intents");
     }
@@ -652,13 +722,18 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       var lockOwner = intentRepo.getByTarget(accountId, intent.getTargetPointerKey()).orElse(null);
       if (lockOwner == null || !applyPhaseTxn.getTxId().equals(lockOwner.getTxId())) {
         Transaction failed =
-            transitionTransactionState(
+            transitionApplyFailureOrReturnApplied(
                 accountId,
                 applyPhaseTxn.getTxId(),
                 Set.of(TransactionState.TS_APPLYING),
                 TransactionState.TS_APPLY_FAILED_RETRYABLE,
                 now,
                 "lock ownership mismatch");
+        if (failed.getState() == TransactionState.TS_APPLIED) {
+          schedulePostCommitCaptureBootstrap(accountId, failed.getTxId(), List.copyOf(intents));
+          invalidateTouchedGraphEntries(intents);
+          return failed;
+        }
         logCommitFailure(
             accountId,
             failed,
@@ -669,61 +744,79 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       }
     }
 
-    var outcome = intentApplierSupport.applyTransactionBestEffort(intents, intentRepo);
+    long transactionPointerVersion =
+        txRepo.metaFor(accountId, applyPhaseTxn.getTxId()).getPointerVersion();
+    Transaction appliedCandidate =
+        applyPhaseTxn.toBuilder().setState(TransactionState.TS_APPLIED).setUpdatedAt(now).build();
+    var outcome =
+        intentApplierSupport.applyTransactionAtomically(
+            appliedCandidate, transactionPointerVersion, intents, intentRepo);
     if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.APPLIED) {
+      Transaction latest = getTransactionOrThrow(accountId, applyPhaseTxn.getTxId());
       Transaction applied =
-          transitionTransactionState(
-              accountId,
-              applyPhaseTxn.getTxId(),
-              Set.of(TransactionState.TS_APPLYING),
-              TransactionState.TS_APPLIED,
-              now,
-              "cannot transition to applied");
+          latest.getState() == TransactionState.TS_APPLIED ? latest : appliedCandidate;
       schedulePostCommitCaptureBootstrap(accountId, applied.getTxId(), List.copyOf(intents));
       invalidateTouchedGraphEntries(intents);
-      cleanupIntentsBestEffort(intents);
       return applied;
     }
 
     if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.CONFLICT) {
-      if (intentsAlreadyApplied(intents)) {
-        Transaction applied =
-            transitionTransactionState(
-                accountId,
-                applyPhaseTxn.getTxId(),
-                Set.of(TransactionState.TS_APPLYING),
-                TransactionState.TS_APPLIED,
-                now,
-                "cannot finalize already-applied transaction");
+      Transaction latest = getTransactionOrThrow(accountId, applyPhaseTxn.getTxId());
+      if (latest.getState() == TransactionState.TS_APPLIED) {
+        Transaction applied = latest;
         schedulePostCommitCaptureBootstrap(accountId, applied.getTxId(), List.copyOf(intents));
         invalidateTouchedGraphEntries(intents);
-        cleanupIntentsBestEffort(intents);
         return applied;
       }
       annotateIntentApplyFailure(intents, outcome, now);
       Transaction failed =
-          transitionTransactionState(
+          transitionApplyFailureOrReturnApplied(
               accountId,
               applyPhaseTxn.getTxId(),
               Set.of(TransactionState.TS_APPLYING),
               TransactionState.TS_APPLY_FAILED_CONFLICT,
               now,
               "cannot transition to apply_failed_conflict");
+      if (failed.getState() == TransactionState.TS_APPLIED) {
+        schedulePostCommitCaptureBootstrap(accountId, failed.getTxId(), List.copyOf(intents));
+        invalidateTouchedGraphEntries(intents);
+        return failed;
+      }
       logCommitFailure(accountId, failed, outcome, intents);
       return failed;
     }
 
     annotateIntentApplyFailure(intents, outcome, now);
     Transaction failed =
-        transitionTransactionState(
+        transitionApplyFailureOrReturnApplied(
             accountId,
             applyPhaseTxn.getTxId(),
             Set.of(TransactionState.TS_APPLYING),
             TransactionState.TS_APPLY_FAILED_RETRYABLE,
             now,
             "cannot transition to apply_failed_retryable");
+    if (failed.getState() == TransactionState.TS_APPLIED) {
+      schedulePostCommitCaptureBootstrap(accountId, failed.getTxId(), List.copyOf(intents));
+      invalidateTouchedGraphEntries(intents);
+      return failed;
+    }
     logCommitFailure(accountId, failed, outcome, intents);
     return failed;
+  }
+
+  private Transaction transitionApplyFailureOrReturnApplied(
+      String accountId,
+      String txId,
+      Set<TransactionState> expectedStates,
+      TransactionState nextState,
+      Timestamp now,
+      String failureMessage) {
+    Transaction latest = getTransactionOrThrow(accountId, txId);
+    if (latest.getState() == TransactionState.TS_APPLIED) {
+      return latest;
+    }
+    return transitionTransactionState(
+        accountId, txId, expectedStates, nextState, now, failureMessage);
   }
 
   private List<TxChange> materializeConnectorProvisioningChanges(
@@ -974,7 +1067,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         Connector connector = readConnector(intent.getBlobUri());
         if (connector == null
             || !connector.hasResourceId()
-            || !isGatewayManagedCaptureOnlyIcebergConnector(connector)
+            || !isGatewayManagedIcebergConnector(connector)
             || !connector.hasDestination()
             || !connector.getDestination().hasTableId()
             || connector.getDestination().getTableId().getId().isBlank()) {
@@ -1016,7 +1109,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       return null;
     }
     Connector connector = connectorRepo.getById(connectorId).orElse(null);
-    if (!isGatewayManagedCaptureOnlyIcebergConnector(connector)) {
+    if (!isGatewayManagedIcebergConnector(connector)) {
       return null;
     }
     return connector;
@@ -1048,7 +1141,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       if (current == null) {
         return null;
       }
-      if (!isGatewayManagedCaptureOnlyIcebergConnector(current)) {
+      if (!isGatewayManagedIcebergConnector(current)) {
         return null;
       }
       if (current.getState() == ConnectorState.CS_ACTIVE) {
@@ -1083,7 +1176,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         accountId,
         connector.getResourceId().getId(),
         false,
-        ReconcilerService.CaptureMode.CAPTURE_ONLY,
+        ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
         ReconcileScope.of(
             List.of(),
             tableId,
@@ -1101,15 +1194,11 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         txId, connector.getResourceId().getId(), tableId);
   }
 
-  private boolean isGatewayManagedCaptureOnlyIcebergConnector(Connector connector) {
+  private boolean isGatewayManagedIcebergConnector(Connector connector) {
     if (connector == null || !connector.hasResourceId()) {
       return false;
     }
     if (connector.getKind() != ConnectorKind.CK_ICEBERG) {
-      return false;
-    }
-    if (!CONNECTOR_MODE_CAPTURE_ONLY.equalsIgnoreCase(
-        connector.getPropertiesMap().get(CONNECTOR_MODE_PROPERTY))) {
       return false;
     }
     String captureStatistics = connector.getPropertiesMap().get(CAPTURE_STATISTICS_PROPERTY);

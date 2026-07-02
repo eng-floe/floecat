@@ -148,12 +148,25 @@ final class RepoTestPointerStores {
     public boolean compareAndSetBatch(List<CasOp> ops) {
       Set<String> seen = new HashSet<>();
       for (CasOp op : ops) {
-        String key = op instanceof CasUpsert u ? u.key() : ((CasDelete) op).key();
+        String key = keyOf(op);
         if (!seen.add(key)) {
           throw new IllegalArgumentException("duplicate key in transactional batch: " + key);
         }
       }
       return delegate.compareAndSetBatch(ops);
+    }
+
+    private String keyOf(CasOp op) {
+      if (op instanceof CasUpsert u) {
+        return u.key();
+      }
+      if (op instanceof CasDelete d) {
+        return d.key();
+      }
+      if (op instanceof CasCheck c) {
+        return c.key();
+      }
+      return ((CasCheckAbsent) op).key();
     }
   }
 }
