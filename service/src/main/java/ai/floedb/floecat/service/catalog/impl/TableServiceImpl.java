@@ -564,13 +564,14 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
     boolean catalogChanged = false;
     boolean namespaceChanged = false;
+    var surface = catalogSurfaceTables();
 
     if (maskTargets(mask, "catalog_id")) {
       if (!spec.hasCatalogId()) {
         throw GrpcErrors.invalidArgument(corr, CATALOG_ID_CANNOT_CLEAR, Map.of());
       }
       var catId = spec.getCatalogId();
-      catalogSurfaceTables().requireWritableCatalog(catId, "spec.catalog_id", corr);
+      surface.requireWritableCatalog(catId, "spec.catalog_id", corr);
       b.setCatalogId(catId);
       catalogChanged = true;
     }
@@ -580,20 +581,18 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         throw GrpcErrors.invalidArgument(corr, NAMESPACE_ID_CANNOT_CLEAR, Map.of());
       }
       var nsId = spec.getNamespaceId();
-      var ns = catalogSurfaceTables().requireWritableNamespace(nsId, "spec.namespace_id", corr);
+      var ns = surface.requireWritableNamespace(nsId, "spec.namespace_id", corr);
 
       var effectiveCatalogId = catalogChanged ? b.getCatalogId() : current.getCatalogId();
-      catalogSurfaceTables().requireNamespaceInCatalog(ns, nsId, effectiveCatalogId, corr);
+      surface.requireNamespaceInCatalog(ns, nsId, effectiveCatalogId, corr);
       b.setNamespaceId(nsId);
       namespaceChanged = true;
     }
 
     if (catalogChanged && !namespaceChanged) {
       var effectiveCatalogId = b.getCatalogId();
-      var ns =
-          catalogSurfaceTables().requireWritableNamespace(b.getNamespaceId(), "namespace_id", corr);
-      catalogSurfaceTables()
-          .requireNamespaceInCatalog(ns, b.getNamespaceId(), effectiveCatalogId, corr);
+      var ns = surface.requireWritableNamespace(b.getNamespaceId(), "namespace_id", corr);
+      surface.requireNamespaceInCatalog(ns, b.getNamespaceId(), effectiveCatalogId, corr);
     }
 
     var currentUp = current.getUpstream();

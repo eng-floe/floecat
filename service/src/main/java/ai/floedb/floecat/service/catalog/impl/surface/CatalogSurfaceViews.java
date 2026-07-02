@@ -33,9 +33,6 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -61,83 +58,26 @@ public class CatalogSurfaceViews {
 
     var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
     final int want = Math.max(1, pageIn.limit);
-    final boolean isServiceToken =
-        pageIn.token != null && pageIn.token.startsWith(VIEW_TOKEN_PREFIX);
-    final String resumeAfterRel =
-        isServiceToken ? CatalogSurfaceSupport.decodeToken(VIEW_TOKEN_PREFIX, pageIn.token) : "";
-    String repoCursor = isServiceToken ? "" : pageIn.token;
+    var result =
+        CatalogSurfaceRelationPager.list(
+            nsNode,
+            want,
+            pageIn.token,
+            VIEW_TOKEN_PREFIX,
+            (limit, cursor, next) ->
+                repo.list(accountId, catalogId.getId(), namespaceId.getId(), limit, cursor, next),
+            () -> repo.count(accountId, catalogId.getId(), namespaceId.getId()),
+            () ->
+                overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
+                    .filter(ViewNode.class::isInstance)
+                    .map(ViewNode.class::cast)
+                    .toList(),
+            CatalogSurfaceViews::relativeViewKey,
+            CatalogSurfaceViews::viewFromSystemNode,
+            corr);
 
-    var out = new ArrayList<View>(want);
-    String lastEmittedRel = "";
-
-    String repoNext = "";
-    if (nsNode.origin() != GraphNodeOrigin.SYSTEM && !isServiceToken) {
-      var next = new StringBuilder();
-      final List<View> scanned;
-      try {
-        scanned =
-            repo.list(accountId, catalogId.getId(), namespaceId.getId(), want, repoCursor, next);
-      } catch (IllegalArgumentException badToken) {
-        throw GrpcErrors.invalidArgument(
-            corr, PAGE_TOKEN_INVALID, Map.of("page_token", repoCursor));
-      }
-
-      out.addAll(scanned);
-      repoNext = next.toString();
-    }
-
-    int sysCount = 0;
-    final boolean repoExhausted = repoNext.isBlank();
-    if (repoExhausted) {
-      var sysNodes =
-          overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
-              .filter(ViewNode.class::isInstance)
-              .map(ViewNode.class::cast)
-              .toList();
-      sysCount = sysNodes.size();
-
-      if (out.size() < want && sysCount > 0) {
-        record SysItem(ViewNode node, String rel) {}
-
-        var sysItems =
-            sysNodes.stream()
-                .map(node -> new SysItem(node, relativeViewKey(node)))
-                .filter(it -> it.rel() != null && !it.rel().isBlank())
-                .sorted(Comparator.comparing(SysItem::rel))
-                .toList();
-
-        for (var it : sysItems) {
-          if (!resumeAfterRel.isBlank() && it.rel().compareTo(resumeAfterRel) <= 0) {
-            continue;
-          }
-          if (out.size() >= want) {
-            break;
-          }
-          out.add(viewFromSystemNode(it.node()));
-          lastEmittedRel = it.rel();
-        }
-      }
-    } else {
-      sysCount =
-          (int)
-              overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
-                  .filter(ViewNode.class::isInstance)
-                  .count();
-    }
-
-    String nextToken = repoNext;
-    if (nextToken.isBlank() && out.size() == want && sysCount > 0) {
-      nextToken = CatalogSurfaceSupport.encodeToken(VIEW_TOKEN_PREFIX, lastEmittedRel);
-    }
-
-    int repoCount =
-        (nsNode.origin() == GraphNodeOrigin.SYSTEM)
-            ? 0
-            : repo.count(accountId, catalogId.getId(), namespaceId.getId());
-
-    var page = MutationOps.pageOut(nextToken, repoCount + sysCount);
-
-    return ListViewsResponse.newBuilder().addAllViews(out).setPage(page).build();
+    var page = MutationOps.pageOut(result.nextToken(), result.totalSize());
+    return ListViewsResponse.newBuilder().addAllViews(result.items()).setPage(page).build();
   }
 
   public GetViewResponse getView(GetViewRequest request, String corr) {

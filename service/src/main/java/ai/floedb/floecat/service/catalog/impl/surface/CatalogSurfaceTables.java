@@ -35,8 +35,6 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
-import java.util.Comparator;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -67,87 +65,26 @@ public class CatalogSurfaceTables {
         CatalogSurfaceSupport.requireVisibleNamespace(overlay, namespaceId, corr);
     ResourceId catalogId = nsNode.catalogId();
 
-    final boolean isServiceToken =
-        pageIn.token != null && pageIn.token.startsWith(TBL_TOKEN_PREFIX);
-    final String resumeAfterRel =
-        isServiceToken ? CatalogSurfaceSupport.decodeToken(TBL_TOKEN_PREFIX, pageIn.token) : "";
-    String repoCursor = isServiceToken ? "" : pageIn.token;
+    var result =
+        CatalogSurfaceRelationPager.list(
+            nsNode,
+            want,
+            pageIn.token,
+            TBL_TOKEN_PREFIX,
+            (limit, cursor, next) ->
+                repo.list(accountId, catalogId.getId(), namespaceId.getId(), limit, cursor, next),
+            () -> repo.count(accountId, catalogId.getId(), namespaceId.getId()),
+            () ->
+                overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
+                    .filter(TableNode.class::isInstance)
+                    .map(TableNode.class::cast)
+                    .toList(),
+            CatalogSurfaceTables::relativeTableKey,
+            node -> node.toTableProtoBuilder().setCatalogId(catalogId).build(),
+            corr);
 
-    var out = new java.util.ArrayList<Table>(want);
-    String lastEmittedRel = "";
-
-    String repoNext = "";
-    if (nsNode.origin() != GraphNodeOrigin.SYSTEM && !isServiceToken) {
-      var next = new StringBuilder();
-      final List<Table> scanned;
-      try {
-        scanned =
-            repo.list(accountId, catalogId.getId(), namespaceId.getId(), want, repoCursor, next);
-      } catch (IllegalArgumentException badToken) {
-        throw GrpcErrors.invalidArgument(
-            corr, PAGE_TOKEN_INVALID, Map.of("page_token", repoCursor));
-      }
-
-      out.addAll(scanned);
-      repoNext = next.toString();
-    } else {
-      repoNext = "";
-    }
-
-    int sysCount = 0;
-    final boolean repoExhausted = repoNext.isBlank();
-    if (repoExhausted) {
-      var rels =
-          overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
-              .filter(TableNode.class::isInstance)
-              .map(TableNode.class::cast)
-              .toList();
-
-      sysCount = rels.size();
-
-      if (out.size() < want && sysCount > 0) {
-        record SysItem(TableNode node, String rel) {}
-
-        var sysItems =
-            rels.stream()
-                .map(tn -> new SysItem(tn, relativeTableKey(tn)))
-                .filter(it -> it.rel() != null && !it.rel().isBlank())
-                .sorted(Comparator.comparing(SysItem::rel))
-                .toList();
-
-        for (var it : sysItems) {
-          if (!resumeAfterRel.isBlank() && it.rel().compareTo(resumeAfterRel) <= 0) {
-            continue;
-          }
-          if (out.size() >= want) {
-            break;
-          }
-          out.add(it.node().toTableProtoBuilder().setCatalogId(catalogId).build());
-          lastEmittedRel = it.rel();
-        }
-      }
-    } else {
-      sysCount =
-          (int)
-              overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
-                  .filter(TableNode.class::isInstance)
-                  .count();
-    }
-
-    String nextToken = repoNext;
-
-    if (nextToken.isBlank() && out.size() == want && sysCount > 0) {
-      nextToken = CatalogSurfaceSupport.encodeToken(TBL_TOKEN_PREFIX, lastEmittedRel);
-    }
-
-    int repoCount =
-        (nsNode.origin() == GraphNodeOrigin.SYSTEM)
-            ? 0
-            : repo.count(accountId, catalogId.getId(), namespaceId.getId());
-
-    var page = MutationOps.pageOut(nextToken, repoCount + sysCount);
-
-    return ListTablesResponse.newBuilder().addAllTables(out).setPage(page).build();
+    var page = MutationOps.pageOut(result.nextToken(), result.totalSize());
+    return ListTablesResponse.newBuilder().addAllTables(result.items()).setPage(page).build();
   }
 
   public GetTableResponse getTable(GetTableRequest request, String corr) {

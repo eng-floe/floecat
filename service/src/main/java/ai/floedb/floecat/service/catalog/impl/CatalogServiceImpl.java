@@ -89,7 +89,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var principalContext = principal.get();
                   authz.require(principalContext, "catalog.read");
 
-                  return catalogSurface()
+                  return catalogSurfaceCatalogs()
                       .listCatalogs(request, principalContext.getAccountId(), correlationId());
                 }),
             correlationId())
@@ -110,7 +110,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
 
                   authz.require(principalContext, "catalog.read");
 
-                  return catalogSurface().getCatalog(request, correlationId());
+                  return catalogSurfaceCatalogs().getCatalog(request, correlationId());
                 }),
             correlationId())
         .onFailure()
@@ -235,7 +235,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   authz.require(pctx, "catalog.write");
 
                   var catalogId = request.getCatalogId();
-                  catalogSurface().requireWritableCatalog(catalogId, corr);
+                  catalogSurfaceCatalogs().requireWritableCatalog(catalogId, corr);
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
                     throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
@@ -334,7 +334,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var correlationId = principalContext.getCorrelationId();
                   authz.require(principalContext, "catalog.write");
                   var id = request.getCatalogId();
-                  catalogSurface().requireWritableCatalog(id, correlationId);
+                  catalogSurfaceCatalogs().requireWritableCatalog(id, correlationId);
                   long markerVersion = markerStore.catalogMarkerVersion(id);
 
                   MutationMeta meta;
@@ -387,7 +387,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
         .invoke(L::ok);
   }
 
-  private CatalogSurfaceCatalogs catalogSurface() {
+  private CatalogSurfaceCatalogs catalogSurfaceCatalogs() {
     return new CatalogSurfaceCatalogs(catalogRepo, overlay, engineContext);
   }
 
