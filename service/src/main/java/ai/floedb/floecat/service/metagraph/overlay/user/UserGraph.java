@@ -365,13 +365,14 @@ public final class UserGraph {
    */
   public Optional<ResourceId> resolveName(String cid, NameRef ref) {
     validateNameRef(cid, ref);
+    String accountId = requireAccountId(cid);
     if (ref.hasResourceId()) {
       ResourceId id = ref.getResourceId();
-      if (id.getKind() == ResourceKind.RK_TABLE || id.getKind() == ResourceKind.RK_VIEW) {
+      if (accountId.equals(id.getAccountId())
+          && (id.getKind() == ResourceKind.RK_TABLE || id.getKind() == ResourceKind.RK_VIEW)) {
         return Optional.of(id);
       }
     }
-    String accountId = requireAccountId(cid);
 
     NameResolution cached = resolveNameFromTopology(cid, accountId, ref);
     if (cached.answered()) {

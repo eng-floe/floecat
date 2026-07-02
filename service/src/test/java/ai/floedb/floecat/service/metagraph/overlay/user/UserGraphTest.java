@@ -371,6 +371,23 @@ class UserGraphTest {
   }
 
   @Test
+  void resolveNameResourceIdShortcutRequiresCurrentAccount() {
+    var ids = seedTable("local_table", "{}");
+    ResourceId foreignId = rid("other-account", "foreign-table", ResourceKind.RK_TABLE);
+    NameRef ref =
+        NameRef.newBuilder()
+            .setCatalog("cat")
+            .addPath("ns")
+            .setName("local_table")
+            .setResourceId(foreignId)
+            .build();
+
+    Optional<ResourceId> resolved = graph.resolveName("corr", ref);
+
+    assertThat(resolved).contains(ids.tableId());
+  }
+
+  @Test
   void resolveNameReturnsViewWhenOnlyViewExists() {
     ResourceId viewId = seedView("only_view");
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("only_view").build();
