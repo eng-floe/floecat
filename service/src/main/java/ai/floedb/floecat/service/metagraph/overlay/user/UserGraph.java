@@ -364,7 +364,9 @@ public final class UserGraph {
    * @throws GrpcErrors if the name is ambiguous
    */
   public Optional<ResourceId> resolveName(String cid, NameRef ref) {
-    validateNameRef(cid, ref);
+    if (ref == null) {
+      validateNameRef(cid, null);
+    }
     String accountId = requireAccountId(cid);
     if (ref.hasResourceId()) {
       ResourceId id = ref.getResourceId();
@@ -373,6 +375,7 @@ public final class UserGraph {
         return Optional.of(id);
       }
     }
+    validateNameRef(cid, ref);
 
     NameResolution cached = resolveNameFromTopology(cid, accountId, ref);
     if (cached.answered()) {

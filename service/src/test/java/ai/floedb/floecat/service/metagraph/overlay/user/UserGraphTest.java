@@ -388,6 +388,16 @@ class UserGraphTest {
   }
 
   @Test
+  void resolveNameResourceIdShortcutDoesNotRequireCatalog() {
+    var ids = seedTable("direct_table", "{}");
+    NameRef ref = NameRef.newBuilder().setResourceId(ids.tableId()).build();
+
+    Optional<ResourceId> resolved = graph.resolveName("corr", ref);
+
+    assertThat(resolved).contains(ids.tableId());
+  }
+
+  @Test
   void resolveNameReturnsViewWhenOnlyViewExists() {
     ResourceId viewId = seedView("only_view");
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("only_view").build();
