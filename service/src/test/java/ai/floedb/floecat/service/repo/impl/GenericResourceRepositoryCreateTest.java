@@ -276,7 +276,7 @@ class GenericResourceRepositoryCreateTest {
   }
 
   @Test
-  void delete_whenResourceBlobIsCorrupt_failsFast_withoutDeletingPointers() {
+  void delete_whenResourceBlobIsCorrupt_removesCanonicalPointer() {
     var repo = new AccountRepository(ptr, blobs);
     var account = account("acct-1", "alpha", "");
     repo.create(account);
@@ -284,10 +284,9 @@ class GenericResourceRepositoryCreateTest {
     String blobUri = ptr.get(Keys.accountPointerById("acct-1")).orElseThrow().getBlobUri();
     assertThat(blobs.delete(blobUri)).isTrue();
 
-    assertThatThrownBy(() -> repo.delete(account.getResourceId()))
-        .isInstanceOf(BaseResourceRepository.CorruptionException.class);
+    assertThat(repo.delete(account.getResourceId())).isTrue();
 
-    assertThat(ptr.get(Keys.accountPointerById("acct-1"))).isPresent();
+    assertThat(ptr.get(Keys.accountPointerById("acct-1"))).isEmpty();
     assertThat(ptr.get(Keys.accountPointerByName("alpha"))).isPresent();
   }
 }

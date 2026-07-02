@@ -271,6 +271,26 @@ public class TransactionCommitExecutionSupport {
     return "true".equals(response.getHeaderString(RETRYABLE_CONFLICT_PROPERTY));
   }
 
+  Response stripInternalRetryHeader(Response response) {
+    if (response == null || response.getHeaderString(RETRYABLE_CONFLICT_PROPERTY) == null) {
+      return response;
+    }
+    Response.ResponseBuilder builder =
+        Response.status(response.getStatus()).entity(response.getEntity());
+    response
+        .getHeaders()
+        .forEach(
+            (name, values) -> {
+              if (RETRYABLE_CONFLICT_PROPERTY.equalsIgnoreCase(name)) {
+                return;
+              }
+              for (Object value : values) {
+                builder.header(name, value);
+              }
+            });
+    return builder.build();
+  }
+
   Response retryableConflict(String message) {
     return conflictResponse(message, true);
   }
@@ -464,17 +484,5 @@ public class TransactionCommitExecutionSupport {
     } catch (RuntimeException e) {
       LOG.debugf(e, "Best-effort abort failed for tx=%s", txId);
     }
-  }
-
-  private static String firstNonBlank(String... values) {
-    if (values == null) {
-      return null;
-    }
-    for (String value : values) {
-      if (value != null && !value.isBlank()) {
-        return value;
-      }
-    }
-    return null;
   }
 }

@@ -1239,8 +1239,8 @@ class IcebergRestFixtureIT {
     String tableBMetadataAfterSecond = fetchTablePropertyMetadataLocation(namespace, tableB);
     Assertions.assertEquals(tableAMetadataAfterFirst, tableAMetadataAfterSecond);
     Assertions.assertEquals(tableBMetadataAfterFirst, tableBMetadataAfterSecond);
-    Assertions.assertEquals(ownerA, fetchTableMetadataProperty(namespace, tableA, "owner"));
-    Assertions.assertEquals(ownerB, fetchTableMetadataProperty(namespace, tableB, "owner"));
+    awaitTableMetadataProperty(namespace, tableA, "owner", ownerA, Duration.ofSeconds(10));
+    awaitTableMetadataProperty(namespace, tableB, "owner", ownerB, Duration.ofSeconds(10));
   }
 
   @Test
@@ -2242,6 +2242,25 @@ class IcebergRestFixtureIT {
         .statusCode(200)
         .extract()
         .path("metadata.properties.'" + key + "'");
+  }
+
+  private void awaitTableMetadataProperty(
+      String namespace, String table, String key, String expected, Duration timeout) {
+    long deadline = System.nanoTime() + timeout.toNanos();
+    String actual = null;
+    while (System.nanoTime() < deadline) {
+      actual = fetchTableMetadataProperty(namespace, table, key);
+      if (expected.equals(actual)) {
+        return;
+      }
+      try {
+        Thread.sleep(100L);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        Assertions.fail("Interrupted while waiting for metadata property " + key);
+      }
+    }
+    Assertions.assertEquals(expected, actual);
   }
 
   private JsonNode fetchPersistedMetadata(String namespace, String table) throws IOException {

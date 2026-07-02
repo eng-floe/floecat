@@ -85,7 +85,8 @@ public class TransactionCommitSnapshotSupport {
         firstNonBlank(trimToNull(metadataLocation), requestedMetadataLocation);
     List<ai.floedb.floecat.transaction.rpc.TxChange> out = new ArrayList<>();
     boolean writesNewSnapshot = false;
-    Long targetCurrentSnapshotId = targetCurrentSnapshotId(table, tableSupport, parsed);
+    Long existingCurrentSnapshotId = currentSnapshotId(table, tableSupport);
+    Long targetCurrentSnapshotId = targetCurrentSnapshotId(existingCurrentSnapshotId, parsed);
     Snapshot currentSnapshotCandidate = null;
     if (updates != null && !updates.isEmpty()) {
       for (Map<String, Object> update : updates) {
@@ -154,9 +155,11 @@ public class TransactionCommitSnapshotSupport {
         }
       }
     }
-    if (!writesNewSnapshot
-        && resolvedMetadataLocation != null
-        && (updates == null || updates.isEmpty() || !parsed.containsSnapshotUpdates())) {
+    if (shouldRewriteCurrentSnapshotMetadata(
+        writesNewSnapshot,
+        resolvedMetadataLocation,
+        existingCurrentSnapshotId,
+        targetCurrentSnapshotId)) {
       SnapshotChangePlan rewritePlan =
           rewriteCurrentSnapshotMetadata(
               scopedTableId, resolvedAccountId, resolvedMetadataLocation);
@@ -332,8 +335,7 @@ public class TransactionCommitSnapshotSupport {
   }
 
   private Long targetCurrentSnapshotId(
-      Table table, TableGatewaySupport tableSupport, CommitUpdateInspector.Parsed parsed) {
-    Long existingCurrentSnapshotId = currentSnapshotId(table, tableSupport);
+      Long existingCurrentSnapshotId, CommitUpdateInspector.Parsed parsed) {
     Long requestedMainSnapshotId = parsed.requestedMainRefSnapshotId();
     if (shouldApplyRequestedMainSnapshotId(
         parsed, existingCurrentSnapshotId, requestedMainSnapshotId)) {
@@ -346,6 +348,21 @@ public class TransactionCommitSnapshotSupport {
       return parsed.latestAddedSnapshotId();
     }
     return null;
+  }
+
+  private boolean shouldRewriteCurrentSnapshotMetadata(
+      boolean writesNewSnapshot,
+      String resolvedMetadataLocation,
+      Long existingCurrentSnapshotId,
+      Long targetCurrentSnapshotId) {
+    if (writesNewSnapshot || resolvedMetadataLocation == null) {
+      return false;
+    }
+    if (targetCurrentSnapshotId == null) {
+      return true;
+    }
+    return existingCurrentSnapshotId != null
+        && existingCurrentSnapshotId.equals(targetCurrentSnapshotId);
   }
 
   private Long currentSnapshotId(Table table, TableGatewaySupport tableSupport) {

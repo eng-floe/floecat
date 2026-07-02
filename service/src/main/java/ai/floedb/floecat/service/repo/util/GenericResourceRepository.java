@@ -457,7 +457,18 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
             return false;
           }
           String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
-          Optional<T> current = getByKeyUnobserved(key);
+          Optional<T> current;
+          try {
+            current = getByKeyUnobserved(key);
+          } catch (CorruptionException e) {
+            if (!deleteCanonicalPointer(canonicalPointer, canonicalPtr.getVersion())) {
+              return false;
+            }
+            if (!schema.casBlobs && !blobUri.isBlank()) {
+              deleteQuietly(() -> blobStore.delete(blobUri));
+            }
+            return true;
+          }
           if (current.isEmpty()) {
             return false;
           }
@@ -483,7 +494,18 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         () -> {
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
-          Optional<T> current = getByKeyUnobserved(key);
+          Optional<T> current;
+          try {
+            current = getByKeyUnobserved(key);
+          } catch (CorruptionException e) {
+            if (!deleteCanonicalPointer(canonicalPointer, expectedCanonicalVersion)) {
+              return false;
+            }
+            if (!schema.casBlobs && !blobUri.isBlank()) {
+              deleteQuietly(() -> blobStore.delete(blobUri));
+            }
+            return true;
+          }
           if (current.isEmpty()) {
             return false;
           }
@@ -524,6 +546,11 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     }
 
     return pointerStore.compareAndSetBatch(ops);
+  }
+
+  private boolean deleteCanonicalPointer(String canonicalPointer, long expectedCanonicalVersion) {
+    return pointerStore.compareAndSetBatch(
+        List.of(new PointerStore.CasDelete(canonicalPointer, expectedCanonicalVersion)));
   }
 
   public MutationMeta metaFor(K key) {

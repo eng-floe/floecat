@@ -287,6 +287,44 @@ class TransactionCommitSnapshotSupportTest {
   }
 
   @Test
+  void planAtomicSnapshotChangesRewritesCurrentSnapshotMetadataForRemoveSnapshotCommit()
+      throws Exception {
+    TransactionCommitSnapshotSupport support = new TransactionCommitSnapshotSupport();
+    support.grpcClient = Mockito.mock(GrpcServiceFacade.class);
+    support.transactionCommitExecutionSupport =
+        Mockito.mock(TransactionCommitExecutionSupport.class);
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build();
+    Table table = Table.newBuilder().setResourceId(tableId).build();
+    Snapshot existingSnapshot =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(777L)
+            .setMetadataLocation("s3://bucket/metadata/00001.metadata.json")
+            .build();
+    Mockito.when(support.grpcClient.getSnapshot(Mockito.any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(existingSnapshot).build());
+
+    var result =
+        support.planAtomicSnapshotChanges(
+            "acct-1",
+            "tx-1",
+            tableId,
+            table,
+            null,
+            "s3://bucket/metadata/00002.metadata.json",
+            List.of(Map.of("action", "remove-snapshots", "snapshot-ids", List.of(100L))),
+            List.of());
+
+    assertNull(result.error());
+    assertEquals(2, result.txChanges().size());
+    Snapshot byId = Snapshot.parseFrom(result.txChanges().getFirst().getPayload());
+    assertEquals("s3://bucket/metadata/00002.metadata.json", byId.getMetadataLocation());
+    Snapshot byTime = Snapshot.parseFrom(result.txChanges().get(1).getPayload());
+    assertEquals("s3://bucket/metadata/00002.metadata.json", byTime.getMetadataLocation());
+  }
+
+  @Test
   void planAtomicSnapshotChangesDeletesRemovedSnapshotUsingStoredByTimeTimestamp() {
     TransactionCommitSnapshotSupport support = new TransactionCommitSnapshotSupport();
     support.grpcClient = Mockito.mock(GrpcServiceFacade.class);

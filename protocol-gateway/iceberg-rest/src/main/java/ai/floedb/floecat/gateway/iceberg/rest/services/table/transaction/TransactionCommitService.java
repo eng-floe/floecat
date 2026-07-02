@@ -336,7 +336,9 @@ public class TransactionCommitService {
 
       Response applyResponse = transactionCommitExecutionSupport.apply(openTransaction, txChanges);
       if (!shouldRetryTransactionConflict(attempt, applyResponse)) {
-        return applyResponse;
+        return transactionCommitExecutionSupport.isRetryableConflict(applyResponse)
+            ? transactionCommitExecutionSupport.stripInternalRetryHeader(applyResponse)
+            : applyResponse;
       }
     }
 

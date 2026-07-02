@@ -397,14 +397,14 @@ class BackendStorageIT {
             .orElseThrow()
             .getBlobUri();
     assertTrue(blobs.delete(blobUri));
-    var corruption =
-        assertThrows(
-            io.grpc.StatusRuntimeException.class,
-            () ->
-                table.deleteTable(
-                    DeleteTableRequest.newBuilder().setTableId(tbl.getResourceId()).build()));
-    assertEquals(io.grpc.Status.Code.INTERNAL, corruption.getStatus().getCode());
-    assertTrue(corruption.getMessage().contains("dangling pointer, missing blob"));
+    var deleteResponse =
+        table.deleteTable(DeleteTableRequest.newBuilder().setTableId(tbl.getResourceId()).build());
+    assertTrue(deleteResponse.hasMeta());
+    assertTrue(
+        ptr.get(
+                Keys.tablePointerById(
+                    tbl.getResourceId().getAccountId(), tbl.getResourceId().getId()))
+            .isEmpty());
 
     var tbl2 =
         TestSupport.createTable(

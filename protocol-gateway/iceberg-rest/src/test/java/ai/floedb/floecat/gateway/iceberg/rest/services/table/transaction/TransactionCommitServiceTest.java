@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -402,6 +403,58 @@ class TransactionCommitServiceTest {
     verify(service.transactionCommitExecutionSupport, never()).apply(eq(abortedOpen), any());
     verify(service.transactionCommitExecutionSupport)
         .openTransaction(eq("client-key"), eq(true), eq("examples"), any(), eq("tx-attempt-1"));
+  }
+
+  @Test
+  void commitStripsInternalRetryHeaderWhenRetryAttemptsAreExhausted() {
+    TransactionCommitService service = baseService();
+    service.transactionCommitExecutionSupport =
+        Mockito.mock(TransactionCommitExecutionSupport.class, Mockito.CALLS_REAL_METHODS);
+    TableGatewaySupport tableSupport = Mockito.mock(TableGatewaySupport.class);
+    ResourceId catalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
+    ResourceId namespaceId = ResourceId.newBuilder().setAccountId("acct").setId("ns-1").build();
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl-1").build();
+    Table table = Table.newBuilder().setResourceId(tableId).build();
+    TransactionCommitRequest request = singlePropertyChangeRequest();
+
+    arrangeCommonSingleTablePlanning(service, tableSupport, catalogId, namespaceId, tableId, table);
+
+    var firstOpen =
+        new TransactionCommitExecutionSupport.OpenTransaction(
+            "tx-1", TransactionState.TS_OPEN, null, "tx-1");
+    var secondOpen =
+        new TransactionCommitExecutionSupport.OpenTransaction(
+            "tx-2", TransactionState.TS_OPEN, null, "tx-2");
+    var thirdOpen =
+        new TransactionCommitExecutionSupport.OpenTransaction(
+            "tx-3", TransactionState.TS_OPEN, null, "tx-3");
+    Mockito.doReturn(new TransactionCommitExecutionSupport.OpenTransactionResult(firstOpen, null))
+        .when(service.transactionCommitExecutionSupport)
+        .openTransaction(eq(null), eq(true), eq("examples"), any(), eq(null));
+    Mockito.doReturn(new TransactionCommitExecutionSupport.OpenTransactionResult(secondOpen, null))
+        .when(service.transactionCommitExecutionSupport)
+        .openTransaction(eq(null), eq(true), eq("examples"), any(), eq("tx-attempt-1"));
+    Mockito.doReturn(new TransactionCommitExecutionSupport.OpenTransactionResult(thirdOpen, null))
+        .when(service.transactionCommitExecutionSupport)
+        .openTransaction(eq(null), eq(true), eq("examples"), any(), eq("tx-attempt-2"));
+
+    Response retryableConflict =
+        Response.status(Response.Status.CONFLICT)
+            .header(TransactionCommitExecutionSupport.RETRYABLE_CONFLICT_PROPERTY, "true")
+            .entity("conflict")
+            .build();
+    Mockito.doReturn(retryableConflict)
+        .when(service.transactionCommitExecutionSupport)
+        .apply(any(), any());
+
+    Response response = service.commit("examples", null, request, tableSupport);
+
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
+    assertEquals("conflict", response.getEntity());
+    assertNull(
+        response.getHeaderString(TransactionCommitExecutionSupport.RETRYABLE_CONFLICT_PROPERTY));
+    verify(service.transactionCommitExecutionSupport)
+        .openTransaction(eq(null), eq(true), eq("examples"), any(), eq("tx-attempt-2"));
   }
 
   private TransactionCommitService baseService() {
