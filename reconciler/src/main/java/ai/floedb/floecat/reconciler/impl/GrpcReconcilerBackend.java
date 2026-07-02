@@ -342,25 +342,6 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       NameRef tableRef,
       TableSpecDescriptor descriptor) {
     NameRef normalizedTable = NameRefNormalizer.normalize(tableRef);
-    TableSpec spec =
-        TableSpec.newBuilder()
-            .setDisplayName(descriptor.displayName())
-            .setSchemaJson(descriptor.schemaJson())
-            .setUpstream(buildUpstream(descriptor))
-            .putAllProperties(safeProperties(descriptor))
-            .build();
-    UpdateTableRequest request =
-        UpdateTableRequest.newBuilder()
-            .setTableId(tableId)
-            .setSpec(spec)
-            .setUpdateMask(
-                FieldMask.newBuilder()
-                    .addPaths("schema_json")
-                    .addPaths("upstream")
-                    .addPaths("properties")
-                    .build())
-            .build();
-
     for (int attempt = 0; attempt < UPDATE_OCC_RETRIES; attempt++) {
       var before =
           table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
@@ -372,6 +353,17 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         throw new IllegalArgumentException(
             "Destination table display name mismatch for id: " + tableId.getId());
       }
+      UpdateTableRequest request =
+          UpdateTableRequest.newBuilder()
+              .setTableId(tableId)
+              .setSpec(reconcileTableSpec(before, descriptor))
+              .setUpdateMask(
+                  FieldMask.newBuilder()
+                      .addPaths("schema_json")
+                      .addPaths("upstream")
+                      .addPaths("properties")
+                      .build())
+              .build();
       try {
         var response = table(ctx).updateTable(request).getTable();
         return !response.equals(before);
@@ -385,6 +377,25 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     throw Status.FAILED_PRECONDITION
         .withDescription("table update precondition failed after retries")
         .asRuntimeException();
+  }
+
+  private TableSpec reconcileTableSpec(Table current, TableSpecDescriptor descriptor) {
+    return TableSpec.newBuilder()
+        .setDisplayName(descriptor.displayName())
+        .setSchemaJson(descriptor.schemaJson())
+        .setUpstream(buildUpstream(descriptor))
+        .putAllProperties(mergedReconcileProperties(current, descriptor))
+        .build();
+  }
+
+  private Map<String, String> mergedReconcileProperties(
+      Table current, TableSpecDescriptor descriptor) {
+    LinkedHashMap<String, String> merged = new LinkedHashMap<>();
+    if (current != null) {
+      merged.putAll(current.getPropertiesMap());
+    }
+    merged.putAll(safeProperties(descriptor));
+    return Map.copyOf(merged);
   }
 
   @Override

@@ -891,6 +891,89 @@ class GrpcReconcilerBackendTest {
   }
 
   @Test
+  void updateTableByIdPreservesExistingTableProperties() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.table =
+        mock(ai.floedb.floecat.catalog.rpc.TableServiceGrpc.TableServiceBlockingStub.class);
+    when(backend.table.withInterceptors(any())).thenReturn(backend.table);
+
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns-1")
+            .build();
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat-1")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl-1")
+            .build();
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .setId("conn-1")
+            .build();
+    Table before =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders")
+            .putProperties("owner", "txn-owner")
+            .putProperties("storage_location", "s3://old-location")
+            .build();
+    Table after =
+        before.toBuilder()
+            .putProperties("reconciled", "true")
+            .putProperties("storage_location", "s3://new-location")
+            .build();
+
+    when(backend.table.getTable(any()))
+        .thenReturn(GetTableResponse.newBuilder().setTable(before).build());
+    when(backend.table.updateTable(any()))
+        .thenReturn(UpdateTableResponse.newBuilder().setTable(after).build());
+
+    boolean changed =
+        backend.updateTableById(
+            reconcileContext(),
+            tableId,
+            namespaceId,
+            NameRef.newBuilder().setCatalog("cat").addPath("main").setName("orders").build(),
+            new TableSpecDescriptor(
+                "main",
+                "orders",
+                "s3://new-location",
+                "{}",
+                Map.of("reconciled", "true"),
+                List.of(),
+                ColumnIdAlgorithm.CID_FIELD_ID,
+                ConnectorFormat.CF_ICEBERG,
+                connectorId,
+                "uri",
+                "src.ns",
+                "orders"));
+
+    assertThat(changed).isTrue();
+    ArgumentCaptor<ai.floedb.floecat.catalog.rpc.UpdateTableRequest> requestCaptor =
+        ArgumentCaptor.forClass(ai.floedb.floecat.catalog.rpc.UpdateTableRequest.class);
+    verify(backend.table).updateTable(requestCaptor.capture());
+    assertThat(requestCaptor.getValue().getSpec().getPropertiesMap())
+        .containsEntry("owner", "txn-owner")
+        .containsEntry("reconciled", "true")
+        .containsEntry("storage_location", "s3://new-location");
+  }
+
+  @Test
   void updateTableByIdRetriesFailedPreconditionAndSucceeds() {
     GrpcReconcilerBackend backend =
         new GrpcReconcilerBackend(

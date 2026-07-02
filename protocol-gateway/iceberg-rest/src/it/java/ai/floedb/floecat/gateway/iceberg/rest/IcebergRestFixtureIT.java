@@ -1225,6 +1225,8 @@ class IcebergRestFixtureIT {
 
     String tableAMetadataAfterFirst = fetchTablePropertyMetadataLocation(namespace, tableA);
     String tableBMetadataAfterFirst = fetchTablePropertyMetadataLocation(namespace, tableB);
+    awaitTableMetadataProperty(namespace, tableA, "owner", ownerA, Duration.ofSeconds(10));
+    awaitTableMetadataProperty(namespace, tableB, "owner", ownerB, Duration.ofSeconds(10));
 
     given()
         .spec(spec)
