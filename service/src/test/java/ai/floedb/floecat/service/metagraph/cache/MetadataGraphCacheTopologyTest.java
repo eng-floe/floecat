@@ -193,6 +193,29 @@ class MetadataGraphCacheTopologyTest {
   }
 
   @Test
+  void evictRelationIdClearsExactRelationNameHit() {
+    ResourceId catalogId = rid("acct", "cat", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid("acct", "ns", ResourceKind.RK_NAMESPACE);
+    ResourceId staleTableId = rid("acct", "tbl-old", ResourceKind.RK_TABLE);
+    ResourceId freshTableId = rid("acct", "tbl-new", ResourceKind.RK_TABLE);
+    RelationRef stale = new RelationRef(staleTableId, "orders", ResourceKind.RK_TABLE);
+    RelationRef fresh = new RelationRef(freshTableId, "orders", ResourceKind.RK_TABLE);
+    when(tableRepository.listRefsByName("acct", "cat", "ns", Set.of("orders")))
+        .thenReturn(List.of(stale), List.of(fresh));
+    when(viewRepository.listRefsByName("acct", "cat", "ns", Set.of("orders")))
+        .thenReturn(List.of());
+
+    assertThat(cache.resolveRelationRefsByName(catalogId, namespaceId, "orders").singleId())
+        .contains(staleTableId);
+
+    cache.evict(staleTableId);
+
+    assertThat(cache.resolveRelationRefsByName(catalogId, namespaceId, "orders").singleId())
+        .contains(freshTableId);
+    verify(tableRepository, times(2)).listRefsByName("acct", "cat", "ns", Set.of("orders"));
+  }
+
+  @Test
   void resolveRelationRefsByName_doesNotCacheMisses() {
     ResourceId catalogId = rid("acct", "cat", ResourceKind.RK_CATALOG);
     ResourceId namespaceId = rid("acct", "ns", ResourceKind.RK_NAMESPACE);

@@ -358,6 +358,7 @@ public class MetadataGraphCache {
       return;
     }
     invalidateNode(resourceId);
+    relationNames.asMap().values().removeIf(resolution -> resolution.contains(resourceId));
     ResourceId nsId = reverseMap.remove(resourceId);
     if (nsId != null) {
       evictRelationRefs(nsId);
@@ -511,6 +512,10 @@ public class MetadataGraphCache {
         return Optional.empty();
       }
       return Optional.of(tableId != null ? tableId : viewId);
+    }
+
+    private boolean contains(ResourceId id) {
+      return id != null && (id.equals(tableId) || id.equals(viewId));
     }
   }
 
