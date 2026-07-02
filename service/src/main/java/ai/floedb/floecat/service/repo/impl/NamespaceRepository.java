@@ -148,10 +148,23 @@ public class NamespaceRepository {
     if (requested.isEmpty()) {
       return List.of();
     }
-    return listRefs(accountId, catalogId).stream()
-        .filter(
-            ref -> requested.contains(TopologyNames.namespaceName(ref.pathSegments(), ref.name())))
-        .toList();
+    List<NamespaceRef> refs = new ArrayList<>(requested.size());
+    Set<String> dottedNames = new java.util.HashSet<>();
+    for (String name : requested) {
+      if (name.indexOf('.') >= 0) {
+        dottedNames.add(name);
+      } else {
+        refByPath(accountId, catalogId, List.of(name)).ifPresent(refs::add);
+      }
+    }
+    if (!dottedNames.isEmpty()) {
+      listRefs(accountId, catalogId).stream()
+          .filter(
+              ref ->
+                  dottedNames.contains(TopologyNames.namespaceName(ref.pathSegments(), ref.name())))
+          .forEach(refs::add);
+    }
+    return refs;
   }
 
   private static ResourceId catalogResourceId(String accountId, String catalogId) {

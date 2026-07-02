@@ -171,4 +171,31 @@ class NamespaceRepositoryTest {
 
     assertEquals(Set.of(dottedRid, nestedRid), ids);
   }
+
+  @Test
+  void listRefsByNameUsesExactLookupForSingleSegmentNames() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var catRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    var pgRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    namespaceRepo.create(
+        Namespace.newBuilder()
+            .setResourceId(pgRid)
+            .setDisplayName("pg_catalog")
+            .setCatalogId(catRid)
+            .build());
+
+    var refs = namespaceRepo.listRefsByName(account, catRid.getId(), Set.of("pg_catalog"));
+
+    assertEquals(List.of(pgRid), refs.stream().map(ref -> ref.id()).toList());
+  }
 }
