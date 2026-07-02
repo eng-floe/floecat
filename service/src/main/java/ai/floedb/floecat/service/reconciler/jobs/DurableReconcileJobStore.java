@@ -66,6 +66,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQue
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore.LeaseScanStats;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -136,6 +137,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Inject ObjectMapper mapper;
   @Inject Config config;
   @Inject Instance<DynamoDbClient> dynamoDb;
+  @Inject Instance<DynamoDbClientManager> dynamoDbClientManager;
 
   @ConfigProperty(name = "floecat.kv.table", defaultValue = "floecat_pointers")
   String kvTable = "floecat_pointers";
@@ -229,6 +231,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (jobIndexBackend instanceof MemoryReconcileJobIndexBackend memoryBackend) {
       memoryBackend.bind(pointerStore);
     } else if (jobIndexBackend instanceof DynamoReconcileJobIndexBackend dynamoBackend
+        && dynamoDbClientManager != null
+        && dynamoDbClientManager.isResolvable()) {
+      DynamoDbClientManager manager = dynamoDbClientManager.get();
+      dynamoBackend.bind(manager::current, kvTable, manager::refreshAfterFailure);
+    } else if (jobIndexBackend instanceof DynamoReconcileJobIndexBackend dynamoBackend
         && dynamoDb != null
         && dynamoDb.isResolvable()) {
       dynamoBackend.bind(dynamoDb.get(), kvTable);
@@ -299,6 +306,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (leaseBackend instanceof MemoryReconcileLeaseBackend memoryBackend) {
       memoryBackend.bind(pointerStore);
     } else if (leaseBackend instanceof DynamoReconcileLeaseBackend dynamoBackend
+        && dynamoDbClientManager != null
+        && dynamoDbClientManager.isResolvable()) {
+      DynamoDbClientManager manager = dynamoDbClientManager.get();
+      dynamoBackend.bind(manager::current, kvTable, manager::refreshAfterFailure);
+    } else if (leaseBackend instanceof DynamoReconcileLeaseBackend dynamoBackend
         && dynamoDb != null
         && dynamoDb.isResolvable()) {
       dynamoBackend.bind(dynamoDb.get(), kvTable);
@@ -347,6 +359,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     if (readyQueueBackend instanceof MemoryReconcileReadyQueueBackend memoryBackend) {
       memoryBackend.bind(pointerStore);
+    } else if (readyQueueBackend instanceof DynamoReconcileReadyQueueBackend dynamoBackend
+        && dynamoDbClientManager != null
+        && dynamoDbClientManager.isResolvable()) {
+      DynamoDbClientManager manager = dynamoDbClientManager.get();
+      dynamoBackend.bind(manager::current, kvTable, manager::refreshAfterFailure);
     } else if (readyQueueBackend instanceof DynamoReconcileReadyQueueBackend dynamoBackend
         && dynamoDb != null
         && dynamoDb.isResolvable()) {
