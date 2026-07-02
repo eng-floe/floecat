@@ -17,13 +17,19 @@
 package ai.floedb.floecat.service.metagraph.cache;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository;
+import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.testsupport.TestNodes;
+import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Telemetry;
 import ai.floedb.floecat.telemetry.TestObservability;
 import com.google.protobuf.Timestamp;
@@ -31,15 +37,15 @@ import java.time.Instant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-class GraphCacheManagerTest {
+class MetadataGraphCacheNodeTest {
 
-  private GraphCacheManager cacheManager;
+  private MetadataGraphCache cacheManager;
   private TestObservability observability;
 
   @BeforeEach
   void setUp() {
     observability = new TestObservability();
-    cacheManager = new GraphCacheManager(true, 10, observability);
+    cacheManager = newCache(10, 0L, observability);
   }
 
   @Test
@@ -71,7 +77,7 @@ class GraphCacheManagerTest {
     assertThat(cacheManager.get(tableId, v1)).isNotNull();
     assertThat(cacheManager.get(tableId, v2)).isNotNull();
 
-    cacheManager.invalidate(tableId);
+    cacheManager.evict(tableId);
 
     assertThat(cacheManager.get(tableId, v1)).isNull();
     assertThat(cacheManager.get(tableId, v2)).isNull();
@@ -79,7 +85,7 @@ class GraphCacheManagerTest {
 
   @Test
   void disabledCacheReturnsNull() {
-    GraphCacheManager disabled = new GraphCacheManager(false, 10, new TestObservability());
+    MetadataGraphCache disabled = newCache(0, 0L, new TestObservability());
     ResourceId tableId = rid("account", "tbl");
     GraphCacheKey key = new GraphCacheKey(tableId, 1L);
 
@@ -90,7 +96,7 @@ class GraphCacheManagerTest {
 
   @Test
   void metaCacheStoresAndInvalidatesEntries() {
-    GraphCacheManager manager = new GraphCacheManager(true, 10, 2L, new TestObservability());
+    MetadataGraphCache manager = newCache(10, 2L, new TestObservability());
     ResourceId tableId = rid("account", "tbl");
     MutationMeta meta = mutationMeta(7L);
 
@@ -98,13 +104,13 @@ class GraphCacheManagerTest {
     manager.putMeta(tableId, meta);
     assertThat(manager.getMeta(tableId)).isEqualTo(meta);
 
-    manager.invalidate(tableId);
+    manager.evict(tableId);
     assertThat(manager.getMeta(tableId)).isNull();
   }
 
   @Test
   void disabledMetaCacheIgnoresWrites() {
-    GraphCacheManager manager = new GraphCacheManager(true, 10, 0L, new TestObservability());
+    MetadataGraphCache manager = newCache(10, 0L, new TestObservability());
     ResourceId tableId = rid("account", "tbl");
     manager.putMeta(tableId, mutationMeta(1L));
 
@@ -114,7 +120,7 @@ class GraphCacheManagerTest {
   @Test
   void metaCacheRecordsHitAndMissCounters() {
     TestObservability metrics = new TestObservability();
-    GraphCacheManager manager = new GraphCacheManager(true, 10, 2L, metrics);
+    MetadataGraphCache manager = newCache(10, 2L, metrics);
     ResourceId tableId = rid("account", "tbl");
 
     assertThat(manager.getMeta(tableId)).isNull();
@@ -135,6 +141,21 @@ class GraphCacheManagerTest {
 
   private UserTableNode tableNode(ResourceId tableId) {
     return TestNodes.tableNode(tableId, "{}");
+  }
+
+  private MetadataGraphCache newCache(
+      long graphCacheMaxSize, long metaCacheTtlSeconds, Observability observability) {
+    return new MetadataGraphCache(
+        mock(CatalogRepository.class),
+        mock(NamespaceRepository.class),
+        mock(TableRepository.class),
+        mock(ViewRepository.class),
+        observability,
+        graphCacheMaxSize,
+        metaCacheTtlSeconds,
+        10,
+        10,
+        15);
   }
 
   private static ResourceId rid(String accountId, String id) {

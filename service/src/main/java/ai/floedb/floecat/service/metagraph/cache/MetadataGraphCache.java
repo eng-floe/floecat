@@ -16,7 +16,10 @@
 
 package ai.floedb.floecat.service.metagraph.cache;
 
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
+import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
 import ai.floedb.floecat.scanner.spi.TopologyNames;
@@ -26,6 +29,8 @@ import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import ai.floedb.floecat.telemetry.helpers.CacheMetrics;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -44,48 +49,51 @@ import java.util.stream.Collectors;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
- * Application-scoped cache for catalog topology: namespace and relation (table/view) refs without
- * full proto materialization.
+ * Application-scoped metadata cache for graph nodes and catalog topology/name indexes.
  *
- * <p>Cache population goes to DynamoDB only (pointer prefix scan) — no S3. Warm hits are
- * sub-millisecond; cold population of 200K tables across 10 namespaces is ~50ms (parallelism added
- * in Layer 5).
+ * <p>The node cache keeps per-account {@link GraphNode} caches keyed by resource id and pointer
+ * version. The topology indexes cache lightweight namespace and relation refs, plus exact
+ * catalog/path/name lookups, without full proto materialization.
  *
- * <p>Two Caffeine caches:
- *
- * <ul>
- *   <li>{@code nsRefs}: keyed by {@code (accountId, catalogId)} — 15-min access TTL, 10K entries
- *   <li>{@code relRefs}: keyed by {@code (accountId, namespaceId)} — 15-min access TTL, 5K entries
- * </ul>
- *
- * <p>A {@code reverseMap} stores {@code relId → nsId} so that {@link #evict} can find the parent
- * namespace for a relation being deleted, even after the relation's own pointer is gone.
+ * <p>A {@code reverseMap} stores {@code relId -> nsId} so relation invalidation can find the parent
+ * namespace even after the relation pointer is gone.
  */
 @ApplicationScoped
-public class CatalogTopologyCache {
+public class MetadataGraphCache {
 
+  private final boolean graphCacheEnabled;
+  private final boolean metaCacheEnabled;
+  private final long graphCacheMaxSize;
   private final Cache<NsCacheKey, List<NamespaceRef>> nsRefs;
   private final Cache<RelCacheKey, List<RelationRef>> relRefs;
   private final Cache<CatalogNameKey, Optional<CatalogRef>> catalogNames;
   private final Cache<NamespacePathKey, Optional<NamespaceRef>> namespacePaths;
   private final Cache<RelationNameKey, RelationNameResolution> relationNames;
   private final ConcurrentMap<ResourceId, ResourceId> reverseMap;
+  private final ConcurrentMap<String, Cache<GraphCacheKey, GraphNode>> accountCaches;
+  private final Cache<ResourceId, MutationMeta> metaCache;
 
   private final CatalogRepository catalogRepo;
   private final NamespaceRepository nsRepo;
   private final TableRepository tableRepo;
   private final ViewRepository viewRepo;
 
+  private final CacheMetrics graphCacheMetrics;
+  private final CacheMetrics metaCacheMetrics;
   private final CacheMetrics nsCacheMetrics;
   private final CacheMetrics relCacheMetrics;
 
   @Inject
-  public CatalogTopologyCache(
+  public MetadataGraphCache(
       CatalogRepository catalogRepo,
       NamespaceRepository nsRepo,
       TableRepository tableRepo,
       ViewRepository viewRepo,
       Observability observability,
+      @ConfigProperty(name = "floecat.metadata.graph.cache-max-size", defaultValue = "50000")
+          long graphCacheMaxSize,
+      @ConfigProperty(name = "floecat.metadata.graph.meta-cache-ttl-seconds", defaultValue = "2")
+          long metaCacheTtlSeconds,
       @ConfigProperty(name = "floecat.topology.ns-cache-size", defaultValue = "10000")
           long nsCacheSize,
       @ConfigProperty(name = "floecat.topology.rel-cache-size", defaultValue = "5000")
@@ -96,6 +104,18 @@ public class CatalogTopologyCache {
     this.nsRepo = Objects.requireNonNull(nsRepo, "nsRepo");
     this.tableRepo = Objects.requireNonNull(tableRepo, "tableRepo");
     this.viewRepo = Objects.requireNonNull(viewRepo, "viewRepo");
+
+    this.graphCacheEnabled = graphCacheMaxSize > 0;
+    this.metaCacheEnabled = metaCacheTtlSeconds > 0;
+    this.graphCacheMaxSize = Math.max(1L, graphCacheMaxSize);
+    this.accountCaches = new ConcurrentHashMap<>();
+    this.metaCache =
+        metaCacheEnabled
+            ? Caffeine.newBuilder()
+                .maximumSize(this.graphCacheMaxSize)
+                .expireAfterWrite(Duration.ofSeconds(metaCacheTtlSeconds))
+                .build()
+            : null;
 
     Duration ttl = Duration.ofMinutes(cacheTtlMinutes);
     this.nsRefs =
@@ -124,13 +144,87 @@ public class CatalogTopologyCache {
                 })
             .build();
 
+    this.graphCacheMetrics =
+        new CacheMetrics(observability, "service", "graph-cache", "graph-cache");
+    this.metaCacheMetrics =
+        new CacheMetrics(observability, "service", "graph-cache", "graph-meta-cache");
     this.nsCacheMetrics =
         new CacheMetrics(observability, "service", "topology-cache", "topology-ns");
     this.relCacheMetrics =
         new CacheMetrics(observability, "service", "topology-cache", "topology-rel");
 
+    registerGraphGauges();
+    graphCacheMetrics.trackSize(
+        () -> accountCaches.values().stream().mapToDouble(Cache::estimatedSize).sum(),
+        "Estimated graph cache entries");
+    metaCacheMetrics.trackEnabled(
+        () -> metaCacheEnabled ? 1.0 : 0.0, "Graph metadata cache enabled");
+    metaCacheMetrics.trackMaxEntries(
+        () -> metaCacheEnabled ? (double) this.graphCacheMaxSize : 0.0,
+        "Graph metadata cache configured max entries");
+    metaCacheMetrics.trackSize(
+        () -> metaCacheEnabled && metaCache != null ? (double) metaCache.estimatedSize() : 0.0,
+        "Estimated graph metadata cache entries");
     nsCacheMetrics.trackSize(nsRefs::estimatedSize, "ns-refs cache size");
     relCacheMetrics.trackSize(relRefs::estimatedSize, "rel-refs cache size");
+  }
+
+  /**
+   * Returns the cached node for the provided resource, or {@code null} when caching is disabled or
+   * missing.
+   */
+  public GraphNode get(ResourceId id, GraphCacheKey key) {
+    if (!graphCacheEnabled || id == null || key == null) {
+      return null;
+    }
+    Cache<GraphCacheKey, GraphNode> cache = accountCache(id.getAccountId());
+    if (cache == null) {
+      return null;
+    }
+    GraphNode node = cache.getIfPresent(key);
+    incrementGraphCounter(id.getAccountId(), node != null);
+    return node;
+  }
+
+  /** Stores the resolved node inside the account cache. */
+  public void put(ResourceId id, GraphCacheKey key, GraphNode node) {
+    if (!graphCacheEnabled || id == null || key == null || node == null) {
+      return;
+    }
+    Cache<GraphCacheKey, GraphNode> cache = accountCache(id.getAccountId());
+    if (cache != null) {
+      cache.put(key, node);
+    }
+  }
+
+  public MutationMeta getMeta(ResourceId id) {
+    if (!metaCacheEnabled || metaCache == null || id == null) {
+      return null;
+    }
+    MutationMeta meta = metaCache.getIfPresent(id);
+    incrementMetaCounter(id.getAccountId(), meta != null);
+    return meta;
+  }
+
+  public void putMeta(ResourceId id, MutationMeta meta) {
+    if (!metaCacheEnabled || metaCache == null || id == null || meta == null) {
+      return;
+    }
+    metaCache.put(id, meta);
+  }
+
+  public void recordLoad(Duration duration) {
+    if (duration == null || !graphCacheEnabled) {
+      return;
+    }
+    graphCacheMetrics.recordLoad(duration, true);
+  }
+
+  public void recordLoadFailure(Duration duration, Throwable error) {
+    if (duration == null || !graphCacheEnabled) {
+      return;
+    }
+    graphCacheMetrics.recordLoadFailure(duration, error);
   }
 
   public Optional<CatalogRef> resolveCatalogRefByName(String accountId, String name) {
@@ -261,6 +355,7 @@ public class CatalogTopologyCache {
     if (resourceId == null) {
       return;
     }
+    invalidateNode(resourceId);
     ResourceId nsId = reverseMap.remove(resourceId);
     if (nsId != null) {
       evictRelationRefs(nsId);
@@ -333,6 +428,70 @@ public class CatalogTopologyCache {
     refs.addAll(tableRepo.listRefs(accountId, catId, nsId));
     refs.addAll(viewRepo.listRefs(accountId, catId, nsId));
     return refs;
+  }
+
+  private void invalidateNode(ResourceId id) {
+    if (id == null) {
+      return;
+    }
+    if (graphCacheEnabled) {
+      Cache<GraphCacheKey, GraphNode> cache = accountCaches.get(id.getAccountId());
+      if (cache != null) {
+        cache.asMap().keySet().removeIf(key -> key.id().equals(id));
+        if (cache.estimatedSize() == 0) {
+          accountCaches.remove(id.getAccountId(), cache);
+        }
+      }
+    }
+    if (metaCacheEnabled && metaCache != null) {
+      metaCache.invalidate(id);
+    }
+  }
+
+  private Cache<GraphCacheKey, GraphNode> accountCache(String accountId) {
+    if (accountId == null || accountId.isBlank()) {
+      return null;
+    }
+    return accountCaches.computeIfAbsent(
+        accountId,
+        id ->
+            Caffeine.newBuilder()
+                .maximumSize(graphCacheMaxSize)
+                .expireAfterAccess(Duration.ofMinutes(15))
+                .build());
+  }
+
+  private void incrementGraphCounter(String accountId, boolean hit) {
+    if (accountId == null || accountId.isBlank()) {
+      return;
+    }
+    Tag accountTag = Tag.of(TagKey.ACCOUNT, accountId);
+    if (hit) {
+      graphCacheMetrics.recordHit(accountTag);
+    } else {
+      graphCacheMetrics.recordMiss(accountTag);
+    }
+  }
+
+  private void incrementMetaCounter(String accountId, boolean hit) {
+    if (accountId == null || accountId.isBlank()) {
+      return;
+    }
+    Tag accountTag = Tag.of(TagKey.ACCOUNT, accountId);
+    if (hit) {
+      metaCacheMetrics.recordHit(accountTag);
+    } else {
+      metaCacheMetrics.recordMiss(accountTag);
+    }
+  }
+
+  private void registerGraphGauges() {
+    graphCacheMetrics.trackEnabled(() -> graphCacheEnabled ? 1.0 : 0.0, "Graph cache enabled");
+    graphCacheMetrics.trackMaxEntries(
+        () -> graphCacheEnabled ? (double) graphCacheMaxSize : 0.0,
+        "Graph cache configured max entries");
+    graphCacheMetrics.trackAccounts(
+        () -> (double) accountCaches.size(), "Graph cache account count");
   }
 
   public record RelationNameResolution(ResourceId tableId, ResourceId viewId) {

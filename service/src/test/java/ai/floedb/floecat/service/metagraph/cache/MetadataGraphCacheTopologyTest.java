@@ -35,13 +35,13 @@ import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-class CatalogTopologyCacheTest {
+class MetadataGraphCacheTopologyTest {
 
   private CatalogRepository catalogRepository;
   private NamespaceRepository namespaceRepository;
   private TableRepository tableRepository;
   private ViewRepository viewRepository;
-  private CatalogTopologyCache cache;
+  private MetadataGraphCache cache;
 
   @BeforeEach
   void setUp() {
@@ -50,12 +50,14 @@ class CatalogTopologyCacheTest {
     tableRepository = mock(TableRepository.class);
     viewRepository = mock(ViewRepository.class);
     cache =
-        new CatalogTopologyCache(
+        new MetadataGraphCache(
             catalogRepository,
             namespaceRepository,
             tableRepository,
             viewRepository,
             new TestObservability(),
+            100,
+            2,
             100,
             100,
             15);

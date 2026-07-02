@@ -39,7 +39,7 @@ import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.cache.CatalogTopologyCache;
+import ai.floedb.floecat.service.metagraph.cache.MetadataGraphCache;
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.systemcatalog.graph.SystemCatalogTranslator;
@@ -65,7 +65,7 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
   private final LogicalSchemaMapper schemaMapper;
   private final SystemGraph systemGraph;
   private final EngineContextProvider engine;
-  private final CatalogTopologyCache topologyCache;
+  private final MetadataGraphCache topologyCache;
 
   @Inject
   public MetaGraph(
@@ -73,7 +73,7 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
       LogicalSchemaMapper schemaMapper,
       SystemGraph systemGraph,
       EngineContextProvider engine,
-      CatalogTopologyCache topologyCache) {
+      MetadataGraphCache topologyCache) {
     this.userGraph = userGraph;
     this.schemaMapper = schemaMapper;
     this.systemGraph = systemGraph;

@@ -43,7 +43,7 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
-import ai.floedb.floecat.service.metagraph.cache.CatalogTopologyCache;
+import ai.floedb.floecat.service.metagraph.cache.MetadataGraphCache;
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
@@ -67,7 +67,7 @@ class MetaGraphTest {
   UserGraph user;
   SystemGraph system;
   MetaGraph meta;
-  CatalogTopologyCache topologyCache;
+  MetadataGraphCache topologyCache;
   LogicalSchemaMapper schemaMapper;
   EngineContext context;
 
@@ -89,7 +89,7 @@ class MetaGraphTest {
   void setup() {
     user = mock(UserGraph.class);
     system = mock(SystemGraph.class);
-    topologyCache = mock(CatalogTopologyCache.class);
+    topologyCache = mock(MetadataGraphCache.class);
 
     schemaMapper =
         new LogicalSchemaMapper() {

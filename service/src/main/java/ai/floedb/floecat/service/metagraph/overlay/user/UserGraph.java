@@ -27,8 +27,7 @@ import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.cache.CatalogTopologyCache;
-import ai.floedb.floecat.service.metagraph.cache.GraphCacheManager;
+import ai.floedb.floecat.service.metagraph.cache.MetadataGraphCache;
 import ai.floedb.floecat.service.metagraph.hint.EngineHintManager;
 import ai.floedb.floecat.service.metagraph.loader.NodeLoader;
 import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
@@ -50,7 +49,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
  * ==== MetadataGraph (Façade) ====
@@ -67,8 +65,7 @@ public final class UserGraph {
   // Dependencies (constructed once)
   // ----------------------------------------------------------------------
 
-  private final GraphCacheManager cache;
-  private final CatalogTopologyCache topology;
+  private final MetadataGraphCache cache;
   private final NodeLoader nodes;
   private final NameResolver names;
   private final FullyQualifiedResolver fq;
@@ -88,10 +85,7 @@ public final class UserGraph {
    * @param snapshotRepo repository for snapshot operations
    * @param tableRepo repository for table operations
    * @param viewRepo repository for view operations
-   * @param snapshotStub gRPC client for snapshot service
-   * @param meter metrics registry for performance monitoring
    * @param principal provider for current principal context
-   * @param cacheMaxSize maximum size of the graph cache
    * @param engineHints manager for engine-specific hints
    */
   @Inject
@@ -101,18 +95,10 @@ public final class UserGraph {
       SnapshotRepository snapshotRepo,
       TableRepository tableRepo,
       ViewRepository viewRepo,
-      CatalogTopologyCache topology,
-      Observability observability,
+      MetadataGraphCache cache,
       PrincipalProvider principal,
-      @ConfigProperty(name = "floecat.metadata.graph.cache-max-size", defaultValue = "50000")
-          long cacheMaxSize,
-      @ConfigProperty(name = "floecat.metadata.graph.meta-cache-ttl-seconds", defaultValue = "2")
-          long metaCacheTtlSeconds,
       EngineHintManager engineHints) {
-    this.cache =
-        new GraphCacheManager(
-            cacheMaxSize > 0, cacheMaxSize, Math.max(0L, metaCacheTtlSeconds), observability);
-    this.topology = topology;
+    this.cache = cache;
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
@@ -138,19 +124,18 @@ public final class UserGraph {
         snapshotRepo,
         tableRepo,
         viewRepo,
-        new CatalogTopologyCache(
+        new MetadataGraphCache(
             catalogRepo,
             nsRepo,
             tableRepo,
             viewRepo,
             observability,
             cacheMaxSize,
+            2L,
+            cacheMaxSize,
             cacheMaxSize,
             15),
-        observability,
         principal,
-        cacheMaxSize,
-        2L,
         engineHints);
   }
 
@@ -168,32 +153,28 @@ public final class UserGraph {
         snapshotRepo,
         tableRepo,
         viewRepo,
-        new CatalogTopologyCache(
-            catalogRepo, nsRepo, tableRepo, viewRepo, observability, 1024L, 1024L, 15),
-        observability,
+        new MetadataGraphCache(
+            catalogRepo, nsRepo, tableRepo, viewRepo, observability, 1024L, 2L, 1024L, 1024L, 15),
         new PrincipalProvider() {
           @Override
           public PrincipalContext get() {
             return PrincipalContext.newBuilder().setAccountId("account").build();
           }
         },
-        1024L,
-        2L,
         null);
   }
 
   public void invalidate(ResourceId id) {
-    cache.invalidate(id);
-    if (topology == null || id == null) {
+    if (cache == null || id == null) {
       return;
     }
+    cache.evict(id);
     switch (id.getKind()) {
       case RK_CATALOG -> {
-        topology.evictCatalogRefs(id.getAccountId());
-        topology.evictNamespaceRefs(id);
+        cache.evictCatalogRefs(id.getAccountId());
+        cache.evictNamespaceRefs(id);
       }
-      case RK_NAMESPACE -> topology.evictRelationRefs(id);
-      case RK_TABLE, RK_VIEW -> topology.evict(id);
+      case RK_NAMESPACE -> cache.evictRelationRefs(id);
       default -> {}
     }
   }
@@ -411,19 +392,19 @@ public final class UserGraph {
   }
 
   private NameResolution resolveNameFromTopology(String cid, String accountId, NameRef ref) {
-    if (topology == null || ref.getName().isBlank() || ref.getPathList().isEmpty()) {
+    if (cache == null || ref.getName().isBlank() || ref.getPathList().isEmpty()) {
       return NameResolution.unanswered();
     }
-    var catalog = topology.resolveCatalogRefByName(accountId, ref.getCatalog());
+    var catalog = cache.resolveCatalogRefByName(accountId, ref.getCatalog());
     if (catalog.isEmpty()) {
       return NameResolution.notFound();
     }
-    var namespace = topology.resolveNamespaceRefByPath(catalog.get().id(), ref.getPathList());
+    var namespace = cache.resolveNamespaceRefByPath(catalog.get().id(), ref.getPathList());
     if (namespace.isEmpty()) {
       return NameResolution.notFound();
     }
     var resolved =
-        topology.resolveRelationRefsByName(catalog.get().id(), namespace.get().id(), ref.getName());
+        cache.resolveRelationRefsByName(catalog.get().id(), namespace.get().id(), ref.getName());
     if (resolved.isAmbiguous()) {
       throw GrpcErrors.invalidArgument(
           cid,
