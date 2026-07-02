@@ -47,8 +47,6 @@ import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
-import ai.floedb.floecat.service.repo.impl.CatalogRepository;
-import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -67,8 +65,6 @@ import org.jboss.logging.Logger;
 @GrpcService
 public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
-  @Inject CatalogRepository catalogRepo;
-  @Inject NamespaceRepository namespaceRepo;
   @Inject ViewRepository viewRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
@@ -165,25 +161,13 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   }
 
                   var catalogId = spec.getCatalogId();
-                  ensureKind(catalogId, ResourceKind.RK_CATALOG, "spec.catalog_id", corr);
-                  var catalog =
-                      CatalogOverlayGuards.requireVisibleCatalogNode(overlay, catalogId, corr);
-                  CatalogOverlayGuards.rejectSystemCatalogMutation(catalog.id(), corr);
+                  var surface = catalogSurfaceViews();
+                  surface.requireWritableCatalog(catalogId, "spec.catalog_id", corr);
 
                   var namespaceId = spec.getNamespaceId();
-                  ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", corr);
                   var namespace =
-                      CatalogOverlayGuards.requireWritableNamespaceNode(overlay, namespaceId, corr);
-                  var nsCatalogId = namespace.catalogId();
-                  if (nsCatalogId == null || !nsCatalogId.getId().equals(catalogId.getId())) {
-                    throw GrpcErrors.invalidArgument(
-                        corr,
-                        NAMESPACE_CATALOG_MISMATCH,
-                        Map.of(
-                            "namespace_id", namespaceId.getId(),
-                            "namespace.catalog_id", nsCatalogId == null ? "" : nsCatalogId.getId(),
-                            "catalog_id", catalogId.getId()));
-                  }
+                      surface.requireWritableNamespace(namespaceId, "spec.namespace_id", corr);
+                  surface.requireNamespaceInCatalog(namespace, namespaceId, catalogId, corr);
 
                   var tsNow = nowTs();
 
@@ -530,9 +514,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
         throw GrpcErrors.invalidArgument(corr, CATALOG_ID_CANNOT_CLEAR, Map.of());
       }
       var catId = spec.getCatalogId();
-      ensureKind(catId, ResourceKind.RK_CATALOG, "spec.catalog_id", corr);
-      var catalog = CatalogOverlayGuards.requireVisibleCatalogNode(overlay, catId, corr);
-      CatalogOverlayGuards.rejectSystemCatalogMutation(catalog.id(), corr);
+      catalogSurfaceViews().requireWritableCatalog(catId, "spec.catalog_id", corr);
       b.setCatalogId(catId);
       catalogChanged = true;
     }
@@ -542,37 +524,20 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
         throw GrpcErrors.invalidArgument(corr, NAMESPACE_ID_CANNOT_CLEAR, Map.of());
       }
       var nsId = spec.getNamespaceId();
-      ensureKind(nsId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", corr);
-      var ns = CatalogOverlayGuards.requireWritableNamespaceNode(overlay, nsId, corr);
+      var ns = catalogSurfaceViews().requireWritableNamespace(nsId, "spec.namespace_id", corr);
 
       var effectiveCatalogId = catalogChanged ? b.getCatalogId() : current.getCatalogId();
-      var nsCatalogId = ns.catalogId();
-      if (nsCatalogId == null || !nsCatalogId.getId().equals(effectiveCatalogId.getId())) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            NAMESPACE_CATALOG_MISMATCH,
-            Map.of(
-                "namespace_id", nsId.getId(),
-                "namespace.catalog_id", nsCatalogId == null ? "" : nsCatalogId.getId(),
-                "catalog_id", effectiveCatalogId.getId()));
-      }
+      catalogSurfaceViews().requireNamespaceInCatalog(ns, nsId, effectiveCatalogId, corr);
       b.setNamespaceId(nsId);
       namespaceChanged = true;
     }
 
     if (catalogChanged && !namespaceChanged) {
       var effectiveCatalogId = b.getCatalogId();
-      var ns = CatalogOverlayGuards.requireWritableNamespaceNode(overlay, b.getNamespaceId(), corr);
-      var nsCatalogId = ns.catalogId();
-      if (nsCatalogId == null || !nsCatalogId.getId().equals(effectiveCatalogId.getId())) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            NAMESPACE_CATALOG_MISMATCH,
-            Map.of(
-                "namespace_id", b.getNamespaceId().getId(),
-                "namespace.catalog_id", nsCatalogId == null ? "" : nsCatalogId.getId(),
-                "catalog_id", effectiveCatalogId.getId()));
-      }
+      var ns =
+          catalogSurfaceViews().requireWritableNamespace(b.getNamespaceId(), "namespace_id", corr);
+      catalogSurfaceViews()
+          .requireNamespaceInCatalog(ns, b.getNamespaceId(), effectiveCatalogId, corr);
     }
 
     return b.build();

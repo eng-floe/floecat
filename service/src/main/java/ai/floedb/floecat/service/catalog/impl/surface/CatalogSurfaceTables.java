@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
@@ -177,6 +178,19 @@ public class CatalogSurfaceTables {
     TableNode node = requireVisibleTable(tableId, corr);
     enforceWritableTableNode(node, tableId, corr);
     return node;
+  }
+
+  public CatalogNode requireWritableCatalog(ResourceId catalogId, String field, String corr) {
+    return CatalogSurfaceSupport.requireWritableCatalog(overlay, catalogId, field, corr);
+  }
+
+  public NamespaceNode requireWritableNamespace(ResourceId namespaceId, String field, String corr) {
+    return CatalogSurfaceSupport.requireWritableNamespace(overlay, namespaceId, field, corr);
+  }
+
+  public void requireNamespaceInCatalog(
+      NamespaceNode namespace, ResourceId namespaceId, ResourceId catalogId, String corr) {
+    CatalogSurfaceSupport.requireNamespaceInCatalog(namespace, namespaceId, catalogId, corr);
   }
 
   public void requireWritableTableForDelete(ResourceId tableId, String corr, boolean callerCares) {

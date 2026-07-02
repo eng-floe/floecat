@@ -63,7 +63,10 @@ public class CatalogSurfaceNamespaces {
       catalogId = parentNode.catalogId();
       parentPath = append(parentNode.pathSegments(), parentNode.displayName());
     } else if (request.hasCatalogId()) {
-      catalogId = requireVisibleCatalog(request.getCatalogId(), "catalog_id", corr).id();
+      catalogId =
+          CatalogSurfaceSupport.requireVisibleCatalog(
+                  overlay, request.getCatalogId(), "catalog_id", corr)
+              .id();
       parentPath = new ArrayList<>(request.getPathList());
     } else {
       throw GrpcErrors.invalidArgument(corr, SELECTOR_REQUIRED, Map.of());
@@ -186,12 +189,7 @@ public class CatalogSurfaceNamespaces {
   }
 
   public CatalogNode requireWritableCatalog(ResourceId catalogId, String field, String corr) {
-    var catalog = requireVisibleCatalog(catalogId, field, corr);
-    if (SystemResourceIdGenerator.isSystemId(catalog.id())) {
-      throw GrpcErrors.permissionDenied(
-          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", catalog.id().getId(), "kind", "catalog"));
-    }
-    return catalog;
+    return CatalogSurfaceSupport.requireWritableCatalog(overlay, catalogId, field, corr);
   }
 
   public void requireWritableNamespace(ResourceId namespaceId, String corr) {
@@ -219,15 +217,6 @@ public class CatalogSurfaceNamespaces {
           SYSTEM_OBJECT_IMMUTABLE,
           Map.of("catalog_id", catalogId.getId(), "path", String.join(".", fullPath)));
     }
-  }
-
-  private CatalogNode requireVisibleCatalog(ResourceId catalogId, String field, String corr) {
-    CatalogSurfaceSupport.ensureKind(catalogId, ResourceKind.RK_CATALOG, field, corr);
-    return overlay
-        .resolve(catalogId)
-        .filter(CatalogNode.class::isInstance)
-        .map(CatalogNode.class::cast)
-        .orElseThrow(() -> GrpcErrors.notFound(corr, CATALOG, Map.of("id", catalogId.getId())));
   }
 
   private List<NamespaceNode> listSystemNamespaces(ResourceId catalogId) {

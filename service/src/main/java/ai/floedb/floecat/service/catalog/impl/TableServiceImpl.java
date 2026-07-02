@@ -49,8 +49,6 @@ import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
-import ai.floedb.floecat.service.repo.impl.CatalogRepository;
-import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -73,8 +71,6 @@ import org.jboss.logging.Logger;
 @GrpcService
 public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
-  @Inject CatalogRepository catalogRepo;
-  @Inject NamespaceRepository namespaceRepo;
   @Inject TableRepository tableRepo;
   @Inject SnapshotRepository snapshotRepo;
   @Inject PrincipalProvider principal;
@@ -162,39 +158,14 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var corr = pc.getCorrelationId();
                   authz.require(pc, "table.write");
 
-                  ensureKind(
-                      request.getSpec().getCatalogId(),
-                      ResourceKind.RK_CATALOG,
-                      "spec.catalog_id",
-                      corr);
-                  ensureKind(
-                      request.getSpec().getNamespaceId(),
-                      ResourceKind.RK_NAMESPACE,
-                      "spec.namespace_id",
-                      corr);
-
-                  // Overlay is the source of truth for visibility (SYSTEM + user).
+                  var surface = catalogSurfaceTables();
                   var catId = request.getSpec().getCatalogId();
-                  var catalog =
-                      CatalogOverlayGuards.requireVisibleCatalogNode(overlay, catId, corr);
-                  CatalogOverlayGuards.rejectSystemCatalogMutation(catalog.id(), corr);
-
-                  // Namespace must be visible and writable (SYSTEM namespaces are immutable).
+                  surface.requireWritableCatalog(catId, "spec.catalog_id", corr);
                   var nsNode =
-                      CatalogOverlayGuards.requireWritableNamespaceNode(
-                          overlay, request.getSpec().getNamespaceId(), corr);
-
-                  if (nsNode.catalogId() == null
-                      || !nsNode.catalogId().getId().equals(catId.getId())) {
-                    throw GrpcErrors.invalidArgument(
-                        corr,
-                        NAMESPACE_CATALOG_MISMATCH,
-                        Map.of(
-                            "namespace_id", nsNode.id().getId(),
-                            "namespace.catalog_id",
-                                nsNode.catalogId() == null ? "" : nsNode.catalogId().getId(),
-                            "catalog_id", catId.getId()));
-                  }
+                      surface.requireWritableNamespace(
+                          request.getSpec().getNamespaceId(), "spec.namespace_id", corr);
+                  surface.requireNamespaceInCatalog(
+                      nsNode, request.getSpec().getNamespaceId(), catId, corr);
 
                   var tsNow = nowTs();
 
@@ -599,9 +570,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         throw GrpcErrors.invalidArgument(corr, CATALOG_ID_CANNOT_CLEAR, Map.of());
       }
       var catId = spec.getCatalogId();
-      ensureKind(catId, ResourceKind.RK_CATALOG, "spec.catalog_id", corr);
-      var catalog = CatalogOverlayGuards.requireVisibleCatalogNode(overlay, catId, corr);
-      CatalogOverlayGuards.rejectSystemCatalogMutation(catalog.id(), corr);
+      catalogSurfaceTables().requireWritableCatalog(catId, "spec.catalog_id", corr);
       b.setCatalogId(catId);
       catalogChanged = true;
     }
@@ -611,37 +580,20 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         throw GrpcErrors.invalidArgument(corr, NAMESPACE_ID_CANNOT_CLEAR, Map.of());
       }
       var nsId = spec.getNamespaceId();
-      ensureKind(nsId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", corr);
-      var ns = CatalogOverlayGuards.requireWritableNamespaceNode(overlay, nsId, corr);
+      var ns = catalogSurfaceTables().requireWritableNamespace(nsId, "spec.namespace_id", corr);
 
       var effectiveCatalogId = catalogChanged ? b.getCatalogId() : current.getCatalogId();
-      var nsCatalogId = ns.catalogId();
-      if (nsCatalogId == null || !nsCatalogId.getId().equals(effectiveCatalogId.getId())) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            NAMESPACE_CATALOG_MISMATCH,
-            Map.of(
-                "namespace_id", nsId.getId(),
-                "namespace.catalog_id", nsCatalogId == null ? "" : nsCatalogId.getId(),
-                "catalog_id", effectiveCatalogId.getId()));
-      }
+      catalogSurfaceTables().requireNamespaceInCatalog(ns, nsId, effectiveCatalogId, corr);
       b.setNamespaceId(nsId);
       namespaceChanged = true;
     }
 
     if (catalogChanged && !namespaceChanged) {
       var effectiveCatalogId = b.getCatalogId();
-      var ns = CatalogOverlayGuards.requireWritableNamespaceNode(overlay, b.getNamespaceId(), corr);
-      var nsCatalogId = ns.catalogId();
-      if (nsCatalogId == null || !nsCatalogId.getId().equals(effectiveCatalogId.getId())) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            NAMESPACE_CATALOG_MISMATCH,
-            Map.of(
-                "namespace_id", b.getNamespaceId().getId(),
-                "namespace.catalog_id", nsCatalogId == null ? "" : nsCatalogId.getId(),
-                "catalog_id", effectiveCatalogId.getId()));
-      }
+      var ns =
+          catalogSurfaceTables().requireWritableNamespace(b.getNamespaceId(), "namespace_id", corr);
+      catalogSurfaceTables()
+          .requireNamespaceInCatalog(ns, b.getNamespaceId(), effectiveCatalogId, corr);
     }
 
     var currentUp = current.getUpstream();

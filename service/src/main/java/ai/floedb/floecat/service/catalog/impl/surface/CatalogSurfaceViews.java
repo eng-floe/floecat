@@ -24,6 +24,7 @@ import ai.floedb.floecat.catalog.rpc.ListViewsResponse;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
@@ -163,6 +164,19 @@ public class CatalogSurfaceViews {
     ViewNode node = requireVisibleView(viewId, corr);
     enforceWritableViewNode(node, viewId, corr);
     return node;
+  }
+
+  public CatalogNode requireWritableCatalog(ResourceId catalogId, String field, String corr) {
+    return CatalogSurfaceSupport.requireWritableCatalog(overlay, catalogId, field, corr);
+  }
+
+  public NamespaceNode requireWritableNamespace(ResourceId namespaceId, String field, String corr) {
+    return CatalogSurfaceSupport.requireWritableNamespace(overlay, namespaceId, field, corr);
+  }
+
+  public void requireNamespaceInCatalog(
+      NamespaceNode namespace, ResourceId namespaceId, ResourceId catalogId, String corr) {
+    CatalogSurfaceSupport.requireNamespaceInCatalog(namespace, namespaceId, catalogId, corr);
   }
 
   public void requireWritableViewForDelete(ResourceId viewId, String corr, boolean callerCares) {
