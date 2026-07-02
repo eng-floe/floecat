@@ -457,14 +457,11 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
             return false;
           }
           String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
-          T currentValue =
-              getByKeyUnobserved(key)
-                  .orElseThrow(
-                      () ->
-                          new NotFoundException(
-                              schema.resourceName
-                                  + " not found for canonical: "
-                                  + canonicalPointer));
+          Optional<T> current = getByKeyUnobserved(key);
+          if (current.isEmpty()) {
+            return false;
+          }
+          T currentValue = current.get();
 
           if (!deleteAtomically(
               canonicalPointer,
@@ -486,14 +483,11 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         () -> {
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
-          T currentValue =
-              getByKeyUnobserved(key)
-                  .orElseThrow(
-                      () ->
-                          new NotFoundException(
-                              schema.resourceName
-                                  + " not found for canonical: "
-                                  + canonicalPointer));
+          Optional<T> current = getByKeyUnobserved(key);
+          if (current.isEmpty()) {
+            return false;
+          }
+          T currentValue = current.get();
 
           if (!deleteAtomically(
               canonicalPointer,
@@ -524,6 +518,8 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       Pointer secondary = pointerStore.get(pointerKey).orElse(null);
       if (secondary != null) {
         ops.add(new PointerStore.CasDelete(pointerKey, secondary.getVersion()));
+      } else {
+        ops.add(new PointerStore.CasCheckAbsent(pointerKey));
       }
     }
 
