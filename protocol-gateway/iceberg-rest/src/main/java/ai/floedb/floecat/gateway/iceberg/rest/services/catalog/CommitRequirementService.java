@@ -172,7 +172,7 @@ public class CommitRequirementService {
   private static Long resolveRefSnapshotId(
       TableGatewaySupport tableSupport, Table table, String refName) {
     if ("main".equals(refName) && table != null) {
-      return propertyLong(table.getPropertiesMap(), "current-snapshot-id");
+      return tableSupport == null ? null : tableSupport.loadCurrentSnapshotId(table);
     }
     if (table == null) {
       return null;

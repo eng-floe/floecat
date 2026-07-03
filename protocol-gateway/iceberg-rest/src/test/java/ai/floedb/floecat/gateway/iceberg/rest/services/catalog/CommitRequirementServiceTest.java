@@ -34,7 +34,7 @@ class CommitRequirementServiceTest {
   private final CommitRequirementService service = new CommitRequirementService();
 
   @Test
-  void assertMainRefSnapshotIdUsesTableMetadataNotCurrentSnapshotPointer() {
+  void assertMainRefSnapshotIdUsesCurrentSnapshotPointer() {
     var table =
         Table.newBuilder()
             .setResourceId(
@@ -51,7 +51,7 @@ class CommitRequirementServiceTest {
     Response error =
         service.validateRequirements(
             tableSupport,
-            List.of(Map.of("type", "assert-ref-snapshot-id", "ref", "main", "snapshot-id", 10)),
+            List.of(Map.of("type", "assert-ref-snapshot-id", "ref", "main", "snapshot-id", 20)),
             () -> table,
             CommitRequirementServiceTest::validation,
             CommitRequirementServiceTest::conflict);
@@ -77,13 +77,39 @@ class CommitRequirementServiceTest {
     Response error =
         service.validateRequirements(
             tableSupport,
-            List.of(Map.of("type", "assert-ref-snapshot-id", "ref", "main", "snapshot-id", 20)),
+            List.of(Map.of("type", "assert-ref-snapshot-id", "ref", "main", "snapshot-id", 10)),
             () -> table,
             CommitRequirementServiceTest::validation,
             CommitRequirementServiceTest::conflict);
 
     assertNotNull(error);
     assertEquals(Response.Status.CONFLICT.getStatusCode(), error.getStatus());
+  }
+
+  @Test
+  void assertMainRefSnapshotIdDoesNotFallBackToTableMetadataWhenPointerMissing() {
+    var table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_TABLE)
+                    .setId("tbl")
+                    .build())
+            .putProperties("current-snapshot-id", "10")
+            .build();
+    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+    when(tableSupport.loadCurrentSnapshotId(table)).thenReturn(null);
+
+    Response error =
+        service.validateRequirements(
+            tableSupport,
+            List.of(Map.of("type", "assert-ref-snapshot-id", "ref", "main", "snapshot-id", 10)),
+            () -> table,
+            CommitRequirementServiceTest::validation,
+            CommitRequirementServiceTest::conflict);
+
+    assertNull(error);
   }
 
   private static Response validation(String message) {
