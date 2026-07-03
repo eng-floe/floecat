@@ -91,10 +91,21 @@ public final class InMemoryKvStore implements KvStore {
           break;
         }
       }
-      if (index < 0) {
+      if (index >= 0) {
+        start = index + 1;
+      } else if (token.startsWith(skPrefix)) {
+        // The token names a position inside this keyspace whose row has since been deleted.
+        // Resume at the insertion point, matching DynamoDB's positional exclusiveStartKey
+        // semantics; tokens outside the keyspace are still rejected as malformed.
+        int insertion = 0;
+        while (insertion < matching.size()
+            && matching.get(insertion).key().sortKey().compareTo(token) <= 0) {
+          insertion++;
+        }
+        start = insertion;
+      } else {
         throw new IllegalArgumentException("Bad page token");
       }
-      start = index + 1;
     }
 
     if (start >= matching.size()) {

@@ -77,10 +77,16 @@ public class InMemoryPointerStore implements PointerStore {
     int start = 0;
     if (pageToken != null && !pageToken.isEmpty()) {
       int idx = Collections.binarySearch(keys, pageToken);
-      if (idx < 0) {
+      if (idx >= 0) {
+        start = idx + 1;
+      } else if (pageToken.startsWith(pfx)) {
+        // The token names a position inside this keyspace whose row has since been deleted.
+        // Resume at the insertion point, matching DynamoDB's positional exclusiveStartKey
+        // semantics; tokens outside the keyspace are still rejected as malformed.
+        start = -idx - 1;
+      } else {
         throw new IllegalArgumentException("bad page token");
       }
-      start = idx + 1;
     }
 
     if (start >= keys.size()) {
