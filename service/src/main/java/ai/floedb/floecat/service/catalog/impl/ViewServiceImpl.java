@@ -182,8 +182,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
                   var rawName = mustNonEmpty(spec.getDisplayName(), "spec.display_name", corr);
                   var normName = normalizeName(rawName);
-                  writePolicy.requireRelationNameWriteEligible(
-                      namespaceId, catalogId, normName, null, VIEW_ALREADY_EXISTS, corr);
 
                   var explicitKey =
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
@@ -338,13 +336,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           desired.getNamespaceId(), "namespace_id", corr);
                   writePolicy.requireNamespaceInCatalog(
                       desiredNamespace, desired.getNamespaceId(), desired.getCatalogId(), corr);
-                  writePolicy.requireRelationNameWriteEligible(
-                      desired.getNamespaceId(),
-                      desired.getCatalogId(),
-                      desired.getDisplayName(),
-                      current.getResourceId(),
-                      VIEW_ALREADY_EXISTS,
-                      corr);
                   if (hintCleaner.shouldClearHints(mask)) {
                     View.Builder builder = desired.toBuilder();
                     hintCleaner.cleanViewHints(builder, mask, current, builder.build());

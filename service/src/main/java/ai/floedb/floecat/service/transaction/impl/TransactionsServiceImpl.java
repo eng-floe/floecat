@@ -1640,13 +1640,6 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             table.getNamespaceId(), "table.namespace_id", correlationId());
     writePolicy.requireNamespaceInCatalog(
         namespace, table.getNamespaceId(), table.getCatalogId(), correlationId());
-    writePolicy.requireRelationNameWriteEligible(
-        table.getNamespaceId(),
-        table.getCatalogId(),
-        table.getDisplayName(),
-        table.getResourceId(),
-        TABLE_ALREADY_EXISTS,
-        correlationId());
   }
 
   private void rejectSystemTableId(ResourceId tableId) {

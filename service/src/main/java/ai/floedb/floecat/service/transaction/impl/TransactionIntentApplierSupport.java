@@ -683,14 +683,6 @@ public class TransactionIntentApplierSupport {
               table.getNamespaceId(), "table.namespace_id", "transaction-apply");
       writePolicy.requireNamespaceInCatalog(
           namespace, table.getNamespaceId(), table.getCatalogId(), "transaction-apply");
-      writePolicy.requireRelationNameWriteEligible(
-          table.getNamespaceId(),
-          table.getCatalogId(),
-          table.getDisplayName(),
-          table.getResourceId(),
-          ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey
-              .TABLE_ALREADY_EXISTS,
-          "transaction-apply");
       return ApplyOutcome.applied();
     } catch (StatusRuntimeException policyViolation) {
       return ApplyOutcome.conflict(

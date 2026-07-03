@@ -177,8 +177,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var spec = request.getSpec();
                   var rawName = mustNonEmpty(spec.getDisplayName(), "display_name", corr);
                   var normName = normalizeName(rawName);
-                  writePolicy.requireRelationNameWriteEligible(
-                      spec.getNamespaceId(), catId, normName, null, TABLE_ALREADY_EXISTS, corr);
                   PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
                       spec.getPropertiesMap(), corr, "spec.properties");
 
@@ -355,13 +353,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           desired.getNamespaceId(), "namespace_id", corr);
                   writePolicy.requireNamespaceInCatalog(
                       desiredNamespace, desired.getNamespaceId(), desired.getCatalogId(), corr);
-                  writePolicy.requireRelationNameWriteEligible(
-                      desired.getNamespaceId(),
-                      desired.getCatalogId(),
-                      desired.getDisplayName(),
-                      current.getResourceId(),
-                      TABLE_ALREADY_EXISTS,
-                      corr);
                   if (hintCleaner.shouldClearHints(mask)) {
                     Table.Builder builder = desired.toBuilder();
                     hintCleaner.cleanTableHints(builder, mask, current, builder.build());
