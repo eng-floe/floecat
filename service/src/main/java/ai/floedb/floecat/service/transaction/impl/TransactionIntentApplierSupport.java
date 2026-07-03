@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.transaction.impl;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
@@ -452,6 +453,19 @@ public class TransactionIntentApplierSupport {
       return newNameOutcome;
     }
 
+    String newRelationKey =
+        Keys.relationPointerByName(
+            nextTable.getResourceId().getAccountId(),
+            nextTable.getCatalogId().getId(),
+            nextTable.getNamespaceId().getId(),
+            nextTable.getDisplayName());
+    ApplyOutcome newClaimOutcome =
+        buildRelationClaimUpsertOp(
+            newRelationKey, nextTable.getResourceId(), intent.getBlobUri(), touchedKeys, ops);
+    if (newClaimOutcome.status != ApplyStatus.APPLIED) {
+      return newClaimOutcome;
+    }
+
     if (current != null) {
       Table oldTable = readTable(current.getBlobUri());
       if (oldTable == null) {
@@ -468,6 +482,18 @@ public class TransactionIntentApplierSupport {
             buildOwnedNameDeleteOp(oldNameKey, oldTable.getResourceId().getId(), touchedKeys, ops);
         if (oldNameOutcome.status != ApplyStatus.APPLIED) {
           return oldNameOutcome;
+        }
+        String oldRelationKey =
+            Keys.relationPointerByName(
+                oldTable.getResourceId().getAccountId(),
+                oldTable.getCatalogId().getId(),
+                oldTable.getNamespaceId().getId(),
+                oldTable.getDisplayName());
+        ApplyOutcome oldClaimOutcome =
+            buildOwnedRelationClaimDeleteOp(
+                oldRelationKey, oldTable.getResourceId().getId(), touchedKeys, ops);
+        if (oldClaimOutcome.status != ApplyStatus.APPLIED) {
+          return oldClaimOutcome;
         }
       }
     }
@@ -515,7 +541,19 @@ public class TransactionIntentApplierSupport {
             currentTable.getCatalogId().getId(),
             currentTable.getNamespaceId().getId(),
             currentTable.getDisplayName());
-    return buildOwnedNameDeleteOp(nameKey, currentTable.getResourceId().getId(), touchedKeys, ops);
+    ApplyOutcome nameDelete =
+        buildOwnedNameDeleteOp(nameKey, currentTable.getResourceId().getId(), touchedKeys, ops);
+    if (nameDelete.status != ApplyStatus.APPLIED) {
+      return nameDelete;
+    }
+    String relationKey =
+        Keys.relationPointerByName(
+            currentTable.getResourceId().getAccountId(),
+            currentTable.getCatalogId().getId(),
+            currentTable.getNamespaceId().getId(),
+            currentTable.getDisplayName());
+    return buildOwnedRelationClaimDeleteOp(
+        relationKey, currentTable.getResourceId().getId(), touchedKeys, ops);
   }
 
   private ApplyOutcome planConnectorIntentOps(
@@ -793,6 +831,53 @@ public class TransactionIntentApplierSupport {
     }
     Pointer next = PointerReferences.blobPointer(key, nextBlobUri, ptr.getVersion() + 1L);
     return addOp(new PointerStore.CasUpsert(key, ptr.getVersion(), next), key, touchedKeys, ops);
+  }
+
+  /**
+   * Reserves the shared, kind-agnostic relation-name claim ({@link Keys#relationPointerByName}) so
+   * a table and a view can never hold the same (namespace, name). Ownership and kind are read from
+   * the claim's stored {@link ResourceId} (stable across renames) rather than from the name or
+   * blob, so a claim held by any other relation — a different table or a view of the same name — is
+   * a hard conflict.
+   */
+  private ApplyOutcome buildRelationClaimUpsertOp(
+      String key,
+      ResourceId owner,
+      String nextBlobUri,
+      Set<String> touchedKeys,
+      List<PointerStore.CasOp> ops) {
+    var ptr = pointerStore.get(key).orElse(null);
+    if (ptr == null) {
+      Pointer created = PointerReferences.blobPointer(key, nextBlobUri, 1L, owner, "");
+      return addOp(new PointerStore.CasUpsert(key, 0L, created), key, touchedKeys, ops);
+    }
+    ResourceId held = ptr.getResourceId();
+    if (!Objects.equals(held.getId(), owner.getId())) {
+      return ApplyOutcome.conflict(
+          "RELATION_NAME_CONFLICT",
+          "relation name is already claimed by another relation",
+          null,
+          null,
+          held.getId());
+    }
+    if (Objects.equals(ptr.getBlobUri(), nextBlobUri)) {
+      return ApplyOutcome.applied();
+    }
+    Pointer next =
+        PointerReferences.blobPointer(key, nextBlobUri, ptr.getVersion() + 1L, owner, "");
+    return addOp(new PointerStore.CasUpsert(key, ptr.getVersion(), next), key, touchedKeys, ops);
+  }
+
+  private ApplyOutcome buildOwnedRelationClaimDeleteOp(
+      String key, String ownerId, Set<String> touchedKeys, List<PointerStore.CasOp> ops) {
+    var ptr = pointerStore.get(key).orElse(null);
+    if (ptr == null) {
+      return ApplyOutcome.applied();
+    }
+    if (Objects.equals(ptr.getResourceId().getId(), ownerId)) {
+      return addOp(new PointerStore.CasDelete(key, ptr.getVersion()), key, touchedKeys, ops);
+    }
+    return ApplyOutcome.applied();
   }
 
   private ApplyOutcome buildOwnedNameDeleteOp(

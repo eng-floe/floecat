@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
+import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -150,6 +151,57 @@ class TableRepositoryTest {
     tableRepo.create(td);
 
     return tableId;
+  }
+
+  private View view(ResourceId catalogId, ResourceId namespaceId, String name) {
+    return View.newBuilder()
+        .setResourceId(
+            ResourceId.newBuilder()
+                .setAccountId(account)
+                .setId(UUID.randomUUID().toString())
+                .setKind(ResourceKind.RK_VIEW))
+        .setDisplayName(name)
+        .setCatalogId(catalogId)
+        .setNamespaceId(namespaceId)
+        .setCreatedAt(Timestamps.fromMillis(clock.millis()))
+        .build();
+  }
+
+  @Test
+  void relationClaimBlocksViewSharingTableName() {
+    ResourceId tableId = createTable("sales", "us", "orders");
+    Table table = tableRepo.getById(tableId).orElseThrow();
+    ViewRepository viewRepo = new ViewRepository(ptr, blobs);
+
+    assertThrows(
+        BaseResourceRepository.NameConflictException.class,
+        () -> viewRepo.create(view(table.getCatalogId(), table.getNamespaceId(), "orders")));
+  }
+
+  @Test
+  void relationClaimBlocksTableSharingViewName() {
+    ResourceId anchorId = createTable("sales", "us", "anchor");
+    Table anchor = tableRepo.getById(anchorId).orElseThrow();
+    ResourceId catalogId = anchor.getCatalogId();
+    ResourceId namespaceId = anchor.getNamespaceId();
+
+    ViewRepository viewRepo = new ViewRepository(ptr, blobs);
+    viewRepo.create(view(catalogId, namespaceId, "metrics"));
+
+    assertThrows(
+        BaseResourceRepository.NameConflictException.class,
+        () -> createTable(catalogId, namespaceId, "metrics"));
+  }
+
+  @Test
+  void relationClaimReleasedOnDeleteFreesNameForOtherKind() {
+    ResourceId tableId = createTable("sales", "us", "orders");
+    Table table = tableRepo.getById(tableId).orElseThrow();
+    assertTrue(tableRepo.delete(tableId));
+
+    ViewRepository viewRepo = new ViewRepository(ptr, blobs);
+    assertDoesNotThrow(
+        () -> viewRepo.create(view(table.getCatalogId(), table.getNamespaceId(), "orders")));
   }
 
   @Test

@@ -613,7 +613,116 @@ class TransactionIntentApplierSupportTest {
     assertEquals(1, intentRepo.listByTx(accountId, txId).size());
   }
 
-  private static Transaction readTransaction(InMemoryBlobStore blobs, String blobUri)
+  @Test
+  void applyTransactionClaimsSharedRelationNamePointerOnCreate() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = new TransactionIntentApplierSupport();
+    inject(support, "pointerStore", pointers);
+    inject(support, "blobStore", blobs);
+
+    String accountId = "acct";
+    String catalogId = "cat-1";
+    String namespaceId = "ns-1";
+    String tableId = "table-1";
+    String byIdKey = Keys.tablePointerById(accountId, tableId);
+    String relationKey = Keys.relationPointerByName(accountId, catalogId, namespaceId, "orders");
+
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(tableId)
+                    .setKind(ResourceKind.RK_TABLE))
+            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId(catalogId))
+            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId(namespaceId))
+            .setDisplayName("orders")
+            .build();
+    String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
+    blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(byIdKey)
+            .setBlobUri(blobUri)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertTrue(pointers.get(relationKey).isPresent(), "shared relation-name claim must be created");
+    assertEquals(tableId, pointers.get(relationKey).orElseThrow().getResourceId().getId());
+  }
+
+  @Test
+  void applyTransactionRejectsTableCreateWhenViewHoldsRelationName() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = new TransactionIntentApplierSupport();
+    inject(support, "pointerStore", pointers);
+    inject(support, "blobStore", blobs);
+
+    String accountId = "acct";
+    String catalogId = "cat-1";
+    String namespaceId = "ns-1";
+    String relationKey = Keys.relationPointerByName(accountId, catalogId, namespaceId, "orders");
+
+    // A view already owns the shared relation-name claim for "orders".
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId("view-9")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    String viewBlob = "/accounts/acct/views/view-9/view/blob.pb";
+    pointers.compareAndSet(
+        relationKey,
+        0L,
+        PointerReferences.blobPointer(relationKey, viewBlob, 1L, viewId, "orders"));
+
+    String tableId = "table-1";
+    String byIdKey = Keys.tablePointerById(accountId, tableId);
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(tableId)
+                    .setKind(ResourceKind.RK_TABLE))
+            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId(catalogId))
+            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId(namespaceId))
+            .setDisplayName("orders")
+            .build();
+    String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
+    blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(byIdKey)
+            .setBlobUri(blobUri)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("RELATION_NAME_CONFLICT", outcome.errorCode());
+    assertTrue(
+        pointers.get(byIdKey).isEmpty(), "table by-id pointer must not be created on conflict");
+  }
+
+
+    private static Transaction readTransaction(InMemoryBlobStore blobs, String blobUri)
       throws Exception {
     return Transaction.parseFrom(blobs.get(blobUri));
   }

@@ -121,6 +121,12 @@ public final class Schemas {
                           v.getResourceId().getAccountId(),
                           v.getCatalogId().getId(),
                           v.getNamespaceId().getId(),
+                          v.getDisplayName()),
+                      "relationName",
+                      Keys.relationPointerByName(
+                          v.getResourceId().getAccountId(),
+                          v.getCatalogId().getId(),
+                          v.getNamespaceId().getId(),
                           v.getDisplayName())),
               v -> {
                 var sha = Hashing.sha256Hex(v.toByteArray());
@@ -314,6 +320,12 @@ public final class Schemas {
                   Map.of(
                       "byName",
                       Keys.viewPointerByName(
+                          v.getResourceId().getAccountId(),
+                          v.getCatalogId().getId(),
+                          v.getNamespaceId().getId(),
+                          v.getDisplayName()),
+                      "relationName",
+                      Keys.relationPointerByName(
                           v.getResourceId().getAccountId(),
                           v.getCatalogId().getId(),
                           v.getNamespaceId().getId(),
