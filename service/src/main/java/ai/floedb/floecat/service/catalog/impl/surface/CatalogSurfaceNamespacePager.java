@@ -42,37 +42,41 @@ final class CatalogSurfaceNamespacePager {
     var out = new ArrayList<Namespace>(want);
     String lastEmittedRel = "";
 
-    if (!isServiceToken) {
-      while (out.size() < want) {
-        var next = new StringBuilder();
-        final List<Namespace> scanned;
-        try {
-          scanned = source.listRepo(batch, cursor, next);
-        } catch (IllegalArgumentException badToken) {
-          throw GrpcErrors.invalidArgument(corr, PAGE_TOKEN_INVALID, Map.of("page_token", cursor));
+    // The repo phase must run for continuation tokens too: a batch that exhausts the cursor can
+    // hold
+    // more matches than fit on one page, so later pages re-scan from the start and skip already-
+    // emitted namespaces by name via resumeAfterRel. Skipping the scan for service tokens would
+    // drop
+    // every remaining user namespace once a page-filling batch exhausted the cursor.
+    while (out.size() < want) {
+      var next = new StringBuilder();
+      final List<Namespace> scanned;
+      try {
+        scanned = source.listRepo(batch, cursor, next);
+      } catch (IllegalArgumentException badToken) {
+        throw GrpcErrors.invalidArgument(corr, PAGE_TOKEN_INVALID, Map.of("page_token", cursor));
+      }
+
+      for (var ns : scanned) {
+        if (!matches(ns, source)) {
+          continue;
         }
 
-        for (var ns : scanned) {
-          if (!matches(ns, source)) {
-            continue;
-          }
-
-          var rel = relativeQualifiedName(ns, source.parentPath());
-          if (!resumeAfterRel.isBlank() && rel.compareTo(resumeAfterRel) <= 0) {
-            continue;
-          }
-
-          out.add(ns);
-          lastEmittedRel = rel;
-          if (out.size() >= want) {
-            break;
-          }
+        var rel = relativeQualifiedName(ns, source.parentPath());
+        if (!resumeAfterRel.isBlank() && rel.compareTo(resumeAfterRel) <= 0) {
+          continue;
         }
 
-        cursor = next.toString();
-        if (cursor.isBlank() || out.size() >= want) {
+        out.add(ns);
+        lastEmittedRel = rel;
+        if (out.size() >= want) {
           break;
         }
+      }
+
+      cursor = next.toString();
+      if (cursor.isBlank() || out.size() >= want) {
+        break;
       }
     }
 

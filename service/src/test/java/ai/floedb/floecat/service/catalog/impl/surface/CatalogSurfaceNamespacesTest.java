@@ -118,6 +118,20 @@ class CatalogSurfaceNamespacesTest {
   }
 
   @Test
+  void listNamespacesPagesThroughAllUserNamespacesWhenRepoExhaustsInOneBatch() {
+    // Regression: a single repo batch that exhausts the cursor may contain more matches than fit
+    // on one page. Later pages must keep returning the remaining user namespaces rather than
+    // jumping straight to the (empty) system phase.
+    stubUserNamespaces(
+        List.of(
+            namespace("alpha", List.of()),
+            namespace("bravo", List.of()),
+            namespace("charlie", List.of())));
+
+    assertEquals(List.of("alpha", "bravo", "charlie"), pageAllNamespaceNames(1));
+  }
+
+  @Test
   void listNamespacesRejectsMalformedServicePageToken() {
     StatusRuntimeException ex =
         assertThrows(
@@ -152,6 +166,39 @@ class CatalogSurfaceNamespacesTest {
 
   private static List<String> names(List<Namespace> namespaces) {
     return namespaces.stream().map(Namespace::getDisplayName).toList();
+  }
+
+  /** Stubs the repo so all user namespaces come back in a single exhausting batch. */
+  private void stubUserNamespaces(List<Namespace> userNamespaces) {
+    when(namespaceRepo.list(eq(ACCOUNT_ID), eq("cat"), eq(List.of()), anyInt(), anyString(), any()))
+        .thenAnswer(
+            invocation -> {
+              String cursor = invocation.getArgument(4);
+              // Leave the "next" cursor blank: a blank next-token signals repo exhaustion.
+              return cursor == null || cursor.isBlank() ? userNamespaces : List.of();
+            });
+  }
+
+  /** Drains every page (page_size {@code pageSize}) and returns the concatenated display names. */
+  private List<String> pageAllNamespaceNames(int pageSize) {
+    var collected = new java.util.ArrayList<String>();
+    String token = "";
+    for (int guard = 0; guard < 100; guard++) {
+      var response =
+          surface.listNamespaces(
+              ListNamespacesRequest.newBuilder()
+                  .setCatalogId(catalogId)
+                  .setPage(PageRequest.newBuilder().setPageSize(pageSize).setPageToken(token))
+                  .build(),
+              ACCOUNT_ID,
+              CORRELATION_ID);
+      collected.addAll(names(response.getNamespacesList()));
+      token = response.getPage().getNextPageToken();
+      if (token.isBlank()) {
+        return collected;
+      }
+    }
+    throw new AssertionError("pagination did not terminate; collected so far: " + collected);
   }
 
   private Namespace namespace(String name, List<String> path) {
