@@ -141,7 +141,7 @@ public final class CatalogSurfaceWritePolicy {
     enforceWritableViewNode(node, viewId, corr);
   }
 
-  public void rejectSystemNamespacePathCollision(
+  public void requireNamespacePathWriteEligible(
       ResourceId catalogId, List<String> fullPath, String corr) {
     var sysMatch = systemNamespacePathMatch(catalogId, fullPath, listSystemNamespaces(catalogId));
     if (sysMatch == SystemPathMatch.EXACT) {

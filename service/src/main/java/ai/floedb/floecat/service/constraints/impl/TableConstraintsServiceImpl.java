@@ -723,16 +723,19 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
 
   /** Ensures the request table is visible through overlay resolution (user or system). */
   private void ensureTableVisible(ResourceId tableId) {
-    catalogSurfaceWritePolicy().requireVisibleTable(tableId, correlationId());
+    var writePolicy = catalogSurfaceWritePolicy();
+    writePolicy.requireVisibleTable(tableId, correlationId());
   }
 
   /** Ensures the request table is mutable; system tables are immutable and rejected. */
   private void ensureTableWritable(ResourceId tableId) {
-    catalogSurfaceWritePolicy().requireWritableTable(tableId, correlationId());
+    var writePolicy = catalogSurfaceWritePolicy();
+    writePolicy.requireWritableTable(tableId, correlationId());
   }
 
   private String writableTableCatalogName(ResourceId tableId) {
-    var table = catalogSurfaceWritePolicy().requireWritableTable(tableId, correlationId());
+    var writePolicy = catalogSurfaceWritePolicy();
+    var table = writePolicy.requireWritableTable(tableId, correlationId());
     if (!(table instanceof UserTableNode userTable)) {
       return "";
     }

@@ -154,7 +154,7 @@ class CatalogSurfaceNamespacesTest {
   }
 
   @Test
-  void rejectSystemNamespacePathCollisionDistinguishesExactAndUnderSystem() {
+  void requireNamespacePathWriteEligibleDistinguishesExactAndUnderSystem() {
     overlay.addNode(
         namespaceNode(systemNamespaceId("information_schema"), "information_schema", List.of()));
 
@@ -162,7 +162,7 @@ class CatalogSurfaceNamespacesTest {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                writePolicy.rejectSystemNamespacePathCollision(
+                writePolicy.requireNamespacePathWriteEligible(
                     catalogId, List.of("information_schema"), CORRELATION_ID));
     assertEquals(Status.Code.ALREADY_EXISTS, exact.getStatus().getCode());
 
@@ -170,7 +170,7 @@ class CatalogSurfaceNamespacesTest {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                writePolicy.rejectSystemNamespacePathCollision(
+                writePolicy.requireNamespacePathWriteEligible(
                     catalogId, List.of("information_schema", "tables"), CORRELATION_ID));
     assertEquals(Status.Code.PERMISSION_DENIED, under.getStatus().getCode());
   }

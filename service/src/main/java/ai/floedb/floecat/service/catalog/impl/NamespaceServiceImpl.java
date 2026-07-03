@@ -197,7 +197,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   final List<String> fullPath = new ArrayList<>(parents);
                   fullPath.add(display);
 
-                  writePolicy.rejectSystemNamespacePathCollision(
+                  writePolicy.requireNamespacePathWriteEligible(
                       spec.getCatalogId(), fullPath, correlationId);
 
                   final byte[] fingerprint =
