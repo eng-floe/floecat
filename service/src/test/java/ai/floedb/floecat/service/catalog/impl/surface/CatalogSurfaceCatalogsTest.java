@@ -16,6 +16,7 @@
 package ai.floedb.floecat.service.catalog.impl.surface;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -34,6 +35,8 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Base64;
@@ -96,6 +99,101 @@ class CatalogSurfaceCatalogsTest {
     verify(catalogRepo).getById(callerScopedId);
     verify(overlay).catalog(canonicalSystemId);
     verifyNoMoreInteractions(catalogRepo);
+  }
+
+  @Test
+  void getCatalogHiddenSystemCatalogReturnsNotFound() {
+    ResourceId canonicalSystemId = systemCatalogId();
+    ResourceId callerScopedId = callerScopedCatalogId(canonicalSystemId);
+
+    when(catalogRepo.getById(callerScopedId)).thenReturn(Optional.empty());
+    when(overlay.catalog(canonicalSystemId)).thenReturn(Optional.empty());
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                surface.getCatalog(
+                    GetCatalogRequest.newBuilder().setCatalogId(callerScopedId).build(), "corr"));
+
+    assertEquals(Status.Code.NOT_FOUND, ex.getStatus().getCode());
+    verify(catalogRepo).getById(callerScopedId);
+    verify(overlay).catalog(canonicalSystemId);
+  }
+
+  @Test
+  void listCatalogsAllowsRawRepoTokensWithLegacyCatalogPrefix() {
+    String repoToken = "cat:repo_cursor";
+    ResourceId canonicalSystemId = systemCatalogId();
+    when(overlay.catalog(canonicalSystemId))
+        .thenReturn(Optional.of(systemCatalogNode(canonicalSystemId)));
+    when(catalogRepo.count("acct")).thenReturn(1);
+    when(catalogRepo.list(eq("acct"), eq(2), eq(repoToken), any(StringBuilder.class)))
+        .thenReturn(List.of(Catalog.newBuilder().setDisplayName("examples").build()));
+
+    var req =
+        ListCatalogsRequest.newBuilder()
+            .setPage(PageRequest.newBuilder().setPageSize(2).setPageToken(repoToken))
+            .build();
+
+    var res = surface.listCatalogs(req, "acct", "corr");
+
+    assertEquals(2, res.getCatalogsCount());
+    verify(catalogRepo).list(eq("acct"), eq(2), eq(repoToken), any(StringBuilder.class));
+  }
+
+  @Test
+  void listCatalogsRawCatSystemTokenIsStillARepoToken() {
+    String repoToken = "cat:system";
+    when(catalogRepo.count("acct")).thenReturn(1);
+    when(catalogRepo.list(eq("acct"), eq(2), eq(repoToken), any(StringBuilder.class)))
+        .thenReturn(List.of(Catalog.newBuilder().setDisplayName("examples").build()));
+
+    var req =
+        ListCatalogsRequest.newBuilder()
+            .setPage(PageRequest.newBuilder().setPageSize(2).setPageToken(repoToken))
+            .build();
+
+    var res = surface.listCatalogs(req, "acct", "corr");
+
+    assertEquals(1, res.getCatalogsCount());
+    assertEquals("examples", res.getCatalogs(0).getDisplayName());
+    verify(catalogRepo).list(eq("acct"), eq(2), eq(repoToken), any(StringBuilder.class));
+    verify(overlay).catalog(systemCatalogId());
+  }
+
+  @Test
+  void listCatalogsHidesSystemCatalogWhenOverlayCannotSeeIt() {
+    ResourceId canonicalSystemId = systemCatalogId();
+    when(overlay.catalog(canonicalSystemId)).thenReturn(Optional.empty());
+    when(catalogRepo.count("acct")).thenReturn(1);
+    when(catalogRepo.list(eq("acct"), eq(5), eq(""), any(StringBuilder.class)))
+        .thenReturn(List.of(Catalog.newBuilder().setDisplayName("examples").build()));
+
+    var req =
+        ListCatalogsRequest.newBuilder().setPage(PageRequest.newBuilder().setPageSize(5)).build();
+
+    var res = surface.listCatalogs(req, "acct", "corr");
+
+    assertEquals(1, res.getCatalogsCount());
+    assertEquals("examples", res.getCatalogs(0).getDisplayName());
+  }
+
+  @Test
+  void listCatalogsRejectsSystemPhaseTokenWhenSystemCatalogIsHidden() {
+    when(overlay.catalog(systemCatalogId())).thenReturn(Optional.empty());
+    when(catalogRepo.count("acct")).thenReturn(0);
+
+    var req =
+        ListCatalogsRequest.newBuilder()
+            .setPage(PageRequest.newBuilder().setPageSize(10).setPageToken(systemPhasePageToken()))
+            .build();
+
+    StatusRuntimeException ex =
+        assertThrows(StatusRuntimeException.class, () -> surface.listCatalogs(req, "acct", "corr"));
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verify(overlay).catalog(systemCatalogId());
   }
 
   private static ResourceId systemCatalogId() {
