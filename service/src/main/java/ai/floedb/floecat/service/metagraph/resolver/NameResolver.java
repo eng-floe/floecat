@@ -207,6 +207,19 @@ public final class NameResolver {
                     scope -> {
                       String catalogId = scope.catalog().getResourceId().getId();
                       String namespaceId = scope.namespace().getResourceId().getId();
+                      // One pointer read (no blob fetch) answers both kind and id via the shared
+                      // relation-name claim written by every table/view create and rename.
+                      Optional<ResourceId> claimed =
+                          tableRepository.relationNameClaim(
+                              accountId, catalogId, namespaceId, ref.getName());
+                      if (claimed.isPresent()) {
+                        ResourceId rid = claimed.get();
+                        return Optional.of(
+                            rid.getKind() == ResourceKind.RK_TABLE
+                                ? requireCanonicalTableId(rid)
+                                : rid);
+                      }
+                      // Claimless rows (created before the claim existed): kind-specific probes.
                       Optional<ResourceId> table =
                           tableRepository
                               .getByName(accountId, catalogId, namespaceId, ref.getName())
