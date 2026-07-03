@@ -35,6 +35,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
@@ -206,6 +207,35 @@ class DurableReconcileJobStoreTest {
             "executor-b");
 
     assertEquals(first, second);
+  }
+
+  @Test
+  void enqueuePlanDoesNotDedupeAcrossDifferentExplicitSnapshotSelections() {
+    ReconcileScope firstScope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            null,
+            List.of(),
+            ReconcileScope.empty().capturePolicy(),
+            ReconcileSnapshotSelection.explicit(List.of(101L)));
+    ReconcileScope secondScope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            null,
+            List.of(),
+            ReconcileScope.empty().capturePolicy(),
+            ReconcileSnapshotSelection.explicit(List.of(202L)));
+
+    String first =
+        store.enqueue(
+            ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, firstScope);
+    String second =
+        store.enqueue(
+            ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, secondScope);
+
+    assertNotEquals(first, second);
   }
 
   @Test

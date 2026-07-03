@@ -26,6 +26,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueItemResult
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueSpec;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
@@ -731,6 +732,7 @@ public class ReconcileJobEnqueuer {
             .reduce((a, b) -> a + "," + b)
             .orElse("");
     String capturePolicy = canonicalCapturePolicy(scope.capturePolicy());
+    String snapshotSelection = canonicalSnapshotSelection(scope.snapshotSelection());
     String canonicalTableDisplayName =
         tableTask != null && tableTask.strict() && !blank(tableTask.destinationTableId())
             ? ""
@@ -812,6 +814,7 @@ public class ReconcileJobEnqueuer {
         .scalar("scope.view", scope.destinationViewId() == null ? "" : scope.destinationViewId())
         .scalar("scope.capture_requests", captureRequests)
         .scalar("scope.capture_policy", capturePolicy)
+        .scalar("scope.snapshot_selection", snapshotSelection)
         .scalar("policy.execution_class", policy.executionClass().name())
         .scalar("policy.lane", policy.lane())
         .map("policy.attributes", policy.attributes())
@@ -911,6 +914,21 @@ public class ReconcileJobEnqueuer {
         + policy.defaultColumnScope().name()
         + "|"
         + policy.maxDefaultColumns();
+  }
+
+  private static String canonicalSnapshotSelection(ReconcileSnapshotSelection selection) {
+    if (selection == null || !selection.isSpecified()) {
+      return "";
+    }
+    return selection.kind().name()
+        + "|"
+        + selection.latestN()
+        + "|"
+        + selection.snapshotIds().stream()
+            .map(String::valueOf)
+            .sorted()
+            .reduce((a, b) -> a + "," + b)
+            .orElse("");
   }
 
   private static List<String> canonicalSnapshotFileGroups(
