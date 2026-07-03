@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.account.rpc.Account;
@@ -40,6 +41,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJob;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJobPage;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -48,6 +51,11 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class ReconcilePlannerSchedulerTest {
+
+  private static void stubNoActiveRootJobs(ReconcileJobStore jobs) {
+    when(jobs.listRootJobs(anyString(), anyInt(), anyString(), anyString(), any()))
+        .thenReturn(new ReconcileJobPage(List.of(), ""));
+  }
 
   private static void stubConnectorLookup(ConnectorRepository connectors, Connector... rows) {
     for (Connector row : rows) {
@@ -72,6 +80,7 @@ class ReconcilePlannerSchedulerTest {
     scheduler.jobs = mock(ReconcileJobStore.class);
     scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
     when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+    stubNoActiveRootJobs(scheduler.jobs);
 
     List<String> enqueued = new ArrayList<>();
     when(scheduler.jobs.enqueuePlan(
@@ -136,6 +145,7 @@ class ReconcilePlannerSchedulerTest {
     scheduler.jobs = mock(ReconcileJobStore.class);
     scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
     when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+    stubNoActiveRootJobs(scheduler.jobs);
 
     List<String> enqueued = new ArrayList<>();
     List<String> connectorTokens = new ArrayList<>();
@@ -192,6 +202,7 @@ class ReconcilePlannerSchedulerTest {
     scheduler.jobs = mock(ReconcileJobStore.class);
     scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
     when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+    stubNoActiveRootJobs(scheduler.jobs);
 
     List<String> enqueued = new ArrayList<>();
     when(scheduler.jobs.enqueuePlan(
@@ -228,6 +239,7 @@ class ReconcilePlannerSchedulerTest {
     scheduler.jobs = mock(ReconcileJobStore.class);
     scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
     when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+    stubNoActiveRootJobs(scheduler.jobs);
 
     List<String> enqueued = new ArrayList<>();
     when(scheduler.jobs.enqueuePlan(
@@ -271,6 +283,7 @@ class ReconcilePlannerSchedulerTest {
     scheduler.jobs = mock(ReconcileJobStore.class);
     scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
     when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+    stubNoActiveRootJobs(scheduler.jobs);
 
     List<String> enqueued = new ArrayList<>();
     when(scheduler.jobs.enqueuePlan(
@@ -309,6 +322,7 @@ class ReconcilePlannerSchedulerTest {
         ReconcileExecutionPolicy.of(
             ReconcileExecutionClass.HEAVY, "planner-lane", java.util.Map.of());
     when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+    stubNoActiveRootJobs(scheduler.jobs);
     when(scheduler.accounts.list(anyInt(), anyString(), any()))
         .thenReturn(List.of(account("acct-a", "alpha")));
     when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
@@ -337,6 +351,7 @@ class ReconcilePlannerSchedulerTest {
     scheduler.jobs = mock(ReconcileJobStore.class);
     scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
     when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+    stubNoActiveRootJobs(scheduler.jobs);
 
     List<ReconcileScope> enqueuedScopes = new ArrayList<>();
     when(scheduler.accounts.list(anyInt(), anyString(), any()))
@@ -373,6 +388,7 @@ class ReconcilePlannerSchedulerTest {
     scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
 
     when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(false);
+    stubNoActiveRootJobs(scheduler.jobs);
     when(scheduler.accounts.list(anyInt(), anyString(), any()))
         .thenReturn(List.of(account("acct-a", "alpha")));
     when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
@@ -381,7 +397,74 @@ class ReconcilePlannerSchedulerTest {
 
     scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
 
-    org.mockito.Mockito.verify(scheduler.jobs, never())
+    verify(scheduler.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void runPlannerPassDoesNotEnqueueWhenConnectorAlreadyHasActiveRootJob() {
+    TestScheduler scheduler = new TestScheduler();
+    scheduler.accounts = mock(AccountRepository.class);
+    scheduler.connectors = mock(ConnectorRepository.class);
+    scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+    when(scheduler.accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a", "alpha")));
+    when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
+        .thenReturn(List.of(connector("acct-a", "conn-a1", "alpha-1")));
+    stubConnectorLookup(scheduler.connectors, connector("acct-a", "conn-a1", "alpha-1"));
+    when(scheduler.jobs.listRootJobs(
+            eq("acct-a"),
+            eq(1),
+            eq(""),
+            eq("conn-a1"),
+            eq(java.util.Set.of("JS_QUEUED", "JS_WAITING", "JS_RUNNING", "JS_CANCELLING"))))
+        .thenReturn(
+            new ReconcileJobPage(
+                List.of(
+                    new ReconcileJob(
+                        "job-1",
+                        "acct-a",
+                        "conn-a1",
+                        "JS_RUNNING",
+                        "",
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        false,
+                        ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode
+                            .METADATA_AND_CAPTURE,
+                        0L,
+                        0L,
+                        0L,
+                        true,
+                        ReconcileScope.empty(),
+                        ReconcileExecutionPolicy.defaults(),
+                        "",
+                        "",
+                        ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_CONNECTOR,
+                        ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+                        ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+                        ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask.empty(),
+                        ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask.empty(),
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        "")),
+                ""));
+
+    scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
+
+    verify(scheduler.jobs, never())
         .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
 
