@@ -44,6 +44,17 @@ public class TestDataResetter {
 
   private static final String GLOBAL_ACCOUNTS_BY_ID_PREFIX = "/accounts/by-id/";
   private static final String GLOBAL_ACCOUNTS_BY_NAME_PREFIX = "/accounts/by-name/";
+  private static final List<String> GLOBAL_RECONCILE_PREFIXES =
+      List.of(
+          Keys.reconcileJobLookupPointerByIdPrefix(),
+          Keys.reconcileDirtyParentPointerPrefix(),
+          Keys.reconcileJobByStatePointerPrefix(),
+          Keys.reconcileReadyPointerPrefix(),
+          Keys.reconcileReadyByExecutionClassPointerPrefix(),
+          Keys.reconcileReadyByExecutionLanePointerPrefix(),
+          Keys.reconcileReadyByPinnedExecutorPointerPrefix(),
+          Keys.reconcileReadyByJobKindPointerPrefix(),
+          "/accounts/by-id/reconcile/snapshot-leases/");
 
   public void wipeAll() {
     synchronized (SeedRunner.class) {
@@ -61,9 +72,14 @@ public class TestDataResetter {
       }
       // Durable reconcile state includes global lookup/ready pointers not scoped under
       // /accounts/<id>/.
-      ptr.deleteByPrefix(Keys.reconcileJobLookupPointerByIdPrefix());
-      ptr.deleteByPrefix(Keys.reconcileReadyPointerPrefix());
+      for (String prefix : GLOBAL_RECONCILE_PREFIXES) {
+        ptr.deleteByPrefix(prefix);
+        if (prefix.startsWith("/")) {
+          ptr.deleteByPrefix(prefix.substring(1));
+        }
+      }
       ptr.deleteByPrefix("/accounts/");
+      ptr.deleteByPrefix("accounts/");
       wipeDynamoKvTableIfPresent();
 
       for (var tid : accountIds) {

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.transaction.impl;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
@@ -38,6 +39,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
@@ -1041,7 +1043,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         if (activeConnector == null || activeConnector.getState() != ConnectorState.CS_ACTIVE) {
           continue;
         }
-        enqueuePostCommitCapture(accountId, txId, activeConnector, candidate.tableId());
+        enqueuePostCommitCapture(
+            accountId, txId, activeConnector, candidate.tableId(), candidate.snapshotId());
       } catch (RuntimeException e) {
         LOG.warnf(
             e,
@@ -1057,6 +1060,17 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       List<TransactionIntent> intents) {
     if (intents == null || intents.isEmpty()) {
       return List.of();
+    }
+    LinkedHashMap<String, Long> committedCurrentSnapshotsByTable = new LinkedHashMap<>();
+    for (TransactionIntent intent : intents) {
+      CurrentSnapshotPointer pointer = currentSnapshotPointerIntent(intent);
+      if (pointer == null
+          || !pointer.hasTableId()
+          || pointer.getTableId().getId().isBlank()
+          || pointer.getSnapshotId() < 0L) {
+        continue;
+      }
+      committedCurrentSnapshotsByTable.put(pointer.getTableId().getId(), pointer.getSnapshotId());
     }
     LinkedHashMap<String, PostCommitCaptureCandidate> candidates = new LinkedHashMap<>();
     for (TransactionIntent intent : intents) {
@@ -1078,7 +1092,11 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                 + "|"
                 + connector.getDestination().getTableId().getId(),
             new PostCommitCaptureCandidate(
-                connector.getResourceId(), connector.getDestination().getTableId().getId(), true));
+                connector.getResourceId(),
+                connector.getDestination().getTableId().getId(),
+                true,
+                committedCurrentSnapshotsByTable.get(
+                    connector.getDestination().getTableId().getId())));
         continue;
       }
       if (!isTableByIdPointer(intent.getTargetPointerKey())) {
@@ -1099,7 +1117,11 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       }
       candidates.putIfAbsent(
           connectorId.getId() + "|" + table.getResourceId().getId(),
-          new PostCommitCaptureCandidate(connectorId, table.getResourceId().getId(), false));
+          new PostCommitCaptureCandidate(
+              connectorId,
+              table.getResourceId().getId(),
+              false,
+              committedCurrentSnapshotsByTable.get(table.getResourceId().getId())));
     }
     return List.copyOf(candidates.values());
   }
@@ -1163,7 +1185,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   }
 
   private void enqueuePostCommitCapture(
-      String accountId, String txId, Connector connector, String tableId) {
+      String accountId, String txId, Connector connector, String tableId, Long snapshotId) {
     if (accountId == null
         || accountId.isBlank()
         || connector == null
@@ -1180,13 +1202,17 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         ReconcileScope.of(
             List.of(),
             tableId,
+            null,
             List.of(),
             ReconcileCapturePolicy.of(
                 List.of(),
                 Set.of(
                     ReconcileCapturePolicy.Output.TABLE_STATS,
                     ReconcileCapturePolicy.Output.FILE_STATS,
-                    ReconcileCapturePolicy.Output.COLUMN_STATS))),
+                    ReconcileCapturePolicy.Output.COLUMN_STATS)),
+            snapshotId != null && snapshotId >= 0L
+                ? ReconcileSnapshotSelection.explicit(List.of(snapshotId))
+                : ReconcileSnapshotSelection.current()),
         ReconcileExecutionPolicy.defaults(),
         "");
     LOG.infof(
@@ -1508,7 +1534,23 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   }
 
   private record PostCommitCaptureCandidate(
-      ResourceId connectorId, String tableId, boolean connectorCreatedInThisTransaction) {}
+      ResourceId connectorId,
+      String tableId,
+      boolean connectorCreatedInThisTransaction,
+      Long snapshotId) {}
+
+  private CurrentSnapshotPointer currentSnapshotPointerIntent(TransactionIntent intent) {
+    if (intent == null || !isCurrentSnapshotPointer(intent.getTargetPointerKey())) {
+      return null;
+    }
+    return readCurrentSnapshotPointer(intent.getBlobUri());
+  }
+
+  private boolean isCurrentSnapshotPointer(String pointerKey) {
+    return pointerKey != null
+        && pointerKey.contains("/tables/")
+        && pointerKey.endsWith("/snapshots/current");
+  }
 
   private boolean tableDeleteAlreadyApplied(TransactionIntent intent) {
     if (intent == null || !isTableByIdPointer(intent.getTargetPointerKey())) {
@@ -1641,6 +1683,18 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     try {
       byte[] bytes = blobStore.get(blobUri);
       return bytes == null ? null : Connector.parseFrom(bytes);
+    } catch (Exception e) {
+      return null;
+    }
+  }
+
+  private CurrentSnapshotPointer readCurrentSnapshotPointer(String blobUri) {
+    if (blobUri == null || blobUri.isBlank()) {
+      return null;
+    }
+    try {
+      byte[] bytes = blobStore.get(blobUri);
+      return bytes == null ? null : CurrentSnapshotPointer.parseFrom(bytes);
     } catch (Exception e) {
       return null;
     }

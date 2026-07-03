@@ -29,6 +29,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
@@ -40,6 +41,8 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
@@ -1094,7 +1097,7 @@ class TransactionsServiceImplTest {
             .setResourceId(resourceId("conn-1", ResourceKind.RK_CONNECTOR))
             .build();
 
-    invokeEnqueuePostCommitCapture(service, "acct", "tx-1", connector, "table-1");
+    invokeEnqueuePostCommitCapture(service, "acct", "tx-1", connector, "table-1", null);
 
     verify(reconcileJobs)
         .enqueuePlan(
@@ -1102,11 +1105,84 @@ class TransactionsServiceImplTest {
             org.mockito.ArgumentMatchers.eq("conn-1"),
             org.mockito.ArgumentMatchers.eq(false),
             org.mockito.ArgumentMatchers.eq(ReconcilerService.CaptureMode.METADATA_AND_CAPTURE),
-            org.mockito.ArgumentMatchers.any(
-                ai.floedb.floecat.reconciler.jobs.ReconcileScope.class),
+            org.mockito.ArgumentMatchers.argThat(
+                scope ->
+                    scope instanceof ReconcileScope reconcileScope
+                        && "table-1".equals(reconcileScope.destinationTableId())
+                        && reconcileScope.snapshotSelection().kind()
+                            == ReconcileSnapshotSelection.Kind.CURRENT),
             org.mockito.ArgumentMatchers.any(
                 ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy.class),
             org.mockito.ArgumentMatchers.eq(""));
+  }
+
+  @Test
+  void enqueuePostCommitCapturePinsCommittedSnapshotWhenKnown() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var reconcileJobs = Mockito.mock(ReconcileJobStore.class);
+
+    inject(service, "reconcileJobs", reconcileJobs);
+
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(resourceId("conn-1", ResourceKind.RK_CONNECTOR))
+            .build();
+
+    invokeEnqueuePostCommitCapture(service, "acct", "tx-1", connector, "table-1", 123L);
+
+    verify(reconcileJobs)
+        .enqueuePlan(
+            org.mockito.ArgumentMatchers.eq("acct"),
+            org.mockito.ArgumentMatchers.eq("conn-1"),
+            org.mockito.ArgumentMatchers.eq(false),
+            org.mockito.ArgumentMatchers.eq(ReconcilerService.CaptureMode.METADATA_AND_CAPTURE),
+            org.mockito.ArgumentMatchers.argThat(
+                scope ->
+                    scope instanceof ReconcileScope reconcileScope
+                        && "table-1".equals(reconcileScope.destinationTableId())
+                        && reconcileScope.snapshotSelection().kind()
+                            == ReconcileSnapshotSelection.Kind.EXPLICIT
+                        && reconcileScope.snapshotSelection().snapshotIds().equals(List.of(123L))),
+            org.mockito.ArgumentMatchers.any(
+                ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy.class),
+            org.mockito.ArgumentMatchers.eq(""));
+  }
+
+  @Test
+  void postCommitCaptureCandidatesCarryCommittedCurrentSnapshotPointer() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var blobStore = Mockito.mock(BlobStore.class);
+    inject(service, "blobStore", blobStore);
+
+    ResourceId tableId = resourceId("table-1", ResourceKind.RK_TABLE);
+    ResourceId connectorId = resourceId("conn-1", ResourceKind.RK_CONNECTOR);
+    Table table =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setUpstream(UpstreamRef.newBuilder().setConnectorId(connectorId).build())
+            .build();
+    CurrentSnapshotPointer pointer =
+        CurrentSnapshotPointer.newBuilder().setTableId(tableId).setSnapshotId(987L).build();
+    when(blobStore.get("blob-table")).thenReturn(table.toByteArray());
+    when(blobStore.get("blob-current")).thenReturn(pointer.toByteArray());
+
+    List<?> candidates =
+        invokePostCommitCaptureCandidates(
+            service,
+            List.of(
+                TransactionIntent.newBuilder()
+                    .setTargetPointerKey(Keys.tablePointerById("acct", "table-1"))
+                    .setBlobUri("blob-table")
+                    .build(),
+                TransactionIntent.newBuilder()
+                    .setTargetPointerKey(Keys.currentSnapshotPointerByTable("acct", "table-1"))
+                    .setBlobUri("blob-current")
+                    .build()));
+
+    assertEquals(1, candidates.size());
+    Method snapshotId = candidates.getFirst().getClass().getDeclaredMethod("snapshotId");
+    snapshotId.setAccessible(true);
+    assertEquals(987L, snapshotId.invoke(candidates.getFirst()));
   }
 
   @Test
@@ -1259,14 +1335,35 @@ class TransactionsServiceImplTest {
       String accountId,
       String txId,
       Connector connector,
-      String tableId)
+      String tableId,
+      Long snapshotId)
       throws Exception {
     Method m =
         TransactionsServiceImpl.class.getDeclaredMethod(
-            "enqueuePostCommitCapture", String.class, String.class, Connector.class, String.class);
+            "enqueuePostCommitCapture",
+            String.class,
+            String.class,
+            Connector.class,
+            String.class,
+            Long.class);
     m.setAccessible(true);
     try {
-      m.invoke(service, accountId, txId, connector, tableId);
+      m.invoke(service, accountId, txId, connector, tableId, snapshotId);
+    } catch (InvocationTargetException e) {
+      if (e.getCause() instanceof Exception ex) {
+        throw ex;
+      }
+      throw e;
+    }
+  }
+
+  private static List<?> invokePostCommitCaptureCandidates(
+      TransactionsServiceImpl service, List<TransactionIntent> intents) throws Exception {
+    Method m =
+        TransactionsServiceImpl.class.getDeclaredMethod("postCommitCaptureCandidates", List.class);
+    m.setAccessible(true);
+    try {
+      return (List<?>) m.invoke(service, intents);
     } catch (InvocationTargetException e) {
       if (e.getCause() instanceof Exception ex) {
         throw ex;
