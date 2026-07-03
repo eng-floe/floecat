@@ -57,14 +57,12 @@ class CatalogSurfaceTablesTest {
   private TableRepository tableRepo;
   private TestCatalogOverlay overlay;
   private CatalogSurfaceTables surface;
-  private CatalogSurfaceWritePolicy writePolicy;
 
   @BeforeEach
   void setup() {
     tableRepo = mock(TableRepository.class);
     overlay = new TestCatalogOverlay();
     surface = new CatalogSurfaceTables(tableRepo, overlay);
-    writePolicy = new CatalogSurfaceWritePolicy(overlay);
 
     overlay.addNode(
         new NamespaceNode(
@@ -174,20 +172,6 @@ class CatalogSurfaceTablesTest {
     assertEquals(systemTable.id(), response.getTable().getResourceId());
     assertEquals("engine_tables", response.getTable().getDisplayName());
     assertEquals(0L, response.getMeta().getPointerVersion());
-    verifyNoInteractions(tableRepo);
-  }
-
-  @Test
-  void requireWritableTableRejectsSystemTable() {
-    var systemTable = systemTable("immutable_system");
-    overlay.addRelation(namespaceId, systemTable);
-
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () -> writePolicy.requireWritableTable(systemTable.id(), CORRELATION_ID));
-
-    assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
     verifyNoInteractions(tableRepo);
   }
 

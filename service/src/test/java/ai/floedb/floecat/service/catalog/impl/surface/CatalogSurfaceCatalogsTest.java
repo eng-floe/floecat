@@ -16,12 +16,10 @@
 package ai.floedb.floecat.service.catalog.impl.surface;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
@@ -36,8 +34,6 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import io.grpc.Status;
-import io.grpc.StatusRuntimeException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Base64;
@@ -52,7 +48,6 @@ class CatalogSurfaceCatalogsTest {
   private CatalogRepository catalogRepo;
   private CatalogOverlay overlay;
   private CatalogSurfaceCatalogs surface;
-  private CatalogSurfaceWritePolicy writePolicy;
 
   @BeforeEach
   void setup() {
@@ -64,7 +59,6 @@ class CatalogSurfaceCatalogsTest {
     when(overlay.catalog(any())).thenReturn(Optional.empty());
 
     surface = new CatalogSurfaceCatalogs(catalogRepo, overlay, engineContext);
-    writePolicy = new CatalogSurfaceWritePolicy(overlay);
   }
 
   @Test
@@ -102,19 +96,6 @@ class CatalogSurfaceCatalogsTest {
     verify(catalogRepo).getById(callerScopedId);
     verify(overlay).catalog(canonicalSystemId);
     verifyNoMoreInteractions(catalogRepo);
-  }
-
-  @Test
-  void requireWritableCatalogRejectsSystemCatalogBeforeRepoLookup() {
-    ResourceId systemCatalogId = systemCatalogId();
-
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () -> writePolicy.requireWritableCatalog(systemCatalogId, "corr"));
-
-    assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
-    verifyNoInteractions(catalogRepo, overlay);
   }
 
   private static ResourceId systemCatalogId() {

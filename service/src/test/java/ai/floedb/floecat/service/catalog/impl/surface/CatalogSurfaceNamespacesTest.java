@@ -24,7 +24,6 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
@@ -59,14 +58,12 @@ class CatalogSurfaceNamespacesTest {
   private NamespaceRepository namespaceRepo;
   private TestCatalogOverlay overlay;
   private CatalogSurfaceNamespaces surface;
-  private CatalogSurfaceWritePolicy writePolicy;
 
   @BeforeEach
   void setup() {
     namespaceRepo = mock(NamespaceRepository.class);
     overlay = new TestCatalogOverlay();
     surface = new CatalogSurfaceNamespaces(namespaceRepo, overlay);
-    writePolicy = new CatalogSurfaceWritePolicy(overlay);
 
     overlay.addNode(catalogNode(catalogId, "examples"));
   }
@@ -151,41 +148,6 @@ class CatalogSurfaceNamespacesTest {
     assertEquals(namespaceId, res.getNamespace().getResourceId());
     verify(namespaceRepo).getById(namespaceId);
     verifyNoMoreInteractions(namespaceRepo);
-  }
-
-  @Test
-  void requireNamespacePathWriteEligibleDistinguishesExactAndUnderSystem() {
-    overlay.addNode(
-        namespaceNode(systemNamespaceId("information_schema"), "information_schema", List.of()));
-
-    StatusRuntimeException exact =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                writePolicy.requireNamespacePathWriteEligible(
-                    catalogId, List.of("information_schema"), CORRELATION_ID));
-    assertEquals(Status.Code.ALREADY_EXISTS, exact.getStatus().getCode());
-
-    StatusRuntimeException under =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                writePolicy.requireNamespacePathWriteEligible(
-                    catalogId, List.of("information_schema", "tables"), CORRELATION_ID));
-    assertEquals(Status.Code.PERMISSION_DENIED, under.getStatus().getCode());
-  }
-
-  @Test
-  void requireWritableNamespaceRejectsSystemIdBeforeRepoLookup() {
-    ResourceId namespaceId = systemNamespaceId("information_schema");
-
-    StatusRuntimeException ex =
-        assertThrows(
-            StatusRuntimeException.class,
-            () -> writePolicy.requireWritableNamespace(namespaceId, CORRELATION_ID));
-
-    assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
-    verifyNoInteractions(namespaceRepo);
   }
 
   private static List<String> names(List<Namespace> namespaces) {

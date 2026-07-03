@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
@@ -35,6 +36,7 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import io.grpc.Status;
@@ -102,6 +104,38 @@ class CatalogSurfaceWritePolicyTest {
     assertStatus(
         Status.Code.PERMISSION_DENIED,
         () -> writePolicy.requireWritableNamespace(namespaceId, CORRELATION_ID));
+  }
+
+  @Test
+  void requireWritableSystemIdsRejectBeforeOverlayLookup() {
+    CatalogOverlay mockedOverlay = mock(CatalogOverlay.class);
+    var policy = new CatalogSurfaceWritePolicy(mockedOverlay);
+    var systemCatalogId = SystemNodeRegistry.systemCatalogContainerId("engine");
+    var systemNamespaceId =
+        SystemNodeRegistry.resourceId("engine", ResourceKind.RK_NAMESPACE, "information_schema");
+
+    assertStatus(
+        Status.Code.PERMISSION_DENIED,
+        () -> policy.requireWritableCatalog(systemCatalogId, CORRELATION_ID));
+    assertStatus(
+        Status.Code.PERMISSION_DENIED,
+        () -> policy.requireWritableNamespace(systemNamespaceId, CORRELATION_ID));
+    verifyNoInteractions(mockedOverlay);
+  }
+
+  @Test
+  void requireWritableRelationsRejectSystemOriginNodes() {
+    var systemTable = systemTableNode(tableId);
+    var systemView = viewNode(viewId, GraphNodeOrigin.SYSTEM);
+    overlay.addRelation(namespaceId, systemTable);
+    overlay.addRelation(namespaceId, systemView);
+
+    assertStatus(
+        Status.Code.PERMISSION_DENIED,
+        () -> writePolicy.requireWritableTable(tableId, CORRELATION_ID));
+    assertStatus(
+        Status.Code.PERMISSION_DENIED,
+        () -> writePolicy.requireWritableView(viewId, CORRELATION_ID));
   }
 
   @Test
