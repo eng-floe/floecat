@@ -27,60 +27,76 @@ import java.util.Map;
 
 final class CatalogSurfaceNamespacePager {
 
+  // System-phase resume token: the carried relative name is a *system* namespace name.
   private static final String NS_TOKEN_PREFIX = "ns:";
+  // Repo-phase resume token: the carried relative name is a *user* namespace name.
+  private static final String NSU_TOKEN_PREFIX = "nsu:";
 
   private CatalogSurfaceNamespacePager() {}
 
   static Page list(int want, String pageToken, Source source, String corr) {
 
     final int batch = Math.max(want * 4, 64);
-    final boolean isServiceToken = pageToken != null && pageToken.startsWith(NS_TOKEN_PREFIX);
-    final String resumeAfterRel =
-        isServiceToken ? CatalogSurfaceSupport.decodeToken(NS_TOKEN_PREFIX, pageToken, corr) : "";
-    String cursor = isServiceToken ? "" : pageToken;
+    final boolean isSystemToken = pageToken != null && pageToken.startsWith(NS_TOKEN_PREFIX);
+    final boolean isUserToken = pageToken != null && pageToken.startsWith(NSU_TOKEN_PREFIX);
+    // Resume keys are scoped to their own phase: a user relative name must never filter system
+    // namespaces (and vice versa), since the two are independent, independently-ordered keyspaces.
+    final String resumeSystemRel =
+        isSystemToken ? CatalogSurfaceSupport.decodeToken(NS_TOKEN_PREFIX, pageToken, corr) : "";
+    final String resumeUserRel =
+        isUserToken ? CatalogSurfaceSupport.decodeToken(NSU_TOKEN_PREFIX, pageToken, corr) : "";
+    // Raw repo cursors carry no service prefix; service tokens restart the scan and resume by name.
+    String cursor = (isSystemToken || isUserToken) ? "" : pageToken;
 
     var out = new ArrayList<Namespace>(want);
-    String lastEmittedRel = "";
+    String lastUserRel = "";
+    String lastSystemRel = "";
 
-    // The repo phase must run for continuation tokens too: a batch that exhausts the cursor can
-    // hold
-    // more matches than fit on one page, so later pages re-scan from the start and skip already-
-    // emitted namespaces by name via resumeAfterRel. Skipping the scan for service tokens would
-    // drop
-    // every remaining user namespace once a page-filling batch exhausted the cursor.
-    while (out.size() < want) {
-      var next = new StringBuilder();
-      final List<Namespace> scanned;
-      try {
-        scanned = source.listRepo(batch, cursor, next);
-      } catch (IllegalArgumentException badToken) {
-        throw GrpcErrors.invalidArgument(corr, PAGE_TOKEN_INVALID, Map.of("page_token", cursor));
-      }
-
-      for (var ns : scanned) {
-        if (!matches(ns, source)) {
-          continue;
+    // Repo (user) phase. Runs for the first page, raw-cursor pages, and user-phase resume tokens;
+    // it
+    // is skipped only once we have advanced into the system phase (system-phase token). A batch
+    // that
+    // exhausts the cursor can hold more matches than fit on one page, so a user-phase resume token
+    // re-scans from the start and skips already-emitted rows by name via resumeUserRel.
+    if (!isSystemToken) {
+      while (out.size() < want) {
+        var next = new StringBuilder();
+        final List<Namespace> scanned;
+        try {
+          scanned = source.listRepo(batch, cursor, next);
+        } catch (IllegalArgumentException badToken) {
+          throw GrpcErrors.invalidArgument(corr, PAGE_TOKEN_INVALID, Map.of("page_token", cursor));
         }
 
-        var rel = relativeQualifiedName(ns, source.parentPath());
-        if (!resumeAfterRel.isBlank() && rel.compareTo(resumeAfterRel) <= 0) {
-          continue;
+        for (var ns : scanned) {
+          if (!matches(ns, source)) {
+            continue;
+          }
+
+          var rel = relativeQualifiedName(ns, source.parentPath());
+          if (!resumeUserRel.isBlank() && rel.compareTo(resumeUserRel) <= 0) {
+            continue;
+          }
+
+          out.add(ns);
+          lastUserRel = rel;
+          if (out.size() >= want) {
+            break;
+          }
         }
 
-        out.add(ns);
-        lastEmittedRel = rel;
-        if (out.size() >= want) {
+        cursor = next.toString();
+        if (cursor.isBlank() || out.size() >= want) {
           break;
         }
       }
-
-      cursor = next.toString();
-      if (cursor.isBlank() || out.size() >= want) {
-        break;
-      }
     }
 
-    if (cursor.isBlank() && out.size() < want) {
+    // System phase: only once the repo cursor is exhausted, or when resuming directly into it. When
+    // transitioning here from the repo phase, resumeSystemRel is blank, so system namespaces are
+    // emitted from the beginning regardless of where the user phase left off.
+    boolean enteredSystemPhase = false;
+    if ((isSystemToken || cursor.isBlank()) && out.size() < want) {
       record SysItem(NamespaceNode namespace, String rel) {}
 
       var sysItems =
@@ -91,20 +107,24 @@ final class CatalogSurfaceNamespacePager {
               .toList();
 
       for (var it : sysItems) {
-        if (!resumeAfterRel.isBlank() && it.rel().compareTo(resumeAfterRel) <= 0) {
+        if (!resumeSystemRel.isBlank() && it.rel().compareTo(resumeSystemRel) <= 0) {
           continue;
         }
         if (out.size() >= want) {
           break;
         }
         out.add(source.mapSystemNode(it.namespace()));
-        lastEmittedRel = it.rel();
+        lastSystemRel = it.rel();
+        enteredSystemPhase = true;
       }
     }
 
     String nextToken = cursor;
     if (nextToken.isBlank() && out.size() == want) {
-      nextToken = CatalogSurfaceSupport.encodeToken(NS_TOKEN_PREFIX, lastEmittedRel);
+      nextToken =
+          enteredSystemPhase
+              ? CatalogSurfaceSupport.encodeToken(NS_TOKEN_PREFIX, lastSystemRel)
+              : CatalogSurfaceSupport.encodeToken(NSU_TOKEN_PREFIX, lastUserRel);
     }
 
     int total = countNamespaces(source, corr);

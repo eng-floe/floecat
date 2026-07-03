@@ -132,6 +132,18 @@ class CatalogSurfaceNamespacesTest {
   }
 
   @Test
+  void listNamespacesDoesNotDropSystemNamespacesSortingBeforeLastUserNamespace() {
+    // Regression: the system phase must resume by a system relative name, not by the last user
+    // relative name. "alpha" sorts before the last user namespace "orders" and must still appear.
+    stubUserNamespaces(List.of(namespace("orders", List.of())));
+    overlay.addNode(namespaceNode(systemNamespaceId("alpha"), "alpha", List.of()));
+    overlay.addNode(
+        namespaceNode(systemNamespaceId("information_schema"), "information_schema", List.of()));
+
+    assertEquals(List.of("orders", "alpha", "information_schema"), pageAllNamespaceNames(1));
+  }
+
+  @Test
   void listNamespacesRejectsMalformedServicePageToken() {
     StatusRuntimeException ex =
         assertThrows(
