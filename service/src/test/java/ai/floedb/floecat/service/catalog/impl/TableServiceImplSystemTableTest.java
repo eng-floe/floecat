@@ -18,8 +18,6 @@ package ai.floedb.floecat.service.catalog.impl;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -33,7 +31,6 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.MutationMeta;
-import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
@@ -47,6 +44,7 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.testsupport.TestPrincipals;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
@@ -99,11 +97,7 @@ class TableServiceImplSystemTableTest {
     svc.metadataGraph = metadataGraph;
 
     // Minimal principal + authz behavior
-    var pc = mock(PrincipalContext.class);
-    when(principal.get()).thenReturn(pc);
-    when(pc.getCorrelationId()).thenReturn("corr");
-    when(pc.getAccountId()).thenReturn("acct");
-    doNothing().when(authz).require(any(), anyString());
+    var pc = TestPrincipals.stubPrincipal(principal, authz);
     when(hintCleaner.shouldClearHints(any())).thenReturn(false);
   }
 

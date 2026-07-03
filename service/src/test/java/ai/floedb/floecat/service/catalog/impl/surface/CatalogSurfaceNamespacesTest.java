@@ -141,7 +141,7 @@ class CatalogSurfaceNamespacesTest {
     }
     stubUserNamespaces(many);
 
-    assertEquals(expected, pageAllNamespaceNames(3));
+    assertEquals(expected, pageAllNamespaceNames(surface, 3));
   }
 
   @Test
@@ -155,7 +155,7 @@ class CatalogSurfaceNamespacesTest {
             namespace("bravo", List.of()),
             namespace("charlie", List.of())));
 
-    assertEquals(List.of("alpha", "bravo", "charlie"), pageAllNamespaceNames(1));
+    assertEquals(List.of("alpha", "bravo", "charlie"), pageAllNamespaceNames(surface, 1));
   }
 
   @Test
@@ -181,25 +181,7 @@ class CatalogSurfaceNamespacesTest {
               .build());
     }
 
-    var collected = new java.util.ArrayList<String>();
-    String token = "";
-    for (int guard = 0; guard < 200; guard++) {
-      var response =
-          realSurface.listNamespaces(
-              ListNamespacesRequest.newBuilder()
-                  .setCatalogId(catalogId)
-                  .setPage(PageRequest.newBuilder().setPageSize(7).setPageToken(token))
-                  .build(),
-              ACCOUNT_ID,
-              CORRELATION_ID);
-      collected.addAll(names(response.getNamespacesList()));
-      token = response.getPage().getNextPageToken();
-      if (token.isBlank()) {
-        break;
-      }
-    }
-
-    assertEquals(expected, collected);
+    assertEquals(expected, pageAllNamespaceNames(realSurface, 7));
   }
 
   @Test
@@ -211,7 +193,8 @@ class CatalogSurfaceNamespacesTest {
     overlay.addNode(
         namespaceNode(systemNamespaceId("information_schema"), "information_schema", List.of()));
 
-    assertEquals(List.of("orders", "alpha", "information_schema"), pageAllNamespaceNames(1));
+    assertEquals(
+        List.of("orders", "alpha", "information_schema"), pageAllNamespaceNames(surface, 1));
   }
 
   @Test
@@ -289,12 +272,12 @@ class CatalogSurfaceNamespacesTest {
   }
 
   /** Drains every page (page_size {@code pageSize}) and returns the concatenated display names. */
-  private List<String> pageAllNamespaceNames(int pageSize) {
+  private List<String> pageAllNamespaceNames(CatalogSurfaceNamespaces target, int pageSize) {
     var collected = new java.util.ArrayList<String>();
     String token = "";
     for (int guard = 0; guard < 100; guard++) {
       var response =
-          surface.listNamespaces(
+          target.listNamespaces(
               ListNamespacesRequest.newBuilder()
                   .setCatalogId(catalogId)
                   .setPage(PageRequest.newBuilder().setPageSize(pageSize).setPageToken(token))

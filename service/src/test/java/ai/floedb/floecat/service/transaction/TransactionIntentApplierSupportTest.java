@@ -808,6 +808,7 @@ class TransactionIntentApplierSupportTest {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointers);
     inject(support, "blobStore", blobs);
+    inject(support, "overlay", permissiveOverlay());
 
     String accountId = "acct";
     String catalogId = "cat-1";
@@ -827,8 +828,16 @@ class TransactionIntentApplierSupportTest {
     Table current =
         Table.newBuilder()
             .setResourceId(tableRid)
-            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId(catalogId))
-            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId(namespaceId))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
             .setDisplayName("orders")
             .build();
     String currentBlob = "/accounts/acct/tables/table-1/table/current.pb";
