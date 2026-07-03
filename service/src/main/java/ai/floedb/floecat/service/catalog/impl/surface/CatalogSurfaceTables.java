@@ -24,7 +24,6 @@ import ai.floedb.floecat.catalog.rpc.ListTablesResponse;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
@@ -40,12 +39,12 @@ public final class CatalogSurfaceTables {
 
   private final TableRepository tableRepo;
   private final CatalogOverlay overlay;
-  private final CatalogSurfaceTablePolicy tablePolicy;
+  private final CatalogSurfaceWritePolicy writePolicy;
 
   public CatalogSurfaceTables(TableRepository tableRepo, CatalogOverlay overlay) {
     this.tableRepo = Objects.requireNonNull(tableRepo, "table repository is required");
     this.overlay = overlay;
-    this.tablePolicy = new CatalogSurfaceTablePolicy(overlay);
+    this.writePolicy = new CatalogSurfaceWritePolicy(overlay);
   }
 
   public ListTablesResponse listTables(ListTablesRequest request, String accountId, String corr) {
@@ -53,8 +52,7 @@ public final class CatalogSurfaceTables {
     final int want = Math.max(1, pageIn.limit);
 
     var namespaceId = request.getNamespaceId();
-    NamespaceNode nsNode =
-        CatalogSurfaceSupport.requireVisibleNamespace(overlay, namespaceId, corr);
+    NamespaceNode nsNode = writePolicy.requireVisibleNamespace(namespaceId, corr);
 
     var result =
         CatalogSurfaceRelationPager.list(
@@ -68,7 +66,7 @@ public final class CatalogSurfaceTables {
   }
 
   public GetTableResponse getTable(GetTableRequest request, String corr) {
-    TableNode node = requireVisibleTable(request.getTableId(), corr);
+    TableNode node = writePolicy.requireVisibleTable(request.getTableId(), corr);
     Table table = tableFromOverlayNodeOrRepo(node, request.getTableId(), corr);
     MutationMeta meta =
         node.origin() == GraphNodeOrigin.SYSTEM
@@ -76,31 +74,6 @@ public final class CatalogSurfaceTables {
             : tableRepo.metaForSafe(request.getTableId());
 
     return GetTableResponse.newBuilder().setTable(table).setMeta(meta).build();
-  }
-
-  public TableNode requireVisibleTable(ResourceId tableId, String corr) {
-    return tablePolicy.requireVisibleTable(tableId, corr);
-  }
-
-  public TableNode requireWritableTable(ResourceId tableId, String corr) {
-    return tablePolicy.requireWritableTable(tableId, corr);
-  }
-
-  public CatalogNode requireWritableCatalog(ResourceId catalogId, String field, String corr) {
-    return CatalogSurfaceSupport.requireWritableCatalog(overlay, catalogId, field, corr);
-  }
-
-  public NamespaceNode requireWritableNamespace(ResourceId namespaceId, String field, String corr) {
-    return CatalogSurfaceSupport.requireWritableNamespace(overlay, namespaceId, field, corr);
-  }
-
-  public void requireNamespaceInCatalog(
-      NamespaceNode namespace, ResourceId namespaceId, ResourceId catalogId, String corr) {
-    CatalogSurfaceSupport.requireNamespaceInCatalog(namespace, namespaceId, catalogId, corr);
-  }
-
-  public void requireWritableTableForDelete(ResourceId tableId, String corr, boolean callerCares) {
-    tablePolicy.requireWritableTableForDelete(tableId, corr, callerCares);
   }
 
   private Table tableFromOverlayNodeOrRepo(TableNode node, ResourceId tableId, String corr) {

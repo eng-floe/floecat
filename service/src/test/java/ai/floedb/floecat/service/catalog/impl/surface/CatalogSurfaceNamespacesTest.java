@@ -59,12 +59,14 @@ class CatalogSurfaceNamespacesTest {
   private NamespaceRepository namespaceRepo;
   private TestCatalogOverlay overlay;
   private CatalogSurfaceNamespaces surface;
+  private CatalogSurfaceWritePolicy writePolicy;
 
   @BeforeEach
   void setup() {
     namespaceRepo = mock(NamespaceRepository.class);
     overlay = new TestCatalogOverlay();
     surface = new CatalogSurfaceNamespaces(namespaceRepo, overlay);
+    writePolicy = new CatalogSurfaceWritePolicy(overlay);
 
     overlay.addNode(catalogNode(catalogId, "examples"));
   }
@@ -160,7 +162,7 @@ class CatalogSurfaceNamespacesTest {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                surface.rejectSystemNamespacePathCollision(
+                writePolicy.rejectSystemNamespacePathCollision(
                     catalogId, List.of("information_schema"), CORRELATION_ID));
     assertEquals(Status.Code.ALREADY_EXISTS, exact.getStatus().getCode());
 
@@ -168,7 +170,7 @@ class CatalogSurfaceNamespacesTest {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                surface.rejectSystemNamespacePathCollision(
+                writePolicy.rejectSystemNamespacePathCollision(
                     catalogId, List.of("information_schema", "tables"), CORRELATION_ID));
     assertEquals(Status.Code.PERMISSION_DENIED, under.getStatus().getCode());
   }
@@ -180,7 +182,7 @@ class CatalogSurfaceNamespacesTest {
     StatusRuntimeException ex =
         assertThrows(
             StatusRuntimeException.class,
-            () -> surface.requireWritableNamespace(namespaceId, CORRELATION_ID));
+            () -> writePolicy.requireWritableNamespace(namespaceId, CORRELATION_ID));
 
     assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
     verifyNoInteractions(namespaceRepo);

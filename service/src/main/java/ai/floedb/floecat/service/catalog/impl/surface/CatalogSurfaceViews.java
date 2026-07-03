@@ -23,9 +23,6 @@ import ai.floedb.floecat.catalog.rpc.ListViewsRequest;
 import ai.floedb.floecat.catalog.rpc.ListViewsResponse;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.metagraph.model.CatalogNode;
-import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
@@ -41,16 +38,17 @@ public final class CatalogSurfaceViews {
 
   private final ViewRepository viewRepo;
   private final CatalogOverlay overlay;
+  private final CatalogSurfaceWritePolicy writePolicy;
 
   public CatalogSurfaceViews(ViewRepository viewRepo, CatalogOverlay overlay) {
     this.viewRepo = Objects.requireNonNull(viewRepo, "view repository is required");
     this.overlay = overlay;
+    this.writePolicy = new CatalogSurfaceWritePolicy(overlay);
   }
 
   public ListViewsResponse listViews(ListViewsRequest request, String accountId, String corr) {
     var namespaceId = request.getNamespaceId();
-    NamespaceNode nsNode =
-        CatalogSurfaceSupport.requireVisibleNamespace(overlay, namespaceId, corr);
+    NamespaceNode nsNode = writePolicy.requireVisibleNamespace(namespaceId, corr);
 
     var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
     final int want = Math.max(1, pageIn.limit);
@@ -67,76 +65,10 @@ public final class CatalogSurfaceViews {
 
   public GetViewResponse getView(GetViewRequest request, String corr) {
     var viewId = request.getViewId();
-    ViewNode node = requireVisibleView(viewId, corr);
+    ViewNode node = writePolicy.requireVisibleView(viewId, corr);
     var view = viewFromOverlayNodeOrRepo(node, viewId, corr);
 
     return GetViewResponse.newBuilder().setView(view).build();
-  }
-
-  public ViewNode requireVisibleView(ResourceId viewId, String corr) {
-    if (viewId == null) {
-      throw GrpcErrors.notFound(corr, VIEW, Map.of("id", "<missing_view_id>"));
-    }
-    CatalogSurfaceSupport.ensureKind(viewId, ResourceKind.RK_VIEW, "view_id", corr);
-    return overlay
-        .resolve(viewId)
-        .filter(ViewNode.class::isInstance)
-        .map(ViewNode.class::cast)
-        .orElseThrow(() -> GrpcErrors.notFound(corr, VIEW, Map.of("id", viewId.getId())));
-  }
-
-  public ViewNode requireWritableView(ResourceId viewId, String corr) {
-    ViewNode node = requireVisibleView(viewId, corr);
-    enforceWritableViewNode(node, viewId, corr);
-    return node;
-  }
-
-  public CatalogNode requireWritableCatalog(ResourceId catalogId, String field, String corr) {
-    return CatalogSurfaceSupport.requireWritableCatalog(overlay, catalogId, field, corr);
-  }
-
-  public NamespaceNode requireWritableNamespace(ResourceId namespaceId, String field, String corr) {
-    return CatalogSurfaceSupport.requireWritableNamespace(overlay, namespaceId, field, corr);
-  }
-
-  public void requireNamespaceInCatalog(
-      NamespaceNode namespace, ResourceId namespaceId, ResourceId catalogId, String corr) {
-    CatalogSurfaceSupport.requireNamespaceInCatalog(namespace, namespaceId, catalogId, corr);
-  }
-
-  public void requireWritableViewForDelete(ResourceId viewId, String corr, boolean callerCares) {
-    GraphNode node = resolveViewNode(viewId, corr, callerCares);
-    if (node == null) {
-      return;
-    }
-    enforceWritableViewNode(node, viewId, corr);
-  }
-
-  private GraphNode resolveViewNode(ResourceId viewId, String corr, boolean throwOnError) {
-    if (viewId == null) {
-      throw GrpcErrors.notFound(corr, VIEW, Map.of("id", "<missing_view_id>"));
-    }
-    CatalogSurfaceSupport.ensureKind(viewId, ResourceKind.RK_VIEW, "view_id", corr);
-
-    try {
-      return overlay.resolve(viewId).orElse(null);
-    } catch (RuntimeException e) {
-      if (throwOnError) {
-        throw e;
-      }
-      return null;
-    }
-  }
-
-  private void enforceWritableViewNode(GraphNode node, ResourceId viewId, String corr) {
-    if (node instanceof ViewNode vn) {
-      if (isSystemViewNode(vn)) {
-        throw GrpcErrors.permissionDenied(
-            corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", viewId.getId(), "kind", "view"));
-      }
-      return;
-    }
-    throw GrpcErrors.notFound(corr, VIEW, Map.of("id", viewId.getId()));
   }
 
   private View viewFromOverlayNodeOrRepo(ViewNode node, ResourceId viewId, String corr) {
@@ -161,7 +93,7 @@ public final class CatalogSurfaceViews {
     return builder.build();
   }
 
-  private static boolean isSystemViewNode(GraphNode node) {
+  private static boolean isSystemViewNode(ViewNode node) {
     if (node == null || node.id() == null) {
       return false;
     }

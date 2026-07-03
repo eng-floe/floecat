@@ -38,6 +38,7 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceViews;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -90,6 +91,10 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
   private CatalogSurfaceViews catalogSurfaceViews() {
     return new CatalogSurfaceViews(viewRepo, overlay);
+  }
+
+  private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
+    return new CatalogSurfaceWritePolicy(overlay);
   }
 
   @Override
@@ -161,13 +166,13 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   }
 
                   var catalogId = spec.getCatalogId();
-                  var surface = catalogSurfaceViews();
-                  surface.requireWritableCatalog(catalogId, "spec.catalog_id", corr);
+                  var writePolicy = catalogSurfaceWritePolicy();
+                  writePolicy.requireWritableCatalog(catalogId, "spec.catalog_id", corr);
 
                   var namespaceId = spec.getNamespaceId();
                   var namespace =
-                      surface.requireWritableNamespace(namespaceId, "spec.namespace_id", corr);
-                  surface.requireNamespaceInCatalog(namespace, namespaceId, catalogId, corr);
+                      writePolicy.requireWritableNamespace(namespaceId, "spec.namespace_id", corr);
+                  writePolicy.requireNamespaceInCatalog(namespace, namespaceId, catalogId, corr);
 
                   var tsNow = nowTs();
 
@@ -301,7 +306,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
                   var viewId = request.getViewId();
                   ensureKind(viewId, ResourceKind.RK_VIEW, "view_id", corr);
-                  catalogSurfaceViews().requireWritableView(viewId, corr);
+                  catalogSurfaceWritePolicy().requireWritableView(viewId, corr);
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
                     throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
@@ -409,7 +414,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   var viewId = request.getViewId();
                   ensureKind(viewId, ResourceKind.RK_VIEW, "view_id", correlationId);
                   boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
-                  catalogSurfaceViews()
+                  catalogSurfaceWritePolicy()
                       .requireWritableViewForDelete(viewId, correlationId, callerCares);
 
                   MutationMeta meta;
@@ -508,14 +513,14 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
     boolean catalogChanged = false;
     boolean namespaceChanged = false;
-    var surface = catalogSurfaceViews();
+    var writePolicy = catalogSurfaceWritePolicy();
 
     if (maskTargets(mask, "catalog_id")) {
       if (!spec.hasCatalogId()) {
         throw GrpcErrors.invalidArgument(corr, CATALOG_ID_CANNOT_CLEAR, Map.of());
       }
       var catId = spec.getCatalogId();
-      surface.requireWritableCatalog(catId, "spec.catalog_id", corr);
+      writePolicy.requireWritableCatalog(catId, "spec.catalog_id", corr);
       b.setCatalogId(catId);
       catalogChanged = true;
     }
@@ -525,18 +530,18 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
         throw GrpcErrors.invalidArgument(corr, NAMESPACE_ID_CANNOT_CLEAR, Map.of());
       }
       var nsId = spec.getNamespaceId();
-      var ns = surface.requireWritableNamespace(nsId, "spec.namespace_id", corr);
+      var ns = writePolicy.requireWritableNamespace(nsId, "spec.namespace_id", corr);
 
       var effectiveCatalogId = catalogChanged ? b.getCatalogId() : current.getCatalogId();
-      surface.requireNamespaceInCatalog(ns, nsId, effectiveCatalogId, corr);
+      writePolicy.requireNamespaceInCatalog(ns, nsId, effectiveCatalogId, corr);
       b.setNamespaceId(nsId);
       namespaceChanged = true;
     }
 
     if (catalogChanged && !namespaceChanged) {
       var effectiveCatalogId = b.getCatalogId();
-      var ns = surface.requireWritableNamespace(b.getNamespaceId(), "namespace_id", corr);
-      surface.requireNamespaceInCatalog(ns, b.getNamespaceId(), effectiveCatalogId, corr);
+      var ns = writePolicy.requireWritableNamespace(b.getNamespaceId(), "namespace_id", corr);
+      writePolicy.requireNamespaceInCatalog(ns, b.getNamespaceId(), effectiveCatalogId, corr);
     }
 
     return b.build();

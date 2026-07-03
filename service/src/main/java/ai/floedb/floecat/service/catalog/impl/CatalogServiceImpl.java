@@ -35,6 +35,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceCatalogs;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -235,7 +236,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   authz.require(pctx, "catalog.write");
 
                   var catalogId = request.getCatalogId();
-                  catalogSurfaceCatalogs().requireWritableCatalog(catalogId, corr);
+                  catalogSurfaceWritePolicy().requireWritableCatalog(catalogId, corr);
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
                     throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
@@ -334,7 +335,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var correlationId = principalContext.getCorrelationId();
                   authz.require(principalContext, "catalog.write");
                   var id = request.getCatalogId();
-                  catalogSurfaceCatalogs().requireWritableCatalog(id, correlationId);
+                  catalogSurfaceWritePolicy().requireWritableCatalog(id, correlationId);
                   long markerVersion = markerStore.catalogMarkerVersion(id);
 
                   MutationMeta meta;
@@ -389,6 +390,10 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
 
   private CatalogSurfaceCatalogs catalogSurfaceCatalogs() {
     return new CatalogSurfaceCatalogs(catalogRepo, overlay, engineContext);
+  }
+
+  private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
+    return new CatalogSurfaceWritePolicy(overlay);
   }
 
   private Catalog applyCatalogSpecPatch(

@@ -60,12 +60,14 @@ class CatalogSurfaceViewsTest {
   private ViewRepository viewRepo;
   private TestCatalogOverlay overlay;
   private CatalogSurfaceViews surface;
+  private CatalogSurfaceWritePolicy writePolicy;
 
   @BeforeEach
   void setup() {
     viewRepo = mock(ViewRepository.class);
     overlay = new TestCatalogOverlay();
     surface = new CatalogSurfaceViews(viewRepo, overlay);
+    writePolicy = new CatalogSurfaceWritePolicy(overlay);
 
     overlay.addNode(
         new NamespaceNode(
@@ -185,7 +187,7 @@ class CatalogSurfaceViewsTest {
     StatusRuntimeException ex =
         assertThrows(
             StatusRuntimeException.class,
-            () -> surface.requireWritableView(systemView.id(), CORRELATION_ID));
+            () -> writePolicy.requireWritableView(systemView.id(), CORRELATION_ID));
 
     assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
     verifyNoInteractions(viewRepo);

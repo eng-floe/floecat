@@ -52,6 +52,7 @@ class CatalogSurfaceCatalogsTest {
   private CatalogRepository catalogRepo;
   private CatalogOverlay overlay;
   private CatalogSurfaceCatalogs surface;
+  private CatalogSurfaceWritePolicy writePolicy;
 
   @BeforeEach
   void setup() {
@@ -63,6 +64,7 @@ class CatalogSurfaceCatalogsTest {
     when(overlay.catalog(any())).thenReturn(Optional.empty());
 
     surface = new CatalogSurfaceCatalogs(catalogRepo, overlay, engineContext);
+    writePolicy = new CatalogSurfaceWritePolicy(overlay);
   }
 
   @Test
@@ -109,7 +111,7 @@ class CatalogSurfaceCatalogsTest {
     StatusRuntimeException ex =
         assertThrows(
             StatusRuntimeException.class,
-            () -> surface.requireWritableCatalog(systemCatalogId, "corr"));
+            () -> writePolicy.requireWritableCatalog(systemCatalogId, "corr"));
 
     assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
     verifyNoInteractions(catalogRepo, overlay);

@@ -35,6 +35,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceNamespaces;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -162,10 +163,10 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   var spec = request.getSpec();
                   PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
                       spec.getPropertiesMap(), correlationId, "spec.properties");
+                  var writePolicy = catalogSurfaceWritePolicy();
                   var catalog =
-                      namespaceSurface()
-                          .requireWritableCatalog(
-                              spec.getCatalogId(), "spec.catalog_id", correlationId);
+                      writePolicy.requireWritableCatalog(
+                          spec.getCatalogId(), "spec.catalog_id", correlationId);
                   String catalogName = catalog.displayName();
 
                   var tsNow = nowTs();
@@ -196,9 +197,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   final List<String> fullPath = new ArrayList<>(parents);
                   fullPath.add(display);
 
-                  namespaceSurface()
-                      .rejectSystemNamespacePathCollision(
-                          spec.getCatalogId(), fullPath, correlationId);
+                  writePolicy.rejectSystemNamespacePathCollision(
+                      spec.getCatalogId(), fullPath, correlationId);
 
                   final byte[] fingerprint =
                       canonicalFingerprint(spec.getCatalogId(), parents, display, spec);
@@ -377,7 +377,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   authz.require(princ, "namespace.write");
 
                   var nsId = request.getNamespaceId();
-                  namespaceSurface().requireWritableNamespace(nsId, corr);
+                  catalogSurfaceWritePolicy().requireWritableNamespace(nsId, corr);
 
                   if (!request.hasUpdateMask() || request.getUpdateMask().getPathsCount() == 0) {
                     throw GrpcErrors.invalidArgument(
@@ -487,7 +487,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   authz.require(princ, "namespace.write");
 
                   var namespaceId = request.getNamespaceId();
-                  namespaceSurface().requireWritableNamespace(namespaceId, correlationId);
+                  catalogSurfaceWritePolicy().requireWritableNamespace(namespaceId, correlationId);
 
                   var namespace = namespaceRepo.getById(namespaceId).orElse(null);
                   var catalogId =
@@ -616,6 +616,10 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
     return new CatalogSurfaceNamespaces(namespaceRepo, overlay);
   }
 
+  private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
+    return new CatalogSurfaceWritePolicy(overlay);
+  }
+
   private static byte[] canonicalFingerprint(
       ResourceId catalogId, List<String> parents, String display, NamespaceSpec spec) {
     return new Canonicalizer()
@@ -667,7 +671,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
             corr, GeneratedErrorMessages.MessageKey.CATALOG_ID_CANNOT_CLEAR, Map.of());
       }
       var cat = spec.getCatalogId();
-      namespaceSurface().requireWritableCatalog(cat, "spec.catalog_id", corr);
+      catalogSurfaceWritePolicy().requireWritableCatalog(cat, "spec.catalog_id", corr);
       b.setCatalogId(cat);
     }
 

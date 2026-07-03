@@ -121,14 +121,6 @@ public final class CatalogSurfaceCatalogs {
     return GetCatalogResponse.newBuilder().setCatalog(catalog).build();
   }
 
-  public void requireWritableCatalog(ResourceId catalogId, String corr) {
-    CatalogSurfaceSupport.ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", corr);
-    if (isCurrentSystemCatalog(catalogId)) {
-      throw GrpcErrors.permissionDenied(
-          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", catalogId.getId(), "kind", "catalog"));
-    }
-  }
-
   private Catalog systemCatalogForCurrentEngine() {
     String engineKind = engineContext.effectiveEngineKind();
     return Catalog.newBuilder()

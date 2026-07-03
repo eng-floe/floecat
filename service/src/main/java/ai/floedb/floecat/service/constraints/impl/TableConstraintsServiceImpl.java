@@ -43,7 +43,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
-import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceTablePolicy;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
@@ -80,8 +80,8 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
 
   private static final Logger LOG = Logger.getLogger(TableConstraintsServiceImpl.class);
 
-  private CatalogSurfaceTablePolicy catalogSurfaceTablePolicy() {
-    return new CatalogSurfaceTablePolicy(overlay);
+  private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
+    return new CatalogSurfaceWritePolicy(overlay);
   }
 
   /** Returns snapshot-scoped constraints for one table snapshot. */
@@ -723,16 +723,16 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
 
   /** Ensures the request table is visible through overlay resolution (user or system). */
   private void ensureTableVisible(ResourceId tableId) {
-    catalogSurfaceTablePolicy().requireVisibleTable(tableId, correlationId());
+    catalogSurfaceWritePolicy().requireVisibleTable(tableId, correlationId());
   }
 
   /** Ensures the request table is mutable; system tables are immutable and rejected. */
   private void ensureTableWritable(ResourceId tableId) {
-    catalogSurfaceTablePolicy().requireWritableTable(tableId, correlationId());
+    catalogSurfaceWritePolicy().requireWritableTable(tableId, correlationId());
   }
 
   private String writableTableCatalogName(ResourceId tableId) {
-    var table = catalogSurfaceTablePolicy().requireWritableTable(tableId, correlationId());
+    var table = catalogSurfaceWritePolicy().requireWritableTable(tableId, correlationId());
     if (!(table instanceof UserTableNode userTable)) {
       return "";
     }

@@ -20,11 +20,9 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
-import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
 import java.util.Base64;
@@ -55,27 +53,6 @@ final class CatalogSurfaceSupport {
         .filter(CatalogNode.class::isInstance)
         .map(CatalogNode.class::cast)
         .orElseThrow(() -> GrpcErrors.notFound(corr, CATALOG, Map.of("id", catalogId.getId())));
-  }
-
-  static CatalogNode requireWritableCatalog(
-      CatalogOverlay overlay, ResourceId catalogId, String field, String corr) {
-    var catalog = requireVisibleCatalog(overlay, catalogId, field, corr);
-    if (SystemResourceIdGenerator.isSystemId(catalog.id())) {
-      throw GrpcErrors.permissionDenied(
-          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", catalog.id().getId(), "kind", "catalog"));
-    }
-    return catalog;
-  }
-
-  static NamespaceNode requireWritableNamespace(
-      CatalogOverlay overlay, ResourceId namespaceId, String field, String corr) {
-    ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, field, corr);
-    var namespace = requireVisibleNamespace(overlay, namespaceId, corr);
-    if (namespace.origin() == GraphNodeOrigin.SYSTEM) {
-      throw GrpcErrors.permissionDenied(
-          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", namespaceId.getId(), "kind", "namespace"));
-    }
-    return namespace;
   }
 
   static void requireNamespaceInCatalog(

@@ -57,12 +57,14 @@ class CatalogSurfaceTablesTest {
   private TableRepository tableRepo;
   private TestCatalogOverlay overlay;
   private CatalogSurfaceTables surface;
+  private CatalogSurfaceWritePolicy writePolicy;
 
   @BeforeEach
   void setup() {
     tableRepo = mock(TableRepository.class);
     overlay = new TestCatalogOverlay();
     surface = new CatalogSurfaceTables(tableRepo, overlay);
+    writePolicy = new CatalogSurfaceWritePolicy(overlay);
 
     overlay.addNode(
         new NamespaceNode(
@@ -183,7 +185,7 @@ class CatalogSurfaceTablesTest {
     StatusRuntimeException ex =
         assertThrows(
             StatusRuntimeException.class,
-            () -> surface.requireWritableTable(systemTable.id(), CORRELATION_ID));
+            () -> writePolicy.requireWritableTable(systemTable.id(), CORRELATION_ID));
 
     assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
     verifyNoInteractions(tableRepo);
