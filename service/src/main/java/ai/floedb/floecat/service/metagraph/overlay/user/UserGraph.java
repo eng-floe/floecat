@@ -346,30 +346,24 @@ public final class UserGraph {
   /**
    * Resolves a relation (table or view) by name reference.
    *
-   * <p>Checks both tables and views, throwing an error if both match and returning empty if neither
-   * resolves.
+   * <p>Checks tables first, then views. Write-side catalog surface policy prevents tables and views
+   * from sharing a relation name, so the query path does not need to probe both kinds when a table
+   * exists.
    *
    * @param cid correlation ID for error reporting
    * @param ref the name reference to resolve
    * @return the resolved resource ID, if present
-   * @throws GrpcErrors if the name is ambiguous
    */
   public Optional<ResourceId> resolveName(String cid, NameRef ref) {
     validateNameRef(cid, ref);
     String accountId = requireAccountId(cid);
 
-    // table / view?
     Optional<ResolvedRelation> t = names.resolveTableRelation(accountId, ref);
-    Optional<ResolvedRelation> v = names.resolveViewRelation(accountId, ref);
-
-    if (t.isPresent() && v.isPresent()) {
-      throw GrpcErrors.invalidArgument(
-          cid,
-          GeneratedErrorMessages.MessageKey.QUERY_INPUT_AMBIGUOUS,
-          Map.of("name", ref.toString()));
+    if (t.isPresent()) {
+      return t.map(ResolvedRelation::resourceId);
     }
 
-    return t.map(ResolvedRelation::resourceId).or(() -> v.map(ResolvedRelation::resourceId));
+    return names.resolveViewRelation(accountId, ref).map(ResolvedRelation::resourceId);
   }
 
   /**

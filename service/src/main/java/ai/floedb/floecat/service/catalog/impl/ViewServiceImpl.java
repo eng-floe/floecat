@@ -182,6 +182,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
                   var rawName = mustNonEmpty(spec.getDisplayName(), "spec.display_name", corr);
                   var normName = normalizeName(rawName);
+                  writePolicy.requireRelationNameWriteEligible(
+                      namespaceId, catalogId, normName, null, VIEW_ALREADY_EXISTS, corr);
 
                   var explicitKey =
                       request.hasIdempotency() ? request.getIdempotency().getKey().trim() : "";
@@ -330,6 +332,19 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                               () -> GrpcErrors.notFound(corr, VIEW, Map.of("id", viewId.getId())));
 
                   var desired = applyViewSpecPatch(current, spec, mask, corr);
+                  var writePolicy = catalogSurfaceWritePolicy();
+                  var desiredNamespace =
+                      writePolicy.requireWritableNamespace(
+                          desired.getNamespaceId(), "namespace_id", corr);
+                  writePolicy.requireNamespaceInCatalog(
+                      desiredNamespace, desired.getNamespaceId(), desired.getCatalogId(), corr);
+                  writePolicy.requireRelationNameWriteEligible(
+                      desired.getNamespaceId(),
+                      desired.getCatalogId(),
+                      desired.getDisplayName(),
+                      current.getResourceId(),
+                      VIEW_ALREADY_EXISTS,
+                      corr);
                   if (hintCleaner.shouldClearHints(mask)) {
                     View.Builder builder = desired.toBuilder();
                     hintCleaner.cleanViewHints(builder, mask, current, builder.build());
@@ -475,7 +490,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
       if (!spec.hasDisplayName()) {
         throw GrpcErrors.invalidArgument(corr, DISPLAY_NAME_CANNOT_CLEAR, Map.of());
       }
-      b.setDisplayName(mustNonEmpty(spec.getDisplayName(), "spec.display_name", corr));
+      b.setDisplayName(
+          normalizeName(mustNonEmpty(spec.getDisplayName(), "spec.display_name", corr)));
     }
 
     if (maskTargets(mask, "description")) {

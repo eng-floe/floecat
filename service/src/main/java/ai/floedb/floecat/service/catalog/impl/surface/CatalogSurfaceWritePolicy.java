@@ -27,12 +27,15 @@ import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.spi.TopologyGraph;
+import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /** Catalog Surface visibility and write eligibility policy. */
 public final class CatalogSurfaceWritePolicy {
@@ -200,6 +203,35 @@ public final class CatalogSurfaceWritePolicy {
           corr,
           SYSTEM_OBJECT_IMMUTABLE,
           Map.of("catalog_id", catalogId.getId(), "path", String.join(".", fullPath)));
+    }
+  }
+
+  public void requireRelationNameWriteEligible(
+      ResourceId namespaceId,
+      ResourceId catalogId,
+      String displayName,
+      ResourceId currentResourceId,
+      MessageKey alreadyExistsKey,
+      String corr) {
+    String relationName = CatalogSurfaceSupport.normalizeName(displayName);
+    for (TopologyGraph.RelationRef relation :
+        overlay.listRelationRefsByName(catalogId, namespaceId, Set.of(relationName))) {
+      if (!relationName.equals(CatalogSurfaceSupport.normalizeName(relation.name()))) {
+        continue;
+      }
+      if (currentResourceId != null && currentResourceId.equals(relation.id())) {
+        continue;
+      }
+      throw GrpcErrors.alreadyExists(
+          corr,
+          alreadyExistsKey,
+          Map.of(
+              "display_name",
+              relationName,
+              "catalog_id",
+              catalogId.getId(),
+              "namespace_id",
+              namespaceId.getId()));
     }
   }
 

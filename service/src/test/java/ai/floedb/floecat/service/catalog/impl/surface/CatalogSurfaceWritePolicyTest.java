@@ -15,6 +15,7 @@
  */
 package ai.floedb.floecat.service.catalog.impl.surface;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.TABLE_ALREADY_EXISTS;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -155,6 +156,37 @@ class CatalogSurfaceWritePolicyTest {
   }
 
   @Test
+  void requireRelationNameWriteEligibleRejectsExistingRelationNameAcrossKinds() {
+    overlay.addRelation(namespaceId, viewNode(viewId, GraphNodeOrigin.USER, "orders"));
+
+    assertStatus(
+        Status.Code.ALREADY_EXISTS,
+        () ->
+            writePolicy.requireRelationNameWriteEligible(
+                namespaceId, catalogId, "orders", null, TABLE_ALREADY_EXISTS, CORRELATION_ID));
+  }
+
+  @Test
+  void requireRelationNameWriteEligibleAllowsCurrentResource() {
+    overlay.addRelation(namespaceId, userTableNode(tableId));
+
+    assertDoesNotThrow(
+        () ->
+            writePolicy.requireRelationNameWriteEligible(
+                namespaceId, catalogId, "orders", tableId, TABLE_ALREADY_EXISTS, CORRELATION_ID));
+  }
+
+  @Test
+  void requireRelationNameWriteEligibleAllowsMissingName() {
+    overlay.addRelation(namespaceId, userTableNode(tableId));
+
+    assertDoesNotThrow(
+        () ->
+            writePolicy.requireRelationNameWriteEligible(
+                namespaceId, catalogId, "invoices", null, TABLE_ALREADY_EXISTS, CORRELATION_ID));
+  }
+
+  @Test
   void requireWritableDeleteChecksIgnoreMissingObjectsWhenCallerDoesNotCare() {
     assertDoesNotThrow(
         () -> writePolicy.requireWritableTableForDelete(tableId, CORRELATION_ID, false));
@@ -251,13 +283,17 @@ class CatalogSurfaceWritePolicyTest {
   }
 
   private ViewNode viewNode(ResourceId id, GraphNodeOrigin origin) {
+    return viewNode(id, origin, "orders_view");
+  }
+
+  private ViewNode viewNode(ResourceId id, GraphNodeOrigin origin, String displayName) {
     return new ViewNode(
         id,
         1L,
         Instant.EPOCH,
         catalogId,
         namespaceId,
-        "orders_view",
+        displayName,
         "select 1",
         "sql",
         List.<SchemaColumn>of(),

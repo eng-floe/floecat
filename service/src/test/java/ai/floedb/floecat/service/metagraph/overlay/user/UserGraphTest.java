@@ -381,13 +381,14 @@ class UserGraphTest {
   }
 
   @Test
-  void resolveNameThrowsWhenAmbiguous() {
-    seedTable("ambiguous", "{}");
-    seedView("ambiguous");
-    NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("ambiguous").build();
+  void resolveNameReturnsTableWhenDuplicateRelationNamesExist() {
+    var ids = seedTable("duplicate", "{}");
+    seedView("duplicate");
+    NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("duplicate").build();
 
-    assertThatThrownBy(() -> graph.resolveName("corr", ref))
-        .isInstanceOf(StatusRuntimeException.class);
+    Optional<ResourceId> resolved = graph.resolveName("corr", ref);
+
+    assertThat(resolved).contains(ids.tableId());
   }
 
   @Test
@@ -607,7 +608,7 @@ class UserGraphTest {
   }
 
   @Test
-  void resolveNameFailsWhenAmbiguous() {
+  void resolveNameReturnsTableWhenDuplicateRelationNamesExistInRepositories() {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("obj").build();
     Catalog catalog =
         Catalog.newBuilder()
@@ -650,8 +651,9 @@ class UserGraphTest {
             .build();
     viewRepository.put(view, mutationMeta(1L, Instant.now()));
 
-    assertThatThrownBy(() -> graph.resolveName("corr", ref))
-        .isInstanceOf(StatusRuntimeException.class);
+    Optional<ResourceId> resolved = graph.resolveName("corr", ref);
+
+    assertThat(resolved).contains(table.getResourceId());
   }
 
   @Test
