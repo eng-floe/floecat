@@ -161,6 +161,20 @@ public interface CatalogOverlay {
 
   Optional<ResourceId> resolveName(String correlationId, NameRef ref);
 
+  /**
+   * Batch kind-agnostic name resolution. The default loops {@link #resolveName}; overlays backed by
+   * per-name storage reads should override so names sharing a catalog/namespace resolve their scope
+   * once per batch instead of once per name.
+   */
+  default java.util.Map<NameRef, Optional<ResourceId>> resolveNames(
+      String correlationId, List<NameRef> refs) {
+    var out = new java.util.LinkedHashMap<NameRef, Optional<ResourceId>>(refs.size());
+    for (NameRef ref : refs) {
+      out.computeIfAbsent(ref, r -> resolveName(correlationId, r));
+    }
+    return out;
+  }
+
   /** Resolves a system table name without involving the user graph. */
   Optional<ResourceId> resolveSystemTable(NameRef ref);
 

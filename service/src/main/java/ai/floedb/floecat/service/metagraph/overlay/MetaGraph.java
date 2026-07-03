@@ -305,6 +305,32 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     return system.isPresent() ? system : userGraph.resolveName(correlationId, ref);
   }
 
+  /**
+   * Batch kind-agnostic name resolution: system names answer from the in-memory registry; the rest
+   * resolve through the user graph in one batch so names sharing a catalog/namespace resolve their
+   * scope once.
+   */
+  @Override
+  public Map<NameRef, Optional<ResourceId>> resolveNames(String correlationId, List<NameRef> refs) {
+    EngineContext ctx = engineContext();
+    var out = new LinkedHashMap<NameRef, Optional<ResourceId>>(refs.size());
+    var userRefs = new ArrayList<NameRef>(refs.size());
+    for (NameRef ref : refs) {
+      if (out.containsKey(ref)) {
+        continue;
+      }
+      Optional<ResourceId> system = systemGraph.resolveName(ref, ctx);
+      out.put(ref, system);
+      if (system.isEmpty()) {
+        userRefs.add(ref);
+      }
+    }
+    if (!userRefs.isEmpty()) {
+      out.putAll(userGraph.resolveNames(correlationId, userRefs));
+    }
+    return out;
+  }
+
   @Override
   public Optional<ResourceId> resolveSystemTable(NameRef ref) {
     EngineContext ctx = engineContext();

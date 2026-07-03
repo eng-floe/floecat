@@ -35,7 +35,10 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -174,12 +177,32 @@ public final class NameResolver {
    * the shared relation-name claim), so the table-first order is deterministic.
    */
   public Optional<ResourceId> resolveRelationId(String accountId, NameRef ref) {
+    return resolveRelationId(accountId, ref, new HashMap<>());
+  }
+
+  /**
+   * Batch variant of {@link #resolveRelationId}: names sharing a catalog/namespace resolve their
+   * scope once per call instead of once per name.
+   */
+  public Map<NameRef, Optional<ResourceId>> resolveRelationIds(
+      String accountId, List<NameRef> refs) {
+    Map<String, Optional<Scope>> scopes = new HashMap<>();
+    var out = new LinkedHashMap<NameRef, Optional<ResourceId>>(refs.size());
+    for (NameRef ref : refs) {
+      out.computeIfAbsent(ref, r -> resolveRelationId(accountId, r, scopes));
+    }
+    return out;
+  }
+
+  private Optional<ResourceId> resolveRelationId(
+      String accountId, NameRef ref, Map<String, Optional<Scope>> scopeMemo) {
     return diagnose(
         "resolve_relation_id",
         "",
         accountId,
         () ->
-            resolveScope(accountId, ref)
+            scopeMemo
+                .computeIfAbsent(scopeKey(ref), k -> resolveScope(accountId, ref))
                 .flatMap(
                     scope -> {
                       String catalogId = scope.catalog().getResourceId().getId();
@@ -196,6 +219,10 @@ public final class NameResolver {
                           .getByName(accountId, catalogId, namespaceId, ref.getName())
                           .map(View::getResourceId);
                     }));
+  }
+
+  private static String scopeKey(NameRef ref) {
+    return ref.getCatalog() + "\u001F" + String.join("\u001F", ref.getPathList());
   }
 
   public Optional<ResolvedRelation> resolveTableRelation(String accountId, NameRef ref) {

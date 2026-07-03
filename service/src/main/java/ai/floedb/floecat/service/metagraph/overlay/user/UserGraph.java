@@ -360,6 +360,17 @@ public final class UserGraph {
   }
 
   /**
+   * Batch variant of {@link #resolveName}: names sharing a catalog/namespace resolve their scope
+   * (catalog + namespace reads) once per call instead of once per name.
+   */
+  public java.util.Map<NameRef, Optional<ResourceId>> resolveNames(
+      String cid, java.util.List<NameRef> refs) {
+    refs.forEach(ref -> validateNameRef(cid, ref));
+    String accountId = requireAccountId(cid);
+    return names.resolveRelationIds(accountId, refs);
+  }
+
+  /**
    * Gets the schema JSON for a table at a specific snapshot.
    *
    * @param cid correlation ID for error reporting
