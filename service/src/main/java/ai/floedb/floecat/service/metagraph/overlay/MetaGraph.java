@@ -393,31 +393,7 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
   @Override
   public ResolveResult batchResolveTables(
       String correlationId, List<NameRef> items, int limit, String token) {
-
-    validateListToken(correlationId, token);
-
-    if (items == null || items.isEmpty()) {
-      return new ResolveResult(List.of(), 0, "");
-    }
-
-    EngineContext ctx = engineContext();
-    int max = Math.min(items.size(), normalizeLimit(limit));
-
-    List<NameRef> subset = items.subList(0, max);
-    Map<String, CatalogOverlay.QualifiedRelation> merged =
-        collectSystemRelationsForNames(subset, ctx, true);
-
-    List<NameRef> userRefs = unresolvedUserRefs(subset, merged);
-    if (!userRefs.isEmpty() && merged.size() < max) {
-      ResolveResult userResult =
-          toResolveResult(
-              userGraph.resolveTables(correlationId, userRefs, max - merged.size(), token));
-      for (CatalogOverlay.QualifiedRelation userRelation : userResult.relations()) {
-        merged.put(canonicalName(userRelation.name()), userRelation);
-      }
-    }
-
-    return new ResolveResult(new ArrayList<>(merged.values()), merged.size(), "");
+    return batchResolveRelations(correlationId, items, limit, token, true);
   }
 
   /**
@@ -449,6 +425,16 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
   @Override
   public ResolveResult batchResolveViews(
       String correlationId, List<NameRef> items, int limit, String token) {
+    return batchResolveRelations(correlationId, items, limit, token, false);
+  }
+
+  /**
+   * Shared list-resolution behind {@link #batchResolveTables} and {@link #batchResolveViews}:
+   * system names answer from the in-memory registry (aliased back to the user-facing catalog), the
+   * rest resolve through the user graph.
+   */
+  private ResolveResult batchResolveRelations(
+      String correlationId, List<NameRef> items, int limit, String token, boolean tables) {
 
     validateListToken(correlationId, token);
 
@@ -461,13 +447,15 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
 
     List<NameRef> subset = items.subList(0, max);
     Map<String, CatalogOverlay.QualifiedRelation> merged =
-        collectSystemRelationsForNames(subset, ctx, false);
+        collectSystemRelationsForNames(subset, ctx, tables);
 
     List<NameRef> userRefs = unresolvedUserRefs(subset, merged);
     if (!userRefs.isEmpty() && merged.size() < max) {
       ResolveResult userResult =
           toResolveResult(
-              userGraph.resolveViews(correlationId, userRefs, max - merged.size(), token));
+              tables
+                  ? userGraph.resolveTables(correlationId, userRefs, max - merged.size(), token)
+                  : userGraph.resolveViews(correlationId, userRefs, max - merged.size(), token));
       for (CatalogOverlay.QualifiedRelation userRelation : userResult.relations()) {
         merged.put(canonicalName(userRelation.name()), userRelation);
       }
