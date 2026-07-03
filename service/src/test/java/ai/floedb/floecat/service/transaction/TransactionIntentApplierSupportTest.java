@@ -799,6 +799,72 @@ class TransactionIntentApplierSupportTest {
         pointers.get(byIdKey).isEmpty(), "table by-id pointer must not be created on conflict");
   }
 
+  @Test
+  void applyTransactionMovesRelationClaimOnRename() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = new TransactionIntentApplierSupport();
+    inject(support, "pointerStore", pointers);
+    inject(support, "blobStore", blobs);
+
+    String accountId = "acct";
+    String catalogId = "cat-1";
+    String namespaceId = "ns-1";
+    ResourceId tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId("table-1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    String byIdKey = Keys.tablePointerById(accountId, tableRid.getId());
+    String oldNameKey = Keys.tablePointerByName(accountId, catalogId, namespaceId, "orders");
+    String oldClaimKey = Keys.relationPointerByName(accountId, catalogId, namespaceId, "orders");
+    String newNameKey = Keys.tablePointerByName(accountId, catalogId, namespaceId, "invoices");
+    String newClaimKey = Keys.relationPointerByName(accountId, catalogId, namespaceId, "invoices");
+
+    Table current =
+        Table.newBuilder()
+            .setResourceId(tableRid)
+            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId(catalogId))
+            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId(namespaceId))
+            .setDisplayName("orders")
+            .build();
+    String currentBlob = "/accounts/acct/tables/table-1/table/current.pb";
+    blobs.put(currentBlob, current.toByteArray(), "application/x-protobuf");
+    pointers.compareAndSet(byIdKey, 0L, PointerReferences.blobPointer(byIdKey, currentBlob, 1L));
+    pointers.compareAndSet(
+        oldNameKey, 0L, PointerReferences.blobPointer(oldNameKey, currentBlob, 1L));
+    pointers.compareAndSet(
+        oldClaimKey,
+        0L,
+        PointerReferences.blobPointer(oldClaimKey, currentBlob, 1L, tableRid, "orders"));
+
+    Table renamed = current.toBuilder().setDisplayName("invoices").build();
+    String renamedBlob = "/accounts/acct/tables/table-1/table/renamed.pb";
+    blobs.put(renamedBlob, renamed.toByteArray(), "application/x-protobuf");
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(byIdKey)
+            .setBlobUri(renamedBlob)
+            .setExpectedVersion(1L)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertTrue(pointers.get(oldClaimKey).isEmpty(), "old name's claim must be released");
+    assertTrue(pointers.get(oldNameKey).isEmpty(), "old by-name pointer must be released");
+    assertTrue(pointers.get(newClaimKey).isPresent(), "new name's claim must be reserved");
+    assertEquals(tableRid.getId(), pointers.get(newClaimKey).orElseThrow().getResourceId().getId());
+    assertTrue(pointers.get(newNameKey).isPresent(), "new by-name pointer must be reserved");
+  }
+
   private static Transaction readTransaction(InMemoryBlobStore blobs, String blobUri)
       throws Exception {
     return Transaction.parseFrom(blobs.get(blobUri));

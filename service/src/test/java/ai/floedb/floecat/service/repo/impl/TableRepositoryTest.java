@@ -218,6 +218,40 @@ class TableRepositoryTest {
   }
 
   @Test
+  void relationClaimBlocksRenameOntoNameHeldByOtherKind() {
+    ResourceId tableId = createTable("sales", "us", "orders");
+    Table table = tableRepo.getById(tableId).orElseThrow();
+    ViewRepository viewRepo = new ViewRepository(ptr, blobs);
+    viewRepo.create(view(table.getCatalogId(), table.getNamespaceId(), "metrics"));
+
+    Table renamed = table.toBuilder().setDisplayName("metrics").build();
+    long version = tableRepo.metaForSafe(tableId).getPointerVersion();
+
+    assertThrows(
+        BaseResourceRepository.NameConflictException.class,
+        () -> tableRepo.update(renamed, version));
+  }
+
+  @Test
+  void renameMovesRelationClaimToTheNewName() {
+    ResourceId tableId = createTable("sales", "us", "orders");
+    Table table = tableRepo.getById(tableId).orElseThrow();
+    String catalogId = table.getCatalogId().getId();
+    String namespaceId = table.getNamespaceId().getId();
+
+    Table renamed = table.toBuilder().setDisplayName("invoices").build();
+    long version = tableRepo.metaForSafe(tableId).getPointerVersion();
+    assertTrue(tableRepo.update(renamed, version));
+
+    assertTrue(
+        tableRepo.relationNameClaim(account, catalogId, namespaceId, "orders").isEmpty(),
+        "old name's claim must be released by the rename");
+    var claimed = tableRepo.relationNameClaim(account, catalogId, namespaceId, "invoices");
+    assertTrue(claimed.isPresent(), "new name's claim must be reserved by the rename");
+    assertEquals(tableId.getId(), claimed.get().getId());
+  }
+
+  @Test
   void relationClaimReleasedOnDeleteFreesNameForOtherKind() {
     ResourceId tableId = createTable("sales", "us", "orders");
     Table table = tableRepo.getById(tableId).orElseThrow();
