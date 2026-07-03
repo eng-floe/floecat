@@ -268,6 +268,13 @@ public class SnapshotRepository {
     return latestSnapshotByTime(tableId);
   }
 
+  public Optional<CurrentSnapshotPointer> getCurrentSnapshotPointer(ResourceId tableId) {
+    if (tableId == null) {
+      return Optional.empty();
+    }
+    return currentPointerRepo.get(tableId);
+  }
+
   private CurrentSnapshotPointer buildCurrentPointer(ResourceId tableId, Snapshot snapshot) {
     CurrentSnapshotPointer.Builder builder =
         CurrentSnapshotPointer.newBuilder()

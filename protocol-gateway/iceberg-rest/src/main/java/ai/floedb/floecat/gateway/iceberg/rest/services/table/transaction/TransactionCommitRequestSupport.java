@@ -207,7 +207,7 @@ final class TransactionCommitRequestSupport {
     }
     if ("main".equals(refName)) {
       Long currentSnapshotId =
-          TableMappingUtil.asLong(table.getPropertiesMap().get("current-snapshot-id"));
+          tableSupport == null ? null : tableSupport.loadCurrentSnapshotId(table);
       return currentSnapshotId != null && currentSnapshotId >= 0L;
     }
     String encodedRefs = table.getPropertiesMap().get(RefPropertyUtil.PROPERTY_KEY);

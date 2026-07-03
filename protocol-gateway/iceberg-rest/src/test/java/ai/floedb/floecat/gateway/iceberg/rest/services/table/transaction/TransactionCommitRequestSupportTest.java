@@ -44,17 +44,17 @@ class TransactionCommitRequestSupportTest {
                     .build())
             .build();
     TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
-    when(tableSupport.hasSnapshotRef(table, "main")).thenReturn(true);
+    when(tableSupport.loadCurrentSnapshotId(table)).thenReturn(10L);
 
     Response response =
         TransactionCommitRequestSupport.validateNullSnapshotRefRequirements(
             tableSupport, table, List.of(nullMainRefRequirement()));
 
-    assertNull(response);
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
   }
 
   @Test
-  void nullMainSnapshotRefRequirementConflictsWhenTableMetadataHasCurrentSnapshot() {
+  void nullMainSnapshotRefRequirementIgnoresStaleTablePropertyWhenPointerMissing() {
     Table table =
         Table.newBuilder()
             .setResourceId(
@@ -66,12 +66,13 @@ class TransactionCommitRequestSupportTest {
             .putProperties("current-snapshot-id", "10")
             .build();
     TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+    when(tableSupport.loadCurrentSnapshotId(table)).thenReturn(null);
 
     Response response =
         TransactionCommitRequestSupport.validateNullSnapshotRefRequirements(
             tableSupport, table, List.of(nullMainRefRequirement()));
 
-    assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
+    assertNull(response);
   }
 
   private static Map<String, Object> nullMainRefRequirement() {

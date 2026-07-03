@@ -64,6 +64,13 @@ message GetSnapshotResponse {
   Snapshot snapshot = 1;
 }
 
+message GetCurrentSnapshotPointerRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+}
+message GetCurrentSnapshotPointerResponse {
+  CurrentSnapshotPointer current_snapshot_pointer = 1;
+}
+
 message SnapshotSpec {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   int64 snapshot_id = 2;
@@ -112,6 +119,8 @@ message UpdateSnapshotResponse {
 service SnapshotService {
   rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
   rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
+  rpc GetCurrentSnapshotPointer(GetCurrentSnapshotPointerRequest)
+      returns (GetCurrentSnapshotPointerResponse);
   rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
   rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
   rpc UpdateSnapshot(UpdateSnapshotRequest) returns (UpdateSnapshotResponse);
