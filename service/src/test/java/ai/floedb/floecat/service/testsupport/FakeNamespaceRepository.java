@@ -74,6 +74,12 @@ public final class FakeNamespaceRepository extends NamespaceRepository {
     return meta;
   }
 
+  @Override
+  public MutationMeta pointerMetaForSafe(ResourceId id) {
+    // The fake's meta map is the single source of truth for both meta variants.
+    return metaForSafe(id);
+  }
+
   private boolean matchesPath(Namespace namespace, List<String> path) {
     if (path.isEmpty()) {
       return namespace.getDisplayName().isBlank() && namespace.getParentsCount() == 0;

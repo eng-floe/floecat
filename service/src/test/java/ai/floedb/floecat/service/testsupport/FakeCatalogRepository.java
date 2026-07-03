@@ -70,6 +70,12 @@ public final class FakeCatalogRepository extends CatalogRepository {
     return meta;
   }
 
+  @Override
+  public MutationMeta pointerMetaForSafe(ResourceId id) {
+    // The fake's meta map is the single source of truth for both meta variants.
+    return metaForSafe(id);
+  }
+
   public int getByIdCount(ResourceId id) {
     return gets.getOrDefault(id, 0);
   }

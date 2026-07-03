@@ -606,7 +606,8 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
                                   + schema.resourceName
                                   + ": "
                                   + canonicalPointer));
-          return readMetaOrDefault(canonicalPointer, pointer.getBlobUri(), nowTs);
+          return readMetaOrDefault(
+              Optional.of(pointer), canonicalPointer, pointer.getBlobUri(), nowTs);
         });
   }
 
@@ -629,17 +630,42 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
                 .setUpdatedAt(nowTs)
                 .build();
           }
-          String blobUri;
-          if (schema.casBlobs) {
-            blobUri =
-                (ptrOpt.isPresent() && ptrOpt.get().getBlobUri() != null)
-                    ? ptrOpt.get().getBlobUri()
-                    : "";
-          } else {
-            blobUri = schema.blobUriForKey.apply(key);
-          }
-          return readMetaOrDefault(canonical, blobUri, nowTs);
+          String blobUri = blobUriFor(key, ptrOpt);
+          return readMetaOrDefault(ptrOpt, canonical, blobUri, nowTs);
         });
+  }
+
+  /**
+   * Pointer-only mutation meta: one pointer read, no blob HEAD, blank etag. For consumers that only
+   * need the pointer version and key (e.g. metadata-graph cache keys and node hydration) — callers
+   * returning meta to RPC clients must keep using {@link #metaForSafe}, whose etag feeds
+   * precondition checks.
+   */
+  public MutationMeta pointerMetaForSafe(K key) {
+    return observeRepository(
+        "pointer_meta_for_safe",
+        () -> {
+          Timestamp nowTs = Timestamps.fromMillis(clock.millis());
+          String canonical = schema.canonicalPointerForKey.apply(key);
+          var ptrOpt = pointerStore.get(canonical);
+          String blobUri = ptrOpt.isEmpty() && schema.casBlobs ? "" : blobUriFor(key, ptrOpt);
+          return MutationMeta.newBuilder()
+              .setPointerKey(canonical)
+              .setBlobUri(blobUri)
+              .setPointerVersion(ptrOpt.map(Pointer::getVersion).orElse(0L))
+              .setEtag("")
+              .setUpdatedAt(nowTs)
+              .build();
+        });
+  }
+
+  private String blobUriFor(K key, Optional<Pointer> ptrOpt) {
+    if (schema.casBlobs) {
+      return (ptrOpt.isPresent() && ptrOpt.get().getBlobUri() != null)
+          ? ptrOpt.get().getBlobUri()
+          : "";
+    }
+    return schema.blobUriForKey.apply(key);
   }
 
   private String resolveBlobUriForDelete(K key, String canonicalPointer) {

@@ -154,4 +154,15 @@ public class TableRepository {
   public MutationMeta metaForSafe(ResourceId tableResourceId) {
     return repo.metaForSafe(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
+
+  /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
+  public MutationMeta pointerMetaForSafe(ResourceId tableResourceId) {
+    return repo.pointerMetaForSafe(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
+  }
+
+  /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
+  public Optional<Table> getByBlobUri(String blobUri) {
+    return repo.getByBlobUri(blobUri);
+  }
 }

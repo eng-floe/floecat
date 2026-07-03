@@ -397,7 +397,15 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected MutationMeta readMetaOrDefault(String pointerKey, String blobUri, Timestamp nowTs) {
-    var pointerOpt = pointerStore.get(pointerKey);
+    return readMetaOrDefault(pointerStore.get(pointerKey), pointerKey, blobUri, nowTs);
+  }
+
+  /**
+   * Meta assembly for callers that already hold the canonical pointer — avoids re-reading the
+   * pointer that was fetched moments earlier to derive {@code blobUri}.
+   */
+  protected MutationMeta readMetaOrDefault(
+      Optional<Pointer> pointerOpt, String pointerKey, String blobUri, Timestamp nowTs) {
     var header = blobStore.head(blobUri);
     long version = pointerOpt.map(Pointer::getVersion).orElse(0L);
     String etag = header.map(BlobHeader::getEtag).orElse("");
@@ -409,6 +417,33 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
         .setEtag(etag)
         .setUpdatedAt(nowTs)
         .build();
+  }
+
+  /**
+   * Fetches and parses a resource directly by blob URI, skipping the pointer read. Intended for
+   * callers that already resolved the pointer (e.g. graph hydration from cached metadata). Returns
+   * empty when the blob is absent — callers should fall back to a pointer-based read, since the
+   * pointer may have moved to a new blob in the meantime.
+   */
+  public Optional<T> getByBlobUri(String blobUri) {
+    if (blobUri == null || blobUri.isBlank()) {
+      return Optional.empty();
+    }
+    try {
+      byte[] bytes = blobStore.get(blobUri);
+      if (bytes == null) {
+        return Optional.empty();
+      }
+      return Optional.of(parser.parse(bytes));
+    } catch (StorageNotFoundException snf) {
+      return Optional.empty();
+    } catch (InvalidProtocolBufferException ipbe) {
+      throw new CorruptionException("parse failed: " + blobUri, ipbe);
+    } catch (StorageAbortRetryableException sar) {
+      throw new AbortRetryableException("blob read retryable: " + blobUri);
+    } catch (Exception e) {
+      throw new CorruptionException("parse failed: " + blobUri, e);
+    }
   }
 
   protected static void deleteQuietly(Runnable runnable) {

@@ -122,6 +122,12 @@ public final class FakeViewRepository extends ViewRepository {
     return meta;
   }
 
+  @Override
+  public MutationMeta pointerMetaForSafe(ResourceId id) {
+    // The fake's meta map is the single source of truth for both meta variants.
+    return metaForSafe(id);
+  }
+
   private List<View> matchingViews(String accountId, String catalogId, String namespaceId) {
     return entries.values().stream()
         .filter(
