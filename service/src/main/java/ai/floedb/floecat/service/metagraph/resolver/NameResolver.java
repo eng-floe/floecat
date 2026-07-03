@@ -167,6 +167,47 @@ public final class NameResolver {
                                         .map(View::getResourceId))));
   }
 
+  /**
+   * Kind-agnostic name resolution: resolves catalog and namespace once, then probes tables and (on
+   * miss) views. Unlike calling {@link #resolveTableRelation} followed by {@link
+   * #resolveViewRelation}, this does not re-resolve the catalog and namespace for the view probe. A
+   * relation name is unique across kinds (enforced by the shared relation-name claim), so the
+   * table-first order is deterministic.
+   */
+  public Optional<ResourceId> resolveRelationId(String accountId, NameRef ref) {
+    return diagnose(
+        "resolve_relation_id",
+        "",
+        accountId,
+        () -> {
+          if (!validCatalog(ref) || !validName(ref)) return Optional.empty();
+
+          Optional<Catalog> catalogOpt = catalogRepository.getByName(accountId, ref.getCatalog());
+          if (catalogOpt.isEmpty()) return Optional.empty();
+          Catalog catalog = catalogOpt.get();
+
+          Optional<Namespace> nsOpt =
+              namespaceRepository.getByPath(
+                  accountId, catalog.getResourceId().getId(), ref.getPathList());
+          if (nsOpt.isEmpty()) return Optional.empty();
+
+          String catalogId = catalog.getResourceId().getId();
+          String namespaceId = nsOpt.get().getResourceId().getId();
+
+          Optional<ResourceId> table =
+              tableRepository
+                  .getByName(accountId, catalogId, namespaceId, ref.getName())
+                  .map(Table::getResourceId)
+                  .map(this::requireCanonicalTableId);
+          if (table.isPresent()) {
+            return table;
+          }
+          return viewRepository
+              .getByName(accountId, catalogId, namespaceId, ref.getName())
+              .map(View::getResourceId);
+        });
+  }
+
   public Optional<ResolvedRelation> resolveTableRelation(String accountId, NameRef ref) {
     return diagnose(
         "resolve_table_relation",

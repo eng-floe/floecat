@@ -31,7 +31,6 @@ import ai.floedb.floecat.service.metagraph.hint.EngineHintManager;
 import ai.floedb.floecat.service.metagraph.loader.NodeLoader;
 import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
-import ai.floedb.floecat.service.metagraph.resolver.NameResolver.ResolvedRelation;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
@@ -357,13 +356,7 @@ public final class UserGraph {
   public Optional<ResourceId> resolveName(String cid, NameRef ref) {
     validateNameRef(cid, ref);
     String accountId = requireAccountId(cid);
-
-    Optional<ResolvedRelation> t = names.resolveTableRelation(accountId, ref);
-    if (t.isPresent()) {
-      return t.map(ResolvedRelation::resourceId);
-    }
-
-    return names.resolveViewRelation(accountId, ref).map(ResolvedRelation::resourceId);
+    return names.resolveRelationId(accountId, ref);
   }
 
   /**
