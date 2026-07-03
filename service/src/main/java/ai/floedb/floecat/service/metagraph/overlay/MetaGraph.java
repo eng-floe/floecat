@@ -341,8 +341,13 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
       ResourceId tableId,
       SnapshotRef override,
       Optional<Timestamp> asOfDefault) {
-    // System objects don't need snapshot pins
-    if (resolve(tableId).filter(SystemTableNode.class::isInstance).isPresent()) {
+    // System objects don't need snapshot pins. The system graph is an in-memory registry, so probe
+    // it directly instead of the merged resolve, which would hydrate the full user node from
+    // storage just to conclude the table is not a system table.
+    if (systemGraph
+        .resolve(tableId, engineContext())
+        .filter(SystemTableNode.class::isInstance)
+        .isPresent()) {
       return null;
     }
     return userGraph.snapshotPinFor(correlationId, tableId, override, asOfDefault);
