@@ -33,6 +33,11 @@ final class CatalogSurfaceNamespacePager {
   private CatalogSurfaceNamespacePager() {}
 
   static Page list(int want, String pageToken, Source source, String corr) {
+    if (want <= 0) {
+      // The fill-return path dereferences the last emitted row, which requires want >= 1; the
+      // single caller clamps, but guard against future call sites.
+      throw new IllegalArgumentException("want must be >= 1");
+    }
 
     final int batch = Math.max(want * 4, 64);
     final boolean isSystemToken = pageToken != null && pageToken.startsWith(NS_TOKEN_PREFIX);
