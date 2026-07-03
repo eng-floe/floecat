@@ -44,6 +44,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -111,6 +112,10 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
     if (!(node instanceof TableNode)) {
       throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
     }
+  }
+
+  private void ensureTableWritable(ResourceId tableId, String corr) {
+    new CatalogSurfaceWritePolicy(overlay).requireWritableTable(tableId, corr);
   }
 
   private String schemaJsonForTable(String corr, ResourceId tableId) {
@@ -293,7 +298,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   authz.require(pc, "table.write");
 
                   var tableId = request.getSpec().getTableId();
-                  ensureTableVisible(tableId, corr);
+                  ensureTableWritable(tableId, corr);
 
                   var tsNow = nowTs();
 
@@ -440,7 +445,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
                   var tableId = request.getTableId();
                   long snapshotId = request.getSnapshotId();
-                  ensureTableVisible(tableId, correlationId);
+                  ensureTableWritable(tableId, correlationId);
 
                   MutationMeta meta;
                   try {
@@ -528,7 +533,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                     PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
                         spec.getSummaryMap(), corr, "spec.summary");
                   }
-                  ensureTableVisible(tableId, corr);
+                  ensureTableWritable(tableId, corr);
 
                   var meta = snapshotRepo.metaFor(tableId, snapshotId);
                   enforcePreconditions(corr, meta, request.getPrecondition());

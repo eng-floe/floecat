@@ -19,12 +19,15 @@ package ai.floedb.floecat.service.transaction.impl;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.transaction.rpc.Transaction;
+import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -81,6 +84,7 @@ public class TransactionIntentApplierSupport {
 
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
+  @Inject CatalogOverlay overlay;
 
   public boolean isTableByIdPointer(String pointerKey) {
     return pointerKey != null && pointerKey.contains("/tables/by-id/");
@@ -411,6 +415,10 @@ public class TransactionIntentApplierSupport {
     if (targetValidation.status != ApplyStatus.APPLIED) {
       return targetValidation;
     }
+    ApplyOutcome writeEligibility = validateTableWriteEligibility(nextTable, current != null);
+    if (writeEligibility.status != ApplyStatus.APPLIED) {
+      return writeEligibility;
+    }
 
     String nextTableId = nextTable.getResourceId().getId();
     String newNameKey =
@@ -483,6 +491,10 @@ public class TransactionIntentApplierSupport {
         validateTableIntentTarget(intent.getTargetPointerKey(), currentTable);
     if (targetValidation.status != ApplyStatus.APPLIED) {
       return targetValidation;
+    }
+    ApplyOutcome writeEligibility = validateExistingTableWriteEligibility(currentTable);
+    if (writeEligibility.status != ApplyStatus.APPLIED) {
+      return writeEligibility;
     }
 
     long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
@@ -606,6 +618,67 @@ public class TransactionIntentApplierSupport {
       }
     }
     return ApplyOutcome.applied();
+  }
+
+  private ApplyOutcome validateTableWriteEligibility(Table table, boolean existingTable) {
+    if (table == null || !table.hasResourceId()) {
+      return ApplyOutcome.conflict(
+          "TABLE_INTENT_INVALID_PAYLOAD", "table payload is missing resource_id", null, null, null);
+    }
+    if (SystemResourceIdGenerator.isSystemId(table.getResourceId())) {
+      return tableImmutableConflict(table.getResourceId().getId());
+    }
+    if (overlay == null) {
+      return ApplyOutcome.applied();
+    }
+
+    try {
+      var writePolicy = new CatalogSurfaceWritePolicy(overlay);
+      if (existingTable) {
+        writePolicy.requireWritableTable(table.getResourceId(), "transaction-apply");
+      }
+      writePolicy.requireWritableCatalog(
+          table.getCatalogId(), "table.catalog_id", "transaction-apply");
+      var namespace =
+          writePolicy.requireWritableNamespace(
+              table.getNamespaceId(), "table.namespace_id", "transaction-apply");
+      writePolicy.requireNamespaceInCatalog(
+          namespace, table.getNamespaceId(), table.getCatalogId(), "transaction-apply");
+      return ApplyOutcome.applied();
+    } catch (RuntimeException e) {
+      return ApplyOutcome.conflict(
+          "TABLE_INTENT_NOT_WRITABLE", "table intent target is not writable", null, null, null);
+    }
+  }
+
+  private ApplyOutcome validateExistingTableWriteEligibility(Table table) {
+    if (table == null || !table.hasResourceId()) {
+      return ApplyOutcome.conflict(
+          "TABLE_INTENT_INVALID_PAYLOAD", "table payload is missing resource_id", null, null, null);
+    }
+    if (SystemResourceIdGenerator.isSystemId(table.getResourceId())) {
+      return tableImmutableConflict(table.getResourceId().getId());
+    }
+    if (overlay == null) {
+      return ApplyOutcome.applied();
+    }
+    try {
+      new CatalogSurfaceWritePolicy(overlay)
+          .requireWritableTable(table.getResourceId(), "transaction-apply");
+      return ApplyOutcome.applied();
+    } catch (RuntimeException e) {
+      return ApplyOutcome.conflict(
+          "TABLE_INTENT_NOT_WRITABLE", "table intent target is not writable", null, null, null);
+    }
+  }
+
+  private ApplyOutcome tableImmutableConflict(String tableId) {
+    return ApplyOutcome.conflict(
+        "SYSTEM_OBJECT_IMMUTABLE",
+        "system table is immutable",
+        null,
+        null,
+        tableId == null ? "" : tableId);
   }
 
   private ApplyOutcome validateTableIntentTarget(String pointerKey, Table nextTable) {

@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -29,6 +30,7 @@ import ai.floedb.floecat.service.transaction.impl.TransactionIntentApplierSuppor
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.transaction.rpc.Transaction;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import com.google.protobuf.util.Timestamps;
@@ -166,6 +168,45 @@ class TransactionIntentApplierSupportTest {
 
     assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
     assertEquals("TABLE_INTENT_TARGET_MISMATCH", outcome.errorCode());
+  }
+
+  @Test
+  void applyTransactionRejectsSystemTablePayloadBeforePointerOps() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = new TransactionIntentApplierSupport();
+    inject(support, "pointerStore", pointers);
+    inject(support, "blobStore", blobs);
+
+    ResourceId systemTableId =
+        SystemNodeRegistry.resourceId("engine", ResourceKind.RK_TABLE, "information_schema.tables");
+    String blobUri = "s3://bucket/system-table";
+    Table tablePayload =
+        Table.newBuilder()
+            .setResourceId(systemTableId)
+            .setCatalogId(ResourceId.newBuilder().setAccountId("acct").setId("cat-1"))
+            .setNamespaceId(ResourceId.newBuilder().setAccountId("acct").setId("ns-1"))
+            .setDisplayName("tables")
+            .build();
+    blobs.put(blobUri, tablePayload.toByteArray(), "application/x-protobuf");
+
+    String pointerKey = Keys.tablePointerById(systemTableId.getAccountId(), systemTableId.getId());
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(systemTableId.getAccountId())
+            .setTxId("tx-1")
+            .setTargetPointerKey(pointerKey)
+            .setBlobUri(blobUri)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("SYSTEM_OBJECT_IMMUTABLE", outcome.errorCode());
+    assertTrue(pointers.get(pointerKey).isEmpty(), "system table pointer must not be written");
   }
 
   @Test
