@@ -30,6 +30,7 @@ import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
+import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
@@ -653,9 +654,15 @@ public class TransactionIntentApplierSupport {
               .TABLE_ALREADY_EXISTS,
           "transaction-apply");
       return ApplyOutcome.applied();
-    } catch (RuntimeException e) {
+    } catch (StatusRuntimeException policyViolation) {
       return ApplyOutcome.conflict(
           "TABLE_INTENT_NOT_WRITABLE", "table intent target is not writable", null, null, null);
+    } catch (RuntimeException unexpected) {
+      // Overlay resolution can fail transiently (storage/cache errors). Do not turn that into a
+      // terminal conflict that abandons an otherwise-valid transaction; let it be retried.
+      return ApplyOutcome.retryable(
+          "TABLE_WRITE_ELIGIBILITY_ERROR",
+          "unable to evaluate table write eligibility: " + unexpected.getMessage());
     }
   }
 
@@ -674,9 +681,15 @@ public class TransactionIntentApplierSupport {
       new CatalogSurfaceWritePolicy(overlay)
           .requireWritableTable(table.getResourceId(), "transaction-apply");
       return ApplyOutcome.applied();
-    } catch (RuntimeException e) {
+    } catch (StatusRuntimeException policyViolation) {
       return ApplyOutcome.conflict(
           "TABLE_INTENT_NOT_WRITABLE", "table intent target is not writable", null, null, null);
+    } catch (RuntimeException unexpected) {
+      // Overlay resolution can fail transiently (storage/cache errors). Do not turn that into a
+      // terminal conflict that abandons an otherwise-valid transaction; let it be retried.
+      return ApplyOutcome.retryable(
+          "TABLE_WRITE_ELIGIBILITY_ERROR",
+          "unable to evaluate table write eligibility: " + unexpected.getMessage());
     }
   }
 
