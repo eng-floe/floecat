@@ -134,6 +134,50 @@ class CatalogSurfaceNamespacesTest {
   }
 
   @Test
+  void listNamespacesPagesCompletelyOverARealRepositoryAndStore() {
+    // End-to-end over the real chain: pager -> NamespaceRepository -> InMemoryPointerStore,
+    // including listTokenAfter -> pageTokenAfterKey cursor synthesis. Catches any drift between
+    // the pointer keys the repository writes and the keys the pager resumes from — mocked-repo
+    // tests re-implement the cursor contract and cannot.
+    var pointers = new ai.floedb.floecat.storage.memory.InMemoryPointerStore();
+    var blobs = new ai.floedb.floecat.storage.memory.InMemoryBlobStore();
+    var realRepo = new NamespaceRepository(pointers, blobs);
+    var realSurface = new CatalogSurfaceNamespaces(realRepo, overlay);
+
+    var expected = new java.util.ArrayList<String>();
+    for (int i = 0; i < 150; i++) {
+      String name = String.format("ns%03d", i);
+      expected.add(name);
+      realRepo.create(
+          Namespace.newBuilder()
+              .setResourceId(id(ResourceKind.RK_NAMESPACE, "id_" + name))
+              .setCatalogId(catalogId)
+              .setDisplayName(name)
+              .build());
+    }
+
+    var collected = new java.util.ArrayList<String>();
+    String token = "";
+    for (int guard = 0; guard < 200; guard++) {
+      var response =
+          realSurface.listNamespaces(
+              ListNamespacesRequest.newBuilder()
+                  .setCatalogId(catalogId)
+                  .setPage(PageRequest.newBuilder().setPageSize(7).setPageToken(token))
+                  .build(),
+              ACCOUNT_ID,
+              CORRELATION_ID);
+      collected.addAll(names(response.getNamespacesList()));
+      token = response.getPage().getNextPageToken();
+      if (token.isBlank()) {
+        break;
+      }
+    }
+
+    assertEquals(expected, collected);
+  }
+
+  @Test
   void listNamespacesDoesNotDropSystemNamespacesSortingBeforeLastUserNamespace() {
     // Regression: the system phase must resume by a system relative name, not by the last user
     // relative name. "alpha" sorts before the last user namespace "orders" and must still appear.
