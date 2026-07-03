@@ -224,7 +224,19 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                               "catalog_id", spec.getCatalogId().getId(),
                               "namespace_id", spec.getNamespaceId().getId()));
                     }
-                    viewRepo.create(view);
+                    try {
+                      viewRepo.create(view);
+                    } catch (BaseResourceRepository.NameConflictException nce) {
+                      // The name may be owned by a table via the shared relation-name claim, so a
+                      // cross-kind collision surfaces here rather than in the view getByName check.
+                      throw GrpcErrors.alreadyExists(
+                          corr,
+                          VIEW_ALREADY_EXISTS,
+                          Map.of(
+                              "display_name", normName,
+                              "catalog_id", spec.getCatalogId().getId(),
+                              "namespace_id", spec.getNamespaceId().getId()));
+                    }
                     metadataGraph.invalidate(viewResourceId);
                     topology.evictRelationRefs(view.getNamespaceId());
                     var meta = viewRepo.metaForSafe(viewResourceId);
