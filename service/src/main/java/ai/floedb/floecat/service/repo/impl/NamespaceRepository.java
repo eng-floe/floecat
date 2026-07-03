@@ -39,9 +39,11 @@ import java.util.Set;
 public class NamespaceRepository {
 
   private final GenericResourceRepository<Namespace, NamespaceKey> repo;
+  private final PointerStore pointerStore;
 
   @Inject
   public NamespaceRepository(PointerStore pointerStore, BlobStore blobStore) {
+    this.pointerStore = pointerStore;
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -96,6 +98,16 @@ public class NamespaceRepository {
   public int count(String accountId, String catalogId, List<String> parentSegmentsOrEmpty) {
     String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
     return repo.countByPrefix(prefix);
+  }
+
+  /**
+   * Page token resuming a {@link #list} scan immediately after the namespace at {@code fullPath}.
+   * Lets callers that post-filter scanned rows continue exactly after the last row they emitted
+   * instead of after the whole over-fetched batch.
+   */
+  public String listTokenAfter(String accountId, String catalogId, List<String> fullPath) {
+    return pointerStore.pageTokenAfterKey(
+        Keys.namespacePointerByPath(accountId, catalogId, fullPath));
   }
 
   public List<ResourceId> listIds(String accountId, String catalogId) {

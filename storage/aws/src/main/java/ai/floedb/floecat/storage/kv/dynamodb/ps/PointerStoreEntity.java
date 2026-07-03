@@ -299,6 +299,11 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
                     page.items().stream().map(this::decode).toList(), page.nextToken()));
   }
 
+  /** Page token resuming a {@link #listByPrefix} scan immediately after the given pointer key. */
+  public String pageTokenAfterKey(String key) {
+    return kv.pageTokenAfterKey(pointerKey(key));
+  }
+
   /**
    * List pointer keys by prefix.
    *

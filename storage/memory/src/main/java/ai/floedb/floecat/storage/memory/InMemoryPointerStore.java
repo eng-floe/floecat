@@ -112,6 +112,14 @@ public class InMemoryPointerStore implements PointerStore {
   }
 
   @Override
+  public String pageTokenAfterKey(String key) {
+    // This store's page tokens are raw pointer keys ("resume after this key"), so the key itself
+    // is the token. Resuming after a since-deleted key fails the same way an ordinary end-of-page
+    // token for that key would.
+    return key;
+  }
+
+  @Override
   public int countByPrefix(String prefix) {
     final String pfx = prefix == null ? "" : prefix;
     int n = 0;

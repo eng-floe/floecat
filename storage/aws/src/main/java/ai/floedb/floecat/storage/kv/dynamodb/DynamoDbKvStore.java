@@ -160,6 +160,15 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
     return Optional.of(Map.of(ATTR_PARTITION_KEY, S(parts[0]), ATTR_SORT_KEY, S(parts[1])));
   }
 
+  @Override
+  public String pageTokenAfterKey(Key key) {
+    // Tokens are the (pk, sk) position encoded exactly as lastEvaluatedKey tokens are; DynamoDB's
+    // exclusiveStartKey is a position, not an item reference, so the key need not still exist.
+    return encodeToken(
+            Map.of(ATTR_PARTITION_KEY, S(key.partitionKey()), ATTR_SORT_KEY, S(key.sortKey())))
+        .orElseThrow();
+  }
+
   private static <T> Uni<T> fromStage(CompletionStage<T> stage) {
     return Uni.createFrom()
         .emitter(

@@ -70,26 +70,9 @@ class CatalogSurfaceNamespacesTest {
 
   @Test
   void listNamespacesKeepsRepoPhaseBeforeSystemPhase() {
-    Namespace userNamespace = namespace("alpha", List.of());
-    var systemNamespace =
-        namespaceNode(systemNamespaceId("information_schema"), "information_schema", List.of());
-    overlay.addNode(systemNamespace);
-
-    when(namespaceRepo.list(eq(ACCOUNT_ID), eq("cat"), eq(List.of()), anyInt(), anyString(), any()))
-        .thenAnswer(
-            invocation -> {
-              int limit = invocation.getArgument(3);
-              String cursor = invocation.getArgument(4);
-              StringBuilder nextOut = invocation.getArgument(5);
-              if (limit == 64 && cursor.isBlank()) {
-                nextOut.append("repo-next");
-                return List.of(userNamespace);
-              }
-              if (limit == 1000 && cursor.isBlank()) {
-                return List.of(userNamespace);
-              }
-              return List.of();
-            });
+    stubUserNamespaces(List.of(namespace("alpha", List.of())));
+    overlay.addNode(
+        namespaceNode(systemNamespaceId("information_schema"), "information_schema", List.of()));
 
     var firstPage =
         surface.listNamespaces(
@@ -101,20 +84,39 @@ class CatalogSurfaceNamespacesTest {
             CORRELATION_ID);
 
     assertEquals(List.of("alpha"), names(firstPage.getNamespacesList()));
-    assertEquals("repo-next", firstPage.getPage().getNextPageToken());
+    // Page filled in the repo phase: the token is a precise repo cursor, not a system-phase token.
+    String repoCursor = firstPage.getPage().getNextPageToken();
+    assertTrue(!repoCursor.isBlank() && !repoCursor.startsWith("ns:"));
     assertEquals(2, firstPage.getPage().getTotalSize());
 
     var systemPage =
         surface.listNamespaces(
             ListNamespacesRequest.newBuilder()
                 .setCatalogId(catalogId)
-                .setPage(PageRequest.newBuilder().setPageSize(1).setPageToken("repo-next"))
+                .setPage(PageRequest.newBuilder().setPageSize(1).setPageToken(repoCursor))
                 .build(),
             ACCOUNT_ID,
             CORRELATION_ID);
 
     assertEquals(List.of("information_schema"), names(systemPage.getNamespacesList()));
     assertTrue(systemPage.getPage().getNextPageToken().startsWith("ns:"));
+  }
+
+  @Test
+  void listNamespacesDoesNotSkipMatchesWhenPageFillsMidBatch() {
+    // Regression: the repo scan over-fetches (batch >= 64) and post-filters, so with more matching
+    // children than one batch the continuation must resume after the last *emitted* row, not after
+    // the scanned batch. A batch-end cursor silently skips every match scanned past the page fill.
+    var many = new java.util.ArrayList<Namespace>();
+    var expected = new java.util.ArrayList<String>();
+    for (int i = 0; i < 70; i++) {
+      String name = String.format("ns%02d", i);
+      many.add(namespace(name, List.of()));
+      expected.add(name);
+    }
+    stubUserNamespaces(many);
+
+    assertEquals(expected, pageAllNamespaceNames(3));
   }
 
   @Test
@@ -180,14 +182,40 @@ class CatalogSurfaceNamespacesTest {
     return namespaces.stream().map(Namespace::getDisplayName).toList();
   }
 
-  /** Stubs the repo so all user namespaces come back in a single exhausting batch. */
+  /**
+   * Stubs the repo mock as a faithful pager backend: rows are served in name order, {@code list}
+   * returns up to {@code limit} rows strictly after the cursor name (blank = start) and sets the
+   * next cursor to the last returned name when more remain, and {@code listTokenAfter} returns the
+   * row's name — mirroring the real store's "resume after this key" semantics.
+   */
   private void stubUserNamespaces(List<Namespace> userNamespaces) {
+    var sorted = new java.util.ArrayList<>(userNamespaces);
+    sorted.sort(java.util.Comparator.comparing(Namespace::getDisplayName));
     when(namespaceRepo.list(eq(ACCOUNT_ID), eq("cat"), eq(List.of()), anyInt(), anyString(), any()))
         .thenAnswer(
             invocation -> {
+              int limit = invocation.getArgument(3);
               String cursor = invocation.getArgument(4);
-              // Leave the "next" cursor blank: a blank next-token signals repo exhaustion.
-              return cursor == null || cursor.isBlank() ? userNamespaces : List.of();
+              StringBuilder nextOut = invocation.getArgument(5);
+              var remaining =
+                  sorted.stream()
+                      .filter(
+                          ns ->
+                              cursor == null
+                                  || cursor.isBlank()
+                                  || ns.getDisplayName().compareTo(cursor) > 0)
+                      .toList();
+              var page = remaining.subList(0, Math.min(limit, remaining.size()));
+              if (!page.isEmpty() && page.size() < remaining.size()) {
+                nextOut.append(page.get(page.size() - 1).getDisplayName());
+              }
+              return page;
+            });
+    when(namespaceRepo.listTokenAfter(eq(ACCOUNT_ID), eq("cat"), any()))
+        .thenAnswer(
+            invocation -> {
+              List<String> fullPath = invocation.getArgument(2);
+              return fullPath.get(fullPath.size() - 1);
             });
   }
 

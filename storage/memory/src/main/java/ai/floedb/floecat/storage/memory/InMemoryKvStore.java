@@ -111,6 +111,12 @@ public final class InMemoryKvStore implements KvStore {
   }
 
   @Override
+  public String pageTokenAfterKey(Key key) {
+    // Same encoding as end-of-page tokens: base64 of the sort key to resume after.
+    return encodeToken(key.sortKey());
+  }
+
+  @Override
   public Uni<Integer> deleteByPrefix(String partitionKey, String sortKeyPrefix) {
     String pk = partitionKey == null ? "" : partitionKey;
     String skPrefix = sortKeyPrefix == null ? "" : sortKeyPrefix;
