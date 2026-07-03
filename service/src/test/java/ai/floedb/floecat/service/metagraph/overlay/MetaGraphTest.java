@@ -451,6 +451,143 @@ class MetaGraphTest {
   }
 
   @Test
+  void listTablesByPrefix_systemFillingPageDoesNotSkipUserRows() {
+    // Regression: when system rows fill the page, the user graph must not be consulted for rows
+    // (its cursor would advance past a row the page drops). The user row must surface on the next
+    // page, fetched from a blank cursor.
+    NameRef prefix =
+        NameRef.newBuilder().setCatalog("examples").addPath("information_schema").build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("sys-ns")
+            .build();
+    when(system.resolveNamespace(any(NameRef.class), eq(context)))
+        .thenReturn(Optional.of(namespaceId));
+    when(system.listRelationsInNamespace(ResourceId.getDefaultInstance(), namespaceId, context))
+        .thenReturn(List.of(prefixSystemTable(sysTable, namespaceId, "system_table")));
+    when(system.tableName(sysTable, context))
+        .thenReturn(
+            Optional.of(NameRef.newBuilder().setCatalog("engine").setName("system_table").build()));
+
+    UserGraph.ResolveResult userResult =
+        userResolveResult(
+            1,
+            "",
+            new CatalogOverlay.QualifiedRelation(
+                NameRef.newBuilder().setCatalog("examples").addPath("ns").setName("user_t").build(),
+                usrTable));
+    when(user.resolveTables(eq("cid"), eq(prefix), eq(1), eq(""))).thenReturn(userResult);
+
+    CatalogOverlay.ResolveResult firstPage = meta.listTablesByPrefix("cid", prefix, 1, "");
+
+    assertThat(firstPage.relations()).hasSize(1);
+    assertThat(firstPage.relations().get(0).resourceId()).isEqualTo(sysTable);
+    assertThat(firstPage.totalSize()).isEqualTo(2);
+
+    CatalogOverlay.ResolveResult secondPage =
+        meta.listTablesByPrefix("cid", prefix, 1, firstPage.nextToken());
+
+    assertThat(secondPage.relations()).hasSize(1);
+    assertThat(secondPage.relations().get(0).resourceId()).isEqualTo(usrTable);
+    assertThat(secondPage.totalSize()).isEqualTo(2);
+    // Probe on the boundary page plus the second page's fetch, always from a blank cursor.
+    verify(user, times(2)).resolveTables(eq("cid"), eq(prefix), eq(1), eq(""));
+  }
+
+  @Test
+  void listTablesByPrefix_pagesThroughSystemOverflowWithoutLoss() {
+    // Regression: system rows beyond the page size were dropped (system was collected first-page
+    // only, capped at the page size). They must flow across pages via the system-phase token.
+    NameRef prefix =
+        NameRef.newBuilder().setCatalog("examples").addPath("information_schema").build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("sys-ns")
+            .build();
+    ResourceId sysTableB =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("sys-t-b")
+            .build();
+    when(system.resolveNamespace(any(NameRef.class), eq(context)))
+        .thenReturn(Optional.of(namespaceId));
+    when(system.listRelationsInNamespace(ResourceId.getDefaultInstance(), namespaceId, context))
+        .thenReturn(
+            List.of(
+                prefixSystemTable(sysTableB, namespaceId, "b_sys"),
+                prefixSystemTable(sysTable, namespaceId, "a_sys")));
+    when(system.tableName(sysTable, context))
+        .thenReturn(
+            Optional.of(NameRef.newBuilder().setCatalog("engine").setName("a_sys").build()));
+    when(system.tableName(sysTableB, context))
+        .thenReturn(
+            Optional.of(NameRef.newBuilder().setCatalog("engine").setName("b_sys").build()));
+    when(user.resolveTables(eq("cid"), eq(prefix), eq(1), eq("")))
+        .thenReturn(
+            new UserGraph.ResolveResult(
+                new FullyQualifiedResolver.ResolveResult(List.of(), 0, "")));
+
+    var collected = new java.util.ArrayList<ResourceId>();
+    String token = "";
+    for (int guard = 0; guard < 10 && collected.size() < 2; guard++) {
+      CatalogOverlay.ResolveResult page = meta.listTablesByPrefix("cid", prefix, 1, token);
+      page.relations().forEach(rel -> collected.add(rel.resourceId()));
+      assertThat(page.totalSize()).isEqualTo(2);
+      token = page.nextToken();
+      if (token.isBlank()) {
+        break;
+      }
+    }
+
+    // Sorted by canonical name: a_sys then b_sys, no gaps, no duplicates.
+    assertThat(collected).containsExactly(sysTable, sysTableB);
+  }
+
+  private static TableNode prefixSystemTable(ResourceId id, ResourceId namespaceId, String name) {
+    return new TableNode() {
+      @Override
+      public ResourceId namespaceId() {
+        return namespaceId;
+      }
+
+      @Override
+      public String displayName() {
+        return name;
+      }
+
+      @Override
+      public ResourceId id() {
+        return id;
+      }
+
+      @Override
+      public long version() {
+        return 1;
+      }
+
+      @Override
+      public Instant metadataUpdatedAt() {
+        return Instant.EPOCH;
+      }
+
+      @Override
+      public GraphNodeOrigin origin() {
+        return GraphNodeOrigin.SYSTEM;
+      }
+
+      @Override
+      public Map<EngineHintKey, EngineHint> engineHints() {
+        return Map.of();
+      }
+    };
+  }
+
+  @Test
   void resolveTables_prefix_resolvesSystemNamespaceWithNameSegment() {
     NameRef prefix =
         NameRef.newBuilder().setCatalog("examples").addPath("information_schema").build();

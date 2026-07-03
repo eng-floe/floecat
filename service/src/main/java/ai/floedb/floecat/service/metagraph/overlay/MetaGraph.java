@@ -49,7 +49,10 @@ import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -400,19 +403,7 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
   @Override
   public ResolveResult listTablesByPrefix(
       String correlationId, NameRef prefix, int limit, String token) {
-
-    EngineContext ctx = engineContext();
-    int max = normalizeLimit(limit);
-    String userToken = decodeUserToken(token);
-    boolean firstPage = userToken.isBlank();
-
-    List<CatalogOverlay.QualifiedRelation> system =
-        firstPage ? collectSystemRelationsInNamespace(prefix, ctx, true, max) : List.of();
-    int userLimit = Math.max(1, max - system.size());
-    ResolveResult user =
-        toResolveResult(userGraph.resolveTables(correlationId, prefix, userLimit, userToken));
-
-    return mergePrefixResults(system, user, max);
+    return listRelationsByPrefix(correlationId, prefix, limit, token, true);
   }
 
   /**
@@ -465,19 +456,89 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
   @Override
   public ResolveResult listViewsByPrefix(
       String correlationId, NameRef prefix, int limit, String token) {
+    return listRelationsByPrefix(correlationId, prefix, limit, token, false);
+  }
+
+  /**
+   * Phased prefix listing: system relations first (sorted by canonical name), then user relations.
+   *
+   * <p>Tokens are phase-scoped so neither cursor can advance past rows the page did not emit. A
+   * {@code sys:} token resumes the (bounded, in-memory) system list after the carried name; the
+   * user-phase token is the user graph's own cursor. The user graph is only consulted for rows once
+   * the system rows are fully emitted, so a page filled by system rows never advances — and can
+   * never drop — user results. Reported totals combine both sources.
+   */
+  private ResolveResult listRelationsByPrefix(
+      String correlationId, NameRef prefix, int limit, String token, boolean tables) {
 
     EngineContext ctx = engineContext();
     int max = normalizeLimit(limit);
-    String userToken = decodeUserToken(token);
-    boolean firstPage = userToken.isBlank();
 
-    List<CatalogOverlay.QualifiedRelation> system =
-        firstPage ? collectSystemRelationsInNamespace(prefix, ctx, false, max) : List.of();
-    int userLimit = Math.max(1, max - system.size());
+    final boolean sysToken = token != null && token.startsWith(SYS_TOKEN_PREFIX);
+    final String sysResume = sysToken ? decodeSysToken(correlationId, token) : "";
+    final boolean userPhase = !sysToken && token != null && !token.isBlank();
+    final String userToken = userPhase ? decodeUserToken(token) : "";
+
+    // Collected on every page (bounded, in-memory) so totals can include the system rows.
+    List<CatalogOverlay.QualifiedRelation> systemAll =
+        new ArrayList<>(collectSystemRelationsInNamespace(prefix, ctx, tables, Integer.MAX_VALUE));
+    systemAll.sort(Comparator.comparing(rel -> canonicalName(rel.name())));
+
+    var merged = new ArrayList<CatalogOverlay.QualifiedRelation>(Math.min(max, 64));
+
+    if (!userPhase) {
+      String lastSystemName = "";
+      for (CatalogOverlay.QualifiedRelation rel : systemAll) {
+        String name = canonicalName(rel.name());
+        if (!sysResume.isBlank() && name.compareTo(sysResume) <= 0) {
+          continue;
+        }
+        if (merged.size() >= max) {
+          // System rows remain: continue the system phase next page; the user cursor is untouched.
+          return new ResolveResult(
+              merged,
+              systemAll.size() + userTotalByPrefix(correlationId, prefix, tables),
+              SYS_TOKEN_PREFIX + encodeSysName(lastSystemName));
+        }
+        merged.add(rel);
+        lastSystemName = name;
+      }
+      if (merged.size() >= max) {
+        // Page filled exactly as the system rows ran out: hand off to the user phase without
+        // advancing its cursor. The next page starts the user scan from the beginning.
+        return new ResolveResult(
+            merged,
+            systemAll.size() + userTotalByPrefix(correlationId, prefix, tables),
+            USER_TOKEN_PREFIX);
+      }
+    }
+
+    int room = max - merged.size();
     ResolveResult user =
-        toResolveResult(userGraph.resolveViews(correlationId, prefix, userLimit, userToken));
+        toResolveResult(
+            tables
+                ? userGraph.resolveTables(correlationId, prefix, room, userToken)
+                : userGraph.resolveViews(correlationId, prefix, room, userToken));
+    for (CatalogOverlay.QualifiedRelation rel : user.relations()) {
+      if (merged.size() >= max) {
+        break;
+      }
+      merged.add(rel);
+    }
+    return new ResolveResult(
+        merged, systemAll.size() + user.totalSize(), encodeUserToken(user.nextToken()));
+  }
 
-    return mergePrefixResults(system, user, max);
+  /**
+   * User-relation total for combined counts on system-phase pages. The one-row probe's rows and
+   * cursor are discarded; the user phase later starts from a blank cursor, so nothing is skipped.
+   */
+  private int userTotalByPrefix(String correlationId, NameRef prefix, boolean tables) {
+    return toResolveResult(
+            tables
+                ? userGraph.resolveTables(correlationId, prefix, 1, "")
+                : userGraph.resolveViews(correlationId, prefix, 1, ""))
+        .totalSize();
   }
 
   /**
@@ -661,6 +722,8 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
    */
   private static final String USER_TOKEN_PREFIX = "u:";
 
+  private static final String SYS_TOKEN_PREFIX = "sys:";
+
   private static int normalizeLimit(int limit) {
     return Math.max(1, limit > 0 ? limit : 50);
   }
@@ -677,6 +740,25 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
       return token.substring(USER_TOKEN_PREFIX.length());
     }
     return token;
+  }
+
+  private static String encodeSysName(String name) {
+    return Base64.getUrlEncoder()
+        .withoutPadding()
+        .encodeToString(name.getBytes(StandardCharsets.UTF_8));
+  }
+
+  private String decodeSysToken(String correlationId, String token) {
+    try {
+      return new String(
+          Base64.getUrlDecoder().decode(token.substring(SYS_TOKEN_PREFIX.length())),
+          StandardCharsets.UTF_8);
+    } catch (IllegalArgumentException badToken) {
+      throw GrpcErrors.invalidArgument(
+          correlationId,
+          GeneratedErrorMessages.MessageKey.PAGE_TOKEN_INVALID,
+          Map.of("page_token", token));
+    }
   }
 
   private static String encodeUserToken(String token) {
@@ -769,27 +851,6 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     }
 
     return out;
-  }
-
-  private ResolveResult mergePrefixResults(
-      List<CatalogOverlay.QualifiedRelation> system, ResolveResult user, int max) {
-    List<CatalogOverlay.QualifiedRelation> merged = new ArrayList<>();
-
-    for (CatalogOverlay.QualifiedRelation rel : system) {
-      if (merged.size() >= max) {
-        break;
-      }
-      merged.add(rel);
-    }
-
-    for (CatalogOverlay.QualifiedRelation rel : user.relations()) {
-      if (merged.size() >= max) {
-        break;
-      }
-      merged.add(rel);
-    }
-
-    return new ResolveResult(merged, user.totalSize(), encodeUserToken(user.nextToken()));
   }
 
   // ---- Lightweight ref listing and topology-cache invalidation ----
