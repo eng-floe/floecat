@@ -36,6 +36,8 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class TransactionCommitExecutionSupport {
   static final String RETRYABLE_CONFLICT_PROPERTY = "floecat.retryable-transaction-conflict";
+  static final String APPLY_FAILURE_RETRYABLE_PROPERTY =
+      "floecat.transaction.apply-failure-retryable";
   private static final int DEFAULT_COMMIT_CONFIRM_MAX_ATTEMPTS = 6;
   private static final long DEFAULT_COMMIT_CONFIRM_INITIAL_SLEEP_MS = 20L;
   private static final long DEFAULT_COMMIT_CONFIRM_MAX_SLEEP_MS = 200L;
@@ -176,11 +178,15 @@ public class TransactionCommitExecutionSupport {
           applied = true;
         } else {
           if (isDeterministicFailedState(commitState)) {
+            boolean retryable =
+                commitResponse != null
+                    && commitResponse.hasTransaction()
+                    && isRetryableApplyFailure(commitResponse.getTransaction());
             if (waitForAppliedState(txId)) {
               applied = true;
               return Response.noContent().build();
             }
-            return conflictResponse("transaction commit did not reach applied state", false);
+            return conflictResponse("transaction commit did not reach applied state", retryable);
           }
           if (shouldConfirmAmbiguousCommitState(commitState) && waitForAppliedState(txId)) {
             applied = true;
@@ -293,6 +299,13 @@ public class TransactionCommitExecutionSupport {
 
   Response retryableConflict(String message) {
     return conflictResponse(message, true);
+  }
+
+  boolean isRetryableApplyFailure(ai.floedb.floecat.transaction.rpc.Transaction transaction) {
+    if (transaction == null) {
+      return false;
+    }
+    return "true".equals(transaction.getPropertiesMap().get(APPLY_FAILURE_RETRYABLE_PROPERTY));
   }
 
   void abortIfOpen(TransactionState currentState, String txId, String reason) {

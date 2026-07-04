@@ -153,6 +153,13 @@ public class TransactionCommitService {
           sleepBeforeRetry(attempt);
           continue;
         }
+        if (currentState == TransactionState.TS_APPLY_FAILED_CONFLICT
+            && openTransaction.currentTxn() != null
+            && openTransaction.currentTxn().hasTransaction()
+            && transactionCommitExecutionSupport.isRetryableApplyFailure(
+                openTransaction.currentTxn().getTransaction())) {
+          return transactionCommitExecutionSupport.retryableConflict("transaction commit failed");
+        }
         return IcebergErrorResponses.failure(
             "transaction commit failed", "CommitFailedException", Response.Status.CONFLICT);
       }

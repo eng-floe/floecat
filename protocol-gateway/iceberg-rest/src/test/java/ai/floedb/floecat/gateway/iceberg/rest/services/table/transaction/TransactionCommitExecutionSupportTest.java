@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.table.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -190,5 +191,71 @@ class TransactionCommitExecutionSupportTest {
 
     assertEquals(Response.Status.NO_CONTENT.getStatusCode(), response.getStatus());
     verify(support.grpcClient, times(1)).getTransaction(any());
+  }
+
+  @Test
+  void applyMarksAnnotatedVersionConflictStateAsRetryableConflict() {
+    TransactionCommitExecutionSupport support = new TransactionCommitExecutionSupport();
+    support.grpcClient = Mockito.mock(GrpcServiceFacade.class);
+
+    Transaction failed =
+        Transaction.newBuilder()
+            .setTxId("tx-1")
+            .setState(TransactionState.TS_APPLY_FAILED_CONFLICT)
+            .putProperties(
+                TransactionCommitExecutionSupport.APPLY_FAILURE_RETRYABLE_PROPERTY, "true")
+            .build();
+    when(support.grpcClient.prepareTransaction(any()))
+        .thenReturn(
+            ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse.getDefaultInstance());
+    when(support.grpcClient.commitTransaction(any()))
+        .thenReturn(CommitTransactionResponse.newBuilder().setTransaction(failed).build());
+    when(support.grpcClient.getTransaction(any()))
+        .thenReturn(GetTransactionResponse.newBuilder().setTransaction(failed).build());
+
+    Response response =
+        support.apply(
+            new TransactionCommitExecutionSupport.OpenTransaction(
+                "tx-1", TransactionState.TS_OPEN, null, "tx-1"),
+            List.of(
+                TxChange.newBuilder()
+                    .setTargetPointerKey("/accounts/acct/tables/by-id/tbl-1")
+                    .setIntendedBlobUri("/accounts/acct/objects/blob-1")
+                    .build()));
+
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
+    assertTrue(support.isRetryableConflict(response));
+  }
+
+  @Test
+  void applyLeavesUnannotatedConflictStateNonRetryable() {
+    TransactionCommitExecutionSupport support = new TransactionCommitExecutionSupport();
+    support.grpcClient = Mockito.mock(GrpcServiceFacade.class);
+
+    Transaction failed =
+        Transaction.newBuilder()
+            .setTxId("tx-1")
+            .setState(TransactionState.TS_APPLY_FAILED_CONFLICT)
+            .build();
+    when(support.grpcClient.prepareTransaction(any()))
+        .thenReturn(
+            ai.floedb.floecat.transaction.rpc.PrepareTransactionResponse.getDefaultInstance());
+    when(support.grpcClient.commitTransaction(any()))
+        .thenReturn(CommitTransactionResponse.newBuilder().setTransaction(failed).build());
+    when(support.grpcClient.getTransaction(any()))
+        .thenReturn(GetTransactionResponse.newBuilder().setTransaction(failed).build());
+
+    Response response =
+        support.apply(
+            new TransactionCommitExecutionSupport.OpenTransaction(
+                "tx-1", TransactionState.TS_OPEN, null, "tx-1"),
+            List.of(
+                TxChange.newBuilder()
+                    .setTargetPointerKey("/accounts/acct/tables/by-id/tbl-1")
+                    .setIntendedBlobUri("/accounts/acct/objects/blob-1")
+                    .build()));
+
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
+    assertFalse(support.isRetryableConflict(response));
   }
 }

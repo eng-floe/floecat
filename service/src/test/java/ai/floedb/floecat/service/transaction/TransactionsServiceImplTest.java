@@ -208,6 +208,11 @@ class TransactionsServiceImplTest {
             Timestamps.fromMillis(10));
 
     assertEquals(TransactionState.TS_APPLY_FAILED_RETRYABLE, committed.getState());
+    assertEquals(
+        "RETRYABLE", committed.getPropertiesMap().get("floecat.transaction.apply-failure-status"));
+    assertEquals("X", committed.getPropertiesMap().get("floecat.transaction.apply-failure-code"));
+    assertEquals(
+        "true", committed.getPropertiesMap().get("floecat.transaction.apply-failure-retryable"));
     verify(intentRepo, never()).deleteBothIndicesBestEffort(intent);
   }
 
@@ -457,6 +462,13 @@ class TransactionsServiceImplTest {
             Timestamps.fromMillis(10));
 
     assertEquals(TransactionState.TS_APPLY_FAILED_CONFLICT, committed.getState());
+    assertEquals(
+        "CONFLICT", committed.getPropertiesMap().get("floecat.transaction.apply-failure-status"));
+    assertEquals(
+        "EXPECTED_VERSION_MISMATCH",
+        committed.getPropertiesMap().get("floecat.transaction.apply-failure-code"));
+    assertEquals(
+        "true", committed.getPropertiesMap().get("floecat.transaction.apply-failure-retryable"));
     verify(intentRepo, never()).deleteBothIndicesBestEffort(intent);
     verify(intentRepo)
         .update(

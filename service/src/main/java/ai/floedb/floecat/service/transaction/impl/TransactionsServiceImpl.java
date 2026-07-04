@@ -86,6 +86,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -104,6 +105,11 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   private static final String CAPTURE_STATISTICS_PROPERTY = "floecat.connector.capture-statistics";
   private static final String PREPARED_INTENT_COUNT_PROPERTY =
       "floecat.transaction.prepared-intent-count";
+  static final String APPLY_FAILURE_STATUS_PROPERTY = "floecat.transaction.apply-failure-status";
+  static final String APPLY_FAILURE_CODE_PROPERTY = "floecat.transaction.apply-failure-code";
+  static final String APPLY_FAILURE_MESSAGE_PROPERTY = "floecat.transaction.apply-failure-message";
+  static final String APPLY_FAILURE_RETRYABLE_PROPERTY =
+      "floecat.transaction.apply-failure-retryable";
   private static final String RESERVED_TABLE_ID_PROPERTY_PREFIX =
       "floecat.transaction.reserved-table-id.";
   @Inject TransactionRepository txRepo;
@@ -409,6 +415,18 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       TransactionState nextState,
       Timestamp now,
       String conflictReason) {
+    return transitionTransactionState(
+        accountId, txId, expectedStates, nextState, now, conflictReason, Map.of());
+  }
+
+  private Transaction transitionTransactionState(
+      String accountId,
+      String txId,
+      Set<TransactionState> expectedStates,
+      TransactionState nextState,
+      Timestamp now,
+      String conflictReason,
+      Map<String, String> properties) {
     for (int attempt = 0; attempt < 3; attempt++) {
       Transaction current = getTransactionOrThrow(accountId, txId);
       TransactionState currentState = current.getState();
@@ -420,9 +438,13 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             conflictReason + ": tx=" + txId + " state=" + currentState.name());
       }
       long version = txRepo.metaFor(accountId, txId).getPointerVersion();
-      Transaction updated = current.toBuilder().setState(nextState).setUpdatedAt(now).build();
-      if (txRepo.update(updated, version)) {
-        return updated;
+      Transaction.Builder updated = current.toBuilder().setState(nextState).setUpdatedAt(now);
+      if (properties != null && !properties.isEmpty()) {
+        updated.putAllProperties(properties);
+      }
+      Transaction updatedTransaction = updated.build();
+      if (txRepo.update(updatedTransaction, version)) {
+        return updatedTransaction;
       }
     }
     throw new PreconditionFailedException("transaction update conflict: " + txId);
@@ -777,6 +799,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
               applyPhaseTxn.getTxId(),
               Set.of(TransactionState.TS_APPLYING),
               TransactionState.TS_APPLY_FAILED_CONFLICT,
+              outcome,
               now,
               "cannot transition to apply_failed_conflict");
       if (failed.getState() == TransactionState.TS_APPLIED) {
@@ -795,6 +818,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             applyPhaseTxn.getTxId(),
             Set.of(TransactionState.TS_APPLYING),
             TransactionState.TS_APPLY_FAILED_RETRYABLE,
+            outcome,
             now,
             "cannot transition to apply_failed_retryable");
     if (failed.getState() == TransactionState.TS_APPLIED) {
@@ -813,12 +837,30 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       TransactionState nextState,
       Timestamp now,
       String failureMessage) {
+    return transitionApplyFailureOrReturnApplied(
+        accountId, txId, expectedStates, nextState, null, now, failureMessage);
+  }
+
+  private Transaction transitionApplyFailureOrReturnApplied(
+      String accountId,
+      String txId,
+      Set<TransactionState> expectedStates,
+      TransactionState nextState,
+      TransactionIntentApplierSupport.ApplyOutcome outcome,
+      Timestamp now,
+      String failureMessage) {
     Transaction latest = getTransactionOrThrow(accountId, txId);
     if (latest.getState() == TransactionState.TS_APPLIED) {
       return latest;
     }
     return transitionTransactionState(
-        accountId, txId, expectedStates, nextState, now, failureMessage);
+        accountId,
+        txId,
+        expectedStates,
+        nextState,
+        now,
+        failureMessage,
+        applyFailureProperties(outcome));
   }
 
   private List<TxChange> materializeConnectorProvisioningChanges(
@@ -1698,6 +1740,35 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     } catch (Exception e) {
       return null;
     }
+  }
+
+  private Map<String, String> applyFailureProperties(
+      TransactionIntentApplierSupport.ApplyOutcome outcome) {
+    if (outcome == null || outcome.status() == null) {
+      return Map.of();
+    }
+    LinkedHashMap<String, String> properties = new LinkedHashMap<>();
+    properties.put(APPLY_FAILURE_STATUS_PROPERTY, outcome.status().name());
+    properties.put(
+        APPLY_FAILURE_RETRYABLE_PROPERTY, Boolean.toString(isRetryableApplyFailure(outcome)));
+    if (outcome.errorCode() != null && !outcome.errorCode().isBlank()) {
+      properties.put(APPLY_FAILURE_CODE_PROPERTY, outcome.errorCode());
+    }
+    if (outcome.errorMessage() != null && !outcome.errorMessage().isBlank()) {
+      properties.put(APPLY_FAILURE_MESSAGE_PROPERTY, outcome.errorMessage());
+    }
+    return Map.copyOf(properties);
+  }
+
+  private boolean isRetryableApplyFailure(TransactionIntentApplierSupport.ApplyOutcome outcome) {
+    if (outcome == null) {
+      return false;
+    }
+    if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.RETRYABLE) {
+      return true;
+    }
+    return outcome.status() == TransactionIntentApplierSupport.ApplyStatus.CONFLICT
+        && "EXPECTED_VERSION_MISMATCH".equals(outcome.errorCode());
   }
 
   private void annotateIntentApplyFailure(

@@ -248,7 +248,10 @@ assert_contains_any() {
 
 duckdb_should_retry_iceberg_occ() {
   local output="${1:-}"
-  [[ "$output" == *"Conflict_409"* && "$output" == *"assert-ref-snapshot-id failed for ref main"* ]]
+  [[ "$output" == *"Conflict_409"* && (
+    "$output" == *"assert-ref-snapshot-id failed for ref main"* ||
+    "$output" == *"transaction commit did not reach applied state"*
+  ) ]]
 }
 
 run_duckdb_with_iceberg_occ_retry() {
