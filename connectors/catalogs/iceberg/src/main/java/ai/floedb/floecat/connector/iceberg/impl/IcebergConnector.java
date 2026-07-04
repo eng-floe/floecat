@@ -869,14 +869,14 @@ public abstract class IcebergConnector implements FloecatConnector {
 
   static String resolveMetadataLocation(
       String input, FileIO fileIO, String committedMetadataLocation) {
+    String trimmed = input.trim();
+    if (trimmed.endsWith(".json")) {
+      return trimmed;
+    }
     if (committedMetadataLocation != null
         && !committedMetadataLocation.isBlank()
         && committedMetadataLocation.trim().endsWith(".json")) {
       return committedMetadataLocation.trim();
-    }
-    String trimmed = input.trim();
-    if (trimmed.endsWith(".json")) {
-      return trimmed;
     }
     String base = trimmed.endsWith("/") ? trimmed.substring(0, trimmed.length() - 1) : trimmed;
     if (!(fileIO instanceof SupportsPrefixOperations prefixOps)) {
