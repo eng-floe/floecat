@@ -44,6 +44,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJobPage;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import java.util.ArrayList;
@@ -468,6 +470,39 @@ class ReconcilePlannerSchedulerTest {
         .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
 
+  @Test
+  void runPlannerPassUsesCanonicalJobsWhenRootSummaryProjectionLags() {
+    TestScheduler scheduler = new TestScheduler();
+    scheduler.accounts = mock(AccountRepository.class);
+    scheduler.connectors = mock(ConnectorRepository.class);
+    scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.jobIndexStore = mock(ReconcileJobIndexStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+    when(scheduler.accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a", "alpha")));
+    when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
+        .thenReturn(List.of(connector("acct-a", "conn-a1", "alpha-1")));
+    stubConnectorLookup(scheduler.connectors, connector("acct-a", "conn-a1", "alpha-1"));
+    when(scheduler.jobs.listRootJobs(anyString(), anyInt(), anyString(), anyString(), any()))
+        .thenReturn(new ReconcileJobPage(List.of(), ""));
+    when(scheduler.jobIndexStore.listStoredJobs(
+            eq("acct-a"),
+            eq(256),
+            eq(""),
+            eq("conn-a1"),
+            eq(java.util.Set.of("JS_QUEUED", "JS_WAITING", "JS_RUNNING", "JS_CANCELLING"))))
+        .thenReturn(
+            new ReconcileJobIndexStore.StoredJobPage(
+                List.of(storedRootJob("acct-a", "conn-a1", "root-1", "JS_WAITING")), ""));
+
+    scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
+
+    verify(scheduler.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
   private static Account account(String accountId, String displayName) {
     return Account.newBuilder()
         .setResourceId(
@@ -493,6 +528,17 @@ class ReconcilePlannerSchedulerTest {
         .setState(ConnectorState.CS_ACTIVE)
         .setPolicy(ReconcilePolicy.newBuilder().setEnabled(policyEnabled).build())
         .build();
+  }
+
+  private static StoredReconcileJob storedRootJob(
+      String accountId, String connectorId, String jobId, String state) {
+    StoredReconcileJob job = new StoredReconcileJob();
+    job.accountId = accountId;
+    job.connectorId = connectorId;
+    job.jobId = jobId;
+    job.state = state;
+    job.parentJobId = "";
+    return job;
   }
 
   private static final class TestScheduler extends ReconcilePlannerScheduler {
