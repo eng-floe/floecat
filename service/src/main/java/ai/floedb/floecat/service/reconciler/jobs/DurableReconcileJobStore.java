@@ -2518,6 +2518,25 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       long errors,
       long snapshotsProcessed,
       long statsProcessed) {
+    String terminalState = terminalStateForCompletionKind(completionKind);
+    if (terminalState.isBlank()) {
+      return onHotPath(
+          () ->
+              completer()
+                  .applyLeaseOutcome(
+                      jobId,
+                      leaseEpoch,
+                      completionKind,
+                      finishedAtMs,
+                      message,
+                      tablesScanned,
+                      tablesChanged,
+                      viewsScanned,
+                      viewsChanged,
+                      errors,
+                      snapshotsProcessed,
+                      statsProcessed));
+    }
     if (applyLeaseOutcomeTransactionally(
         jobId,
         leaseEpoch,
@@ -2547,36 +2566,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         statsProcessed)) {
       return true;
     }
-    boolean accepted =
-        onHotPath(
-            () ->
-                completer()
-                    .applyLeaseOutcome(
-                        jobId,
-                        leaseEpoch,
-                        completionKind,
-                        finishedAtMs,
-                        message,
-                        tablesScanned,
-                        tablesChanged,
-                        viewsScanned,
-                        viewsChanged,
-                        errors,
-                        snapshotsProcessed,
-                        statsProcessed));
-    return accepted
-        || isIdempotentTerminalLeaseOutcome(
-            jobId,
-            completionKind,
-            finishedAtMs,
-            message,
-            tablesScanned,
-            tablesChanged,
-            viewsScanned,
-            viewsChanged,
-            errors,
-            snapshotsProcessed,
-            statsProcessed);
+    return false;
   }
 
   private boolean applyLeaseOutcomeTransactionally(
@@ -2664,6 +2654,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         StoredReconcileJob nextParent = jobIndexStore().cloneStoredRecord(previousParent);
         applyCanonicalParentSchedulingState(nextParent, rollup);
         if (canonicalSchedulingEquivalent(previousParent, nextParent)) {
+          // Even when the parent still appears semantically unchanged, keep it in the CAS set.
+          // Concurrent sibling completions can otherwise each commit child-only updates against the
+          // same waiting parent snapshot and strand canonical state behind the last terminal child.
+          mutations.add(
+              new ReconcileJobIndexStore.CanonicalRecordMutation(
+                  parentSnapshot, previousParent, nextParent));
+          changedRecords.add(nextParent);
+          updatedRecordsByJobId.put(nextParent.jobId, nextParent);
           currentParentJobId = blankToEmpty(previousParent.parentJobId);
           continue;
         }
