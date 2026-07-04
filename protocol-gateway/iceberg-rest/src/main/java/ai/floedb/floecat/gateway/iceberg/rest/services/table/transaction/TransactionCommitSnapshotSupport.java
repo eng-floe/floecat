@@ -85,7 +85,13 @@ public class TransactionCommitSnapshotSupport {
         firstNonBlank(trimToNull(metadataLocation), requestedMetadataLocation);
     List<ai.floedb.floecat.transaction.rpc.TxChange> out = new ArrayList<>();
     boolean writesNewSnapshot = false;
-    Long existingCurrentSnapshotId = currentSnapshotId(table, tableSupport);
+    Long existingCurrentSnapshotId;
+    try {
+      existingCurrentSnapshotId = currentSnapshotId(table, tableSupport);
+    } catch (StatusRuntimeException e) {
+      return new SnapshotChangePlan(
+          List.of(), transactionCommitExecutionSupport.mapPrepareFailure(e));
+    }
     Long targetCurrentSnapshotId = targetCurrentSnapshotId(existingCurrentSnapshotId, parsed);
     Snapshot currentSnapshotCandidate = null;
     if (updates != null && !updates.isEmpty()) {

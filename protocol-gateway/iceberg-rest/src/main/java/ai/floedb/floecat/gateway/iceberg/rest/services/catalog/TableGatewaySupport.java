@@ -292,7 +292,10 @@ public class TableGatewaySupport {
       }
       return response.getCurrentSnapshotPointer().getSnapshotId();
     } catch (StatusRuntimeException e) {
-      return null;
+      if (e.getStatus().getCode() == io.grpc.Status.Code.NOT_FOUND) {
+        return null;
+      }
+      throw e;
     }
   }
 
@@ -329,7 +332,10 @@ public class TableGatewaySupport {
       }
       return response.getSnapshot();
     } catch (StatusRuntimeException e) {
-      return null;
+      if (e.getStatus().getCode() == io.grpc.Status.Code.NOT_FOUND) {
+        return null;
+      }
+      throw e;
     }
   }
 
