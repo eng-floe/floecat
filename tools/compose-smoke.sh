@@ -246,6 +246,22 @@ assert_contains_any() {
   return 1
 }
 
+unity_create_already_exists() {
+  local response="$1"
+  local http_code="$2"
+  local error_code="$3"
+
+  if [ "$http_code" = "409" ]; then
+    return 0
+  fi
+
+  if [ "$http_code" = "400" ] && [[ "$response" == *"\"error_code\":\"$error_code\""* ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
 assert_remote_file_group_worker_activity() {
   local compose_cmd="$1"
   local label="$2"
@@ -943,7 +959,9 @@ quit")
       -d "{\"name\":\"$unity_catalog\",\"comment\":\"compose-smoke\"}")
     local unity_catalog_code
     unity_catalog_code=$(printf "%s\n" "$unity_catalog_resp" | tail -n1)
-    if [ "$unity_catalog_code" != "200" ] && [ "$unity_catalog_code" != "201" ] && [ "$unity_catalog_code" != "409" ]; then
+    if [ "$unity_catalog_code" != "200" ] \
+      && [ "$unity_catalog_code" != "201" ] \
+      && ! unity_create_already_exists "$unity_catalog_resp" "$unity_catalog_code" "CATALOG_ALREADY_EXISTS"; then
       echo "[FAIL] $label unity catalog create failed (http=$unity_catalog_code)"
       echo "$unity_catalog_resp"
       return 1
@@ -957,7 +975,9 @@ quit")
       -d "{\"name\":\"$unity_schema\",\"catalog_name\":\"$unity_catalog\",\"comment\":\"compose-smoke\"}")
     local unity_schema_code
     unity_schema_code=$(printf "%s\n" "$unity_schema_resp" | tail -n1)
-    if [ "$unity_schema_code" != "200" ] && [ "$unity_schema_code" != "201" ] && [ "$unity_schema_code" != "409" ]; then
+    if [ "$unity_schema_code" != "200" ] \
+      && [ "$unity_schema_code" != "201" ] \
+      && ! unity_create_already_exists "$unity_schema_resp" "$unity_schema_code" "SCHEMA_ALREADY_EXISTS"; then
       echo "[FAIL] $label unity schema create failed (http=$unity_schema_code)"
       echo "$unity_schema_resp"
       return 1
@@ -971,7 +991,9 @@ quit")
       -d "{\"name\":\"$unity_source_table\",\"catalog_name\":\"$unity_catalog\",\"schema_name\":\"$unity_schema\",\"table_type\":\"EXTERNAL\",\"data_source_format\":\"DELTA\",\"storage_location\":\"$unity_storage_location\"}")
     local unity_table_code
     unity_table_code=$(printf "%s\n" "$unity_table_resp" | tail -n1)
-    if [ "$unity_table_code" != "200" ] && [ "$unity_table_code" != "201" ] && [ "$unity_table_code" != "409" ]; then
+    if [ "$unity_table_code" != "200" ] \
+      && [ "$unity_table_code" != "201" ] \
+      && ! unity_create_already_exists "$unity_table_resp" "$unity_table_code" "TABLE_ALREADY_EXISTS"; then
       echo "[FAIL] $label unity table register failed (http=$unity_table_code)"
       echo "$unity_table_resp"
       return 1
