@@ -316,6 +316,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     try {
       var resolved =
           table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
+      String metadataLocation = currentSnapshotMetadataLocation(ctx, tableId);
       return Optional.of(
           new DestinationTableMetadata(
               resolved.getCatalogId(),
@@ -325,7 +326,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
               sourceName(resolved.hasUpstream() ? resolved.getUpstream() : null),
               sourceConnectorId(resolved.hasUpstream() ? resolved.getUpstream() : null),
               resolved.getPropertiesMap().getOrDefault("storage_location", ""),
-              resolved.getPropertiesMap().getOrDefault("metadata-location", "")));
+              metadataLocation));
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
         return Optional.empty();
@@ -1381,6 +1382,27 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       return token;
     }
     return "Bearer " + token;
+  }
+
+  private String currentSnapshotMetadataLocation(ReconcileContext ctx, ResourceId tableId) {
+    try {
+      var response =
+          snapshot(ctx)
+              .getSnapshot(
+                  GetSnapshotRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setSnapshot(
+                          SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
+                      .build());
+      return response.getSnapshot().hasMetadataLocation()
+          ? response.getSnapshot().getMetadataLocation()
+          : "";
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return "";
+      }
+      throw e;
+    }
   }
 
   private SnapshotPin currentSnapshotPin(ReconcileContext ctx, ResourceId tableId) {

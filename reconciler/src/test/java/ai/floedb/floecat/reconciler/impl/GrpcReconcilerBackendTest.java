@@ -35,6 +35,7 @@ import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
+import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.GetViewResponse;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
@@ -43,7 +44,9 @@ import ai.floedb.floecat.catalog.rpc.LookupTableByRefResponse;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
@@ -418,6 +421,82 @@ class GrpcReconcilerBackendTest {
             NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("missing").build());
 
     assertThat(resolved).isEmpty();
+  }
+
+  @Test
+  void lookupDestinationTableMetadataUsesCurrentSnapshotMetadataLocation() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.table =
+        mock(ai.floedb.floecat.catalog.rpc.TableServiceGrpc.TableServiceBlockingStub.class);
+    backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    when(backend.table.withInterceptors(any())).thenReturn(backend.table);
+    when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat")
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns")
+            .build();
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .setId("conn")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl")
+            .build();
+
+    when(backend.table.getTable(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(
+                    Table.newBuilder()
+                        .setResourceId(tableId)
+                        .setCatalogId(catalogId)
+                        .setNamespaceId(namespaceId)
+                        .setDisplayName("orders")
+                        .setUpstream(
+                            UpstreamRef.newBuilder()
+                                .setConnectorId(connectorId)
+                                .addNamespacePath("main")
+                                .addNamespacePath("sales")
+                                .setTableDisplayName("orders")
+                                .build())
+                        .putProperties("storage_location", "s3://warehouse/main.db/orders")
+                        .build())
+                .build());
+    when(backend.snapshot.getSnapshot(any()))
+        .thenReturn(
+            GetSnapshotResponse.newBuilder()
+                .setSnapshot(
+                    Snapshot.newBuilder()
+                        .setTableId(tableId)
+                        .setSnapshotId(42L)
+                        .setMetadataLocation(
+                            "s3://warehouse/main.db/orders/metadata/00042.metadata.json")
+                        .build())
+                .build());
+
+    Optional<ReconcilerBackend.DestinationTableMetadata> resolved =
+        backend.lookupDestinationTableMetadata(reconcileContext(), tableId);
+
+    assertThat(resolved).isPresent();
+    assertThat(resolved.orElseThrow().storageLocation()).isEqualTo("s3://warehouse/main.db/orders");
+    assertThat(resolved.orElseThrow().metadataLocation())
+        .isEqualTo("s3://warehouse/main.db/orders/metadata/00042.metadata.json");
   }
 
   @Test
