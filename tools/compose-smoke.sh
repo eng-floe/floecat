@@ -246,6 +246,43 @@ assert_contains_any() {
   return 1
 }
 
+duckdb_should_retry_iceberg_occ() {
+  local output="${1:-}"
+  [[ "$output" == *"Conflict_409"* && "$output" == *"assert-ref-snapshot-id failed for ref main"* ]]
+}
+
+run_duckdb_with_iceberg_occ_retry() {
+  local label="$1"
+  local compose_project="$2"
+  local bootstrap_sql="$3"
+  local query_sql="$4"
+  local max_attempts="${5:-3}"
+
+  local attempt
+  local duckdb_out
+  local sleep_seconds
+  for attempt in $(seq 1 "$max_attempts"); do
+    if duckdb_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
+      duckdb -c "$bootstrap_sql $query_sql" 2>&1); then
+      printf '%s\n' "$duckdb_out"
+      return 0
+    fi
+    if ! duckdb_should_retry_iceberg_occ "$duckdb_out"; then
+      printf '%s\n' "$duckdb_out"
+      return 1
+    fi
+    printf '%s\n' "$duckdb_out"
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      return 1
+    fi
+    sleep_seconds="$attempt"
+    echo "[WARN] $label duckdb OCC conflict on attempt $attempt/$max_attempts; retrying in ${sleep_seconds}s"
+    sleep "$sleep_seconds"
+  done
+
+  return 1
+}
+
 unity_create_already_exists() {
   local response="$1"
   local http_code="$2"
@@ -1057,8 +1094,12 @@ quit")
     local duckdb_query="SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'my_local_nonnull_name=' || CAST(COUNT(name) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'dv_demo_delta=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'dv_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_ctas_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke AS SELECT * FROM iceberg_floecat.delta.call_center LIMIT 5; SELECT 'ctas_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_recreate_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_recreate_smoke (id INTEGER, v VARCHAR); INSERT INTO iceberg_floecat.iceberg.duckdb_recreate_smoke VALUES (11, 'first'); SELECT 'recreate_first_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_recreate_smoke; DELETE FROM iceberg_floecat.iceberg.duckdb_recreate_smoke WHERE id = 11; SELECT 'recreate_after_delete=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_recreate_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_recreate_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_recreate_smoke (id INTEGER, v VARCHAR); INSERT INTO iceberg_floecat.iceberg.duckdb_recreate_smoke VALUES (22, 'second'); SELECT 'recreate_second_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_recreate_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_recreate_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke (id INTEGER, v VARCHAR); SELECT 'mut_after_create=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; INSERT INTO iceberg_floecat.iceberg.duckdb_mutation_smoke VALUES (1, 'a'), (2, 'b'), (3, 'c'); SELECT 'mut_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DELETE FROM iceberg_floecat.iceberg.duckdb_mutation_smoke WHERE id = 2; SELECT 'mut_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; UPDATE iceberg_floecat.iceberg.duckdb_mutation_smoke SET v = 'c2' WHERE id = 3; SELECT 'mut_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke;"
 
     local duckdb_out
-    if ! duckdb_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
-      duckdb -c "$duckdb_bootstrap $duckdb_query" 2>&1); then
+    if ! duckdb_out=$(run_duckdb_with_iceberg_occ_retry \
+      "$label" \
+      "$compose_project" \
+      "$duckdb_bootstrap" \
+      "$duckdb_query" \
+      3); then
       echo "$duckdb_out"
       echo "[FAIL] $label duckdb command failed"
       return 1

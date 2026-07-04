@@ -290,7 +290,7 @@ class TransactionCommitServiceTest {
   }
 
   @Test
-  void commitDoesNotRetryUserRequirementConflict() {
+  void commitDoesNotRetryAssertRefSnapshotIdConflictFromPlanning() {
     TransactionCommitService service = baseService();
     TableGatewaySupport tableSupport = Mockito.mock(TableGatewaySupport.class);
     ResourceId catalogId = ResourceId.newBuilder().setAccountId("acct").setId("cat-1").build();
@@ -309,7 +309,9 @@ class TransactionCommitServiceTest {
         .thenReturn(new TransactionCommitExecutionSupport.OpenTransactionResult(firstOpen, null));
 
     Response userConflict =
-        Response.status(Response.Status.CONFLICT).entity("user-conflict").build();
+        Response.status(Response.Status.CONFLICT)
+            .entity("assert-ref-snapshot-id failed for ref main")
+            .build();
     when(service.tablePlanningSupport.planExistingTableChange(
             any(),
             any(),

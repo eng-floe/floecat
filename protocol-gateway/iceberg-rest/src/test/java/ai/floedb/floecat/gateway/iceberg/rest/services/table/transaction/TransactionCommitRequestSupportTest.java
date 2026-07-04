@@ -33,7 +33,7 @@ import org.junit.jupiter.api.Test;
 class TransactionCommitRequestSupportTest {
 
   @Test
-  void nullMainSnapshotRefRequirementIgnoresStaleCurrentSnapshotPointer() {
+  void nullMainSnapshotRefRequirementConflictsWhenCurrentSnapshotPointerExists() {
     Table table =
         Table.newBuilder()
             .setResourceId(
@@ -54,7 +54,7 @@ class TransactionCommitRequestSupportTest {
   }
 
   @Test
-  void nullMainSnapshotRefRequirementIgnoresStaleTablePropertyWhenPointerMissing() {
+  void nullMainSnapshotRefRequirementSkipsWhenCurrentSnapshotPointerMissing() {
     Table table =
         Table.newBuilder()
             .setResourceId(

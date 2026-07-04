@@ -60,7 +60,7 @@ class CommitRequirementServiceTest {
   }
 
   @Test
-  void assertMainRefSnapshotIdConflictsWhenTableMetadataDiffersFromRequirement() {
+  void assertMainRefSnapshotIdConflictsWhenCurrentSnapshotPointerDiffersFromRequirement() {
     var table =
         Table.newBuilder()
             .setResourceId(
@@ -87,7 +87,7 @@ class CommitRequirementServiceTest {
   }
 
   @Test
-  void assertMainRefSnapshotIdDoesNotFallBackToTableMetadataWhenPointerMissing() {
+  void assertMainRefSnapshotIdSkipsStrictCheckWhenCurrentSnapshotPointerIsMissing() {
     var table =
         Table.newBuilder()
             .setResourceId(
