@@ -447,6 +447,24 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
                 .build();
 
         tx.add(TransactWriteItem.builder().delete(del).build());
+      } else if (op instanceof TxnCheck c) {
+        var check =
+            ConditionCheck.builder()
+                .tableName(table)
+                .key(keyMap(c.key()))
+                .conditionExpression("#v = :ev")
+                .expressionAttributeNames(Map.of("#v", ATTR_VERSION))
+                .expressionAttributeValues(Map.of(":ev", N(c.expectedVersion())))
+                .build();
+        tx.add(TransactWriteItem.builder().conditionCheck(check).build());
+      } else if (op instanceof TxnCheckAbsent c) {
+        var check =
+            ConditionCheck.builder()
+                .tableName(table)
+                .key(keyMap(c.key()))
+                .conditionExpression("attribute_not_exists(pk)")
+                .build();
+        tx.add(TransactWriteItem.builder().conditionCheck(check).build());
       }
     }
 

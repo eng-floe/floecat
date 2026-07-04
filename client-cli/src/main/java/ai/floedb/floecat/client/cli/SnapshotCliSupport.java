@@ -25,6 +25,7 @@ import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.util.JsonFormat;
 import io.grpc.Status;
@@ -124,17 +125,20 @@ final class SnapshotCliSupport {
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotsService,
       Function<String, ResourceId> resolveTableId) {
     if (args.size() < 2) {
-      out.println("usage: snapshot get <id|catalog.ns[.ns...].table> <snapshot_id>");
+      out.println("usage: snapshot get <id|catalog.ns[.ns...].table> <snapshot_id|current>");
       return;
     }
     ResourceId tableId = resolveTableId.apply(args.get(0));
-    long snapshotId = Long.parseLong(args.get(1));
+    SnapshotRef snapshotRef;
+    if ("current".equalsIgnoreCase(args.get(1))) {
+      snapshotRef = SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build();
+    } else {
+      long snapshotId = Long.parseLong(args.get(1));
+      snapshotRef = SnapshotRef.newBuilder().setSnapshotId(snapshotId).build();
+    }
     var resp =
         snapshotsService.getSnapshot(
-            GetSnapshotRequest.newBuilder()
-                .setTableId(tableId)
-                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId).build())
-                .build());
+            GetSnapshotRequest.newBuilder().setTableId(tableId).setSnapshot(snapshotRef).build());
     printSnapshotDetail(resp.getSnapshot(), out);
   }
 

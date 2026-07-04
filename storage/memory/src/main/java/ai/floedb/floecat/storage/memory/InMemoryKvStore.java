@@ -168,6 +168,15 @@ public final class InMemoryKvStore implements KvStore {
           if (existing == null || existing.version() != delete.expectedVersion()) {
             return Uni.createFrom().item(false);
           }
+        } else if (op instanceof TxnCheck check) {
+          Record existing = records.get(check.key());
+          if (existing == null || existing.version() != check.expectedVersion()) {
+            return Uni.createFrom().item(false);
+          }
+        } else if (op instanceof TxnCheckAbsent check) {
+          if (records.get(check.key()) != null) {
+            return Uni.createFrom().item(false);
+          }
         }
       }
 

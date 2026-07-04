@@ -87,6 +87,29 @@ public class TestDataResetterTest {
   }
 
   @Test
+  void wipeAll_removes_global_reconcile_pointers_with_or_without_leading_slash() {
+    FakePointerStore ptr = new FakePointerStore();
+    ptr.putPointer("/accounts/by-id/reconcile/jobs/dirty-parents/acct/job", 1L);
+    ptr.putPointer("accounts/by-id/reconcile/jobs/dirty-parents/acct/job2", 1L);
+    ptr.putPointer("/accounts/by-id/reconcile/jobs/ready/0000000000000000001/acct/lane/job", 1L);
+    ptr.putPointer(
+        "accounts/by-id/reconcile/jobs/ready/by-execution-class/DEFAULT/0000000000000000001/acct/job",
+        1L);
+    ptr.putPointer("/accounts/by-id/reconcile/jobs/by-id/job", 1L);
+    ptr.putPointer(
+        "accounts/by-id/reconcile/jobs/by-state/JS_QUEUED/0000000000000000001/acct/job", 1L);
+    ptr.putPointer("/accounts/by-id/reconcile/snapshot-leases/table/0000000000000000001", 1L);
+    ptr.putPointer("/other/keep", 1L);
+
+    TestDataResetter resetter = resetter(ptr, new FakeBlobStore());
+    resetter.wipeAll();
+
+    assertTrue(ptr.containsKey("/other/keep"));
+    assertTrue(ptr.keysMatching("/accounts/by-id/reconcile/").isEmpty());
+    assertTrue(ptr.keysMatching("accounts/by-id/reconcile/").isEmpty());
+  }
+
+  @Test
   void wipeAll_does_not_throw_on_empty_store() {
     TestDataResetter resetter = resetter(new FakePointerStore(), new FakeBlobStore());
     resetter.wipeAll();

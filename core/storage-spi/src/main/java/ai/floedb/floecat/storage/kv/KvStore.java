@@ -131,7 +131,7 @@ public interface KvStore {
    */
   Uni<Boolean> txnWriteCas(List<TxnOp> ops);
 
-  sealed interface TxnOp permits TxnPut, TxnDelete {}
+  sealed interface TxnOp permits TxnPut, TxnDelete, TxnCheck, TxnCheckAbsent {}
 
   /**
    * CAS put in a transaction.
@@ -152,4 +152,16 @@ public interface KvStore {
       }
     }
   }
+
+  /** Condition-only version check in a transaction (expectedVersion must be > 0). */
+  record TxnCheck(Key key, long expectedVersion) implements TxnOp {
+    public TxnCheck {
+      if (expectedVersion <= 0) {
+        throw new IllegalArgumentException("expectedVersion must be > 0 for check");
+      }
+    }
+  }
+
+  /** Condition-only absence check in a transaction. */
+  record TxnCheckAbsent(Key key) implements TxnOp {}
 }

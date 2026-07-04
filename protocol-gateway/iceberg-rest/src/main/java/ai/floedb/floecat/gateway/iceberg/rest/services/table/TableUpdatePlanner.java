@@ -25,6 +25,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.api.request.TableRequests;
 import ai.floedb.floecat.gateway.iceberg.rest.common.CommitUpdateInspector;
 import ai.floedb.floecat.gateway.iceberg.rest.resources.common.IcebergErrorResponses;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.CommitRequirementService;
+import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.FileIoFactory;
 import ai.floedb.floecat.gateway.iceberg.rest.services.metadata.SnapshotUpdateService;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -111,7 +112,11 @@ public class TableUpdatePlanner {
       }
     }
     var propertyResult =
-        tablePropertyService.applyCommitPropertyUpdates(tableSupplier, mergedProps, req.updates());
+        tablePropertyService.applyCommitPropertyUpdates(
+            tableSupplier,
+            mergedProps,
+            req.updates(),
+            loadCurrentSnapshotId(command.tableSupport(), tableSupplier));
     if (propertyResult.hasError()) {
       return UpdatePlan.failure(spec, mask, propertyResult.error());
     }
@@ -210,6 +215,18 @@ public class TableUpdatePlanner {
     }
     mergedProps.keySet().removeIf(FileIoFactory::isFileIoProperty);
     return mergedProps;
+  }
+
+  private Long loadCurrentSnapshotId(
+      TableGatewaySupport tableSupport, Supplier<Table> tableSupplier) {
+    if (tableSupport == null || tableSupplier == null) {
+      return null;
+    }
+    Table table = tableSupplier.get();
+    if (table == null) {
+      return null;
+    }
+    return tableSupport.loadCurrentSnapshotId(table);
   }
 
   // TableMappingUtil provides common parsing helpers.

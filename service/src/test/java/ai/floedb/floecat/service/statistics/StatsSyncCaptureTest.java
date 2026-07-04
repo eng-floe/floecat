@@ -20,6 +20,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
@@ -73,6 +75,22 @@ class StatsSyncCaptureTest {
     StatsSyncOutcome outcome = capture.capture("acct", "conn-1", SCOPE, Duration.ofSeconds(5));
 
     assertThat(outcome).isEqualTo(StatsSyncOutcome.FAILED);
+  }
+
+  @Test
+  void waitsForTerminalCancellationBeforeFailing() {
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    when(jobStore.enqueue(anyString(), anyString(), anyBoolean(), any(), any()))
+        .thenReturn("job-1");
+    when(jobStore.get("acct", "job-1"))
+        .thenReturn(Optional.of(job("JS_CANCELLING")))
+        .thenReturn(Optional.of(job("JS_CANCELLED")));
+
+    StatsSyncCapture capture = new StatsSyncCapture(jobStore);
+    StatsSyncOutcome outcome = capture.capture("acct", "conn-1", SCOPE, Duration.ofMillis(250));
+
+    assertThat(outcome).isEqualTo(StatsSyncOutcome.FAILED);
+    verify(jobStore, times(2)).get("acct", "job-1");
   }
 
   @Test

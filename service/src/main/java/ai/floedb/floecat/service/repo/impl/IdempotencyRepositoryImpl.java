@@ -171,11 +171,12 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
       return true;
     }
 
-    var uri = p.get().getBlobUri();
-    var ok = ptr.delete(key);
-    blobs.delete(uri);
-    blobs.deletePrefix(Keys.idempotencyBlobPrefixForPointerKey(key));
-
-    return ok;
+    Pointer pointer = p.orElseThrow();
+    boolean ok = ptr.compareAndDelete(key, pointer.getVersion());
+    if (!ok) {
+      return false;
+    }
+    blobs.delete(pointer.getBlobUri());
+    return true;
   }
 }

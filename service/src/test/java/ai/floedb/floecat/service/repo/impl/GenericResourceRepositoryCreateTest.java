@@ -32,6 +32,10 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -178,5 +182,111 @@ class GenericResourceRepositoryCreateTest {
 
     assertThatCode(() -> snapshotRepo.create(snapshot)).doesNotThrowAnyException();
     assertThat(snapshotRepo.getById(tableId, 42L)).isPresent();
+  }
+
+  @Test
+  void delete_whenBatchThrows_leavesCanonicalAndSecondaryUntouched() {
+    var baseRepo = new AccountRepository(ptr, blobs);
+    var account = account("acct-1", "alpha", "");
+    baseRepo.create(account);
+
+    var failingRepo = new AccountRepository(new FailingBatchPointerStore(ptr), blobs);
+
+    assertThatThrownBy(() -> failingRepo.delete(account.getResourceId()))
+        .isInstanceOf(FailingBatchPointerStore.InjectedBatchFailure.class);
+
+    assertThat(ptr.get(Keys.accountPointerById("acct-1"))).isPresent();
+    assertThat(ptr.get(Keys.accountPointerByName("alpha"))).isPresent();
+    assertThat(baseRepo.getById(account.getResourceId())).isPresent();
+    assertThat(baseRepo.getByName("alpha")).isPresent();
+  }
+
+  @Test
+  void deleteWithPrecondition_whenBatchThrows_leavesCanonicalAndSecondaryUntouched() {
+    var baseRepo = new AccountRepository(ptr, blobs);
+    var account = account("acct-1", "alpha", "");
+    baseRepo.create(account);
+    long expectedVersion = ptr.get(Keys.accountPointerById("acct-1")).orElseThrow().getVersion();
+
+    var failingRepo = new AccountRepository(new FailingBatchPointerStore(ptr), blobs);
+
+    assertThatThrownBy(
+            () -> failingRepo.deleteWithPrecondition(account.getResourceId(), expectedVersion))
+        .isInstanceOf(FailingBatchPointerStore.InjectedBatchFailure.class);
+
+    assertThat(ptr.get(Keys.accountPointerById("acct-1"))).isPresent();
+    assertThat(ptr.get(Keys.accountPointerByName("alpha"))).isPresent();
+    assertThat(baseRepo.getById(account.getResourceId())).isPresent();
+    assertThat(baseRepo.getByName("alpha")).isPresent();
+  }
+
+  @Test
+  void delete_whenCanonicalDisappearsDuringRead_returnsFalse() {
+    var baseRepo = new AccountRepository(ptr, blobs);
+    var account = account("acct-1", "alpha", "");
+    baseRepo.create(account);
+
+    var racing =
+        new RepoTestPointerStores.DelegatingPointerStore(ptr) {
+          private final AtomicInteger canonicalReads = new AtomicInteger();
+
+          @Override
+          public Optional<ai.floedb.floecat.common.rpc.Pointer> get(String key) {
+            if (Keys.accountPointerById("acct-1").equals(key)
+                && canonicalReads.incrementAndGet() == 2) {
+              ptr.delete(Keys.accountPointerById("acct-1"));
+              ptr.delete(Keys.accountPointerByName("alpha"));
+              return Optional.empty();
+            }
+            return super.get(key);
+          }
+        };
+    var repo = new AccountRepository(racing, blobs);
+
+    assertThat(repo.delete(account.getResourceId())).isFalse();
+  }
+
+  @Test
+  void delete_whenSecondaryAlreadyAbsent_checksItStayedAbsent() {
+    var repo = new AccountRepository(ptr, blobs);
+    var account = account("acct-1", "alpha", "");
+    repo.create(account);
+    assertThat(ptr.delete(Keys.accountPointerByName("alpha"))).isTrue();
+
+    var capturing =
+        new RepoTestPointerStores.DelegatingPointerStore(ptr) {
+          private List<PointerStore.CasOp> capturedOps = List.of();
+
+          @Override
+          public boolean compareAndSetBatch(List<PointerStore.CasOp> ops) {
+            capturedOps = new ArrayList<>(ops);
+            return super.compareAndSetBatch(ops);
+          }
+        };
+    var capturingRepo = new AccountRepository(capturing, blobs);
+
+    assertThat(capturingRepo.delete(account.getResourceId())).isTrue();
+    assertThat(capturing.capturedOps)
+        .anySatisfy(
+            op -> {
+              assertThat(op).isInstanceOf(PointerStore.CasCheckAbsent.class);
+              assertThat(((PointerStore.CasCheckAbsent) op).key())
+                  .isEqualTo(Keys.accountPointerByName("alpha"));
+            });
+  }
+
+  @Test
+  void delete_whenResourceBlobIsCorrupt_removesCanonicalPointer() {
+    var repo = new AccountRepository(ptr, blobs);
+    var account = account("acct-1", "alpha", "");
+    repo.create(account);
+
+    String blobUri = ptr.get(Keys.accountPointerById("acct-1")).orElseThrow().getBlobUri();
+    assertThat(blobs.delete(blobUri)).isTrue();
+
+    assertThat(repo.delete(account.getResourceId())).isTrue();
+
+    assertThat(ptr.get(Keys.accountPointerById("acct-1"))).isEmpty();
+    assertThat(ptr.get(Keys.accountPointerByName("alpha"))).isPresent();
   }
 }

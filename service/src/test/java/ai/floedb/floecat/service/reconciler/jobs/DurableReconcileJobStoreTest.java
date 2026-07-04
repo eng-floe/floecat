@@ -35,6 +35,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
@@ -209,7 +210,36 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void enqueueSnapshotPlanDedupesAcrossDifferentPlanTableParents() {
+  void enqueuePlanDoesNotDedupeAcrossDifferentExplicitSnapshotSelections() {
+    ReconcileScope firstScope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            null,
+            List.of(),
+            ReconcileScope.empty().capturePolicy(),
+            ReconcileSnapshotSelection.explicit(List.of(101L)));
+    ReconcileScope secondScope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            null,
+            List.of(),
+            ReconcileScope.empty().capturePolicy(),
+            ReconcileSnapshotSelection.explicit(List.of(202L)));
+
+    String first =
+        store.enqueue(
+            ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, firstScope);
+    String second =
+        store.enqueue(
+            ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, secondScope);
+
+    assertNotEquals(first, second);
+  }
+
+  @Test
+  void enqueueSnapshotPlanDoesNotDedupeAcrossDifferentPlanTableParents() {
     String firstParentJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -259,7 +289,66 @@ class DurableReconcileJobStoreTest {
             secondParentJobId,
             "");
 
-    assertEquals(first, second);
+    assertNotEquals(first, second);
+    assertEquals(
+        List.of(first),
+        store.childJobsPage(ACCOUNT_ID, firstParentJobId, 200, "").jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
+            .map(job -> job.jobId)
+            .toList());
+    assertEquals(
+        List.of(second),
+        store.childJobsPage(ACCOUNT_ID, secondParentJobId, 200, "").jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
+            .map(job -> job.jobId)
+            .toList());
+
+    var firstParentLease = leaseJob(firstParentJobId);
+    store.markRunning(firstParentJobId, firstParentLease.leaseEpoch, 100L, "executor-table-1");
+    store.markWaiting(
+        firstParentJobId,
+        firstParentLease.leaseEpoch,
+        110L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        1L,
+        1L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    var secondParentLease = leaseJob(secondParentJobId);
+    store.markRunning(secondParentJobId, secondParentLease.leaseEpoch, 120L, "executor-table-2");
+    store.markWaiting(
+        secondParentJobId,
+        secondParentLease.leaseEpoch,
+        130L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        1L,
+        1L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    var firstSnapshotLease = leaseJob(first);
+    store.markRunning(first, firstSnapshotLease.leaseEpoch, 140L, "executor-snapshot-1");
+    store.markSucceeded(first, firstSnapshotLease.leaseEpoch, 150L, 0L, 0L, 0L, 0L, 0L, 0L);
+
+    var secondSnapshotLease = leaseJob(second);
+    store.markRunning(second, secondSnapshotLease.leaseEpoch, 160L, "executor-snapshot-2");
+    store.markSucceeded(second, secondSnapshotLease.leaseEpoch, 170L, 0L, 0L, 0L, 0L, 0L, 0L);
+
+    assertEquals(
+        "JS_SUCCEEDED",
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, firstParentJobId)).state);
+    assertEquals(
+        "JS_SUCCEEDED",
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, secondParentJobId)).state);
   }
 
   @Test

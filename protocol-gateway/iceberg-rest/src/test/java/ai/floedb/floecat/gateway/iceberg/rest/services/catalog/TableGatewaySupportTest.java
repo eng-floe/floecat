@@ -24,6 +24,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
+import ai.floedb.floecat.catalog.rpc.GetCurrentSnapshotPointerRequest;
+import ai.floedb.floecat.catalog.rpc.GetCurrentSnapshotPointerResponse;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -47,6 +50,55 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class TableGatewaySupportTest {
+
+  @Test
+  void loadCurrentSnapshotIdUsesPointerRpc() {
+    GrpcServiceFacade grpcClient = mock(GrpcServiceFacade.class);
+    StorageCredentialAuthority storageCredentialAuthority = mock(StorageCredentialAuthority.class);
+    StorageAwsConfig storageAwsConfig = mock(StorageAwsConfig.class);
+    StorageAwsConfig.S3Config s3Config = mock(StorageAwsConfig.S3Config.class);
+    when(storageAwsConfig.region()).thenReturn(Optional.empty());
+    when(storageAwsConfig.s3()).thenReturn(s3Config);
+    when(s3Config.endpoint()).thenReturn(Optional.empty());
+    when(s3Config.pathStyleAccess()).thenReturn(false);
+
+    TableGatewaySupport support =
+        new TableGatewaySupport(
+            mock(GrpcWithHeaders.class),
+            mock(IcebergGatewayConfig.class),
+            mock(ConnectorIntegrationConfig.class),
+            storageAwsConfig,
+            new ObjectMapper(),
+            grpcClient,
+            storageCredentialAuthority);
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct-1")
+                    .setKind(ResourceKind.RK_TABLE)
+                    .setId("tbl-1")
+                    .build())
+            .build();
+    when(grpcClient.getCurrentSnapshotPointer(any()))
+        .thenReturn(
+            GetCurrentSnapshotPointerResponse.newBuilder()
+                .setCurrentSnapshotPointer(
+                    CurrentSnapshotPointer.newBuilder()
+                        .setTableId(table.getResourceId())
+                        .setSnapshotId(1234L)
+                        .build())
+                .build());
+
+    Long snapshotId = support.loadCurrentSnapshotId(table);
+
+    assertEquals(1234L, snapshotId);
+    ArgumentCaptor<GetCurrentSnapshotPointerRequest> requestCaptor =
+        ArgumentCaptor.forClass(GetCurrentSnapshotPointerRequest.class);
+    verify(grpcClient).getCurrentSnapshotPointer(requestCaptor.capture());
+    assertEquals(table.getResourceId(), requestCaptor.getValue().getTableId());
+    verify(grpcClient, never()).getSnapshot(any());
+  }
 
   @Test
   void serverSideFileIoPropertiesForLocationUsesExplicitCompatLocation() {

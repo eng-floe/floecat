@@ -24,7 +24,9 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
+import ai.floedb.floecat.transaction.rpc.TransactionState;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
@@ -267,6 +269,65 @@ public class TransactionIntentApplierSupport {
     return ApplyOutcome.applied();
   }
 
+  public ApplyOutcome applyTransactionAtomically(
+      Transaction appliedTransaction,
+      long expectedTransactionPointerVersion,
+      List<TransactionIntent> intents,
+      TransactionIntentRepository intentRepo) {
+    if (appliedTransaction == null) {
+      return ApplyOutcome.retryable("MISSING_TRANSACTION", "applied transaction is required");
+    }
+    if (intents == null || intents.isEmpty()) {
+      return ApplyOutcome.retryable("EMPTY_TRANSACTION", "transaction has no intents");
+    }
+    if (intentRepo == null) {
+      return ApplyOutcome.retryable(
+          "MISSING_INTENT_REPOSITORY", "transaction intent repository is required");
+    }
+
+    var ops = new ArrayList<PointerStore.CasOp>();
+    Set<String> touchedKeys = new HashSet<>();
+    for (var intent : intents) {
+      ApplyOutcome planOutcome = planIntentOps(intent, ops, touchedKeys);
+      if (planOutcome.status != ApplyStatus.APPLIED) {
+        return planOutcome;
+      }
+      ApplyOutcome cleanupOutcome = appendIntentCleanupOps(intent, intentRepo, touchedKeys, ops);
+      if (cleanupOutcome.status != ApplyStatus.APPLIED) {
+        return cleanupOutcome;
+      }
+      if (ops.size() > MAX_POINTER_TXN_OPS - 1) {
+        return ApplyOutcome.conflict(
+            "POINTER_TXN_TOO_LARGE",
+            "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations",
+            null,
+            null,
+            null);
+      }
+    }
+
+    ApplyOutcome txOutcome =
+        appendTransactionAppliedOp(
+            appliedTransaction, expectedTransactionPointerVersion, touchedKeys, ops);
+    if (txOutcome.status != ApplyStatus.APPLIED) {
+      return txOutcome;
+    }
+    if (ops.size() > MAX_POINTER_TXN_OPS) {
+      return ApplyOutcome.conflict(
+          "POINTER_TXN_TOO_LARGE",
+          "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations",
+          null,
+          null,
+          null);
+    }
+
+    if (pointerStore.compareAndSetBatch(ops)) {
+      return ApplyOutcome.applied();
+    }
+    return classifyAtomicApplyFailure(
+        appliedTransaction, expectedTransactionPointerVersion, intents, intentRepo);
+  }
+
   private ApplyOutcome planIntentOps(
       TransactionIntent intent, List<PointerStore.CasOp> ops, Set<String> touchedKeys) {
     String pointerKey = intent.getTargetPointerKey();
@@ -290,14 +351,15 @@ public class TransactionIntentApplierSupport {
 
     if (isDeleteSentinel(intent)) {
       if (current == null) {
-        return ApplyOutcome.applied();
+        return addAbsentCheck(pointerKey, touchedKeys, ops);
       }
       long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
       return addOp(new PointerStore.CasDelete(pointerKey, expected), pointerKey, touchedKeys, ops);
     }
 
     if (current != null && intent.getBlobUri().equals(current.getBlobUri())) {
-      return ApplyOutcome.applied();
+      long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
+      return addCheck(pointerKey, expected, touchedKeys, ops);
     }
 
     long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
@@ -368,6 +430,11 @@ public class TransactionIntentApplierSupport {
       if (outcome.status != ApplyStatus.APPLIED) {
         return outcome;
       }
+    } else {
+      ApplyOutcome outcome = addCheck(pointerKey, expected, touchedKeys, ops);
+      if (outcome.status != ApplyStatus.APPLIED) {
+        return outcome;
+      }
     }
 
     ApplyOutcome newNameOutcome =
@@ -405,7 +472,7 @@ public class TransactionIntentApplierSupport {
       List<PointerStore.CasOp> ops,
       Set<String> touchedKeys) {
     if (current == null) {
-      return ApplyOutcome.applied();
+      return addAbsentCheck(intent.getTargetPointerKey(), touchedKeys, ops);
     }
 
     Table currentTable = readTable(current.getBlobUri());
@@ -454,7 +521,7 @@ public class TransactionIntentApplierSupport {
 
     if (isDeleteSentinel(intent)) {
       if (current == null) {
-        return ApplyOutcome.applied();
+        return addAbsentCheck(intent.getTargetPointerKey(), touchedKeys, ops);
       }
       Connector currentConnector = readConnector(current.getBlobUri());
       if (currentConnector == null || !currentConnector.hasResourceId()) {
@@ -503,6 +570,11 @@ public class TransactionIntentApplierSupport {
       ApplyOutcome outcome =
           addOp(
               new PointerStore.CasUpsert(pointerKey, expected, next), pointerKey, touchedKeys, ops);
+      if (outcome.status != ApplyStatus.APPLIED) {
+        return outcome;
+      }
+    } else {
+      ApplyOutcome outcome = addCheck(pointerKey, expected, touchedKeys, ops);
       if (outcome.status != ApplyStatus.APPLIED) {
         return outcome;
       }
@@ -610,7 +682,7 @@ public class TransactionIntentApplierSupport {
       return addOp(new PointerStore.CasUpsert(key, 0L, created), key, touchedKeys, ops);
     }
     if (Objects.equals(ptr.getBlobUri(), nextBlobUri)) {
-      return ApplyOutcome.applied();
+      return addCheck(key, ptr.getVersion(), touchedKeys, ops);
     }
     Table existing = readTable(ptr.getBlobUri());
     if (existing == null || !existing.hasResourceId()) {
@@ -633,7 +705,7 @@ public class TransactionIntentApplierSupport {
       String key, String ownerTableId, Set<String> touchedKeys, List<PointerStore.CasOp> ops) {
     var ptr = pointerStore.get(key).orElse(null);
     if (ptr == null) {
-      return ApplyOutcome.applied();
+      return addAbsentCheck(key, touchedKeys, ops);
     }
     Table existing = readTable(ptr.getBlobUri());
     if (existing == null || !existing.hasResourceId()) {
@@ -642,7 +714,7 @@ public class TransactionIntentApplierSupport {
     if (Objects.equals(existing.getResourceId().getId(), ownerTableId)) {
       return addOp(new PointerStore.CasDelete(key, ptr.getVersion()), key, touchedKeys, ops);
     }
-    return ApplyOutcome.applied();
+    return addCheck(key, ptr.getVersion(), touchedKeys, ops);
   }
 
   private ApplyOutcome buildConnectorNameUpsertOp(
@@ -657,7 +729,7 @@ public class TransactionIntentApplierSupport {
       return addOp(new PointerStore.CasUpsert(key, 0L, created), key, touchedKeys, ops);
     }
     if (Objects.equals(ptr.getBlobUri(), nextBlobUri)) {
-      return ApplyOutcome.applied();
+      return addCheck(key, ptr.getVersion(), touchedKeys, ops);
     }
     Connector existing = readConnector(ptr.getBlobUri());
     if (existing == null || !existing.hasResourceId()) {
@@ -680,7 +752,7 @@ public class TransactionIntentApplierSupport {
       String key, String ownerConnectorId, Set<String> touchedKeys, List<PointerStore.CasOp> ops) {
     var ptr = pointerStore.get(key).orElse(null);
     if (ptr == null) {
-      return ApplyOutcome.applied();
+      return addAbsentCheck(key, touchedKeys, ops);
     }
     Connector existing = readConnector(ptr.getBlobUri());
     if (existing == null || !existing.hasResourceId()) {
@@ -690,7 +762,7 @@ public class TransactionIntentApplierSupport {
     if (Objects.equals(existing.getResourceId().getId(), ownerConnectorId)) {
       return addOp(new PointerStore.CasDelete(key, ptr.getVersion()), key, touchedKeys, ops);
     }
-    return ApplyOutcome.applied();
+    return addCheck(key, ptr.getVersion(), touchedKeys, ops);
   }
 
   private ApplyOutcome addOp(
@@ -705,6 +777,16 @@ public class TransactionIntentApplierSupport {
     }
     ops.add(op);
     return ApplyOutcome.applied();
+  }
+
+  private ApplyOutcome addCheck(
+      String key, long expectedVersion, Set<String> touchedKeys, List<PointerStore.CasOp> ops) {
+    return addOp(new PointerStore.CasCheck(key, expectedVersion), key, touchedKeys, ops);
+  }
+
+  private ApplyOutcome addAbsentCheck(
+      String key, Set<String> touchedKeys, List<PointerStore.CasOp> ops) {
+    return addOp(new PointerStore.CasCheckAbsent(key), key, touchedKeys, ops);
   }
 
   private ApplyOutcome findExpectedVersionConflict(List<TransactionIntent> intents) {
@@ -724,5 +806,176 @@ public class TransactionIntentApplierSupport {
       }
     }
     return null;
+  }
+
+  private ApplyOutcome appendIntentCleanupOps(
+      TransactionIntent intent,
+      TransactionIntentRepository intentRepo,
+      Set<String> touchedKeys,
+      List<PointerStore.CasOp> ops) {
+    if (intent == null) {
+      return ApplyOutcome.retryable("MISSING_INTENT", "transaction intent is required");
+    }
+    TransactionIntent current =
+        intentRepo.getByTarget(intent.getAccountId(), intent.getTargetPointerKey()).orElse(null);
+    if (current == null) {
+      return ApplyOutcome.retryable("LOCK_OWNERSHIP_MISMATCH", "intent lock missing during apply");
+    }
+    if (!intent.getTxId().equals(current.getTxId())) {
+      return ApplyOutcome.retryable(
+          "LOCK_OWNERSHIP_MISMATCH", "intent lock is owned by another transaction");
+    }
+
+    var byTargetPointer =
+        intentRepo
+            .getTargetPointer(intent.getAccountId(), intent.getTargetPointerKey())
+            .orElse(null);
+    if (byTargetPointer == null) {
+      return ApplyOutcome.retryable("LOCK_OWNERSHIP_MISMATCH", "target intent pointer missing");
+    }
+    ApplyOutcome byTargetDelete =
+        addOp(
+            new PointerStore.CasDelete(
+                Keys.transactionIntentPointerByTarget(
+                    intent.getAccountId(), intent.getTargetPointerKey()),
+                byTargetPointer.getVersion()),
+            Keys.transactionIntentPointerByTarget(
+                intent.getAccountId(), intent.getTargetPointerKey()),
+            touchedKeys,
+            ops);
+    if (byTargetDelete.status != ApplyStatus.APPLIED) {
+      return byTargetDelete;
+    }
+
+    String byTxKey =
+        Keys.transactionIntentPointerByTx(
+            intent.getAccountId(), intent.getTxId(), intent.getTargetPointerKey());
+    var byTxPointer = pointerStore.get(byTxKey).orElse(null);
+    if (byTxPointer == null) {
+      return ApplyOutcome.retryable("LOCK_OWNERSHIP_MISMATCH", "tx intent pointer missing");
+    }
+    return addOp(
+        new PointerStore.CasDelete(byTxKey, byTxPointer.getVersion()), byTxKey, touchedKeys, ops);
+  }
+
+  private ApplyOutcome appendTransactionAppliedOp(
+      Transaction appliedTransaction,
+      long expectedTransactionPointerVersion,
+      Set<String> touchedKeys,
+      List<PointerStore.CasOp> ops) {
+    if (expectedTransactionPointerVersion <= 0L) {
+      return ApplyOutcome.retryable(
+          "INVALID_TRANSACTION_POINTER_VERSION",
+          "expected transaction pointer version must be positive");
+    }
+    try {
+      String blobUri = writeTransactionBlob(appliedTransaction);
+      String key =
+          Keys.transactionPointerById(
+              appliedTransaction.getAccountId(), appliedTransaction.getTxId());
+      return addOp(
+          new PointerStore.CasUpsert(
+              key,
+              expectedTransactionPointerVersion,
+              PointerReferences.blobPointer(key, blobUri, expectedTransactionPointerVersion + 1L)),
+          key,
+          touchedKeys,
+          ops);
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "transaction blob write failed for %s", appliedTransaction.getTxId());
+      return ApplyOutcome.retryable(
+          "TRANSACTION_BLOB_WRITE_FAILED", "failed to stage applied transaction blob");
+    }
+  }
+
+  private String writeTransactionBlob(Transaction appliedTransaction) {
+    byte[] bytes = appliedTransaction.toByteArray();
+    String blobUri =
+        Keys.transactionBlobUri(
+            appliedTransaction.getAccountId(),
+            appliedTransaction.getTxId(),
+            ai.floedb.floecat.types.Hashing.sha256Hex(bytes));
+    blobStore.put(blobUri, bytes, "application/x-protobuf");
+    return blobUri;
+  }
+
+  private ApplyOutcome classifyAtomicApplyFailure(
+      Transaction appliedTransaction,
+      long expectedTransactionPointerVersion,
+      List<TransactionIntent> intents,
+      TransactionIntentRepository intentRepo) {
+    ApplyOutcome appliedState =
+        findAppliedTransactionState(appliedTransaction, expectedTransactionPointerVersion);
+    if (appliedState != null) {
+      return appliedState;
+    }
+    ApplyOutcome pointerConflict = findExpectedVersionConflict(intents);
+    if (pointerConflict != null) {
+      return pointerConflict;
+    }
+    ApplyOutcome intentConflict = findIntentCleanupConflict(intents, intentRepo);
+    if (intentConflict != null) {
+      return intentConflict;
+    }
+    return ApplyOutcome.retryable("POINTER_TXN_CAS_FAILED", "pointer transaction conflict");
+  }
+
+  private ApplyOutcome findAppliedTransactionState(
+      Transaction appliedTransaction, long expectedTransactionPointerVersion) {
+    String key =
+        Keys.transactionPointerById(
+            appliedTransaction.getAccountId(), appliedTransaction.getTxId());
+    Pointer pointer = pointerStore.get(key).orElse(null);
+    if (pointer == null) {
+      return null;
+    }
+    if (pointer.getVersion() == expectedTransactionPointerVersion) {
+      return null;
+    }
+    Transaction existing = readTransaction(pointer.getBlobUri());
+    if (existing != null && existing.getState() == TransactionState.TS_APPLIED) {
+      return ApplyOutcome.applied();
+    }
+    return null;
+  }
+
+  private ApplyOutcome findIntentCleanupConflict(
+      List<TransactionIntent> intents, TransactionIntentRepository intentRepo) {
+    for (TransactionIntent intent : intents) {
+      if (intent == null) {
+        continue;
+      }
+      TransactionIntent current =
+          intentRepo.getByTarget(intent.getAccountId(), intent.getTargetPointerKey()).orElse(null);
+      if (current == null) {
+        return ApplyOutcome.retryable(
+            "LOCK_OWNERSHIP_MISMATCH", "intent lock missing during apply");
+      }
+      if (!intent.getTxId().equals(current.getTxId())) {
+        return ApplyOutcome.retryable(
+            "LOCK_OWNERSHIP_MISMATCH", "intent lock is owned by another transaction");
+      }
+      String byTxKey =
+          Keys.transactionIntentPointerByTx(
+              intent.getAccountId(), intent.getTxId(), intent.getTargetPointerKey());
+      if (pointerStore.get(byTxKey).isEmpty()) {
+        return ApplyOutcome.retryable("LOCK_OWNERSHIP_MISMATCH", "tx intent pointer missing");
+      }
+    }
+    return null;
+  }
+
+  private Transaction readTransaction(String blobUri) {
+    try {
+      byte[] bytes = blobStore.get(blobUri);
+      if (bytes == null) {
+        LOG.debugf("transaction blob missing: %s", blobUri);
+        return null;
+      }
+      return Transaction.parseFrom(bytes);
+    } catch (Exception e) {
+      LOG.debugf("transaction blob parse failed: %s", blobUri, e);
+      return null;
+    }
   }
 }

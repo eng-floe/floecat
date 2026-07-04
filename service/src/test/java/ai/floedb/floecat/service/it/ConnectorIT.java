@@ -471,8 +471,10 @@ public class ConnectorIT {
             .filter(job -> selectedSnapshotPlan.jobId.equals(job.parentJobId))
             .toList();
     var snapshotJobResponse =
-        reconcileControl.getReconcileJob(
-            GetReconcileJobRequest.newBuilder().setJobId(selectedSnapshotPlan.jobId).build());
+        awaitReconcileJobResponse(
+            selectedSnapshotPlan.jobId,
+            response -> response.getFileGroupsCompleted() == selectedSnapshotFileGroups.size(),
+            Duration.ofSeconds(10));
     assertEquals(
         selectedSnapshotFileGroups.size(),
         snapshotJobResponse.getFileGroupsTotal(),

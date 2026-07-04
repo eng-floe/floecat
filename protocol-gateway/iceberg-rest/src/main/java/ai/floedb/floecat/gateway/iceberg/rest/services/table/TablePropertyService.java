@@ -117,13 +117,12 @@ public class TablePropertyService {
   public PropertyUpdateResult applyCommitPropertyUpdates(
       Supplier<Table> tableSupplier,
       Map<String, String> mergedProps,
-      List<Map<String, Object>> updates) {
+      List<Map<String, Object>> updates,
+      Long existingCurrentSnapshotId) {
     if (updates == null || updates.isEmpty()) {
       return new PropertyUpdateResult(mergedProps, null);
     }
     CommitUpdateInspector.Parsed parsed = CommitUpdateInspector.inspectUpdates(updates);
-    Long existingCurrentSnapshotId =
-        asLong(tableSupplier.get().getPropertiesMap().get("current-snapshot-id"));
     Map<String, String> targetProps = mergedProps;
     if (hasPropertyUpdates(updates)) {
       if (targetProps == null) {
@@ -134,8 +133,10 @@ public class TablePropertyService {
         return new PropertyUpdateResult(null, updateError);
       }
     }
-    targetProps = applySnapshotPropertyUpdates(targetProps, tableSupplier, parsed);
-    targetProps = applyRefPropertyUpdates(targetProps, tableSupplier, parsed);
+    targetProps =
+        applySnapshotPropertyUpdates(targetProps, tableSupplier, parsed, existingCurrentSnapshotId);
+    targetProps =
+        applyRefPropertyUpdates(targetProps, tableSupplier, parsed, existingCurrentSnapshotId);
     targetProps = applyTableDefinitionPropertyUpdates(targetProps, tableSupplier, updates);
     targetProps =
         preserveCurrentSnapshotForMetadataOnlyCommit(
@@ -214,12 +215,8 @@ public class TablePropertyService {
   private Map<String, String> applyRefPropertyUpdates(
       Map<String, String> mergedProps,
       Supplier<Table> tableSupplier,
-      CommitUpdateInspector.Parsed parsed) {
-    Long existingCurrentSnapshotId =
-        asLong(
-            mergedProps != null
-                ? mergedProps.get("current-snapshot-id")
-                : tableSupplier.get().getPropertiesMap().get("current-snapshot-id"));
+      CommitUpdateInspector.Parsed parsed,
+      Long existingCurrentSnapshotId) {
     Map<String, Map<String, Object>> refs = loadStoredRefs(mergedProps, tableSupplier);
     boolean mutated = false;
     for (CommitUpdateInspector.SnapshotRefMutation mutation : parsed.snapshotRefMutations()) {
@@ -287,14 +284,10 @@ public class TablePropertyService {
   private Map<String, String> applySnapshotPropertyUpdates(
       Map<String, String> mergedProps,
       Supplier<Table> tableSupplier,
-      CommitUpdateInspector.Parsed parsed) {
+      CommitUpdateInspector.Parsed parsed,
+      Long existingCurrentSnapshotId) {
     Long mainRefSnapshotId = parsed.requestedMainRefSnapshotId();
     Long latestSequence = parsed.maxSnapshotSequenceNumber();
-    Long existingCurrentSnapshotId =
-        asLong(
-            mergedProps != null
-                ? mergedProps.get("current-snapshot-id")
-                : tableSupplier.get().getPropertiesMap().get("current-snapshot-id"));
     if (!shouldApplyRequestedMainSnapshotId(parsed, existingCurrentSnapshotId, mainRefSnapshotId)
         && (latestSequence == null || latestSequence <= 0)) {
       return mergedProps;

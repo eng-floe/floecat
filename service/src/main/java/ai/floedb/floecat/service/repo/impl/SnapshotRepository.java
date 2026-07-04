@@ -37,9 +37,12 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.LockSupport;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class SnapshotRepository {
+  private static final Logger LOG = Logger.getLogger(SnapshotRepository.class);
+
   public enum CurrentSnapshotPointerUpdateResult {
     UPDATED,
     UNCHANGED,
@@ -145,7 +148,7 @@ public class SnapshotRepository {
 
     for (int attempt = 0; attempt < 4; attempt++) {
       Optional<CurrentSnapshotPointer> currentPointer = currentPointerRepo.get(tableId);
-      if (!shouldAdvanceCurrentSnapshot(currentPointer.orElse(null), candidate)) {
+      if (!shouldAdvanceCurrentSnapshot(tableId, currentPointer.orElse(null), candidate)) {
         return CurrentSnapshotPointerUpdateResult.UNCHANGED;
       }
 
@@ -161,7 +164,7 @@ public class SnapshotRepository {
           backoffCurrentPointerAdvance(attempt);
           continue;
         }
-        if (!shouldAdvanceCurrentSnapshot(observed.get().pointer(), candidate)) {
+        if (!shouldAdvanceCurrentSnapshot(tableId, observed.get().pointer(), candidate)) {
           return CurrentSnapshotPointerUpdateResult.UNCHANGED;
         }
         if (currentPointerRepo.update(next, observed.get().pointerVersion())) {
@@ -198,7 +201,7 @@ public class SnapshotRepository {
   }
 
   private boolean shouldAdvanceCurrentSnapshot(
-      CurrentSnapshotPointer currentPointer, Snapshot candidateSnapshot) {
+      ResourceId tableId, CurrentSnapshotPointer currentPointer, Snapshot candidateSnapshot) {
     if (currentPointer == null) {
       return true;
     }
@@ -213,7 +216,13 @@ public class SnapshotRepository {
             : Long.MIN_VALUE;
 
     if (currentPointer.getSnapshotId() == candidateSnapshot.getSnapshotId()) {
-      return currentMs != candidateMs;
+      if (currentMs != candidateMs) {
+        LOG.warnf(
+            "same snapshotId has different upstreamCreatedAt; leaving current pointer unchanged:"
+                + " tableId=%s snapshotId=%d currentMs=%d candidateMs=%d",
+            tableId, candidateSnapshot.getSnapshotId(), currentMs, candidateMs);
+      }
+      return false;
     }
 
     if (candidateMs != currentMs) {
@@ -257,6 +266,13 @@ public class SnapshotRepository {
     StoreOperationSummary.put("current_snapshot_source", "fallback");
     StoreOperationSummary.fallback(fallbackReason);
     return latestSnapshotByTime(tableId);
+  }
+
+  public Optional<CurrentSnapshotPointer> getCurrentSnapshotPointer(ResourceId tableId) {
+    if (tableId == null) {
+      return Optional.empty();
+    }
+    return currentPointerRepo.get(tableId);
   }
 
   private CurrentSnapshotPointer buildCurrentPointer(ResourceId tableId, Snapshot snapshot) {

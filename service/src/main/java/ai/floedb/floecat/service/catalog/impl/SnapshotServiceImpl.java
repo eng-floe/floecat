@@ -22,6 +22,8 @@ import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotResponse;
+import ai.floedb.floecat.catalog.rpc.GetCurrentSnapshotPointerRequest;
+import ai.floedb.floecat.catalog.rpc.GetCurrentSnapshotPointerResponse;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
@@ -242,6 +244,33 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   }
 
                   return GetSnapshotResponse.newBuilder().setSnapshot(snap).build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  @Override
+  public Uni<GetCurrentSnapshotPointerResponse> getCurrentSnapshotPointer(
+      GetCurrentSnapshotPointerRequest request) {
+    var L = LogHelper.start(LOG, "GetCurrentSnapshotPointer");
+
+    return mapFailures(
+            run(
+                () -> {
+                  var principalContext = principal.get();
+                  authz.require(principalContext, "table.read");
+
+                  var tableId = request.getTableId();
+                  ensureTableVisible(tableId, correlationId());
+
+                  var response = GetCurrentSnapshotPointerResponse.newBuilder();
+                  snapshotRepo
+                      .getCurrentSnapshotPointer(tableId)
+                      .ifPresent(response::setCurrentSnapshotPointer);
+                  return response.build();
                 }),
             correlationId())
         .onFailure()

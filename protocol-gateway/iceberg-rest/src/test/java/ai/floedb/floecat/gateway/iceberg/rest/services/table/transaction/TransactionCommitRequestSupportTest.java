@@ -33,7 +33,28 @@ import org.junit.jupiter.api.Test;
 class TransactionCommitRequestSupportTest {
 
   @Test
-  void nullMainSnapshotRefRequirementUsesPointerBackedRefExistence() {
+  void nullMainSnapshotRefRequirementConflictsWhenCurrentSnapshotPointerExists() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_TABLE)
+                    .setId("tbl")
+                    .build())
+            .build();
+    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
+    when(tableSupport.loadCurrentSnapshotId(table)).thenReturn(10L);
+
+    Response response =
+        TransactionCommitRequestSupport.validateNullSnapshotRefRequirements(
+            tableSupport, table, List.of(nullMainRefRequirement()));
+
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
+  }
+
+  @Test
+  void nullMainSnapshotRefRequirementSkipsWhenCurrentSnapshotPointerMissing() {
     Table table =
         Table.newBuilder()
             .setResourceId(
@@ -45,34 +66,13 @@ class TransactionCommitRequestSupportTest {
             .putProperties("current-snapshot-id", "10")
             .build();
     TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
-    when(tableSupport.hasSnapshotRef(table, "main")).thenReturn(false);
+    when(tableSupport.loadCurrentSnapshotId(table)).thenReturn(null);
 
     Response response =
         TransactionCommitRequestSupport.validateNullSnapshotRefRequirements(
             tableSupport, table, List.of(nullMainRefRequirement()));
 
     assertNull(response);
-  }
-
-  @Test
-  void nullMainSnapshotRefRequirementConflictsWhenPointerBackedRefExists() {
-    Table table =
-        Table.newBuilder()
-            .setResourceId(
-                ResourceId.newBuilder()
-                    .setAccountId("acct")
-                    .setKind(ResourceKind.RK_TABLE)
-                    .setId("tbl")
-                    .build())
-            .build();
-    TableGatewaySupport tableSupport = mock(TableGatewaySupport.class);
-    when(tableSupport.hasSnapshotRef(table, "main")).thenReturn(true);
-
-    Response response =
-        TransactionCommitRequestSupport.validateNullSnapshotRefRequirements(
-            tableSupport, table, List.of(nullMainRefRequirement()));
-
-    assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
   }
 
   private static Map<String, Object> nullMainRefRequirement() {

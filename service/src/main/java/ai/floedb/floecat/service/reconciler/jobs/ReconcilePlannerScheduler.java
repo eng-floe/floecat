@@ -42,6 +42,7 @@ import jakarta.inject.Inject;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.eclipse.microprofile.config.ConfigProvider;
@@ -57,6 +58,8 @@ public class ReconcilePlannerScheduler {
               ReconcileCapturePolicy.Output.TABLE_STATS,
               ReconcileCapturePolicy.Output.FILE_STATS,
               ReconcileCapturePolicy.Output.COLUMN_STATS));
+  private static final Set<String> ACTIVE_ROOT_STATES =
+      Set.of("JS_QUEUED", "JS_WAITING", "JS_RUNNING", "JS_CANCELLING");
 
   @Inject AccountRepository accounts;
   @Inject ConnectorRepository connectors;
@@ -270,6 +273,10 @@ public class ReconcilePlannerScheduler {
         observePlannerEnqueue("skipped", "n_a", "planner_unavailable");
         return;
       }
+      if (hasActiveRootJob(connector)) {
+        observePlannerEnqueue("skipped", mode, "active_root");
+        return;
+      }
       jobs.enqueuePlan(
           connector.getResourceId().getAccountId(),
           connector.getResourceId().getId(),
@@ -294,6 +301,20 @@ public class ReconcilePlannerScheduler {
           connector.getResourceId().getAccountId(),
           connector.getResourceId().getId());
     }
+  }
+
+  private boolean hasActiveRootJob(Connector connector) {
+    if (connector == null || !connector.hasResourceId()) {
+      return false;
+    }
+    return !jobs.listRootJobs(
+            connector.getResourceId().getAccountId(),
+            1,
+            "",
+            connector.getResourceId().getId(),
+            ACTIVE_ROOT_STATES)
+        .jobs
+        .isEmpty();
   }
 
   private static long effectiveIntervalMs(Connector connector, long defaultIntervalMs) {

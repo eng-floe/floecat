@@ -397,7 +397,14 @@ class BackendStorageIT {
             .orElseThrow()
             .getBlobUri();
     assertTrue(blobs.delete(blobUri));
-    table.deleteTable(DeleteTableRequest.newBuilder().setTableId(tbl.getResourceId()).build());
+    var deleteResponse =
+        table.deleteTable(DeleteTableRequest.newBuilder().setTableId(tbl.getResourceId()).build());
+    assertTrue(deleteResponse.hasMeta());
+    assertTrue(
+        ptr.get(
+                Keys.tablePointerById(
+                    tbl.getResourceId().getAccountId(), tbl.getResourceId().getId()))
+            .isEmpty());
 
     var tbl2 =
         TestSupport.createTable(

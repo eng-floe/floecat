@@ -457,26 +457,28 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
             return false;
           }
           String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
-
-          Optional<T> currentValue;
+          Optional<T> current;
           try {
-            currentValue = getByKeyUnobserved(key);
+            current = getByKeyUnobserved(key);
           } catch (CorruptionException e) {
-            currentValue = Optional.empty();
+            if (!deleteCanonicalPointer(canonicalPointer, canonicalPtr.getVersion())) {
+              return false;
+            }
+            if (!schema.casBlobs && !blobUri.isBlank()) {
+              deleteQuietly(() -> blobStore.delete(blobUri));
+            }
+            return true;
           }
-          Set<String> currentSecondary =
-              currentValue
-                  .map(schema.secondaryPointersFromValue)
-                  .map(m -> new HashSet<>(m.values()))
-                  .orElseGet(HashSet::new);
-
-          if (!compareAndDeleteOrFalseUnobserved(canonicalPointer, canonicalPtr.getVersion())) {
+          if (current.isEmpty()) {
             return false;
           }
-          for (String p : currentSecondary) {
-            pointerStore
-                .get(p)
-                .ifPresent(ptr -> compareAndDeleteOrFalseUnobserved(p, ptr.getVersion()));
+          T currentValue = current.get();
+
+          if (!deleteAtomically(
+              canonicalPointer,
+              canonicalPtr.getVersion(),
+              new HashSet<>(schema.secondaryPointersFromValue.apply(currentValue).values()))) {
+            return false;
           }
 
           if (!schema.casBlobs && !blobUri.isBlank()) {
@@ -492,27 +494,28 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         () -> {
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
-
-          Optional<T> currentValue;
+          Optional<T> current;
           try {
-            currentValue = getByKeyUnobserved(key);
+            current = getByKeyUnobserved(key);
           } catch (CorruptionException e) {
-            currentValue = Optional.empty();
+            if (!deleteCanonicalPointer(canonicalPointer, expectedCanonicalVersion)) {
+              return false;
+            }
+            if (!schema.casBlobs && !blobUri.isBlank()) {
+              deleteQuietly(() -> blobStore.delete(blobUri));
+            }
+            return true;
           }
-          Set<String> currentSecondary =
-              currentValue
-                  .map(schema.secondaryPointersFromValue)
-                  .map(m -> new HashSet<>(m.values()))
-                  .orElseGet(HashSet::new);
-
-          if (!compareAndDeleteOrFalseUnobserved(canonicalPointer, expectedCanonicalVersion)) {
+          if (current.isEmpty()) {
             return false;
           }
+          T currentValue = current.get();
 
-          for (String p : currentSecondary) {
-            pointerStore
-                .get(p)
-                .ifPresent(ptr -> compareAndDeleteOrFalseUnobserved(p, ptr.getVersion()));
+          if (!deleteAtomically(
+              canonicalPointer,
+              expectedCanonicalVersion,
+              new HashSet<>(schema.secondaryPointersFromValue.apply(currentValue).values()))) {
+            return false;
           }
 
           if (!schema.casBlobs && !blobUri.isBlank()) {
@@ -520,6 +523,34 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
           return true;
         });
+  }
+
+  private boolean deleteAtomically(
+      String canonicalPointer, long expectedCanonicalVersion, Set<String> currentSecondary) {
+    Set<String> batchedKeys = new HashSet<>();
+    List<PointerStore.CasOp> ops = new ArrayList<>();
+
+    batchedKeys.add(canonicalPointer);
+    ops.add(new PointerStore.CasDelete(canonicalPointer, expectedCanonicalVersion));
+
+    for (String pointerKey : currentSecondary) {
+      if (!batchedKeys.add(pointerKey)) {
+        continue;
+      }
+      Pointer secondary = pointerStore.get(pointerKey).orElse(null);
+      if (secondary != null) {
+        ops.add(new PointerStore.CasDelete(pointerKey, secondary.getVersion()));
+      } else {
+        ops.add(new PointerStore.CasCheckAbsent(pointerKey));
+      }
+    }
+
+    return pointerStore.compareAndSetBatch(ops);
+  }
+
+  private boolean deleteCanonicalPointer(String canonicalPointer, long expectedCanonicalVersion) {
+    return pointerStore.compareAndSetBatch(
+        List.of(new PointerStore.CasDelete(canonicalPointer, expectedCanonicalVersion)));
   }
 
   public MutationMeta metaFor(K key) {

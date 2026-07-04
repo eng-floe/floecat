@@ -22,11 +22,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
+import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.gateway.iceberg.rest.services.catalog.TableGatewaySupport;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
+import ai.floedb.floecat.storage.kv.Keys;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -207,5 +209,162 @@ class TransactionCommitSnapshotSupportTest {
     for (var change : result.txChanges()) {
       assertTrue(!change.getTargetPointerKey().endsWith("/snapshots/current"));
     }
+  }
+
+  @Test
+  void planAtomicSnapshotChangesRewritesCurrentSnapshotMetadataForMetadataOnlyCommit()
+      throws Exception {
+    TransactionCommitSnapshotSupport support = new TransactionCommitSnapshotSupport();
+    support.grpcClient = Mockito.mock(GrpcServiceFacade.class);
+    support.transactionCommitExecutionSupport =
+        Mockito.mock(TransactionCommitExecutionSupport.class);
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build();
+    Table table = Table.newBuilder().setResourceId(tableId).build();
+    Snapshot existingSnapshot =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(777L)
+            .setMetadataLocation("s3://bucket/metadata/00001.metadata.json")
+            .build();
+    Mockito.when(support.grpcClient.getSnapshot(Mockito.any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(existingSnapshot).build());
+
+    var result =
+        support.planAtomicSnapshotChanges(
+            "acct-1",
+            "tx-1",
+            tableId,
+            table,
+            null,
+            "s3://bucket/metadata/00002.metadata.json",
+            List.of(Map.of("action", "set-properties", "updates", Map.of("k", "v"))),
+            List.of());
+
+    assertNull(result.error());
+    assertEquals(2, result.txChanges().size());
+    Snapshot byId = Snapshot.parseFrom(result.txChanges().getFirst().getPayload());
+    assertEquals("s3://bucket/metadata/00002.metadata.json", byId.getMetadataLocation());
+    Snapshot byTime = Snapshot.parseFrom(result.txChanges().get(1).getPayload());
+    assertEquals("s3://bucket/metadata/00002.metadata.json", byTime.getMetadataLocation());
+  }
+
+  @Test
+  void planAtomicSnapshotChangesRewritesCurrentSnapshotMetadataForEmptyCommit() throws Exception {
+    TransactionCommitSnapshotSupport support = new TransactionCommitSnapshotSupport();
+    support.grpcClient = Mockito.mock(GrpcServiceFacade.class);
+    support.transactionCommitExecutionSupport =
+        Mockito.mock(TransactionCommitExecutionSupport.class);
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build();
+    Table table = Table.newBuilder().setResourceId(tableId).build();
+    Snapshot existingSnapshot =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(777L)
+            .setMetadataLocation("s3://bucket/metadata/00001.metadata.json")
+            .build();
+    Mockito.when(support.grpcClient.getSnapshot(Mockito.any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(existingSnapshot).build());
+
+    var result =
+        support.planAtomicSnapshotChanges(
+            "acct-1",
+            "tx-1",
+            tableId,
+            table,
+            null,
+            "s3://bucket/metadata/00002.metadata.json",
+            List.of(),
+            List.of());
+
+    assertNull(result.error());
+    assertEquals(2, result.txChanges().size());
+    Snapshot byId = Snapshot.parseFrom(result.txChanges().getFirst().getPayload());
+    assertEquals("s3://bucket/metadata/00002.metadata.json", byId.getMetadataLocation());
+    Snapshot byTime = Snapshot.parseFrom(result.txChanges().get(1).getPayload());
+    assertEquals("s3://bucket/metadata/00002.metadata.json", byTime.getMetadataLocation());
+  }
+
+  @Test
+  void planAtomicSnapshotChangesRewritesCurrentSnapshotMetadataForRemoveSnapshotCommit()
+      throws Exception {
+    TransactionCommitSnapshotSupport support = new TransactionCommitSnapshotSupport();
+    support.grpcClient = Mockito.mock(GrpcServiceFacade.class);
+    support.transactionCommitExecutionSupport =
+        Mockito.mock(TransactionCommitExecutionSupport.class);
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build();
+    Table table = Table.newBuilder().setResourceId(tableId).build();
+    Snapshot existingSnapshot =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(777L)
+            .setMetadataLocation("s3://bucket/metadata/00001.metadata.json")
+            .build();
+    Mockito.when(support.grpcClient.getSnapshot(Mockito.any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(existingSnapshot).build());
+
+    var result =
+        support.planAtomicSnapshotChanges(
+            "acct-1",
+            "tx-1",
+            tableId,
+            table,
+            null,
+            "s3://bucket/metadata/00002.metadata.json",
+            List.of(Map.of("action", "remove-snapshots", "snapshot-ids", List.of(100L))),
+            List.of());
+
+    assertNull(result.error());
+    assertEquals(2, result.txChanges().size());
+    Snapshot byId = Snapshot.parseFrom(result.txChanges().getFirst().getPayload());
+    assertEquals("s3://bucket/metadata/00002.metadata.json", byId.getMetadataLocation());
+    Snapshot byTime = Snapshot.parseFrom(result.txChanges().get(1).getPayload());
+    assertEquals("s3://bucket/metadata/00002.metadata.json", byTime.getMetadataLocation());
+  }
+
+  @Test
+  void planAtomicSnapshotChangesDeletesRemovedSnapshotUsingStoredByTimeTimestamp() {
+    TransactionCommitSnapshotSupport support = new TransactionCommitSnapshotSupport();
+    support.grpcClient = Mockito.mock(GrpcServiceFacade.class);
+    support.transactionCommitExecutionSupport =
+        Mockito.mock(TransactionCommitExecutionSupport.class);
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct-1").setId("tbl-1").build();
+    long removedSnapshotId = 777L;
+    Snapshot listedSnapshot =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(removedSnapshotId)
+            .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(1234L))
+            .build();
+    Snapshot byIdSnapshot =
+        Snapshot.newBuilder().setTableId(tableId).setSnapshotId(removedSnapshotId).build();
+
+    Mockito.when(support.grpcClient.listSnapshots(Mockito.any()))
+        .thenReturn(ListSnapshotsResponse.newBuilder().addSnapshots(listedSnapshot).build());
+    Mockito.when(support.grpcClient.getSnapshot(Mockito.any()))
+        .thenReturn(GetSnapshotResponse.newBuilder().setSnapshot(byIdSnapshot).build());
+
+    var result =
+        support.planAtomicSnapshotChanges(
+            "acct-1",
+            "tx-1",
+            tableId,
+            Table.newBuilder().setResourceId(tableId).build(),
+            null,
+            null,
+            List.of(),
+            List.of(removedSnapshotId));
+
+    assertNull(result.error());
+    assertEquals(2, result.txChanges().size());
+    assertEquals(
+        "/accounts/acct-1/tables/tbl-1/snapshots/by-id/0000000000000000777",
+        result.txChanges().get(0).getTargetPointerKey());
+    assertEquals(
+        Keys.snapshotPointerByTime("acct-1", "tbl-1", removedSnapshotId, 1234L),
+        result.txChanges().get(1).getTargetPointerKey());
   }
 }

@@ -35,6 +35,7 @@ import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
+import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.GetViewResponse;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
@@ -43,17 +44,21 @@ import ai.floedb.floecat.catalog.rpc.LookupTableByRefResponse;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateViewResponse;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -416,6 +421,82 @@ class GrpcReconcilerBackendTest {
             NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("missing").build());
 
     assertThat(resolved).isEmpty();
+  }
+
+  @Test
+  void lookupDestinationTableMetadataUsesCurrentSnapshotMetadataLocation() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.table =
+        mock(ai.floedb.floecat.catalog.rpc.TableServiceGrpc.TableServiceBlockingStub.class);
+    backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    when(backend.table.withInterceptors(any())).thenReturn(backend.table);
+    when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat")
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns")
+            .build();
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .setId("conn")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl")
+            .build();
+
+    when(backend.table.getTable(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(
+                    Table.newBuilder()
+                        .setResourceId(tableId)
+                        .setCatalogId(catalogId)
+                        .setNamespaceId(namespaceId)
+                        .setDisplayName("orders")
+                        .setUpstream(
+                            UpstreamRef.newBuilder()
+                                .setConnectorId(connectorId)
+                                .addNamespacePath("main")
+                                .addNamespacePath("sales")
+                                .setTableDisplayName("orders")
+                                .build())
+                        .putProperties("storage_location", "s3://warehouse/main.db/orders")
+                        .build())
+                .build());
+    when(backend.snapshot.getSnapshot(any()))
+        .thenReturn(
+            GetSnapshotResponse.newBuilder()
+                .setSnapshot(
+                    Snapshot.newBuilder()
+                        .setTableId(tableId)
+                        .setSnapshotId(42L)
+                        .setMetadataLocation(
+                            "s3://warehouse/main.db/orders/metadata/00042.metadata.json")
+                        .build())
+                .build());
+
+    Optional<ReconcilerBackend.DestinationTableMetadata> resolved =
+        backend.lookupDestinationTableMetadata(reconcileContext(), tableId);
+
+    assertThat(resolved).isPresent();
+    assertThat(resolved.orElseThrow().storageLocation()).isEqualTo("s3://warehouse/main.db/orders");
+    assertThat(resolved.orElseThrow().metadataLocation())
+        .isEqualTo("s3://warehouse/main.db/orders/metadata/00042.metadata.json");
   }
 
   @Test
@@ -891,6 +972,102 @@ class GrpcReconcilerBackendTest {
   }
 
   @Test
+  void updateTableByIdPreservesExistingTableProperties() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.table =
+        mock(ai.floedb.floecat.catalog.rpc.TableServiceGrpc.TableServiceBlockingStub.class);
+    when(backend.table.withInterceptors(any())).thenReturn(backend.table);
+
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns-1")
+            .build();
+    ResourceId catalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat-1")
+            .build();
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl-1")
+            .build();
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .setId("conn-1")
+            .build();
+    Table before =
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setDisplayName("orders")
+            .putProperties("owner", "txn-owner")
+            .putProperties("storage_location", "s3://old-location")
+            .build();
+    Table after =
+        before.toBuilder()
+            .putProperties(ReconcilerBackend.SOURCE_NAMESPACE_PROPERTY, "src.ns")
+            .putProperties("storage_location", "s3://new-location")
+            .build();
+    when(backend.table.getTable(any()))
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(before)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build());
+    when(backend.table.updateTable(any()))
+        .thenReturn(UpdateTableResponse.newBuilder().setTable(after).build());
+
+    boolean changed =
+        backend.updateTableById(
+            reconcileContext(),
+            tableId,
+            namespaceId,
+            NameRef.newBuilder().setCatalog("cat").addPath("main").setName("orders").build(),
+            new TableSpecDescriptor(
+                "main",
+                "orders",
+                "s3://new-location",
+                "{}",
+                Map.of(
+                    "owner",
+                    "integration",
+                    "reconciled",
+                    "true",
+                    ReconcilerBackend.SOURCE_NAMESPACE_PROPERTY,
+                    "src.ns"),
+                List.of(),
+                ColumnIdAlgorithm.CID_FIELD_ID,
+                ConnectorFormat.CF_ICEBERG,
+                connectorId,
+                "uri",
+                "src.ns",
+                "orders"));
+
+    assertThat(changed).isTrue();
+    ArgumentCaptor<UpdateTableRequest> requestCaptor =
+        ArgumentCaptor.forClass(UpdateTableRequest.class);
+    verify(backend.table).updateTable(requestCaptor.capture());
+    assertThat(requestCaptor.getValue().getSpec().getPropertiesMap())
+        .containsEntry("owner", "txn-owner")
+        .containsEntry(ReconcilerBackend.SOURCE_NAMESPACE_PROPERTY, "src.ns")
+        .containsEntry("storage_location", "s3://new-location");
+    assertThat(requestCaptor.getValue().getSpec().getPropertiesMap())
+        .doesNotContainEntry("owner", "integration")
+        .doesNotContainEntry("reconciled", "true");
+    assertThat(requestCaptor.getValue().getPrecondition().getExpectedVersion()).isEqualTo(7L);
+  }
+
+  @Test
   void updateTableByIdRetriesFailedPreconditionAndSucceeds() {
     GrpcReconcilerBackend backend =
         new GrpcReconcilerBackend(
@@ -924,10 +1101,18 @@ class GrpcReconcilerBackendTest {
             .setNamespaceId(namespaceId)
             .setDisplayName("orders")
             .build();
-    Table after = before.toBuilder().putProperties("reconciled", "true").build();
-
+    Table after = before.toBuilder().putProperties("storage_location", "s3://new-location").build();
     when(backend.table.getTable(any()))
-        .thenReturn(GetTableResponse.newBuilder().setTable(before).build());
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(before)
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(7L))
+                .build())
+        .thenReturn(
+            GetTableResponse.newBuilder()
+                .setTable(before.toBuilder().putProperties("owner", "txn-owner").build())
+                .setMeta(MutationMeta.newBuilder().setPointerVersion(8L))
+                .build());
     when(backend.table.updateTable(any()))
         .thenThrow(
             new StatusRuntimeException(
@@ -943,9 +1128,9 @@ class GrpcReconcilerBackendTest {
             new TableSpecDescriptor(
                 "main",
                 "orders",
-                "",
+                "s3://new-location",
                 "{}",
-                Map.of("reconciled", "true"),
+                Map.of("owner", "integration", "reconciled", "true"),
                 List.of(),
                 ColumnIdAlgorithm.CID_FIELD_ID,
                 ConnectorFormat.CF_ICEBERG,
@@ -961,6 +1146,19 @@ class GrpcReconcilerBackendTest {
     assertThat(changed).isTrue();
     verify(backend.table, org.mockito.Mockito.times(2)).updateTable(any());
     verify(backend.table, org.mockito.Mockito.times(2)).getTable(any());
+    ArgumentCaptor<UpdateTableRequest> requestCaptor =
+        ArgumentCaptor.forClass(UpdateTableRequest.class);
+    verify(backend.table, org.mockito.Mockito.times(2)).updateTable(requestCaptor.capture());
+    assertThat(requestCaptor.getAllValues().get(0).getPrecondition().getExpectedVersion())
+        .isEqualTo(7L);
+    assertThat(requestCaptor.getAllValues().get(1).getPrecondition().getExpectedVersion())
+        .isEqualTo(8L);
+    assertThat(requestCaptor.getAllValues().get(1).getSpec().getPropertiesMap())
+        .containsEntry("owner", "txn-owner")
+        .containsEntry("storage_location", "s3://new-location");
+    assertThat(requestCaptor.getAllValues().get(1).getSpec().getPropertiesMap())
+        .doesNotContainEntry("owner", "integration")
+        .doesNotContainEntry("reconciled", "true");
   }
 
   private static ReconcileContext reconcileContext() {

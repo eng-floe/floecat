@@ -190,7 +190,8 @@ class TablePropertyServiceTest {
         service.applyCommitPropertyUpdates(
             () -> table,
             null,
-            List.of(Map.of("action", "set-properties", "updates", Map.of("added", "yes"))));
+            List.of(Map.of("action", "set-properties", "updates", Map.of("added", "yes"))),
+            null);
 
     assertNull(result.error());
     assertEquals("yes", result.properties().get("added"));
@@ -248,7 +249,7 @@ class TablePropertyServiceTest {
                 "min_snapshots_to_keep",
                 7));
 
-    var result = service.applyCommitPropertyUpdates(() -> table, null, updates);
+    var result = service.applyCommitPropertyUpdates(() -> table, null, updates, 10L);
 
     assertNull(result.error());
     assertEquals("33", result.properties().get("current-snapshot-id"));
@@ -284,7 +285,8 @@ class TablePropertyServiceTest {
                     Map.of("operation", "append", "total-data-files", "0"))),
             Map.of("action", "upgrade-format-version", "format-version", 2));
 
-    var result = service.applyCommitPropertyUpdates(() -> table, null, updates);
+    var result =
+        service.applyCommitPropertyUpdates(() -> table, null, updates, 1944648604358776794L);
 
     assertNull(result.error());
     assertEquals("1944648604358776794", result.properties().get("current-snapshot-id"));
@@ -316,7 +318,8 @@ class TablePropertyServiceTest {
                 "type",
                 "branch"));
 
-    var result = service.applyCommitPropertyUpdates(() -> table, null, updates);
+    var result =
+        service.applyCommitPropertyUpdates(() -> table, null, updates, 2193008915892245619L);
 
     assertNull(result.error());
     assertEquals("2193008915892245619", result.properties().get("current-snapshot-id"));
@@ -343,7 +346,8 @@ class TablePropertyServiceTest {
                 List.of("current-snapshot-id", "format-version")),
             Map.of("action", "upgrade-format-version", "format-version", 2));
 
-    var result = service.applyCommitPropertyUpdates(() -> table, null, updates);
+    var result =
+        service.applyCommitPropertyUpdates(() -> table, null, updates, 5239576338451716881L);
 
     assertNull(result.error());
     assertEquals("5239576338451716881", result.properties().get("current-snapshot-id"));

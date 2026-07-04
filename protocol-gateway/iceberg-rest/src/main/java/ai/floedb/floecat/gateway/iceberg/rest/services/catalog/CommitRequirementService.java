@@ -191,4 +191,11 @@ public class CommitRequirementService {
     }
     return asInteger(props.get(key));
   }
+
+  private static Long propertyLong(Map<String, String> props, String key) {
+    if (props == null || key == null || key.isBlank()) {
+      return null;
+    }
+    return asLong(props.get(key));
+  }
 }

@@ -69,6 +69,7 @@ import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
+import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
@@ -133,6 +134,14 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   };
 
   private static final Logger LOG = Logger.getLogger(GrpcReconcilerBackend.class);
+  private static final Set<String> RECONCILE_MANAGED_TABLE_PROPERTIES =
+      Set.of(
+          "metadata-location",
+          "metadata_location",
+          "storage_location",
+          SOURCE_NAMESPACE_PROPERTY,
+          SOURCE_NAME_PROPERTY,
+          SOURCE_CONNECTOR_ID_PROPERTY);
 
   private static final Metadata.Key<String> AUTHORIZATION =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
@@ -307,6 +316,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     try {
       var resolved =
           table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
+      String metadataLocation = currentSnapshotMetadataLocation(ctx, tableId);
       return Optional.of(
           new DestinationTableMetadata(
               resolved.getCatalogId(),
@@ -315,7 +325,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
               sourceNamespace(resolved.hasUpstream() ? resolved.getUpstream() : null),
               sourceName(resolved.hasUpstream() ? resolved.getUpstream() : null),
               sourceConnectorId(resolved.hasUpstream() ? resolved.getUpstream() : null),
-              resolved.getPropertiesMap().getOrDefault("storage_location", "")));
+              resolved.getPropertiesMap().getOrDefault("storage_location", ""),
+              metadataLocation));
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
         return Optional.empty();
@@ -342,28 +353,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       NameRef tableRef,
       TableSpecDescriptor descriptor) {
     NameRef normalizedTable = NameRefNormalizer.normalize(tableRef);
-    TableSpec spec =
-        TableSpec.newBuilder()
-            .setDisplayName(descriptor.displayName())
-            .setSchemaJson(descriptor.schemaJson())
-            .setUpstream(buildUpstream(descriptor))
-            .putAllProperties(safeProperties(descriptor))
-            .build();
-    UpdateTableRequest request =
-        UpdateTableRequest.newBuilder()
-            .setTableId(tableId)
-            .setSpec(spec)
-            .setUpdateMask(
-                FieldMask.newBuilder()
-                    .addPaths("schema_json")
-                    .addPaths("upstream")
-                    .addPaths("properties")
-                    .build())
-            .build();
-
     for (int attempt = 0; attempt < UPDATE_OCC_RETRIES; attempt++) {
-      var before =
-          table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build()).getTable();
+      var beforeResponse =
+          table(ctx).getTable(GetTableRequest.newBuilder().setTableId(tableId).build());
+      var before = beforeResponse.getTable();
       if (!before.getNamespaceId().equals(namespaceId)) {
         throw new IllegalArgumentException(
             "Destination table namespace mismatch for id: " + tableId.getId());
@@ -372,8 +365,23 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         throw new IllegalArgumentException(
             "Destination table display name mismatch for id: " + tableId.getId());
       }
+      UpdateTableRequest.Builder request =
+          UpdateTableRequest.newBuilder()
+              .setTableId(tableId)
+              .setSpec(reconcileTableSpec(before, descriptor))
+              .setUpdateMask(
+                  FieldMask.newBuilder()
+                      .addPaths("schema_json")
+                      .addPaths("upstream")
+                      .addPaths("properties")
+                      .build());
+      if (beforeResponse.hasMeta() && beforeResponse.getMeta().getPointerVersion() > 0L) {
+        request.setPrecondition(
+            Precondition.newBuilder()
+                .setExpectedVersion(beforeResponse.getMeta().getPointerVersion()));
+      }
       try {
-        var response = table(ctx).updateTable(request).getTable();
+        var response = table(ctx).updateTable(request.build()).getTable();
         return !response.equals(before);
       } catch (StatusRuntimeException e) {
         if (e.getStatus().getCode() != Status.Code.FAILED_PRECONDITION
@@ -385,6 +393,31 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     throw Status.FAILED_PRECONDITION
         .withDescription("table update precondition failed after retries")
         .asRuntimeException();
+  }
+
+  private TableSpec reconcileTableSpec(Table current, TableSpecDescriptor descriptor) {
+    return TableSpec.newBuilder()
+        .setDisplayName(descriptor.displayName())
+        .setSchemaJson(descriptor.schemaJson())
+        .setUpstream(buildUpstream(descriptor))
+        .putAllProperties(mergedReconcileProperties(current, descriptor))
+        .build();
+  }
+
+  private Map<String, String> mergedReconcileProperties(
+      Table current, TableSpecDescriptor descriptor) {
+    LinkedHashMap<String, String> merged = new LinkedHashMap<>();
+    if (current != null) {
+      merged.putAll(current.getPropertiesMap());
+    }
+    safeProperties(descriptor)
+        .forEach(
+            (key, value) -> {
+              if (RECONCILE_MANAGED_TABLE_PROPERTIES.contains(key)) {
+                merged.put(key, value);
+              }
+            });
+    return Map.copyOf(merged);
   }
 
   @Override
@@ -1349,6 +1382,27 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       return token;
     }
     return "Bearer " + token;
+  }
+
+  private String currentSnapshotMetadataLocation(ReconcileContext ctx, ResourceId tableId) {
+    try {
+      var response =
+          snapshot(ctx)
+              .getSnapshot(
+                  GetSnapshotRequest.newBuilder()
+                      .setTableId(tableId)
+                      .setSnapshot(
+                          SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
+                      .build());
+      return response.getSnapshot().hasMetadataLocation()
+          ? response.getSnapshot().getMetadataLocation()
+          : "";
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return "";
+      }
+      throw e;
+    }
   }
 
   private SnapshotPin currentSnapshotPin(ReconcileContext ctx, ResourceId tableId) {

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.GetCurrentSnapshotPointerRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -275,11 +276,27 @@ public class TableGatewaySupport {
   }
 
   public Long loadCurrentSnapshotId(Table table) {
-    Snapshot snapshot = loadCurrentSnapshot(table);
-    if (snapshot == null || snapshot.getSnapshotId() < 0) {
+    if (table == null || !table.hasResourceId()) {
       return null;
     }
-    return snapshot.getSnapshotId();
+    try {
+      var response =
+          grpcClient.getCurrentSnapshotPointer(
+              GetCurrentSnapshotPointerRequest.newBuilder()
+                  .setTableId(table.getResourceId())
+                  .build());
+      if (response == null
+          || !response.hasCurrentSnapshotPointer()
+          || response.getCurrentSnapshotPointer().getSnapshotId() < 0) {
+        return null;
+      }
+      return response.getCurrentSnapshotPointer().getSnapshotId();
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == io.grpc.Status.Code.NOT_FOUND) {
+        return null;
+      }
+      throw e;
+    }
   }
 
   public boolean hasSnapshotRef(Table table, String refName) {
@@ -315,7 +332,10 @@ public class TableGatewaySupport {
       }
       return response.getSnapshot();
     } catch (StatusRuntimeException e) {
-      return null;
+      if (e.getStatus().getCode() == io.grpc.Status.Code.NOT_FOUND) {
+        return null;
+      }
+      throw e;
     }
   }
 

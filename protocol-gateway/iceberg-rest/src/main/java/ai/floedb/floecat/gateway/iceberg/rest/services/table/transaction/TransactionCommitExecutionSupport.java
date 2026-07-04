@@ -35,6 +35,9 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TransactionCommitExecutionSupport {
+  static final String RETRYABLE_CONFLICT_PROPERTY = "floecat.retryable-transaction-conflict";
+  static final String APPLY_FAILURE_RETRYABLE_PROPERTY =
+      "floecat.transaction.apply-failure-retryable";
   private static final int DEFAULT_COMMIT_CONFIRM_MAX_ATTEMPTS = 6;
   private static final long DEFAULT_COMMIT_CONFIRM_INITIAL_SLEEP_MS = 20L;
   private static final long DEFAULT_COMMIT_CONFIRM_MAX_SLEEP_MS = 200L;
@@ -61,11 +64,12 @@ public class TransactionCommitExecutionSupport {
       String idempotencyKey,
       boolean allowGeneratedBeginIdempotency,
       String catalogName,
-      String requestHash) {
+      String requestHash,
+      String generatedBeginSuffix) {
+    String generatedBeginIdempotency =
+        allowGeneratedBeginIdempotency ? "req:" + catalogName + ":" + requestHash : null;
     String beginIdempotency =
-        firstNonBlank(
-            idempotencyKey,
-            allowGeneratedBeginIdempotency ? "req:" + catalogName + ":" + requestHash : null);
+        beginIdempotency(idempotencyKey, generatedBeginIdempotency, generatedBeginSuffix);
     ai.floedb.floecat.transaction.rpc.BeginTransactionResponse begin;
     try {
       begin =
@@ -128,16 +132,8 @@ public class TransactionCommitExecutionSupport {
       }
     }
 
-    if (currentState == TransactionState.TS_APPLY_FAILED_CONFLICT) {
-      return new OpenTransactionResult(
-          null,
-          IcebergErrorResponses.failure(
-              "transaction commit failed", "CommitFailedException", Response.Status.CONFLICT));
-    }
-
     return new OpenTransactionResult(
-        new OpenTransaction(txId, currentState, currentTxn, firstNonBlank(idempotencyKey, txId)),
-        null);
+        new OpenTransaction(txId, currentState, currentTxn, txId), null);
   }
 
   Response apply(
@@ -182,10 +178,15 @@ public class TransactionCommitExecutionSupport {
           applied = true;
         } else {
           if (isDeterministicFailedState(commitState)) {
-            return IcebergErrorResponses.failure(
-                "transaction commit did not reach applied state",
-                "CommitFailedException",
-                Response.Status.CONFLICT);
+            boolean retryable =
+                commitResponse != null
+                    && commitResponse.hasTransaction()
+                    && isRetryableApplyFailure(commitResponse.getTransaction());
+            if (waitForAppliedState(txId)) {
+              applied = true;
+              return Response.noContent().build();
+            }
+            return conflictResponse("transaction commit did not reach applied state", retryable);
           }
           if (shouldConfirmAmbiguousCommitState(commitState) && waitForAppliedState(txId)) {
             applied = true;
@@ -198,8 +199,13 @@ public class TransactionCommitExecutionSupport {
         }
       } catch (StatusRuntimeException commitFailure) {
         if (isDeterministicCommitFailure(commitFailure)) {
-          return IcebergErrorResponses.failure(
-              "transaction commit failed", "CommitFailedException", Response.Status.CONFLICT);
+          if (waitForAppliedState(txId)) {
+            applied = true;
+            return Response.noContent().build();
+          }
+          return conflictResponse(
+              "transaction commit failed",
+              extractFloecatErrorCode(commitFailure) == ErrorCode.MC_PRECONDITION_FAILED);
         }
         if (isRetryableCommitAbort(commitFailure)) {
           if (waitForAppliedState(txId)) {
@@ -238,8 +244,9 @@ public class TransactionCommitExecutionSupport {
           "transaction commit failed", "NoSuchTableException", Response.Status.NOT_FOUND);
     }
     if (code == Status.Code.FAILED_PRECONDITION || code == Status.Code.ALREADY_EXISTS) {
-      return IcebergErrorResponses.failure(
-          "transaction commit failed", "CommitFailedException", Response.Status.CONFLICT);
+      return conflictResponse(
+          "transaction commit failed",
+          extractFloecatErrorCode(failure) == ErrorCode.MC_PRECONDITION_FAILED);
     }
     if (code == Status.Code.ABORTED) {
       ErrorCode detailCode = extractFloecatErrorCode(failure);
@@ -249,8 +256,8 @@ public class TransactionCommitExecutionSupport {
             "CommitStateUnknownException",
             Response.Status.SERVICE_UNAVAILABLE);
       }
-      return IcebergErrorResponses.failure(
-          "transaction commit failed", "CommitFailedException", Response.Status.CONFLICT);
+      return conflictResponse(
+          "transaction commit failed", detailCode == ErrorCode.MC_PRECONDITION_FAILED);
     }
     Response mapped = mapCommitFailureByStatus(code);
     return mapped == null ? stateUnknown() : mapped;
@@ -263,6 +270,44 @@ public class TransactionCommitExecutionSupport {
         Response.Status.INTERNAL_SERVER_ERROR);
   }
 
+  boolean isRetryableConflict(Response response) {
+    if (response == null || response.getStatus() != Response.Status.CONFLICT.getStatusCode()) {
+      return false;
+    }
+    return "true".equals(response.getHeaderString(RETRYABLE_CONFLICT_PROPERTY));
+  }
+
+  Response stripInternalRetryHeader(Response response) {
+    if (response == null || response.getHeaderString(RETRYABLE_CONFLICT_PROPERTY) == null) {
+      return response;
+    }
+    Response.ResponseBuilder builder =
+        Response.status(response.getStatus()).entity(response.getEntity());
+    response
+        .getHeaders()
+        .forEach(
+            (name, values) -> {
+              if (RETRYABLE_CONFLICT_PROPERTY.equalsIgnoreCase(name)) {
+                return;
+              }
+              for (Object value : values) {
+                builder.header(name, value);
+              }
+            });
+    return builder.build();
+  }
+
+  Response retryableConflict(String message) {
+    return conflictResponse(message, true);
+  }
+
+  boolean isRetryableApplyFailure(ai.floedb.floecat.transaction.rpc.Transaction transaction) {
+    if (transaction == null) {
+      return false;
+    }
+    return "true".equals(transaction.getPropertiesMap().get(APPLY_FAILURE_RETRYABLE_PROPERTY));
+  }
+
   void abortIfOpen(TransactionState currentState, String txId, String reason) {
     if (currentState == TransactionState.TS_OPEN) {
       abortTransactionQuietly(txId, reason);
@@ -273,9 +318,41 @@ public class TransactionCommitExecutionSupport {
     return state == TransactionState.TS_APPLIED;
   }
 
+  private String beginIdempotency(
+      String clientIdempotencyKey, String generatedBeginIdempotency, String generatedBeginSuffix) {
+    String clientKey = trimToNull(clientIdempotencyKey);
+    if (clientKey != null) {
+      String suffix = trimToNull(generatedBeginSuffix);
+      return suffix == null ? clientKey : clientKey + ":" + suffix;
+    }
+    String generatedKey = trimToNull(generatedBeginIdempotency);
+    if (generatedKey == null) {
+      return null;
+    }
+    String suffix = trimToNull(generatedBeginSuffix);
+    return suffix == null ? generatedKey : generatedKey + ":" + suffix;
+  }
+
+  private String trimToNull(String value) {
+    if (value == null) {
+      return null;
+    }
+    String trimmed = value.trim();
+    return trimmed.isEmpty() ? null : trimmed;
+  }
+
   private boolean isDeterministicFailedState(TransactionState state) {
     return state == TransactionState.TS_APPLY_FAILED_CONFLICT
         || state == TransactionState.TS_ABORTED;
+  }
+
+  private Response conflictResponse(String message, boolean retryable) {
+    Response response =
+        IcebergErrorResponses.failure(message, "CommitFailedException", Response.Status.CONFLICT);
+    if (!retryable) {
+      return response;
+    }
+    return Response.fromResponse(response).header(RETRYABLE_CONFLICT_PROPERTY, "true").build();
   }
 
   private boolean isDeterministicCommitFailure(StatusRuntimeException failure) {
@@ -420,17 +497,5 @@ public class TransactionCommitExecutionSupport {
     } catch (RuntimeException e) {
       LOG.debugf(e, "Best-effort abort failed for tx=%s", txId);
     }
-  }
-
-  private static String firstNonBlank(String... values) {
-    if (values == null) {
-      return null;
-    }
-    for (String value : values) {
-      if (value != null && !value.isBlank()) {
-        return value;
-      }
-    }
-    return null;
   }
 }

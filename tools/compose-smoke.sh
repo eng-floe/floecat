@@ -246,6 +246,62 @@ assert_contains_any() {
   return 1
 }
 
+duckdb_should_retry_iceberg_occ() {
+  local output="${1:-}"
+  [[ "$output" == *"Conflict_409"* && (
+    "$output" == *"assert-ref-snapshot-id failed for ref main"* ||
+    "$output" == *"transaction commit did not reach applied state"*
+  ) ]]
+}
+
+run_duckdb_with_iceberg_occ_retry() {
+  local label="$1"
+  local compose_project="$2"
+  local bootstrap_sql="$3"
+  local query_sql="$4"
+  local max_attempts="${5:-3}"
+
+  local attempt
+  local duckdb_out
+  local sleep_seconds
+  for attempt in $(seq 1 "$max_attempts"); do
+    if duckdb_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
+      duckdb -c "$bootstrap_sql $query_sql" 2>&1); then
+      printf '%s\n' "$duckdb_out"
+      return 0
+    fi
+    if ! duckdb_should_retry_iceberg_occ "$duckdb_out"; then
+      printf '%s\n' "$duckdb_out"
+      return 1
+    fi
+    printf '%s\n' "$duckdb_out"
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      return 1
+    fi
+    sleep_seconds="$attempt"
+    echo "[WARN] $label duckdb OCC conflict on attempt $attempt/$max_attempts; retrying in ${sleep_seconds}s"
+    sleep "$sleep_seconds"
+  done
+
+  return 1
+}
+
+unity_create_already_exists() {
+  local response="$1"
+  local http_code="$2"
+  local error_code="$3"
+
+  if [ "$http_code" = "409" ]; then
+    return 0
+  fi
+
+  if [ "$http_code" = "400" ] && [[ "$response" == *"\"error_code\":\"$error_code\""* ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
 assert_remote_file_group_worker_activity() {
   local compose_cmd="$1"
   local label="$2"
@@ -270,7 +326,6 @@ assert_table_stats_available() {
   local out
   local snapshot_out
   local snapshot_id
-  local snapshot_ids
   local last_out=""
 
   echo "==> [SMOKE] waiting for stats for $table_fqn (retries=$retries sleep=${sleep_seconds}s)"
@@ -285,13 +340,15 @@ quit")
       return 0
     fi
 
-    # Current snapshot can briefly lag metrics writes; probe a few explicit snapshots as fallback.
+    # Resolve the exact current snapshot id, then probe that immutable snapshot directly.
     snapshot_out=$(run_cli_script "$compose_cmd" "account t-0001
-snapshots $table_fqn
+snapshot get $table_fqn current
 quit")
-    snapshot_ids=$(echo "$snapshot_out" | awk '/^[[:space:]]*[0-9]+[[:space:]]/ {print $1}' | head -n 5)
-
-    for snapshot_id in $snapshot_ids; do
+    snapshot_id=$(echo "$snapshot_out" | awk -F'"' '/"snapshotId"[[:space:]]*:/ {print $4; exit}')
+    if [ -n "$snapshot_id" ]; then
+      if [ "$attempt" -eq 1 ] || [ $((attempt % 5)) -eq 0 ] || [ "$attempt" -eq "$retries" ]; then
+        echo "==> [SMOKE] probing resolved current snapshot $snapshot_id for $table_fqn"
+      fi
       out=$(run_cli_script "$compose_cmd" "account t-0001
 stats files $table_fqn --snapshot $snapshot_id --limit 5
 quit")
@@ -301,7 +358,7 @@ quit")
         echo "[PASS] $label stats available for $table_fqn (snapshot=$snapshot_id)"
         return 0
       fi
-    done
+    fi
 
     if [ "$attempt" -eq 1 ] || [ $((attempt % 5)) -eq 0 ] || [ "$attempt" -eq "$retries" ]; then
       echo "==> [SMOKE] stats not ready for $table_fqn yet (attempt $attempt/$retries)"
@@ -326,7 +383,6 @@ assert_table_indexes_available() {
   local out
   local snapshot_out
   local snapshot_id
-  local snapshot_ids
   local last_out=""
 
   echo "==> [SMOKE] waiting for index artifacts for $table_fqn (retries=$retries sleep=${sleep_seconds}s)"
@@ -345,13 +401,15 @@ quit")
       return 0
     fi
 
-    # Current snapshot can briefly lag artifact registration; probe a few explicit snapshots as fallback.
+    # Resolve the exact current snapshot id, then probe that immutable snapshot directly.
     snapshot_out=$(run_cli_script "$compose_cmd" "account t-0001
-snapshots $table_fqn
+snapshot get $table_fqn current
 quit")
-    snapshot_ids=$(echo "$snapshot_out" | awk '/^[[:space:]]*[0-9]+[[:space:]]/ {print $1}' | head -n 5)
-
-    for snapshot_id in $snapshot_ids; do
+    snapshot_id=$(echo "$snapshot_out" | awk -F'"' '/"snapshotId"[[:space:]]*:/ {print $4; exit}')
+    if [ -n "$snapshot_id" ]; then
+      if [ "$attempt" -eq 1 ] || [ $((attempt % 5)) -eq 0 ] || [ "$attempt" -eq "$retries" ]; then
+        echo "==> [SMOKE] probing resolved current snapshot $snapshot_id for $table_fqn"
+      fi
       out=$(run_cli_script "$compose_cmd" "account t-0001
 stats index $table_fqn --snapshot $snapshot_id --limit 5
 quit")
@@ -365,7 +423,7 @@ quit")
         echo "[PASS] $label index artifacts available for $table_fqn (snapshot=$snapshot_id)"
         return 0
       fi
-    done
+    fi
 
     if [ "$attempt" -eq 1 ] || [ $((attempt % 5)) -eq 0 ] || [ "$attempt" -eq "$retries" ]; then
       echo "==> [SMOKE] index artifacts not ready for $table_fqn yet (attempt $attempt/$retries)"
@@ -941,7 +999,9 @@ quit")
       -d "{\"name\":\"$unity_catalog\",\"comment\":\"compose-smoke\"}")
     local unity_catalog_code
     unity_catalog_code=$(printf "%s\n" "$unity_catalog_resp" | tail -n1)
-    if [ "$unity_catalog_code" != "200" ] && [ "$unity_catalog_code" != "201" ] && [ "$unity_catalog_code" != "409" ]; then
+    if [ "$unity_catalog_code" != "200" ] \
+      && [ "$unity_catalog_code" != "201" ] \
+      && ! unity_create_already_exists "$unity_catalog_resp" "$unity_catalog_code" "CATALOG_ALREADY_EXISTS"; then
       echo "[FAIL] $label unity catalog create failed (http=$unity_catalog_code)"
       echo "$unity_catalog_resp"
       return 1
@@ -955,7 +1015,9 @@ quit")
       -d "{\"name\":\"$unity_schema\",\"catalog_name\":\"$unity_catalog\",\"comment\":\"compose-smoke\"}")
     local unity_schema_code
     unity_schema_code=$(printf "%s\n" "$unity_schema_resp" | tail -n1)
-    if [ "$unity_schema_code" != "200" ] && [ "$unity_schema_code" != "201" ] && [ "$unity_schema_code" != "409" ]; then
+    if [ "$unity_schema_code" != "200" ] \
+      && [ "$unity_schema_code" != "201" ] \
+      && ! unity_create_already_exists "$unity_schema_resp" "$unity_schema_code" "SCHEMA_ALREADY_EXISTS"; then
       echo "[FAIL] $label unity schema create failed (http=$unity_schema_code)"
       echo "$unity_schema_resp"
       return 1
@@ -969,7 +1031,9 @@ quit")
       -d "{\"name\":\"$unity_source_table\",\"catalog_name\":\"$unity_catalog\",\"schema_name\":\"$unity_schema\",\"table_type\":\"EXTERNAL\",\"data_source_format\":\"DELTA\",\"storage_location\":\"$unity_storage_location\"}")
     local unity_table_code
     unity_table_code=$(printf "%s\n" "$unity_table_resp" | tail -n1)
-    if [ "$unity_table_code" != "200" ] && [ "$unity_table_code" != "201" ] && [ "$unity_table_code" != "409" ]; then
+    if [ "$unity_table_code" != "200" ] \
+      && [ "$unity_table_code" != "201" ] \
+      && ! unity_create_already_exists "$unity_table_resp" "$unity_table_code" "TABLE_ALREADY_EXISTS"; then
       echo "[FAIL] $label unity table register failed (http=$unity_table_code)"
       echo "$unity_table_resp"
       return 1
@@ -1033,8 +1097,12 @@ quit")
     local duckdb_query="SELECT 'duckdb_smoke_ok' AS status; SELECT 'call_center=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.call_center; SELECT 'my_local_delta_table=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'my_local_nonnull_name=' || CAST(COUNT(name) AS VARCHAR) AS check FROM iceberg_floecat.delta.my_local_delta_table; SELECT 'dv_demo_delta=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'dv_content=' || CAST(MIN(id) AS VARCHAR) || ',' || CAST(MAX(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.delta.dv_demo_delta; SELECT 'empty_join=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.trino_types i JOIN iceberg_floecat.delta.call_center d ON 1=0; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_ctas_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke AS SELECT * FROM iceberg_floecat.delta.call_center LIMIT 5; SELECT 'ctas_count=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_ctas_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_recreate_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_recreate_smoke (id INTEGER, v VARCHAR); INSERT INTO iceberg_floecat.iceberg.duckdb_recreate_smoke VALUES (11, 'first'); SELECT 'recreate_first_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_recreate_smoke; DELETE FROM iceberg_floecat.iceberg.duckdb_recreate_smoke WHERE id = 11; SELECT 'recreate_after_delete=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_recreate_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_recreate_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_recreate_smoke (id INTEGER, v VARCHAR); INSERT INTO iceberg_floecat.iceberg.duckdb_recreate_smoke VALUES (22, 'second'); SELECT 'recreate_second_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_recreate_smoke; DROP TABLE iceberg_floecat.iceberg.duckdb_recreate_smoke; DROP TABLE IF EXISTS iceberg_floecat.iceberg.duckdb_mutation_smoke; CREATE TABLE iceberg_floecat.iceberg.duckdb_mutation_smoke (id INTEGER, v VARCHAR); SELECT 'mut_after_create=' || CAST(COUNT(*) AS VARCHAR) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; INSERT INTO iceberg_floecat.iceberg.duckdb_mutation_smoke VALUES (1, 'a'), (2, 'b'), (3, 'c'); SELECT 'mut_after_insert=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; DELETE FROM iceberg_floecat.iceberg.duckdb_mutation_smoke WHERE id = 2; SELECT 'mut_after_delete=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke; UPDATE iceberg_floecat.iceberg.duckdb_mutation_smoke SET v = 'c2' WHERE id = 3; SELECT 'mut_after_update=' || CAST(COUNT(*) AS VARCHAR) || ',' || CAST(SUM(id) AS VARCHAR) || ',' || MIN(v) || ',' || MAX(v) AS check FROM iceberg_floecat.iceberg.duckdb_mutation_smoke;"
 
     local duckdb_out
-    if ! duckdb_out=$(docker run --rm --network "${compose_project}_floecat" "$COMPOSE_SMOKE_DUCKDB_IMAGE" \
-      duckdb -c "$duckdb_bootstrap $duckdb_query" 2>&1); then
+    if ! duckdb_out=$(run_duckdb_with_iceberg_occ_retry \
+      "$label" \
+      "$compose_project" \
+      "$duckdb_bootstrap" \
+      "$duckdb_query" \
+      3); then
       echo "$duckdb_out"
       echo "[FAIL] $label duckdb command failed"
       return 1

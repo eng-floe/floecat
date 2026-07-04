@@ -122,7 +122,7 @@ class TableUpdatePlannerTest {
 
     assertTrue(plan.hasError());
     assertSame(failure, plan.error());
-    verify(propertyService, never()).applyCommitPropertyUpdates(any(), any(), any());
+    verify(propertyService, never()).applyCommitPropertyUpdates(any(), any(), any(), any());
   }
 
   @Test

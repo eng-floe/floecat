@@ -31,6 +31,8 @@ import ai.floedb.floecat.catalog.rpc.DeleteTableResponse;
 import ai.floedb.floecat.catalog.rpc.DeleteViewRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteViewResponse;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.GetCurrentSnapshotPointerRequest;
+import ai.floedb.floecat.catalog.rpc.GetCurrentSnapshotPointerResponse;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
@@ -190,6 +192,11 @@ public class GrpcServiceFacade {
 
   public GetSnapshotResponse getSnapshot(GetSnapshotRequest request) {
     return snapshotStub().getSnapshot(request);
+  }
+
+  public GetCurrentSnapshotPointerResponse getCurrentSnapshotPointer(
+      GetCurrentSnapshotPointerRequest request) {
+    return snapshotStub().getCurrentSnapshotPointer(request);
   }
 
   public CreateSnapshotResponse createSnapshot(CreateSnapshotRequest request) {
