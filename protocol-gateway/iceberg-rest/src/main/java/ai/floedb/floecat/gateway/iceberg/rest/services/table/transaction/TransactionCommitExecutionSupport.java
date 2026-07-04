@@ -180,7 +180,7 @@ public class TransactionCommitExecutionSupport {
               applied = true;
               return Response.noContent().build();
             }
-            return conflictResponse("transaction commit did not reach applied state", true);
+            return conflictResponse("transaction commit did not reach applied state", false);
           }
           if (shouldConfirmAmbiguousCommitState(commitState) && waitForAppliedState(txId)) {
             applied = true;

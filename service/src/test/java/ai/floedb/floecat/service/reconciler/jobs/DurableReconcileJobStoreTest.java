@@ -239,7 +239,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void enqueueSnapshotPlanDedupesAcrossDifferentPlanTableParents() {
+  void enqueueSnapshotPlanDoesNotDedupeAcrossDifferentPlanTableParents() {
     String firstParentJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -289,7 +289,7 @@ class DurableReconcileJobStoreTest {
             secondParentJobId,
             "");
 
-    assertEquals(first, second);
+    assertNotEquals(first, second);
   }
 
   @Test
