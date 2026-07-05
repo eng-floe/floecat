@@ -1913,9 +1913,12 @@ connector trigger glue-iceberg --incremental --current --mode metadata-and-captu
 connector trigger glue-iceberg --full --current --mode metadata-and-capture --capture stats
 connector trigger glue-iceberg --full --current --mode metadata-and-capture --capture index
 </code></pre></div>
-<p>For capture modes, trigger-time <code>--capture</code> flags are optional only when the connector already
-  has a persisted auto-capture policy. If omitted, the run inherits that connector policy.
-  Trigger-time capture flags override the connector default for that run.
+<p>For capture modes, the reconciler API resolves a missing request capture policy from the
+  connector's persisted auto-capture policy when present. Trigger-time <code>--capture</code> flags override
+  that policy for the run. If neither an explicit request policy nor a persisted connector policy
+  is present, the request is rejected.
+  Trigger-time <code>--columns</code>, <code>--default-cols</code>, and <code>--max-default-cols</code> are only valid with an
+  explicit <code>--capture</code>; otherwise the request inherits the connector's persisted policy unchanged.
   <code>connector create</code> and <code>connector validate</code> do not accept <code>--policy-capture none</code>; use
   <code>connector update ... --policy-capture none</code> to clear a persisted auto-capture policy.
   <code>--policy-columns</code>, <code>--policy-default-cols</code>, and <code>--policy-max-default-cols</code> require an explicit

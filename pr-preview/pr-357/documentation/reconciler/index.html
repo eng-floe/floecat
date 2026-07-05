@@ -1835,9 +1835,12 @@ file-scoped execution work do not block public gRPC threads. The service submits
 reconcile control RPCs:</p>
 <ul>
 <li><code>ReconcileControl.StartCapture(scope, mode, full_rescan, execution_policy)</code>: enqueues a
-  top-level <code>PLAN_CONNECTOR</code> job via <code>ReconcileJobStore</code>.</li>
+  top-level <code>PLAN_CONNECTOR</code> job via <code>ReconcileJobStore</code>. For capture modes, if the request omits
+  <code>scope.capture_policy</code>, the service resolves it from <code>connector.policy.auto_capture_policy</code> when
+  present; otherwise the request is rejected.</li>
 <li><code>ReconcileControl.CaptureNow(...)</code>: uses the same split path, but waits for the aggregated
-  outcome of the top-level plan job plus any child planning/execution jobs.</li>
+  outcome of the top-level plan job plus any child planning/execution jobs. It uses the same
+  capture-policy resolution rule as <code>StartCapture</code>.</li>
 <li><code>ReconcileControl.GetReconcileJob(job_id)</code> / <code>ListReconcileJobs(...)</code>: expose both top-level and
   child jobs. Parent-capable jobs (<code>PLAN_CONNECTOR</code>, <code>PLAN_TABLE</code>, <code>PLAN_SNAPSHOT</code>) surface
   aggregate child status through eventually consistent projection/root-summary read models rather
@@ -2036,8 +2039,8 @@ perform a post-completion final lease confirmation after that RPC has durably co
   discovery and metadata planning across the full upstream history.</li>
 <li><strong>Incremental capture run</strong>: operator triggers
   <code>connector trigger demo-glue --incremental --current --mode metadata-and-capture</code>.
-  If the trigger omits <code>--capture</code>, the reconcile path inherits the connector's persisted
-  auto-capture policy when present; otherwise the request is rejected.
+  If the trigger omits <code>--capture</code>, the reconcile API resolves the missing request policy from the
+  connector's persisted auto-capture policy when present; otherwise the request is rejected.
   Trigger-time <code>--capture</code> flags remain available as one-off overrides.</li>
 <li><strong>Scheduled auto-reconcile run</strong>: when connector policy enables automatic reconcile, the planner
   uses <code>connector.policy.auto_capture_policy</code> as the capture policy for queued
