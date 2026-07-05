@@ -185,6 +185,10 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
   For capture modes, trigger-time `--capture` flags are optional only when the connector already
   has a persisted auto-capture policy. If omitted, the run inherits that connector policy.
   Trigger-time capture flags override the connector default for that run.
+  `connector create` and `connector validate` do not accept `--policy-capture none`; use
+  `connector update ... --policy-capture none` to clear a persisted auto-capture policy.
+  `--policy-columns`, `--policy-default-cols`, and `--policy-max-default-cols` require an explicit
+  `--policy-capture`, and those flags cannot be combined with `--policy-capture none`.
   Use `connector update ... --policy-capture none` to clear a persisted auto-capture policy.
 
 - **Creating a storage authority for Iceberg REST credential vending**

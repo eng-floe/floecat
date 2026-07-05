@@ -220,6 +220,14 @@ Extensibility points:
 - **Full reconciliation** – `ReconcilerService` enters full-rescan mode (`fullRescan=true`), so the
   connector lists every table in the namespace, creates missing namespaces in the destination
   catalog, updates `DestinationTarget` pointers, and ingests snapshot stats for each table.
+- **Persisted capture policy** – Delta connectors can store a default auto-capture policy used by
+  scheduled reconcile runs and by trigger-time capture modes when `--capture` is omitted. Example:
+  ```
+  connector update "Unity Delta SP" \
+    --policy-capture stats,index \
+    --policy-default-cols explicit-only
+  ```
+  Use `connector update "Unity Delta SP" --policy-capture none` to clear the persisted policy.
 
 ## Cross-References
 

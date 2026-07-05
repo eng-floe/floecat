@@ -273,6 +273,10 @@ perform a post-completion final lease confirmation after that RPC has durably co
   If the trigger omits `--capture`, the reconcile path inherits the connector's persisted
   auto-capture policy when present; otherwise the request is rejected.
   Trigger-time `--capture` flags remain available as one-off overrides.
+- **Scheduled auto-reconcile run**: when connector policy enables automatic reconcile, the planner
+  uses `connector.policy.auto_capture_policy` as the capture policy for queued
+  `METADATA_AND_CAPTURE` work. If the connector has no persisted auto-capture policy, planner runs
+  fall back to the default table/file/column stats capture policy.
 - **Incremental run**: `--incremental` restricts work to snapshots not already ingested, and the
   explicit snapshot scope (`--current`, `--latest-n`, `--snapshot`, or `--all`) controls which
   upstream snapshots are eligible for planning.

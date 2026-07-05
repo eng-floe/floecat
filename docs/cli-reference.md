@@ -192,6 +192,12 @@ Trigger notes:
 - If `--capture` is omitted for a capture mode, the run inherits `connector.policy.auto_capture_policy`
   when set; otherwise the request is rejected.
 - `--columns`, `--default-cols`, and `--max-default-cols` require an explicit `--capture` override.
+- `connector create` and `connector validate` do not accept `--policy-capture none`; clearing a
+  persisted auto-capture policy is only supported on `connector update`.
+- `--policy-capture none` cannot be combined with `--policy-columns`, `--policy-default-cols`, or
+  `--policy-max-default-cols`.
+- `--policy-columns`, `--policy-default-cols`, and `--policy-max-default-cols` require an explicit
+  `--policy-capture`.
 - `connector update --policy-capture none` clears a persisted auto-capture policy.
 - Metadata reconcile runs require exactly one traversal flag (`--full` or `--incremental`) and,
   unless `--dest-view` is used, exactly one snapshot scope flag (`--current`, `--latest-n`,
