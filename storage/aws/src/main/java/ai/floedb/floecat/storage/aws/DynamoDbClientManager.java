@@ -21,24 +21,24 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.concurrent.atomic.AtomicReference;
 import org.jboss.logging.Logger;
-import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
 @ApplicationScoped
-public class DynamoDbAsyncClientManager {
+public class DynamoDbClientManager {
 
-  private static final Logger LOG = Logger.getLogger(DynamoDbAsyncClientManager.class);
+  private static final Logger LOG = Logger.getLogger(DynamoDbClientManager.class);
 
   @Inject AwsClients awsClients;
 
-  private final AtomicReference<DynamoDbAsyncClient> current = new AtomicReference<>();
+  private final AtomicReference<DynamoDbClient> current = new AtomicReference<>();
 
-  public DynamoDbAsyncClient current() {
-    DynamoDbAsyncClient existing = current.get();
+  public DynamoDbClient current() {
+    DynamoDbClient existing = current.get();
     if (existing != null) {
       return existing;
     }
 
-    DynamoDbAsyncClient next = awsClients.newDynamoDbAsyncClient();
+    DynamoDbClient next = awsClients.newDynamoDbClient();
     if (current.compareAndSet(null, next)) {
       return next;
     }
@@ -47,7 +47,7 @@ public class DynamoDbAsyncClientManager {
     return current.get();
   }
 
-  public void refreshAfterFailure(DynamoDbAsyncClient failedClient, Throwable failure) {
+  public void refreshAfterFailure(DynamoDbClient failedClient, Throwable failure) {
     if (!ClosedAwsClientDetector.isConnectionPoolShutdown(failure)) {
       return;
     }
@@ -55,10 +55,10 @@ public class DynamoDbAsyncClientManager {
       return;
     }
 
-    DynamoDbAsyncClient next = awsClients.newDynamoDbAsyncClient();
+    DynamoDbClient next = awsClients.newDynamoDbClient();
     if (current.compareAndSet(failedClient, next)) {
       closeQuietly(failedClient);
-      LOG.warn("Refreshed DynamoDB async client after closed connection pool");
+      LOG.warn("Refreshed DynamoDB client after closed connection pool");
     } else {
       next.close();
     }
@@ -69,7 +69,7 @@ public class DynamoDbAsyncClientManager {
     closeQuietly(current.getAndSet(null));
   }
 
-  private static void closeQuietly(DynamoDbAsyncClient client) {
+  private static void closeQuietly(DynamoDbClient client) {
     if (client == null) {
       return;
     }

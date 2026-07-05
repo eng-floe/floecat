@@ -21,16 +21,20 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend.ReadyQueueSlice;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore.LeaseScanStats;
+import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
+import jakarta.enterprise.inject.Instance;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.core.exception.ApiCallAttemptTimeoutException;
 import software.amazon.awssdk.core.exception.ApiCallTimeoutException;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
+import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 
 class DynamoReconcileReadyQueueBackendTest {
 
@@ -55,6 +59,37 @@ class DynamoReconcileReadyQueueBackendTest {
 
     assertFalse(error.callerCancelled());
     assertTrue(stats.abortedByDeadline);
+  }
+
+  @Test
+  void scanReadySliceRefreshesManagerClientAndRetriesAfterClosedPool() {
+    DynamoDbClient staleClient = mock(DynamoDbClient.class);
+    DynamoDbClient refreshedClient = mock(DynamoDbClient.class);
+    RuntimeException closedPool = new RuntimeException("Connection pool shut down");
+    when(staleClient.query(any(QueryRequest.class))).thenThrow(closedPool);
+    when(refreshedClient.query(any(QueryRequest.class)))
+        .thenReturn(QueryResponse.builder().build());
+
+    DynamoDbClientManager manager = mock(DynamoDbClientManager.class);
+    when(manager.current()).thenReturn(staleClient, refreshedClient);
+    @SuppressWarnings("unchecked")
+    Instance<DynamoDbClientManager> managerInstance = mock(Instance.class);
+    when(managerInstance.isResolvable()).thenReturn(true);
+    when(managerInstance.get()).thenReturn(manager);
+
+    DynamoReconcileReadyQueueBackend backend =
+        new DynamoReconcileReadyQueueBackend(staleClient, "floecat_pointers");
+    backend.dynamoDbClientManager = managerInstance;
+    LeaseScanStats stats = new LeaseScanStats();
+    stats.deadlineAtMs = System.currentTimeMillis() + 5_000L;
+
+    var page =
+        backend.scanReadySlice(
+            new ReadyQueueSlice(ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, ""), 16, "", stats);
+
+    assertTrue(page.entries().isEmpty());
+    verify(manager).refreshAfterFailure(staleClient, closedPool);
+    verify(refreshedClient).query(any(QueryRequest.class));
   }
 
   @Test

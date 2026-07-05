@@ -73,6 +73,10 @@ public class AwsClients {
   @Produces
   @Singleton
   DynamoDbClient dynamoDbClient() {
+    return newDynamoDbClient();
+  }
+
+  public DynamoDbClient newDynamoDbClient() {
     var builder =
         DynamoDbClient.builder()
             .region(region)
