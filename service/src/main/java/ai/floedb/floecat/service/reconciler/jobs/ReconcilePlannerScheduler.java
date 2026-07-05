@@ -248,7 +248,7 @@ public class ReconcilePlannerScheduler {
     }
 
     String key = connector.getResourceId().getAccountId() + ":" + connector.getResourceId().getId();
-    if (connectors.getById(connector.getResourceId()).isEmpty()) {
+    if (!canonicalConnectorExists(connector)) {
       lastEnqueueMs.remove(key);
       observePlannerEnqueue("skipped", mode, "stale_connector");
       return;
@@ -277,6 +277,11 @@ public class ReconcilePlannerScheduler {
         observePlannerEnqueue("skipped", mode, "active_root");
         return;
       }
+      if (!canonicalConnectorExists(connector)) {
+        lastEnqueueMs.remove(key);
+        observePlannerEnqueue("skipped", mode, "stale_connector");
+        return;
+      }
       jobs.enqueuePlan(
           connector.getResourceId().getAccountId(),
           connector.getResourceId().getId(),
@@ -301,6 +306,12 @@ public class ReconcilePlannerScheduler {
           connector.getResourceId().getAccountId(),
           connector.getResourceId().getId());
     }
+  }
+
+  private boolean canonicalConnectorExists(Connector connector) {
+    return connector != null
+        && connector.hasResourceId()
+        && connectors.existsById(connector.getResourceId());
   }
 
   private boolean hasActiveRootJob(Connector connector) {

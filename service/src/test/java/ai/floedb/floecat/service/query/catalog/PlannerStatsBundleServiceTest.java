@@ -948,7 +948,9 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
         new StatsOrchestrator(
             repository,
             org.mockito.Mockito.mock(ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.class),
-            tableRepository);
+            tableRepository,
+            org.mockito.Mockito.mock(
+                ai.floedb.floecat.service.repo.impl.ConnectorRepository.class));
     StatsProviderFactory factory = new StatsProviderFactory(orchestrator, tableRepository, store);
 
     PlannerStatsBundleService service =

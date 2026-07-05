@@ -854,23 +854,53 @@ public interface ReconcileJobStore {
   }
 
   final class BulkEnqueueItemResult {
+    public enum FailureReason {
+      NONE,
+      CONNECTOR_DELETED
+    }
+
     public final int index;
     public final String jobId;
     public final boolean created;
     public final String error;
     public final boolean invalidRequest;
+    public final FailureReason failureReason;
+    public final String failureSubjectId;
 
     public BulkEnqueueItemResult(int index, String jobId, boolean created, String error) {
-      this(index, jobId, created, error, false);
+      this(index, jobId, created, error, false, FailureReason.NONE);
     }
 
     public BulkEnqueueItemResult(
         int index, String jobId, boolean created, String error, boolean invalidRequest) {
+      this(index, jobId, created, error, invalidRequest, FailureReason.NONE, "");
+    }
+
+    public BulkEnqueueItemResult(
+        int index,
+        String jobId,
+        boolean created,
+        String error,
+        boolean invalidRequest,
+        FailureReason failureReason) {
+      this(index, jobId, created, error, invalidRequest, failureReason, "");
+    }
+
+    public BulkEnqueueItemResult(
+        int index,
+        String jobId,
+        boolean created,
+        String error,
+        boolean invalidRequest,
+        FailureReason failureReason,
+        String failureSubjectId) {
       this.index = Math.max(0, index);
       this.jobId = jobId == null ? "" : jobId;
       this.created = created;
       this.error = error == null ? "" : error;
       this.invalidRequest = invalidRequest;
+      this.failureReason = failureReason == null ? FailureReason.NONE : failureReason;
+      this.failureSubjectId = failureSubjectId == null ? "" : failureSubjectId;
     }
 
     public boolean succeeded() {

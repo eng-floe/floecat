@@ -41,6 +41,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
@@ -180,7 +181,8 @@ class StatsOrchestratorTest {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
-    StatsOrchestrator orchestrator = new StatsOrchestrator(statsStore, jobStore, tableRepository);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryWith());
 
     StatsCaptureRequest request = tableRequest(StatsExecutionMode.SYNC);
     when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
@@ -212,6 +214,26 @@ class StatsOrchestratorTest {
     assertThat(scope.capturePolicy().selectorsForStats()).containsExactlyInAnyOrder("id", "region");
   }
 
+  @Test
+  void missDoesNotEnqueueWhenCanonicalConnectorIsDeleted() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryMissing());
+
+    StatsCaptureRequest request = tableRequest(StatsExecutionMode.SYNC);
+    when(statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.empty());
+    when(tableRepository.getById(request.tableId())).thenReturn(Optional.of(upstreamTable()));
+
+    StatsResolutionResult result = orchestrator.resolve(request);
+
+    assertThat(result.outcome()).isEqualTo(StatsSyncOutcome.SKIPPED);
+    assertThat(result.stats()).isEmpty();
+    verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+  }
+
   // ---------------------------------------------------------------------------
   // triggerBatch path (unchanged semantics)
   // ---------------------------------------------------------------------------
@@ -221,7 +243,8 @@ class StatsOrchestratorTest {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
-    StatsOrchestrator orchestrator = new StatsOrchestrator(statsStore, jobStore, tableRepository);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryWith());
 
     StatsCaptureRequest tableRequest = tableRequest(StatsExecutionMode.ASYNC);
     StatsCaptureRequest columnRequest =
@@ -268,7 +291,8 @@ class StatsOrchestratorTest {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
-    StatsOrchestrator orchestrator = new StatsOrchestrator(statsStore, jobStore, tableRepository);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryWith());
 
     StatsCaptureRequest columnRequest =
         StatsCaptureRequest.builder(
@@ -305,7 +329,8 @@ class StatsOrchestratorTest {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
-    StatsOrchestrator orchestrator = new StatsOrchestrator(statsStore, jobStore, tableRepository);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryWith());
 
     StatsCaptureRequest request =
         StatsCaptureRequest.builder(
@@ -342,7 +367,8 @@ class StatsOrchestratorTest {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
-    StatsOrchestrator orchestrator = new StatsOrchestrator(statsStore, jobStore, tableRepository);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryWith());
 
     StatsCaptureRequest request =
         StatsCaptureRequest.builder(
@@ -381,7 +407,8 @@ class StatsOrchestratorTest {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
-    StatsOrchestrator orchestrator = new StatsOrchestrator(statsStore, jobStore, tableRepository);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryWith());
 
     StatsCaptureRequest request = tableRequest(StatsExecutionMode.ASYNC);
     when(tableRepository.getById(request.tableId())).thenReturn(Optional.empty());
@@ -405,7 +432,8 @@ class StatsOrchestratorTest {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
-    StatsOrchestrator orchestrator = new StatsOrchestrator(statsStore, jobStore, tableRepository);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryWith());
 
     StatsCaptureRequest request = tableRequest(StatsExecutionMode.ASYNC);
     when(tableRepository.getById(request.tableId()))
@@ -430,7 +458,8 @@ class StatsOrchestratorTest {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
-    StatsOrchestrator orchestrator = new StatsOrchestrator(statsStore, jobStore, tableRepository);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryWith());
 
     StatsCaptureRequest request = tableRequest(StatsExecutionMode.ASYNC);
     when(tableRepository.getById(request.tableId())).thenReturn(Optional.of(upstreamTable()));
@@ -456,7 +485,8 @@ class StatsOrchestratorTest {
     StatsStore statsStore = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
-    StatsOrchestrator orchestrator = new StatsOrchestrator(statsStore, jobStore, tableRepository);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryWith());
 
     StatsCaptureRequest accepted = tableRequest(StatsExecutionMode.ASYNC);
     StatsCaptureRequest skipped =
@@ -550,7 +580,20 @@ class StatsOrchestratorTest {
       ReconcileJobStore jobStore,
       TableRepository tableRepository,
       StatsSyncCapture syncCapture) {
-    return new StatsOrchestrator(statsStore, jobStore, tableRepository, syncCapture, true, null);
+    return new StatsOrchestrator(
+        statsStore, jobStore, tableRepository, connectorRepositoryWith(), syncCapture, true, null);
+  }
+
+  private static ConnectorRepository connectorRepositoryWith() {
+    ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
+    when(connectorRepository.existsById(any())).thenReturn(true);
+    return connectorRepository;
+  }
+
+  private static ConnectorRepository connectorRepositoryMissing() {
+    ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
+    when(connectorRepository.existsById(any())).thenReturn(false);
+    return connectorRepository;
   }
 
   private static StatsCaptureRequest tableRequest(StatsExecutionMode mode) {

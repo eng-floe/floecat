@@ -103,7 +103,11 @@ abstract class PlannerStatsBundleServiceTestSupport {
       int maxTargets) {
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
     StatsOrchestrator orchestrator =
-        new StatsOrchestrator(repository, Mockito.mock(ReconcileJobStore.class), tableRepository);
+        new StatsOrchestrator(
+            repository,
+            Mockito.mock(ReconcileJobStore.class),
+            tableRepository,
+            Mockito.mock(ai.floedb.floecat.service.repo.impl.ConnectorRepository.class));
     StatsProviderFactory factory = new StatsProviderFactory(orchestrator, tableRepository, store);
     return PlannerStatsBundleService.forTesting(
         factory, constraintProvider, repository, maxTables, maxTargets, chunkSize);
@@ -118,7 +122,11 @@ abstract class PlannerStatsBundleServiceTestSupport {
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
     Mockito.when(tableRepository.getById(TABLE)).thenReturn(Optional.of(TABLE_RECORD));
     StatsOrchestrator orchestrator =
-        new StatsOrchestrator(repository, Mockito.mock(ReconcileJobStore.class), tableRepository);
+        new StatsOrchestrator(
+            repository,
+            Mockito.mock(ReconcileJobStore.class),
+            tableRepository,
+            Mockito.mock(ai.floedb.floecat.service.repo.impl.ConnectorRepository.class));
     StatsProviderFactory factory = new StatsProviderFactory(orchestrator, tableRepository, store);
     return PlannerStatsBundleService.forTestingWithRealLookup(
         orchestrator, tableRepository, factory, maxTables, maxTargets, chunkSize);

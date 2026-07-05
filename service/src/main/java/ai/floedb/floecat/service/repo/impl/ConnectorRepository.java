@@ -73,6 +73,11 @@ public class ConnectorRepository {
         new ConnectorKey(connectorResourceId.getAccountId(), connectorResourceId.getId()));
   }
 
+  public boolean existsById(ResourceId connectorResourceId) {
+    return repo.existsByKey(
+        new ConnectorKey(connectorResourceId.getAccountId(), connectorResourceId.getId()));
+  }
+
   public Optional<Connector> getByName(String accountId, String displayName) {
     return repo.get(Keys.connectorPointerByName(accountId, displayName));
   }

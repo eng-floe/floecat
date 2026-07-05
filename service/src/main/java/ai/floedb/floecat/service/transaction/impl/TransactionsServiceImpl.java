@@ -1236,6 +1236,12 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         || tableId.isBlank()) {
       return;
     }
+    if (!connectorRepo.existsById(connector.getResourceId())) {
+      LOG.infof(
+          "Skipping post-commit capture for deleted connector tx=%s connector=%s table=%s",
+          txId, connector.getResourceId().getId(), tableId);
+      return;
+    }
     reconcileJobs.enqueuePlan(
         accountId,
         connector.getResourceId().getId(),

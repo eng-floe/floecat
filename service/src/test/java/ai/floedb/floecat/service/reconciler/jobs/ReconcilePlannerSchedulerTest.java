@@ -59,8 +59,8 @@ class ReconcilePlannerSchedulerTest {
 
   private static void stubConnectorLookup(ConnectorRepository connectors, Connector... rows) {
     for (Connector row : rows) {
-      when(connectors.getById(argThat(id -> sameResourceId(id, row.getResourceId()))))
-          .thenReturn(java.util.Optional.of(row));
+      when(connectors.existsById(argThat(id -> sameResourceId(id, row.getResourceId()))))
+          .thenReturn(true);
     }
   }
 
@@ -461,6 +461,31 @@ class ReconcilePlannerSchedulerTest {
                         0L,
                         "")),
                 ""));
+
+    scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
+
+    verify(scheduler.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void runPlannerPassRejectsConnectorDeletedBeforeSchedulerRootEnqueue() {
+    TestScheduler scheduler = new TestScheduler();
+    scheduler.accounts = mock(AccountRepository.class);
+    scheduler.connectors = mock(ConnectorRepository.class);
+    scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+
+    Connector row = connector("acct-a", "conn-a1", "alpha-1");
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+    when(scheduler.accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a", "alpha")));
+    when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
+        .thenReturn(List.of(row));
+    when(scheduler.connectors.existsById(argThat(id -> sameResourceId(id, row.getResourceId()))))
+        .thenReturn(true)
+        .thenReturn(false);
+    stubNoActiveRootJobs(scheduler.jobs);
 
     scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
 

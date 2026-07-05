@@ -349,7 +349,10 @@ class PlannerStatsServiceImplTest {
     StatsProviderFactory factory =
         new StatsProviderFactory(
             new StatsOrchestrator(
-                repository, Mockito.mock(ReconcileJobStore.class), tableRepository),
+                repository,
+                Mockito.mock(ReconcileJobStore.class),
+                tableRepository,
+                Mockito.mock(ai.floedb.floecat.service.repo.impl.ConnectorRepository.class)),
             tableRepository,
             store);
     return PlannerStatsBundleService.forTesting(

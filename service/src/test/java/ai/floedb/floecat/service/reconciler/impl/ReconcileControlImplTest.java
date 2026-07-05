@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -51,6 +52,7 @@ import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeRequest;
 import ai.floedb.floecat.reconciler.rpc.ListReconcileJobsRequest;
+import ai.floedb.floecat.service.reconciler.jobs.DurableReconcileJobStore;
 import ai.floedb.floecat.service.reconciler.jobs.ReconcilerSettingsStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -92,6 +94,7 @@ class ReconcileControlImplTest {
             .build();
     when(service.connectorRepo.getById(any()))
         .thenReturn(Optional.of(connector(connectorId, ConnectorState.CS_ACTIVE)));
+    when(service.connectorRepo.existsById(any())).thenReturn(true);
     when(service.jobs.childJobsPage(anyString(), anyString(), anyInt(), anyString()))
         .thenReturn(new ReconcileJobStore.ReconcileJobPage(java.util.List.of(), ""));
   }
@@ -268,6 +271,67 @@ class ReconcileControlImplTest {
     assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
     verify(service.jobs, never())
         .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void startCaptureRejectsDeletedConnectorAtEnqueueBoundary() {
+    ResourceId connectorId = accountScopedConnectorId();
+    when(service.connectorRepo.getById(connectorId))
+        .thenReturn(Optional.of(connector(connectorId, ConnectorState.CS_ACTIVE)));
+    when(service.connectorRepo.existsById(connectorId)).thenReturn(false);
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .startCapture(
+                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
+                            .setScope(captureScope())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.NOT_FOUND, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void startCaptureMapsDeletedConnectorRaceDuringEnqueueToNotFound() {
+    ResourceId connectorId = accountScopedConnectorId();
+    when(service.connectorRepo.getById(connectorId))
+        .thenReturn(Optional.of(connector(connectorId, ConnectorState.CS_ACTIVE)));
+    when(service.connectorRepo.existsById(connectorId)).thenReturn(true);
+    when(service.jobs.enqueuePlan(
+            eq(connectorId.getAccountId()),
+            eq(connectorId.getId()),
+            anyBoolean(),
+            any(),
+            any(),
+            any(),
+            anyString()))
+        .thenThrow(new DurableReconcileJobStore.ConnectorDeletedException(connectorId.getId()));
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .startCapture(
+                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
+                            .setScope(captureScope())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.NOT_FOUND, ex.getStatus().getCode());
   }
 
   @Test

@@ -25,6 +25,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -49,7 +51,9 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJo
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileLeaseBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.aws.dynamodb.DynamoPointerStore;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbKvStore;
@@ -70,6 +74,7 @@ import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.AfterAll;
@@ -77,6 +82,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
@@ -169,6 +175,65 @@ class DurableReconcileJobStoreTest {
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
 
     assertEquals(first, second);
+  }
+
+  @Test
+  void enqueuePlanRejectsDeletedConnectorBeforeCreatingRootJob() {
+    store.connectorRepo = Mockito.mock(ConnectorRepository.class);
+    Mockito.when(store.connectorRepo.existsById(connectorResourceId())).thenReturn(false);
+
+    ReconcileJobStore.BulkEnqueueResult result =
+        store.bulkEnqueue(
+            List.of(
+                ReconcileJobStore.BulkEnqueueSpec.of(
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileJobKind.PLAN_CONNECTOR,
+                    ReconcileTableTask.empty(),
+                    ReconcileViewTask.empty(),
+                    ReconcileSnapshotTask.empty(),
+                    ReconcileFileGroupTask.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "",
+                    "")));
+
+    assertEquals(
+        ReconcileJobStore.BulkEnqueueItemResult.FailureReason.CONNECTOR_DELETED,
+        result.items.getFirst().failureReason);
+    assertEquals(CONNECTOR_ID, result.items.getFirst().failureSubjectId);
+
+    var thrown =
+        assertThrows(
+            DurableReconcileJobStore.ConnectorDeletedException.class,
+            () ->
+                store.enqueue(
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty()));
+
+    assertEquals("connector deleted: " + CONNECTOR_ID, thrown.getMessage());
+    assertTrue(store.listRootJobs(ACCOUNT_ID, 10, "", "", null).jobs.isEmpty());
+  }
+
+  @Test
+  void enqueuePlanAllowsExistingCanonicalConnector() {
+    store.connectorRepo = Mockito.mock(ConnectorRepository.class);
+    Mockito.when(store.connectorRepo.existsById(connectorResourceId())).thenReturn(true);
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+
+    assertTrue(store.get(ACCOUNT_ID, jobId).isPresent());
   }
 
   @Test
@@ -646,6 +711,96 @@ class DurableReconcileJobStoreTest {
     assertEquals("JS_WAITING", parentRecord.state);
     assertEquals(24L, parentRecord.expectedDirectChildren);
     assertEquals(24, store.childJobs(ACCOUNT_ID, connectorJobId).size());
+  }
+
+  @Test
+  void connectorParentCanonicalStateSucceedsWhenSiblingTerminalCompletionsRace() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    MemoryReconcileJobIndexBackend delegateBackend = new MemoryReconcileJobIndexBackend();
+    delegateBackend.bind(pointerStore);
+    HookedCompareAndSetBatchBackend hookedBackend =
+        new HookedCompareAndSetBatchBackend(delegateBackend);
+    store = newIsolatedInMemoryStore(pointerStore, new InMemoryBlobStore(), hookedBackend);
+
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 100L, "executor-connector");
+
+    List<ReconcileJobStore.BulkEnqueueSpec> childSpecs =
+        java.util.stream.IntStream.range(0, 2)
+            .mapToObj(
+                i ->
+                    ReconcileJobStore.BulkEnqueueSpec.of(
+                        ACCOUNT_ID,
+                        CONNECTOR_ID,
+                        false,
+                        CaptureMode.METADATA_AND_CAPTURE,
+                        ReconcileScope.of(List.of(), "table-" + i),
+                        ReconcileJobKind.PLAN_TABLE,
+                        ReconcileTableTask.of("db", "orders_" + i, "table-" + i, "orders_" + i),
+                        ReconcileViewTask.empty(),
+                        ReconcileSnapshotTask.empty(),
+                        ReconcileFileGroupTask.empty(),
+                        ReconcileExecutionPolicy.defaults(),
+                        connectorJobId,
+                        ""))
+            .toList();
+
+    assertTrue(
+        store.bulkEnqueueAndApplyLeaseOutcome(
+            childSpecs,
+            connectorJobId,
+            connectorLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            200L,
+            "Planned 2 table job(s)",
+            2L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
+
+    List<ReconcileJob> children = store.childJobsPage(ACCOUNT_ID, connectorJobId, 20, "").jobs;
+    assertEquals(2, children.size());
+    ReconcileJob firstChild = children.get(0);
+    ReconcileJob secondChild = children.get(1);
+    var firstLease = leaseJob(firstChild.jobId);
+    var secondLease = leaseJob(secondChild.jobId);
+    store.markRunning(firstChild.jobId, firstLease.leaseEpoch, 300L, "executor-table-a");
+    store.markRunning(secondChild.jobId, secondLease.leaseEpoch, 300L, "executor-table-b");
+
+    String parentCanonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId);
+    String firstChildCanonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, firstChild.jobId);
+    AtomicBoolean injectedSiblingCompletion = new AtomicBoolean(false);
+    hookedBackend.beforeCompareAndSetBatch(
+        batch -> {
+          if (injectedSiblingCompletion.get()) {
+            return;
+          }
+          if (!batchContainsCanonicalMutation(batch, firstChildCanonicalKey)
+              || batchContainsCanonicalMutation(batch, parentCanonicalKey)) {
+            return;
+          }
+          injectedSiblingCompletion.set(true);
+          store.markSucceeded(
+              secondChild.jobId, secondLease.leaseEpoch, 400L, 1L, 1L, 0L, 0L, 0L, 0L);
+        });
+
+    store.markSucceeded(firstChild.jobId, firstLease.leaseEpoch, 400L, 1L, 1L, 0L, 0L, 0L, 0L);
+
+    StoredReconcileJob parentRecord =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+    assertTrue(injectedSiblingCompletion.get());
+    assertEquals("JS_SUCCEEDED", parentRecord.state);
+    assertEquals("Succeeded", parentRecord.message);
   }
 
   @Test
@@ -2823,6 +2978,17 @@ class DurableReconcileJobStoreTest {
     return isolatedStore;
   }
 
+  private static boolean batchContainsCanonicalMutation(
+      ReconcileJobIndexStore.JobIndexWriteBatch batch, String canonicalPointerKey) {
+    if (batch == null || canonicalPointerKey == null || canonicalPointerKey.isBlank()) {
+      return false;
+    }
+    return batch.writes().stream()
+        .filter(ReconcileJobIndexStore.JobIndexUpsert.class::isInstance)
+        .map(ReconcileJobIndexStore.JobIndexUpsert.class::cast)
+        .anyMatch(upsert -> canonicalPointerKey.equals(upsert.pointerKey()));
+  }
+
   private boolean deleteReadyEntry(String readyPointerKey) {
     assertDoesNotThrow(() -> invokePrivateMethod(store, "readyQueue", new Class<?>[] {}));
     return store.readyQueueBackend.deleteReadyEntry(readyPointerKey);
@@ -3082,6 +3248,75 @@ class DurableReconcileJobStoreTest {
     }
   }
 
+  private static final class HookedCompareAndSetBatchBackend implements ReconcileJobIndexBackend {
+    private final ReconcileJobIndexBackend delegate;
+    private volatile Consumer<ReconcileJobIndexStore.JobIndexWriteBatch> beforeCompareAndSetBatch =
+        batch -> {};
+
+    private HookedCompareAndSetBatchBackend(ReconcileJobIndexBackend delegate) {
+      this.delegate = delegate;
+    }
+
+    void beforeCompareAndSetBatch(Consumer<ReconcileJobIndexStore.JobIndexWriteBatch> callback) {
+      beforeCompareAndSetBatch = callback == null ? batch -> {} : callback;
+    }
+
+    @Override
+    public Optional<JobIndexEntrySnapshot> loadIndexEntry(String pointerKey) {
+      return delegate.loadIndexEntry(pointerKey);
+    }
+
+    @Override
+    public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
+      beforeCompareAndSetBatch.accept(batch);
+      return delegate.compareAndSetBatch(batch);
+    }
+
+    @Override
+    public JobIndexQueryPage listCanonicalEntries(String accountId, int limit, String pageToken) {
+      return delegate.listCanonicalEntries(accountId, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listDedupeEntries(String accountId, int limit, String pageToken) {
+      return delegate.listDedupeEntries(accountId, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listParentEntries(
+        String accountId, String parentJobId, int limit, String pageToken) {
+      return delegate.listParentEntries(accountId, parentJobId, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listConnectorEntries(
+        String accountId, String connectorId, int limit, String pageToken) {
+      return delegate.listConnectorEntries(accountId, connectorId, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listGlobalStateEntries(String state, int limit, String pageToken) {
+      return delegate.listGlobalStateEntries(state, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listAccountStateEntries(
+        String accountId, String state, int limit, String pageToken) {
+      return delegate.listAccountStateEntries(accountId, state, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listConnectorStateEntries(
+        String accountId, String connectorId, String state, int limit, String pageToken) {
+      return delegate.listConnectorStateEntries(accountId, connectorId, state, limit, pageToken);
+    }
+
+    @Override
+    public boolean purgeEntriesByCanonicalReference(String canonicalPointerKey) {
+      return delegate.purgeEntriesByCanonicalReference(canonicalPointerKey);
+    }
+  }
+
   private Object invokePrivateMethod(Object target, String name, Class<?>[] parameterTypes)
       throws Exception {
     return invokePrivateMethod(target, name, parameterTypes, new Object[] {});
@@ -3198,5 +3433,13 @@ class DurableReconcileJobStoreTest {
       }
       startKey = response.lastEvaluatedKey();
     } while (startKey != null && !startKey.isEmpty());
+  }
+
+  private static ResourceId connectorResourceId() {
+    return ResourceId.newBuilder()
+        .setAccountId(ACCOUNT_ID)
+        .setId(CONNECTOR_ID)
+        .setKind(ResourceKind.RK_CONNECTOR)
+        .build();
   }
 }

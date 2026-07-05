@@ -168,7 +168,10 @@ class UserObjectBundleServiceTest {
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
     StatsOrchestrator orchestrator =
         new StatsOrchestrator(
-            statsRepository, Mockito.mock(ReconcileJobStore.class), tableRepository);
+            statsRepository,
+            Mockito.mock(ReconcileJobStore.class),
+            tableRepository,
+            Mockito.mock(ai.floedb.floecat.service.repo.impl.ConnectorRepository.class));
     statsFactory = new StatsProviderFactory(orchestrator, tableRepository, queryStore);
     service =
         new UserObjectBundleService(
@@ -268,7 +271,10 @@ class UserObjectBundleServiceTest {
     TableRepository localTableRepository = Mockito.mock(TableRepository.class);
     StatsOrchestrator localOrchestrator =
         new StatsOrchestrator(
-            localStatsRepository, Mockito.mock(ReconcileJobStore.class), localTableRepository);
+            localStatsRepository,
+            Mockito.mock(ReconcileJobStore.class),
+            localTableRepository,
+            Mockito.mock(ai.floedb.floecat.service.repo.impl.ConnectorRepository.class));
     StatsProviderFactory localStatsFactory =
         new StatsProviderFactory(localOrchestrator, localTableRepository, localStore);
     UserObjectBundleService localService =

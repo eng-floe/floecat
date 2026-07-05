@@ -60,8 +60,16 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return observeRepository("get_by_key", () -> getByKeyUnobserved(key));
   }
 
+  public boolean existsByKey(K key) {
+    return observeRepository("exists_by_key", () -> existsByKeyUnobserved(key));
+  }
+
   private Optional<T> getByKeyUnobserved(K key) {
     return read(schema.canonicalPointerForKey.apply(key));
+  }
+
+  private boolean existsByKeyUnobserved(K key) {
+    return pointerStore.get(schema.canonicalPointerForKey.apply(key)).isPresent();
   }
 
   /**
