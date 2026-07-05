@@ -860,6 +860,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       ReconcileScope scope,
       ReconcileExecutionPolicy executionPolicy) {
     ensureExecutorsAvailable(mode, scope);
+    requireCanonicalConnectorExists(connectorId);
     return jobs.enqueuePlan(
         connectorId.getAccountId(),
         connectorId.getId(),
@@ -868,6 +869,15 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         scope,
         executionPolicy,
         "");
+  }
+
+  private void requireCanonicalConnectorExists(ResourceId connectorId) {
+    if (!connectorRepo.existsById(connectorId)) {
+      throw GrpcErrors.notFound(
+          correlationId(),
+          GeneratedErrorMessages.MessageKey.CONNECTOR,
+          Map.of("id", connectorId.getId()));
+    }
   }
 
   private void ensureExecutorsAvailable(CaptureMode mode, ReconcileScope scope) {

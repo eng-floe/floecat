@@ -20,10 +20,12 @@ import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -161,6 +163,7 @@ public class StatsOrchestrator {
   private final StatsStore statsStore;
   private final ReconcileJobStore reconcileJobStore;
   private final TableRepository tableRepository;
+  private final ConnectorRepository connectorRepository;
   private final StatsSyncCapture statsSyncCapture;
   private final boolean syncEnabled;
   private final ConcurrentMap<TableKey, String> lastEnqueuedJobByTable = new ConcurrentHashMap<>();
@@ -171,6 +174,7 @@ public class StatsOrchestrator {
       StatsStore statsStore,
       ReconcileJobStore reconcileJobStore,
       TableRepository tableRepository,
+      ConnectorRepository connectorRepository,
       StatsSyncCapture statsSyncCapture,
       @ConfigProperty(name = "floecat.stats.sync.enabled", defaultValue = "true")
           boolean syncEnabled,
@@ -178,6 +182,7 @@ public class StatsOrchestrator {
     this.statsStore = statsStore;
     this.reconcileJobStore = reconcileJobStore;
     this.tableRepository = tableRepository;
+    this.connectorRepository = connectorRepository;
     this.statsSyncCapture = statsSyncCapture;
     this.syncEnabled = syncEnabled;
     this.observability =
@@ -185,12 +190,16 @@ public class StatsOrchestrator {
   }
 
   public StatsOrchestrator(
-      StatsStore statsStore, ReconcileJobStore reconcileJobStore, TableRepository tableRepository) {
+      StatsStore statsStore,
+      ReconcileJobStore reconcileJobStore,
+      TableRepository tableRepository,
+      ConnectorRepository connectorRepository) {
     this(
         statsStore,
         reconcileJobStore,
         tableRepository,
-        new StatsSyncCapture(reconcileJobStore),
+        connectorRepository,
+        new StatsSyncCapture(reconcileJobStore, connectorRepository),
         true,
         null);
   }
@@ -745,6 +754,15 @@ public class StatsOrchestrator {
             "blank_connector_id",
             "Skipping async enqueue because upstream connector id is blank");
       }
+      ResourceId connectorId =
+          connectorResourceId(
+              first.tableId().getAccountId(), table.get().getUpstream().getConnectorId().getId());
+      if (!connectorRepository.existsById(connectorId)) {
+        return recordAsyncSkipGroup(
+            groupedRequests,
+            "missing_connector",
+            "Skipping async enqueue because canonical connector lookup failed");
+      }
       LinkedHashSet<ReconcileScope.ScopedCaptureRequest> captureRequests = new LinkedHashSet<>();
       for (IndexedRequest indexedRequest : groupedRequests) {
         StatsCaptureRequest request = indexedRequest.request();
@@ -812,6 +830,14 @@ public class StatsOrchestrator {
                           indexedRequest.request(), "failed to enqueue reconcile capture")))
           .toList();
     }
+  }
+
+  private static ResourceId connectorResourceId(String accountId, String connectorId) {
+    return ResourceId.newBuilder()
+        .setAccountId(accountId)
+        .setId(connectorId)
+        .setKind(ResourceKind.RK_CONNECTOR)
+        .build();
   }
 
   private List<IndexedResult> recordAsyncSkipGroup(

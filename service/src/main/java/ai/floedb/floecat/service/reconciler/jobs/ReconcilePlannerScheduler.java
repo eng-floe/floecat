@@ -30,8 +30,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.service.gc.ReconcileJobGcScheduler;
-import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
@@ -66,7 +64,6 @@ public class ReconcilePlannerScheduler {
   @Inject AccountRepository accounts;
   @Inject ConnectorRepository connectors;
   @Inject ReconcileJobStore jobs;
-  @Inject ReconcileJobIndexStore jobIndexStore;
   @Inject ReconcileExecutorRegistry executorRegistry;
   @Inject ReconcilerSettingsStore settings;
   @Inject Observability observability;
@@ -251,7 +248,7 @@ public class ReconcilePlannerScheduler {
     }
 
     String key = connector.getResourceId().getAccountId() + ":" + connector.getResourceId().getId();
-    if (connectors.getById(connector.getResourceId()).isEmpty()) {
+    if (!canonicalConnectorExists(connector)) {
       lastEnqueueMs.remove(key);
       observePlannerEnqueue("skipped", mode, "stale_connector");
       return;
@@ -280,6 +277,11 @@ public class ReconcilePlannerScheduler {
         observePlannerEnqueue("skipped", mode, "active_root");
         return;
       }
+      if (!canonicalConnectorExists(connector)) {
+        lastEnqueueMs.remove(key);
+        observePlannerEnqueue("skipped", mode, "stale_connector");
+        return;
+      }
       jobs.enqueuePlan(
           connector.getResourceId().getAccountId(),
           connector.getResourceId().getId(),
@@ -306,38 +308,24 @@ public class ReconcilePlannerScheduler {
     }
   }
 
+  private boolean canonicalConnectorExists(Connector connector) {
+    return connector != null
+        && connector.hasResourceId()
+        && connectors.existsById(connector.getResourceId());
+  }
+
   private boolean hasActiveRootJob(Connector connector) {
     if (connector == null || !connector.hasResourceId()) {
       return false;
     }
-    if (jobIndexStore == null) {
-      return !jobs.listRootJobs(
-              connector.getResourceId().getAccountId(),
-              1,
-              "",
-              connector.getResourceId().getId(),
-              ACTIVE_ROOT_STATES)
-          .jobs
-          .isEmpty();
-    }
-    String accountId = connector.getResourceId().getAccountId();
-    String connectorId = connector.getResourceId().getId();
-    String pageToken = "";
-    while (true) {
-      var page =
-          jobIndexStore.listStoredJobs(accountId, 256, pageToken, connectorId, ACTIVE_ROOT_STATES);
-      for (StoredReconcileJob job : page.records()) {
-        if (job != null && (job.parentJobId == null || job.parentJobId.isBlank())) {
-          return true;
-        }
-      }
-      if (page.nextPageToken() == null
-          || page.nextPageToken().isBlank()
-          || page.nextPageToken().equals(pageToken)) {
-        return false;
-      }
-      pageToken = page.nextPageToken();
-    }
+    return !jobs.listRootJobs(
+            connector.getResourceId().getAccountId(),
+            1,
+            "",
+            connector.getResourceId().getId(),
+            ACTIVE_ROOT_STATES)
+        .jobs
+        .isEmpty();
   }
 
   private static long effectiveIntervalMs(Connector connector, long defaultIntervalMs) {

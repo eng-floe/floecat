@@ -31,6 +31,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
@@ -41,6 +43,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -50,6 +53,7 @@ class LeasedPlannerWorkerServiceTest {
   private LeasedPlannerWorkerService service;
   private ReconcileJobStore jobs;
   private SnapshotPlanBlobStore snapshotPlanBlobStore;
+  private ConnectorRepository connectorRepo;
   private PrincipalContext principal;
 
   @BeforeEach
@@ -57,6 +61,7 @@ class LeasedPlannerWorkerServiceTest {
     service = new LeasedPlannerWorkerService();
     jobs = mock(ReconcileJobStore.class);
     snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
+    connectorRepo = mock(ConnectorRepository.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
     service.snapshotPlanBlobStore = snapshotPlanBlobStore;
@@ -849,7 +854,7 @@ class LeasedPlannerWorkerServiceTest {
                 service.persistPlanSnapshotSuccess(
                     principal, "job-1", "lease-1", submittedSnapshotTask));
 
-    verify(snapshotPlanBlobStore).loadPlanJobs(submittedSnapshotTask);
+    verify(snapshotPlanBlobStore, never()).loadPlanJobs(any());
     verify(jobs, never()).adoptSnapshotPlanManifest(any(), any(), any(), any(), anyBoolean());
   }
 
@@ -1319,6 +1324,106 @@ class LeasedPlannerWorkerServiceTest {
         .enqueueViewPlan(any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
   }
 
+  @Test
+  void persistPlanConnectorSuccessCancelsDeletedConnectorWithoutChildFanout() {
+    service.connectorRepo = connectorRepo;
+    when(connectorRepo.existsById(any())).thenReturn(false);
+    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(jobs.getLeaseView("job-1"))
+        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_CONNECTOR)));
+    when(jobs.applyLeaseOutcome(
+            any(), any(), any(), anyLong(), any(), anyLong(), anyLong(), anyLong(), anyLong(),
+            anyLong(), anyLong(), anyLong()))
+        .thenReturn(true);
+
+    boolean accepted =
+        service.persistPlanConnectorSuccess(
+            principal,
+            "job-1",
+            "lease-1",
+            List.of(
+                new LeasedPlannerWorkerService.PlannedTableJob(
+                    ReconcileScope.empty(),
+                    ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.of(
+                        "db", "orders", "orders-id", "orders"))),
+            List.of());
+
+    assertTrue(accepted);
+    verify(connectorRepo).existsById(activeConnectorId());
+    verify(jobs, never())
+        .bulkEnqueueAndApplyLeaseOutcome(
+            any(), any(), any(), any(), anyLong(), any(), anyLong(), anyLong(), anyLong(),
+            anyLong(), anyLong(), anyLong(), anyLong());
+    verify(jobs)
+        .applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.CANCELLED),
+            anyLong(),
+            eq("connector deleted: connector-1"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L));
+  }
+
+  @Test
+  void persistPlanSnapshotSuccessCancelsDeletedConnectorBeforeLoadingPlanManifest() {
+    service.connectorRepo = connectorRepo;
+    ReconcileSnapshotTask submittedSnapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/job-1/snapshot-plan/plan.json",
+            1);
+    when(connectorRepo.existsById(any())).thenReturn(false);
+    when(jobs.getLeaseView("job-1"))
+        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_SNAPSHOT)));
+    when(jobs.getCompletionLeaseView("job-1", "lease-1", true))
+        .thenReturn(
+            java.util.Optional.of(
+                new ReconcileJobStore.LeasedJob(
+                    "job-1",
+                    "acct",
+                    "connector-1",
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-1",
+                    "remote-executor",
+                    "remote_snapshot_planner_worker",
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+                    ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+                    submittedSnapshotTask,
+                    ReconcileFileGroupTask.empty(),
+                    "parent-1")));
+    when(jobs.applyLeaseOutcome(
+            any(), any(), any(), anyLong(), any(), anyLong(), anyLong(), anyLong(), anyLong(),
+            anyLong(), anyLong(), anyLong()))
+        .thenReturn(true);
+
+    boolean accepted =
+        service.persistPlanSnapshotSuccess(principal, "job-1", "lease-1", submittedSnapshotTask);
+
+    assertTrue(accepted);
+    verify(connectorRepo).existsById(activeConnectorId());
+    verify(snapshotPlanBlobStore, never()).loadPlanJobs(any());
+    verify(jobs, never()).bulkEnqueue(any());
+    verify(jobs, never())
+        .enqueueSnapshotFinalization(
+            any(), any(), anyBoolean(), any(), any(), any(), any(), any(), any());
+  }
+
   private static ReconcileJobStore.ReconcileJob job(String jobId, ReconcileJobKind jobKind) {
     return new ReconcileJobStore.ReconcileJob(
         jobId,
@@ -1347,5 +1452,13 @@ class LeasedPlannerWorkerServiceTest {
         ReconcileSnapshotTask.empty(),
         ReconcileFileGroupTask.empty(),
         "parent-1");
+  }
+
+  private static ResourceId activeConnectorId() {
+    return ResourceId.newBuilder()
+        .setAccountId("acct")
+        .setKind(ResourceKind.RK_CONNECTOR)
+        .setId("connector-1")
+        .build();
   }
 }

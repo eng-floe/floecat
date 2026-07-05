@@ -79,6 +79,7 @@ import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRespon
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.reconciler.jobs.LeaseScanCapacityExceededException;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -101,6 +102,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
   @Inject PrincipalProvider principalProvider;
   @Inject Authorizer authz;
   @Inject ReconcileJobStore jobs;
+  @Inject ConnectorRepository connectorRepo;
   @Inject ReconcileCancellationRegistry cancellations;
   @Inject LeasedFileGroupExecutionService leasedFileGroupExecutionService;
   @Inject LeasedSnapshotFinalizeInputService leasedSnapshotFinalizeInputService;
@@ -141,12 +143,47 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               if (lease.isEmpty()) {
                 return LeaseReconcileJobResponse.newBuilder().setFound(false).build();
               }
+              if (!canonicalConnectorExists(lease.get())) {
+                jobs.applyLeaseOutcome(
+                    lease.get().jobId,
+                    lease.get().leaseEpoch,
+                    ReconcileJobStore.CompletionKind.CANCELLED,
+                    System.currentTimeMillis(),
+                    "connector deleted: " + lease.get().connectorId,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    0L,
+                    0L);
+                return LeaseReconcileJobResponse.newBuilder().setFound(false).build();
+              }
               return LeaseReconcileJobResponse.newBuilder()
                   .setFound(true)
                   .setJob(toProtoLease(lease.get()))
                   .build();
             }),
         correlationId());
+  }
+
+  private boolean canonicalConnectorExists(ReconcileJobStore.LeasedJob lease) {
+    if (connectorRepo == null || lease == null) {
+      return true;
+    }
+    if (lease.accountId == null
+        || lease.accountId.isBlank()
+        || lease.connectorId == null
+        || lease.connectorId.isBlank()) {
+      return false;
+    }
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId(lease.accountId)
+            .setId(lease.connectorId)
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .build();
+    return connectorRepo.existsById(connectorId);
   }
 
   private Optional<ReconcileJobStore.LeasedJob> leaseNextOrThrowRateLimited(

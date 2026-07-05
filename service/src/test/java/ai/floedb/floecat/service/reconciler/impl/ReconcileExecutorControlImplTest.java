@@ -54,6 +54,7 @@ import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
 import ai.floedb.floecat.service.reconciler.jobs.LeaseScanCapacityExceededException;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -74,6 +75,7 @@ class ReconcileExecutorControlImplTest {
     service.principalProvider = mock(PrincipalProvider.class);
     service.authz = mock(Authorizer.class);
     service.jobs = mock(ReconcileJobStore.class);
+    service.connectorRepo = null;
     service.cancellations = mock(ReconcileCancellationRegistry.class);
     service.leasedFileGroupExecutionService = mock(LeasedFileGroupExecutionService.class);
     service.leasedSnapshotFinalizeInputService = mock(LeasedSnapshotFinalizeInputService.class);
@@ -286,6 +288,69 @@ class ReconcileExecutorControlImplTest {
   }
 
   @Test
+  void leaseReconcileJobCancelsAndWithholdsDeletedConnectorWork() {
+    service.connectorRepo = mock(ConnectorRepository.class);
+    when(service.jobs.leaseNext(any()))
+        .thenReturn(
+            Optional.of(
+                new ReconcileJobStore.LeasedJob(
+                    "job-deleted",
+                    "acct",
+                    "connector-deleted",
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-deleted",
+                    "",
+                    "",
+                    ReconcileJobKind.PLAN_CONNECTOR,
+                    ReconcileTableTask.empty(),
+                    ReconcileViewTask.empty(),
+                    ReconcileSnapshotTask.empty(),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(service.connectorRepo.existsById(deletedConnectorId())).thenReturn(false);
+    when(service.jobs.applyLeaseOutcome(
+            eq("job-deleted"),
+            eq("lease-deleted"),
+            eq(ReconcileJobStore.CompletionKind.CANCELLED),
+            anyLong(),
+            eq("connector deleted: connector-deleted"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L)))
+        .thenReturn(true);
+
+    var response =
+        service
+            .leaseReconcileJob(LeaseReconcileJobRequest.getDefaultInstance())
+            .await()
+            .indefinitely();
+
+    assertTrue(!response.getFound());
+    verify(service.connectorRepo).existsById(deletedConnectorId());
+    verify(service.jobs)
+        .applyLeaseOutcome(
+            eq("job-deleted"),
+            eq("lease-deleted"),
+            eq(ReconcileJobStore.CompletionKind.CANCELLED),
+            anyLong(),
+            eq("connector deleted: connector-deleted"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L));
+  }
+
+  @Test
   void renewReconcileLeaseReturnsCancellationSignal() {
     when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
     when(service.jobs.isCancellationRequested("job-1")).thenReturn(true);
@@ -302,6 +367,14 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getRenewed());
     assertTrue(response.getCancellationRequested());
+  }
+
+  private static ResourceId deletedConnectorId() {
+    return ResourceId.newBuilder()
+        .setAccountId("acct")
+        .setKind(ResourceKind.RK_CONNECTOR)
+        .setId("connector-deleted")
+        .build();
   }
 
   @Test
@@ -435,6 +508,34 @@ class ReconcileExecutorControlImplTest {
     assertTrue(response.getAccepted());
     verify(service.leasedFileGroupExecutionService)
         .persistSuccess(any(), eq("job-1"), eq("lease-1"), eq("result-1"), eq(2), any());
+  }
+
+  @Test
+  void submitLeasedFileGroupExecutionResultAllowsRunningLeafToFinishAfterConnectorDelete() {
+    service.connectorRepo = mock(ConnectorRepository.class);
+    when(service.connectorRepo.existsById(any())).thenReturn(false);
+    when(service.leasedFileGroupExecutionService.persistSuccess(
+            any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), eq(1), any()))
+        .thenReturn(true);
+
+    var response =
+        service
+            .submitLeasedFileGroupExecutionResult(
+                SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
+                    .setJobId("leaf-1")
+                    .setLeaseEpoch("lease-1")
+                    .setSuccess(
+                        SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
+                            .setResultId("result-1")
+                            .setChunkCount(1)
+                            .build())
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getAccepted());
+    verify(service.leasedFileGroupExecutionService)
+        .persistSuccess(any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), eq(1), any());
   }
 
   @Test

@@ -32,6 +32,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -44,6 +45,7 @@ public class LeasedPlannerWorkerService {
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerBackend backend;
   @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
+  @Inject ConnectorRepository connectorRepo;
 
   record PlanConnectorPayload(
       String jobId,
@@ -119,6 +121,9 @@ public class LeasedPlannerWorkerService {
             jobId,
             leaseEpoch,
             ReconcileJobKind.PLAN_CONNECTOR);
+    if (cancelIfCanonicalConnectorMissing(lease)) {
+      return true;
+    }
     long plannedTableJobs =
         nullToEmpty(tableJobs).stream()
             .filter(job -> job != null && !job.tableTask().isEmpty())
@@ -241,6 +246,9 @@ public class LeasedPlannerWorkerService {
     ReconcileJobStore.LeasedJob lease =
         requireLeasedJob(
             principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_TABLE);
+    if (cancelIfCanonicalConnectorMissing(lease)) {
+      return true;
+    }
     long plannedSnapshotJobs =
         nullToEmpty(snapshotJobs).stream()
             .filter(job -> job != null && !job.snapshotTask().isEmpty())
@@ -408,7 +416,6 @@ public class LeasedPlannerWorkerService {
                 baseSnapshotTask.directStatsBlobUri(),
                 baseSnapshotTask.directStatsRecordCount())
             : plannedSnapshotTask;
-    List<PlannedFileGroupJob> plannedJobs = plannedFileGroupJobs(finalizedSnapshotTask);
     ReconcileSnapshotTask durableSnapshotTask = durableSnapshotTask(finalizedSnapshotTask);
     if ("JS_SUCCEEDED".equals(currentJob.state)) {
       if (durableSnapshotTask.equals(currentJob.snapshotTask)) {
@@ -421,6 +428,10 @@ public class LeasedPlannerWorkerService {
     ReconcileJobStore.LeasedJob lease =
         requireCompletionLease(
             principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_SNAPSHOT);
+    if (cancelIfCanonicalConnectorMissing(lease)) {
+      return true;
+    }
+    List<PlannedFileGroupJob> plannedJobs = plannedFileGroupJobs(finalizedSnapshotTask);
     long plannedFileGroupJobs =
         plannedJobs.stream().filter(job -> job != null && !job.fileGroupTask().isEmpty()).count();
     boolean adopted =
@@ -740,6 +751,45 @@ public class LeasedPlannerWorkerService {
           .asRuntimeException();
     }
     return lease;
+  }
+
+  private boolean cancelIfCanonicalConnectorMissing(ReconcileJobStore.LeasedJob lease) {
+    if (canonicalConnectorExists(lease)) {
+      return false;
+    }
+    jobs.applyLeaseOutcome(
+        lease.jobId,
+        lease.leaseEpoch,
+        ReconcileJobStore.CompletionKind.CANCELLED,
+        System.currentTimeMillis(),
+        "connector deleted: " + lease.connectorId,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+    return true;
+  }
+
+  private boolean canonicalConnectorExists(ReconcileJobStore.LeasedJob lease) {
+    if (connectorRepo == null || lease == null) {
+      return true;
+    }
+    if (lease.accountId == null
+        || lease.accountId.isBlank()
+        || lease.connectorId == null
+        || lease.connectorId.isBlank()) {
+      return false;
+    }
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId(lease.accountId)
+            .setId(lease.connectorId)
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .build();
+    return connectorRepo.existsById(connectorId);
   }
 
   private boolean currentSnapshotPlanSuccess(

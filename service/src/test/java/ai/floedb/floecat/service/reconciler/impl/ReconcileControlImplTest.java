@@ -92,6 +92,7 @@ class ReconcileControlImplTest {
             .build();
     when(service.connectorRepo.getById(any()))
         .thenReturn(Optional.of(connector(connectorId, ConnectorState.CS_ACTIVE)));
+    when(service.connectorRepo.existsById(any())).thenReturn(true);
     when(service.jobs.childJobsPage(anyString(), anyString(), anyInt(), anyString()))
         .thenReturn(new ReconcileJobStore.ReconcileJobPage(java.util.List.of(), ""));
   }
@@ -266,6 +267,33 @@ class ReconcileControlImplTest {
                     .indefinitely());
 
     assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void startCaptureRejectsDeletedConnectorAtEnqueueBoundary() {
+    ResourceId connectorId = accountScopedConnectorId();
+    when(service.connectorRepo.getById(connectorId))
+        .thenReturn(Optional.of(connector(connectorId, ConnectorState.CS_ACTIVE)));
+    when(service.connectorRepo.existsById(connectorId)).thenReturn(false);
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .startCapture(
+                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
+                            .setScope(captureScope())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.NOT_FOUND, ex.getStatus().getCode());
     verify(service.jobs, never())
         .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }

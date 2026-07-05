@@ -501,7 +501,12 @@ class StatsProviderFactoryTest {
       SnapshotRepository snapshots) {
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
-    StatsOrchestrator orchestrator = new StatsOrchestrator(repository, jobStore, tableRepository);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(
+            repository,
+            jobStore,
+            tableRepository,
+            Mockito.mock(ai.floedb.floecat.service.repo.impl.ConnectorRepository.class));
     return new StatsProviderFactory(
         orchestrator, tableRepository, store, snapshots, defaultSyncConfig());
   }

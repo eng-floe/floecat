@@ -16,9 +16,12 @@
 
 package ai.floedb.floecat.service.statistics;
 
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.stats.spi.StatsSyncOutcome;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -40,10 +43,12 @@ class StatsSyncCapture {
   private static final long POLL_INTERVAL_MS = 100L;
 
   private final ReconcileJobStore reconcileJobStore;
+  private final ConnectorRepository connectorRepository;
 
   @Inject
-  StatsSyncCapture(ReconcileJobStore reconcileJobStore) {
+  StatsSyncCapture(ReconcileJobStore reconcileJobStore, ConnectorRepository connectorRepository) {
     this.reconcileJobStore = reconcileJobStore;
+    this.connectorRepository = connectorRepository;
   }
 
   /**
@@ -56,6 +61,12 @@ class StatsSyncCapture {
   StatsSyncOutcome capture(
       String accountId, String connectorId, ReconcileScope scope, Duration budget) {
     try {
+      if (!connectorRepository.existsById(connectorResourceId(accountId, connectorId))) {
+        LOG.debugf(
+            "stats_sync_capture skipped missing connector account=%s connector=%s",
+            accountId, connectorId);
+        return StatsSyncOutcome.FAILED;
+      }
       String jobId =
           reconcileJobStore.enqueue(
               accountId, connectorId, false, ReconcilerService.CaptureMode.CAPTURE_ONLY, scope);
@@ -68,6 +79,14 @@ class StatsSyncCapture {
           e, "stats_sync_capture enqueue failed account=%s connector=%s", accountId, connectorId);
       return StatsSyncOutcome.FAILED;
     }
+  }
+
+  private static ResourceId connectorResourceId(String accountId, String connectorId) {
+    return ResourceId.newBuilder()
+        .setAccountId(accountId)
+        .setId(connectorId)
+        .setKind(ResourceKind.RK_CONNECTOR)
+        .build();
   }
 
   private StatsSyncOutcome pollUntilTerminal(String accountId, String jobId, Duration budget) {

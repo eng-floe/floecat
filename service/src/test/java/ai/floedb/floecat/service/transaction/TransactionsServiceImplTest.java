@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.inOrder;
@@ -45,6 +46,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -1101,13 +1103,16 @@ class TransactionsServiceImplTest {
   void enqueuePostCommitCaptureUsesMetadataAndCaptureMode() throws Exception {
     var service = new TransactionsServiceImpl();
     var reconcileJobs = Mockito.mock(ReconcileJobStore.class);
+    var connectorRepo = Mockito.mock(ConnectorRepository.class);
 
     inject(service, "reconcileJobs", reconcileJobs);
+    inject(service, "connectorRepo", connectorRepo);
 
     Connector connector =
         Connector.newBuilder()
             .setResourceId(resourceId("conn-1", ResourceKind.RK_CONNECTOR))
             .build();
+    when(connectorRepo.existsById(connector.getResourceId())).thenReturn(true);
 
     invokeEnqueuePostCommitCapture(service, "acct", "tx-1", connector, "table-1", null);
 
@@ -1132,13 +1137,16 @@ class TransactionsServiceImplTest {
   void enqueuePostCommitCapturePinsCommittedSnapshotWhenKnown() throws Exception {
     var service = new TransactionsServiceImpl();
     var reconcileJobs = Mockito.mock(ReconcileJobStore.class);
+    var connectorRepo = Mockito.mock(ConnectorRepository.class);
 
     inject(service, "reconcileJobs", reconcileJobs);
+    inject(service, "connectorRepo", connectorRepo);
 
     Connector connector =
         Connector.newBuilder()
             .setResourceId(resourceId("conn-1", ResourceKind.RK_CONNECTOR))
             .build();
+    when(connectorRepo.existsById(connector.getResourceId())).thenReturn(true);
 
     invokeEnqueuePostCommitCapture(service, "acct", "tx-1", connector, "table-1", 123L);
 
@@ -1158,6 +1166,27 @@ class TransactionsServiceImplTest {
             org.mockito.ArgumentMatchers.any(
                 ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy.class),
             org.mockito.ArgumentMatchers.eq(""));
+  }
+
+  @Test
+  void enqueuePostCommitCaptureSkipsDeletedConnector() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var reconcileJobs = Mockito.mock(ReconcileJobStore.class);
+    var connectorRepo = Mockito.mock(ConnectorRepository.class);
+
+    inject(service, "reconcileJobs", reconcileJobs);
+    inject(service, "connectorRepo", connectorRepo);
+
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(resourceId("conn-1", ResourceKind.RK_CONNECTOR))
+            .build();
+    when(connectorRepo.existsById(connector.getResourceId())).thenReturn(false);
+
+    invokeEnqueuePostCommitCapture(service, "acct", "tx-1", connector, "table-1", null);
+
+    verify(reconcileJobs, never())
+        .enqueuePlan(any(), any(), anyBoolean(), any(), any(), any(), any());
   }
 
   @Test
