@@ -1342,6 +1342,7 @@ final class ConnectorCliSupport {
 
   private static void printReconcileJobsTableHeader(PrintStream out) {
     final int W_JOB_ID = 36;
+    final int W_CONNECTOR_ID = 36;
     final int W_STATE = 10;
     final int W_MODE = 12;
     final int W_STARTED = 24;
@@ -1355,6 +1356,8 @@ final class ConnectorCliSupport {
     out.printf(
         "%-"
             + W_JOB_ID
+            + "s  %-"
+            + W_CONNECTOR_ID
             + "s  %-"
             + W_STATE
             + "s  %-"
@@ -1377,6 +1380,7 @@ final class ConnectorCliSupport {
             + W_ERRORS
             + "s  %s%n",
         "JOB_ID",
+        "CONNECTOR_ID",
         "STATE",
         "MODE",
         "STARTED",
@@ -1393,6 +1397,7 @@ final class ConnectorCliSupport {
   private static void printReconcileJobsTableRows(
       List<GetReconcileJobResponse> jobs, PrintStream out) {
     final int W_JOB_ID = 36;
+    final int W_CONNECTOR_ID = 36;
     final int W_STATE = 10;
     final int W_MODE = 12;
     final int W_STARTED = 24;
@@ -1406,6 +1411,8 @@ final class ConnectorCliSupport {
       out.printf(
           "%-"
               + W_JOB_ID
+              + "s  %-"
+              + W_CONNECTOR_ID
               + "s  %-"
               + W_STATE
               + "s  %-"
@@ -1428,6 +1435,7 @@ final class ConnectorCliSupport {
               + W_ERRORS
               + "d  %s%n",
           job.getJobId(),
+          job.getConnectorId(),
           formatJobState(job),
           job.getFullRescan() ? "full" : "incremental",
           CliUtils.ts(job.getStartedAt()),

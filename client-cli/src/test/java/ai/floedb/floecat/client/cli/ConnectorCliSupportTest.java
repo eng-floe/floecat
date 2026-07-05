@@ -727,9 +727,11 @@ class ConnectorCliSupportTest {
 
       assertEquals(1, h.reconcileControlService.listReconcileJobsCalls.get());
       assertTrue(buf.toString().contains("JOB_ID"));
+      assertTrue(buf.toString().contains("CONNECTOR_ID"));
       assertTrue(buf.toString().contains("MODE"));
       assertTrue(buf.toString().contains("INDEXES"));
       assertTrue(buf.toString().contains("job-plan-1"));
+      assertTrue(buf.toString().contains(CONNECTOR_UUID));
       assertTrue(buf.toString().contains("0/2"));
       assertTrue(buf.toString().contains("0/1"));
       assertTrue(!buf.toString().contains("job-table-1"));
@@ -827,9 +829,14 @@ class ConnectorCliSupportTest {
           h.directoryStub,
           () -> "acct-1");
 
-      assertTrue(buf.toString().contains("\"jobs\""));
-      assertTrue(buf.toString().contains("job-plan-1"));
-      assertTrue(!buf.toString().contains("JOB_ID"));
+      String output = buf.toString();
+      assertTrue(output.contains("\"jobs\""));
+      assertTrue(output.contains("\"jobId\": \"job-plan-1\""));
+      assertTrue(output.contains("\"connectorId\": \"" + CONNECTOR_UUID + "\""));
+      assertTrue(
+          output.indexOf("\"jobId\": \"job-plan-1\"")
+              < output.indexOf("\"connectorId\": \"" + CONNECTOR_UUID + "\""));
+      assertTrue(!output.contains("JOB_ID"));
     }
   }
 
