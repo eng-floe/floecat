@@ -65,6 +65,7 @@ import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.reconciler.jobs.DurableReconcileJobStore;
 import ai.floedb.floecat.service.reconciler.jobs.ReconcilerSettingsStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -861,14 +862,21 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       ReconcileExecutionPolicy executionPolicy) {
     ensureExecutorsAvailable(mode, scope);
     requireCanonicalConnectorExists(connectorId);
-    return jobs.enqueuePlan(
-        connectorId.getAccountId(),
-        connectorId.getId(),
-        fullRescan,
-        mode,
-        scope,
-        executionPolicy,
-        "");
+    try {
+      return jobs.enqueuePlan(
+          connectorId.getAccountId(),
+          connectorId.getId(),
+          fullRescan,
+          mode,
+          scope,
+          executionPolicy,
+          "");
+    } catch (DurableReconcileJobStore.ConnectorDeletedException e) {
+      throw GrpcErrors.notFound(
+          correlationId(),
+          GeneratedErrorMessages.MessageKey.CONNECTOR,
+          Map.of("id", e.connectorId));
+    }
   }
 
   private void requireCanonicalConnectorExists(ResourceId connectorId) {

@@ -64,6 +64,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseSto
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore.LeaseScanStats;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -107,6 +108,15 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 // legacy StoredJobReference indirection, lane queue/head scheduling rows, or separate lease-state
 // blobs.
 public class DurableReconcileJobStore implements ReconcileJobStore {
+  public static final class ConnectorDeletedException extends IllegalStateException {
+    public final String connectorId;
+
+    public ConnectorDeletedException(String connectorId) {
+      super("connector deleted: " + blankToEmpty(connectorId));
+      this.connectorId = blankToEmpty(connectorId);
+    }
+  }
+
   private static final Logger LOG = Logger.getLogger(DurableReconcileJobStore.class);
 
   private static final int DEFAULT_MAX_ATTEMPTS = 8;
@@ -159,6 +169,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Inject ReconcileJobMaintenanceService maintenanceService;
   @Inject ReconcileReadyQueueStore readyQueueStore;
   @Inject ReconcileReadyQueueBackend readyQueueBackend;
+  @Inject ConnectorRepository connectorRepo;
   private int maxAttempts = DEFAULT_MAX_ATTEMPTS;
   private long baseBackoffMs = DEFAULT_BASE_BACKOFF_MS;
   private long maxBackoffMs = DEFAULT_MAX_BACKOFF_MS;
@@ -523,7 +534,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       ReconcileExecutionPolicy executionPolicy,
       String parentJobId,
       String pinnedExecutorId) {
-    return bulkEnqueue(
+    BulkEnqueueResult result =
+        bulkEnqueue(
             List.of(
                 BulkEnqueueSpec.of(
                     accountId,
@@ -538,14 +550,60 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                     fileGroupTask,
                     executionPolicy,
                     parentJobId,
-                    pinnedExecutorId)))
-        .singleJobId();
+                    pinnedExecutorId)));
+    throwIfConnectorDeleted(result);
+    return result.singleJobId();
   }
 
   @Override
   public BulkEnqueueResult bulkEnqueue(List<BulkEnqueueSpec> specs) {
-    BulkEnqueueResult result = onHotPath(() -> enqueuer().bulkEnqueue(specs));
     List<BulkEnqueueSpec> effectiveSpecs = specs == null ? List.of() : specs;
+    var admittedSpecs = new ArrayList<BulkEnqueueSpec>(effectiveSpecs.size());
+    var rejectedItems = new ArrayList<BulkEnqueueItemResult>();
+    for (int index = 0; index < effectiveSpecs.size(); index++) {
+      BulkEnqueueSpec spec = effectiveSpecs.get(index);
+      if (isRootPlanConnector(spec)
+          && !canonicalConnectorExists(spec.accountId, spec.connectorId)) {
+        rejectedItems.add(
+            new BulkEnqueueItemResult(
+                index,
+                "",
+                false,
+                "connector deleted: " + blankToEmpty(spec.connectorId),
+                false,
+                BulkEnqueueItemResult.FailureReason.CONNECTOR_DELETED,
+                blankToEmpty(spec.connectorId)));
+        continue;
+      }
+      admittedSpecs.add(spec);
+    }
+    BulkEnqueueResult admittedResult = onHotPath(() -> enqueuer().bulkEnqueue(admittedSpecs));
+    var itemsByIndex = new java.util.HashMap<Integer, BulkEnqueueItemResult>();
+    for (BulkEnqueueItemResult item : rejectedItems) {
+      itemsByIndex.put(item.index, item);
+    }
+    int admittedIndex = 0;
+    for (int originalIndex = 0; originalIndex < effectiveSpecs.size(); originalIndex++) {
+      if (itemsByIndex.containsKey(originalIndex)) {
+        continue;
+      }
+      BulkEnqueueItemResult item = admittedResult.items.get(admittedIndex++);
+      itemsByIndex.put(
+          originalIndex,
+          new BulkEnqueueItemResult(
+              originalIndex,
+              item.jobId,
+              item.created,
+              item.error,
+              item.invalidRequest,
+              item.failureReason,
+              item.failureSubjectId));
+    }
+    BulkEnqueueResult result =
+        new BulkEnqueueResult(
+            java.util.stream.IntStream.range(0, effectiveSpecs.size())
+                .mapToObj(itemsByIndex::get)
+                .toList());
     for (BulkEnqueueItemResult item : result.items) {
       if (item == null || !item.succeeded()) {
         continue;
@@ -569,6 +627,40 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       }
     }
     return result;
+  }
+
+  private boolean isRootPlanConnector(BulkEnqueueSpec spec) {
+    return spec != null
+        && spec.jobKind == ReconcileJobKind.PLAN_CONNECTOR
+        && blankToEmpty(spec.parentJobId).isBlank();
+  }
+
+  private void throwIfConnectorDeleted(BulkEnqueueResult result) {
+    if (result == null || result.items.size() != 1) {
+      return;
+    }
+    BulkEnqueueItemResult item = result.items.getFirst();
+    if (item == null
+        || item.failureReason != BulkEnqueueItemResult.FailureReason.CONNECTOR_DELETED) {
+      return;
+    }
+    throw new ConnectorDeletedException(item.failureSubjectId);
+  }
+
+  private boolean canonicalConnectorExists(String accountId, String connectorId) {
+    if (connectorRepo == null) {
+      return true;
+    }
+    if (blankToEmpty(accountId).isBlank() || blankToEmpty(connectorId).isBlank()) {
+      return false;
+    }
+    var resourceId =
+        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId(connectorId)
+            .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_CONNECTOR)
+            .build();
+    return connectorRepo.existsById(resourceId);
   }
 
   @Override

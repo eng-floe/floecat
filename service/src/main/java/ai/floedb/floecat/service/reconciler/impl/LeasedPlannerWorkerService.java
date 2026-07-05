@@ -121,8 +121,9 @@ public class LeasedPlannerWorkerService {
             jobId,
             leaseEpoch,
             ReconcileJobKind.PLAN_CONNECTOR);
-    if (cancelIfCanonicalConnectorMissing(lease)) {
-      return true;
+    Boolean cancelled = cancelIfCanonicalConnectorMissing(lease);
+    if (cancelled != null) {
+      return cancelled;
     }
     long plannedTableJobs =
         nullToEmpty(tableJobs).stream()
@@ -213,8 +214,8 @@ public class LeasedPlannerWorkerService {
       String message) {
     requireLeasedJob(
         principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_CONNECTOR);
-    persistPlanFailure(jobId, leaseEpoch, failureKind, retryDisposition, retryClass, message);
-    return true;
+    return persistPlanFailure(
+        jobId, leaseEpoch, failureKind, retryDisposition, retryClass, message);
   }
 
   public PlanTablePayload resolvePlanTable(
@@ -246,8 +247,9 @@ public class LeasedPlannerWorkerService {
     ReconcileJobStore.LeasedJob lease =
         requireLeasedJob(
             principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_TABLE);
-    if (cancelIfCanonicalConnectorMissing(lease)) {
-      return true;
+    Boolean cancelled = cancelIfCanonicalConnectorMissing(lease);
+    if (cancelled != null) {
+      return cancelled;
     }
     long plannedSnapshotJobs =
         nullToEmpty(snapshotJobs).stream()
@@ -298,8 +300,8 @@ public class LeasedPlannerWorkerService {
       String message) {
     requireLeasedJob(
         principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_TABLE);
-    persistPlanFailure(jobId, leaseEpoch, failureKind, retryDisposition, retryClass, message);
-    return true;
+    return persistPlanFailure(
+        jobId, leaseEpoch, failureKind, retryDisposition, retryClass, message);
   }
 
   public PlanViewPayload resolvePlanView(
@@ -361,8 +363,8 @@ public class LeasedPlannerWorkerService {
       String message) {
     requireLeasedJob(
         principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_VIEW);
-    persistPlanFailure(jobId, leaseEpoch, failureKind, retryDisposition, retryClass, message);
-    return true;
+    return persistPlanFailure(
+        jobId, leaseEpoch, failureKind, retryDisposition, retryClass, message);
   }
 
   public PlanSnapshotPayload resolvePlanSnapshot(
@@ -428,8 +430,9 @@ public class LeasedPlannerWorkerService {
     ReconcileJobStore.LeasedJob lease =
         requireCompletionLease(
             principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_SNAPSHOT);
-    if (cancelIfCanonicalConnectorMissing(lease)) {
-      return true;
+    Boolean cancelled = cancelIfCanonicalConnectorMissing(lease);
+    if (cancelled != null) {
+      return cancelled;
     }
     List<PlannedFileGroupJob> plannedJobs = plannedFileGroupJobs(finalizedSnapshotTask);
     long plannedFileGroupJobs =
@@ -676,8 +679,8 @@ public class LeasedPlannerWorkerService {
       String message) {
     requireLeasedJob(
         principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_SNAPSHOT);
-    persistPlanFailure(jobId, leaseEpoch, failureKind, retryDisposition, retryClass, message);
-    return true;
+    return persistPlanFailure(
+        jobId, leaseEpoch, failureKind, retryDisposition, retryClass, message);
   }
 
   record PlannedTableJob(ReconcileScope scope, ReconcileTableTask tableTask) {}
@@ -753,11 +756,11 @@ public class LeasedPlannerWorkerService {
     return lease;
   }
 
-  private boolean cancelIfCanonicalConnectorMissing(ReconcileJobStore.LeasedJob lease) {
+  private Boolean cancelIfCanonicalConnectorMissing(ReconcileJobStore.LeasedJob lease) {
     if (canonicalConnectorExists(lease)) {
-      return false;
+      return null;
     }
-    jobs.applyLeaseOutcome(
+    return jobs.applyLeaseOutcome(
         lease.jobId,
         lease.leaseEpoch,
         ReconcileJobStore.CompletionKind.CANCELLED,
@@ -770,7 +773,6 @@ public class LeasedPlannerWorkerService {
         0L,
         0L,
         0L);
-    return true;
   }
 
   private boolean canonicalConnectorExists(ReconcileJobStore.LeasedJob lease) {
@@ -802,7 +804,7 @@ public class LeasedPlannerWorkerService {
         .orElse(false);
   }
 
-  private void persistPlanFailure(
+  private boolean persistPlanFailure(
       String jobId,
       String leaseEpoch,
       ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind failureKind,
@@ -812,7 +814,7 @@ public class LeasedPlannerWorkerService {
       String message) {
     long finishedAtMs = System.currentTimeMillis();
     if (isObsoleteFailureKind(failureKind)) {
-      jobs.applyLeaseOutcome(
+      return jobs.applyLeaseOutcome(
           jobId,
           leaseEpoch,
           ReconcileJobStore.CompletionKind.CANCELLED,
@@ -825,12 +827,11 @@ public class LeasedPlannerWorkerService {
           1L,
           0L,
           0L);
-      return;
     }
     if (retryDisposition
         == ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
             .TERMINAL) {
-      jobs.applyLeaseOutcome(
+      return jobs.applyLeaseOutcome(
           jobId,
           leaseEpoch,
           ReconcileJobStore.CompletionKind.FAILED_TERMINAL,
@@ -843,12 +844,11 @@ public class LeasedPlannerWorkerService {
           1L,
           0L,
           0L);
-      return;
     }
     if (retryClass
         == ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass
             .DEPENDENCY_NOT_READY) {
-      jobs.applyLeaseOutcome(
+      return jobs.applyLeaseOutcome(
           jobId,
           leaseEpoch,
           ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY,
@@ -861,9 +861,8 @@ public class LeasedPlannerWorkerService {
           1L,
           0L,
           0L);
-      return;
     }
-    jobs.applyLeaseOutcome(
+    return jobs.applyLeaseOutcome(
         jobId,
         leaseEpoch,
         ReconcileJobStore.CompletionKind.FAILED_RETRYABLE,

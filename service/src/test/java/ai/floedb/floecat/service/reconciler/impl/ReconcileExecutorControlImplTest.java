@@ -351,6 +351,56 @@ class ReconcileExecutorControlImplTest {
   }
 
   @Test
+  void leaseReconcileJobKeepsDeletedConnectorWorkVisibleWhenCancelDoesNotCommit() {
+    service.connectorRepo = mock(ConnectorRepository.class);
+    when(service.jobs.leaseNext(any()))
+        .thenReturn(
+            Optional.of(
+                new ReconcileJobStore.LeasedJob(
+                    "job-deleted",
+                    "acct",
+                    "connector-deleted",
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-deleted",
+                    "",
+                    "",
+                    ReconcileJobKind.PLAN_CONNECTOR,
+                    ReconcileTableTask.empty(),
+                    ReconcileViewTask.empty(),
+                    ReconcileSnapshotTask.empty(),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(service.connectorRepo.existsById(deletedConnectorId())).thenReturn(false);
+    when(service.jobs.applyLeaseOutcome(
+            eq("job-deleted"),
+            eq("lease-deleted"),
+            eq(ReconcileJobStore.CompletionKind.CANCELLED),
+            anyLong(),
+            eq("connector deleted: connector-deleted"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L)))
+        .thenReturn(false);
+
+    var response =
+        service
+            .leaseReconcileJob(LeaseReconcileJobRequest.getDefaultInstance())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getFound());
+    assertEquals("job-deleted", response.getJob().getJobId());
+    verify(service.connectorRepo).existsById(deletedConnectorId());
+  }
+
+  @Test
   void renewReconcileLeaseReturnsCancellationSignal() {
     when(service.jobs.renewLease("job-1", "lease-1")).thenReturn(true);
     when(service.jobs.isCancellationRequested("job-1")).thenReturn(true);

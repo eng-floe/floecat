@@ -622,6 +622,42 @@ class LeasedPlannerWorkerServiceTest {
   }
 
   @Test
+  void persistPlanTableFailureReturnsFalseWhenObsoleteCancelDoesNotCommit() {
+    when(jobs.renewLease("job-2c", "lease-2c")).thenReturn(true);
+    when(jobs.getLeaseView("job-2c"))
+        .thenReturn(java.util.Optional.of(job("job-2c", ReconcileJobKind.PLAN_TABLE)));
+    when(jobs.applyLeaseOutcome(
+            eq("job-2c"),
+            eq("lease-2c"),
+            eq(ReconcileJobStore.CompletionKind.CANCELLED),
+            anyLong(),
+            any(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong()))
+        .thenReturn(false);
+
+    boolean accepted =
+        service.persistPlanTableFailure(
+            principal,
+            "job-2c",
+            "lease-2c",
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind
+                .CONNECTOR_MISSING,
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
+                .RETRYABLE,
+            ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass
+                .TRANSIENT_ERROR,
+            "getConnector failed: connector-1");
+
+    assertTrue(!accepted);
+  }
+
+  @Test
   void persistPlanSnapshotFailureMarksRetryableFailure() {
     when(jobs.renewLease("job-3", "lease-3")).thenReturn(true);
     when(jobs.getLeaseView("job-3"))
@@ -1368,6 +1404,38 @@ class LeasedPlannerWorkerServiceTest {
             eq(0L),
             eq(0L),
             eq(0L));
+  }
+
+  @Test
+  void persistPlanConnectorSuccessReturnsFalseWhenDeleteCancelDoesNotCommit() {
+    service.connectorRepo = connectorRepo;
+    when(connectorRepo.existsById(any())).thenReturn(false);
+    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(jobs.getLeaseView("job-1"))
+        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_CONNECTOR)));
+    when(jobs.applyLeaseOutcome(
+            any(), any(), any(), anyLong(), any(), anyLong(), anyLong(), anyLong(), anyLong(),
+            anyLong(), anyLong(), anyLong()))
+        .thenReturn(false);
+
+    boolean accepted =
+        service.persistPlanConnectorSuccess(
+            principal,
+            "job-1",
+            "lease-1",
+            List.of(
+                new LeasedPlannerWorkerService.PlannedTableJob(
+                    ReconcileScope.empty(),
+                    ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.of(
+                        "db", "orders", "orders-id", "orders"))),
+            List.of());
+
+    assertTrue(!accepted);
+    verify(connectorRepo).existsById(activeConnectorId());
+    verify(jobs, never())
+        .bulkEnqueueAndApplyLeaseOutcome(
+            any(), any(), any(), any(), anyLong(), any(), anyLong(), anyLong(), anyLong(),
+            anyLong(), anyLong(), anyLong(), anyLong());
   }
 
   @Test

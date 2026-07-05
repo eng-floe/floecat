@@ -144,20 +144,23 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                 return LeaseReconcileJobResponse.newBuilder().setFound(false).build();
               }
               if (!canonicalConnectorExists(lease.get())) {
-                jobs.applyLeaseOutcome(
-                    lease.get().jobId,
-                    lease.get().leaseEpoch,
-                    ReconcileJobStore.CompletionKind.CANCELLED,
-                    System.currentTimeMillis(),
-                    "connector deleted: " + lease.get().connectorId,
-                    0L,
-                    0L,
-                    0L,
-                    0L,
-                    0L,
-                    0L,
-                    0L);
-                return LeaseReconcileJobResponse.newBuilder().setFound(false).build();
+                boolean cancelled =
+                    jobs.applyLeaseOutcome(
+                        lease.get().jobId,
+                        lease.get().leaseEpoch,
+                        ReconcileJobStore.CompletionKind.CANCELLED,
+                        System.currentTimeMillis(),
+                        "connector deleted: " + lease.get().connectorId,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L,
+                        0L);
+                if (cancelled) {
+                  return LeaseReconcileJobResponse.newBuilder().setFound(false).build();
+                }
               }
               return LeaseReconcileJobResponse.newBuilder()
                   .setFound(true)

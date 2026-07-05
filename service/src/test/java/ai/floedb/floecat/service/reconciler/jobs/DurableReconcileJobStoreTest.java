@@ -25,6 +25,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -51,6 +53,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileRe
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.aws.dynamodb.DynamoPointerStore;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbKvStore;
@@ -79,6 +82,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
@@ -171,6 +175,65 @@ class DurableReconcileJobStoreTest {
         store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, scope);
 
     assertEquals(first, second);
+  }
+
+  @Test
+  void enqueuePlanRejectsDeletedConnectorBeforeCreatingRootJob() {
+    store.connectorRepo = Mockito.mock(ConnectorRepository.class);
+    Mockito.when(store.connectorRepo.existsById(connectorResourceId())).thenReturn(false);
+
+    ReconcileJobStore.BulkEnqueueResult result =
+        store.bulkEnqueue(
+            List.of(
+                ReconcileJobStore.BulkEnqueueSpec.of(
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileJobKind.PLAN_CONNECTOR,
+                    ReconcileTableTask.empty(),
+                    ReconcileViewTask.empty(),
+                    ReconcileSnapshotTask.empty(),
+                    ReconcileFileGroupTask.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "",
+                    "")));
+
+    assertEquals(
+        ReconcileJobStore.BulkEnqueueItemResult.FailureReason.CONNECTOR_DELETED,
+        result.items.getFirst().failureReason);
+    assertEquals(CONNECTOR_ID, result.items.getFirst().failureSubjectId);
+
+    var thrown =
+        assertThrows(
+            DurableReconcileJobStore.ConnectorDeletedException.class,
+            () ->
+                store.enqueue(
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty()));
+
+    assertEquals("connector deleted: " + CONNECTOR_ID, thrown.getMessage());
+    assertTrue(store.listRootJobs(ACCOUNT_ID, 10, "", "", null).jobs.isEmpty());
+  }
+
+  @Test
+  void enqueuePlanAllowsExistingCanonicalConnector() {
+    store.connectorRepo = Mockito.mock(ConnectorRepository.class);
+    Mockito.when(store.connectorRepo.existsById(connectorResourceId())).thenReturn(true);
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+
+    assertTrue(store.get(ACCOUNT_ID, jobId).isPresent());
   }
 
   @Test
@@ -3370,5 +3433,13 @@ class DurableReconcileJobStoreTest {
       }
       startKey = response.lastEvaluatedKey();
     } while (startKey != null && !startKey.isEmpty());
+  }
+
+  private static ResourceId connectorResourceId() {
+    return ResourceId.newBuilder()
+        .setAccountId(ACCOUNT_ID)
+        .setId(CONNECTOR_ID)
+        .setKind(ResourceKind.RK_CONNECTOR)
+        .build();
   }
 }
