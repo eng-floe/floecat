@@ -187,10 +187,14 @@ Connector policy examples:
 - `connector update demo-iceberg --policy-capture none`
 
 Trigger notes:
+- `analyze` defaults to `--mode capture-only` with stats capture, but `--columns`,
+  `--default-cols`, and `--max-default-cols` still require an explicit `--capture` override.
 - `--mode` is required on `connector trigger`.
+- For capture modes, `ReconcileControl.StartCapture` and `CaptureNow` resolve a missing request
+  capture policy from `connector.policy.auto_capture_policy` when present.
 - Trigger-time `--capture` flags override the connector's persisted auto-capture policy for that run.
-- If `--capture` is omitted for a capture mode, the run inherits `connector.policy.auto_capture_policy`
-  when set; otherwise the request is rejected.
+- If no explicit request policy is provided and the connector has no persisted auto-capture policy,
+  the capture-mode request is rejected.
 - `--columns`, `--default-cols`, and `--max-default-cols` require an explicit `--capture` override.
 - `connector create` and `connector validate` do not accept `--policy-capture none`; clearing a
   persisted auto-capture policy is only supported on `connector update`.

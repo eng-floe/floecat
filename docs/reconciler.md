@@ -69,9 +69,12 @@ While the reconciler itself runs as an internal Quarkus app, it exposes behavior
 reconcile control RPCs:
 
 - `ReconcileControl.StartCapture(scope, mode, full_rescan, execution_policy)`: enqueues a
-  top-level `PLAN_CONNECTOR` job via `ReconcileJobStore`.
+  top-level `PLAN_CONNECTOR` job via `ReconcileJobStore`. For capture modes, if the request omits
+  `scope.capture_policy`, the service resolves it from `connector.policy.auto_capture_policy` when
+  present; otherwise the request is rejected.
 - `ReconcileControl.CaptureNow(...)`: uses the same split path, but waits for the aggregated
-  outcome of the top-level plan job plus any child planning/execution jobs.
+  outcome of the top-level plan job plus any child planning/execution jobs. It uses the same
+  capture-policy resolution rule as `StartCapture`.
 - `ReconcileControl.GetReconcileJob(job_id)` / `ListReconcileJobs(...)`: expose both top-level and
   child jobs. Parent-capable jobs (`PLAN_CONNECTOR`, `PLAN_TABLE`, `PLAN_SNAPSHOT`) surface
   aggregate child status through eventually consistent projection/root-summary read models rather
@@ -270,8 +273,8 @@ perform a post-completion final lease confirmation after that RPC has durably co
   discovery and metadata planning across the full upstream history.
 - **Incremental capture run**: operator triggers
   `connector trigger demo-glue --incremental --current --mode metadata-and-capture`.
-  If the trigger omits `--capture`, the reconcile path inherits the connector's persisted
-  auto-capture policy when present; otherwise the request is rejected.
+  If the trigger omits `--capture`, the reconcile API resolves the missing request policy from the
+  connector's persisted auto-capture policy when present; otherwise the request is rejected.
   Trigger-time `--capture` flags remain available as one-off overrides.
 - **Scheduled auto-reconcile run**: when connector policy enables automatic reconcile, the planner
   uses `connector.policy.auto_capture_policy` as the capture policy for queued

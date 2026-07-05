@@ -30,10 +30,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.capture.rpc.CaptureOutput;
+import ai.floedb.floecat.capture.rpc.CapturePolicy;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.connector.rpc.CaptureOutput;
-import ai.floedb.floecat.connector.rpc.CapturePolicy;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
@@ -389,6 +389,7 @@ class ReconcilePlannerSchedulerTest {
     scheduler.jobs = mock(ReconcileJobStore.class);
     scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
     when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+    stubNoActiveRootJobs(scheduler.jobs);
 
     List<ReconcileScope> enqueuedScopes = new ArrayList<>();
     Connector connector =

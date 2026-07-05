@@ -17,8 +17,10 @@
 package ai.floedb.floecat.client.cli;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.capture.rpc.CaptureOutput;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
@@ -52,7 +54,6 @@ import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
-import ai.floedb.floecat.connector.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowResponse;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
@@ -703,11 +704,79 @@ class StatsCliSupportTest {
 
       CaptureNowRequest request = h.reconcileControlService.lastCaptureNowRequest;
       assertEquals(
-          List.of(CaptureOutput.CO_PARQUET_PAGE_INDEX),
-          request.getScope().getCapturePolicy().getOutputsList());
+          java.util.Set.of(CaptureOutput.CO_PARQUET_PAGE_INDEX),
+          java.util.Set.copyOf(request.getScope().getCapturePolicy().getOutputsList()));
       assertEquals("c1", request.getScope().getCapturePolicy().getColumns(0).getSelector());
       assertEquals(false, request.getScope().getCapturePolicy().getColumns(0).getCaptureStats());
       assertEquals(true, request.getScope().getCapturePolicy().getColumns(0).getCaptureIndex());
+    }
+  }
+
+  @Test
+  void analyzeDefaultColsStillRequireExplicitCaptureOverride() throws Exception {
+    try (Harness h = new Harness()) {
+      h.tableService.tableToReturn =
+          Table.newBuilder()
+              .setResourceId(tableId())
+              .setDisplayName("events")
+              .setNamespaceId(ResourceId.newBuilder().setId("ns-1").build())
+              .setUpstream(
+                  UpstreamRef.newBuilder()
+                      .setConnectorId(ResourceId.newBuilder().setId("conn-1").build())
+                      .build())
+              .build();
+
+      IllegalArgumentException error =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  StatsCliSupport.handle(
+                      "analyze",
+                      List.of("catalog.ns.tbl", "--default-cols", "first-n"),
+                      new PrintStream(new ByteArrayOutputStream()),
+                      h.statisticsStub,
+                      h.indexesStub,
+                      h.snapshotStub,
+                      h.tablesStub,
+                      h.namespacesStub,
+                      h.reconcileControlStub,
+                      ignored -> tableId()));
+
+      assertTrue(error.getMessage().contains("--capture is required"));
+    }
+  }
+
+  @Test
+  void analyzeMaxDefaultColsStillRequireExplicitCaptureOverride() throws Exception {
+    try (Harness h = new Harness()) {
+      h.tableService.tableToReturn =
+          Table.newBuilder()
+              .setResourceId(tableId())
+              .setDisplayName("events")
+              .setNamespaceId(ResourceId.newBuilder().setId("ns-1").build())
+              .setUpstream(
+                  UpstreamRef.newBuilder()
+                      .setConnectorId(ResourceId.newBuilder().setId("conn-1").build())
+                      .build())
+              .build();
+
+      IllegalArgumentException error =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  StatsCliSupport.handle(
+                      "analyze",
+                      List.of("catalog.ns.tbl", "--max-default-cols", "32"),
+                      new PrintStream(new ByteArrayOutputStream()),
+                      h.statisticsStub,
+                      h.indexesStub,
+                      h.snapshotStub,
+                      h.tablesStub,
+                      h.namespacesStub,
+                      h.reconcileControlStub,
+                      ignored -> tableId()));
+
+      assertTrue(error.getMessage().contains("--capture is required"));
     }
   }
 

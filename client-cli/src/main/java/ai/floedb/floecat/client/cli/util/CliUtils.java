@@ -15,15 +15,15 @@
  */
 package ai.floedb.floecat.client.cli.util;
 
+import ai.floedb.floecat.capture.rpc.CaptureColumnPolicy;
+import ai.floedb.floecat.capture.rpc.CaptureOutput;
+import ai.floedb.floecat.capture.rpc.CapturePolicy;
+import ai.floedb.floecat.capture.rpc.DefaultColumnScope;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.NdvApprox;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
-import ai.floedb.floecat.connector.rpc.CaptureColumnPolicy;
-import ai.floedb.floecat.connector.rpc.CaptureOutput;
-import ai.floedb.floecat.connector.rpc.CapturePolicy;
-import ai.floedb.floecat.connector.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageOrBuilder;
@@ -259,22 +259,24 @@ public final class CliUtils {
   /** Builds a capture policy from explicit outputs. */
   public static CapturePolicy buildCapturePolicy(
       CaptureMode mode,
+      boolean captureSet,
       Set<CaptureOutput> requestedOutputs,
       List<String> columns,
+      boolean defaultColsSet,
       DefaultColumnScope defaultColumnScope,
+      boolean maxDefaultColsSet,
       int maxDefaultColumns) {
     if (mode == CaptureMode.CM_METADATA_ONLY) {
       return null;
     }
     java.util.LinkedHashSet<CaptureOutput> outputs =
         new java.util.LinkedHashSet<>(requestedOutputs);
+    if (!captureSet
+        && ((columns != null && !columns.isEmpty()) || defaultColsSet || maxDefaultColsSet)) {
+      throw new IllegalArgumentException(
+          "--capture is required when using --columns, --default-cols, or --max-default-cols");
+    }
     if (outputs.isEmpty()) {
-      if ((columns != null && !columns.isEmpty())
-          || defaultColumnScope != DefaultColumnScope.DCS_FIRST_N
-          || maxDefaultColumns != 32) {
-        throw new IllegalArgumentException(
-            "--capture is required when using --columns, --default-cols, or --max-default-cols");
-      }
       return null;
     }
     CapturePolicy.Builder policy =

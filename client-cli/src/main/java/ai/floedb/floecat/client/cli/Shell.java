@@ -551,7 +551,8 @@ public class Shell implements Runnable {
          analyze <tableFQ> [--columns c1,c2,...] [--default-cols first-n|all|explicit-only] [--max-default-cols <n>]
              [--snapshot <id>|--current] [--mode metadata-only|metadata-and-capture|capture-only]
              [--capture stats|table-stats|file-stats|column-stats|index,...]
-             # Defaults to --mode capture-only --capture stats --default-cols first-n --max-default-cols 32.
+             # Defaults to --mode capture-only with stats capture. --columns, --default-cols, and
+             # --max-default-cols require an explicit --capture override.
              [--full] [--wait-seconds <n>]
              # Runs synchronous table-scoped capture_now.
          query begin [--ttl <seconds>] [--as-of-default <timestamp>] (table <catalog.ns....table> [--snapshot <id|current>] [--as-of <timestamp>] | table-id <uuid> [--snapshot <id|current>] [--as-of <timestamp>] | view-id <uuid> | namespace <catalog.ns[.ns...]>)+
@@ -599,11 +600,14 @@ public class Shell implements Runnable {
          connector trigger <display_name|id> (--full|--incremental)
              --mode metadata-only|metadata-and-capture|capture-only
              [--capture stats|table-stats|file-stats|column-stats|index,...]
-             # --mode is required. --capture overrides connector policy for that run.
+             # --mode is required. For capture modes, omitted --capture is resolved from the
+             # connector's persisted auto-capture policy when present; explicit --capture overrides
+             # it for that run.
              [--dest-ns <a.b[.c]>] [--dest-table <name>] [--dest-view <name>]
              [--snapshot <id[,id...]>|--current|--latest-n <n>|--all] [--columns c1,#id2,...]
              [--default-cols first-n|all|explicit-only] [--max-default-cols <n>]
-             # Defaults to --default-cols first-n --max-default-cols 32 when --columns is not set.
+             # --columns, --default-cols, and --max-default-cols require an explicit --capture
+             # override; otherwise the trigger inherits the connector's persisted policy as-is.
          connector job <jobId> [--json]
          connector jobs [--connector <display_name|id>] [--state <queued|running|cancelling|cancelled|succeeded|failed>[,...]] [--limit N] [--json]
          connector jobs --child <parentJobId> [--json]

@@ -18,6 +18,7 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.reconciler.rpc";
 
 import "floecat/common/common.proto";
+import "floecat/capture/capture.proto";
 import "floecat/catalog/index.proto";
 import "floecat/catalog/stats.proto";
 import "floecat/catalog/view.proto";
@@ -41,7 +42,7 @@ message CaptureScope {
   string destination_view_id = 5;
   // Explicit unified capture policy for reconcile execution. Required whenever capture outputs are
   // requested.
-  CapturePolicy capture_policy = 6;
+  ai.floedb.floecat.capture.CapturePolicy capture_policy = 6;
   // Explicit upstream snapshot selection for enumeration/reconcile planning.
   SnapshotSelection snapshot_selection = 7;
 }
@@ -55,38 +56,6 @@ message ScopedCaptureRequest {
   string target_spec = 3;
   // Optional selectors used when the target is TABLE and column scope is needed.
   repeated string column_selectors = 4;
-}
-
-enum CaptureOutput {
-  CO_UNSPECIFIED = 0;
-  CO_TABLE_STATS = 1;
-  CO_FILE_STATS = 2;
-  CO_COLUMN_STATS = 3;
-  CO_PARQUET_PAGE_INDEX = 4;
-}
-
-message CaptureColumnPolicy {
-  string selector = 1;
-  bool capture_stats = 2;
-  bool capture_index = 3;
-}
-
-enum DefaultColumnScope {
-  DCS_UNSPECIFIED = 0;
-  DCS_FIRST_N = 1;
-  DCS_ALL = 2;
-  DCS_EXPLICIT_ONLY = 3;
-}
-
-message CapturePolicy {
-  repeated CaptureColumnPolicy columns = 1;
-  repeated CaptureOutput outputs = 2;
-  DefaultColumnScope default_column_scope = 3;
-  uint32 max_default_columns = 4;
-  // Generic key-value capture properties forwarded opaquely to the execution engine.
-  // Floecat does not interpret these; the engine reads whatever keys it understands.
-  // Example key shape: "stats.<engine-feature>.<parameter>".
-  map<string, string> properties = 5;
 }
 
 enum SnapshotSelectionKind {
@@ -710,7 +679,7 @@ message LeasedFileGroupExecution {
   string plan_id = 9;
   string group_id = 10;
   repeated string file_paths = 11;
-  CapturePolicy capture_policy = 12;
+  ai.floedb.floecat.capture.CapturePolicy capture_policy = 12;
   string storage_location = 13;
 }
 

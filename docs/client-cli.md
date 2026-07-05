@@ -182,9 +182,12 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
   connector trigger glue-iceberg --full --current --mode metadata-and-capture --capture index
   ```
 
-  For capture modes, trigger-time `--capture` flags are optional only when the connector already
-  has a persisted auto-capture policy. If omitted, the run inherits that connector policy.
-  Trigger-time capture flags override the connector default for that run.
+  For capture modes, the reconciler API resolves a missing request capture policy from the
+  connector's persisted auto-capture policy when present. Trigger-time `--capture` flags override
+  that policy for the run. If neither an explicit request policy nor a persisted connector policy
+  is present, the request is rejected.
+  Trigger-time `--columns`, `--default-cols`, and `--max-default-cols` are only valid with an
+  explicit `--capture`; otherwise the request inherits the connector's persisted policy unchanged.
   `connector create` and `connector validate` do not accept `--policy-capture none`; use
   `connector update ... --policy-capture none` to clear a persisted auto-capture policy.
   `--policy-columns`, `--policy-default-cols`, and `--policy-max-default-cols` require an explicit

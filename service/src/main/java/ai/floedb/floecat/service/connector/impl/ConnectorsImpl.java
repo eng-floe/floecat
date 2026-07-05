@@ -16,13 +16,13 @@
 
 package ai.floedb.floecat.service.connector.impl;
 
+import ai.floedb.floecat.capture.rpc.CapturePolicy;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
-import ai.floedb.floecat.connector.rpc.CapturePolicy;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
@@ -978,8 +978,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     }
     for (int i = 0; i < policy.getOutputsCount(); i++) {
       var output = policy.getOutputs(i);
-      if (output == ai.floedb.floecat.connector.rpc.CaptureOutput.CO_UNSPECIFIED
-          || output == ai.floedb.floecat.connector.rpc.CaptureOutput.UNRECOGNIZED) {
+      if (output == ai.floedb.floecat.capture.rpc.CaptureOutput.CO_UNSPECIFIED
+          || output == ai.floedb.floecat.capture.rpc.CaptureOutput.UNRECOGNIZED) {
         throw GrpcErrors.invalidArgument(
             corr, null, Map.of("field", fieldName + ".outputs[" + i + "]"));
       }

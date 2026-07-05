@@ -30,11 +30,11 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.capture.rpc.CaptureOutput;
+import ai.floedb.floecat.capture.rpc.CapturePolicy;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.connector.rpc.CaptureOutput;
-import ai.floedb.floecat.connector.rpc.CapturePolicy;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
@@ -739,7 +739,9 @@ class ReconcileControlImplTest {
                             .setScope(
                                 CaptureScope.newBuilder()
                                     .setConnectorId(connectorId())
-                                    .setCapturePolicy(CapturePolicy.newBuilder().build())
+                                    .setCapturePolicy(
+                                        ai.floedb.floecat.capture.rpc.CapturePolicy.newBuilder()
+                                            .build())
                                     .build())
                             .build())
                     .await()
@@ -1243,10 +1245,10 @@ class ReconcileControlImplTest {
     return CaptureScope.newBuilder()
         .setConnectorId(connectorId())
         .setCapturePolicy(
-            CapturePolicy.newBuilder()
-                .addOutputs(CaptureOutput.CO_TABLE_STATS)
-                .addOutputs(CaptureOutput.CO_FILE_STATS)
-                .addOutputs(CaptureOutput.CO_COLUMN_STATS)
+            ai.floedb.floecat.capture.rpc.CapturePolicy.newBuilder()
+                .addOutputs(ai.floedb.floecat.capture.rpc.CaptureOutput.CO_TABLE_STATS)
+                .addOutputs(ai.floedb.floecat.capture.rpc.CaptureOutput.CO_FILE_STATS)
+                .addOutputs(ai.floedb.floecat.capture.rpc.CaptureOutput.CO_COLUMN_STATS)
                 .build())
         .build();
   }

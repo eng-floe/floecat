@@ -18,6 +18,9 @@ package ai.floedb.floecat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.floecat.capture.rpc.CaptureColumnPolicy;
+import ai.floedb.floecat.capture.rpc.CaptureOutput;
+import ai.floedb.floecat.capture.rpc.CapturePolicy;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
@@ -40,8 +43,6 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.*;
-import ai.floedb.floecat.connector.rpc.CaptureOutput;
-import ai.floedb.floecat.connector.rpc.CapturePolicy;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
@@ -544,10 +545,10 @@ public class ConnectorIT {
             true,
             scopeWithCaptureOutputs(
                 CaptureScope.newBuilder().setConnectorId(conn.getResourceId()).build(),
-                CaptureOutput.CO_TABLE_STATS,
-                CaptureOutput.CO_FILE_STATS,
-                CaptureOutput.CO_COLUMN_STATS,
-                CaptureOutput.CO_PARQUET_PAGE_INDEX),
+                ai.floedb.floecat.capture.rpc.CaptureOutput.CO_TABLE_STATS,
+                ai.floedb.floecat.capture.rpc.CaptureOutput.CO_FILE_STATS,
+                ai.floedb.floecat.capture.rpc.CaptureOutput.CO_COLUMN_STATS,
+                ai.floedb.floecat.capture.rpc.CaptureOutput.CO_PARQUET_PAGE_INDEX),
             false);
     assertNotNull(job);
     assertEquals("JS_SUCCEEDED", job.state, () -> "job failed: " + job.message);
@@ -1653,19 +1654,20 @@ public class ConnectorIT {
     }
     return scopeWithCaptureOutputs(
         scope,
-        CaptureOutput.CO_TABLE_STATS,
-        CaptureOutput.CO_FILE_STATS,
-        CaptureOutput.CO_COLUMN_STATS);
+        ai.floedb.floecat.capture.rpc.CaptureOutput.CO_TABLE_STATS,
+        ai.floedb.floecat.capture.rpc.CaptureOutput.CO_FILE_STATS,
+        ai.floedb.floecat.capture.rpc.CaptureOutput.CO_COLUMN_STATS);
   }
 
   private static CaptureScope scopeWithCaptureOutputs(
-      CaptureScope scope, CaptureOutput... outputs) {
+      CaptureScope scope, ai.floedb.floecat.capture.rpc.CaptureOutput... outputs) {
     if (scope == null || scope.hasCapturePolicy()) {
       return scope;
     }
-    CapturePolicy.Builder policy = CapturePolicy.newBuilder();
+    ai.floedb.floecat.capture.rpc.CapturePolicy.Builder policy =
+        ai.floedb.floecat.capture.rpc.CapturePolicy.newBuilder();
     if (outputs != null) {
-      for (CaptureOutput output : outputs) {
+      for (ai.floedb.floecat.capture.rpc.CaptureOutput output : outputs) {
         if (output != null) {
           policy.addOutputs(output);
         }

@@ -16,10 +16,10 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
+import ai.floedb.floecat.capture.rpc.CapturePolicy;
 import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.connector.rpc.CapturePolicy;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
@@ -751,7 +751,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
   }
 
   private static ReconcileCapturePolicy.Output mapCaptureOutput(
-      ai.floedb.floecat.connector.rpc.CaptureOutput output) {
+      ai.floedb.floecat.capture.rpc.CaptureOutput output) {
     return switch (output) {
       case CO_TABLE_STATS -> ReconcileCapturePolicy.Output.TABLE_STATS;
       case CO_FILE_STATS -> ReconcileCapturePolicy.Output.FILE_STATS;
@@ -763,7 +763,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
   }
 
   private static ReconcileCapturePolicy.DefaultColumnScope fromProtoDefaultColumnScope(
-      ai.floedb.floecat.connector.rpc.DefaultColumnScope scope) {
+      ai.floedb.floecat.capture.rpc.DefaultColumnScope scope) {
     return switch (scope) {
       case DCS_ALL -> ReconcileCapturePolicy.DefaultColumnScope.ALL;
       case DCS_EXPLICIT_ONLY -> ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;

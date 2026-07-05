@@ -16,6 +16,9 @@
 
 package ai.floedb.floecat.client.cli;
 
+import ai.floedb.floecat.capture.rpc.CaptureOutput;
+import ai.floedb.floecat.capture.rpc.CapturePolicy;
+import ai.floedb.floecat.capture.rpc.DefaultColumnScope;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
@@ -43,9 +46,6 @@ import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
-import ai.floedb.floecat.connector.rpc.CaptureOutput;
-import ai.floedb.floecat.connector.rpc.CapturePolicy;
-import ai.floedb.floecat.connector.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
@@ -477,16 +477,19 @@ final class StatsCliSupport {
               + " [--mode metadata-only|metadata-and-capture|capture-only]"
               + " [--capture stats|table-stats|file-stats|column-stats|index,...]"
               + " [--full] [--wait-seconds <n>]"
-              + "  (defaults: --mode capture-only --capture stats)");
+              + "  (defaults: --mode capture-only with stats capture;"
+              + " --columns/--default-cols/--max-default-cols require explicit --capture)");
       return;
     }
 
     String fq = args.get(0);
     List<String> columns =
         CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--columns", "")));
+    boolean defaultColsSet = args.contains("--default-cols");
     DefaultColumnScope defaultColumnScope =
         CliUtils.parseDefaultColumnScope(
             Quotes.unquote(CliArgs.parseStringFlag(args, "--default-cols", "")));
+    boolean maxDefaultColsSet = args.contains("--max-default-cols");
     int maxDefaultColumns = CliArgs.parseIntFlag(args, "--max-default-cols", 32);
     if (maxDefaultColumns <= 0) {
       throw new IllegalArgumentException("--max-default-cols must be greater than 0");
@@ -498,6 +501,7 @@ final class StatsCliSupport {
             ? CaptureMode.CM_CAPTURE_ONLY
             : CliUtils.parseCaptureMode(modeToken);
     String captureToken = Quotes.unquote(CliArgs.parseStringFlag(args, "--capture", ""));
+    boolean captureSet = args.contains("--capture");
     java.util.Set<CaptureOutput> requestedOutputs =
         captureToken == null || captureToken.isBlank()
             ? defaultAnalyzeCaptureOutputs(mode)
@@ -540,7 +544,14 @@ final class StatsCliSupport {
     }
     CapturePolicy capturePolicy =
         CliUtils.buildCapturePolicy(
-            mode, requestedOutputs, columns, defaultColumnScope, maxDefaultColumns);
+            mode,
+            captureSet,
+            requestedOutputs,
+            columns,
+            defaultColsSet,
+            defaultColumnScope,
+            maxDefaultColsSet,
+            maxDefaultColumns);
     if (capturePolicy != null) {
       scope.setCapturePolicy(capturePolicy);
     }

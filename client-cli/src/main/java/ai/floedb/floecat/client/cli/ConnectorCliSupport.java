@@ -16,6 +16,9 @@
 
 package ai.floedb.floecat.client.cli;
 
+import ai.floedb.floecat.capture.rpc.CaptureOutput;
+import ai.floedb.floecat.capture.rpc.CapturePolicy;
+import ai.floedb.floecat.capture.rpc.DefaultColumnScope;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
@@ -35,14 +38,11 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
-import ai.floedb.floecat.connector.rpc.CaptureOutput;
-import ai.floedb.floecat.connector.rpc.CapturePolicy;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
-import ai.floedb.floecat.connector.rpc.DefaultColumnScope;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
@@ -596,7 +596,8 @@ final class ConnectorCliSupport {
                   + " [--columns c1,#id2,...]"
                   + " [--default-cols first-n|all|explicit-only]"
                   + " [--max-default-cols <n>]"
-                  + "  (--mode required; --capture overrides connector policy for that run)");
+                  + "  (--mode required; explicit --capture overrides connector policy for that run;"
+                  + " --columns/--default-cols/--max-default-cols require explicit --capture)");
           return;
         }
         boolean full = CliArgs.hasFlag(args, "--full");
@@ -616,14 +617,17 @@ final class ConnectorCliSupport {
         boolean currentSnapshot = CliArgs.hasFlag(args, "--current");
         boolean allSnapshots = CliArgs.hasFlag(args, "--all");
         int latestN = CliArgs.parseIntFlag(args, "--latest-n", 0);
+        boolean captureSet = args.contains("--capture");
         java.util.Set<CaptureOutput> requestedOutputs =
             CliUtils.parseCaptureOutputs(
                 Quotes.unquote(CliArgs.parseStringFlag(args, "--capture", "")));
         List<String> columns =
             CliUtils.csvList(Quotes.unquote(CliArgs.parseStringFlag(args, "--columns", "")));
+        boolean defaultColsSet = args.contains("--default-cols");
         DefaultColumnScope defaultColumnScope =
             CliUtils.parseDefaultColumnScope(
                 Quotes.unquote(CliArgs.parseStringFlag(args, "--default-cols", "")));
+        boolean maxDefaultColsSet = args.contains("--max-default-cols");
         int maxDefaultColumns = CliArgs.parseIntFlag(args, "--max-default-cols", 32);
         if (maxDefaultColumns <= 0) {
           throw new IllegalArgumentException("--max-default-cols must be greater than 0");
@@ -655,7 +659,14 @@ final class ConnectorCliSupport {
         CaptureScope.Builder scope = CaptureScope.newBuilder().setConnectorId(connectorId);
         CapturePolicy capturePolicy =
             CliUtils.buildCapturePolicy(
-                mode, requestedOutputs, columns, defaultColumnScope, maxDefaultColumns);
+                mode,
+                captureSet,
+                requestedOutputs,
+                columns,
+                defaultColsSet,
+                defaultColumnScope,
+                maxDefaultColsSet,
+                maxDefaultColumns);
         Connector connector = null;
         if (!destNs.isBlank()
             || !destTable.isBlank()
@@ -1167,7 +1178,7 @@ final class ConnectorCliSupport {
         continue;
       }
       policy.addColumns(
-          ai.floedb.floecat.connector.rpc.CaptureColumnPolicy.newBuilder()
+          ai.floedb.floecat.capture.rpc.CaptureColumnPolicy.newBuilder()
               .setSelector(column)
               .setCaptureStats(outputs.contains(CaptureOutput.CO_COLUMN_STATS))
               .setCaptureIndex(outputs.contains(CaptureOutput.CO_PARQUET_PAGE_INDEX))
@@ -1236,6 +1247,34 @@ final class ConnectorCliSupport {
                   case CO_UNSPECIFIED, UNRECOGNIZED -> "unspecified";
                 })
         .collect(Collectors.joining(","));
+  }
+
+  private static String formatDefaultColumnScope(CapturePolicy policy) {
+    if (policy == null) {
+      return "";
+    }
+    return switch (policy.getDefaultColumnScope()) {
+      case DCS_FIRST_N -> "first-n";
+      case DCS_ALL -> "all";
+      case DCS_EXPLICIT_ONLY -> "explicit-only";
+      case DCS_UNSPECIFIED, UNRECOGNIZED -> "unspecified";
+    };
+  }
+
+  private static String formatCaptureColumns(CapturePolicy policy) {
+    if (policy == null || policy.getColumnsCount() == 0) {
+      return "[]";
+    }
+    return policy.getColumnsList().stream()
+        .map(
+            column ->
+                column.getSelector()
+                    + "(stats="
+                    + column.getCaptureStats()
+                    + ",index="
+                    + column.getCaptureIndex()
+                    + ")")
+        .collect(Collectors.joining(",", "[", "]"));
   }
 
   private static SourceSelector buildSource(String ns, String table, List<String> cols) {
@@ -1438,7 +1477,14 @@ final class ConnectorCliSupport {
                       : " scope=" + formatPolicyScope(p))
                   + (p.getMaxParallel() > 0 ? " max_par=" + p.getMaxParallel() : "")
                   + (p.hasAutoCapturePolicy()
-                      ? " capture=" + formatCaptureOutputs(p.getAutoCapturePolicy())
+                      ? " capture="
+                          + formatCaptureOutputs(p.getAutoCapturePolicy())
+                          + " default_column_scope="
+                          + formatDefaultColumnScope(p.getAutoCapturePolicy())
+                          + " max_default_columns="
+                          + p.getAutoCapturePolicy().getMaxDefaultColumns()
+                          + " columns="
+                          + formatCaptureColumns(p.getAutoCapturePolicy())
                       : "")
                   + (notBefore.isEmpty() ? "" : " not_before=" + notBefore));
         }
