@@ -1944,6 +1944,13 @@ guide listed below.</p>
 <li><strong>Full reconciliation</strong> – <code>ReconcilerService</code> enters full-rescan mode (<code>fullRescan=true</code>), so the
   connector lists every table in the namespace, creates missing namespaces in the destination
   catalog, updates <code>DestinationTarget</code> pointers, and ingests snapshot stats for each table.</li>
+<li><strong>Persisted capture policy</strong> – Delta connectors can store a default auto-capture policy used by
+  scheduled reconcile runs and by trigger-time capture modes when <code>--capture</code> is omitted. Example:
+  <div class="highlight"><pre><span></span><code>connector update &quot;Unity Delta SP&quot; \
+  --policy-capture stats,index \
+  --policy-default-cols explicit-only
+</code></pre></div>
+  Use <code>connector update "Unity Delta SP" --policy-capture none</code> to clear the persisted policy.</li>
 </ul>
 <h2 id="cross-references">Cross-References<a class="headerlink" href="#cross-references" title="Permanent link">&para;</a></h2>
 <ul>

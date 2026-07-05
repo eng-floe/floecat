@@ -1588,7 +1588,7 @@ view get &lt;id|catalog.ns[.ns...].name&gt;
 view update &lt;id|fq&gt; [--display &lt;name&gt;] [--namespace &lt;catalog.ns[.ns...]&gt;] [--sql &lt;text&gt;] [--desc &lt;text&gt;] [--props k=v ...]
 view delete &lt;id|fq&gt;
 
-snapshots &lt;catalog.ns[.ns...].table&gt;
+snapshots &lt;catalog.ns[.ns...].table&gt; [--limit N]
 snapshot get &lt;table&gt; &lt;snapshot_id&gt;
 snapshot delete &lt;table&gt; &lt;snapshot_id&gt; [--etag &lt;etag&gt;]
 
@@ -1631,7 +1631,7 @@ query get &lt;query_id&gt;
 query fetch-scan &lt;query_id&gt; &lt;table_id&gt;
 
 connectors
-connector list [--kind &lt;KIND&gt;] [--page-size &lt;N&gt;]
+connector list [--kind &lt;KIND&gt;]
 connector get &lt;display_name|id&gt;
 connector create &lt;display_name&gt; &lt;source_type (ICEBERG|DELTA|GLUE|UNITY)&gt; &lt;uri&gt; &lt;source_namespace (a[.b[.c]...])&gt; &lt;destination_catalog (name)&gt;
     [--source-table &lt;name&gt;] [--source-cols c1,#id2,...]
@@ -1674,14 +1674,14 @@ connector trigger &lt;display_name|id&gt; (--full|--incremental)
     [--snapshot &lt;id[,id...]&gt;|--current|--latest-n &lt;n&gt;|--all] [--columns c1,#id2,...]
     [--default-cols first-n|all|explicit-only] [--max-default-cols &lt;n&gt;]
 connector job &lt;jobId&gt; [--json]
-connector jobs [--connector &lt;id|name&gt;] [--state queued,running,...] [--page-size &lt;N&gt;] [--json]
-connector jobs --child &lt;parentJobId&gt; [--connector &lt;id|name&gt;] [--state queued,running,...] [--page-size &lt;N&gt;] [--json]
+connector jobs [--connector &lt;display_name|id&gt;] [--state &lt;queued|running|cancelling|cancelled|succeeded|failed&gt;[,...]] [--limit N] [--json]
+connector jobs --child &lt;parentJobId&gt; [--json]
 connector cancel &lt;jobId&gt; [--reason &lt;text&gt;]
 connector settings get
 connector settings update [--auto-enabled true|false] [--default-interval-sec &lt;n&gt;] [--default-mode incremental|full] [--finished-job-retention-sec &lt;n&gt;]
 
 storage-authorities
-storage-authority list [--page-size &lt;N&gt;]
+storage-authority list
 storage-authority get &lt;display_name|id&gt;
 storage-authority create &lt;display_name&gt; --location-prefix &lt;uri-prefix&gt;
     [--desc &lt;text&gt;] [--enabled true|false] [--type &lt;type&gt;]
@@ -1741,6 +1741,12 @@ Trigger notes:
 - If `--capture` is omitted for a capture mode, the run inherits `connector.policy.auto_capture_policy`
   when set; otherwise the request is rejected.
 - `--columns`, `--default-cols`, and `--max-default-cols` require an explicit `--capture` override.
+- `connector create` and `connector validate` do not accept `--policy-capture none`; clearing a
+  persisted auto-capture policy is only supported on `connector update`.
+- `--policy-capture none` cannot be combined with `--policy-columns`, `--policy-default-cols`, or
+  `--policy-max-default-cols`.
+- `--policy-columns`, `--policy-default-cols`, and `--policy-max-default-cols` require an explicit
+  `--policy-capture`.
 - `connector update --policy-capture none` clears a persisted auto-capture policy.
 - Metadata reconcile runs require exactly one traversal flag (`--full` or `--incremental`) and,
   unless `--dest-view` is used, exactly one snapshot scope flag (`--current`, `--latest-n`,

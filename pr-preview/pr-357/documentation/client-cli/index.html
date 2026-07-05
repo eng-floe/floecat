@@ -1818,8 +1818,9 @@ syntactic sugar such as <code>catalog.ns.table</code> references and <code>--pro
 <li><strong>Secret handling</strong> – Secret-bearing connector and storage-authority values must be supplied via
   <code>--cred-type</code> / <code>--cred</code>, not <code>--auth k=v</code>. The service stores those secrets out-of-band and
   only returns redacted or client-safe values.</li>
-<li><strong>Pagination defaults</strong> – <code>DEFAULT_PAGE_SIZE</code> is 1000; commands paginate internally by default.
-  Commands that expose <code>--page-size</code> include connector and storage-authority listing workflows.</li>
+<li><strong>Pagination defaults</strong> – Commands paginate internally in batches of 100 rows. User-facing limits
+  are exposed only on ordered result sets such as <code>snapshots</code>, <code>connector jobs</code>, and ordered stats
+  commands.</li>
 <li><strong>Query display</strong> – <code>query get</code> prints the <code>QueryDescriptor</code> metadata (snapshots, expansions,
   obligations). Use <code>query fetch-scan &lt;query_id&gt; &lt;table_id&gt;</code> to print the data/delete <code>ScanFile</code>
   entries returned by connectors via the query lifecycle SPI.</li>
@@ -1915,6 +1916,10 @@ connector trigger glue-iceberg --full --current --mode metadata-and-capture --ca
 <p>For capture modes, trigger-time <code>--capture</code> flags are optional only when the connector already
   has a persisted auto-capture policy. If omitted, the run inherits that connector policy.
   Trigger-time capture flags override the connector default for that run.
+  <code>connector create</code> and <code>connector validate</code> do not accept <code>--policy-capture none</code>; use
+  <code>connector update ... --policy-capture none</code> to clear a persisted auto-capture policy.
+  <code>--policy-columns</code>, <code>--policy-default-cols</code>, and <code>--policy-max-default-cols</code> require an explicit
+  <code>--policy-capture</code>, and those flags cannot be combined with <code>--policy-capture none</code>.
   Use <code>connector update ... --policy-capture none</code> to clear a persisted auto-capture policy.</p>
 <ul>
 <li><strong>Creating a storage authority for Iceberg REST credential vending</strong></li>

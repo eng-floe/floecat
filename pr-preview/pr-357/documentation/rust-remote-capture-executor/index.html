@@ -2090,9 +2090,18 @@ connector definition and auth material needed to read source files.</p>
 <li><code>failure</code></li>
 </ul>
 <p>Both require <code>result_id</code>.</p>
+<p>Stats records and index artifacts are streamed first as <code>chunk</code> messages; <code>success</code> then finalizes
+the result and tells the service how many chunks to reassemble.</p>
 <p>Success carries:</p>
 <ul>
 <li><code>result_id</code></li>
+<li><code>file_results</code></li>
+<li><code>chunk_count</code> (number of preceding <code>chunk</code> messages)</li>
+</ul>
+<p>Each preceding <code>chunk</code> carries:</p>
+<ul>
+<li><code>result_id</code></li>
+<li><code>chunk_index</code></li>
 <li><code>stats_records</code></li>
 <li><code>index_artifacts</code></li>
 </ul>
@@ -2105,15 +2114,19 @@ connector definition and auth material needed to read source files.</p>
 idempotency for stats and artifact writes. This gives you safe replay semantics if the worker loses
 the gRPC response and retries the same submission.</p>
 <h2 id="result-id-rules">Result ID Rules<a class="headerlink" href="#result-id-rules" title="Permanent link">&para;</a></h2>
-<p>For the same durable outcome, reuse the same <code>result_id</code> on retries.</p>
-<p>Recommended shape:</p>
-<div class="highlight"><pre><span></span><code>&lt;job_id&gt;:&lt;plan_id&gt;:&lt;group_id&gt;:success
-&lt;job_id&gt;:&lt;plan_id&gt;:&lt;group_id&gt;:failure
+<p>Scope the <code>result_id</code> to a single <strong>execution attempt</strong> by including the <code>lease_epoch</code>. Within one
+lease — including network retries of the same submission — reuse the same <code>result_id</code>. A re-leased
+retry runs under a fresh <code>lease_epoch</code>, and therefore a fresh <code>result_id</code>.</p>
+<p>Required shape:</p>
+<div class="highlight"><pre><span></span><code>&lt;job_id&gt;:&lt;plan_id&gt;:&lt;group_id&gt;:&lt;lease_epoch&gt;:success
+&lt;job_id&gt;:&lt;plan_id&gt;:&lt;group_id&gt;:&lt;lease_epoch&gt;:failure
 </code></pre></div>
-<p>That is the same stability rule the current Java file-group executor follows when <code>plan_id</code>
-and <code>group_id</code> are available.</p>
-<p>Do not reuse one <code>result_id</code> for different payloads. The control plane rejects replay with the
-same <code>result_id</code> if the full request payload changes.</p>
+<p>Both the Java file-group executor and the remote executor follow this shape.</p>
+<p>Do not reuse one <code>result_id</code> for different payloads. The control plane rejects replay with the same
+<code>result_id</code> if the full request payload changes — and because chunk payloads are not byte-stable
+across re-serializations (protobuf map ordering is not canonical), two different lease attempts must
+not share a <code>result_id</code>, or the second attempt's staged chunks collide with the first and are
+rejected with <code>Conflict detected</code>. Including the <code>lease_epoch</code> guarantees that.</p>
 <h2 id="idempotency-and-retry-semantics">Idempotency and Retry Semantics<a class="headerlink" href="#idempotency-and-retry-semantics" title="Permanent link">&para;</a></h2>
 <p>The worker should assume the following:</p>
 <ul>
@@ -2125,7 +2138,7 @@ same <code>result_id</code> if the full request payload changes.</p>
 </ul>
 <p>Recommended retry behavior:</p>
 <ol>
-<li>Generate one stable <code>result_id</code> per durable success or failure outcome.</li>
+<li>Generate one <code>result_id</code> per execution attempt (include the <code>lease_epoch</code>); a re-lease produces a new one.</li>
 <li>If the submit RPC times out or the response is lost, retry the same request unchanged.</li>
 <li>If <code>CompleteLeasedReconcileJob</code> times out after a successful submit, retry completion with the
    same terminal counters/message.</li>
