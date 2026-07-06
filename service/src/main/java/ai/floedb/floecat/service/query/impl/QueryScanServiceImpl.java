@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.query.impl;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.query.rpc.DataFileBatch;
 import ai.floedb.floecat.query.rpc.DeleteFileBatch;
 import ai.floedb.floecat.query.rpc.InitScanRequest;
@@ -29,6 +30,7 @@ import ai.floedb.floecat.query.rpc.ScanHandle;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.GrpcContextUtil;
 import ai.floedb.floecat.service.common.LogHelper;
+import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.execution.impl.ScanBundleService;
 import ai.floedb.floecat.service.query.QueryContextStore;
@@ -121,25 +123,32 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
    */
   public Multi<DeleteFileBatch> streamDeleteFiles(ScanHandle handle) {
     var L = LogHelper.start(LOG, "StreamDeleteFiles");
+    // Read the resolved call context at method entry — before the executor hop — and carry it by
+    // reference into the body; the captured io.grpc.Context alone is unreliable across the hop
+    // (eng-floe/floecat#361).
+    ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
     return Multi.createFrom()
         .deferred(
             () ->
                 grpcCtx.call(
-                    () -> {
-                      String correlationId = principal.get().getCorrelationId();
-                      ScanSession session = requireSession(handle, correlationId);
-                      return scanBundles
-                          .streamDeleteFiles(session, correlationId)
-                          .onFailure()
-                          .invoke(e -> markPlanningFailed(session, correlationId))
-                          .onFailure()
-                          .invoke(e -> queryStore.removeScanSession(handle))
-                          .onFailure()
-                          .transform(e -> toStatus(e, correlationId))
-                          .onCompletion()
-                          .invoke(L::ok);
-                    }))
+                    () ->
+                        ResolvedCallContexts.callWith(
+                            callCtx,
+                            () -> {
+                              String correlationId = correlationIdOf(callCtx);
+                              ScanSession session = requireSession(handle, correlationId);
+                              return scanBundles
+                                  .streamDeleteFiles(session, correlationId)
+                                  .onFailure()
+                                  .invoke(e -> markPlanningFailed(session, correlationId))
+                                  .onFailure()
+                                  .invoke(e -> queryStore.removeScanSession(handle))
+                                  .onFailure()
+                                  .transform(e -> toStatus(e, correlationId))
+                                  .onCompletion()
+                                  .invoke(L::ok);
+                            })))
         .runSubscriptionOn(Infrastructure.getDefaultExecutor())
         .onFailure()
         .invoke(L::fail);
@@ -152,29 +161,33 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
    */
   public Multi<DataFileBatch> streamDataFiles(ScanHandle handle) {
     var L = LogHelper.start(LOG, "StreamDataFiles");
+    ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
     return Multi.createFrom()
         .deferred(
             () ->
                 grpcCtx.call(
-                    () -> {
-                      String correlationId = principal.get().getCorrelationId();
-                      ScanSession session = requireSession(handle, correlationId);
-                      return scanBundles
-                          .streamDataFiles(session, correlationId)
-                          .onFailure()
-                          .invoke(e -> markPlanningFailed(session, correlationId))
-                          .onFailure()
-                          .invoke(e -> queryStore.removeScanSession(handle))
-                          .onFailure()
-                          .transform(e -> toStatus(e, correlationId))
-                          .onCompletion()
-                          .invoke(
-                              () -> {
-                                markPlanningCompleted(session, correlationId);
-                                L.ok();
-                              });
-                    }))
+                    () ->
+                        ResolvedCallContexts.callWith(
+                            callCtx,
+                            () -> {
+                              String correlationId = correlationIdOf(callCtx);
+                              ScanSession session = requireSession(handle, correlationId);
+                              return scanBundles
+                                  .streamDataFiles(session, correlationId)
+                                  .onFailure()
+                                  .invoke(e -> markPlanningFailed(session, correlationId))
+                                  .onFailure()
+                                  .invoke(e -> queryStore.removeScanSession(handle))
+                                  .onFailure()
+                                  .transform(e -> toStatus(e, correlationId))
+                                  .onCompletion()
+                                  .invoke(
+                                      () -> {
+                                        markPlanningCompleted(session, correlationId);
+                                        L.ok();
+                                      });
+                            })))
         .runSubscriptionOn(Infrastructure.getDefaultExecutor())
         .onTermination()
         .invoke(() -> queryStore.removeScanSession(handle))
@@ -212,6 +225,12 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
         .orElseThrow(
             () ->
                 GrpcErrors.notFound(correlationId, SCAN_HANDLE, Map.of("handle", handle.getId())));
+  }
+
+  private static String correlationIdOf(ResolvedCallContext callCtx) {
+    return !callCtx.correlationId().isBlank()
+        ? callCtx.correlationId()
+        : callCtx.principalContext().getCorrelationId();
   }
 
   private void markPlanningFailed(ScanSession session, String correlationId) {

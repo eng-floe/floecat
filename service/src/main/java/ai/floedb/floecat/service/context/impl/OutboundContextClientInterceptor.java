@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.context.impl;
 
+import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
@@ -61,14 +62,30 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
 
       @Override
       public void start(Listener<RespT> responseListener, Metadata headers) {
-        String sessionHeaderValue = InboundContextInterceptor.SESSION_HEADER_VALUE_KEY.get();
+        // Prefer the resolved-call-context carrier: the io.grpc.Context keys alone are unreliable
+        // on executor threads, which used to silently drop engine/correlation metadata from
+        // outbound RPCs (eng-floe/floecat#361).
+        ResolvedCallContext resolved = ResolvedCallContexts.currentOrNull();
+
+        String sessionHeaderValue =
+            resolved != null && resolved.sessionHeaderValue() != null
+                ? resolved.sessionHeaderValue()
+                : InboundContextInterceptor.SESSION_HEADER_VALUE_KEY.get();
         String authorizationHeaderValue =
-            InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY.get();
+            resolved != null && resolved.authorizationHeaderValue() != null
+                ? resolved.authorizationHeaderValue()
+                : InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY.get();
         var queryId =
-            Optional.ofNullable(InboundContextInterceptor.QUERY_KEY.get())
+            Optional.ofNullable(
+                    firstNonBlank(
+                        resolved != null ? resolved.queryId() : null,
+                        InboundContextInterceptor.QUERY_KEY.get()))
                 .orElseGet(() -> Baggage.current().getEntryValue("query_id"));
 
-        EngineContext engineContext = InboundContextInterceptor.ENGINE_CONTEXT_KEY.get();
+        EngineContext engineContext =
+            resolved != null && resolved.engineContext().hasEngineKind()
+                ? resolved.engineContext()
+                : InboundContextInterceptor.ENGINE_CONTEXT_KEY.get();
 
         String engineKind =
             firstNonBlank(
@@ -88,7 +105,10 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
                     Baggage.current().getEntryValue("engine_version"));
 
         var correlationId =
-            Optional.ofNullable(InboundContextInterceptor.CORR_KEY.get())
+            Optional.ofNullable(
+                    firstNonBlank(
+                        resolved != null ? resolved.correlationId() : null,
+                        InboundContextInterceptor.CORR_KEY.get()))
                 .orElseGet(() -> Baggage.current().getEntryValue("correlation_id"));
 
         if (sessionHeaderValue != null && sessionHeader.isPresent()) {

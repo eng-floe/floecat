@@ -25,6 +25,8 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
+import ai.floedb.floecat.flight.context.ResolvedCallContext;
+import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -85,16 +87,23 @@ public abstract class BaseServiceImpl {
 
   protected <T> Uni<T> run(Supplier<T> body) {
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
+    // Read the resolved call context at method entry — before any executor hop — and carry it by
+    // reference into the body. The captured io.grpc.Context alone is unreliable across the hop
+    // (eng-floe/floecat#361).
+    ResolvedCallContext callCtx = ResolvedCallContexts.currentOrNull();
     Context otelCtx = Context.current();
     return Uni.createFrom()
         .item(
             () ->
                 grpcCtx.call(
-                    () -> {
-                      try (Scope ignored = otelCtx.makeCurrent()) {
-                        return body.get();
-                      }
-                    }));
+                    () ->
+                        ResolvedCallContexts.callWith(
+                            callCtx,
+                            () -> {
+                              try (Scope ignored = otelCtx.makeCurrent()) {
+                                return body.get();
+                              }
+                            })));
   }
 
   protected <T> Uni<T> runWithRetry(Supplier<T> body) {
@@ -213,6 +222,10 @@ public abstract class BaseServiceImpl {
   }
 
   protected String correlationId() {
+    ResolvedCallContext resolved = ResolvedCallContexts.currentOrNull();
+    if (resolved != null && !resolved.correlationId().isBlank()) {
+      return resolved.correlationId();
+    }
     var pctx = principal != null ? principal.get() : null;
     return pctx != null ? pctx.getCorrelationId() : "";
   }

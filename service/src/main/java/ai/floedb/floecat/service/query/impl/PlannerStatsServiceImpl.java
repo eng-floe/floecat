@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.query.impl;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
+import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.query.rpc.FetchTableConstraintsRequest;
 import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
 import ai.floedb.floecat.query.rpc.PlannerStatsService;
@@ -26,6 +27,7 @@ import ai.floedb.floecat.query.rpc.TargetStatsBundleChunk;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.GrpcContextUtil;
 import ai.floedb.floecat.service.common.LogHelper;
+import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.catalog.PlannerStatsBundleService;
@@ -56,24 +58,32 @@ public class PlannerStatsServiceImpl extends BaseServiceImpl implements PlannerS
   @Override
   public Multi<TargetStatsBundleChunk> getTargetStats(FetchTargetStatsRequest request) {
     var L = LogHelper.start(LOG, "GetTargetStats");
-    // Capture the incoming gRPC context so the principal/correlation-id stays available
-    // while authz/QueryContext lookup happen; the bundle builder itself is context-free.
+    // Read the resolved call context at method entry — before the executor hop — and carry it by
+    // reference into the body; the captured io.grpc.Context alone is unreliable across the hop
+    // (eng-floe/floecat#361). The bundle builder itself is context-free.
+    ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
 
     return Multi.createFrom()
         .<TargetStatsBundleChunk>deferred(
             () ->
                 grpcCtx.call(
-                    () -> {
-                      var principalContext = principal.get();
-                      var correlationId = principalContext.getCorrelationId();
-                      authz.require(principalContext, "catalog.read");
+                    () ->
+                        ResolvedCallContexts.callWith(
+                            callCtx,
+                            () -> {
+                              var principalContext = callCtx.principalContext();
+                              var correlationId =
+                                  !callCtx.correlationId().isBlank()
+                                      ? callCtx.correlationId()
+                                      : principalContext.getCorrelationId();
+                              authz.require(principalContext, "catalog.read");
 
-                      String queryId =
-                          mustNonEmpty(request.getQueryId(), "query_id", correlationId);
-                      QueryContext ctx = requireActiveQuery(correlationId, queryId);
-                      return bundles.streamTargets(correlationId, ctx, request);
-                    }))
+                              String queryId =
+                                  mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+                              QueryContext ctx = requireActiveQuery(correlationId, queryId);
+                              return bundles.streamTargets(correlationId, ctx, request);
+                            })))
         .runSubscriptionOn(Infrastructure.getDefaultExecutor())
         .onFailure()
         .invoke(L::fail)
@@ -86,22 +96,29 @@ public class PlannerStatsServiceImpl extends BaseServiceImpl implements PlannerS
   public Multi<TableConstraintsBundleChunk> getTableConstraints(
       FetchTableConstraintsRequest request) {
     var L = LogHelper.start(LOG, "GetTableConstraints");
+    ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
 
     return Multi.createFrom()
         .<TableConstraintsBundleChunk>deferred(
             () ->
                 grpcCtx.call(
-                    () -> {
-                      var principalContext = principal.get();
-                      var correlationId = principalContext.getCorrelationId();
-                      authz.require(principalContext, "catalog.read");
+                    () ->
+                        ResolvedCallContexts.callWith(
+                            callCtx,
+                            () -> {
+                              var principalContext = callCtx.principalContext();
+                              var correlationId =
+                                  !callCtx.correlationId().isBlank()
+                                      ? callCtx.correlationId()
+                                      : principalContext.getCorrelationId();
+                              authz.require(principalContext, "catalog.read");
 
-                      String queryId =
-                          mustNonEmpty(request.getQueryId(), "query_id", correlationId);
-                      QueryContext ctx = requireActiveQuery(correlationId, queryId);
-                      return bundles.streamConstraints(correlationId, ctx, request);
-                    }))
+                              String queryId =
+                                  mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+                              QueryContext ctx = requireActiveQuery(correlationId, queryId);
+                              return bundles.streamConstraints(correlationId, ctx, request);
+                            })))
         .runSubscriptionOn(Infrastructure.getDefaultExecutor())
         .onFailure()
         .invoke(L::fail)

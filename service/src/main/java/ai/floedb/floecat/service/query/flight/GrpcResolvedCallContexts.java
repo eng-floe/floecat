@@ -16,10 +16,8 @@
 
 package ai.floedb.floecat.service.query.flight;
 
-import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
-import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
+import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 
 /** Resolves Floecat Flight call context from the current shared gRPC request context. */
 final class GrpcResolvedCallContexts {
@@ -27,24 +25,6 @@ final class GrpcResolvedCallContexts {
   private GrpcResolvedCallContexts() {}
 
   static ResolvedCallContext currentOrUnauthenticated() {
-    PrincipalContext principal = InboundContextInterceptor.PC_KEY.get();
-    if (principal == null) {
-      return ResolvedCallContext.unauthenticated();
-    }
-
-    String queryId = InboundContextInterceptor.QUERY_KEY.get();
-    String correlationId = InboundContextInterceptor.CORR_KEY.get();
-    EngineContext engineContext = InboundContextInterceptor.ENGINE_CONTEXT_KEY.get();
-    String sessionHeaderValue = InboundContextInterceptor.SESSION_HEADER_VALUE_KEY.get();
-    String authorizationHeaderValue =
-        InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY.get();
-
-    return new ResolvedCallContext(
-        principal,
-        queryId != null ? queryId : "",
-        correlationId != null ? correlationId : "",
-        engineContext != null ? engineContext : EngineContext.empty(),
-        sessionHeaderValue,
-        authorizationHeaderValue);
+    return ResolvedCallContexts.currentOrUnauthenticated();
   }
 }
