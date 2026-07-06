@@ -29,6 +29,7 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
+import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +46,24 @@ public final class CatalogSurfaceWritePolicy {
     this.overlay = Objects.requireNonNull(overlay, "catalog overlay is required");
   }
 
+  /**
+   * The user-facing PERMISSION_DENIED for a write against a system object. This is the surface
+   * layer's early, kind-labelled rendering of the same immutability invariant that {@code
+   * GenericResourceRepository#guardSystemObject} enforces structurally at the repository layer.
+   */
+  private static StatusRuntimeException systemObjectImmutable(
+      String corr, ResourceId id, String kind) {
+    return GrpcErrors.permissionDenied(
+        corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", id.getId(), "kind", kind));
+  }
+
+  /** Rejects a target whose id carries the system marker (immutable). */
+  private static void rejectSystemId(ResourceId id, String kind, String corr) {
+    if (SystemResourceIdGenerator.isSystemId(id)) {
+      throw systemObjectImmutable(corr, id, kind);
+    }
+  }
+
   public CatalogNode requireVisibleCatalog(ResourceId catalogId, String field, String corr) {
     return CatalogSurfaceSupport.requireVisibleCatalog(overlay, catalogId, field, corr);
   }
@@ -55,10 +74,7 @@ public final class CatalogSurfaceWritePolicy {
 
   public CatalogNode requireWritableCatalog(ResourceId catalogId, String field, String corr) {
     CatalogSurfaceSupport.ensureKind(catalogId, ResourceKind.RK_CATALOG, field, corr);
-    if (SystemResourceIdGenerator.isSystemId(catalogId)) {
-      throw GrpcErrors.permissionDenied(
-          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", catalogId.getId(), "kind", "catalog"));
-    }
+    rejectSystemId(catalogId, "catalog", corr);
     return requireVisibleCatalog(catalogId, field, corr);
   }
 
@@ -72,14 +88,10 @@ public final class CatalogSurfaceWritePolicy {
 
   public NamespaceNode requireWritableNamespace(ResourceId namespaceId, String field, String corr) {
     CatalogSurfaceSupport.ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, field, corr);
-    if (SystemResourceIdGenerator.isSystemId(namespaceId)) {
-      throw GrpcErrors.permissionDenied(
-          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", namespaceId.getId(), "kind", "namespace"));
-    }
+    rejectSystemId(namespaceId, "namespace", corr);
     var namespace = requireVisibleNamespace(namespaceId, corr);
     if (namespace.origin() == GraphNodeOrigin.SYSTEM) {
-      throw GrpcErrors.permissionDenied(
-          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", namespaceId.getId(), "kind", "namespace"));
+      throw systemObjectImmutable(corr, namespaceId, "namespace");
     }
     return namespace;
   }
@@ -93,10 +105,7 @@ public final class CatalogSurfaceWritePolicy {
    */
   public void requireDeletableCatalog(ResourceId catalogId, String corr) {
     CatalogSurfaceSupport.ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", corr);
-    if (SystemResourceIdGenerator.isSystemId(catalogId)) {
-      throw GrpcErrors.permissionDenied(
-          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", catalogId.getId(), "kind", "catalog"));
-    }
+    rejectSystemId(catalogId, "catalog", corr);
   }
 
   /**
@@ -109,10 +118,7 @@ public final class CatalogSurfaceWritePolicy {
    */
   public void requireDeletableNamespace(ResourceId namespaceId, String corr) {
     CatalogSurfaceSupport.ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
-    if (SystemResourceIdGenerator.isSystemId(namespaceId)) {
-      throw GrpcErrors.permissionDenied(
-          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", namespaceId.getId(), "kind", "namespace"));
-    }
+    rejectSystemId(namespaceId, "namespace", corr);
     overlay
         .resolve(namespaceId)
         .filter(NamespaceNode.class::isInstance)
@@ -120,10 +126,7 @@ public final class CatalogSurfaceWritePolicy {
         .filter(ns -> ns.origin() == GraphNodeOrigin.SYSTEM)
         .ifPresent(
             ns -> {
-              throw GrpcErrors.permissionDenied(
-                  corr,
-                  SYSTEM_OBJECT_IMMUTABLE,
-                  Map.of("id", namespaceId.getId(), "kind", "namespace"));
+              throw systemObjectImmutable(corr, namespaceId, "namespace");
             });
   }
 
@@ -241,8 +244,7 @@ public final class CatalogSurfaceWritePolicy {
     }
 
     if (node != null && node.origin() == GraphNodeOrigin.SYSTEM) {
-      throw GrpcErrors.permissionDenied(
-          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", tableId.getId(), "kind", "table"));
+      throw systemObjectImmutable(corr, tableId, "table");
     }
 
     throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
@@ -251,8 +253,7 @@ public final class CatalogSurfaceWritePolicy {
   private void enforceWritableViewNode(GraphNode node, ResourceId viewId, String corr) {
     if (node instanceof ViewNode vn) {
       if (isSystemViewNode(vn)) {
-        throw GrpcErrors.permissionDenied(
-            corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", viewId.getId(), "kind", "view"));
+        throw systemObjectImmutable(corr, viewId, "view");
       }
       return;
     }
