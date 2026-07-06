@@ -18,10 +18,12 @@ package ai.floedb.floecat.service.context.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.flight.context.ResolvedCallContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
-import io.grpc.Context;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import java.io.ByteArrayInputStream;
@@ -68,12 +70,8 @@ final class OutboundContextClientInterceptorTest {
         new OutboundContextClientInterceptor(Optional.empty(), Optional.of("authorization"));
     AtomicReference<Metadata> captured = new AtomicReference<>();
 
-    Context context =
-        Context.current()
-            .withValue(
-                InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY, "Bearer propagated");
-
-    context.run(
+    ResolvedCallContexts.runWith(
+        resolvedWithAuthorizationHeader("Bearer propagated"),
         () -> {
           ClientCall<String, String> call =
               interceptor.interceptCall(
@@ -108,12 +106,8 @@ final class OutboundContextClientInterceptorTest {
         new OutboundContextClientInterceptor(Optional.empty(), Optional.of("authorization"));
     AtomicReference<Metadata> captured = new AtomicReference<>();
 
-    Context context =
-        Context.current()
-            .withValue(
-                InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY, "Bearer propagated");
-
-    context.run(
+    ResolvedCallContexts.runWith(
+        resolvedWithAuthorizationHeader("Bearer propagated"),
         () -> {
           ClientCall<String, String> call =
               interceptor.interceptCall(
@@ -128,6 +122,11 @@ final class OutboundContextClientInterceptorTest {
     Metadata.Key<String> authKey =
         Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
     assertThat(captured.get().get(authKey)).isEqualTo("Bearer explicit");
+  }
+
+  private static ResolvedCallContext resolvedWithAuthorizationHeader(String value) {
+    return new ResolvedCallContext(
+        PrincipalContext.getDefaultInstance(), "", "", EngineContext.empty(), null, value);
   }
 
   private static MethodDescriptor<String, String> testMethod(String fullMethodName) {

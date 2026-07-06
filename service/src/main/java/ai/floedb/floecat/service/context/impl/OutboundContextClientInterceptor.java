@@ -24,7 +24,6 @@ import io.grpc.ClientCall;
 import io.grpc.ForwardingClientCall;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
-import io.opentelemetry.api.baggage.Baggage;
 import io.quarkus.grpc.GlobalInterceptor;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Optional;
@@ -62,72 +61,42 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
 
       @Override
       public void start(Listener<RespT> responseListener, Metadata headers) {
-        // Prefer the resolved-call-context carrier: the io.grpc.Context keys alone are unreliable
-        // on executor threads, which used to silently drop engine/correlation metadata from
-        // outbound RPCs (eng-floe/floecat#361). Once the carrier is present it is trusted
-        // entirely — falling back per-field would let a reused worker's stale io.grpc.Context
-        // keys leak a previous call's values into a request that legitimately has none.
+        // The resolved-call-context carrier is the single source of outbound propagation. The
+        // io.grpc.Context keys are unreliable on executor threads and can be stale on reused
+        // workers, and nothing in the stack ever populates OTel baggage with these entries, so
+        // the old key/baggage fallbacks could only propagate wrong values or none
+        // (eng-floe/floecat#361). The carrier itself still reads the io.grpc keys as its last
+        // channel, so callers that only drive io.grpc.Context (tests) keep working.
         ResolvedCallContext resolved = ResolvedCallContexts.currentOrNull();
-
-        String sessionHeaderValue;
-        String authorizationHeaderValue;
-        String queryId;
-        String engineKind;
-        String engineVersion;
-        String correlationId;
-        if (resolved != null) {
-          sessionHeaderValue = resolved.sessionHeaderValue();
-          authorizationHeaderValue = resolved.authorizationHeaderValue();
-          queryId = resolved.queryId();
-          EngineContext engineContext = resolved.engineContext();
-          engineKind = engineContext.hasEngineKind() ? engineContext.engineKind() : null;
-          engineVersion = engineContext.engineVersion();
-          correlationId = resolved.correlationId();
-        } else {
-          sessionHeaderValue = InboundContextInterceptor.SESSION_HEADER_VALUE_KEY.get();
-          authorizationHeaderValue = InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY.get();
-          queryId =
-              Optional.ofNullable(InboundContextInterceptor.QUERY_KEY.get())
-                  .orElseGet(() -> Baggage.current().getEntryValue("query_id"));
-          EngineContext engineContext = InboundContextInterceptor.ENGINE_CONTEXT_KEY.get();
-          engineKind =
-              firstNonBlank(
-                  engineContext != null && engineContext.hasEngineKind()
-                      ? engineContext.engineKind()
-                      : null,
-                  InboundContextInterceptor.ENGINE_KIND_KEY.get(),
-                  Baggage.current().getEntryValue("engine_kind"));
-          engineVersion =
-              firstNonBlank(
-                  engineContext != null ? engineContext.engineVersion() : null,
-                  InboundContextInterceptor.ENGINE_VERSION_KEY.get(),
-                  Baggage.current().getEntryValue("engine_version"));
-          correlationId =
-              Optional.ofNullable(InboundContextInterceptor.CORR_KEY.get())
-                  .orElseGet(() -> Baggage.current().getEntryValue("correlation_id"));
+        if (resolved == null) {
+          // Machine-initiated call outside any request scope: nothing to propagate.
+          super.start(responseListener, headers);
+          return;
         }
+
+        EngineContext engineContext = resolved.engineContext();
+        String engineKind = engineContext.hasEngineKind() ? engineContext.engineKind() : null;
         // Only propagate an engine version if we are propagating an engine kind.
-        if (engineKind == null || engineKind.isBlank()) {
-          engineVersion = null;
-        }
+        String engineVersion =
+            (engineKind == null || engineKind.isBlank()) ? null : engineContext.engineVersion();
 
-        if (sessionHeaderValue != null && sessionHeader.isPresent()) {
+        if (resolved.sessionHeaderValue() != null && sessionHeader.isPresent()) {
           Metadata.Key<String> key =
               Metadata.Key.of(sessionHeader.orElseThrow(), Metadata.ASCII_STRING_MARSHALLER);
-          headers.put(key, sessionHeaderValue);
+          headers.put(key, resolved.sessionHeaderValue());
         }
-        if (authorizationHeaderValue != null
+        if (resolved.authorizationHeaderValue() != null
             && authorizationHeader.isPresent()
             && !hasAuthorizationHeader(headers)) {
           Metadata.Key<String> key =
               Metadata.Key.of(authorizationHeader.orElseThrow(), Metadata.ASCII_STRING_MARSHALLER);
-          headers.put(key, authorizationHeaderValue);
+          headers.put(key, resolved.authorizationHeaderValue());
         }
 
-        putIfNonBlank(headers, QUERY_ID, queryId);
+        putIfNonBlank(headers, QUERY_ID, resolved.queryId());
         putIfNonBlank(headers, ENGINE_KIND, engineKind);
         putIfNonBlank(headers, ENGINE_VERSION, engineVersion);
-        putIfNonBlank(headers, CORR, correlationId);
+        putIfNonBlank(headers, CORR, resolved.correlationId());
         super.start(responseListener, headers);
       }
     };
@@ -137,15 +106,6 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
     if (value != null && !value.isBlank()) {
       headers.put(key, value);
     }
-  }
-
-  private static String firstNonBlank(String... candidates) {
-    for (String candidate : candidates) {
-      if (candidate != null && !candidate.isBlank()) {
-        return candidate;
-      }
-    }
-    return null;
   }
 
   private boolean hasAuthorizationHeader(Metadata headers) {
