@@ -24,6 +24,7 @@ import io.vertx.core.Vertx;
 import java.util.Objects;
 import java.util.concurrent.Callable;
 import org.jboss.logging.Logger;
+import org.jboss.logging.MDC;
 
 /**
  * Write-once carrier for the fully resolved inbound call context (principal, correlation id, engine
@@ -104,7 +105,28 @@ public final class ResolvedCallContexts {
     if (fromDuplicatedContext != null) {
       return fromDuplicatedContext;
     }
-    return fromGrpcContextKeys();
+    ResolvedCallContext fromKeys = fromGrpcContextKeys();
+    if (fromKeys == null) {
+      warnIfMdcDisagrees();
+    }
+    return fromKeys;
+  }
+
+  /**
+   * Channel-disagreement detector: MDC carrying a correlation id proves this thread is inside a
+   * resolved request, so a miss on every context channel is a propagation loss — the failure mode
+   * of eng-floe/floecat#361, turned from a silent wrong answer into a countable signal. This should
+   * never fire; any occurrence is a regression in context propagation.
+   */
+  private static void warnIfMdcDisagrees() {
+    Object mdcCorrelationId = MDC.get("correlation_id");
+    if (mdcCorrelationId instanceof String correlationId && !correlationId.isBlank()) {
+      LOG.warnf(
+          "call-context channels disagree: MDC correlation_id=%s is populated but no channel"
+              + " (scope, duplicated-context local, io.grpc.Context) carries a resolved call"
+              + " context — the call context was lost on the way to this thread",
+          correlationId);
+    }
   }
 
   /** Like {@link #currentOrNull()} but degrades to {@link ResolvedCallContext#unauthenticated}. */

@@ -22,6 +22,8 @@ import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Optional;
+import org.jboss.logging.Logger;
+import org.jboss.logging.MDC;
 
 /**
  * Resolves the engine context declared by the current call.
@@ -32,6 +34,8 @@ import java.util.Optional;
  */
 @ApplicationScoped
 public final class EngineContextProvider {
+
+  private static final Logger LOG = Logger.getLogger(EngineContextProvider.class);
 
   public String engineKind() {
     return engineContext().engineKind();
@@ -69,6 +73,27 @@ public final class EngineContextProvider {
     String kind = Optional.ofNullable(InboundContextInterceptor.ENGINE_KIND_KEY.get()).orElse("");
     String version =
         Optional.ofNullable(InboundContextInterceptor.ENGINE_VERSION_KEY.get()).orElse("");
-    return EngineContext.of(kind, version);
+    EngineContext fallback = EngineContext.of(kind, version);
+    if (!fallback.hasEngineKind()) {
+      warnIfRequestDeclaredEngine();
+    }
+    return fallback;
+  }
+
+  /**
+   * Channel-disagreement detector: MDC carrying an engine kind proves the request declared an
+   * engine, so resolving an empty engine context here is a propagation loss — the exact condition
+   * that silently un-resolves engine-gated system objects (eng-floe/floecat#361). This should never
+   * fire; any occurrence is a regression in context propagation.
+   */
+  private static void warnIfRequestDeclaredEngine() {
+    Object mdcEngineKind = MDC.get("floecat_engine_kind");
+    if (mdcEngineKind instanceof String engineKind && !engineKind.isBlank()) {
+      LOG.warnf(
+          "engine-context channels disagree: MDC floecat_engine_kind=%s is populated but no"
+              + " channel carries an engine context — the call context was lost on the way to"
+              + " this thread (correlation_id=%s)",
+          engineKind, MDC.get("correlation_id"));
+    }
   }
 }

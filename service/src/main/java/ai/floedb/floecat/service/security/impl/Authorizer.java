@@ -27,9 +27,7 @@ public class Authorizer {
     if (principalContext.getPermissionsList().contains(permission)) {
       return;
     }
-    throw Status.PERMISSION_DENIED
-        .withDescription("missing permission: " + permission)
-        .asRuntimeException();
+    throw denied(principalContext, "missing permission: " + permission);
   }
 
   public void require(PrincipalContext principalContext, List<String> permissions) {
@@ -38,8 +36,21 @@ public class Authorizer {
         return;
       }
     }
-    throw Status.PERMISSION_DENIED
-        .withDescription("missing permissions: " + permissions)
-        .asRuntimeException();
+    throw denied(principalContext, "missing permissions: " + permissions);
+  }
+
+  /**
+   * A principal with no subject and no permissions is not a caller that lacks a grant — it is a
+   * caller whose identity never arrived (interceptor bypassed, or the call context lost before
+   * authorization; eng-floe/floecat#361). Reporting that as UNAUTHENTICATED instead of
+   * PERMISSION_DENIED keeps the next propagation bug diagnosable.
+   */
+  private static RuntimeException denied(PrincipalContext principalContext, String detail) {
+    if (principalContext.getSubject().isBlank() && principalContext.getPermissionsCount() == 0) {
+      return Status.UNAUTHENTICATED
+          .withDescription("no authenticated principal on this call (" + detail + ")")
+          .asRuntimeException();
+    }
+    return Status.PERMISSION_DENIED.withDescription(detail).asRuntimeException();
   }
 }
