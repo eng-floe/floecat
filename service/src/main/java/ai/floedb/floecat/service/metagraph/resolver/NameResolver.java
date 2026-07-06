@@ -200,38 +200,45 @@ public final class NameResolver {
         "resolve_relation_id",
         "",
         accountId,
-        () ->
-            scopeMemo
-                .computeIfAbsent(scopeKey(ref), k -> resolveScope(accountId, ref))
-                .flatMap(
-                    scope -> {
-                      String catalogId = scope.catalog().getResourceId().getId();
-                      String namespaceId = scope.namespace().getResourceId().getId();
-                      // One pointer read (no blob fetch) answers both kind and id via the shared
-                      // relation-name claim written by every table/view create and rename.
-                      Optional<ResourceId> claimed =
-                          tableRepository.relationNameClaim(
-                              accountId, catalogId, namespaceId, ref.getName());
-                      if (claimed.isPresent()) {
-                        ResourceId rid = claimed.get();
-                        return Optional.of(
-                            rid.getKind() == ResourceKind.RK_TABLE
-                                ? requireCanonicalTableId(rid)
-                                : rid);
-                      }
-                      // Claimless rows (created before the claim existed): kind-specific probes.
-                      Optional<ResourceId> table =
-                          tableRepository
-                              .getByName(accountId, catalogId, namespaceId, ref.getName())
-                              .map(Table::getResourceId)
-                              .map(this::requireCanonicalTableId);
-                      if (table.isPresent()) {
-                        return table;
-                      }
-                      return viewRepository
-                          .getByName(accountId, catalogId, namespaceId, ref.getName())
-                          .map(View::getResourceId);
-                    }));
+        () -> {
+          // Name validity is per-ref; check it here, not inside resolveScope, so a blank-name ref
+          // does not cache Optional.empty() under the name-independent scope key and starve valid
+          // siblings sharing the same catalog/path in this batch.
+          if (!validName(ref)) {
+            return Optional.<ResourceId>empty();
+          }
+          return scopeMemo
+              .computeIfAbsent(scopeKey(ref), k -> resolveScope(accountId, ref))
+              .flatMap(
+                  scope -> {
+                    String catalogId = scope.catalog().getResourceId().getId();
+                    String namespaceId = scope.namespace().getResourceId().getId();
+                    // One pointer read (no blob fetch) answers both kind and id via the shared
+                    // relation-name claim written by every table/view create and rename.
+                    Optional<ResourceId> claimed =
+                        tableRepository.relationNameClaim(
+                            accountId, catalogId, namespaceId, ref.getName());
+                    if (claimed.isPresent()) {
+                      ResourceId rid = claimed.get();
+                      return Optional.of(
+                          rid.getKind() == ResourceKind.RK_TABLE
+                              ? requireCanonicalTableId(rid)
+                              : rid);
+                    }
+                    // Claimless rows (created before the claim existed): kind-specific probes.
+                    Optional<ResourceId> table =
+                        tableRepository
+                            .getByName(accountId, catalogId, namespaceId, ref.getName())
+                            .map(Table::getResourceId)
+                            .map(this::requireCanonicalTableId);
+                    if (table.isPresent()) {
+                      return table;
+                    }
+                    return viewRepository
+                        .getByName(accountId, catalogId, namespaceId, ref.getName())
+                        .map(View::getResourceId);
+                  });
+        });
   }
 
   private static String scopeKey(NameRef ref) {
@@ -243,27 +250,31 @@ public final class NameResolver {
         "resolve_table_relation",
         "",
         accountId,
-        () ->
-            resolveScope(accountId, ref)
-                .flatMap(
-                    scope ->
-                        tableRepository
-                            .getByName(
-                                accountId,
-                                scope.catalog().getResourceId().getId(),
-                                scope.namespace().getResourceId().getId(),
-                                ref.getName())
-                            .map(
-                                t -> {
-                                  ResourceId tableId = requireCanonicalTableId(t.getResourceId());
-                                  return new ResolvedRelation(
-                                      tableId,
-                                      canonicalName(
-                                          scope.catalog(),
-                                          scope.namespace(),
-                                          t.getDisplayName(),
-                                          tableId));
-                                })));
+        () -> {
+          if (!validName(ref)) {
+            return Optional.<ResolvedRelation>empty();
+          }
+          return resolveScope(accountId, ref)
+              .flatMap(
+                  scope ->
+                      tableRepository
+                          .getByName(
+                              accountId,
+                              scope.catalog().getResourceId().getId(),
+                              scope.namespace().getResourceId().getId(),
+                              ref.getName())
+                          .map(
+                              t -> {
+                                ResourceId tableId = requireCanonicalTableId(t.getResourceId());
+                                return new ResolvedRelation(
+                                    tableId,
+                                    canonicalName(
+                                        scope.catalog(),
+                                        scope.namespace(),
+                                        t.getDisplayName(),
+                                        tableId));
+                              }));
+        });
   }
 
   // ----------------------------------------------------------------------
@@ -274,11 +285,13 @@ public final class NameResolver {
   private record Scope(Catalog catalog, Namespace namespace) {}
 
   /**
-   * Resolves the catalog and namespace a relation name lives in, validating the reference first.
-   * Shared by the relation resolution methods so the catalog+namespace lookup is written once.
+   * Resolves the catalog and namespace a relation name lives in. The scope depends only on the
+   * catalog and path, not the relation name — so callers that memoize by {@code scopeKey} (catalog
+   * + path) must gate on {@link #validName} themselves rather than have a blank-name ref poison the
+   * shared scope entry. Shared by the relation resolution methods so the lookup is written once.
    */
   private Optional<Scope> resolveScope(String accountId, NameRef ref) {
-    if (!validCatalog(ref) || !validName(ref)) {
+    if (!validCatalog(ref)) {
       return Optional.empty();
     }
     Optional<Catalog> catalogOpt = catalogRepository.getByName(accountId, ref.getCatalog());
