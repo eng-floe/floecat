@@ -24,10 +24,10 @@ import ai.floedb.floecat.connector.spi.FloecatConnector;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -46,6 +46,8 @@ final class IcebergConnectorFactory {
   private static final String CLIENT_CREDENTIALS_PROVIDER = "client.credentials-provider";
   private static final String CLIENT_CREDENTIALS_PROVIDER_PREFIX =
       CLIENT_CREDENTIALS_PROVIDER + ".";
+  private static final Set<String> ICEBERG_HEADER_KEYS =
+      Set.of("header.x-iceberg-access-delegation");
 
   private IcebergConnectorFactory() {}
 
@@ -119,17 +121,6 @@ final class IcebergConnectorFactory {
           headerHints.forEach((k, v) -> props.put("header." + k, v));
         }
 
-        if (source == IcebergSource.REST) {
-          LOG.infof(
-              "creating iceberg rest connector uri=%s warehouse=%s accessDelegationHeader=%s"
-                  + " headerKeys=%s storageKeyPresent=%s",
-              uri,
-              cleanOpts.get("warehouse"),
-              props.get("header.X-Iceberg-Access-Delegation"),
-              headerHints == null ? java.util.Set.of() : headerHints.keySet(),
-              props.containsKey("s3.access-key-id"));
-        }
-
         props.putIfAbsent("rest.client.user-agent", "floecat-connector-iceberg");
 
         CatalogLease catalogLease = acquireRestCatalog(props);
@@ -195,6 +186,15 @@ final class IcebergConnectorFactory {
                 Map<String, String> catalogProps =
                     Collections.unmodifiableMap(new HashMap<>(props));
                 created.initialize("floecat-iceberg", catalogProps);
+                LOG.infof(
+                    "created iceberg rest catalog uri=%s warehouse=%s accessDelegationHeader=%s"
+                        + " headerKeys=%s storageKeyPresent=%s cacheSize=%d",
+                    catalogProps.get("uri"),
+                    catalogProps.get("warehouse"),
+                    catalogProps.get("header.X-Iceberg-Access-Delegation"),
+                    headerKeys(catalogProps),
+                    catalogProps.containsKey("s3.access-key-id"),
+                    REST_CATALOG_CACHE.size() + 1);
                 return new CatalogCacheEntry(created, created, refreshNow + REST_CATALOG_TTL_MS);
               });
       CatalogLease lease = entry.tryAcquire(System.currentTimeMillis() + REST_CATALOG_TTL_MS);
@@ -224,6 +224,12 @@ final class IcebergConnectorFactory {
       catalog.close();
     } catch (Exception ignore) {
     }
+  }
+
+  private static Set<String> headerKeys(Map<String, String> props) {
+    return props.keySet().stream()
+        .filter(key -> key.startsWith("header."))
+        .collect(java.util.stream.Collectors.toCollection(java.util.TreeSet::new));
   }
 
   static Map<String, String> buildBaseIcebergProperties(Map<String, String> options) {
@@ -405,41 +411,99 @@ final class IcebergConnectorFactory {
     return value == null || value.isBlank();
   }
 
-  private record CatalogCacheKey(Map<String, String> props) {
+  private record CatalogCacheKey(
+      String uri,
+      String warehouse,
+      String restFlavor,
+      String restAuthType,
+      String restSigningName,
+      String restSigningRegion,
+      String restClientUserAgent,
+      String ioImpl,
+      String s3Endpoint,
+      String s3PathStyleAccess,
+      String s3Region,
+      String clientRegion,
+      String awsRegion,
+      String s3RemoteSigningEnabled,
+      String awsProfile,
+      String awsProfilePath,
+      String storageAuthMode,
+      String staticAccessKeyFingerprint,
+      Map<String, String> icebergHeaders) {
     static CatalogCacheKey of(Map<String, String> props) {
-      if (props == null || props.isEmpty()) {
-        return new CatalogCacheKey(Map.of());
-      }
-      Map<String, String> safe = new LinkedHashMap<>();
-      props.entrySet().stream()
-          .sorted(Map.Entry.comparingByKey())
-          .forEach(
-              entry ->
-                  safe.put(
-                      entry.getKey(),
-                      isSensitiveCacheKey(entry.getKey())
-                          ? fingerprintValue(entry.getValue())
-                          : entry.getValue()));
-      return new CatalogCacheKey(Map.copyOf(safe));
+      Map<String, String> safe = props == null ? Map.of() : props;
+      return new CatalogCacheKey(
+          normalizedValue(safe.get("uri")),
+          normalizedValue(safe.get("warehouse")),
+          normalizedValue(safe.get("rest.flavor")),
+          normalizedValue(safe.get("rest.auth.type")),
+          normalizedValue(safe.get("rest.signing-name")),
+          normalizedValue(safe.get("rest.signing-region")),
+          normalizedValue(safe.get("rest.client.user-agent")),
+          normalizedValue(safe.get("io-impl")),
+          normalizedValue(safe.get("s3.endpoint")),
+          normalizedValue(safe.get("s3.path-style-access")),
+          normalizedValue(safe.get("s3.region")),
+          normalizedValue(safe.get("client.region")),
+          normalizedValue(safe.get("aws.region")),
+          normalizedValue(safe.get("s3.remote-signing-enabled")),
+          normalizedValue(safe.get("aws.profile")),
+          normalizedValue(safe.get("aws.profile_path")),
+          catalogStorageAuthMode(safe),
+          catalogStaticAccessKeyFingerprint(safe),
+          stableIcebergHeaders(safe));
     }
   }
 
-  private static boolean isSensitiveCacheKey(String key) {
-    if (key == null || key.isBlank()) {
-      return false;
+  private static String catalogStorageAuthMode(Map<String, String> props) {
+    if (props == null || props.isEmpty()) {
+      return "none";
     }
-    String lower = key.toLowerCase(Locale.ROOT);
-    return lower.contains("secret")
-        || lower.contains("token")
-        || lower.contains("password")
-        || lower.contains("credential")
-        || lower.contains("authorization")
-        || lower.contains("bearer")
-        || lower.contains("assertion")
-        || lower.contains("private")
-        || lower.contains("session-token")
-        || lower.contains("access-key")
-        || lower.contains("secret-access-key");
+    if (!isBlank(props.get(CLIENT_CREDENTIALS_PROVIDER))) {
+      return "provider";
+    }
+    if (!isBlank(props.get("s3.access-key-id")) || !isBlank(props.get("s3.secret-access-key"))) {
+      return "static-keys";
+    }
+    if (!isBlank(props.get("aws.profile"))) {
+      return "profile";
+    }
+    return "none";
+  }
+
+  private static String catalogStaticAccessKeyFingerprint(Map<String, String> props) {
+    if (props == null || props.isEmpty()) {
+      return null;
+    }
+    String accessKeyId = normalizedValue(props.get("s3.access-key-id"));
+    return accessKeyId == null ? null : fingerprintValue(accessKeyId);
+  }
+
+  private static Map<String, String> stableIcebergHeaders(Map<String, String> props) {
+    if (props == null || props.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, String> headers = new HashMap<>();
+    props.forEach(
+        (key, value) -> {
+          String normalizedKey = normalizedValue(key);
+          String normalizedValue = normalizedValue(value);
+          if (normalizedKey == null
+              || normalizedValue == null
+              || !ICEBERG_HEADER_KEYS.contains(normalizedKey.toLowerCase(Locale.ROOT))) {
+            return;
+          }
+          headers.put(normalizedKey.toLowerCase(Locale.ROOT), normalizedValue);
+        });
+    return headers.isEmpty() ? Map.of() : Map.copyOf(headers);
+  }
+
+  private static String normalizedValue(String value) {
+    if (value == null || value.isBlank()) {
+      return null;
+    }
+    return value.trim();
   }
 
   private static String fingerprintValue(String value) {
