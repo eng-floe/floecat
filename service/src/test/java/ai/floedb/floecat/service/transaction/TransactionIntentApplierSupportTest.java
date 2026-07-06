@@ -29,8 +29,8 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.transaction.impl.TransactionIntentApplierSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
-import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
+import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import com.google.protobuf.util.Timestamps;
@@ -721,8 +721,7 @@ class TransactionIntentApplierSupportTest {
         pointers.get(byIdKey).isEmpty(), "table by-id pointer must not be created on conflict");
   }
 
-
-    private static Transaction readTransaction(InMemoryBlobStore blobs, String blobUri)
+  private static Transaction readTransaction(InMemoryBlobStore blobs, String blobUri)
       throws Exception {
     return Transaction.parseFrom(blobs.get(blobUri));
   }
