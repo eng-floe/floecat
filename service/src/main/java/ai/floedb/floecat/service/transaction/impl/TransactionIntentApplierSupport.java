@@ -417,7 +417,9 @@ public class TransactionIntentApplierSupport {
     if (targetValidation.status != ApplyStatus.APPLIED) {
       return targetValidation;
     }
-    ApplyOutcome writeEligibility = validateTableWriteEligibility(nextTable, current != null);
+    ApplyOutcome writeEligibility =
+        validateTableWriteEligibility(
+            nextTable, /* checkExistingTable= */ current != null, /* checkTargetScope= */ true);
     if (writeEligibility.status != ApplyStatus.APPLIED) {
       return writeEligibility;
     }
@@ -519,7 +521,9 @@ public class TransactionIntentApplierSupport {
     if (targetValidation.status != ApplyStatus.APPLIED) {
       return targetValidation;
     }
-    ApplyOutcome writeEligibility = validateExistingTableWriteEligibility(currentTable);
+    ApplyOutcome writeEligibility =
+        validateTableWriteEligibility(
+            currentTable, /* checkExistingTable= */ true, /* checkTargetScope= */ false);
     if (writeEligibility.status != ApplyStatus.APPLIED) {
       return writeEligibility;
     }
@@ -659,7 +663,16 @@ public class TransactionIntentApplierSupport {
     return ApplyOutcome.applied();
   }
 
-  private ApplyOutcome validateTableWriteEligibility(Table table, boolean existingTable) {
+  /**
+   * Evaluates whether a table intent may be applied. The two checks are orthogonal: {@code
+   * checkExistingTable} verifies the table row itself is user-owned and writable (used when the
+   * intent mutates or deletes a row that already exists), while {@code checkTargetScope} verifies
+   * the destination catalog and namespace are writable and mutually consistent (used when the
+   * intent writes a row into a scope). Create passes scope-only, update passes both, delete passes
+   * existing-only.
+   */
+  private ApplyOutcome validateTableWriteEligibility(
+      Table table, boolean checkExistingTable, boolean checkTargetScope) {
     if (table == null || !table.hasResourceId()) {
       return ApplyOutcome.conflict(
           "TABLE_INTENT_INVALID_PAYLOAD", "table payload is missing resource_id", null, null, null);
@@ -678,48 +691,18 @@ public class TransactionIntentApplierSupport {
 
     try {
       var writePolicy = new CatalogSurfaceWritePolicy(overlay);
-      if (existingTable) {
+      if (checkExistingTable) {
         writePolicy.requireWritableTable(table.getResourceId(), "transaction-apply");
       }
-      writePolicy.requireWritableCatalog(
-          table.getCatalogId(), "table.catalog_id", "transaction-apply");
-      var namespace =
-          writePolicy.requireWritableNamespace(
-              table.getNamespaceId(), "table.namespace_id", "transaction-apply");
-      writePolicy.requireNamespaceInCatalog(
-          namespace, table.getNamespaceId(), table.getCatalogId(), "transaction-apply");
-      return ApplyOutcome.applied();
-    } catch (StatusRuntimeException policyViolation) {
-      return ApplyOutcome.conflict(
-          "TABLE_INTENT_NOT_WRITABLE", "table intent target is not writable", null, null, null);
-    } catch (RuntimeException unexpected) {
-      // Overlay resolution can fail transiently (storage/cache errors). Do not turn that into a
-      // terminal conflict that abandons an otherwise-valid transaction; let it be retried.
-      return ApplyOutcome.retryable(
-          "TABLE_WRITE_ELIGIBILITY_ERROR",
-          "unable to evaluate table write eligibility: " + unexpected.getMessage());
-    }
-  }
-
-  private ApplyOutcome validateExistingTableWriteEligibility(Table table) {
-    if (table == null || !table.hasResourceId()) {
-      return ApplyOutcome.conflict(
-          "TABLE_INTENT_INVALID_PAYLOAD", "table payload is missing resource_id", null, null, null);
-    }
-    if (SystemResourceIdGenerator.isSystemId(table.getResourceId())) {
-      return tableImmutableConflict(table.getResourceId().getId());
-    }
-    if (overlay == null) {
-      // The overlay is @Inject-ed on an @ApplicationScoped bean, so this is unreachable in
-      // production. A guard whose purpose is closing write-eligibility gaps must not default to
-      // "allow" on its own null case — treat an absent overlay as retryable rather than applied.
-      return ApplyOutcome.retryable(
-          "TABLE_WRITE_ELIGIBILITY_UNAVAILABLE",
-          "catalog overlay unavailable for write-eligibility check");
-    }
-    try {
-      new CatalogSurfaceWritePolicy(overlay)
-          .requireWritableTable(table.getResourceId(), "transaction-apply");
+      if (checkTargetScope) {
+        writePolicy.requireWritableCatalog(
+            table.getCatalogId(), "table.catalog_id", "transaction-apply");
+        var namespace =
+            writePolicy.requireWritableNamespace(
+                table.getNamespaceId(), "table.namespace_id", "transaction-apply");
+        writePolicy.requireNamespaceInCatalog(
+            namespace, table.getNamespaceId(), table.getCatalogId(), "transaction-apply");
+      }
       return ApplyOutcome.applied();
     } catch (StatusRuntimeException policyViolation) {
       return ApplyOutcome.conflict(
