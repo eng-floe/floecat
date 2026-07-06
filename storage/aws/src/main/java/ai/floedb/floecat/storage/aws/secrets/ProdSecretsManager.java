@@ -17,6 +17,7 @@
 package ai.floedb.floecat.storage.aws.secrets;
 
 import ai.floedb.floecat.storage.aws.AwsClients;
+import ai.floedb.floecat.storage.aws.ClosedAwsClientDetector;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
 import io.quarkus.arc.profile.IfBuildProfile;
 import jakarta.annotation.PreDestroy;
@@ -28,6 +29,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicReference;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 import software.amazon.awssdk.services.secretsmanager.model.CreateSecretRequest;
@@ -51,8 +53,8 @@ public class ProdSecretsManager implements SecretsManager {
   @ConfigProperty(name = "floecat.secrets.aws.role-arn")
   Optional<String> roleArn = Optional.empty();
 
-  private final SecretsManagerClient secretsClient;
-  private final StsClient stsClient;
+  private final AtomicReference<SecretsManagerClient> secretsClient;
+  private final AtomicReference<StsClient> stsClient;
   private final ConcurrentMap<String, SecretsManagerClient> perAccountClients =
       new ConcurrentHashMap<>();
 
@@ -68,8 +70,8 @@ public class ProdSecretsManager implements SecretsManager {
   ProdSecretsManager(
       AwsClients awsClients, SecretsManagerClient secretsClient, StsClient stsClient) {
     this.awsClients = awsClients;
-    this.secretsClient = secretsClient;
-    this.stsClient = stsClient;
+    this.secretsClient = new AtomicReference<>(secretsClient);
+    this.stsClient = new AtomicReference<>(stsClient);
   }
 
   private final AwsClients awsClients;
@@ -77,43 +79,74 @@ public class ProdSecretsManager implements SecretsManager {
   @PreDestroy
   void shutdown() {
     for (SecretsManagerClient client : perAccountClients.values()) {
-      client.close();
+      closeQuietly(client);
     }
     perAccountClients.clear();
-    secretsClient.close();
-    stsClient.close();
+    closeQuietly(secretsClient.getAndSet(null));
+    closeQuietly(stsClient.getAndSet(null));
   }
 
   @Override
   public void put(String accountId, String secretType, String secretId, byte[] payload) {
+    withClientRefresh(
+        accountId,
+        client -> {
+          putOnce(client, accountId, secretType, secretId, payload);
+          return null;
+        });
+  }
+
+  @Override
+  public Optional<byte[]> get(String accountId, String secretType, String secretId) {
+    return withClientRefresh(accountId, client -> getOnce(client, accountId, secretType, secretId));
+  }
+
+  @Override
+  public void update(String accountId, String secretType, String secretId, byte[] payload) {
+    withClientRefresh(
+        accountId,
+        client -> {
+          updateOnce(client, accountId, secretType, secretId, payload);
+          return null;
+        });
+  }
+
+  @Override
+  public void delete(String accountId, String secretType, String secretId) {
+    withClientRefresh(
+        accountId,
+        client -> {
+          deleteOnce(client, accountId, secretType, secretId);
+          return null;
+        });
+  }
+
+  private void putOnce(
+      SecretsManagerClient client, String accountId, String secretType, String secretId, byte[] payload) {
     ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     String encoded = encodePayload(payload);
     List<Tag> tags = buildTags(accountId, secretName);
     try {
-      clientForAccount(accountId)
-          .createSecret(
-              CreateSecretRequest.builder()
-                  .name(secretName)
-                  .secretString(encoded)
-                  .tags(tags)
-                  .build());
+      client.createSecret(
+          CreateSecretRequest.builder()
+              .name(secretName)
+              .secretString(encoded)
+              .tags(tags)
+              .build());
     } catch (ResourceExistsException exists) {
-      clientForAccount(accountId)
-          .putSecretValue(
-              PutSecretValueRequest.builder().secretId(secretName).secretString(encoded).build());
-      tagSecret(accountId, secretName, tags);
+      client.putSecretValue(
+          PutSecretValueRequest.builder().secretId(secretName).secretString(encoded).build());
+      tagSecret(client, secretName, tags);
     }
   }
 
-  @Override
-  public Optional<byte[]> get(String accountId, String secretType, String secretId) {
+  private Optional<byte[]> getOnce(
+      SecretsManagerClient client, String accountId, String secretType, String secretId) {
     ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     try {
-      var response =
-          clientForAccount(accountId)
-              .getSecretValue(GetSecretValueRequest.builder().secretId(secretName).build());
+      var response = client.getSecretValue(GetSecretValueRequest.builder().secretId(secretName).build());
       if (response == null
           || response.secretString() == null
           || response.secretString().isBlank()) {
@@ -125,36 +158,29 @@ public class ProdSecretsManager implements SecretsManager {
     }
   }
 
-  @Override
-  public void update(String accountId, String secretType, String secretId, byte[] payload) {
+  private void updateOnce(
+      SecretsManagerClient client, String accountId, String secretType, String secretId, byte[] payload) {
     ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     String encoded = encodePayload(payload);
     List<Tag> tags = buildTags(accountId, secretName);
     try {
-      clientForAccount(accountId)
-          .putSecretValue(
-              PutSecretValueRequest.builder().secretId(secretName).secretString(encoded).build());
-      tagSecret(accountId, secretName, tags);
+      client.putSecretValue(
+          PutSecretValueRequest.builder().secretId(secretName).secretString(encoded).build());
+      tagSecret(client, secretName, tags);
     } catch (ResourceNotFoundException missing) {
-      clientForAccount(accountId)
-          .createSecret(
-              CreateSecretRequest.builder()
-                  .name(secretName)
-                  .secretString(encoded)
-                  .tags(tags)
-                  .build());
+      client.createSecret(
+          CreateSecretRequest.builder().name(secretName).secretString(encoded).tags(tags).build());
     }
   }
 
-  @Override
-  public void delete(String accountId, String secretType, String secretId) {
+  private void deleteOnce(
+      SecretsManagerClient client, String accountId, String secretType, String secretId) {
     ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     try {
-      clientForAccount(accountId)
-          .deleteSecret(
-              DeleteSecretRequest.builder().secretId(secretName).recoveryWindowInDays(7L).build());
+      client.deleteSecret(
+          DeleteSecretRequest.builder().secretId(secretName).recoveryWindowInDays(7L).build());
     } catch (ResourceNotFoundException ignored) {
     }
   }
@@ -163,25 +189,24 @@ public class ProdSecretsManager implements SecretsManager {
     return List.of(Tag.builder().key(ACCOUNT_ID_TAG).value(accountId).build());
   }
 
-  private void tagSecret(String accountId, String secretName, List<Tag> tags) {
+  private void tagSecret(SecretsManagerClient client, String secretName, List<Tag> tags) {
     if (tags == null || tags.isEmpty()) {
       return;
     }
-    clientForAccount(accountId)
-        .tagResource(TagResourceRequest.builder().secretId(secretName).tags(tags).build());
+    client.tagResource(TagResourceRequest.builder().secretId(secretName).tags(tags).build());
   }
 
   private SecretsManagerClient clientForAccount(String accountId) {
     String role = roleArn.map(String::trim).filter(value -> !value.isBlank()).orElse("");
     if (role.isEmpty()) {
-      return secretsClient;
+      return secretsClient.get();
     }
     return perAccountClients.computeIfAbsent(
         accountId,
         id -> {
           StsAssumeRoleCredentialsProvider creds =
               StsAssumeRoleCredentialsProvider.builder()
-                  .stsClient(stsClient)
+                  .stsClient(stsClient.get())
                   .refreshRequest(
                       builder ->
                           builder
@@ -198,6 +223,50 @@ public class ProdSecretsManager implements SecretsManager {
           }
           return SecretsManagerClient.builder().credentialsProvider(creds).build();
         });
+  }
+
+  private <T> T withClientRefresh(String accountId, ClientOperation<T> operation) {
+    SecretsManagerClient client = clientForAccount(accountId);
+    try {
+      return operation.run(client);
+    } catch (RuntimeException e) {
+      if (awsClients == null || !ClosedAwsClientDetector.isConnectionPoolShutdown(e)) {
+        throw e;
+      }
+      refreshAfterClosedPool(accountId, client);
+      return operation.run(clientForAccount(accountId));
+    }
+  }
+
+  private void refreshAfterClosedPool(String accountId, SecretsManagerClient failedClient) {
+    String role = roleArn.map(String::trim).filter(value -> !value.isBlank()).orElse("");
+    if (role.isEmpty()) {
+      if (failedClient == null) {
+        return;
+      }
+      SecretsManagerClient next = awsClients.secretsManagerClient();
+      if (secretsClient.compareAndSet(failedClient, next)) {
+        closeQuietly(failedClient);
+      } else {
+        closeQuietly(next);
+      }
+      return;
+    }
+
+    if (accountId == null || accountId.isBlank() || failedClient == null) {
+      return;
+    }
+    if (!perAccountClients.remove(accountId, failedClient)) {
+      return;
+    }
+    closeQuietly(failedClient);
+    StsClient previousSts = stsClient.get();
+    StsClient nextSts = awsClients.stsClient();
+    if (stsClient.compareAndSet(previousSts, nextSts)) {
+      closeQuietly(previousSts);
+    } else {
+      closeQuietly(nextSts);
+    }
   }
 
   private static String buildRoleSessionName(String accountId) {
@@ -225,5 +294,20 @@ public class ProdSecretsManager implements SecretsManager {
     } catch (IllegalArgumentException ignored) {
       return encoded.getBytes(StandardCharsets.UTF_8);
     }
+  }
+
+  private static void closeQuietly(AutoCloseable client) {
+    if (client == null) {
+      return;
+    }
+    try {
+      client.close();
+    } catch (Exception ignored) {
+    }
+  }
+
+  @FunctionalInterface
+  private interface ClientOperation<T> {
+    T run(SecretsManagerClient client);
   }
 }
