@@ -335,7 +335,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   var correlationId = principalContext.getCorrelationId();
                   authz.require(principalContext, "catalog.write");
                   var id = request.getCatalogId();
-                  catalogSurfaceWritePolicy().requireWritableCatalog(id, correlationId);
+                  catalogSurfaceWritePolicy().requireDeletableCatalog(id, correlationId);
                   long markerVersion = markerStore.catalogMarkerVersion(id);
 
                   MutationMeta meta;

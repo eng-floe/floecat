@@ -21,18 +21,22 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.CatalogSpec;
 import ai.floedb.floecat.catalog.rpc.DeleteCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateCatalogRequest;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -114,6 +118,30 @@ class CatalogServiceImplSystemCatalogTest {
 
     assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
     verifyNoInteractions(catalogRepo);
+  }
+
+  @Test
+  void deleteCatalog_missingUserCatalog_isIdempotent() {
+    // Delete of an already-gone user catalog (no precondition) is a best-effort no-op, not
+    // NOT_FOUND: the delete guard must not require the catalog to resolve through the overlay
+    // before the repository fallback runs.
+    ResourceId id =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("already-gone")
+            .build();
+    when(markerStore.catalogMarkerVersion(id)).thenReturn(0L);
+    when(catalogRepo.metaFor(id))
+        .thenThrow(new BaseResourceRepository.NotFoundException("catalog missing"));
+    when(catalogRepo.metaForSafe(id)).thenReturn(MutationMeta.getDefaultInstance());
+
+    var req = DeleteCatalogRequest.newBuilder().setCatalogId(id).build();
+
+    var response = svc.deleteCatalog(req).await().indefinitely();
+
+    assertEquals(0L, response.getMeta().getPointerVersion());
+    verify(metadataGraph).invalidate(id);
   }
 
   private static ResourceId systemCatalogId() {

@@ -487,7 +487,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   authz.require(princ, "namespace.write");
 
                   var namespaceId = request.getNamespaceId();
-                  catalogSurfaceWritePolicy().requireWritableNamespace(namespaceId, correlationId);
+                  catalogSurfaceWritePolicy().requireDeletableNamespace(namespaceId, correlationId);
 
                   var namespace = namespaceRepo.getById(namespaceId).orElse(null);
                   var catalogId =

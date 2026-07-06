@@ -84,6 +84,49 @@ public final class CatalogSurfaceWritePolicy {
     return namespace;
   }
 
+  /**
+   * Delete-path guard for catalogs. Rejects system catalogs (immutable) but, unlike {@link
+   * #requireWritableCatalog}, does <b>not</b> require the catalog to currently resolve through the
+   * overlay: an unresolved target is left for the repository fallback, which deletes idempotently
+   * (and enforces any caller precondition). System catalogs are identified purely by id, so no
+   * overlay lookup is needed here.
+   */
+  public void requireDeletableCatalog(ResourceId catalogId, String corr) {
+    CatalogSurfaceSupport.ensureKind(catalogId, ResourceKind.RK_CATALOG, "catalog_id", corr);
+    if (SystemResourceIdGenerator.isSystemId(catalogId)) {
+      throw GrpcErrors.permissionDenied(
+          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", catalogId.getId(), "kind", "catalog"));
+    }
+  }
+
+  /**
+   * Delete-path guard for namespaces. Rejects system namespaces (immutable) but, unlike {@link
+   * #requireWritableNamespace}, does <b>not</b> throw when the namespace fails to resolve: an
+   * unresolved target is left for the repository fallback, which deletes idempotently (and enforces
+   * any caller precondition). The origin-based immutability check is applied only when the
+   * namespace resolves — system namespaces are backed by the in-memory system graph and always
+   * resolve, so a target that does not resolve is provably not a system object.
+   */
+  public void requireDeletableNamespace(ResourceId namespaceId, String corr) {
+    CatalogSurfaceSupport.ensureKind(namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", corr);
+    if (SystemResourceIdGenerator.isSystemId(namespaceId)) {
+      throw GrpcErrors.permissionDenied(
+          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", namespaceId.getId(), "kind", "namespace"));
+    }
+    overlay
+        .resolve(namespaceId)
+        .filter(NamespaceNode.class::isInstance)
+        .map(NamespaceNode.class::cast)
+        .filter(ns -> ns.origin() == GraphNodeOrigin.SYSTEM)
+        .ifPresent(
+            ns -> {
+              throw GrpcErrors.permissionDenied(
+                  corr,
+                  SYSTEM_OBJECT_IMMUTABLE,
+                  Map.of("id", namespaceId.getId(), "kind", "namespace"));
+            });
+  }
+
   public void requireNamespaceInCatalog(
       NamespaceNode namespace, ResourceId namespaceId, ResourceId catalogId, String corr) {
     CatalogSurfaceSupport.requireNamespaceInCatalog(namespace, namespaceId, catalogId, corr);
