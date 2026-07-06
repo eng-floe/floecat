@@ -122,18 +122,18 @@ public class ProdSecretsManager implements SecretsManager {
   }
 
   private void putOnce(
-      SecretsManagerClient client, String accountId, String secretType, String secretId, byte[] payload) {
+      SecretsManagerClient client,
+      String accountId,
+      String secretType,
+      String secretId,
+      byte[] payload) {
     ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     String encoded = encodePayload(payload);
     List<Tag> tags = buildTags(accountId, secretName);
     try {
       client.createSecret(
-          CreateSecretRequest.builder()
-              .name(secretName)
-              .secretString(encoded)
-              .tags(tags)
-              .build());
+          CreateSecretRequest.builder().name(secretName).secretString(encoded).tags(tags).build());
     } catch (ResourceExistsException exists) {
       client.putSecretValue(
           PutSecretValueRequest.builder().secretId(secretName).secretString(encoded).build());
@@ -146,7 +146,8 @@ public class ProdSecretsManager implements SecretsManager {
     ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     try {
-      var response = client.getSecretValue(GetSecretValueRequest.builder().secretId(secretName).build());
+      var response =
+          client.getSecretValue(GetSecretValueRequest.builder().secretId(secretName).build());
       if (response == null
           || response.secretString() == null
           || response.secretString().isBlank()) {
@@ -159,7 +160,11 @@ public class ProdSecretsManager implements SecretsManager {
   }
 
   private void updateOnce(
-      SecretsManagerClient client, String accountId, String secretType, String secretId, byte[] payload) {
+      SecretsManagerClient client,
+      String accountId,
+      String secretType,
+      String secretId,
+      byte[] payload) {
     ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     String encoded = encodePayload(payload);

@@ -15,6 +15,7 @@
  */
 package ai.floedb.floecat.storage.kv.dynamodb;
 
+import ai.floedb.floecat.storage.aws.ClosedAwsClientDetector;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.kv.KvStore;
 import io.smallrye.mutiny.Multi;
@@ -40,6 +41,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
   static final int DELETE_BATCH_LIMIT = Integer.getInteger("floedb.floecat.delete.batch.size", 25);
   private final Supplier<DynamoDbAsyncClient> ddb;
   private final BiConsumer<DynamoDbAsyncClient, Throwable> clientFailureHandler;
+  private final boolean supportsClientRefresh;
   private final String table;
 
   public DynamoDbKvStore(DynamoDbAsyncClient ddb, String table) {
@@ -52,6 +54,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
       BiConsumer<DynamoDbAsyncClient, Throwable> clientFailureHandler) {
     this.ddb = ddb;
     this.table = table;
+    this.supportsClientRefresh = clientFailureHandler != null;
     this.clientFailureHandler =
         clientFailureHandler == null ? (client, failure) -> {} : clientFailureHandler;
   }
@@ -192,25 +195,51 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
   }
 
   private <T> Uni<T> dynamo(Function<DynamoDbAsyncClient, CompletionStage<T>> operation) {
+    return dynamo(operation, 0);
+  }
+
+  private <T> Uni<T> dynamo(
+      Function<DynamoDbAsyncClient, CompletionStage<T>> operation, int attempt) {
     DynamoDbAsyncClient client = ddb();
     try {
       return fromStage(operation.apply(client))
           .onFailure()
-          .invoke(failure -> clientFailureHandler.accept(client, failure));
+          .recoverWithUni(
+              failure -> {
+                clientFailureHandler.accept(client, failure);
+                if (shouldRefreshAndRetry(failure, attempt)) {
+                  return dynamo(operation, attempt + 1);
+                }
+                return Uni.createFrom().failure(failure);
+              });
     } catch (Throwable failure) {
       clientFailureHandler.accept(client, failure);
+      if (shouldRefreshAndRetry(failure, attempt)) {
+        return dynamo(operation, attempt + 1);
+      }
       throw failure;
     }
   }
 
   private <T> T dynamoBlocking(Function<DynamoDbAsyncClient, T> operation) {
-    DynamoDbAsyncClient client = ddb();
-    try {
-      return operation.apply(client);
-    } catch (Throwable failure) {
-      clientFailureHandler.accept(client, failure);
-      throw failure;
+    for (int attempt = 0; ; attempt++) {
+      DynamoDbAsyncClient client = ddb();
+      try {
+        return operation.apply(client);
+      } catch (Throwable failure) {
+        clientFailureHandler.accept(client, failure);
+        if (shouldRefreshAndRetry(failure, attempt)) {
+          continue;
+        }
+        throw failure;
+      }
     }
+  }
+
+  private boolean shouldRefreshAndRetry(Throwable failure, int attempt) {
+    return supportsClientRefresh
+        && attempt == 0
+        && ClosedAwsClientDetector.isConnectionPoolShutdown(failure);
   }
 
   // ---- KvStore (reads)

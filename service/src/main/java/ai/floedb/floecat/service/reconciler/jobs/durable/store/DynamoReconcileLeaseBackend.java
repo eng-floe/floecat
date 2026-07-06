@@ -22,7 +22,6 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
 import ai.floedb.floecat.service.repo.model.PointerReferences;
-import ai.floedb.floecat.storage.aws.ClosedAwsClientDetector;
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import ai.floedb.floecat.storage.spi.PointerStore.CasDelete;
 import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
@@ -38,7 +37,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiConsumer;
-import java.util.function.Function;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -57,85 +55,20 @@ import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledExcepti
 public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
   private static final String ATTR_BLOB_URI = "blob_uri";
 
-  @Inject DynamoDbClient dynamoDb;
   @Inject Instance<DynamoDbClientManager> dynamoDbClientManager;
-  private volatile Supplier<DynamoDbClient> dynamoDbSupplier;
-  private volatile BiConsumer<DynamoDbClient, Throwable> clientFailureHandler =
-      (client, failure) -> {};
+  private final RefreshingDynamoCaller dynamoCaller = new RefreshingDynamoCaller();
 
   @ConfigProperty(name = "floecat.kv.table", defaultValue = "floecat_pointers")
   String table = "floecat_pointers";
 
-  @Inject
   public DynamoReconcileLeaseBackend() {}
-
-  public void bind(DynamoDbClient dynamoDb, String table) {
-    this.dynamoDb = dynamoDb;
-    this.dynamoDbSupplier = () -> dynamoDb;
-    this.clientFailureHandler = (client, failure) -> {};
-    this.table = table;
-  }
 
   public void bind(
       Supplier<DynamoDbClient> dynamoDbSupplier,
       String table,
       BiConsumer<DynamoDbClient, Throwable> clientFailureHandler) {
-    this.dynamoDbSupplier = dynamoDbSupplier;
-    this.clientFailureHandler =
-        clientFailureHandler == null ? (client, failure) -> {} : clientFailureHandler;
+    dynamoCaller.bind(dynamoDbSupplier, clientFailureHandler);
     this.table = table;
-  }
-
-  private DynamoDbClient dynamoDb() {
-    if (dynamoDbSupplier != null) {
-      return dynamoDbSupplier.get();
-    }
-    if (dynamoDbClientManager != null && dynamoDbClientManager.isResolvable()) {
-      DynamoDbClientManager manager = dynamoDbClientManager.get();
-      dynamoDbSupplier = manager::current;
-      clientFailureHandler = manager::refreshAfterFailure;
-      return dynamoDbSupplier.get();
-    }
-    return dynamoDb;
-  }
-
-  private boolean refreshAfterFailure(DynamoDbClient client, Throwable failure) {
-    if (ClosedAwsClientDetector.isConnectionPoolShutdown(failure)) {
-      clientFailureHandler.accept(client, failure);
-      return true;
-    }
-    return false;
-  }
-
-  private <T> T callDynamo(Function<DynamoDbClient, T> operation) {
-    for (int attempt = 0; ; attempt++) {
-      DynamoDbClient client = dynamoDb();
-      try {
-        return operation.apply(client);
-      } catch (RuntimeException e) {
-        boolean refreshed = refreshAfterFailure(client, e);
-        if (refreshed && attempt == 0) {
-          continue;
-        }
-        throw e;
-      }
-    }
-  }
-
-  private void callDynamoVoid(java.util.function.Consumer<DynamoDbClient> operation) {
-    for (int attempt = 0; ; attempt++) {
-      DynamoDbClient client = dynamoDb();
-      try {
-        operation.accept(client);
-        return;
-      } catch (RuntimeException e) {
-        boolean refreshed = refreshAfterFailure(client, e);
-        if (refreshed && attempt == 0) {
-          continue;
-        }
-        throw e;
-      }
-    }
   }
 
   @Override
@@ -155,7 +88,8 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
   @Override
   public Optional<LeaseOwnerSnapshot> loadOwner(String ownerKey) {
     var response =
-        callDynamo(
+        dynamoCaller.call(
+            dynamoDbClientManager,
             client ->
                 client.getItem(
                     GetItemRequest.builder()
@@ -203,7 +137,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               AttributeValue.fromS(token)));
     }
 
-    var response = callDynamo(client -> client.query(query.build()));
+    var response = dynamoCaller.call(dynamoDbClientManager, client -> client.query(query.build()));
     List<ReconcileLeaseStore.LeaseExpiryEntry> entries = new ArrayList<>(response.items().size());
     for (var item : response.items()) {
       entries.add(
@@ -318,7 +252,8 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
       }
     }
     try {
-      callDynamoVoid(
+      dynamoCaller.callVoid(
+          dynamoDbClientManager,
           client ->
               client.transactWriteItems(
                   TransactWriteItemsRequest.builder().transactItems(tx).build()));
@@ -335,7 +270,8 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
   private Optional<LeaseRecordSnapshot> loadLeaseSnapshot(
       LeaseBackendSupport.LeasePointerKey leaseKey) {
     var response =
-        callDynamo(
+        dynamoCaller.call(
+            dynamoDbClientManager,
             client ->
                 client.getItem(
                     GetItemRequest.builder()
@@ -360,7 +296,8 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
   private Optional<LeaseExpirySnapshot> loadLeaseExpirySnapshot(
       LeaseBackendSupport.LeaseExpiryPointerKey expiryKey) {
     var response =
-        callDynamo(
+        dynamoCaller.call(
+            dynamoDbClientManager,
             client ->
                 client.getItem(
                     GetItemRequest.builder()

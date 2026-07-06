@@ -21,10 +21,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.storage.aws.AwsClients;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
-import java.lang.reflect.Field;
 import java.util.ArrayDeque;
 import java.util.Base64;
 import java.util.Deque;
@@ -33,7 +33,6 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
-import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueRequest;
 import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueResponse;
 import software.amazon.awssdk.services.sts.StsClient;
 
@@ -94,7 +93,8 @@ class ProdSecretsManagerTest {
     ClientHandle bootstrapClient = ClientHandle.secretsValue("unused");
     ClientHandle staleStsClient = ClientHandle.sts();
     ClientHandle refreshedStsClient = ClientHandle.sts();
-    ClientHandle stalePerAccountClient = ClientHandle.secretsFailure(new RuntimeException("Connection pool shut down"));
+    ClientHandle stalePerAccountClient =
+        ClientHandle.secretsFailure(new RuntimeException("Connection pool shut down"));
     ClientHandle newerPerAccountClient =
         ClientHandle.secretsValue(Base64.getEncoder().encodeToString("gamma".getBytes()));
 
@@ -149,7 +149,8 @@ class ProdSecretsManagerTest {
 
   @SuppressWarnings("unchecked")
   private static void assertSameMappedClient(
-      ProdSecretsManager manager, String accountId, SecretsManagerClient expected) throws Exception {
+      ProdSecretsManager manager, String accountId, SecretsManagerClient expected)
+      throws Exception {
     Field field = ProdSecretsManager.class.getDeclaredField("perAccountClients");
     field.setAccessible(true);
     Map<String, SecretsManagerClient> clients =

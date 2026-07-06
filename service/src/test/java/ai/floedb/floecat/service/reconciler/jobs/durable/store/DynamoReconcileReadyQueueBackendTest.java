@@ -42,8 +42,8 @@ class DynamoReconcileReadyQueueBackendTest {
   void scanReadySliceNormalizesApiCallTimeoutAsLeaseScanAbort() {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
     when(dynamoDb.query(any(QueryRequest.class))).thenThrow(ApiCallTimeoutException.create(25L));
-    DynamoReconcileReadyQueueBackend backend =
-        new DynamoReconcileReadyQueueBackend(dynamoDb, "floecat_pointers");
+    DynamoReconcileReadyQueueBackend backend = new DynamoReconcileReadyQueueBackend();
+    backend.bind(() -> dynamoDb, "floecat_pointers", null);
     LeaseScanStats stats = new LeaseScanStats();
     stats.deadlineAtMs = System.currentTimeMillis() + 5_000L;
 
@@ -77,8 +77,7 @@ class DynamoReconcileReadyQueueBackendTest {
     when(managerInstance.isResolvable()).thenReturn(true);
     when(managerInstance.get()).thenReturn(manager);
 
-    DynamoReconcileReadyQueueBackend backend =
-        new DynamoReconcileReadyQueueBackend(staleClient, "floecat_pointers");
+    DynamoReconcileReadyQueueBackend backend = new DynamoReconcileReadyQueueBackend();
     backend.dynamoDbClientManager = managerInstance;
     LeaseScanStats stats = new LeaseScanStats();
     stats.deadlineAtMs = System.currentTimeMillis() + 5_000L;
@@ -97,8 +96,8 @@ class DynamoReconcileReadyQueueBackendTest {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
     when(dynamoDb.getItem(any(GetItemRequest.class)))
         .thenThrow(ApiCallAttemptTimeoutException.create(25L));
-    DynamoReconcileReadyQueueBackend backend =
-        new DynamoReconcileReadyQueueBackend(dynamoDb, "floecat_pointers");
+    DynamoReconcileReadyQueueBackend backend = new DynamoReconcileReadyQueueBackend();
+    backend.bind(() -> dynamoDb, "floecat_pointers", null);
     LeaseScanStats stats = new LeaseScanStats();
     stats.deadlineAtMs = System.currentTimeMillis() + 5_000L;
 
