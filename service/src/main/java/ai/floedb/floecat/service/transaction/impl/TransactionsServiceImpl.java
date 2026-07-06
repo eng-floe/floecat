@@ -1583,6 +1583,14 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                   currentVersion > 0L || hasMeaningfulPrecondition(change.getPrecondition()));
           return;
         }
+        // For an intended-blob write we only have the target's blob URI here, not its bytes: the
+        // blob is not promoted (and so not readable) until apply, so we cannot parse the Table to
+        // learn its catalog/namespace scope at prepare time. We therefore validate only what the
+        // pointer already tells us — that an existing row (currentVersion > 0) is user-owned and
+        // writable. The destination-scope check for a brand-new table is deferred to apply time,
+        // where TransactionIntentApplierSupport.validateTableWriteEligibility reads the promoted
+        // blob and enforces checkTargetScope. Prepare-time is a fast-fail optimization, not the
+        // authoritative gate.
         if (currentVersion > 0L) {
           catalogSurfaceWritePolicy().requireWritableTable(tableId, correlationId());
         }
