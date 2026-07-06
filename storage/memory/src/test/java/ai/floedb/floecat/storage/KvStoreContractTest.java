@@ -100,6 +100,12 @@ class KvStoreContractTest {
   }
 
   @Test
+  void pageTokenAfterKey_emptySortKey_throwsInsteadOfEmptyToken() {
+    // An empty sort key would base64-encode to "", colliding with the "no more pages" sentinel.
+    assertThrows(IllegalArgumentException.class, () -> kv.pageTokenAfterKey(key("pk1", "")));
+  }
+
+  @Test
   void deleteByPrefix_removes_matching_records() {
     putSeries("pk1", "sk", 3);
     putSeries("pk2", "sk", 2);

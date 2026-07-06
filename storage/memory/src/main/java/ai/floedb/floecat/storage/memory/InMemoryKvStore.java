@@ -212,6 +212,12 @@ public final class InMemoryKvStore implements KvStore {
   }
 
   private static String encodeToken(String sortKey) {
+    if (sortKey.isEmpty()) {
+      // base64("") is "", which is this codebase's "no more pages" sentinel: an empty sort key
+      // would emit a token indistinguishable from "done" and silently truncate pagination. No key
+      // uses an empty sort key today, so fail loud rather than produce an ambiguous token.
+      throw new IllegalArgumentException("cannot encode a page token for an empty sort key");
+    }
     return Base64.getUrlEncoder()
         .withoutPadding()
         .encodeToString(sortKey.getBytes(StandardCharsets.UTF_8));
