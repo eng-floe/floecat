@@ -39,6 +39,7 @@ import ai.floedb.floecat.connector.rpc.ListConnectorsResponse;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.ReconcilePolicy;
 import ai.floedb.floecat.connector.rpc.ReconcileSnapshotScope;
+import ai.floedb.floecat.connector.rpc.SourceMapping;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorResponse;
@@ -106,6 +107,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           "destination.namespace_id",
           "destination.table_display_name",
           "destination.table_id",
+          "mappings",
           "auth",
           "auth.scheme",
           "auth.credentials",
@@ -250,117 +252,39 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   validatePersistedAuthConfig(spec.getAuth(), corr);
                   validateReconcilePolicy(spec.getPolicy(), corr);
 
-                  if (!spec.hasDestination()
-                      || (!spec.getDestination().hasCatalogId()
-                          && spec.getDestination().getCatalogDisplayName().isBlank())) {
+                  boolean hasLegacySourceOrDest = spec.hasSource() || spec.hasDestination();
+                  var mappingsIn = spec.getMappingsList();
+                  boolean hasMappings = !mappingsIn.isEmpty();
+
+                  if (hasLegacySourceOrDest && hasMappings) {
                     throw GrpcErrors.invalidArgument(
-                        corr,
-                        GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_DESTINATION_CATALOG,
-                        Map.of("id", "destination.catalog_id|catalog_display_name"));
+                        corr, null, Map.of("field", "source|destination|mappings"));
                   }
+                  boolean isShell = !hasLegacySourceOrDest && !hasMappings;
 
-                  var dest = spec.getDestination();
-                  var destB = dest.toBuilder();
+                  List<SourceMapping> resolvedMappings = List.of();
+                  DestinationTarget resolvedLegacyDest = null;
 
-                  if (dest.hasCatalogDisplayName() && !dest.hasCatalogId()) {
-                    final String dName = dest.getCatalogDisplayName().trim();
-                    catalogRepo
-                        .getByName(accountId, dName)
-                        .ifPresentOrElse(
-                            cat -> {
-                              destB.setCatalogId(cat.getResourceId());
-                              destB.clearCatalogDisplayName();
-                            },
-                            () -> {
-                              throw GrpcErrors.notFound(
-                                  corr,
-                                  GeneratedErrorMessages.MessageKey
-                                      .CONNECTOR_DESTINATION_CATALOG_NOT_FOUND,
-                                  Map.of("display_name", dName));
-                            });
-                  }
-
-                  if (dest.hasCatalogId() && dest.hasCatalogDisplayName()) {
-                    var byName =
-                        catalogRepo.getByName(accountId, dest.getCatalogDisplayName().trim());
-                    if (byName.isEmpty()
-                        || !byName
-                            .get()
-                            .getResourceId()
-                            .getId()
-                            .equals(dest.getCatalogId().getId())) {
+                  if (hasMappings) {
+                    if (mappingsIn.size() > 1 && spec.getPolicy().getEnabled()) {
+                      throw GrpcErrors.invalidArgument(
+                          corr, null, Map.of("field", "policy.enabled"));
+                    }
+                    var built = new java.util.ArrayList<SourceMapping>(mappingsIn.size());
+                    for (int i = 0; i < mappingsIn.size(); i++) {
+                      built.add(resolveMapping(mappingsIn.get(i), accountId, corr, i));
+                    }
+                    resolvedMappings = built;
+                  } else if (!isShell) {
+                    if (!spec.hasSource()
+                        || !spec.getSource().hasNamespace()
+                        || spec.getSource().getNamespace().getSegmentsCount() == 0) {
                       throw GrpcErrors.invalidArgument(
                           corr,
-                          GeneratedErrorMessages.MessageKey.CONNECTOR_DESTINATION_CATALOG_MISMATCH,
-                          Map.of(
-                              "catalog_id",
-                              dest.getCatalogId().getId(),
-                              "catalog_display_name",
-                              dest.getCatalogDisplayName()));
+                          GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_SOURCE_NAMESPACE,
+                          Map.of("field", "source.namespace"));
                     }
-                    destB.clearCatalogDisplayName();
-                  }
-
-                  if (!spec.hasSource()
-                      || !spec.getSource().hasNamespace()
-                      || spec.getSource().getNamespace().getSegmentsCount() == 0) {
-                    throw GrpcErrors.invalidArgument(
-                        corr,
-                        GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_SOURCE_NAMESPACE,
-                        Map.of("field", "source.namespace"));
-                  }
-
-                  if (destB.hasCatalogId() && dest.hasNamespace() && !dest.hasNamespaceId()) {
-                    NamespacePath dNs = dest.getNamespace();
-                    namespaceRepo
-                        .getByPath(accountId, destB.getCatalogId().getId(), dNs.getSegmentsList())
-                        .ifPresent(
-                            ns -> {
-                              destB.setNamespaceId(ns.getResourceId());
-                              destB.clearNamespace();
-                            });
-                  }
-
-                  if (destB.hasCatalogId()
-                      && destB.hasNamespaceId()
-                      && dest.hasTableDisplayName()
-                      && !dest.hasTableId()) {
-                    String dTbl = dest.getTableDisplayName().trim();
-                    var tblOpt =
-                        tableRepo.getByName(
-                            accountId,
-                            destB.getCatalogId().getId(),
-                            destB.getNamespaceId().getId(),
-                            dTbl);
-
-                    if (tblOpt.isPresent()) {
-                      destB.setTableId(tblOpt.get().getResourceId());
-                      destB.clearTableDisplayName();
-                    } else {
-                      destB.setTableDisplayName(dTbl);
-                    }
-                  }
-
-                  if (destB.hasCatalogId()) {
-                    ensureKind(
-                        destB.getCatalogId(),
-                        ResourceKind.RK_CATALOG,
-                        "spec.destination.catalog_id",
-                        corr);
-                  }
-                  if (destB.hasNamespaceId()) {
-                    ensureKind(
-                        destB.getNamespaceId(),
-                        ResourceKind.RK_NAMESPACE,
-                        "spec.destination.namespace_id",
-                        corr);
-                  }
-                  if (destB.hasTableId()) {
-                    ensureKind(
-                        destB.getTableId(),
-                        ResourceKind.RK_TABLE,
-                        "spec.destination.table_id",
-                        corr);
+                    resolvedLegacyDest = resolveDestination(spec.getDestination(), accountId, corr);
                   }
 
                   var builder =
@@ -373,11 +297,20 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           .setPolicy(spec.getPolicy())
                           .setCreatedAt(tsNow)
                           .setUpdatedAt(tsNow)
-                          .setState(ConnectorState.CS_ACTIVE);
+                          .setState(
+                              isShell ? ConnectorState.CS_CREATING : ConnectorState.CS_ACTIVE);
 
                   if (spec.hasDescription()) builder.setDescription(spec.getDescription());
-                  if (spec.hasSource()) builder.setSource(spec.getSource());
-                  builder.setDestination(destB.build());
+                  if (hasMappings) {
+                    builder.addAllMappings(resolvedMappings);
+                    if (resolvedMappings.size() == 1) {
+                      var only = resolvedMappings.get(0);
+                      builder.setSource(only.getSource()).setDestination(only.getDestination());
+                    }
+                  } else if (!isShell) {
+                    builder.setSource(spec.getSource());
+                    builder.setDestination(resolvedLegacyDest);
+                  }
 
                   if (idempotencyKey == null) {
                     var existing = connectorRepo.getByName(accountId, display);
@@ -521,7 +454,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   FieldMask normalizedMask = normalizeMask(request.getUpdateMask());
                   var desired =
-                      applyConnectorSpecPatch(current, request.getSpec(), normalizedMask, corr)
+                      applyConnectorSpecPatch(
+                              current, request.getSpec(), normalizedMask, pc.getAccountId(), corr)
                           .toBuilder()
                           .setUpdatedAt(nowTs())
                           .build();
@@ -1001,13 +935,120 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         .toList();
   }
 
+  private DestinationTarget resolveDestination(
+      DestinationTarget dest, String accountId, String corr) {
+    if (!dest.hasCatalogId() && dest.getCatalogDisplayName().isBlank()) {
+      throw GrpcErrors.invalidArgument(
+          corr,
+          GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_DESTINATION_CATALOG,
+          Map.of("id", "destination.catalog_id|catalog_display_name"));
+    }
+
+    var destB = dest.toBuilder();
+
+    if (dest.hasCatalogDisplayName() && !dest.hasCatalogId()) {
+      final String dName = dest.getCatalogDisplayName().trim();
+      catalogRepo
+          .getByName(accountId, dName)
+          .ifPresentOrElse(
+              cat -> {
+                destB.setCatalogId(cat.getResourceId());
+                destB.clearCatalogDisplayName();
+              },
+              () -> {
+                throw GrpcErrors.notFound(
+                    corr,
+                    GeneratedErrorMessages.MessageKey.CONNECTOR_DESTINATION_CATALOG_NOT_FOUND,
+                    Map.of("display_name", dName));
+              });
+    }
+
+    if (dest.hasCatalogId() && dest.hasCatalogDisplayName()) {
+      var byName = catalogRepo.getByName(accountId, dest.getCatalogDisplayName().trim());
+      if (byName.isEmpty()
+          || !byName.get().getResourceId().getId().equals(dest.getCatalogId().getId())) {
+        throw GrpcErrors.invalidArgument(
+            corr,
+            GeneratedErrorMessages.MessageKey.CONNECTOR_DESTINATION_CATALOG_MISMATCH,
+            Map.of(
+                "catalog_id",
+                dest.getCatalogId().getId(),
+                "catalog_display_name",
+                dest.getCatalogDisplayName()));
+      }
+      destB.clearCatalogDisplayName();
+    }
+
+    if (destB.hasCatalogId() && dest.hasNamespace() && !dest.hasNamespaceId()) {
+      NamespacePath dNs = dest.getNamespace();
+      namespaceRepo
+          .getByPath(accountId, destB.getCatalogId().getId(), dNs.getSegmentsList())
+          .ifPresent(
+              ns -> {
+                destB.setNamespaceId(ns.getResourceId());
+                destB.clearNamespace();
+              });
+    }
+
+    if (destB.hasCatalogId()
+        && destB.hasNamespaceId()
+        && dest.hasTableDisplayName()
+        && !dest.hasTableId()) {
+      String dTbl = dest.getTableDisplayName().trim();
+      var tblOpt =
+          tableRepo.getByName(
+              accountId, destB.getCatalogId().getId(), destB.getNamespaceId().getId(), dTbl);
+
+      if (tblOpt.isPresent()) {
+        destB.setTableId(tblOpt.get().getResourceId());
+        destB.clearTableDisplayName();
+      } else {
+        destB.setTableDisplayName(dTbl);
+      }
+    }
+
+    if (destB.hasCatalogId()) {
+      ensureKind(
+          destB.getCatalogId(), ResourceKind.RK_CATALOG, "spec.destination.catalog_id", corr);
+    }
+    if (destB.hasNamespaceId()) {
+      ensureKind(
+          destB.getNamespaceId(), ResourceKind.RK_NAMESPACE, "spec.destination.namespace_id", corr);
+    }
+    if (destB.hasTableId()) {
+      ensureKind(destB.getTableId(), ResourceKind.RK_TABLE, "spec.destination.table_id", corr);
+    }
+
+    return destB.build();
+  }
+
+  private SourceMapping resolveMapping(
+      SourceMapping mapping, String accountId, String corr, int index) {
+    var source = mapping.getSource();
+    if (!source.hasNamespace() || source.getNamespace().getSegmentsCount() == 0) {
+      throw GrpcErrors.invalidArgument(
+          corr,
+          GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_SOURCE_NAMESPACE,
+          Map.of("field", "mappings[" + index + "].source.namespace"));
+    }
+
+    var resolvedDest = resolveDestination(mapping.getDestination(), accountId, corr);
+
+    if (resolvedDest.hasTableId() && (!source.hasTable() || source.getTable().isBlank())) {
+      throw GrpcErrors.invalidArgument(
+          corr, null, Map.of("field", "mappings[" + index + "].source.table"));
+    }
+
+    return SourceMapping.newBuilder().setSource(source).setDestination(resolvedDest).build();
+  }
+
   private ResourceId scopedConnectorId(String accountId, ResourceId connectorId, String corr) {
     ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", corr);
     return connectorId.toBuilder().setAccountId(accountId).build();
   }
 
   private Connector applyConnectorSpecPatch(
-      Connector current, ConnectorSpec spec, FieldMask mask, String corr) {
+      Connector current, ConnectorSpec spec, FieldMask mask, String accountId, String corr) {
     mask = normalizeMask(mask);
 
     var paths = normalizedMaskPaths(mask);
@@ -1211,6 +1252,19 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       b.setDestination(db.build());
     }
 
+    if (maskTargets(mask, "mappings")) {
+      var inMappings = spec.getMappingsList();
+      var resolvedMappings = new java.util.ArrayList<SourceMapping>(inMappings.size());
+      for (int i = 0; i < inMappings.size(); i++) {
+        resolvedMappings.add(resolveMapping(inMappings.get(i), accountId, corr, i));
+      }
+      b.clearMappings().addAllMappings(resolvedMappings);
+      if (resolvedMappings.size() == 1) {
+        var only = resolvedMappings.get(0);
+        b.setSource(only.getSource()).setDestination(only.getDestination());
+      }
+    }
+
     var curAuth = current.hasAuth() ? current.getAuth() : AuthConfig.getDefaultInstance();
     var inAuth = spec.hasAuth() ? spec.getAuth() : AuthConfig.getDefaultInstance();
 
@@ -1326,6 +1380,10 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       }
     }
 
+    if (out.getMappingsCount() > 1 && out.getPolicy().getEnabled()) {
+      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "policy.enabled"));
+    }
+
     return out;
   }
 
@@ -1372,6 +1430,24 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                 .scalar("table_id", nullSafeId(dest.getTableId()))
                 .scalar("table_display_name", dest.getTableDisplayName()));
 
+    var mappings = s.getMappingsList();
+    for (int i = 0; i < mappings.size(); i++) {
+      var mSource = mappings.get(i).getSource();
+      var mDest = mappings.get(i).getDestination();
+      c.group(
+          "mappings[" + i + "]",
+          g ->
+              g.list("source.namespace", mSource.getNamespace().getSegmentsList())
+                  .scalar("source.table", mSource.getTable())
+                  .list("source.columns", mSource.getColumnsList())
+                  .scalar("destination.catalog_id", nullSafeId(mDest.getCatalogId()))
+                  .scalar("destination.catalog_display_name", mDest.getCatalogDisplayName())
+                  .scalar("destination.namespace_id", nullSafeId(mDest.getNamespaceId()))
+                  .list("destination.namespace", mDest.getNamespace().getSegmentsList())
+                  .scalar("destination.table_id", nullSafeId(mDest.getTableId()))
+                  .scalar("destination.table_display_name", mDest.getTableDisplayName()));
+    }
+
     var auth = s.getAuth();
     c.group(
         "auth",
@@ -1413,6 +1489,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     }
     if (connector.hasDestination()) {
       b.setDestination(connector.getDestination());
+    }
+    if (connector.getMappingsCount() > 0) {
+      b.addAllMappings(connector.getMappingsList());
     }
     if (connector.hasAuth()) {
       b.setAuth(connector.getAuth());
