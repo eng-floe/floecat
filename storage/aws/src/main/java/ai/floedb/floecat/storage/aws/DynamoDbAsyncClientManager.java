@@ -19,6 +19,7 @@ package ai.floedb.floecat.storage.aws;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.jboss.logging.Logger;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
@@ -30,25 +31,38 @@ public class DynamoDbAsyncClientManager {
 
   @Inject AwsClients awsClients;
 
+  private final AtomicBoolean closed = new AtomicBoolean();
   private final AtomicReference<DynamoDbAsyncClient> current = new AtomicReference<>();
 
   public DynamoDbAsyncClient current() {
+    requireOpen();
     DynamoDbAsyncClient existing = current.get();
     if (existing != null) {
       return existing;
     }
 
     DynamoDbAsyncClient next = awsClients.newDynamoDbAsyncClient();
+    if (closed.get()) {
+      next.close();
+      requireOpen();
+    }
     if (current.compareAndSet(null, next)) {
+      if (closed.get() && current.compareAndSet(next, null)) {
+        next.close();
+        requireOpen();
+      }
       return next;
     }
 
     next.close();
-    return current.get();
+    return requireOpen(current.get());
   }
 
   public void refreshAfterFailure(DynamoDbAsyncClient failedClient, Throwable failure) {
     if (!ClosedAwsClientDetector.isConnectionPoolShutdown(failure)) {
+      return;
+    }
+    if (closed.get()) {
       return;
     }
     if (failedClient == null || current.get() != failedClient) {
@@ -56,6 +70,10 @@ public class DynamoDbAsyncClientManager {
     }
 
     DynamoDbAsyncClient next = awsClients.newDynamoDbAsyncClient();
+    if (closed.get()) {
+      next.close();
+      return;
+    }
     if (current.compareAndSet(failedClient, next)) {
       closeQuietly(failedClient);
       LOG.warn("Refreshed DynamoDB async client after closed connection pool");
@@ -66,7 +84,23 @@ public class DynamoDbAsyncClientManager {
 
   @PreDestroy
   void close() {
-    closeQuietly(current.getAndSet(null));
+    if (closed.compareAndSet(false, true)) {
+      closeQuietly(current.getAndSet(null));
+    }
+  }
+
+  private void requireOpen() {
+    if (closed.get()) {
+      throw new IllegalStateException("dynamodb async client manager is shut down");
+    }
+  }
+
+  private DynamoDbAsyncClient requireOpen(DynamoDbAsyncClient client) {
+    requireOpen();
+    if (client == null) {
+      throw new IllegalStateException("dynamodb async client manager is shut down");
+    }
+    return client;
   }
 
   private static void closeQuietly(DynamoDbAsyncClient client) {

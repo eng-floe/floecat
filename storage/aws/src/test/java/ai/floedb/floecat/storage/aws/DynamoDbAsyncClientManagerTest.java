@@ -78,6 +78,23 @@ class DynamoDbAsyncClientManagerTest {
     assertFalse(clients.handles.get(1).closed);
   }
 
+  @Test
+  void current_after_close_throws_without_recreating_client() {
+    FakeAwsClients clients = new FakeAwsClients();
+    DynamoDbAsyncClientManager manager = new DynamoDbAsyncClientManager();
+    manager.awsClients = clients;
+
+    DynamoDbAsyncClient first = manager.current();
+    manager.close();
+
+    IllegalStateException thrown = assertThrows(IllegalStateException.class, manager::current);
+
+    assertEquals("dynamodb async client manager is shut down", thrown.getMessage());
+    assertEquals(1, clients.handles.size());
+    assertTrue(clients.handles.get(0).closed);
+    assertSame(first, clients.handles.get(0).client);
+  }
+
   private static final class FakeAwsClients extends AwsClients {
     private final List<ClientHandle> handles = new ArrayList<>();
 

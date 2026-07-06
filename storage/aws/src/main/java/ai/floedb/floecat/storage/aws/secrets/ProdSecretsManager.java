@@ -31,6 +31,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicReference;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 import software.amazon.awssdk.services.secretsmanager.model.CreateSecretRequest;
 import software.amazon.awssdk.services.secretsmanager.model.DeleteSecretRequest;
@@ -243,12 +244,13 @@ public class ProdSecretsManager implements SecretsManager {
       if (awsClients == null || !ClosedAwsClientDetector.isConnectionPoolShutdown(e)) {
         throw e;
       }
-      refreshAfterClosedPool(accountId, client);
+      refreshAfterClosedPool(accountId, client, e);
       return operation.run(clientForAccount(accountId));
     }
   }
 
-  private void refreshAfterClosedPool(String accountId, SecretsManagerClient failedClient) {
+  private void refreshAfterClosedPool(
+      String accountId, SecretsManagerClient failedClient, Throwable failure) {
     String role = roleArn.map(String::trim).filter(value -> !value.isBlank()).orElse("");
     if (role.isEmpty()) {
       if (failedClient == null) {
@@ -271,16 +273,18 @@ public class ProdSecretsManager implements SecretsManager {
         return;
       }
       closeQuietly(failedClient);
-      StsClient previousSts = stsClient.get();
-      if (previousSts == null) {
-        return;
-      }
-      StsClient nextSts = awsClients.stsClient();
-      if (stsClient.compareAndSet(previousSts, nextSts)) {
-        closeQuietly(previousSts);
-        closePerAccountClients();
-      } else {
-        closeQuietly(nextSts);
+      if (isStsCredentialPoolFailure(failure)) {
+        StsClient previousSts = stsClient.get();
+        if (previousSts == null) {
+          return;
+        }
+        StsClient nextSts = awsClients.stsClient();
+        if (stsClient.compareAndSet(previousSts, nextSts)) {
+          closeQuietly(previousSts);
+          closePerAccountClients();
+        } else {
+          closeQuietly(nextSts);
+        }
       }
     }
   }
@@ -297,6 +301,20 @@ public class ProdSecretsManager implements SecretsManager {
       throw new IllegalStateException("secrets manager is shut down");
     }
     return client;
+  }
+
+  private static boolean isStsCredentialPoolFailure(Throwable failure) {
+    Throwable current = failure;
+    while (current != null) {
+      if (current instanceof SdkClientException) {
+        String message = current.getMessage();
+        if (message != null && message.toLowerCase().contains("credential")) {
+          return true;
+        }
+      }
+      current = current.getCause();
+    }
+    return false;
   }
 
   private static String buildRoleSessionName(String accountId) {

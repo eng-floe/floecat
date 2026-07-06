@@ -35,7 +35,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.function.Consumer;
+import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.core.exception.SdkClientException;
@@ -60,7 +60,7 @@ public class S3BlobStore implements BlobStore {
   private static final String META_CREATED_AT = "floecat-created-at";
 
   private final Supplier<S3Client> s3;
-  private final Consumer<Throwable> clientFailureHandler;
+  private final BiConsumer<S3Client, Throwable> clientFailureHandler;
   private final String bucket;
 
   @Inject
@@ -72,11 +72,13 @@ public class S3BlobStore implements BlobStore {
 
   public S3BlobStore(
       S3Client s3, @ConfigProperty(name = "floecat.blob.s3.bucket") Optional<String> bucketOpt) {
-    this(() -> s3, bucketOpt, failure -> {});
+    this(() -> s3, bucketOpt, (client, failure) -> {});
   }
 
   S3BlobStore(
-      Supplier<S3Client> s3, Optional<String> bucketOpt, Consumer<Throwable> clientFailureHandler) {
+      Supplier<S3Client> s3,
+      Optional<String> bucketOpt,
+      BiConsumer<S3Client, Throwable> clientFailureHandler) {
     this.s3 = s3;
     this.clientFailureHandler = clientFailureHandler;
     this.bucket = bucketOpt.orElseGet(() -> System.getProperty("floecat.blob.s3.bucket", ""));
@@ -88,9 +90,10 @@ public class S3BlobStore implements BlobStore {
   @Override
   public Optional<BlobHeader> head(String key) {
     final String k = normalize(key);
+    S3Client client = s3();
     try {
       HeadObjectResponse r =
-          s3().headObject(HeadObjectRequest.builder().bucket(bucket).key(k).build());
+          client.headObject(HeadObjectRequest.builder().bucket(bucket).key(k).build());
 
       String metaSha = (r.metadata() != null) ? r.metadata().get(META_SHA256) : null;
 
@@ -123,18 +126,20 @@ public class S3BlobStore implements BlobStore {
 
       throw mapAndWrap("HEAD", k, e);
     } catch (SdkClientException e) {
-      clientFailureHandler.accept(e);
+      clientFailureHandler.accept(client, e);
       throw new StorageAbortRetryableException(msg("HEAD", k, e.getMessage()));
     } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("HEAD", k, e);
+      throw mapClosedPoolOrRethrow(client, "HEAD", k, e);
     }
   }
 
   @Override
   public byte[] get(String key) {
     final String k = normalize(key);
+    S3Client client = s3();
     try {
-      return s3().getObject(
+      return client
+          .getObject(
               GetObjectRequest.builder().bucket(bucket).key(k).build(),
               ResponseTransformer.toBytes())
           .asByteArray();
@@ -144,21 +149,22 @@ public class S3BlobStore implements BlobStore {
       }
       throw mapAndWrap("GET", k, e);
     } catch (SdkClientException e) {
-      clientFailureHandler.accept(e);
+      clientFailureHandler.accept(client, e);
       throw new StorageAbortRetryableException(msg("GET", k, e.getMessage()));
     } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("GET", k, e);
+      throw mapClosedPoolOrRethrow(client, "GET", k, e);
     }
   }
 
   @Override
   public void put(String key, byte[] bytes, String contentType) {
     final String k = normalize(key);
+    S3Client client = s3();
     try {
       Long createdAtMs = null;
       try {
         HeadObjectResponse prev =
-            s3().headObject(HeadObjectRequest.builder().bucket(bucket).key(k).build());
+            client.headObject(HeadObjectRequest.builder().bucket(bucket).key(k).build());
         createdAtMs =
             Optional.ofNullable(prev.metadata().get(META_CREATED_AT))
                 .map(Long::parseLong)
@@ -184,14 +190,14 @@ public class S3BlobStore implements BlobStore {
       PutObjectRequest req =
           PutObjectRequest.builder().bucket(bucket).key(k).contentType(ct).metadata(meta).build();
 
-      s3().putObject(req, RequestBody.fromBytes(bytes));
+      client.putObject(req, RequestBody.fromBytes(bytes));
     } catch (S3Exception e) {
       throw mapAndWrap("PUT", k, e);
     } catch (SdkClientException e) {
-      clientFailureHandler.accept(e);
+      clientFailureHandler.accept(client, e);
       throw new StorageAbortRetryableException(msg("PUT", k, e.getMessage()));
     } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("PUT", k, e);
+      throw mapClosedPoolOrRethrow(client, "PUT", k, e);
     }
   }
 
@@ -219,6 +225,7 @@ public class S3BlobStore implements BlobStore {
   public BlobStore.Page list(String prefix, int limit, String pageToken) {
     final String p = normalize(prefix);
     final int lim = Math.max(1, limit);
+    S3Client client = s3();
 
     try {
       ListObjectsV2Request.Builder b =
@@ -228,7 +235,7 @@ public class S3BlobStore implements BlobStore {
         b = b.continuationToken(pageToken);
       }
 
-      ListObjectsV2Response resp = s3().listObjectsV2(b.build());
+      ListObjectsV2Response resp = client.listObjectsV2(b.build());
 
       var keys = resp.contents().stream().map(o -> o.key()).toList();
 
@@ -242,18 +249,19 @@ public class S3BlobStore implements BlobStore {
       }
       throw mapAndWrap("LIST", p, e);
     } catch (SdkClientException e) {
-      clientFailureHandler.accept(e);
+      clientFailureHandler.accept(client, e);
       throw new StorageAbortRetryableException(msg("LIST", p, e.getMessage()));
     } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("LIST", p, e);
+      throw mapClosedPoolOrRethrow(client, "LIST", p, e);
     }
   }
 
   @Override
   public boolean delete(String key) {
     final String k = normalize(key);
+    S3Client client = s3();
     try {
-      s3().deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(k).build());
+      client.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(k).build());
       return true;
     } catch (S3Exception e) {
       if (e.statusCode() == 404) {
@@ -261,10 +269,10 @@ public class S3BlobStore implements BlobStore {
       }
       throw mapAndWrap("DELETE", k, e);
     } catch (SdkClientException e) {
-      clientFailureHandler.accept(e);
+      clientFailureHandler.accept(client, e);
       throw new StorageAbortRetryableException(msg("DELETE", k, e.getMessage()));
     } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("DELETE", k, e);
+      throw mapClosedPoolOrRethrow(client, "DELETE", k, e);
     }
   }
 
@@ -272,6 +280,7 @@ public class S3BlobStore implements BlobStore {
   public void deletePrefix(String prefix) {
     final String p = normalize(prefix);
     String ct = null;
+    S3Client client = s3();
 
     try {
       do {
@@ -283,7 +292,7 @@ public class S3BlobStore implements BlobStore {
                 .continuationToken(ct)
                 .build();
 
-        var resp = s3().listObjectsV2(req);
+        var resp = client.listObjectsV2(req);
 
         if (!resp.contents().isEmpty()) {
           var objs = resp.contents();
@@ -291,7 +300,7 @@ public class S3BlobStore implements BlobStore {
             var slice = objs.subList(i, Math.min(i + 1000, objs.size()));
             var dels =
                 slice.stream().map(o -> ObjectIdentifier.builder().key(o.key()).build()).toList();
-            s3().deleteObjects(b -> b.bucket(bucket).delete(d -> d.objects(dels)));
+            client.deleteObjects(b -> b.bucket(bucket).delete(d -> d.objects(dels)));
           }
         }
 
@@ -301,7 +310,7 @@ public class S3BlobStore implements BlobStore {
 
       if (p.endsWith("/")) {
         try {
-          s3().deleteObject(b -> b.bucket(bucket).key(p));
+          client.deleteObject(b -> b.bucket(bucket).key(p));
         } catch (Throwable ignore) {
         }
       }
@@ -309,10 +318,10 @@ public class S3BlobStore implements BlobStore {
     } catch (S3Exception e) {
       throw mapAndWrap("DELETE_PREFIX", p, e);
     } catch (SdkClientException e) {
-      clientFailureHandler.accept(e);
+      clientFailureHandler.accept(client, e);
       throw new StorageAbortRetryableException(msg("DELETE_PREFIX", p, e.getMessage()));
     } catch (RuntimeException e) {
-      throw mapClosedPoolOrRethrow("DELETE_PREFIX", p, e);
+      throw mapClosedPoolOrRethrow(client, "DELETE_PREFIX", p, e);
     }
   }
 
@@ -321,11 +330,11 @@ public class S3BlobStore implements BlobStore {
   }
 
   private StorageAbortRetryableException mapClosedPoolOrRethrow(
-      String operation, String key, RuntimeException failure) {
+      S3Client client, String operation, String key, RuntimeException failure) {
     if (!ClosedAwsClientDetector.isConnectionPoolShutdown(failure)) {
       throw failure;
     }
-    clientFailureHandler.accept(failure);
+    clientFailureHandler.accept(client, failure);
     return new StorageAbortRetryableException(msg(operation, key, failure.getMessage()), failure);
   }
 
