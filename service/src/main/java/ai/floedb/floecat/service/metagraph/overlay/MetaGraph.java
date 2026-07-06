@@ -58,9 +58,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public final class MetaGraph implements CatalogOverlay, TopologyGraph {
+
+  private static final Logger LOG = Logger.getLogger(MetaGraph.class);
 
   private final UserGraph userGraph;
   private final LogicalSchemaMapper schemaMapper;
@@ -86,6 +89,11 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     return engine.isPresent() ? engine.engineContext() : EngineContext.empty();
   }
 
+  private static EngineContext orRequestEngine(
+      EngineContext ctx, Supplier<EngineContext> fallback) {
+    return ctx != null ? ctx : fallback.get();
+  }
+
   /**
    * Resolves a graph node by ID, checking system graph first, then user graph.
    *
@@ -97,7 +105,12 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
    */
   @Override
   public Optional<GraphNode> resolve(ResourceId id) {
-    EngineContext ctx = engineContext();
+    return resolve(id, engineContext());
+  }
+
+  @Override
+  public Optional<GraphNode> resolve(ResourceId id, EngineContext engineContext) {
+    EngineContext ctx = orRequestEngine(engineContext, this::engineContext);
     Optional<GraphNode> sys = systemGraph.resolve(id, ctx);
     if (sys.isPresent()) {
       return sys;
@@ -300,9 +313,27 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
    */
   @Override
   public Optional<ResourceId> resolveName(String correlationId, NameRef ref) {
-    EngineContext ctx = engineContext();
+    return resolveName(correlationId, ref, engineContext());
+  }
+
+  @Override
+  public Optional<ResourceId> resolveName(
+      String correlationId, NameRef ref, EngineContext engineContext) {
+    EngineContext ctx = orRequestEngine(engineContext, this::engineContext);
     Optional<ResourceId> system = systemGraph.resolveName(ref, ctx);
-    return system.isPresent() ? system : userGraph.resolveName(correlationId, ref);
+    Optional<ResourceId> resolved =
+        system.isPresent() ? system : userGraph.resolveName(correlationId, ref);
+    if (resolved.isEmpty() && !ctx.hasEngineKind()) {
+      // A lookup that misses both graphs while the engine context is empty is how a lost engine
+      // context manifests: engine-gated system objects (sys.*, pg_catalog.*) silently resolve to
+      // NOT_FOUND and the engine reports a wrong-answer-shaped 42P01 (eng-floe/floecat#361).
+      // Legitimate no-engine requests that miss also log here, which is rare and still useful.
+      LOG.warnf(
+          "resolveName miss with empty engine context: ref=%s correlation_id=%s — if the request"
+              + " declared an engine, its context was lost before resolution",
+          NameRefUtil.canonical(ref), correlationId);
+    }
+    return resolved;
   }
 
   /**
