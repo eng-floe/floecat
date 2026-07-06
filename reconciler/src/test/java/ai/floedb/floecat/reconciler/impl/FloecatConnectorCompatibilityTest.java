@@ -55,6 +55,11 @@ class FloecatConnectorCompatibilityTest {
     }
 
     @Override
+    public List<String> listCatalogs() {
+      return List.of();
+    }
+
+    @Override
     public List<String> listNamespaces() {
       return List.of();
     }

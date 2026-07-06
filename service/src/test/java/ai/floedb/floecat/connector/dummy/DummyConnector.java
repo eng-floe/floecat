@@ -86,6 +86,11 @@ public final class DummyConnector implements FloecatConnector {
   }
 
   @Override
+  public List<String> listCatalogs() {
+    return List.of();
+  }
+
+  @Override
   public List<String> listNamespaces() {
     return List.of("db", "examples.iceberg");
   }

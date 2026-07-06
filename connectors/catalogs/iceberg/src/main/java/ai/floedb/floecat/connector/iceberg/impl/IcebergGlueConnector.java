@@ -92,6 +92,11 @@ final class IcebergGlueConnector extends IcebergConnector {
   }
 
   @Override
+  public List<String> listCatalogs() {
+    return List.of(catalog.name());
+  }
+
+  @Override
   public List<String> listNamespaces() {
     if (isSingleTableMode()) {
       return listNamespacesSingle();

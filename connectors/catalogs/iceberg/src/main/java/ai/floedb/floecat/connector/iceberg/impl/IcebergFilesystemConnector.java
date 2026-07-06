@@ -65,6 +65,15 @@ final class IcebergFilesystemConnector extends IcebergConnector {
         externalFileIO);
   }
 
+  /**
+   * Filesystem Iceberg tables are pointed at a single table location; there is no catalog layer.
+   * Returns empty always.
+   */
+  @Override
+  public List<String> listCatalogs() {
+    return List.of();
+  }
+
   @Override
   public List<String> listNamespaces() {
     return listNamespacesSingle();

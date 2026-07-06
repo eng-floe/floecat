@@ -154,6 +154,9 @@ public abstract class IcebergConnector implements FloecatConnector {
   }
 
   @Override
+  public abstract List<String> listCatalogs();
+
+  @Override
   public abstract List<String> listNamespaces();
 
   @Override

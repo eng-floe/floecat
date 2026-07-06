@@ -1,0 +1,103 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+package ai.floedb.floecat.connector;
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.connector.rpc";
+
+import "floecat/common/common.proto";
+import "floecat/connector/connector.proto";
+
+message ConnectorDiscoveryTarget {
+  oneof target {
+    ai.floedb.floecat.common.ResourceId connector_id = 1;
+    ConnectorSpec spec = 2;
+  }
+}
+
+enum DiscoveryObjectKind {
+  DOK_UNSPECIFIED = 0;
+  DOK_CATALOG = 1;
+  DOK_NAMESPACE = 2;
+  DOK_TABLE = 3;
+  DOK_VIEW = 4;
+}
+
+message DiscoveryObject {
+  DiscoveryObjectKind object_kind = 1;
+
+  string catalog_name = 10;
+  repeated string namespace_segments = 11;
+  string object_name = 12;
+
+  string upstream_id = 20;
+  string display_name = 21;
+  string location_uri = 22;
+  map<string,string> properties = 99;
+}
+
+message DiscoveryStatus {
+  bool ok = 1;
+  // TODO(adrian): Define and implement these properties
+  // repeated ConnectorIssue issues = 2;
+  // AuthState auth = 3;
+  string summary = 4;
+}
+
+message DiscoverCatalogsRequest {
+  ConnectorDiscoveryTarget target = 1;
+  ai.floedb.floecat.common.PageRequest page = 2;
+  string query = 3;
+}
+
+message DiscoverCatalogsResponse {
+  repeated DiscoveryObject catalogs = 1;
+  ai.floedb.floecat.common.PageResponse page = 2;
+  DiscoveryStatus status = 3;
+}
+
+message DiscoverNamespacesRequest {
+  ConnectorDiscoveryTarget target = 1;
+  optional string catalog_name = 2;
+  ai.floedb.floecat.common.PageRequest page = 3;
+  string query = 4;
+}
+
+message DiscoverNamespacesResponse {
+  repeated DiscoveryObject namespaces = 1;
+  ai.floedb.floecat.common.PageResponse page = 2;
+  DiscoveryStatus status = 3;
+}
+
+message DiscoverObjectsRequest {
+  ConnectorDiscoveryTarget target = 1;
+  optional string catalog_name = 2;
+  repeated string namespace_segments = 3;
+  repeated DiscoveryObjectKind kinds = 4; // table/view
+  ai.floedb.floecat.common.PageRequest page = 5;
+  string query = 6;
+}
+
+message DiscoverObjectsResponse {
+  repeated DiscoveryObject  objects = 1;
+  ai.floedb.floecat.common.PageResponse page = 2;
+  DiscoveryStatus status = 3;
+}
+
+service ConnectorDiscovery {
+  rpc DiscoverCatalogs(DiscoverCatalogsRequest) returns (DiscoverCatalogsResponse);
+  rpc DiscoverNamespaces(DiscoverNamespacesRequest) returns (DiscoverNamespacesResponse);
+  rpc DiscoverObjects(DiscoverObjectsRequest) returns (DiscoverObjectsResponse);
+}

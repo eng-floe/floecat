@@ -44,6 +44,15 @@ final class DeltaFilesystemConnector extends DeltaConnector {
     this.tableName = tableName == null ? "" : tableName;
   }
 
+  /**
+   * Filesystem Delta tables are pointed at a single table root; there is no catalog or schema
+   * layer. Returns empty always.
+   */
+  @Override
+  public List<String> listCatalogs() {
+    return List.of();
+  }
+
   @Override
   public List<String> listNamespaces() {
     return namespaceFq.isBlank() ? List.of() : List.of(namespaceFq);

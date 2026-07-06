@@ -48,6 +48,20 @@ public final class UnityDeltaConnector extends DeltaConnector {
   }
 
   @Override
+  public List<String> listCatalogs() {
+    try {
+      List<String> out = new ArrayList<>();
+      for (var c : ucGetAll("/api/2.1/unity-catalog/catalogs", "catalogs")) {
+        out.add(c.path("name").asText());
+      }
+      out.sort(String::compareTo);
+      return out;
+    } catch (Exception e) {
+      throw new RuntimeException("listCatalogs failed", e);
+    }
+  }
+
+  @Override
   public List<String> listNamespaces() {
     try {
       List<String> out = new ArrayList<>();
