@@ -475,6 +475,16 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
         planned.isPresent(),
         planned.map(plan -> plan.dataFiles().size()).orElse(0),
         planned.map(plan -> plan.deleteFiles().size()).orElse(0));
+    if (planned.isEmpty()) {
+      throw new ReconcileFailureException(
+          ExecutionResult.FailureKind.INTERNAL,
+          ExecutionResult.RetryDisposition.TERMINAL,
+          "Snapshot id does not exist: tableId="
+              + task.tableId()
+              + " snapshotId="
+              + task.snapshotId(),
+          null);
+    }
     return planned;
   }
 

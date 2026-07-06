@@ -793,7 +793,17 @@ public class ReconcilerService {
   }
 
   String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
-    return backend.resolveNamespaceFq(ctx, namespaceId);
+    try {
+      return backend.resolveNamespaceFq(ctx, namespaceId);
+    } catch (RuntimeException e) {
+      if (isMissingObjectFailure(e)) {
+        throw terminalValidation(
+            "Destination namespace id does not exist: "
+                + (namespaceId == null ? "" : namespaceId.getId()),
+            e);
+      }
+      throw e;
+    }
   }
 
   private ReconcileTableTask planStrictTableTask(
