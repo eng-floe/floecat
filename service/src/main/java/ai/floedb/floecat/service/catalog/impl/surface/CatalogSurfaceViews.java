@@ -73,6 +73,12 @@ public final class CatalogSurfaceViews {
 
   private View viewFromOverlayNodeOrRepo(ViewNode node, ResourceId viewId, String corr) {
     if (isSystemViewNode(node)) {
+      // GetView reports the system view's canonical catalog id, unlike ListViews which rewrites it
+      // to the catalog being browsed (see CatalogSurfaceViewPageSource#mapSystemNode). The rewrite
+      // is a presentation of the "symlink" — a system view is visible under many user catalogs at
+      // once — and a by-id lookup carries no requested-catalog context (GetViewRequest is only a
+      // view_id; ResourceId has no catalog field), so there is no single catalog to rewrite to.
+      // The canonical id is therefore the truthful answer here.
       return viewFromSystemNode(node);
     }
 
@@ -81,6 +87,11 @@ public final class CatalogSurfaceViews {
         .orElseThrow(() -> GrpcErrors.notFound(corr, VIEW, Map.of("id", viewId.getId())));
   }
 
+  /**
+   * Builds a {@link View} from a system view node using the node's canonical (system) catalog id.
+   * Callers that present the view within a specific user catalog — e.g. {@code ListViews} — rewrite
+   * {@code catalog_id} afterward; {@code GetView} does not, as a by-id lookup has no such context.
+   */
   static View viewFromSystemNode(ViewNode node) {
     View.Builder builder =
         View.newBuilder()
