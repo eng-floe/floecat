@@ -44,6 +44,8 @@ import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationTableMetada
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationViewMetadata;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.StatsTargetScopeCodec;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -532,6 +534,29 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             () -> service.planTableTasks(principal, connectorId, ReconcileScope.empty(), null))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Pinned destination table id requires connector.source.table");
+  }
+
+  @Test
+  void tablePlannerFailsTerminalWhenExpectedDestinationNamespaceIsMissing() {
+    service.backend =
+        new DefaultBackend() {
+          @Override
+          public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+            return activeConnector();
+          }
+
+          @Override
+          public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+            throw new StatusRuntimeException(
+                Status.NOT_FOUND.withDescription("Namespace not found: " + namespaceId.getId()));
+          }
+        };
+    service.connectorOpener = cfg -> new FakeConnector(List.of());
+
+    assertThatThrownBy(
+            () -> service.planTableTasks(principal, connectorId, ReconcileScope.empty(), null))
+        .isInstanceOf(ReconcileFailureException.class)
+        .hasMessageContaining("Destination namespace id does not exist: ns-1");
   }
 
   @Test
