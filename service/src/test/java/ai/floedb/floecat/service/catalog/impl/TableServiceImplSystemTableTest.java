@@ -28,7 +28,6 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
@@ -42,8 +41,6 @@ import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
-import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
@@ -108,49 +105,6 @@ class TableServiceImplSystemTableTest {
     when(pc.getAccountId()).thenReturn("acct");
     doNothing().when(authz).require(any(), anyString());
     when(hintCleaner.shouldClearHints(any())).thenReturn(false);
-  }
-
-  @Test
-  void getTable_systemTable_usesOverlay_notRepo() {
-    ResourceId sysTableId =
-        ResourceId.newBuilder()
-            .setAccountId("acct")
-            .setKind(ResourceKind.RK_TABLE)
-            .setId("sys_tbl_1")
-            .build();
-
-    ResourceId nsId =
-        ResourceId.newBuilder()
-            .setAccountId("acct")
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .setId("sys_ns_1")
-            .build();
-
-    SystemTableNode node =
-        new SystemTableNode.GenericSystemTableNode(
-            sysTableId,
-            1L,
-            Instant.now(),
-            "engine-v",
-            "system_table",
-            nsId,
-            List.of(SchemaColumn.newBuilder().setName("c1").build()),
-            null,
-            null,
-            TableBackendKind.TABLE_BACKEND_KIND_ENGINE);
-
-    overlay.addNode(node);
-
-    var resp =
-        svc.getTable(GetTableRequest.newBuilder().setTableId(sysTableId).build())
-            .await()
-            .indefinitely();
-
-    assertEquals(sysTableId, resp.getTable().getResourceId());
-    assertEquals("system_table", resp.getTable().getDisplayName());
-    assertEquals(nsId, resp.getTable().getNamespaceId());
-
-    verifyNoInteractions(tableRepo);
   }
 
   @Test

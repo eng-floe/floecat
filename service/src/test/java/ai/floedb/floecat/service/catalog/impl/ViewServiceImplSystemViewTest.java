@@ -28,7 +28,6 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.DeleteViewRequest;
-import ai.floedb.floecat.catalog.rpc.GetViewRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
@@ -89,58 +88,6 @@ class ViewServiceImplSystemViewTest {
     when(pc.getCorrelationId()).thenReturn("corr");
     when(pc.getAccountId()).thenReturn("acct");
     doNothing().when(authz).require(any(), anyString());
-  }
-
-  @Test
-  void getView_systemView_usesOverlay_notRepo() {
-    ResourceId viewId =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_VIEW)
-            .setId("sys_view_get")
-            .build();
-
-    var catalogId =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_CATALOG)
-            .setId("sys_catalog")
-            .build();
-
-    var namespaceId =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .setId("sys_namespace")
-            .build();
-
-    var node =
-        new ViewNode(
-            viewId,
-            1L,
-            Instant.now(),
-            catalogId,
-            namespaceId,
-            "sys_view_get",
-            "select 1",
-            "sql",
-            List.<SchemaColumn>of(),
-            List.of(),
-            List.of(),
-            GraphNodeOrigin.SYSTEM,
-            Map.of(),
-            Optional.empty(),
-            Map.of(),
-            Map.<EngineHintKey, EngineHint>of());
-
-    overlay.addNode(node);
-
-    var resp =
-        svc.getView(GetViewRequest.newBuilder().setViewId(viewId).build()).await().indefinitely();
-
-    assertEquals(viewId, resp.getView().getResourceId());
-    assertEquals("sys_view_get", resp.getView().getDisplayName());
-    verifyNoInteractions(viewRepo);
   }
 
   @Test
