@@ -107,25 +107,31 @@ public final class ResolvedCallContexts {
     }
     ResolvedCallContext fromKeys = fromGrpcContextKeys();
     if (fromKeys == null) {
-      warnIfMdcDisagrees();
+      warnOnChannelDisagreement(
+          "correlation_id",
+          "no channel (scope, duplicated-context local, io.grpc.Context) carries a resolved call"
+              + " context");
     }
     return fromKeys;
   }
 
   /**
-   * Channel-disagreement detector: MDC carrying a correlation id proves this thread is inside a
-   * resolved request, so a miss on every context channel is a propagation loss — the failure mode
-   * of eng-floe/floecat#361, turned from a silent wrong answer into a countable signal. This should
-   * never fire; any occurrence is a regression in context propagation.
+   * Channel-disagreement detector shared by every carrier-backed reader: a populated MDC key proves
+   * the inbound interceptor resolved this request on this very call path (MDC and the carrier are
+   * written together), so a miss on the actual context channels is a propagation loss — the failure
+   * mode of eng-floe/floecat#361, turned from a silent wrong answer into a countable signal. This
+   * should never fire; any occurrence is a regression in context propagation.
+   *
+   * @param mdcKey the MDC key whose presence proves the request declared the lost value
+   * @param missingWhat what the context channels failed to deliver, for the log message
    */
-  private static void warnIfMdcDisagrees() {
-    Object mdcCorrelationId = MDC.get("correlation_id");
-    if (mdcCorrelationId instanceof String correlationId && !correlationId.isBlank()) {
+  public static void warnOnChannelDisagreement(String mdcKey, String missingWhat) {
+    Object mdcValue = MDC.get(mdcKey);
+    if (mdcValue instanceof String value && !value.isBlank()) {
       LOG.warnf(
-          "call-context channels disagree: MDC correlation_id=%s is populated but no channel"
-              + " (scope, duplicated-context local, io.grpc.Context) carries a resolved call"
-              + " context — the call context was lost on the way to this thread",
-          correlationId);
+          "call-context channels disagree: MDC %s=%s is populated but %s — the call context was"
+              + " lost on the way to this thread (correlation_id=%s)",
+          mdcKey, value, missingWhat, MDC.get("correlation_id"));
     }
   }
 
