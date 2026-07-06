@@ -35,7 +35,6 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -177,7 +176,7 @@ public final class NameResolver {
    * the shared relation-name claim), so the table-first order is deterministic.
    */
   public Optional<ResourceId> resolveRelationId(String accountId, NameRef ref) {
-    return resolveRelationId(accountId, ref, new HashMap<>());
+    return resolveRelationId(accountId, ref, newScopeMemo(accountId));
   }
 
   /**
@@ -186,63 +185,65 @@ public final class NameResolver {
    */
   public Map<NameRef, Optional<ResourceId>> resolveRelationIds(
       String accountId, List<NameRef> refs) {
-    Map<String, Optional<Scope>> scopes = new HashMap<>();
+    ScopeMemo memo = newScopeMemo(accountId);
     var out = new LinkedHashMap<NameRef, Optional<ResourceId>>(refs.size());
     for (NameRef ref : refs) {
-      out.computeIfAbsent(ref, r -> resolveRelationId(accountId, r, scopes));
+      out.computeIfAbsent(ref, r -> resolveRelationId(accountId, r, memo));
     }
     return out;
   }
 
-  private Optional<ResourceId> resolveRelationId(
-      String accountId, NameRef ref, Map<String, Optional<Scope>> scopeMemo) {
+  private ScopeMemo newScopeMemo(String accountId) {
+    return new ScopeMemo(
+        name -> catalogByName(accountId, name),
+        (catalog, path) -> namespaceByPath(accountId, catalog, path));
+  }
+
+  private Optional<ResourceId> resolveRelationId(String accountId, NameRef ref, ScopeMemo memo) {
     return diagnose(
         "resolve_relation_id",
         "",
         accountId,
         () -> {
-          // Name validity is per-ref; check it here, not inside resolveScope, so a blank-name ref
-          // does not cache Optional.empty() under the name-independent scope key and starve valid
-          // siblings sharing the same catalog/path in this batch.
-          if (!validName(ref)) {
+          // Name validity is per-ref; a blank name must not consult the shared scope memo (keyed by
+          // catalog + path, name-independent) or it would starve valid siblings in this batch.
+          if (!validName(ref) || !validCatalog(ref)) {
             return Optional.<ResourceId>empty();
           }
-          return scopeMemo
-              .computeIfAbsent(scopeKey(ref), k -> resolveScope(accountId, ref))
+          return memo.catalog(ref.getCatalog())
               .flatMap(
-                  scope -> {
-                    String catalogId = scope.catalog().getResourceId().getId();
-                    String namespaceId = scope.namespace().getResourceId().getId();
-                    // One pointer read (no blob fetch) answers both kind and id via the shared
-                    // relation-name claim written by every table/view create and rename.
-                    Optional<ResourceId> claimed =
-                        tableRepository.relationNameClaim(
-                            accountId, catalogId, namespaceId, ref.getName());
-                    if (claimed.isPresent()) {
-                      ResourceId rid = claimed.get();
-                      return Optional.of(
-                          rid.getKind() == ResourceKind.RK_TABLE
-                              ? requireCanonicalTableId(rid)
-                              : rid);
-                    }
-                    // Claimless rows (created before the claim existed): kind-specific probes.
-                    Optional<ResourceId> table =
-                        tableRepository
-                            .getByName(accountId, catalogId, namespaceId, ref.getName())
-                            .map(Table::getResourceId)
-                            .map(this::requireCanonicalTableId);
-                    if (table.isPresent()) {
-                      return table;
-                    }
-                    return viewRepository
-                        .getByName(accountId, catalogId, namespaceId, ref.getName())
-                        .map(View::getResourceId);
-                  });
+                  catalog ->
+                      memo.namespace(catalog, ref.getPathList())
+                          .flatMap(
+                              ns -> {
+                                String catalogId = catalog.getResourceId().getId();
+                                String namespaceId = ns.getResourceId().getId();
+                                // One pointer read (no blob fetch) answers both kind and id via the
+                                // shared relation-name claim written by every create and rename.
+                                Optional<ResourceId> claimed =
+                                    tableRepository.relationNameClaim(
+                                        accountId, catalogId, namespaceId, ref.getName());
+                                if (claimed.isPresent()) {
+                                  ResourceId rid = claimed.get();
+                                  return Optional.of(
+                                      rid.getKind() == ResourceKind.RK_TABLE
+                                          ? requireCanonicalTableId(rid)
+                                          : rid);
+                                }
+                                // Claimless rows (pre-claim): kind-specific probes.
+                                Optional<ResourceId> table =
+                                    tableRepository
+                                        .getByName(accountId, catalogId, namespaceId, ref.getName())
+                                        .map(Table::getResourceId)
+                                        .map(this::requireCanonicalTableId);
+                                if (table.isPresent()) {
+                                  return table;
+                                }
+                                return viewRepository
+                                    .getByName(accountId, catalogId, namespaceId, ref.getName())
+                                    .map(View::getResourceId);
+                              }));
         });
-  }
-
-  private static String scopeKey(NameRef ref) {
-    return ref.getCatalog() + "\u001F" + String.join("\u001F", ref.getPathList());
   }
 
   public Optional<ResolvedRelation> resolveTableRelation(String accountId, NameRef ref) {

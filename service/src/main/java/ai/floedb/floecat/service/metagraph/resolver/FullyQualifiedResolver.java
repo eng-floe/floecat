@@ -30,7 +30,6 @@ import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -78,7 +77,10 @@ public class FullyQualifiedResolver {
 
     int max = Math.min(names.size(), normalizeLimit(limit));
     List<QualifiedRelation> out = new ArrayList<>(max);
-    var memo = new ScopeMemo();
+    var memo =
+        new ScopeMemo(
+            name -> catalogByName(cid, accountId, name),
+            (catalog, path) -> namespaceByPath(cid, accountId, catalog, path));
 
     for (int i = 0; i < max; i++) {
       var tblEntry = resolveTableEntry(memo, cid, accountId, names.get(i));
@@ -101,7 +103,10 @@ public class FullyQualifiedResolver {
 
     int max = Math.min(names.size(), normalizeLimit(limit));
     List<QualifiedRelation> out = new ArrayList<>(max);
-    var memo = new ScopeMemo();
+    var memo =
+        new ScopeMemo(
+            name -> catalogByName(cid, accountId, name),
+            (catalog, path) -> namespaceByPath(cid, accountId, catalog, path));
 
     for (int i = 0; i < max; i++) {
       var viewEntry = resolveViewEntry(memo, cid, accountId, names.get(i));
@@ -236,38 +241,19 @@ public class FullyQualifiedResolver {
   // Internal helpers (canonical entry resolution)
   // ----------------------------------------------------------------------
 
-  /**
-   * Per-call scope memo: a batch of names typically shares one catalog.namespace, so resolve each
-   * distinct scope once instead of re-reading catalog and namespace for every name.
-   */
-  private final class ScopeMemo {
-    private final Map<String, Optional<Catalog>> catalogs = new HashMap<>();
-    private final Map<String, Optional<Namespace>> namespaces = new HashMap<>();
-
-    Optional<Catalog> catalog(String cid, String accountId, String name) {
-      return catalogs.computeIfAbsent(name, n -> catalogByName(cid, accountId, n));
-    }
-
-    Optional<Namespace> namespace(
-        String cid, String accountId, Catalog catalog, List<String> path) {
-      String key = catalog.getResourceId().getId() + "\u001F" + String.join("\u001F", path);
-      return namespaces.computeIfAbsent(key, k -> namespaceByPath(cid, accountId, catalog, path));
-    }
-  }
-
   private Optional<QualifiedRelation> resolveTableEntry(
       ScopeMemo memo, String cid, String accountId, NameRef ref) {
 
     validateNameRef(cid, ref);
     validateRelationName(cid, ref, "table");
 
-    Optional<Catalog> catalogOpt = memo.catalog(cid, accountId, ref.getCatalog());
+    Optional<Catalog> catalogOpt = memo.catalog(ref.getCatalog());
     if (catalogOpt.isEmpty()) {
       return Optional.empty();
     }
     Catalog catalog = catalogOpt.get();
 
-    Optional<Namespace> nsOpt = memo.namespace(cid, accountId, catalog, ref.getPathList());
+    Optional<Namespace> nsOpt = memo.namespace(catalog, ref.getPathList());
     if (nsOpt.isEmpty()) {
       return Optional.empty();
     }
@@ -296,13 +282,13 @@ public class FullyQualifiedResolver {
     validateNameRef(cid, ref);
     validateRelationName(cid, ref, "view");
 
-    Optional<Catalog> catalogOpt = memo.catalog(cid, accountId, ref.getCatalog());
+    Optional<Catalog> catalogOpt = memo.catalog(ref.getCatalog());
     if (catalogOpt.isEmpty()) {
       return Optional.empty();
     }
     Catalog catalog = catalogOpt.get();
 
-    Optional<Namespace> nsOpt = memo.namespace(cid, accountId, catalog, ref.getPathList());
+    Optional<Namespace> nsOpt = memo.namespace(catalog, ref.getPathList());
     if (nsOpt.isEmpty()) {
       return Optional.empty();
     }
