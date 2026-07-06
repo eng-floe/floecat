@@ -18,6 +18,8 @@ package ai.floedb.floecat.storage.aws.secrets;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.storage.aws.AwsClients;
@@ -89,6 +91,40 @@ class ProdSecretsManagerTest {
   }
 
   @Test
+  void per_account_refresh_closes_all_clients_bound_to_previous_sts() {
+    ClientHandle bootstrapClient = ClientHandle.secretsValue("unused");
+    ClientHandle staleStsClient = ClientHandle.sts();
+    ClientHandle refreshedStsClient = ClientHandle.sts();
+    ClientHandle otherAccountClient =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("other".getBytes()));
+    ClientHandle stalePerAccountClient =
+        ClientHandle.secretsFailure(new RuntimeException("Connection pool shut down"));
+    ClientHandle refreshedPerAccountClient =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("beta".getBytes()));
+
+    FakeAwsClients awsClients = new FakeAwsClients();
+    awsClients.refreshedStsClients.addLast(refreshedStsClient);
+    awsClients.perAccountSecretsClients.addLast(otherAccountClient);
+    awsClients.perAccountSecretsClients.addLast(stalePerAccountClient);
+    awsClients.perAccountSecretsClients.addLast(refreshedPerAccountClient);
+
+    ProdSecretsManager manager =
+        new ProdSecretsManager(awsClients, bootstrapClient.secretsClient, staleStsClient.stsClient);
+    manager.roleArn = Optional.of("arn:aws:iam::123456789012:role/test");
+
+    manager.get("acct-other", "connectors", "secret");
+
+    Optional<byte[]> result = manager.get("acct", "connectors", "secret");
+
+    assertArrayEquals("beta".getBytes(), result.orElseThrow());
+    assertTrue(stalePerAccountClient.closed);
+    assertTrue(otherAccountClient.closed);
+    assertTrue(staleStsClient.closed);
+    assertEquals(3, awsClients.perAccountClientBuilds);
+    assertEquals(1, awsClients.stsRefreshes);
+  }
+
+  @Test
   void stale_failed_per_account_client_does_not_evict_newer_client() throws Exception {
     ClientHandle bootstrapClient = ClientHandle.secretsValue("unused");
     ClientHandle staleStsClient = ClientHandle.sts();
@@ -112,9 +148,46 @@ class ProdSecretsManagerTest {
     invokeRefresh(manager, "acct", stalePerAccountClient.secretsClient);
 
     assertTrue(stalePerAccountClient.closed);
-    assertTrue(!newerPerAccountClient.closed);
+    assertFalse(newerPerAccountClient.closed);
     assertEquals(1, awsClients.stsRefreshes);
     assertSameMappedClient(manager, "acct", newerPerAccountClient.secretsClient);
+  }
+
+  @Test
+  void direct_client_after_shutdown_throws_clear_state_error() {
+    ClientHandle directClient =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("unused".getBytes()));
+    ClientHandle stsClient = ClientHandle.sts();
+    ProdSecretsManager manager =
+        new ProdSecretsManager(
+            new FakeAwsClients(), directClient.secretsClient, stsClient.stsClient);
+
+    manager.shutdown();
+
+    IllegalStateException thrown =
+        assertThrows(
+            IllegalStateException.class, () -> manager.get("acct", "connectors", "secret"));
+
+    assertEquals("secrets manager is shut down", thrown.getMessage());
+  }
+
+  @Test
+  void role_client_after_shutdown_throws_clear_state_error() {
+    ClientHandle directClient =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("unused".getBytes()));
+    ClientHandle stsClient = ClientHandle.sts();
+    ProdSecretsManager manager =
+        new ProdSecretsManager(
+            new FakeAwsClients(), directClient.secretsClient, stsClient.stsClient);
+    manager.roleArn = Optional.of("arn:aws:iam::123456789012:role/test");
+
+    manager.shutdown();
+
+    IllegalStateException thrown =
+        assertThrows(
+            IllegalStateException.class, () -> manager.get("acct", "connectors", "secret"));
+
+    assertEquals("secrets manager is shut down", thrown.getMessage());
   }
 
   private static final class FakeAwsClients extends AwsClients {

@@ -264,6 +264,23 @@ public class DynamoDbKvStoreTest {
   }
 
   @Test
+  void get_fixed_client_rethrows_closed_pool_without_retry() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    RuntimeException closedPool = new RuntimeException("Connection pool shut down");
+    CompletableFuture<GetItemResponse> failed = new CompletableFuture<>();
+    failed.completeExceptionally(closedPool);
+    handler.setPendingGetFuture(failed);
+    DynamoDbKvStore store = newStore(handler);
+
+    RuntimeException thrown =
+        assertThrows(
+            RuntimeException.class, () -> store.get(key("pk", "sk")).await().indefinitely());
+
+    assertSame(closedPool, thrown);
+    assertEquals(1, handler.getItemCalls);
+  }
+
+  @Test
   void get_subscription_cancel_cancels_underlying_future() {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     DynamoDbKvStore store = newStore(handler);
@@ -756,6 +773,7 @@ public class DynamoDbKvStoreTest {
     private int createTableCalls;
     private int deleteTableCalls;
     private int unprocessedCount;
+    private int getItemCalls;
     private CompletableFuture<GetItemResponse> pendingGetFuture;
 
     private void setQueryResponses(List<QueryResponse> responses) {
@@ -855,6 +873,7 @@ public class DynamoDbKvStoreTest {
     }
 
     private CompletableFuture<GetItemResponse> handleGetItem(GetItemRequest req) {
+      getItemCalls++;
       if (pendingGetFuture != null) {
         var future = pendingGetFuture;
         pendingGetFuture = null;

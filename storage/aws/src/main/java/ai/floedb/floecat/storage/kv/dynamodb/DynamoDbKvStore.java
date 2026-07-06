@@ -45,7 +45,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
   private final String table;
 
   public DynamoDbKvStore(DynamoDbAsyncClient ddb, String table) {
-    this(() -> ddb, table, (client, failure) -> {});
+    this(() -> ddb, table, null);
   }
 
   public DynamoDbKvStore(

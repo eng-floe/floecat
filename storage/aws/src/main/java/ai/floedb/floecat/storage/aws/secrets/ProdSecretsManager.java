@@ -57,6 +57,7 @@ public class ProdSecretsManager implements SecretsManager {
   private final AtomicReference<StsClient> stsClient;
   private final ConcurrentMap<String, SecretsManagerClient> perAccountClients =
       new ConcurrentHashMap<>();
+  private final Object perAccountClientLock = new Object();
 
   @Inject
   public ProdSecretsManager(AwsClients awsClients) {
@@ -78,12 +79,11 @@ public class ProdSecretsManager implements SecretsManager {
 
   @PreDestroy
   void shutdown() {
-    for (SecretsManagerClient client : perAccountClients.values()) {
-      closeQuietly(client);
+    synchronized (perAccountClientLock) {
+      closePerAccountClients();
+      closeQuietly(stsClient.getAndSet(null));
     }
-    perAccountClients.clear();
     closeQuietly(secretsClient.getAndSet(null));
-    closeQuietly(stsClient.getAndSet(null));
   }
 
   @Override
@@ -204,30 +204,35 @@ public class ProdSecretsManager implements SecretsManager {
   private SecretsManagerClient clientForAccount(String accountId) {
     String role = roleArn.map(String::trim).filter(value -> !value.isBlank()).orElse("");
     if (role.isEmpty()) {
-      return secretsClient.get();
+      return requireOpen(secretsClient.get());
     }
-    return perAccountClients.computeIfAbsent(
-        accountId,
-        id -> {
-          StsAssumeRoleCredentialsProvider creds =
-              StsAssumeRoleCredentialsProvider.builder()
-                  .stsClient(stsClient.get())
-                  .refreshRequest(
-                      builder ->
-                          builder
-                              .roleArn(role)
-                              .roleSessionName(buildRoleSessionName(id))
-                              .tags(
-                                  software.amazon.awssdk.services.sts.model.Tag.builder()
-                                      .key(ACCOUNT_ID_TAG)
-                                      .value(id)
-                                      .build()))
-                  .build();
-          if (awsClients != null) {
-            return awsClients.secretsManagerClient(creds);
-          }
-          return SecretsManagerClient.builder().credentialsProvider(creds).build();
-        });
+    synchronized (perAccountClientLock) {
+      SecretsManagerClient existing = perAccountClients.get(accountId);
+      if (existing != null) {
+        return existing;
+      }
+      StsClient currentSts = requireOpen(stsClient.get());
+      StsAssumeRoleCredentialsProvider creds =
+          StsAssumeRoleCredentialsProvider.builder()
+              .stsClient(currentSts)
+              .refreshRequest(
+                  builder ->
+                      builder
+                          .roleArn(role)
+                          .roleSessionName(buildRoleSessionName(accountId))
+                          .tags(
+                              software.amazon.awssdk.services.sts.model.Tag.builder()
+                                  .key(ACCOUNT_ID_TAG)
+                                  .value(accountId)
+                                  .build()))
+              .build();
+      SecretsManagerClient client =
+          awsClients != null
+              ? awsClients.secretsManagerClient(creds)
+              : SecretsManagerClient.builder().credentialsProvider(creds).build();
+      perAccountClients.put(accountId, client);
+      return client;
+    }
   }
 
   private <T> T withClientRefresh(String accountId, ClientOperation<T> operation) {
@@ -258,20 +263,40 @@ public class ProdSecretsManager implements SecretsManager {
       return;
     }
 
-    if (accountId == null || accountId.isBlank() || failedClient == null) {
-      return;
+    synchronized (perAccountClientLock) {
+      if (accountId == null || accountId.isBlank() || failedClient == null) {
+        return;
+      }
+      if (!perAccountClients.remove(accountId, failedClient)) {
+        return;
+      }
+      closeQuietly(failedClient);
+      StsClient previousSts = stsClient.get();
+      if (previousSts == null) {
+        return;
+      }
+      StsClient nextSts = awsClients.stsClient();
+      if (stsClient.compareAndSet(previousSts, nextSts)) {
+        closeQuietly(previousSts);
+        closePerAccountClients();
+      } else {
+        closeQuietly(nextSts);
+      }
     }
-    if (!perAccountClients.remove(accountId, failedClient)) {
-      return;
+  }
+
+  private void closePerAccountClients() {
+    for (SecretsManagerClient client : perAccountClients.values()) {
+      closeQuietly(client);
     }
-    closeQuietly(failedClient);
-    StsClient previousSts = stsClient.get();
-    StsClient nextSts = awsClients.stsClient();
-    if (stsClient.compareAndSet(previousSts, nextSts)) {
-      closeQuietly(previousSts);
-    } else {
-      closeQuietly(nextSts);
+    perAccountClients.clear();
+  }
+
+  private static <T> T requireOpen(T client) {
+    if (client == null) {
+      throw new IllegalStateException("secrets manager is shut down");
     }
+    return client;
   }
 
   private static String buildRoleSessionName(String accountId) {
