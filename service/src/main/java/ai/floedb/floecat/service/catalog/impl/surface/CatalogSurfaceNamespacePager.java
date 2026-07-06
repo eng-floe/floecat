@@ -101,11 +101,16 @@ final class CatalogSurfaceNamespacePager {
             .sorted(Comparator.comparing(SysItem::rel))
             .toList();
 
+    // A full page is not the same as having another row to return: only advertise a continuation
+    // when the loop actually stopped before an un-emitted system namespace. Otherwise a page that
+    // exactly consumes the last system row would hand out a token whose next page is empty.
+    boolean hasMoreSystem = false;
     for (var it : sysItems) {
       if (!resumeSystemRel.isBlank() && it.rel().compareTo(resumeSystemRel) <= 0) {
         continue;
       }
       if (out.size() >= want) {
+        hasMoreSystem = true;
         break;
       }
       out.add(source.mapSystemNode(it.namespace()));
@@ -113,7 +118,7 @@ final class CatalogSurfaceNamespacePager {
     }
 
     String nextToken =
-        out.size() == want && !lastSystemRel.isBlank()
+        hasMoreSystem && !lastSystemRel.isBlank()
             ? CatalogSurfaceSupport.encodeToken(NS_TOKEN_PREFIX, lastSystemRel)
             : "";
 

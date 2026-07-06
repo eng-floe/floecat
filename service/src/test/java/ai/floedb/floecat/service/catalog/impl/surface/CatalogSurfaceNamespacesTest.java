@@ -99,7 +99,32 @@ class CatalogSurfaceNamespacesTest {
             CORRELATION_ID);
 
     assertEquals(List.of("information_schema"), names(systemPage.getNamespacesList()));
-    assertTrue(systemPage.getPage().getNextPageToken().startsWith("ns:"));
+    // It is the only system namespace and it exactly fills the page, so there is no next page —
+    // the system phase must not advertise a continuation whose next page would be empty.
+    assertTrue(systemPage.getPage().getNextPageToken().isEmpty());
+  }
+
+  @Test
+  void listNamespacesSystemExactlyFillsPageEmitsNoToken() {
+    // Regression: a page that exactly consumes the last system namespace must not advertise an
+    // ns: continuation, whose next page would come back empty.
+    stubUserNamespaces(List.of());
+    overlay.addNode(
+        namespaceNode(systemNamespaceId("information_schema"), "information_schema", List.of()));
+
+    var page =
+        surface.listNamespaces(
+            ListNamespacesRequest.newBuilder()
+                .setCatalogId(catalogId)
+                .setPage(PageRequest.newBuilder().setPageSize(1))
+                .build(),
+            ACCOUNT_ID,
+            CORRELATION_ID);
+
+    assertEquals(List.of("information_schema"), names(page.getNamespacesList()));
+    assertTrue(
+        page.getPage().getNextPageToken().isEmpty(),
+        "exact-fill on the last system namespace must not emit a continuation token");
   }
 
   @Test

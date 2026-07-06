@@ -500,6 +500,37 @@ class MetaGraphTest {
   }
 
   @Test
+  void listTablesByPrefix_systemExactlyFillsPageWithNoUserRows_emitsNoToken() {
+    // Regression: system rows exactly fill the page and there are no user rows. The handoff must
+    // not advertise a user-phase page that would come back empty.
+    NameRef prefix =
+        NameRef.newBuilder().setCatalog("examples").addPath("information_schema").build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("sys-ns")
+            .build();
+    when(system.resolveNamespace(any(NameRef.class), eq(context)))
+        .thenReturn(Optional.of(namespaceId));
+    when(system.listRelationsInNamespace(ResourceId.getDefaultInstance(), namespaceId, context))
+        .thenReturn(List.of(prefixSystemTable(sysTable, namespaceId, "system_table")));
+    when(system.tableName(sysTable, context))
+        .thenReturn(
+            Optional.of(NameRef.newBuilder().setCatalog("engine").setName("system_table").build()));
+    when(user.countTablesByPrefix(eq("cid"), eq(prefix))).thenReturn(0);
+
+    CatalogOverlay.ResolveResult page = meta.listTablesByPrefix("cid", prefix, 1, "");
+
+    assertThat(page.relations()).hasSize(1);
+    assertThat(page.relations().get(0).resourceId()).isEqualTo(sysTable);
+    assertThat(page.totalSize()).isEqualTo(1);
+    assertThat(page.nextToken()).isEmpty();
+    // No user-phase row fetch — there is nothing to continue into.
+    verify(user, never()).resolveTables(eq("cid"), eq(prefix), eq(1), eq(""));
+  }
+
+  @Test
   void listTablesByPrefix_pagesThroughSystemOverflowWithoutLoss() {
     // Regression: system rows beyond the page size were dropped (system was collected first-page
     // only, capped at the page size). They must flow across pages via the system-phase token.

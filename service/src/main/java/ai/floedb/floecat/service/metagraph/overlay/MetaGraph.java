@@ -518,12 +518,12 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
         lastSystemName = name;
       }
       if (merged.size() >= max) {
-        // Page filled exactly as the system rows ran out: hand off to the user phase without
-        // advancing its cursor. The next page starts the user scan from the beginning.
+        // Page filled exactly as the system rows ran out. Hand off to the user phase only when
+        // there are user rows to continue into; with none, USER_TOKEN_PREFIX would advertise a
+        // next page that is always empty. The next page starts the user scan from the beginning.
+        int userTotal = userTotalByPrefix(correlationId, prefix, tables);
         return new ResolveResult(
-            merged,
-            systemTotal + userTotalByPrefix(correlationId, prefix, tables),
-            USER_TOKEN_PREFIX);
+            merged, systemTotal + userTotal, userTotal > 0 ? USER_TOKEN_PREFIX : "");
       }
     }
 
