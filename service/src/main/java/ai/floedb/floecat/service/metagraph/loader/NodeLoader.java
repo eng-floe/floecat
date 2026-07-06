@@ -79,25 +79,23 @@ public class NodeLoader {
     return catalogRepository.listIds(accountId);
   }
 
+  // These fetch the pointer-only meta once and hydrate from the blob it names (via load), rather
+  // than reading the canonical pointer twice — once in getById and again in pointerMetaForSafe.
+  // Called per-item in listing loops, so the extra pointer read added up.
+
   public Optional<NamespaceNode> namespace(ResourceId id) {
     if (id.getKind() != ResourceKind.RK_NAMESPACE) return Optional.empty();
-    return namespaceRepository
-        .getById(id)
-        .map(ns -> toNamespaceNode(ns, namespaceRepository.pointerMetaForSafe(id)));
+    return mutationMeta(id).flatMap(meta -> load(id, meta)).map(NamespaceNode.class::cast);
   }
 
   public Optional<UserTableNode> table(ResourceId id) {
     if (id.getKind() != ResourceKind.RK_TABLE) return Optional.empty();
-    return tableRepository
-        .getById(id)
-        .map(t -> toTableNode(t, tableRepository.pointerMetaForSafe(id)));
+    return mutationMeta(id).flatMap(meta -> load(id, meta)).map(UserTableNode.class::cast);
   }
 
   public Optional<ViewNode> view(ResourceId id) {
     if (id.getKind() != ResourceKind.RK_VIEW) return Optional.empty();
-    return viewRepository
-        .getById(id)
-        .map(v -> toViewNode(v, viewRepository.pointerMetaForSafe(id)));
+    return mutationMeta(id).flatMap(meta -> load(id, meta)).map(ViewNode.class::cast);
   }
 
   /**
