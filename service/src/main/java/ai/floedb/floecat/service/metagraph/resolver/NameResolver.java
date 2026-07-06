@@ -169,10 +169,9 @@ public final class NameResolver {
 
   /**
    * Kind-agnostic name resolution: resolves catalog and namespace once, then probes tables and (on
-   * miss) views. Unlike calling {@link #resolveTableRelation} followed by {@link
-   * #resolveViewRelation}, this does not re-resolve the catalog and namespace for the view probe. A
-   * relation name is unique across kinds (enforced by the shared relation-name claim), so the
-   * table-first order is deterministic.
+   * miss) views. Unlike resolving the table and the view separately, this does not re-resolve the
+   * catalog and namespace for the view probe. A relation name is unique across kinds (enforced by
+   * the shared relation-name claim), so the table-first order is deterministic.
    */
   public Optional<ResourceId> resolveRelationId(String accountId, NameRef ref) {
     return diagnose(
