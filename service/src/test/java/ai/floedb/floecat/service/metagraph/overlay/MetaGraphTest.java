@@ -479,6 +479,7 @@ class MetaGraphTest {
                 NameRef.newBuilder().setCatalog("examples").addPath("ns").setName("user_t").build(),
                 usrTable));
     when(user.resolveTables(eq("cid"), eq(prefix), eq(1), eq(""))).thenReturn(userResult);
+    when(user.countTablesByPrefix(eq("cid"), eq(prefix))).thenReturn(1);
 
     CatalogOverlay.ResolveResult firstPage = meta.listTablesByPrefix("cid", prefix, 1, "");
 
@@ -492,8 +493,10 @@ class MetaGraphTest {
     assertThat(secondPage.relations()).hasSize(1);
     assertThat(secondPage.relations().get(0).resourceId()).isEqualTo(usrTable);
     assertThat(secondPage.totalSize()).isEqualTo(2);
-    // Probe on the boundary page plus the second page's fetch, always from a blank cursor.
-    verify(user, times(2)).resolveTables(eq("cid"), eq(prefix), eq(1), eq(""));
+    // The boundary page's total now uses the count-only path (no discarded one-row probe); only the
+    // second page fetches rows, from a blank cursor.
+    verify(user, times(1)).resolveTables(eq("cid"), eq(prefix), eq(1), eq(""));
+    verify(user).countTablesByPrefix(eq("cid"), eq(prefix));
   }
 
   @Test
@@ -633,6 +636,7 @@ class MetaGraphTest {
                 NameRef.newBuilder().setCatalog("examples").addPath("ns").setName("uv").build(),
                 usrView));
     when(user.resolveViews(eq("cid"), eq(prefix), eq(1), eq(""))).thenReturn(userResult);
+    when(user.countViewsByPrefix(eq("cid"), eq(prefix))).thenReturn(1);
 
     CatalogOverlay.ResolveResult firstPage = meta.listViewsByPrefix("cid", prefix, 1, "");
 
@@ -645,7 +649,10 @@ class MetaGraphTest {
 
     assertThat(secondPage.relations()).hasSize(1);
     assertThat(secondPage.relations().get(0).resourceId()).isEqualTo(usrView);
-    verify(user, times(2)).resolveViews(eq("cid"), eq(prefix), eq(1), eq(""));
+    // The boundary page's total now uses the count-only path (no discarded one-row probe); only the
+    // second page fetches rows, from a blank cursor.
+    verify(user, times(1)).resolveViews(eq("cid"), eq(prefix), eq(1), eq(""));
+    verify(user).countViewsByPrefix(eq("cid"), eq(prefix));
   }
 
   @Test

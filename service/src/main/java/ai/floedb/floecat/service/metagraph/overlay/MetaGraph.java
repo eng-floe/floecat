@@ -479,14 +479,22 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     final boolean userPhase = !sysToken && token != null && !token.isBlank();
     final String userToken = userPhase ? decodeUserToken(token) : "";
 
-    // Collected on every page (bounded, in-memory) so totals can include the system rows.
-    List<CatalogOverlay.QualifiedRelation> systemAll =
-        new ArrayList<>(collectSystemRelationsInNamespace(prefix, ctx, tables, Integer.MAX_VALUE));
-    systemAll.sort(Comparator.comparing(rel -> canonicalName(rel.name())));
-
     var merged = new ArrayList<CatalogOverlay.QualifiedRelation>(Math.min(max, 64));
 
-    if (!userPhase) {
+    // System-relation total for the combined count. On a user-phase page the system rows were all
+    // emitted on earlier pages, so only their count is needed here — skip the sorted collect (with
+    // its per-relation name resolution) and count the bounded in-memory nodes directly. The sorted
+    // list is built only while the system phase is actually emitting rows.
+    int systemTotal;
+    if (userPhase) {
+      systemTotal = countSystemRelationsInNamespace(prefix, ctx, tables);
+    } else {
+      List<CatalogOverlay.QualifiedRelation> systemAll =
+          new ArrayList<>(
+              collectSystemRelationsInNamespace(prefix, ctx, tables, Integer.MAX_VALUE));
+      systemAll.sort(Comparator.comparing(rel -> canonicalName(rel.name())));
+      systemTotal = systemAll.size();
+
       String lastSystemName = "";
       for (CatalogOverlay.QualifiedRelation rel : systemAll) {
         String name = canonicalName(rel.name());
@@ -497,7 +505,7 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
           // System rows remain: continue the system phase next page; the user cursor is untouched.
           return new ResolveResult(
               merged,
-              systemAll.size() + userTotalByPrefix(correlationId, prefix, tables),
+              systemTotal + userTotalByPrefix(correlationId, prefix, tables),
               SYS_TOKEN_PREFIX + encodeSysName(lastSystemName));
         }
         merged.add(rel);
@@ -508,7 +516,7 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
         // advancing its cursor. The next page starts the user scan from the beginning.
         return new ResolveResult(
             merged,
-            systemAll.size() + userTotalByPrefix(correlationId, prefix, tables),
+            systemTotal + userTotalByPrefix(correlationId, prefix, tables),
             USER_TOKEN_PREFIX);
       }
     }
@@ -526,19 +534,17 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
       merged.add(rel);
     }
     return new ResolveResult(
-        merged, systemAll.size() + user.totalSize(), encodeUserToken(user.nextToken()));
+        merged, systemTotal + user.totalSize(), encodeUserToken(user.nextToken()));
   }
 
   /**
-   * User-relation total for combined counts on system-phase pages. The one-row probe's rows and
-   * cursor are discarded; the user phase later starts from a blank cursor, so nothing is skipped.
+   * User-relation total for combined counts on system-phase pages. Uses a count-only path (a plain
+   * repo countByPrefix) rather than fetching and discarding a one-row probe.
    */
   private int userTotalByPrefix(String correlationId, NameRef prefix, boolean tables) {
-    return toResolveResult(
-            tables
-                ? userGraph.resolveTables(correlationId, prefix, 1, "")
-                : userGraph.resolveViews(correlationId, prefix, 1, ""))
-        .totalSize();
+    return tables
+        ? userGraph.countTablesByPrefix(correlationId, prefix)
+        : userGraph.countViewsByPrefix(correlationId, prefix);
   }
 
   /**
@@ -813,6 +819,28 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
       }
     }
     return out;
+  }
+
+  /**
+   * Counts system relations of the requested kind under a prefix, without the per-relation name
+   * resolution and {@link NameRef} construction {@link #collectSystemRelationsInNamespace} does.
+   * Used for the combined total on user-phase pages, where the sorted system list is not needed.
+   */
+  private int countSystemRelationsInNamespace(NameRef prefix, EngineContext ctx, boolean tables) {
+    Optional<ResourceId> sysNsId =
+        systemGraph.resolveNamespace(
+            SystemCatalogTranslator.toSystemNamespaceRef(prefix, ctx), ctx);
+    if (sysNsId.isEmpty()) {
+      return 0;
+    }
+    int count = 0;
+    for (RelationNode n :
+        systemGraph.listRelationsInNamespace(ResourceId.getDefaultInstance(), sysNsId.get(), ctx)) {
+      if ((tables && n instanceof TableNode) || (!tables && n instanceof ViewNode)) {
+        count++;
+      }
+    }
+    return count;
   }
 
   private List<CatalogOverlay.QualifiedRelation> collectSystemRelationsInNamespace(
