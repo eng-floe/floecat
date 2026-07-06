@@ -668,7 +668,12 @@ public class TransactionIntentApplierSupport {
       return tableImmutableConflict(table.getResourceId().getId());
     }
     if (overlay == null) {
-      return ApplyOutcome.applied();
+      // The overlay is @Inject-ed on an @ApplicationScoped bean, so this is unreachable in
+      // production. A guard whose purpose is closing write-eligibility gaps must not default to
+      // "allow" on its own null case — treat an absent overlay as retryable rather than applied.
+      return ApplyOutcome.retryable(
+          "TABLE_WRITE_ELIGIBILITY_UNAVAILABLE",
+          "catalog overlay unavailable for write-eligibility check");
     }
 
     try {
@@ -705,7 +710,12 @@ public class TransactionIntentApplierSupport {
       return tableImmutableConflict(table.getResourceId().getId());
     }
     if (overlay == null) {
-      return ApplyOutcome.applied();
+      // The overlay is @Inject-ed on an @ApplicationScoped bean, so this is unreachable in
+      // production. A guard whose purpose is closing write-eligibility gaps must not default to
+      // "allow" on its own null case — treat an absent overlay as retryable rather than applied.
+      return ApplyOutcome.retryable(
+          "TABLE_WRITE_ELIGIBILITY_UNAVAILABLE",
+          "catalog overlay unavailable for write-eligibility check");
     }
     try {
       new CatalogSurfaceWritePolicy(overlay)

@@ -50,6 +50,7 @@ class TransactionIntentApplierSupportTest {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointers);
     inject(support, "blobStore", blobs);
+    inject(support, "overlay", permissiveOverlay());
 
     List<TransactionIntent> intents = new ArrayList<>();
     for (int i = 0; i < 101; i++) {
@@ -77,6 +78,7 @@ class TransactionIntentApplierSupportTest {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointers);
     inject(support, "blobStore", blobs);
+    inject(support, "overlay", permissiveOverlay());
 
     String targetKey = "/accounts/acct/custom/key-dup";
     TransactionIntent intentA =
@@ -114,6 +116,7 @@ class TransactionIntentApplierSupportTest {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointers);
     inject(support, "blobStore", blobs);
+    inject(support, "overlay", permissiveOverlay());
 
     TransactionIntent intent =
         TransactionIntent.newBuilder()
@@ -143,13 +146,22 @@ class TransactionIntentApplierSupportTest {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointers);
     inject(support, "blobStore", blobs);
+    inject(support, "overlay", permissiveOverlay());
 
     String blobUri = "s3://bucket/table-a";
     Table tablePayload =
         Table.newBuilder()
             .setResourceId(ResourceId.newBuilder().setAccountId("acct").setId("table-a"))
-            .setCatalogId(ResourceId.newBuilder().setAccountId("acct").setId("cat-1"))
-            .setNamespaceId(ResourceId.newBuilder().setAccountId("acct").setId("ns-1"))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("cat-1")
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("ns-1")
+                    .setKind(ResourceKind.RK_NAMESPACE))
             .setDisplayName("orders")
             .build();
     blobs.put(blobUri, tablePayload.toByteArray(), "application/x-protobuf");
@@ -179,6 +191,7 @@ class TransactionIntentApplierSupportTest {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointers);
     inject(support, "blobStore", blobs);
+    inject(support, "overlay", permissiveOverlay());
 
     ResourceId systemTableId =
         SystemNodeRegistry.resourceId("engine", ResourceKind.RK_TABLE, "information_schema.tables");
@@ -186,8 +199,16 @@ class TransactionIntentApplierSupportTest {
     Table tablePayload =
         Table.newBuilder()
             .setResourceId(systemTableId)
-            .setCatalogId(ResourceId.newBuilder().setAccountId("acct").setId("cat-1"))
-            .setNamespaceId(ResourceId.newBuilder().setAccountId("acct").setId("ns-1"))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("cat-1")
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("ns-1")
+                    .setKind(ResourceKind.RK_NAMESPACE))
             .setDisplayName("tables")
             .build();
     blobs.put(blobUri, tablePayload.toByteArray(), "application/x-protobuf");
@@ -218,6 +239,7 @@ class TransactionIntentApplierSupportTest {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointers);
     inject(support, "blobStore", blobs);
+    inject(support, "overlay", permissiveOverlay());
 
     String accountId = "acct";
     String targetKey = Keys.snapshotPointerById(accountId, "table-1", 7L);
@@ -250,6 +272,7 @@ class TransactionIntentApplierSupportTest {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointers);
     inject(support, "blobStore", blobs);
+    inject(support, "overlay", permissiveOverlay());
 
     String accountId = "acct";
     String catalogId = "cat-1";
@@ -261,9 +284,21 @@ class TransactionIntentApplierSupportTest {
 
     Table table =
         Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setAccountId(accountId).setId(tableId))
-            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId(catalogId))
-            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId(namespaceId))
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(tableId)
+                    .setKind(ResourceKind.RK_TABLE))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
             .setDisplayName("orders")
             .build();
     blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
@@ -296,6 +331,7 @@ class TransactionIntentApplierSupportTest {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointers);
     inject(support, "blobStore", blobs);
+    inject(support, "overlay", permissiveOverlay());
 
     String accountId = "acct";
     String catalogId = "cat-1";
@@ -305,9 +341,21 @@ class TransactionIntentApplierSupportTest {
 
     Table tableAOriginal =
         Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setAccountId(accountId).setId(tableAId))
-            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId(catalogId))
-            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId(namespaceId))
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(tableAId)
+                    .setKind(ResourceKind.RK_TABLE))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
             .setDisplayName("orders-a")
             .build();
     String tableAOriginalBlob = "s3://bucket/table-a-original";
@@ -321,8 +369,16 @@ class TransactionIntentApplierSupportTest {
     Table tableB =
         Table.newBuilder()
             .setResourceId(ResourceId.newBuilder().setAccountId(accountId).setId(tableBId))
-            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId(catalogId))
-            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId(namespaceId))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
             .setDisplayName(contestedName)
             .build();
     String tableBBlob = "s3://bucket/table-b";
@@ -369,6 +425,7 @@ class TransactionIntentApplierSupportTest {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointers);
     inject(support, "blobStore", blobs);
+    inject(support, "overlay", permissiveOverlay());
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -438,6 +495,7 @@ class TransactionIntentApplierSupportTest {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointers);
     inject(support, "blobStore", blobs);
+    inject(support, "overlay", permissiveOverlay());
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -504,6 +562,7 @@ class TransactionIntentApplierSupportTest {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointers);
     inject(support, "blobStore", blobs);
+    inject(support, "overlay", permissiveOverlay());
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -565,6 +624,7 @@ class TransactionIntentApplierSupportTest {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointers);
     inject(support, "blobStore", blobs);
+    inject(support, "overlay", permissiveOverlay());
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -622,6 +682,7 @@ class TransactionIntentApplierSupportTest {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointers);
     inject(support, "blobStore", blobs);
+    inject(support, "overlay", permissiveOverlay());
 
     String accountId = "acct";
     String catalogId = "cat-1";
@@ -637,8 +698,16 @@ class TransactionIntentApplierSupportTest {
                     .setAccountId(accountId)
                     .setId(tableId)
                     .setKind(ResourceKind.RK_TABLE))
-            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId(catalogId))
-            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId(namespaceId))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
             .setDisplayName("orders")
             .build();
     String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
@@ -669,6 +738,7 @@ class TransactionIntentApplierSupportTest {
     var support = new TransactionIntentApplierSupport();
     inject(support, "pointerStore", pointers);
     inject(support, "blobStore", blobs);
+    inject(support, "overlay", permissiveOverlay());
 
     String accountId = "acct";
     String catalogId = "cat-1";
@@ -697,8 +767,16 @@ class TransactionIntentApplierSupportTest {
                     .setAccountId(accountId)
                     .setId(tableId)
                     .setKind(ResourceKind.RK_TABLE))
-            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId(catalogId))
-            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId(namespaceId))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
             .setDisplayName("orders")
             .build();
     String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
@@ -743,6 +821,60 @@ class TransactionIntentApplierSupportTest {
       }
       return super.compareAndSetBatch(ops);
     }
+  }
+
+  /**
+   * Permissive overlay for the apply-time write-eligibility guard: resolves the acct/cat-1/ns-1/
+   * table-1 objects the table-payload tests use as writable user objects, so eligibility passes and
+   * each test exercises its actual pointer/claim assertion. (The guard now fails closed on a null
+   * overlay, so tests must supply one.)
+   */
+  private static ai.floedb.floecat.scanner.spi.CatalogOverlay permissiveOverlay() {
+    // Permit-all overlay: resolves any catalog/namespace/table id as a writable user object so the
+    // apply-time write-eligibility guard passes and each test exercises its actual pointer/claim
+    // assertion. (The guard now fails closed on a null overlay, so tests must supply one.) The
+    // synthesized namespace reports catalog "cat-1" to satisfy requireNamespaceInCatalog, matching
+    // the catalog id these table payloads use.
+    return new ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay() {
+      @Override
+      public java.util.Optional<ai.floedb.floecat.metagraph.model.GraphNode> resolve(
+          ResourceId id) {
+        return switch (id.getKind()) {
+          case RK_CATALOG ->
+              java.util.Optional.of(
+                  new ai.floedb.floecat.metagraph.model.CatalogNode(
+                      id,
+                      1L,
+                      java.time.Instant.EPOCH,
+                      id.getId(),
+                      java.util.Map.of(),
+                      java.util.Optional.empty(),
+                      java.util.Optional.empty(),
+                      java.util.Optional.empty(),
+                      java.util.Map.of()));
+          case RK_NAMESPACE ->
+              java.util.Optional.of(
+                  new ai.floedb.floecat.metagraph.model.NamespaceNode(
+                      id,
+                      1L,
+                      java.time.Instant.EPOCH,
+                      ResourceId.newBuilder()
+                          .setAccountId(id.getAccountId())
+                          .setId("cat-1")
+                          .setKind(ResourceKind.RK_CATALOG)
+                          .build(),
+                      java.util.List.of(),
+                      id.getId(),
+                      ai.floedb.floecat.metagraph.model.GraphNodeOrigin.USER,
+                      java.util.Map.of(),
+                      java.util.Map.of()));
+          case RK_TABLE ->
+              java.util.Optional.of(
+                  ai.floedb.floecat.service.testsupport.TestNodes.tableNode(id, "{}"));
+          default -> java.util.Optional.empty();
+        };
+      }
+    };
   }
 
   private static void inject(Object target, String field, Object value) throws Exception {
