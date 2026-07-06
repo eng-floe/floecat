@@ -23,11 +23,14 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.ResourceKey;
 import ai.floedb.floecat.service.repo.model.ResourceSchema;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
+import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import java.util.ArrayList;
@@ -60,6 +63,39 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
   public Optional<T> getByKey(K key) {
     return observeRepository("get_by_key", () -> getByKeyUnobserved(key));
+  }
+
+  /**
+   * Graph-hydration primitive: fetches and parses a resource directly by blob URI, skipping the
+   * pointer read, for callers that already resolved a <em>fresh</em> pointer (see {@code
+   * NodeLoader#load}). Returns empty when the blob is absent so the caller can fall back to a
+   * pointer read.
+   *
+   * <p>This reads by content and ignores the current pointer, so it is <b>only</b> safe for
+   * hydration and only exposed by the relation/scope repositories NodeLoader uses (catalog,
+   * namespace, table, view). It deliberately lives here rather than on {@link
+   * BaseResourceRepository} so repositories with GC or lifecycle semantics tied to pointer state do
+   * not inherit a "read regardless of the pointer" primitive.
+   */
+  public Optional<T> getByBlobUri(String blobUri) {
+    if (blobUri == null || blobUri.isBlank()) {
+      return Optional.empty();
+    }
+    try {
+      byte[] bytes = blobStore.get(blobUri);
+      if (bytes == null) {
+        return Optional.empty();
+      }
+      return Optional.of(parser.parse(bytes));
+    } catch (StorageNotFoundException snf) {
+      return Optional.empty();
+    } catch (InvalidProtocolBufferException ipbe) {
+      throw new CorruptionException("parse failed: " + blobUri, ipbe);
+    } catch (StorageAbortRetryableException sar) {
+      throw new AbortRetryableException("blob read retryable: " + blobUri);
+    } catch (Exception e) {
+      throw new CorruptionException("parse failed: " + blobUri, e);
+    }
   }
 
   public boolean existsByKey(K key) {

@@ -419,33 +419,6 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
         .build();
   }
 
-  /**
-   * Fetches and parses a resource directly by blob URI, skipping the pointer read. Intended for
-   * callers that already resolved the pointer (e.g. graph hydration from cached metadata). Returns
-   * empty when the blob is absent — callers should fall back to a pointer-based read, since the
-   * pointer may have moved to a new blob in the meantime.
-   */
-  public Optional<T> getByBlobUri(String blobUri) {
-    if (blobUri == null || blobUri.isBlank()) {
-      return Optional.empty();
-    }
-    try {
-      byte[] bytes = blobStore.get(blobUri);
-      if (bytes == null) {
-        return Optional.empty();
-      }
-      return Optional.of(parser.parse(bytes));
-    } catch (StorageNotFoundException snf) {
-      return Optional.empty();
-    } catch (InvalidProtocolBufferException ipbe) {
-      throw new CorruptionException("parse failed: " + blobUri, ipbe);
-    } catch (StorageAbortRetryableException sar) {
-      throw new AbortRetryableException("blob read retryable: " + blobUri);
-    } catch (Exception e) {
-      throw new CorruptionException("parse failed: " + blobUri, e);
-    }
-  }
-
   protected static void deleteQuietly(Runnable runnable) {
     try {
       runnable.run();
