@@ -93,10 +93,13 @@ public final class InMemoryKvStore implements KvStore {
       }
       if (index >= 0) {
         start = index + 1;
-      } else if (token.startsWith(skPrefix)) {
+      } else if (skPrefix.isEmpty() || token.startsWith(skPrefix)) {
         // The token names a position inside this keyspace whose row has since been deleted.
         // Resume at the insertion point, matching DynamoDB's positional exclusiveStartKey
-        // semantics; tokens outside the keyspace are still rejected as malformed.
+        // semantics. With a non-blank prefix, a token outside it is rejected as malformed below;
+        // a blank prefix scans the whole partition, so there is no keyspace boundary to reject
+        // against and any decodable token is a valid position (decodeToken already rejects tokens
+        // that are not valid base64).
         int insertion = 0;
         while (insertion < matching.size()
             && matching.get(insertion).key().sortKey().compareTo(token) <= 0) {

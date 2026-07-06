@@ -176,6 +176,20 @@ public class PointerStoreContractTest {
   }
 
   @Test
+  void listPointersByPrefix_blankPrefix_resumesPositionallyForAbsentToken() {
+    store.compareAndSet(key(1), 0L, pointer(key(1), 1L));
+    store.compareAndSet(key(3), 0L, pointer(key(3), 1L));
+
+    // Under a blank prefix there is no keyspace boundary, so a token naming a position with no
+    // live row resumes positionally (DynamoDB exclusiveStartKey semantics) rather than being
+    // rejected as malformed.
+    StringBuilder next = new StringBuilder();
+    List<Pointer> page = store.listPointersByPrefix("", 10, key(2), next);
+
+    assertEquals(keysOf(List.of(pointer(key(3), 1L))), keysOf(page));
+  }
+
+  @Test
   void compareAndSetBatch_emptyOps_returns_true() {
     assertTrue(store.compareAndSetBatch(List.of()));
   }
