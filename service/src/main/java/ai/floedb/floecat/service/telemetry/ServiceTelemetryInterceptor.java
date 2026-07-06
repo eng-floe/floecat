@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.telemetry;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.service.common.GrpcInterceptorPriorities;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.grpc.GrpcTelemetryServerInterceptor;
@@ -28,8 +29,8 @@ import io.grpc.ServerInterceptor;
 import io.grpc.Status;
 import io.opentelemetry.api.trace.Span;
 import io.quarkus.grpc.GlobalInterceptor;
-import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.spi.Prioritized;
 import jakarta.inject.Inject;
 import java.util.Objects;
 import org.jboss.logging.MDC;
@@ -37,8 +38,7 @@ import org.jboss.logging.MDC;
 /** Service-specific gRPC interceptor that publishes RPC metrics through the telemetry hub. */
 @ApplicationScoped
 @GlobalInterceptor
-@Priority(2)
-public final class ServiceTelemetryInterceptor implements ServerInterceptor {
+public final class ServiceTelemetryInterceptor implements ServerInterceptor, Prioritized {
   private final GrpcTelemetryServerInterceptor delegate;
 
   @Inject
@@ -102,5 +102,11 @@ public final class ServiceTelemetryInterceptor implements ServerInterceptor {
       MDC.remove("floecat_operation");
       throw e;
     }
+  }
+
+  /** Higher = outer; see {@link GrpcInterceptorPriorities}. */
+  @Override
+  public int getPriority() {
+    return GrpcInterceptorPriorities.TELEMETRY;
   }
 }

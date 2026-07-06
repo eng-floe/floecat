@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.error.impl;
 
 import ai.floedb.floecat.common.rpc.Error;
+import ai.floedb.floecat.service.common.GrpcInterceptorPriorities;
 import ai.floedb.floecat.service.context.impl.InboundCallContextHelper;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import com.google.protobuf.Any;
@@ -30,8 +31,8 @@ import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.protobuf.StatusProto;
 import io.quarkus.grpc.GlobalInterceptor;
-import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.spi.Prioritized;
 import java.lang.reflect.Method;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -40,8 +41,7 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 @GlobalInterceptor
-@Priority(5)
-public class RpcLoggingInterceptor implements ServerInterceptor {
+public class RpcLoggingInterceptor implements ServerInterceptor, Prioritized {
   private static final Logger LOG = Logger.getLogger(RpcLoggingInterceptor.class);
   private static final String MISSING = "-";
 
@@ -244,5 +244,11 @@ public class RpcLoggingInterceptor implements ServerInterceptor {
       }
     }
     return "";
+  }
+
+  /** Higher = outer; see {@link GrpcInterceptorPriorities}. */
+  @Override
+  public int getPriority() {
+    return GrpcInterceptorPriorities.RPC_LOGGING;
   }
 }

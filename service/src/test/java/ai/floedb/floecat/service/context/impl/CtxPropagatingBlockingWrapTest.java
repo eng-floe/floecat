@@ -26,6 +26,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.flight.context.ResolvedCallContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import io.grpc.Attributes;
 import io.grpc.Context;
 import io.grpc.Contexts;
@@ -520,6 +523,182 @@ class CtxPropagatingBlockingWrapTest {
       assertEquals("set-by-inner", observed.get());
     } finally {
       executor.shutdownNow();
+      vertx.close().toCompletionStage().toCompletableFuture().get();
+    }
+  }
+
+  /**
+   * The full streaming-relay shape from eng-floe/floecat#361: inbound interceptor (production key
+   * wiring + duplicated-context carrier) → blocking wrap → a service body that reads the resolved
+   * call context at entry and re-emits on a bare executor ({@code runSubscriptionOn} shape) — while
+   * extra listener events fire concurrently, flipping the shared io.grpc.Context slot the way the
+   * call's own trailing events do in production.
+   *
+   * <p>Asserts principal, correlation id, and engine context integrity at both layers: the service
+   * entry (listener callback on a worker) and the emitter (bare executor thread where no
+   * io.grpc.Context and no duplicated context exist — only the explicit {@code runWith} scope).
+   */
+  @Test
+  void resolvedCallContextSurvivesStreamingRelayUnderConcurrentEvents() throws Exception {
+    int n = 50;
+    Vertx vertx = Vertx.vertx();
+    ExecutorService subscriptionPool = Executors.newFixedThreadPool(4);
+    try {
+      Metadata.Key<String> subjectHeader =
+          Metadata.Key.of("x-test-subject", Metadata.ASCII_STRING_MARSHALLER);
+      Metadata.Key<String> correlationHeader =
+          Metadata.Key.of("x-test-correlation", Metadata.ASCII_STRING_MARSHALLER);
+      Metadata.Key<String> engineHeader =
+          Metadata.Key.of("x-test-engine", Metadata.ASCII_STRING_MARSHALLER);
+
+      // Models InboundContextInterceptor: resolve the call context from headers, store it on the
+      // per-call duplicated context, and populate the production io.grpc.Context keys.
+      ServerInterceptor inner =
+          new ServerInterceptor() {
+            @Override
+            public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
+                ServerCall<ReqT, RespT> call,
+                Metadata headers,
+                ServerCallHandler<ReqT, RespT> next) {
+              PrincipalContext principal =
+                  PrincipalContext.newBuilder()
+                      .setSubject(headers.get(subjectHeader))
+                      .setAccountId("acct")
+                      .addPermissions("catalog.read")
+                      .build();
+              ResolvedCallContext resolved =
+                  new ResolvedCallContext(
+                      principal,
+                      "q-1",
+                      headers.get(correlationHeader),
+                      EngineContext.of(headers.get(engineHeader), "16.0"),
+                      null,
+                      null);
+              ResolvedCallContexts.storeOnDuplicatedContext(resolved);
+              Context ctx =
+                  InboundContextInterceptor.contextWithResolvedCallContext(
+                      Context.current(), resolved);
+              return Contexts.interceptCall(ctx, call, headers, next);
+            }
+          };
+      ServerInterceptor wrap = makeWrap(vertx, inner);
+
+      ConcurrentMap<Integer, String> violations = new ConcurrentHashMap<>();
+      CountDownLatch done = new CountDownLatch(n);
+
+      for (int i = 0; i < n; i++) {
+        final int id = i;
+        final String expectedSubject = "subject-" + id;
+        final String expectedCorrelation = "corr-" + id;
+        final String expectedEngine = "engine-" + id;
+
+        ServerCallHandler<Object, Object> handler =
+            (call, headers) ->
+                new ServerCall.Listener<>() {
+                  @Override
+                  public void onHalfClose() {
+                    // Service entry: read once, before any executor hop.
+                    ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
+                    if (!expectedSubject.equals(callCtx.principalContext().getSubject())
+                        || !expectedCorrelation.equals(callCtx.correlationId())
+                        || !expectedEngine.equals(callCtx.engineContext().engineKind())) {
+                      violations.putIfAbsent(
+                          id,
+                          "entry: subject="
+                              + callCtx.principalContext().getSubject()
+                              + " corr="
+                              + callCtx.correlationId()
+                              + " engine="
+                              + callCtx.engineContext().engineKind());
+                      done.countDown();
+                      return;
+                    }
+                    // Emitter layer: a bare pool thread with no io.grpc.Context and no duplicated
+                    // context. Only the explicit runWith scope can carry the call context here,
+                    // and the providers must read through it (as the bundle iterator does).
+                    subscriptionPool.execute(
+                        () ->
+                            ResolvedCallContexts.runWith(
+                                callCtx,
+                                () -> {
+                                  try {
+                                    String subject =
+                                        new ai.floedb.floecat.service.security.impl
+                                                .PrincipalProvider()
+                                            .get()
+                                            .getSubject();
+                                    String engine =
+                                        new ai.floedb.floecat.service.context
+                                                .EngineContextProvider()
+                                            .engineContext()
+                                            .engineKind();
+                                    String correlation =
+                                        ResolvedCallContexts.currentOrUnauthenticated()
+                                            .correlationId();
+                                    if (!expectedSubject.equals(subject)
+                                        || !expectedCorrelation.equals(correlation)
+                                        || !expectedEngine.equals(engine)) {
+                                      violations.putIfAbsent(
+                                          id,
+                                          "emitter: subject="
+                                              + subject
+                                              + " corr="
+                                              + correlation
+                                              + " engine="
+                                              + engine);
+                                    }
+                                  } finally {
+                                    done.countDown();
+                                  }
+                                }));
+                  }
+                };
+
+        Metadata md = new Metadata();
+        md.put(subjectHeader, expectedSubject);
+        md.put(correlationHeader, expectedCorrelation);
+        md.put(engineHeader, expectedEngine);
+
+        // Each call gets its own per-call duplicated context, as Quarkus's outermost
+        // duplicated-context interceptor provides in production.
+        io.vertx.core.Context dup =
+            io.smallrye.common.vertx.VertxContext.createNewDuplicatedContext(
+                vertx.getOrCreateContext());
+        dup.runOnContext(
+            ignored -> {
+              try {
+                ServerCall.Listener<Object> listener = wrap.interceptCall(stubCall(), md, handler);
+                // Stir the shared io.grpc.Context slot with trailing events around the real work,
+                // like the call's own listener-event replay does in production.
+                listener.onReady();
+                listener.onHalfClose();
+                listener.onReady();
+                listener.onComplete();
+              } catch (Throwable t) {
+                violations.putIfAbsent(id, "dispatch-failed=" + t);
+                done.countDown();
+              }
+            });
+      }
+
+      assertTrue(
+          done.await(30, TimeUnit.SECONDS),
+          () -> "did not complete in 30s; remaining=" + done.getCount());
+      if (!violations.isEmpty()) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("call-context integrity violations: ")
+            .append(violations.size())
+            .append(" / ")
+            .append(n);
+        int printed = 0;
+        for (Map.Entry<Integer, String> e : violations.entrySet()) {
+          if (printed++ >= 5) break;
+          sb.append("\n  id=").append(e.getKey()).append(' ').append(e.getValue());
+        }
+        fail(sb.toString());
+      }
+    } finally {
+      subscriptionPool.shutdownNow();
       vertx.close().toCompletionStage().toCompletableFuture().get();
     }
   }
