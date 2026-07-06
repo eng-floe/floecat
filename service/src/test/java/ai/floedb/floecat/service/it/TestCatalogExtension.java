@@ -17,15 +17,18 @@
 package ai.floedb.floecat.service.catalog.it;
 
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastMethod;
 import ai.floedb.floecat.systemcatalog.def.SystemCollationDef;
+import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemOperatorDef;
+import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
@@ -74,7 +77,7 @@ public final class TestCatalogExtension implements EngineSystemCatalogExtension 
         collations(),
         aggregates(),
         namespaces(),
-        /* tables= */ List.of(),
+        tables(),
         /* views= */ List.of(),
         /* registryEngineSpecific= */ List.of());
   }
@@ -212,9 +215,33 @@ public final class TestCatalogExtension implements EngineSystemCatalogExtension 
             List.of()));
   }
 
-  /** Namespace declaration for {@code pg_catalog}. */
+  /** Namespace declarations for {@code pg_catalog} and {@code sys}. */
   private static List<SystemNamespaceDef> namespaces() {
-    return List.of(new SystemNamespaceDef(nr("pg_catalog"), "pg_catalog", List.of()));
+    return List.of(
+        new SystemNamespaceDef(nr("pg_catalog"), "pg_catalog", List.of()),
+        new SystemNamespaceDef(nr("sys"), "sys", List.of()));
+  }
+
+  /**
+   * One engine-gated system table, {@code sys.const}, mirroring the shape of engine-extension
+   * catalogs deployed in production. It exists only in the {@code test-engine} snapshot — never in
+   * the default one — so resolving it by name succeeds only while the request's engine context is
+   * visible to the resolving thread. {@code QueryContextPropagationIT} relies on this to detect
+   * silent engine-context loss (eng-floe/floecat#361).
+   */
+  private static List<SystemTableDef> tables() {
+    return List.of(
+        new SystemTableDef(
+            nr("sys.const"),
+            "const",
+            List.of(new SystemColumnDef("value", nr("pg_catalog.int4"), false, 1, null, List.of())),
+            TableBackendKind.TABLE_BACKEND_KIND_STORAGE,
+            /* scannerId= */ "",
+            /* storagePath= */ "memory://test-engine/sys/const",
+            /* storageEndpointKey= */ "",
+            List.of(),
+            /* flightEndpoint= */ null,
+            List.of()));
   }
 
   // ---------------------------------------------------------------------------
