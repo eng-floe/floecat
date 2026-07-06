@@ -36,6 +36,7 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.spi.TopologyNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.common.PageTokens;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -49,9 +50,7 @@ import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -475,7 +474,8 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     int max = normalizeLimit(limit);
 
     final boolean sysToken = token != null && token.startsWith(SYS_TOKEN_PREFIX);
-    final String sysResume = sysToken ? decodeSysToken(correlationId, token) : "";
+    final String sysResume =
+        sysToken ? PageTokens.decode(SYS_TOKEN_PREFIX, token, correlationId) : "";
     final boolean userPhase = !sysToken && token != null && !token.isBlank();
     final String userToken = userPhase ? decodeUserToken(token) : "";
 
@@ -506,7 +506,7 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
           return new ResolveResult(
               merged,
               systemTotal + userTotalByPrefix(correlationId, prefix, tables),
-              SYS_TOKEN_PREFIX + encodeSysName(lastSystemName));
+              PageTokens.encode(SYS_TOKEN_PREFIX, lastSystemName));
         }
         merged.add(rel);
         lastSystemName = name;
@@ -746,25 +746,6 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
       return token.substring(USER_TOKEN_PREFIX.length());
     }
     return token;
-  }
-
-  private static String encodeSysName(String name) {
-    return Base64.getUrlEncoder()
-        .withoutPadding()
-        .encodeToString(name.getBytes(StandardCharsets.UTF_8));
-  }
-
-  private String decodeSysToken(String correlationId, String token) {
-    try {
-      return new String(
-          Base64.getUrlDecoder().decode(token.substring(SYS_TOKEN_PREFIX.length())),
-          StandardCharsets.UTF_8);
-    } catch (IllegalArgumentException badToken) {
-      throw GrpcErrors.invalidArgument(
-          correlationId,
-          GeneratedErrorMessages.MessageKey.PAGE_TOKEN_INVALID,
-          Map.of("page_token", token));
-    }
   }
 
   private static String encodeUserToken(String token) {
