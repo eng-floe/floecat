@@ -255,24 +255,35 @@ public final class UserGraph {
    */
   public Optional<GraphNode> resolve(ResourceId id) {
 
-    // ----- Regular nodes (cached in graph) ------------------------------------
-    MutationMeta meta = cache.getMeta(id);
-    if (meta == null) {
-      Optional<MutationMeta> metaOpt = nodes.mutationMeta(id);
-      if (metaOpt.isEmpty()) {
-        return Optional.empty();
+    // ----- Hot path: cached meta names the version key for an already-hydrated node --------------
+    MutationMeta cachedMeta = cache.getMeta(id);
+    if (cachedMeta != null) {
+      GraphNode hit = cache.get(id, new GraphCacheKey(id, cachedMeta.getPointerVersion()));
+      if (hit != null) {
+        return Optional.of(hit);
       }
-      meta = metaOpt.get();
-      cache.putMeta(id, meta);
     }
-    GraphCacheKey key = new GraphCacheKey(id, meta.getPointerVersion());
+
+    // ----- Hydration path: re-read a fresh pointer before loading -------------------------------
+    // The meta cache is a per-process Caffeine cache with no cross-instance invalidation, so a
+    // cached meta can name a superseded blob that is still readable (CAS blobs outlive the meta
+    // TTL). Hydrating from that stale blobUri would serve stale content as current. Only a freshly
+    // read pointer is safe to hand to load(); the meta cache is trusted solely to short-circuit to
+    // an already-cached node above.
+    Optional<MutationMeta> freshOpt = nodes.mutationMeta(id);
+    if (freshOpt.isEmpty()) {
+      return Optional.empty();
+    }
+    MutationMeta fresh = freshOpt.get();
+    cache.putMeta(id, fresh);
+    GraphCacheKey key = new GraphCacheKey(id, fresh.getPointerVersion());
 
     GraphNode cached = cache.get(id, key);
     if (cached != null) return Optional.of(cached);
 
     long loadStart = System.nanoTime();
     try {
-      Optional<GraphNode> loaded = nodes.load(id, meta);
+      Optional<GraphNode> loaded = nodes.load(id, fresh);
       loaded.ifPresent(node -> cache.put(id, key, node));
       cache.recordLoad(Duration.ofNanos(System.nanoTime() - loadStart));
       return loaded;

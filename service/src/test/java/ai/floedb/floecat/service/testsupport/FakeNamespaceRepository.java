@@ -31,6 +31,8 @@ import java.util.Optional;
 public final class FakeNamespaceRepository extends NamespaceRepository {
   private final Map<ResourceId, Namespace> entries = new HashMap<>();
   private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
+  // blobUri -> namespace, so the getByBlobUri hydration fast path is exercised.
+  private final Map<String, Namespace> byBlob = new HashMap<>();
 
   public FakeNamespaceRepository() {
     super(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -39,6 +41,9 @@ public final class FakeNamespaceRepository extends NamespaceRepository {
   public void put(Namespace namespace, MutationMeta meta) {
     entries.put(namespace.getResourceId(), namespace);
     metas.put(namespace.getResourceId(), meta);
+    if (meta != null && meta.getBlobUri() != null && !meta.getBlobUri().isBlank()) {
+      byBlob.put(meta.getBlobUri(), namespace);
+    }
   }
 
   @Override
@@ -52,6 +57,14 @@ public final class FakeNamespaceRepository extends NamespaceRepository {
   @Override
   public Optional<Namespace> getById(ResourceId id) {
     return Optional.ofNullable(entries.get(id));
+  }
+
+  @Override
+  public Optional<Namespace> getByBlobUri(String blobUri) {
+    if (blobUri != null && byBlob.containsKey(blobUri)) {
+      return Optional.of(byBlob.get(blobUri));
+    }
+    return super.getByBlobUri(blobUri);
   }
 
   @Override
