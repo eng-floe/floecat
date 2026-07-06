@@ -466,6 +466,12 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
    * user-phase token is the user graph's own cursor. The user graph is only consulted for rows once
    * the system rows are fully emitted, so a page filled by system rows never advances — and can
    * never drop — user results. Reported totals combine both sources.
+   *
+   * <p>NOTE: this reimplements the same "system phase, then user phase, phase-scoped resume token"
+   * shape that {@code CatalogSurfaceRelationPager} generalizes via its {@code Source<P, N>}
+   * abstraction. The duplication is deliberate for now (this path is the just-fixed headline of the
+   * pagination-correctness work); unifying the two phased pagers onto one abstraction is tracked as
+   * a follow-up so a future fix to one does not silently miss the other.
    */
   private ResolveResult listRelationsByPrefix(
       String correlationId, NameRef prefix, int limit, String token, boolean tables) {
