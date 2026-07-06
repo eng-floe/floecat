@@ -51,7 +51,7 @@ class DynamoReconcileLeaseBackendTest {
     dynamoDbClient = createDynamoDbClient();
     clearDynamoTable();
     backend = new DynamoReconcileLeaseBackend();
-    backend.bind(dynamoDbClient, kvTable());
+    backend.bind(() -> dynamoDbClient, kvTable(), null);
   }
 
   @AfterEach

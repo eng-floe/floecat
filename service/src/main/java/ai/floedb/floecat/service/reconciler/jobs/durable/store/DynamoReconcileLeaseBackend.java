@@ -22,9 +22,11 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import ai.floedb.floecat.storage.spi.PointerStore.CasDelete;
 import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
 import io.quarkus.arc.properties.IfBuildProperty;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import java.util.ArrayList;
@@ -34,6 +36,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
@@ -51,16 +55,19 @@ import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledExcepti
 public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
   private static final String ATTR_BLOB_URI = "blob_uri";
 
-  @Inject DynamoDbClient dynamoDb;
+  @Inject Instance<DynamoDbClientManager> dynamoDbClientManager;
+  private final RefreshingDynamoCaller dynamoCaller = new RefreshingDynamoCaller();
 
   @ConfigProperty(name = "floecat.kv.table", defaultValue = "floecat_pointers")
   String table = "floecat_pointers";
 
-  @Inject
   public DynamoReconcileLeaseBackend() {}
 
-  public void bind(DynamoDbClient dynamoDb, String table) {
-    this.dynamoDb = dynamoDb;
+  public void bind(
+      Supplier<DynamoDbClient> dynamoDbSupplier,
+      String table,
+      BiConsumer<DynamoDbClient, Throwable> clientFailureHandler) {
+    dynamoCaller.bind(dynamoDbSupplier, clientFailureHandler);
     this.table = table;
   }
 
@@ -81,17 +88,21 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
   @Override
   public Optional<LeaseOwnerSnapshot> loadOwner(String ownerKey) {
     var response =
-        dynamoDb.getItem(
-            GetItemRequest.builder()
-                .tableName(table)
-                .consistentRead(true)
-                .key(
-                    Map.of(
-                        ATTR_PARTITION_KEY,
-                        AttributeValue.fromS(LeaseBackendSupport.ownerPartitionKey(ownerKey)),
-                        ATTR_SORT_KEY,
-                        AttributeValue.fromS(LeaseBackendSupport.LEASE_OWNER_SORT_KEY)))
-                .build());
+        dynamoCaller.call(
+            dynamoDbClientManager,
+            client ->
+                client.getItem(
+                    GetItemRequest.builder()
+                        .tableName(table)
+                        .consistentRead(true)
+                        .key(
+                            Map.of(
+                                ATTR_PARTITION_KEY,
+                                AttributeValue.fromS(
+                                    LeaseBackendSupport.ownerPartitionKey(ownerKey)),
+                                ATTR_SORT_KEY,
+                                AttributeValue.fromS(LeaseBackendSupport.LEASE_OWNER_SORT_KEY)))
+                        .build()));
     if (!response.hasItem() || response.item().isEmpty()) {
       return Optional.empty();
     }
@@ -126,7 +137,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               AttributeValue.fromS(token)));
     }
 
-    var response = dynamoDb.query(query.build());
+    var response = dynamoCaller.call(dynamoDbClientManager, client -> client.query(query.build()));
     List<ReconcileLeaseStore.LeaseExpiryEntry> entries = new ArrayList<>(response.items().size());
     for (var item : response.items()) {
       entries.add(
@@ -241,7 +252,11 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
       }
     }
     try {
-      dynamoDb.transactWriteItems(TransactWriteItemsRequest.builder().transactItems(tx).build());
+      dynamoCaller.callVoid(
+          dynamoDbClientManager,
+          client ->
+              client.transactWriteItems(
+                  TransactWriteItemsRequest.builder().transactItems(tx).build()));
       return true;
     } catch (TransactionCanceledException e) {
       return false;
@@ -255,17 +270,21 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
   private Optional<LeaseRecordSnapshot> loadLeaseSnapshot(
       LeaseBackendSupport.LeasePointerKey leaseKey) {
     var response =
-        dynamoDb.getItem(
-            GetItemRequest.builder()
-                .tableName(table)
-                .consistentRead(true)
-                .key(
-                    Map.of(
-                        ATTR_PARTITION_KEY,
-                        AttributeValue.fromS(LeaseBackendSupport.leasePartitionKey(leaseKey)),
-                        ATTR_SORT_KEY,
-                        AttributeValue.fromS(LeaseBackendSupport.leaseSortKey(leaseKey))))
-                .build());
+        dynamoCaller.call(
+            dynamoDbClientManager,
+            client ->
+                client.getItem(
+                    GetItemRequest.builder()
+                        .tableName(table)
+                        .consistentRead(true)
+                        .key(
+                            Map.of(
+                                ATTR_PARTITION_KEY,
+                                AttributeValue.fromS(
+                                    LeaseBackendSupport.leasePartitionKey(leaseKey)),
+                                ATTR_SORT_KEY,
+                                AttributeValue.fromS(LeaseBackendSupport.leaseSortKey(leaseKey))))
+                        .build()));
     if (!response.hasItem() || response.item().isEmpty()) {
       return Optional.empty();
     }
@@ -277,17 +296,22 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
   private Optional<LeaseExpirySnapshot> loadLeaseExpirySnapshot(
       LeaseBackendSupport.LeaseExpiryPointerKey expiryKey) {
     var response =
-        dynamoDb.getItem(
-            GetItemRequest.builder()
-                .tableName(table)
-                .consistentRead(true)
-                .key(
-                    Map.of(
-                        ATTR_PARTITION_KEY,
-                        AttributeValue.fromS(LeaseBackendSupport.LEASE_EXPIRY_PARTITION_KEY),
-                        ATTR_SORT_KEY,
-                        AttributeValue.fromS(LeaseBackendSupport.leaseExpirySortKey(expiryKey))))
-                .build());
+        dynamoCaller.call(
+            dynamoDbClientManager,
+            client ->
+                client.getItem(
+                    GetItemRequest.builder()
+                        .tableName(table)
+                        .consistentRead(true)
+                        .key(
+                            Map.of(
+                                ATTR_PARTITION_KEY,
+                                AttributeValue.fromS(
+                                    LeaseBackendSupport.LEASE_EXPIRY_PARTITION_KEY),
+                                ATTR_SORT_KEY,
+                                AttributeValue.fromS(
+                                    LeaseBackendSupport.leaseExpirySortKey(expiryKey))))
+                        .build()));
     if (!response.hasItem() || response.item().isEmpty()) {
       return Optional.empty();
     }

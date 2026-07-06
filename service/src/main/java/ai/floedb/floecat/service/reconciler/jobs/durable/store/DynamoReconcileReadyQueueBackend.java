@@ -20,7 +20,9 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_PARTITION_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
+import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import io.quarkus.arc.properties.IfBuildProperty;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import java.time.Duration;
@@ -28,6 +30,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.awscore.AwsRequestOverrideConfiguration;
 import software.amazon.awssdk.core.exception.AbortedException;
@@ -54,20 +58,19 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
   private static final String GLOBAL_POINTER_PARTITION_KEY = "_ACCOUNT_DIR";
   private static final String ATTR_BLOB_URI = "blob_uri";
 
-  private DynamoDbClient dynamoDb;
-  private String table;
+  @Inject Instance<DynamoDbClientManager> dynamoDbClientManager;
+  private final RefreshingDynamoCaller dynamoCaller = new RefreshingDynamoCaller();
 
-  @Inject
-  public DynamoReconcileReadyQueueBackend(
-      DynamoDbClient dynamoDb, @ConfigProperty(name = "floecat.kv.table") String table) {
-    this.dynamoDb = dynamoDb;
-    this.table = table;
-  }
+  @ConfigProperty(name = "floecat.kv.table", defaultValue = "floecat_pointers")
+  String table = "floecat_pointers";
 
   public DynamoReconcileReadyQueueBackend() {}
 
-  public void bind(DynamoDbClient dynamoDb, String table) {
-    this.dynamoDb = dynamoDb;
+  public void bind(
+      Supplier<DynamoDbClient> dynamoDbSupplier,
+      String table,
+      BiConsumer<DynamoDbClient, Throwable> clientFailureHandler) {
+    dynamoCaller.bind(dynamoDbSupplier, clientFailureHandler);
     this.table = table;
   }
 
@@ -98,7 +101,10 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
     }
 
     applyLeaseScanTimeout(query, scanStats);
-    var response = runLeaseScanCall(scanStats, () -> dynamoDb.query(query.build()));
+    var response =
+        runLeaseScanCall(
+            scanStats,
+            () -> dynamoCaller.call(dynamoDbClientManager, client -> client.query(query.build())));
     List<ReconcileReadyQueueStore.ReadyQueueEntry> entries =
         new ArrayList<>(response.items().size());
     for (var item : response.items()) {
@@ -142,7 +148,7 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
               AttributeValue.fromS(cursor.sortKey())));
     }
 
-    var response = dynamoDb.scan(scan.build());
+    var response = dynamoCaller.call(dynamoDbClientManager, client -> client.scan(scan.build()));
     List<ReconcileReadyQueueStore.ReadyQueueEntry> entries =
         new ArrayList<>(response.items().size());
     for (var item : response.items()) {
@@ -183,14 +189,17 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
     if (row == null) {
       return false;
     }
-    dynamoDb.deleteItem(
-        DeleteItemRequest.builder()
-            .tableName(table)
-            .key(
-                Map.of(
-                    ATTR_PARTITION_KEY, AttributeValue.fromS(row.partitionKey()),
-                    ATTR_SORT_KEY, AttributeValue.fromS(row.sortKey())))
-            .build());
+    dynamoCaller.callVoid(
+        dynamoDbClientManager,
+        client ->
+            client.deleteItem(
+                DeleteItemRequest.builder()
+                    .tableName(table)
+                    .key(
+                        Map.of(
+                            ATTR_PARTITION_KEY, AttributeValue.fromS(row.partitionKey()),
+                            ATTR_SORT_KEY, AttributeValue.fromS(row.sortKey())))
+                    .build()));
     return true;
   }
 
@@ -213,7 +222,12 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
                       AttributeValue.fromS(
                           JobIndexBackendSupport.canonicalSortKey(canonicalJobKey))));
       applyLeaseScanTimeout(request, scanStats);
-      var response = runLeaseScanCall(scanStats, () -> dynamoDb.getItem(request.build()));
+      var response =
+          runLeaseScanCall(
+              scanStats,
+              () ->
+                  dynamoCaller.call(
+                      dynamoDbClientManager, client -> client.getItem(request.build())));
       if (!response.hasItem() || response.item().isEmpty()) {
         return Optional.empty();
       }
@@ -237,7 +251,12 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
                     ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()),
                     ATTR_SORT_KEY, AttributeValue.fromS(key.sortKey())));
     applyLeaseScanTimeout(request, scanStats);
-    var response = runLeaseScanCall(scanStats, () -> dynamoDb.getItem(request.build()));
+    var response =
+        runLeaseScanCall(
+            scanStats,
+            () ->
+                dynamoCaller.call(
+                    dynamoDbClientManager, client -> client.getItem(request.build())));
     if (!response.hasItem() || response.item().isEmpty()) {
       return Optional.empty();
     }

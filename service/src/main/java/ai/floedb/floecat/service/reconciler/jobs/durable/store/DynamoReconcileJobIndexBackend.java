@@ -21,8 +21,10 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_PARTITION_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
+import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import io.quarkus.arc.properties.IfBuildProperty;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import java.util.ArrayList;
@@ -30,6 +32,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.BiConsumer;
+import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
@@ -45,16 +49,19 @@ import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledExcepti
 @Singleton
 @IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
 public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend {
-  @Inject DynamoDbClient dynamoDb;
+  @Inject Instance<DynamoDbClientManager> dynamoDbClientManager;
+  private final RefreshingDynamoCaller dynamoCaller = new RefreshingDynamoCaller();
 
   @ConfigProperty(name = "floecat.kv.table", defaultValue = "floecat_pointers")
   String table = "floecat_pointers";
 
-  @Inject
   public DynamoReconcileJobIndexBackend() {}
 
-  public void bind(DynamoDbClient dynamoDb, String table) {
-    this.dynamoDb = dynamoDb;
+  public void bind(
+      Supplier<DynamoDbClient> dynamoDbSupplier,
+      String table,
+      BiConsumer<DynamoDbClient, Throwable> clientFailureHandler) {
+    dynamoCaller.bind(dynamoDbSupplier, clientFailureHandler);
     this.table = table;
   }
 
@@ -233,19 +240,23 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       if (exclusiveStartKey != null && !exclusiveStartKey.isEmpty()) {
         request.exclusiveStartKey(exclusiveStartKey);
       }
-      var response = dynamoDb.scan(request.build());
+      var response =
+          dynamoCaller.call(dynamoDbClientManager, client -> client.scan(request.build()));
       for (var item : response.items()) {
         if (item == null || item.isEmpty()) {
           continue;
         }
-        dynamoDb.deleteItem(
-            software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest.builder()
-                .tableName(table)
-                .key(
-                    Map.of(
-                        ATTR_PARTITION_KEY, item.get(ATTR_PARTITION_KEY),
-                        ATTR_SORT_KEY, item.get(ATTR_SORT_KEY)))
-                .build());
+        dynamoCaller.callVoid(
+            dynamoDbClientManager,
+            client ->
+                client.deleteItem(
+                    software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest.builder()
+                        .tableName(table)
+                        .key(
+                            Map.of(
+                                ATTR_PARTITION_KEY, item.get(ATTR_PARTITION_KEY),
+                                ATTR_SORT_KEY, item.get(ATTR_SORT_KEY)))
+                        .build()));
         deleted = true;
       }
       exclusiveStartKey = response.lastEvaluatedKey();
@@ -283,7 +294,11 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       }
     }
     try {
-      dynamoDb.transactWriteItems(TransactWriteItemsRequest.builder().transactItems(tx).build());
+      dynamoCaller.callVoid(
+          dynamoDbClientManager,
+          client ->
+              client.transactWriteItems(
+                  TransactWriteItemsRequest.builder().transactItems(tx).build()));
       return true;
     } catch (TransactionCanceledException e) {
       return false;
@@ -338,17 +353,21 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   private Optional<JobIndexEntrySnapshot> loadCanonicalPointer(
       JobIndexBackendSupport.CanonicalJobKey key) {
     var response =
-        dynamoDb.getItem(
-            GetItemRequest.builder()
-                .tableName(table)
-                .consistentRead(true)
-                .key(
-                    Map.of(
-                        ATTR_PARTITION_KEY,
-                        AttributeValue.fromS(JobIndexBackendSupport.canonicalPartitionKey(key)),
-                        ATTR_SORT_KEY,
-                        AttributeValue.fromS(JobIndexBackendSupport.canonicalSortKey(key))))
-                .build());
+        dynamoCaller.call(
+            dynamoDbClientManager,
+            client ->
+                client.getItem(
+                    GetItemRequest.builder()
+                        .tableName(table)
+                        .consistentRead(true)
+                        .key(
+                            Map.of(
+                                ATTR_PARTITION_KEY,
+                                AttributeValue.fromS(
+                                    JobIndexBackendSupport.canonicalPartitionKey(key)),
+                                ATTR_SORT_KEY,
+                                AttributeValue.fromS(JobIndexBackendSupport.canonicalSortKey(key))))
+                        .build()));
     if (!response.hasItem() || response.item().isEmpty()) {
       return Optional.empty();
     }
@@ -362,15 +381,18 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   private Optional<JobIndexEntrySnapshot> loadIndexPointer(
       String partitionKey, String sortKey, String referenceAttributeName) {
     var response =
-        dynamoDb.getItem(
-            GetItemRequest.builder()
-                .tableName(table)
-                .consistentRead(true)
-                .key(
-                    Map.of(
-                        ATTR_PARTITION_KEY, AttributeValue.fromS(partitionKey),
-                        ATTR_SORT_KEY, AttributeValue.fromS(sortKey)))
-                .build());
+        dynamoCaller.call(
+            dynamoDbClientManager,
+            client ->
+                client.getItem(
+                    GetItemRequest.builder()
+                        .tableName(table)
+                        .consistentRead(true)
+                        .key(
+                            Map.of(
+                                ATTR_PARTITION_KEY, AttributeValue.fromS(partitionKey),
+                                ATTR_SORT_KEY, AttributeValue.fromS(sortKey)))
+                        .build()));
     if (!response.hasItem() || response.item().isEmpty()) {
       return Optional.empty();
     }
@@ -398,7 +420,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
               ATTR_PARTITION_KEY, AttributeValue.fromS(partitionKey),
               ATTR_SORT_KEY, AttributeValue.fromS(resumeSortKey)));
     }
-    var response = dynamoDb.query(query.build());
+    var response = dynamoCaller.call(dynamoDbClientManager, client -> client.query(query.build()));
     List<JobIndexEntrySnapshot> pointers = new ArrayList<>(response.items().size());
     for (var item : response.items()) {
       pointers.add(

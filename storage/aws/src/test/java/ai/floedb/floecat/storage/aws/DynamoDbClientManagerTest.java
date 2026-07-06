@@ -24,21 +24,21 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
-import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
-class DynamoDbAsyncClientManagerTest {
+class DynamoDbClientManagerTest {
 
   @Test
   void refreshAfterFailure_replaces_client_on_connection_pool_shutdown() {
     FakeAwsClients clients = new FakeAwsClients();
-    DynamoDbAsyncClientManager manager = new DynamoDbAsyncClientManager();
+    DynamoDbClientManager manager = new DynamoDbClientManager();
     manager.awsClients = clients;
 
-    DynamoDbAsyncClient first = manager.current();
+    DynamoDbClient first = manager.current();
 
     manager.refreshAfterFailure(first, new IllegalStateException("Connection pool shut down"));
 
-    DynamoDbAsyncClient second = manager.current();
+    DynamoDbClient second = manager.current();
     assertNotSame(first, second);
     assertEquals(2, clients.handles.size());
     assertTrue(clients.handles.get(0).closed);
@@ -48,10 +48,10 @@ class DynamoDbAsyncClientManagerTest {
   @Test
   void refreshAfterFailure_ignores_unrelated_failure() {
     FakeAwsClients clients = new FakeAwsClients();
-    DynamoDbAsyncClientManager manager = new DynamoDbAsyncClientManager();
+    DynamoDbClientManager manager = new DynamoDbClientManager();
     manager.awsClients = clients;
 
-    DynamoDbAsyncClient first = manager.current();
+    DynamoDbClient first = manager.current();
 
     manager.refreshAfterFailure(first, new IllegalStateException("throttled"));
 
@@ -63,12 +63,12 @@ class DynamoDbAsyncClientManagerTest {
   @Test
   void refreshAfterFailure_ignores_stale_failed_client() {
     FakeAwsClients clients = new FakeAwsClients();
-    DynamoDbAsyncClientManager manager = new DynamoDbAsyncClientManager();
+    DynamoDbClientManager manager = new DynamoDbClientManager();
     manager.awsClients = clients;
 
-    DynamoDbAsyncClient first = manager.current();
+    DynamoDbClient first = manager.current();
     manager.refreshAfterFailure(first, new IllegalStateException("Connection pool shut down"));
-    DynamoDbAsyncClient second = manager.current();
+    DynamoDbClient second = manager.current();
 
     manager.refreshAfterFailure(first, new IllegalStateException("Connection pool shut down"));
 
@@ -81,15 +81,15 @@ class DynamoDbAsyncClientManagerTest {
   @Test
   void current_after_close_throws_without_recreating_client() {
     FakeAwsClients clients = new FakeAwsClients();
-    DynamoDbAsyncClientManager manager = new DynamoDbAsyncClientManager();
+    DynamoDbClientManager manager = new DynamoDbClientManager();
     manager.awsClients = clients;
 
-    DynamoDbAsyncClient first = manager.current();
+    DynamoDbClient first = manager.current();
     manager.close();
 
     IllegalStateException thrown = assertThrows(IllegalStateException.class, manager::current);
 
-    assertEquals("dynamodb async client manager is shut down", thrown.getMessage());
+    assertEquals("dynamodb client manager is shut down", thrown.getMessage());
     assertEquals(1, clients.handles.size());
     assertTrue(clients.handles.get(0).closed);
     assertSame(first, clients.handles.get(0).client);
@@ -99,7 +99,7 @@ class DynamoDbAsyncClientManagerTest {
     private final List<ClientHandle> handles = new ArrayList<>();
 
     @Override
-    public DynamoDbAsyncClient newDynamoDbAsyncClient() {
+    public DynamoDbClient newDynamoDbClient() {
       ClientHandle handle = new ClientHandle();
       handles.add(handle);
       return handle.client;
@@ -107,12 +107,10 @@ class DynamoDbAsyncClientManagerTest {
   }
 
   private static final class ClientHandle implements InvocationHandler {
-    private final DynamoDbAsyncClient client =
-        (DynamoDbAsyncClient)
+    private final DynamoDbClient client =
+        (DynamoDbClient)
             Proxy.newProxyInstance(
-                DynamoDbAsyncClient.class.getClassLoader(),
-                new Class<?>[] {DynamoDbAsyncClient.class},
-                this);
+                DynamoDbClient.class.getClassLoader(), new Class<?>[] {DynamoDbClient.class}, this);
 
     private boolean closed;
 

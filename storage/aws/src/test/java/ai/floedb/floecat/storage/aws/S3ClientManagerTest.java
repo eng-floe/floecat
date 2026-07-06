@@ -24,21 +24,21 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
-import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
+import software.amazon.awssdk.services.s3.S3Client;
 
-class DynamoDbAsyncClientManagerTest {
+class S3ClientManagerTest {
 
   @Test
   void refreshAfterFailure_replaces_client_on_connection_pool_shutdown() {
     FakeAwsClients clients = new FakeAwsClients();
-    DynamoDbAsyncClientManager manager = new DynamoDbAsyncClientManager();
+    S3ClientManager manager = new S3ClientManager();
     manager.awsClients = clients;
 
-    DynamoDbAsyncClient first = manager.current();
+    S3Client first = manager.current();
 
     manager.refreshAfterFailure(first, new IllegalStateException("Connection pool shut down"));
 
-    DynamoDbAsyncClient second = manager.current();
+    S3Client second = manager.current();
     assertNotSame(first, second);
     assertEquals(2, clients.handles.size());
     assertTrue(clients.handles.get(0).closed);
@@ -46,29 +46,14 @@ class DynamoDbAsyncClientManagerTest {
   }
 
   @Test
-  void refreshAfterFailure_ignores_unrelated_failure() {
-    FakeAwsClients clients = new FakeAwsClients();
-    DynamoDbAsyncClientManager manager = new DynamoDbAsyncClientManager();
-    manager.awsClients = clients;
-
-    DynamoDbAsyncClient first = manager.current();
-
-    manager.refreshAfterFailure(first, new IllegalStateException("throttled"));
-
-    assertSame(first, manager.current());
-    assertEquals(1, clients.handles.size());
-    assertFalse(clients.handles.get(0).closed);
-  }
-
-  @Test
   void refreshAfterFailure_ignores_stale_failed_client() {
     FakeAwsClients clients = new FakeAwsClients();
-    DynamoDbAsyncClientManager manager = new DynamoDbAsyncClientManager();
+    S3ClientManager manager = new S3ClientManager();
     manager.awsClients = clients;
 
-    DynamoDbAsyncClient first = manager.current();
+    S3Client first = manager.current();
     manager.refreshAfterFailure(first, new IllegalStateException("Connection pool shut down"));
-    DynamoDbAsyncClient second = manager.current();
+    S3Client second = manager.current();
 
     manager.refreshAfterFailure(first, new IllegalStateException("Connection pool shut down"));
 
@@ -81,15 +66,15 @@ class DynamoDbAsyncClientManagerTest {
   @Test
   void current_after_close_throws_without_recreating_client() {
     FakeAwsClients clients = new FakeAwsClients();
-    DynamoDbAsyncClientManager manager = new DynamoDbAsyncClientManager();
+    S3ClientManager manager = new S3ClientManager();
     manager.awsClients = clients;
 
-    DynamoDbAsyncClient first = manager.current();
+    S3Client first = manager.current();
     manager.close();
 
     IllegalStateException thrown = assertThrows(IllegalStateException.class, manager::current);
 
-    assertEquals("dynamodb async client manager is shut down", thrown.getMessage());
+    assertEquals("s3 client manager is shut down", thrown.getMessage());
     assertEquals(1, clients.handles.size());
     assertTrue(clients.handles.get(0).closed);
     assertSame(first, clients.handles.get(0).client);
@@ -99,7 +84,7 @@ class DynamoDbAsyncClientManagerTest {
     private final List<ClientHandle> handles = new ArrayList<>();
 
     @Override
-    public DynamoDbAsyncClient newDynamoDbAsyncClient() {
+    public S3Client newS3Client() {
       ClientHandle handle = new ClientHandle();
       handles.add(handle);
       return handle.client;
@@ -107,12 +92,10 @@ class DynamoDbAsyncClientManagerTest {
   }
 
   private static final class ClientHandle implements InvocationHandler {
-    private final DynamoDbAsyncClient client =
-        (DynamoDbAsyncClient)
+    private final S3Client client =
+        (S3Client)
             Proxy.newProxyInstance(
-                DynamoDbAsyncClient.class.getClassLoader(),
-                new Class<?>[] {DynamoDbAsyncClient.class},
-                this);
+                S3Client.class.getClassLoader(), new Class<?>[] {S3Client.class}, this);
 
     private boolean closed;
 
@@ -123,7 +106,8 @@ class DynamoDbAsyncClientManagerTest {
           closed = true;
           yield null;
         }
-        case "toString" -> "fake-dynamodb-client";
+        case "serviceName" -> "test";
+        case "toString" -> "fake-s3-client";
         case "hashCode" -> System.identityHashCode(proxy);
         case "equals" -> proxy == args[0];
         default -> null;
