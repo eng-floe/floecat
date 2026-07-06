@@ -28,6 +28,8 @@ import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.service.repo.util.ConstraintNormalizer;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -69,7 +71,9 @@ public final class Schemas {
                 return new CatalogKey(
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
-          .withCasBlobs();
+          .withCasBlobs()
+          .withSystemGuard(
+              key -> systemGuardId(key.accountId(), key.catalogId(), ResourceKind.RK_CATALOG));
 
   public static final ResourceSchema<StorageAuthority, StorageAuthorityKey> STORAGE_AUTHORITY =
       ResourceSchema.<StorageAuthority, StorageAuthorityKey>of(
@@ -107,7 +111,9 @@ public final class Schemas {
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
           .withCasBlobs()
-          .withPointerMeta(Namespace::getResourceId, Namespace::getDisplayName);
+          .withPointerMeta(Namespace::getResourceId, Namespace::getDisplayName)
+          .withSystemGuard(
+              key -> systemGuardId(key.accountId(), key.namespaceId(), ResourceKind.RK_NAMESPACE));
 
   public static final ResourceSchema<Table, TableKey> TABLE =
       ResourceSchema.<Table, TableKey>of(
@@ -134,7 +140,9 @@ public final class Schemas {
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
           .withCasBlobs()
-          .withPointerMeta(Table::getResourceId, Table::getDisplayName);
+          .withPointerMeta(Table::getResourceId, Table::getDisplayName)
+          .withSystemGuard(
+              key -> systemGuardId(key.accountId(), key.tableId(), ResourceKind.RK_TABLE));
 
   public static final ResourceSchema<Snapshot, SnapshotKey> SNAPSHOT =
       ResourceSchema.<Snapshot, SnapshotKey>of(
@@ -336,7 +344,9 @@ public final class Schemas {
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
           .withCasBlobs()
-          .withPointerMeta(View::getResourceId, View::getDisplayName);
+          .withPointerMeta(View::getResourceId, View::getDisplayName)
+          .withSystemGuard(
+              key -> systemGuardId(key.accountId(), key.viewId(), ResourceKind.RK_VIEW));
 
   public static final ResourceSchema<Connector, ConnectorKey> CONNECTOR =
       ResourceSchema.<Connector, ConnectorKey>of(
@@ -383,4 +393,15 @@ public final class Schemas {
                     v.getAccountId(), v.getTxId(), v.getTargetPointerKey(), sha);
               })
           .withCasBlobs();
+
+  private Schemas() {}
+
+  /**
+   * Builds the ResourceId the repository write path inspects for a system marker. Only the id is
+   * load-bearing (SystemResourceIdGenerator.isSystemId reads the UUID); account and kind are set
+   * for correct diagnostics.
+   */
+  private static ResourceId systemGuardId(String accountId, String id, ResourceKind kind) {
+    return ResourceId.newBuilder().setAccountId(accountId).setId(id).setKind(kind).build();
+  }
 }

@@ -78,6 +78,18 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     }
   }
 
+  /**
+   * Thrown by the repository write path when a mutation targets a system-owned resource id. System
+   * objects are immutable; the surface-layer {@code CatalogSurfaceWritePolicy} is the primary gate
+   * (with user-facing errors), and this is the structural backstop so that no write path — a
+   * service that forgot the policy, a future caller — can persist a system-object mutation.
+   */
+  public static class SystemObjectImmutableException extends RepoException {
+    public SystemObjectImmutableException(String msg) {
+      super(msg);
+    }
+  }
+
   public static class PreconditionFailedException extends RepoException {
     public PreconditionFailedException(String msg) {
       super(msg);
