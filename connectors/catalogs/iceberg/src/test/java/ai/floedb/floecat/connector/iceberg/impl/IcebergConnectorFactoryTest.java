@@ -294,6 +294,98 @@ class IcebergConnectorFactoryTest {
   }
 
   @Test
+  void restCatalogCacheKeyIgnoresTransientProviderIdentityAndOauthToken() throws Exception {
+    Map<String, String> props1 =
+        IcebergConnectorFactory.buildCatalogProperties(
+            "http://polaris:8181/api/catalog",
+            IcebergConnectorFactory.buildBaseIcebergProperties(
+                Map.of(
+                    "iceberg.source",
+                    "rest",
+                    "warehouse",
+                    "quickstart_catalog",
+                    "s3.region",
+                    "us-east-1",
+                    RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
+                    "provider-1")));
+    IcebergConnectorFactory.applyCatalogAuth(props1, "oauth2", Map.of("token", "token-1"));
+    IcebergConnectorFactory.applyStorageAuth(props1, "none", Map.of());
+
+    Map<String, String> props2 = new HashMap<>(props1);
+    props2.put("token", "token-2");
+    props2.put(
+        "client.credentials-provider."
+            + RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID,
+        "provider-2");
+
+    Object key1 = catalogCacheKey(props1);
+    Object key2 = catalogCacheKey(props2);
+
+    assertEquals(key1, key2);
+    assertEquals(key1.hashCode(), key2.hashCode());
+  }
+
+  @Test
+  void restCatalogCacheKeyTracksStableIcebergHeaders() throws Exception {
+    Map<String, String> props1 =
+        IcebergConnectorFactory.buildCatalogProperties(
+            "http://polaris:8181/api/catalog",
+            IcebergConnectorFactory.buildBaseIcebergProperties(
+                Map.of(
+                    "iceberg.source", "rest",
+                    "warehouse", "quickstart_catalog",
+                    "header.X-Iceberg-Access-Delegation", "remote-signing")));
+    Map<String, String> props2 = new HashMap<>(props1);
+    props2.put("header.X-Iceberg-Access-Delegation", "vended-credentials");
+
+    Object key1 = catalogCacheKey(props1);
+    Object key2 = catalogCacheKey(props2);
+
+    assertFalse(key1.equals(key2));
+  }
+
+  @Test
+  void restCatalogCacheKeyDistinguishesStorageAuthModes() throws Exception {
+    Map<String, String> noStorageAuth =
+        IcebergConnectorFactory.buildCatalogProperties(
+            "http://polaris:8181/api/catalog",
+            IcebergConnectorFactory.buildBaseIcebergProperties(
+                Map.of(
+                    "iceberg.source", "rest",
+                    "warehouse", "quickstart_catalog",
+                    "s3.region", "us-east-1")));
+
+    Map<String, String> staticStorageAuth =
+        IcebergConnectorFactory.buildCatalogProperties(
+            "http://polaris:8181/api/catalog",
+            IcebergConnectorFactory.buildBaseIcebergProperties(
+                Map.of(
+                    "iceberg.source", "rest",
+                    "warehouse", "quickstart_catalog",
+                    "s3.region", "us-east-1",
+                    "s3.access-key-id", "akid",
+                    "s3.secret-access-key", "secret")));
+
+    Map<String, String> profileStorageAuth =
+        IcebergConnectorFactory.buildCatalogProperties(
+            "http://polaris:8181/api/catalog",
+            IcebergConnectorFactory.buildBaseIcebergProperties(
+                Map.of(
+                    "iceberg.source", "rest",
+                    "warehouse", "quickstart_catalog",
+                    "s3.region", "us-east-1",
+                    "aws.profile", "dev-profile")));
+
+    Object noStorageKey = catalogCacheKey(noStorageAuth);
+    Object staticStorageKey = catalogCacheKey(staticStorageAuth);
+    Object profileStorageKey = catalogCacheKey(profileStorageAuth);
+
+    assertFalse(noStorageKey.equals(staticStorageKey));
+    assertFalse(noStorageKey.equals(profileStorageKey));
+    assertFalse(staticStorageKey.equals(profileStorageKey));
+  }
+
+  @Test
   void polarisRestCatalogPropsUseOauthTokenWithoutStaticStorageCredentials() {
     Map<String, String> props =
         IcebergConnectorFactory.buildCatalogProperties(
@@ -362,5 +454,14 @@ class IcebergConnectorFactoryTest {
     assertEquals("oauth2", props.get("rest.auth.type"));
     assertEquals("oauth-token", props.get("token"));
     assertEquals("http://polaris:8181/api/catalog/v1/oauth/tokens", props.get("oauth2-server-uri"));
+  }
+
+  private static Object catalogCacheKey(Map<String, String> props) throws Exception {
+    Class<?> keyClass =
+        Class.forName(
+            "ai.floedb.floecat.connector.iceberg.impl.IcebergConnectorFactory$CatalogCacheKey");
+    Method ofMethod = keyClass.getDeclaredMethod("of", Map.class);
+    ofMethod.setAccessible(true);
+    return ofMethod.invoke(null, props);
   }
 }
