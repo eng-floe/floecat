@@ -22,7 +22,6 @@ import static java.util.Objects.requireNonNullElse;
 import ai.floedb.floecat.arrow.ArrowScanPlan;
 import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.expr.Expr;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
@@ -32,10 +31,8 @@ import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
-import ai.floedb.floecat.service.common.GrpcContextUtil;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.context.EngineContextProvider;
-import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.catalog.ConstraintProviderFactory;
@@ -58,7 +55,6 @@ import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
-import io.smallrye.mutiny.infrastructure.Infrastructure;
 import io.smallrye.mutiny.subscription.MultiEmitter;
 import jakarta.inject.Inject;
 import java.util.Iterator;
@@ -95,19 +91,11 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
   @Override
   public Multi<ScanSystemTableChunk> scanSystemTable(ScanSystemTableRequest request) {
     var L = LogHelper.start(LOG, "ScanSystemTable");
-    // Read the resolved call context at method entry — before the executor hop — and carry it by
-    // reference into the body; the captured io.grpc.Context alone is unreliable across the hop
-    // (eng-floe/floecat#361). The providers the body reads (principal, engine context) pull from
-    // this scope.
-    ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
-    GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
-
-    return Multi.createFrom()
-        .<ScanSystemTableChunk>emitter(
-            emitter ->
-                grpcCtx.run(
-                    () -> ResolvedCallContexts.runWith(callCtx, () -> execute(request, emitter))))
-        .runSubscriptionOn(Infrastructure.getDefaultExecutor())
+    // runStreamEmitter reads the resolved call context at method entry — before the executor hop —
+    // and scopes the body to it; the providers the body reads (principal, engine context) pull
+    // from that scope.
+    return this.<ScanSystemTableChunk>runStreamEmitter(
+            (callCtx, emitter) -> execute(request, emitter))
         .onFailure()
         .invoke(L::fail)
         .onCompletion()

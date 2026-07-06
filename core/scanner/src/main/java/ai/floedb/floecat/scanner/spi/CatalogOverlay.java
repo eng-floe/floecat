@@ -57,6 +57,11 @@ public interface CatalogOverlay {
    * from a {@link MetadataResolutionContext}): re-reading the engine from the request context on
    * every lookup is fragile across executor hops, and a silently empty engine makes engine-gated
    * system objects unresolvable.
+   *
+   * <p><b>Implementers beware:</b> this default delegates to {@link #resolve(ResourceId)} and
+   * <em>ignores</em> the passed engine context. Any implementation that serves engine-gated objects
+   * must override it, or callers passing an explicit engine silently lose it (test doubles included
+   * — a fake inheriting this default cannot catch engine-threading regressions).
    */
   default Optional<GraphNode> resolve(ResourceId id, EngineContext engineContext) {
     return resolve(id);
@@ -192,7 +197,8 @@ public interface CatalogOverlay {
    * Resolves a relation (table or view) by name reference using an explicit engine context.
    *
    * <p>Prefer this overload wherever the caller already holds the request's engine context — see
-   * {@link #resolve(ResourceId, EngineContext)}.
+   * {@link #resolve(ResourceId, EngineContext)}, including its note that this default ignores the
+   * passed engine context for implementations that do not override it.
    */
   default Optional<ResourceId> resolveName(
       String correlationId, NameRef ref, EngineContext engineContext) {

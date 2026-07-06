@@ -18,16 +18,13 @@ package ai.floedb.floecat.service.query.impl;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
-import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.query.rpc.FetchTableConstraintsRequest;
 import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
 import ai.floedb.floecat.query.rpc.PlannerStatsService;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleChunk;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
-import ai.floedb.floecat.service.common.GrpcContextUtil;
 import ai.floedb.floecat.service.common.LogHelper;
-import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.catalog.PlannerStatsBundleService;
@@ -35,7 +32,6 @@ import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
-import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.enterprise.context.control.ActivateRequestContext;
 import jakarta.inject.Inject;
 import java.util.Map;
@@ -58,33 +54,18 @@ public class PlannerStatsServiceImpl extends BaseServiceImpl implements PlannerS
   @Override
   public Multi<TargetStatsBundleChunk> getTargetStats(FetchTargetStatsRequest request) {
     var L = LogHelper.start(LOG, "GetTargetStats");
-    // Read the resolved call context at method entry — before the executor hop — and carry it by
-    // reference into the body; the captured io.grpc.Context alone is unreliable across the hop
-    // (eng-floe/floecat#361). The bundle builder itself is context-free.
-    ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
-    GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
+    // runStream reads the resolved call context at method entry — before the executor hop — and
+    // carries it by reference into the body; the bundle builder itself is context-free.
+    return this.<TargetStatsBundleChunk>runStream(
+            callCtx -> {
+              var principalContext = callCtx.principalContext();
+              var correlationId = callCtx.effectiveCorrelationId();
+              authz.require(principalContext, "catalog.read");
 
-    return Multi.createFrom()
-        .<TargetStatsBundleChunk>deferred(
-            () ->
-                grpcCtx.call(
-                    () ->
-                        ResolvedCallContexts.callWith(
-                            callCtx,
-                            () -> {
-                              var principalContext = callCtx.principalContext();
-                              var correlationId =
-                                  !callCtx.correlationId().isBlank()
-                                      ? callCtx.correlationId()
-                                      : principalContext.getCorrelationId();
-                              authz.require(principalContext, "catalog.read");
-
-                              String queryId =
-                                  mustNonEmpty(request.getQueryId(), "query_id", correlationId);
-                              QueryContext ctx = requireActiveQuery(correlationId, queryId);
-                              return bundles.streamTargets(correlationId, ctx, request);
-                            })))
-        .runSubscriptionOn(Infrastructure.getDefaultExecutor())
+              String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+              QueryContext ctx = requireActiveQuery(correlationId, queryId);
+              return bundles.streamTargets(correlationId, ctx, request);
+            })
         .onFailure()
         .invoke(L::fail)
         .onCompletion()
@@ -96,30 +77,16 @@ public class PlannerStatsServiceImpl extends BaseServiceImpl implements PlannerS
   public Multi<TableConstraintsBundleChunk> getTableConstraints(
       FetchTableConstraintsRequest request) {
     var L = LogHelper.start(LOG, "GetTableConstraints");
-    ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
-    GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
+    return this.<TableConstraintsBundleChunk>runStream(
+            callCtx -> {
+              var principalContext = callCtx.principalContext();
+              var correlationId = callCtx.effectiveCorrelationId();
+              authz.require(principalContext, "catalog.read");
 
-    return Multi.createFrom()
-        .<TableConstraintsBundleChunk>deferred(
-            () ->
-                grpcCtx.call(
-                    () ->
-                        ResolvedCallContexts.callWith(
-                            callCtx,
-                            () -> {
-                              var principalContext = callCtx.principalContext();
-                              var correlationId =
-                                  !callCtx.correlationId().isBlank()
-                                      ? callCtx.correlationId()
-                                      : principalContext.getCorrelationId();
-                              authz.require(principalContext, "catalog.read");
-
-                              String queryId =
-                                  mustNonEmpty(request.getQueryId(), "query_id", correlationId);
-                              QueryContext ctx = requireActiveQuery(correlationId, queryId);
-                              return bundles.streamConstraints(correlationId, ctx, request);
-                            })))
-        .runSubscriptionOn(Infrastructure.getDefaultExecutor())
+              String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+              QueryContext ctx = requireActiveQuery(correlationId, queryId);
+              return bundles.streamConstraints(correlationId, ctx, request);
+            })
         .onFailure()
         .invoke(L::fail)
         .onCompletion()

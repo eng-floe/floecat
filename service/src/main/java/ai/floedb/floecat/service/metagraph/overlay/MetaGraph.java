@@ -59,6 +59,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
 import org.jboss.logging.Logger;
+import org.jboss.logging.MDC;
 
 @ApplicationScoped
 public final class MetaGraph implements CatalogOverlay, TopologyGraph {
@@ -324,14 +325,18 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     Optional<ResourceId> resolved =
         system.isPresent() ? system : userGraph.resolveName(correlationId, ref);
     if (resolved.isEmpty() && !ctx.hasEngineKind()) {
-      // A lookup that misses both graphs while the engine context is empty is how a lost engine
-      // context manifests: engine-gated system objects (sys.*, pg_catalog.*) silently resolve to
-      // NOT_FOUND and the engine reports a wrong-answer-shaped 42P01 (eng-floe/floecat#361).
-      // Legitimate no-engine requests that miss also log here, which is rare and still useful.
-      LOG.warnf(
-          "resolveName miss with empty engine context: ref=%s correlation_id=%s — if the request"
-              + " declared an engine, its context was lost before resolution",
-          NameRefUtil.canonical(ref), correlationId);
+      // A lookup that misses both graphs with an empty engine context while MDC proves the
+      // request DID declare an engine is how a lost engine context manifests: engine-gated system
+      // objects (sys.*, pg_catalog.*) silently resolve to NOT_FOUND and the engine reports a
+      // wrong-answer-shaped 42P01 (eng-floe/floecat#361). The MDC gate keeps legitimately
+      // engine-less callers (e.g. client-cli) from tripping this on every name typo.
+      Object mdcEngineKind = MDC.get("floecat_engine_kind");
+      if (mdcEngineKind instanceof String declaredEngineKind && !declaredEngineKind.isBlank()) {
+        LOG.warnf(
+            "resolveName miss with empty engine context: ref=%s correlation_id=%s — the request"
+                + " declared engine_kind=%s but its context was lost before resolution",
+            NameRefUtil.canonical(ref), correlationId, declaredEngineKind);
+      }
     }
     return resolved;
   }

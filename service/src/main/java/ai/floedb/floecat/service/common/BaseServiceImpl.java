@@ -44,7 +44,10 @@ import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
+import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
+import io.smallrye.mutiny.infrastructure.Infrastructure;
+import io.smallrye.mutiny.subscription.MultiEmitter;
 import jakarta.inject.Inject;
 import java.net.URI;
 import java.security.MessageDigest;
@@ -65,6 +68,8 @@ import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeoutException;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
@@ -104,6 +109,55 @@ public abstract class BaseServiceImpl {
                                 return body.get();
                               }
                             })));
+  }
+
+  /**
+   * Streaming analogue of {@link #run} for {@code Multi}-returning RPC methods: reads the resolved
+   * call context once at method entry — before the subscription hop onto the Mutiny default
+   * executor — and carries it by reference into {@code body}, which runs under the captured
+   * gRPC/OTel contexts and an explicit {@link ResolvedCallContexts} scope. Service methods should
+   * build their streams through this (or {@link #runStreamEmitter}) rather than hand-rolling the
+   * capture-and-wrap sequence, so the read-before-hop discipline is structural
+   * (eng-floe/floecat#361).
+   */
+  protected <T> Multi<T> runStream(Function<ResolvedCallContext, Multi<T>> body) {
+    ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
+    GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
+    Context otelCtx = Context.current();
+    return Multi.createFrom()
+        .<T>deferred(
+            () ->
+                grpcCtx.call(
+                    () ->
+                        ResolvedCallContexts.callWith(
+                            callCtx,
+                            () -> {
+                              try (Scope ignored = otelCtx.makeCurrent()) {
+                                return body.apply(callCtx);
+                              }
+                            })))
+        .runSubscriptionOn(Infrastructure.getDefaultExecutor());
+  }
+
+  /** Emitter-based analogue of {@link #runStream} for bodies that drive a {@link MultiEmitter}. */
+  protected <T> Multi<T> runStreamEmitter(
+      BiConsumer<ResolvedCallContext, MultiEmitter<? super T>> body) {
+    ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
+    GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
+    Context otelCtx = Context.current();
+    return Multi.createFrom()
+        .<T>emitter(
+            emitter ->
+                grpcCtx.run(
+                    () ->
+                        ResolvedCallContexts.runWith(
+                            callCtx,
+                            () -> {
+                              try (Scope ignored = otelCtx.makeCurrent()) {
+                                body.accept(callCtx, emitter);
+                              }
+                            })))
+        .runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
 
   protected <T> Uni<T> runWithRetry(Supplier<T> body) {
@@ -223,8 +277,8 @@ public abstract class BaseServiceImpl {
 
   protected String correlationId() {
     ResolvedCallContext resolved = ResolvedCallContexts.currentOrNull();
-    if (resolved != null && !resolved.correlationId().isBlank()) {
-      return resolved.correlationId();
+    if (resolved != null) {
+      return resolved.effectiveCorrelationId();
     }
     var pctx = principal != null ? principal.get() : null;
     return pctx != null ? pctx.getCorrelationId() : "";

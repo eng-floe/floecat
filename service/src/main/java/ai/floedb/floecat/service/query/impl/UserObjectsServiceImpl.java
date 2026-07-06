@@ -18,24 +18,18 @@ package ai.floedb.floecat.service.query.impl;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
-import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsService;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
-import ai.floedb.floecat.service.common.GrpcContextUtil;
 import ai.floedb.floecat.service.common.LogHelper;
-import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleService;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import io.opentelemetry.context.Context;
-import io.opentelemetry.context.Scope;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
-import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.enterprise.context.control.ActivateRequestContext;
 import jakarta.inject.Inject;
 import java.util.Map;
@@ -66,66 +60,46 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
     AtomicBoolean completed = new AtomicBoolean(false);
     AtomicBoolean failed = new AtomicBoolean(false);
     AtomicReference<String> correlationRef = new AtomicReference<>("");
-    // Read the resolved call context at method entry — before any executor hop — and carry it by
-    // reference into the emitter body. Capturing only the io.grpc.Context is unreliable across
-    // the hop: its shared per-call slot races the call's own trailing listener events, which used
-    // to silently drop the engine context and correlation id here (eng-floe/floecat#361).
-    ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
-    GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
-    Context otelCtx = Context.current();
+    // runStreamEmitter reads the resolved call context at method entry — before any executor hop —
+    // and carries it by reference into the emitter body. Capturing only the io.grpc.Context is
+    // unreliable across the hop: its shared per-call slot races the call's own trailing listener
+    // events, which used to silently drop the engine context and correlation id here
+    // (eng-floe/floecat#361).
+    return this.<UserObjectsBundleChunk>runStreamEmitter(
+            (callCtx, emitter) -> {
+              workStartNs.compareAndSet(0L, System.nanoTime());
+              var principalContext = callCtx.principalContext();
+              var correlationId = callCtx.effectiveCorrelationId();
+              correlationRef.set(correlationId);
+              authz.require(principalContext, "catalog.read");
 
-    return Multi.createFrom()
-        .<UserObjectsBundleChunk>emitter(
-            emitter -> {
-              grpcCtx.run(
-                  () ->
-                      ResolvedCallContexts.runWith(
-                          callCtx,
-                          () -> {
-                            try (Scope ignored = otelCtx.makeCurrent()) {
-                              workStartNs.compareAndSet(0L, System.nanoTime());
-                              var principalContext = callCtx.principalContext();
-                              var correlationId =
-                                  !callCtx.correlationId().isBlank()
-                                      ? callCtx.correlationId()
-                                      : principalContext.getCorrelationId();
-                              correlationRef.set(correlationId == null ? "" : correlationId);
-                              authz.require(principalContext, "catalog.read");
+              String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
+              var ctxOpt = queryStore.get(queryId);
+              if (ctxOpt.isEmpty()) {
+                emitter.fail(
+                    GrpcErrors.notFound(
+                        correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId)));
+                return;
+              }
 
-                              String queryId =
-                                  mustNonEmpty(request.getQueryId(), "query_id", correlationId);
-                              var ctxOpt = queryStore.get(queryId);
-                              if (ctxOpt.isEmpty()) {
-                                emitter.fail(
-                                    GrpcErrors.notFound(
-                                        correlationId,
-                                        QUERY_NOT_FOUND,
-                                        Map.of("query_id", queryId)));
-                                return;
-                              }
+              QueryContext ctx = ctxOpt.get();
+              if (!ctx.isActive()) {
+                emitter.fail(
+                    GrpcErrors.preconditionFailed(
+                        correlationId,
+                        QUERY_NOT_ACTIVE,
+                        Map.of("query_id", queryId, "state", ctx.getState().name())));
+                return;
+              }
 
-                              QueryContext ctx = ctxOpt.get();
-                              if (!ctx.isActive()) {
-                                emitter.fail(
-                                    GrpcErrors.preconditionFailed(
-                                        correlationId,
-                                        QUERY_NOT_ACTIVE,
-                                        Map.of(
-                                            "query_id", queryId, "state", ctx.getState().name())));
-                                return;
-                              }
+              var subscription =
+                  bundles.stream(correlationId, ctx, request.getTablesList())
+                      .subscribe()
+                      .with(emitter::emit, emitter::fail, emitter::complete);
 
-                              var subscription =
-                                  bundles.stream(correlationId, ctx, request.getTablesList())
-                                      .subscribe()
-                                      .with(emitter::emit, emitter::fail, emitter::complete);
-
-                              emitter.onTermination(subscription::cancel);
-                              emitter.onCancellation(subscription::cancel);
-                            }
-                          }));
+              emitter.onTermination(subscription::cancel);
+              emitter.onCancellation(subscription::cancel);
             })
-        .runSubscriptionOn(Infrastructure.getDefaultExecutor())
         .onCompletion()
         .invoke(() -> completed.set(true))
         .onFailure()

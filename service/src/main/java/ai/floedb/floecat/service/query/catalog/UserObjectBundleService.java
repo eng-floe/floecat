@@ -560,7 +560,10 @@ public class UserObjectBundleService {
       builder.setViewDefinition(viewBuilder);
     }
 
-    EngineContext ctx = engineContext.engineContext();
+    // The engine captured at iterator construction, not a live provider re-read: this runs on
+    // executor threads where the request context is unreliable, and a silently empty engine would
+    // skip engine-specific decoration with no log line (eng-floe/floecat#361).
+    EngineContext ctx = resolutionContext.engineContext();
     boolean decorationRequired = decorationRequired(ctx);
     Optional<EngineMetadataDecorator> decorator = currentDecorator(ctx);
     RelationDecoration relationDecoration = null;

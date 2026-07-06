@@ -64,52 +64,52 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
       public void start(Listener<RespT> responseListener, Metadata headers) {
         // Prefer the resolved-call-context carrier: the io.grpc.Context keys alone are unreliable
         // on executor threads, which used to silently drop engine/correlation metadata from
-        // outbound RPCs (eng-floe/floecat#361).
+        // outbound RPCs (eng-floe/floecat#361). Once the carrier is present it is trusted
+        // entirely — falling back per-field would let a reused worker's stale io.grpc.Context
+        // keys leak a previous call's values into a request that legitimately has none.
         ResolvedCallContext resolved = ResolvedCallContexts.currentOrNull();
 
-        String sessionHeaderValue =
-            resolved != null && resolved.sessionHeaderValue() != null
-                ? resolved.sessionHeaderValue()
-                : InboundContextInterceptor.SESSION_HEADER_VALUE_KEY.get();
-        String authorizationHeaderValue =
-            resolved != null && resolved.authorizationHeaderValue() != null
-                ? resolved.authorizationHeaderValue()
-                : InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY.get();
-        var queryId =
-            Optional.ofNullable(
-                    firstNonBlank(
-                        resolved != null ? resolved.queryId() : null,
-                        InboundContextInterceptor.QUERY_KEY.get()))
-                .orElseGet(() -> Baggage.current().getEntryValue("query_id"));
-
-        EngineContext engineContext =
-            resolved != null && resolved.engineContext().hasEngineKind()
-                ? resolved.engineContext()
-                : InboundContextInterceptor.ENGINE_CONTEXT_KEY.get();
-
-        String engineKind =
-            firstNonBlank(
-                engineContext != null && engineContext.hasEngineKind()
-                    ? engineContext.engineKind()
-                    : null,
-                InboundContextInterceptor.ENGINE_KIND_KEY.get(),
-                Baggage.current().getEntryValue("engine_kind"));
-
+        String sessionHeaderValue;
+        String authorizationHeaderValue;
+        String queryId;
+        String engineKind;
+        String engineVersion;
+        String correlationId;
+        if (resolved != null) {
+          sessionHeaderValue = resolved.sessionHeaderValue();
+          authorizationHeaderValue = resolved.authorizationHeaderValue();
+          queryId = resolved.queryId();
+          EngineContext engineContext = resolved.engineContext();
+          engineKind = engineContext.hasEngineKind() ? engineContext.engineKind() : null;
+          engineVersion = engineContext.engineVersion();
+          correlationId = resolved.correlationId();
+        } else {
+          sessionHeaderValue = InboundContextInterceptor.SESSION_HEADER_VALUE_KEY.get();
+          authorizationHeaderValue = InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY.get();
+          queryId =
+              Optional.ofNullable(InboundContextInterceptor.QUERY_KEY.get())
+                  .orElseGet(() -> Baggage.current().getEntryValue("query_id"));
+          EngineContext engineContext = InboundContextInterceptor.ENGINE_CONTEXT_KEY.get();
+          engineKind =
+              firstNonBlank(
+                  engineContext != null && engineContext.hasEngineKind()
+                      ? engineContext.engineKind()
+                      : null,
+                  InboundContextInterceptor.ENGINE_KIND_KEY.get(),
+                  Baggage.current().getEntryValue("engine_kind"));
+          engineVersion =
+              firstNonBlank(
+                  engineContext != null ? engineContext.engineVersion() : null,
+                  InboundContextInterceptor.ENGINE_VERSION_KEY.get(),
+                  Baggage.current().getEntryValue("engine_version"));
+          correlationId =
+              Optional.ofNullable(InboundContextInterceptor.CORR_KEY.get())
+                  .orElseGet(() -> Baggage.current().getEntryValue("correlation_id"));
+        }
         // Only propagate an engine version if we are propagating an engine kind.
-        String engineVersion =
-            (engineKind == null || engineKind.isBlank())
-                ? null
-                : firstNonBlank(
-                    engineContext != null ? engineContext.engineVersion() : null,
-                    InboundContextInterceptor.ENGINE_VERSION_KEY.get(),
-                    Baggage.current().getEntryValue("engine_version"));
-
-        var correlationId =
-            Optional.ofNullable(
-                    firstNonBlank(
-                        resolved != null ? resolved.correlationId() : null,
-                        InboundContextInterceptor.CORR_KEY.get()))
-                .orElseGet(() -> Baggage.current().getEntryValue("correlation_id"));
+        if (engineKind == null || engineKind.isBlank()) {
+          engineVersion = null;
+        }
 
         if (sessionHeaderValue != null && sessionHeader.isPresent()) {
           Metadata.Key<String> key =
