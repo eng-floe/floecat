@@ -838,6 +838,12 @@ public class TransactionIntentApplierSupport {
     }
     ResourceId held = ptr.getResourceId();
     if (!Objects.equals(held.getId(), owner.getId())) {
+      // Same cross-kind invariant that ViewServiceImpl#relationNameConflict enforces on the direct
+      // RPC path. These are two independent claim implementations (this one hand-rolls the CAS ops
+      // rather than routing through the generic repository), so the surfaced codes differ by
+      // channel — RELATION_NAME_CONFLICT here (transaction apply outcome) vs
+      // RELATION_NAME_ALREADY_CLAIMED there (gRPC ALREADY_EXISTS) — but the condition is identical:
+      // the name is already claimed by a relation of any kind.
       return ApplyOutcome.conflict(
           "RELATION_NAME_CONFLICT",
           "relation name is already claimed by another relation",

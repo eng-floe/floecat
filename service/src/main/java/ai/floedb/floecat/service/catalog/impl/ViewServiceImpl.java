@@ -53,6 +53,7 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -227,15 +228,10 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                     try {
                       viewRepo.create(view);
                     } catch (BaseResourceRepository.NameConflictException nce) {
-                      // The name may be owned by a table via the shared relation-name claim, so a
-                      // cross-kind collision surfaces here rather than in the view getByName check.
-                      throw GrpcErrors.alreadyExists(
-                          corr,
-                          VIEW_ALREADY_EXISTS,
-                          Map.of(
-                              "display_name", normName,
-                              "catalog_id", spec.getCatalogId().getId(),
-                              "namespace_id", spec.getNamespaceId().getId()));
+                      // The shared relation-name claim enforces cross-kind uniqueness (see
+                      // TransactionIntentApplierSupport#buildRelationClaimUpsertOp), so this fires
+                      // when the name is held by any relation, not only a same-kind view.
+                      throw relationNameConflict(corr, accountId, spec, normName);
                     }
                     metadataGraph.invalidate(viewResourceId);
                     topology.evictRelationRefs(view.getNamespaceId());
@@ -273,13 +269,11 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                                               existingOpt.get(), existingOpt.get().getResourceId());
                                         }
                                       }
-                                      throw GrpcErrors.alreadyExists(
-                                          corr,
-                                          VIEW_ALREADY_EXISTS,
-                                          Map.of(
-                                              "display_name", normName,
-                                              "catalog_id", spec.getCatalogId().getId(),
-                                              "namespace_id", spec.getNamespaceId().getId()));
+                                      // A same-kind view with a different fingerprint is a genuine
+                                      // VIEW_ALREADY_EXISTS; an absent view means the shared claim
+                                      // is
+                                      // held by another relation kind (see relationNameConflict).
+                                      throw relationNameConflict(corr, accountId, spec, normName);
                                     }
                                     metadataGraph.invalidate(viewResourceId);
                                     topology.evictRelationRefs(view.getNamespaceId());
@@ -595,6 +589,30 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
             definitions.stream().map(def -> def.getDialect() + ":" + def.getSql()).toList())
         .map("properties", s.getPropertiesMap())
         .bytes();
+  }
+
+  /**
+   * Builds the conflict error for a relation-name collision detected by {@code viewRepo.create}.
+   * The shared relation-name claim is kind-agnostic, so re-read the view index to tell the two
+   * cases apart: a same-kind view maps to {@code VIEW_ALREADY_EXISTS}, while a name held by another
+   * relation kind (e.g. a table) maps to the kind-agnostic {@code RELATION_NAME_ALREADY_CLAIMED}
+   * rather than misreporting a table as an existing view.
+   */
+  private StatusRuntimeException relationNameConflict(
+      String corr, String accountId, ViewSpec spec, String normName) {
+    boolean sameKindView =
+        viewRepo
+            .getByName(
+                accountId, spec.getCatalogId().getId(), spec.getNamespaceId().getId(), normName)
+            .isPresent();
+    var params =
+        Map.of(
+            "display_name", normName,
+            "catalog_id", spec.getCatalogId().getId(),
+            "namespace_id", spec.getNamespaceId().getId());
+    return sameKindView
+        ? GrpcErrors.alreadyExists(corr, VIEW_ALREADY_EXISTS, params)
+        : GrpcErrors.alreadyExists(corr, RELATION_NAME_ALREADY_CLAIMED, params);
   }
 
   private static ViewSpec specFromView(View view) {

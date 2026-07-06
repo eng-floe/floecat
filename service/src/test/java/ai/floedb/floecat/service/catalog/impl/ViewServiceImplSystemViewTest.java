@@ -21,16 +21,19 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.CreateViewRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteViewRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
+import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -44,6 +47,7 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
@@ -214,6 +218,102 @@ class ViewServiceImplSystemViewTest {
 
     assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
     verify(viewRepo, never()).update(any(), anyLong());
+  }
+
+  @Test
+  void createView_nameOwnedByOtherRelationKind_reportsRelationNameClaimed() {
+    var ctx = writableViewContext();
+
+    // No same-kind view exists (pre-check and re-check both empty), yet create() trips the shared
+    // relation-name claim: the name is held by another relation kind (a table).
+    when(viewRepo.getByName(any(), any(), any(), any())).thenReturn(Optional.empty());
+    doThrow(new BaseResourceRepository.NameConflictException("claimed by a table"))
+        .when(viewRepo)
+        .create(any());
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class, () -> svc.createView(ctx).await().indefinitely());
+
+    assertEquals(Status.Code.ALREADY_EXISTS, ex.getStatus().getCode());
+    // Kind-agnostic message, not the misleading "view already exists".
+    org.junit.jupiter.api.Assertions.assertTrue(
+        ex.getStatus().getDescription().contains("claimed by another relation"),
+        () -> "unexpected message: " + ex.getStatus().getDescription());
+  }
+
+  @Test
+  void createView_concurrentSameKindView_reportsViewAlreadyExists() {
+    var ctx = writableViewContext();
+
+    // Pre-check sees no view, but a concurrent view creation wins the claim before this create;
+    // the re-check then finds the same-kind view, so it must surface VIEW_ALREADY_EXISTS.
+    when(viewRepo.getByName(any(), any(), any(), any()))
+        .thenReturn(Optional.empty())
+        .thenReturn(Optional.of(View.newBuilder().setDisplayName("orders").build()));
+    doThrow(new BaseResourceRepository.NameConflictException("concurrent view"))
+        .when(viewRepo)
+        .create(any());
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class, () -> svc.createView(ctx).await().indefinitely());
+
+    assertEquals(Status.Code.ALREADY_EXISTS, ex.getStatus().getCode());
+    org.junit.jupiter.api.Assertions.assertTrue(
+        ex.getStatus().getDescription().contains("already exists"),
+        () -> "unexpected message: " + ex.getStatus().getDescription());
+  }
+
+  /**
+   * Builds a CreateViewRequest into a writable user catalog/namespace registered in the overlay.
+   */
+  private CreateViewRequest writableViewContext() {
+    ResourceId userCatalogId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat_user_cv")
+            .build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("ns_user_cv")
+            .build();
+
+    overlay.addNode(
+        new CatalogNode(
+            userCatalogId,
+            1L,
+            Instant.now(),
+            "user_catalog",
+            Map.of(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Map.of()));
+    overlay.addNode(
+        new NamespaceNode(
+            namespaceId,
+            1L,
+            Instant.now(),
+            userCatalogId,
+            List.of(),
+            "public",
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Map.of()));
+
+    return CreateViewRequest.newBuilder()
+        .setSpec(
+            ViewSpec.newBuilder()
+                .setCatalogId(userCatalogId)
+                .setNamespaceId(namespaceId)
+                .setDisplayName("orders")
+                .addOutputColumns(SchemaColumn.newBuilder().setName("c").build())
+                .addSqlDefinitions(ViewSqlDefinition.newBuilder().setSql("select 1").build()))
+        .build();
   }
 
   private ViewNode systemViewNode(ResourceId id) {
