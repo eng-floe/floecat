@@ -648,7 +648,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           Timestamp nowTs = Timestamps.fromMillis(clock.millis());
           String canonical = schema.canonicalPointerForKey.apply(key);
           var ptrOpt = pointerStore.get(canonical);
-          String blobUri = ptrOpt.isEmpty() && schema.casBlobs ? "" : blobUriFor(key, ptrOpt);
+          String blobUri = blobUriFor(key, ptrOpt);
           return MutationMeta.newBuilder()
               .setPointerKey(canonical)
               .setBlobUri(blobUri)
