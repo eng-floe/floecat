@@ -119,7 +119,10 @@ class ConnectorsDiscoveryImplTest {
 
       assertTrue(response.getStatus().getOk());
       assertEquals(1, response.getNamespacesCount());
-      assertEquals("prod_catalog.orders", response.getNamespaces(0).getDisplayName());
+      var namespace = response.getNamespaces(0);
+      assertEquals("prod_catalog", namespace.getCatalogName());
+      assertEquals("orders", namespace.getDisplayName());
+      assertEquals(List.of("orders"), namespace.getNamespaceSegmentsList());
     }
   }
 
@@ -144,6 +147,37 @@ class ConnectorsDiscoveryImplTest {
       var kinds = response.getObjectsList().stream().map(o -> o.getObjectKind()).toList();
       assertTrue(kinds.contains(DiscoveryObjectKind.DOK_TABLE));
       assertTrue(kinds.contains(DiscoveryObjectKind.DOK_VIEW));
+    }
+  }
+
+  @Test
+  void discoverObjectsResolvesFullyQualifiedNamespaceFromCatalogNameAndSetsCatalogNameOnObjects() {
+    try (MockedStatic<ConnectorFactory> factory = mockStatic(ConnectorFactory.class)) {
+      factory.when(() -> ConnectorFactory.create(any())).thenReturn(fakeConnector);
+
+      var response =
+          service
+              .discoverObjects(
+                  DiscoverObjectsRequest.newBuilder()
+                      .setTarget(target)
+                      .setCatalogName("prod_catalog")
+                      .addNamespaceSegments("orders")
+                      .build())
+              .await()
+              .indefinitely();
+
+      assertTrue(response.getStatus().getOk());
+      assertEquals(2, response.getObjectsCount());
+      var objectNames = response.getObjectsList().stream().map(o -> o.getObjectName()).toList();
+      assertTrue(objectNames.contains("line_items"));
+      assertTrue(objectNames.contains("orders_view"));
+      response
+          .getObjectsList()
+          .forEach(
+              o -> {
+                assertEquals("prod_catalog", o.getCatalogName());
+                assertEquals(List.of("orders"), o.getNamespaceSegmentsList());
+              });
     }
   }
 

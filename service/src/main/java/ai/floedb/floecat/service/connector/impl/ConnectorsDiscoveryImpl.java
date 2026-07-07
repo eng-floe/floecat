@@ -152,12 +152,13 @@ public class ConnectorsDiscoveryImpl extends BaseServiceImpl implements Connecto
                                   var segments = List.of(ns.split("\\.", -1));
                                   var b =
                                       DiscoveryObject.newBuilder()
-                                          .setObjectKind(DiscoveryObjectKind.DOK_NAMESPACE)
-                                          .setDisplayName(ns)
-                                          .addAllNamespaceSegments(segments);
+                                          .setObjectKind(DiscoveryObjectKind.DOK_NAMESPACE);
                                   if (segments.size() > 1) {
                                     b.setCatalogName(segments.get(0));
+                                    segments = segments.subList(1, segments.size());
                                   }
+                                  b.setDisplayName(String.join(".", segments))
+                                      .addAllNamespaceSegments(segments);
                                   return b.build();
                                 })
                             .toList();
@@ -203,8 +204,13 @@ public class ConnectorsDiscoveryImpl extends BaseServiceImpl implements Connecto
                     throw GrpcErrors.invalidArgument(
                         corr, null, Map.of("field", "namespace_segments"));
                   }
-                  String namespaceFq =
-                      nsSegments.isEmpty() ? catalogName : String.join(".", nsSegments);
+                  List<String> fqSegments = nsSegments;
+                  if (!catalogName.isEmpty()) {
+                    fqSegments = new ArrayList<>();
+                    fqSegments.add(catalogName);
+                    fqSegments.addAll(nsSegments);
+                  }
+                  String namespaceFq = String.join(".", fqSegments);
 
                   Set<DiscoveryObjectKind> requestedKinds =
                       request.getKindsList().isEmpty()
@@ -223,13 +229,18 @@ public class ConnectorsDiscoveryImpl extends BaseServiceImpl implements Connecto
                                   query.isEmpty()
                                       || t.toLowerCase(java.util.Locale.ROOT).contains(query))
                           .map(
-                              t ->
-                                  DiscoveryObject.newBuilder()
-                                      .setObjectKind(DiscoveryObjectKind.DOK_TABLE)
-                                      .addAllNamespaceSegments(nsSegments)
-                                      .setObjectName(t)
-                                      .setDisplayName(t)
-                                      .build())
+                              t -> {
+                                var b =
+                                    DiscoveryObject.newBuilder()
+                                        .setObjectKind(DiscoveryObjectKind.DOK_TABLE)
+                                        .addAllNamespaceSegments(nsSegments)
+                                        .setObjectName(t)
+                                        .setDisplayName(t);
+                                if (!catalogName.isEmpty()) {
+                                  b.setCatalogName(catalogName);
+                                }
+                                return b.build();
+                              })
                           .forEach(objects::add);
                     }
 
@@ -240,13 +251,18 @@ public class ConnectorsDiscoveryImpl extends BaseServiceImpl implements Connecto
                                   query.isEmpty()
                                       || v.toLowerCase(java.util.Locale.ROOT).contains(query))
                           .map(
-                              v ->
-                                  DiscoveryObject.newBuilder()
-                                      .setObjectKind(DiscoveryObjectKind.DOK_VIEW)
-                                      .addAllNamespaceSegments(nsSegments)
-                                      .setObjectName(v)
-                                      .setDisplayName(v)
-                                      .build())
+                              v -> {
+                                var b =
+                                    DiscoveryObject.newBuilder()
+                                        .setObjectKind(DiscoveryObjectKind.DOK_VIEW)
+                                        .addAllNamespaceSegments(nsSegments)
+                                        .setObjectName(v)
+                                        .setDisplayName(v);
+                                if (!catalogName.isEmpty()) {
+                                  b.setCatalogName(catalogName);
+                                }
+                                return b.build();
+                              })
                           .forEach(objects::add);
                     }
 
