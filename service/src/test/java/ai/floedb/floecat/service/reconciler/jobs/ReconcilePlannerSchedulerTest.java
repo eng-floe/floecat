@@ -50,6 +50,7 @@ import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class ReconcilePlannerSchedulerTest {
@@ -400,6 +401,7 @@ class ReconcilePlannerSchedulerTest {
                     .setAutoCapturePolicy(
                         CapturePolicy.newBuilder()
                             .addOutputs(CaptureOutput.CO_PARQUET_PAGE_INDEX)
+                            .putProperties("stats.ndv.sample_fraction", "0.2")
                             .build())
                     .build())
             .build();
@@ -422,6 +424,9 @@ class ReconcilePlannerSchedulerTest {
     assertEquals(
         java.util.Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
         enqueuedScopes.getFirst().capturePolicy().outputs());
+    assertEquals(
+        Map.of("stats.ndv.sample_fraction", "0.2"),
+        enqueuedScopes.getFirst().capturePolicy().properties());
   }
 
   @Test

@@ -1328,6 +1328,7 @@ class GrpcRemoteReconcileExecutorClient
                 .toList())
         .setDefaultColumnScope(toProtoDefaultColumnScope(effective.defaultColumnScope()))
         .setMaxDefaultColumns(effective.maxDefaultColumns())
+        .putAllProperties(effective.properties())
         .build();
   }
 

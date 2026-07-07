@@ -61,6 +61,7 @@ import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.Duration;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -482,6 +483,7 @@ class ReconcileControlImplTest {
                             .setAutoCapturePolicy(
                                 CapturePolicy.newBuilder()
                                     .addOutputs(CaptureOutput.CO_PARQUET_PAGE_INDEX)
+                                    .putProperties("stats.ndv.sample_fraction", "0.1")
                                     .build())
                             .build())
                     .build()));
@@ -511,6 +513,9 @@ class ReconcileControlImplTest {
     assertEquals(
         java.util.Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
         scopeCaptor.getValue().capturePolicy().outputs());
+    assertEquals(
+        Map.of("stats.ndv.sample_fraction", "0.1"),
+        scopeCaptor.getValue().capturePolicy().properties());
   }
 
   @Test

@@ -837,6 +837,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                                   toProtoDefaultColumnScope(
                                       payload.capturePolicy().defaultColumnScope()))
                               .setMaxDefaultColumns(payload.capturePolicy().maxDefaultColumns())
+                              .putAllProperties(payload.capturePolicy().properties())
                               .build());
               if (payload.sourceConnector() != null) {
                 executionBuilder.setSourceConnector(payload.sourceConnector());
@@ -1282,6 +1283,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               .setDefaultColumnScope(
                   toProtoDefaultColumnScope(effectiveScope.capturePolicy().defaultColumnScope()))
               .setMaxDefaultColumns(effectiveScope.capturePolicy().maxDefaultColumns())
+              .putAllProperties(effectiveScope.capturePolicy().properties())
               .build());
     }
     if (effectiveScope.hasSnapshotSelection()) {
@@ -1368,7 +1370,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                     .map(ReconcileExecutorControlImpl::fromProtoCaptureOutput)
                     .collect(java.util.stream.Collectors.toSet()),
                 fromProtoDefaultColumnScope(scope.getCapturePolicy().getDefaultColumnScope()),
-                scope.getCapturePolicy().getMaxDefaultColumns())
+                scope.getCapturePolicy().getMaxDefaultColumns(),
+                scope.getCapturePolicy().getPropertiesMap())
             : ReconcileCapturePolicy.empty(),
         scope.hasSnapshotSelection()
             ? fromProtoSnapshotSelection(scope.getSnapshotSelection())

@@ -27,6 +27,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -45,6 +46,7 @@ import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequ
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultResponse;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -53,6 +55,8 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -467,6 +471,62 @@ class GrpcRemoteReconcileExecutorClientTest {
     verify(channel).awaitTermination(5, TimeUnit.SECONDS);
     assertThat(client.transportFailureLogs())
         .containsExactly("submitLeasedPlanSnapshotResult@dedicated#1");
+  }
+
+  @Test
+  void submitPlanTableSuccessPreservesCapturePolicyPropertiesInScope() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.withInterceptors(any())).thenReturn(stub);
+    when(stub.submitLeasedPlanTableResult(any()))
+        .thenReturn(
+            ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultResponse.newBuilder()
+                .setAccepted(true)
+                .build());
+    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
+
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            null,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(),
+                Set.of(ReconcileCapturePolicy.Output.TABLE_STATS),
+                ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+                ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS,
+                Map.of("stats.ndv.sample_fraction", "0.25")),
+            ReconcileSnapshotSelection.unspecified());
+
+    assertThat(
+            client.submitPlanTableSuccess(
+                remoteLease(),
+                List.of(
+                    new PlannedSnapshotJob(
+                        scope, ReconcileSnapshotTask.of("table-1", 55L, "db", "events"))),
+                1L,
+                1L,
+                0L,
+                1L,
+                1L))
+        .isTrue();
+
+    ArgumentCaptor<SubmitLeasedPlanTableResultRequest> requestCaptor =
+        ArgumentCaptor.forClass(SubmitLeasedPlanTableResultRequest.class);
+    verify(stub).submitLeasedPlanTableResult(requestCaptor.capture());
+    assertThat(
+            requestCaptor
+                .getValue()
+                .getSuccess()
+                .getSnapshotJobs(0)
+                .getScope()
+                .getCapturePolicy()
+                .getPropertiesMap())
+        .containsEntry("stats.ndv.sample_fraction", "0.25");
   }
 
   @Test

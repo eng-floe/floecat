@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.floecat.capture.rpc.CaptureColumnPolicy;
 import ai.floedb.floecat.capture.rpc.CaptureOutput;
 import ai.floedb.floecat.capture.rpc.CapturePolicy;
+import ai.floedb.floecat.capture.rpc.DefaultColumnScope;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
@@ -2669,6 +2670,104 @@ public class ConnectorIT {
   }
 
   @Test
+  void createConnectorRejectsAutoCapturePolicySecretBearingProperties() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-secret-create", "");
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setDisplayName("policy-secret-create")
+                                .setKind(ConnectorKind.CK_UNITY)
+                                .setUri("dummy://x")
+                                .setSource(source(List.of("a", "b")))
+                                .setDestination(dest("cat-policy-secret-create"))
+                                .setPolicy(
+                                    ReconcilePolicy.newBuilder()
+                                        .setAutoCapturePolicy(
+                                            CapturePolicy.newBuilder()
+                                                .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                                                .putProperties(
+                                                    "s3.secret-access-key", "should-not-store")
+                                                .build())
+                                        .build())
+                                .build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void createConnectorRejectsAutoCapturePolicyUnknownDefaultColumnScope() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-scope-create", "");
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setDisplayName("policy-scope-create")
+                                .setKind(ConnectorKind.CK_UNITY)
+                                .setUri("dummy://x")
+                                .setSource(source(List.of("a", "b")))
+                                .setDestination(dest("cat-policy-scope-create"))
+                                .setPolicy(
+                                    ReconcilePolicy.newBuilder()
+                                        .setAutoCapturePolicy(
+                                            CapturePolicy.newBuilder()
+                                                .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                                                .setDefaultColumnScopeValue(99)
+                                                .build())
+                                        .build())
+                                .build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void createConnectorRejectsAutoCapturePolicyUnspecifiedDefaultColumnScope() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-scope-unspecified-create", "");
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setDisplayName("policy-scope-unspecified-create")
+                                .setKind(ConnectorKind.CK_UNITY)
+                                .setUri("dummy://x")
+                                .setSource(source(List.of("a", "b")))
+                                .setDestination(dest("cat-policy-scope-unspecified-create"))
+                                .setPolicy(
+                                    ReconcilePolicy.newBuilder()
+                                        .setAutoCapturePolicy(
+                                            CapturePolicy.newBuilder()
+                                                .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                                                .setDefaultColumnScope(
+                                                    DefaultColumnScope.DCS_UNSPECIFIED)
+                                                .build())
+                                        .build())
+                                .build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
   void updateConnectorRejectsAutoCapturePolicyColumnWithoutEnabledOutputs() throws Exception {
     TestSupport.createCatalog(catalogService, "cat-policy-column-update", "");
     var connector =
@@ -2746,6 +2845,98 @@ public class ConnectorIT {
 
     TestSupport.assertGrpcAndMc(
         ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void updateConnectorRejectsAutoCapturePolicySecretBearingProperties() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-secret-update", "");
+    var connector =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("policy-secret-update")
+                .setKind(ConnectorKind.CK_UNITY)
+                .setUri("dummy://x")
+                .setSource(source(List.of("a", "b")))
+                .setDestination(dest("cat-policy-secret-update"))
+                .build());
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.updateConnector(
+                    UpdateConnectorRequest.newBuilder()
+                        .setConnectorId(connector.getResourceId())
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setPolicy(
+                                    ReconcilePolicy.newBuilder()
+                                        .setAutoCapturePolicy(
+                                            CapturePolicy.newBuilder()
+                                                .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                                                .putProperties(
+                                                    "s3.session-token", "should-not-store")
+                                                .build())
+                                        .build())
+                                .build())
+                        .setUpdateMask(
+                            FieldMask.newBuilder().addPaths("policy.auto_capture_policy").build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void connectorAutoCapturePolicyPropertiesAreMaskedOnResponses() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-mask", "");
+    var created =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("policy-mask")
+                .setKind(ConnectorKind.CK_UNITY)
+                .setUri("dummy://x")
+                .setSource(source(List.of("a", "b")))
+                .setDestination(dest("cat-policy-mask"))
+                .build());
+
+    var stored = connectorRepo.getById(created.getResourceId()).orElseThrow();
+    var mutated =
+        stored.toBuilder()
+            .setPolicy(
+                stored.getPolicy().toBuilder()
+                    .setAutoCapturePolicy(
+                        CapturePolicy.newBuilder()
+                            .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                            .setDefaultColumnScope(DefaultColumnScope.DCS_FIRST_N)
+                            .putProperties("engine.mode", "full")
+                            .putProperties("s3.secret-access-key", "top-secret")
+                            .build())
+                    .build())
+            .build();
+    var meta = connectorRepo.metaForSafe(created.getResourceId());
+    assertTrue(connectorRepo.update(mutated, meta.getPointerVersion()));
+
+    var fetched =
+        connectors.getConnector(
+            GetConnectorRequest.newBuilder().setConnectorId(created.getResourceId()).build());
+    var fetchedPolicy = fetched.getConnector().getPolicy().getAutoCapturePolicy();
+    assertEquals("full", fetchedPolicy.getPropertiesMap().get("engine.mode"));
+    assertEquals("****", fetchedPolicy.getPropertiesMap().get("s3.secret-access-key"));
+
+    var listed =
+        connectors.listConnectors(ListConnectorsRequest.newBuilder().build()).getConnectorsList();
+    var listedPolicy =
+        listed.stream()
+            .filter(c -> c.getResourceId().equals(created.getResourceId()))
+            .findFirst()
+            .orElseThrow()
+            .getPolicy()
+            .getAutoCapturePolicy();
+    assertEquals("full", listedPolicy.getPropertiesMap().get("engine.mode"));
+    assertEquals("****", listedPolicy.getPropertiesMap().get("s3.secret-access-key"));
   }
 
   @Test

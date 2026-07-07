@@ -384,7 +384,8 @@ public class ReconcilePlannerScheduler {
             .map(ReconcilePlannerScheduler::fromProtoCaptureOutput)
             .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new)),
         fromProtoDefaultColumnScope(capturePolicy.getDefaultColumnScope()),
-        capturePolicy.getMaxDefaultColumns());
+        capturePolicy.getMaxDefaultColumns(),
+        capturePolicy.getPropertiesMap());
   }
 
   private static ReconcileCapturePolicy.Column fromProtoCaptureColumnPolicy(

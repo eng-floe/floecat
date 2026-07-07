@@ -802,11 +802,23 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   }
 
   private static Connector maskConnector(Connector connector) {
-    if (connector == null || !connector.hasAuth()) {
+    if (connector == null) {
       return connector;
     }
-    AuthConfig masked = maskAuthConfig(connector.getAuth());
-    return connector.toBuilder().setAuth(masked).build();
+    var builder = connector.toBuilder();
+    boolean changed = false;
+    if (connector.hasAuth()) {
+      builder.setAuth(maskAuthConfig(connector.getAuth()));
+      changed = true;
+    }
+    if (connector.hasPolicy() && connector.getPolicy().hasAutoCapturePolicy()) {
+      builder.setPolicy(
+          connector.getPolicy().toBuilder()
+              .setAutoCapturePolicy(maskCapturePolicy(connector.getPolicy().getAutoCapturePolicy()))
+              .build());
+      changed = true;
+    }
+    return changed ? builder.build() : connector;
   }
 
   private static AuthConfig maskAuthConfig(AuthConfig auth) {
@@ -884,6 +896,16 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     builder.putAllProperties(maskSensitiveMap(credentials.getPropertiesMap()));
     builder.putAllHeaders(maskSensitiveMap(credentials.getHeadersMap()));
     return builder.build();
+  }
+
+  private static CapturePolicy maskCapturePolicy(CapturePolicy policy) {
+    if (policy == null) {
+      return CapturePolicy.getDefaultInstance();
+    }
+    return policy.toBuilder()
+        .clearProperties()
+        .putAllProperties(maskSensitiveMap(policy.getPropertiesMap()))
+        .build();
   }
 
   private static AuthCredentials.TokenExchange maskTokenExchange(
@@ -973,6 +995,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     if (policy == null) {
       return;
     }
+    validateSecretBearingMap(policy.getPropertiesMap(), corr, fieldName + ".properties");
     if (policy.getOutputsCount() == 0) {
       throw GrpcErrors.invalidArgument(corr, null, Map.of("field", fieldName + ".outputs"));
     }
@@ -987,6 +1010,13 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     if (policy.getMaxDefaultColumns() < 0) {
       throw GrpcErrors.invalidArgument(
           corr, null, Map.of("field", fieldName + ".max_default_columns"));
+    }
+    if (policy.getDefaultColumnScope()
+            == ai.floedb.floecat.capture.rpc.DefaultColumnScope.UNRECOGNIZED
+        || policy.getDefaultColumnScope()
+            == ai.floedb.floecat.capture.rpc.DefaultColumnScope.DCS_UNSPECIFIED) {
+      throw GrpcErrors.invalidArgument(
+          corr, null, Map.of("field", fieldName + ".default_column_scope"));
     }
     for (int i = 0; i < policy.getColumnsCount(); i++) {
       var column = policy.getColumns(i);
