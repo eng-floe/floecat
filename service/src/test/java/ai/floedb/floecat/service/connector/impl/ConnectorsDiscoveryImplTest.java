@@ -113,8 +113,7 @@ class ConnectorsDiscoveryImplTest {
 
       var response =
           service
-              .discoverNamespaces(
-                  DiscoverNamespacesRequest.newBuilder().setTarget(target).build())
+              .discoverNamespaces(DiscoverNamespacesRequest.newBuilder().setTarget(target).build())
               .await()
               .indefinitely();
 
