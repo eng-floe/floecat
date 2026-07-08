@@ -30,29 +30,29 @@ import java.util.Map;
 import java.util.Objects;
 
 @ApplicationScoped
-public class SnapshotCreateSequenceStore {
-  private static final String STATE_PREFIX = "seq:";
+public class SnapshotCreateCounterStore {
+  private static final String STATE_PREFIX = "counter:";
 
   private final PointerStore pointerStore;
 
   @Inject
-  public SnapshotCreateSequenceStore(PointerStore pointerStore) {
+  public SnapshotCreateCounterStore(PointerStore pointerStore) {
     this.pointerStore = Objects.requireNonNull(pointerStore, "pointerStore");
   }
 
-  public record CreateTarget(String accountId) {}
+  public record CreateIncrement(String accountId) {}
 
-  public List<PointerStore.CasOp> planCreateOps(List<CreateTarget> targets) {
-    if (targets == null || targets.isEmpty()) {
+  public List<PointerStore.CasOp> planIncrementOps(List<CreateIncrement> increments) {
+    if (increments == null || increments.isEmpty()) {
       return List.of();
     }
 
     Map<String, Integer> createsByAccount = new LinkedHashMap<>();
-    for (CreateTarget target : targets) {
-      if (target == null) {
+    for (CreateIncrement increment : increments) {
+      if (increment == null) {
         continue;
       }
-      createsByAccount.merge(target.accountId(), 1, Integer::sum);
+      createsByAccount.merge(increment.accountId(), 1, Integer::sum);
     }
 
     List<PointerStore.CasOp> ops = new ArrayList<>();
@@ -63,45 +63,45 @@ public class SnapshotCreateSequenceStore {
         continue;
       }
 
-      String stateKey = Keys.snapshotCreateSequenceStatePointer(accountId);
+      String stateKey = Keys.snapshotCreateCounterStatePointer(accountId);
       Pointer state = pointerStore.get(stateKey).orElse(null);
       long expectedVersion = state == null ? 0L : state.getVersion();
-      long lastSequence = state == null ? 0L : parseStateSequence(state, stateKey);
-      long nextLastSequence = lastSequence + createCount;
+      long currentCounter = state == null ? 0L : parseStateCounter(state, stateKey);
+      long nextCounter = currentCounter + createCount;
 
       ops.add(
           new PointerStore.CasUpsert(
               stateKey,
               expectedVersion,
               PointerReferences.opaqueMarkerPointer(
-                  stateKey, STATE_PREFIX + nextLastSequence, expectedVersion + 1L)));
+                  stateKey, STATE_PREFIX + nextCounter, expectedVersion + 1L)));
     }
     return ops;
   }
 
-  public long currentSequence(String accountId) {
-    String stateKey = Keys.snapshotCreateSequenceStatePointer(accountId);
+  public long currentCounter(String accountId) {
+    String stateKey = Keys.snapshotCreateCounterStatePointer(accountId);
     return pointerStore
         .get(stateKey)
-        .map(pointer -> parseStateSequence(pointer, stateKey))
+        .map(pointer -> parseStateCounter(pointer, stateKey))
         .orElse(0L);
   }
 
-  private static long parseStateSequence(Pointer pointer, String stateKey) {
+  private static long parseStateCounter(Pointer pointer, String stateKey) {
     if (!PointerReferences.isOpaqueMarkerPointer(pointer)) {
       throw new BaseResourceRepository.CorruptionException(
-          "snapshot create sequence state has wrong pointer kind: " + stateKey);
+          "snapshot create counter state has wrong pointer kind: " + stateKey);
     }
     String payload = pointer.getBlobUri();
     if (payload == null || !payload.startsWith(STATE_PREFIX)) {
       throw new BaseResourceRepository.CorruptionException(
-          "snapshot create sequence state has invalid payload: " + stateKey);
+          "snapshot create counter state has invalid payload: " + stateKey);
     }
     try {
       return Long.parseLong(payload.substring(STATE_PREFIX.length()));
     } catch (NumberFormatException e) {
       throw new BaseResourceRepository.CorruptionException(
-          "snapshot create sequence state is not numeric: " + stateKey, e);
+          "snapshot create counter state is not numeric: " + stateKey, e);
     }
   }
 }

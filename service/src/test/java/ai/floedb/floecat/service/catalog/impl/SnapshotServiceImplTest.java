@@ -21,7 +21,7 @@ import static org.mockito.Mockito.*;
 
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
-import ai.floedb.floecat.catalog.rpc.GetSnapshotCreateSequenceRequest;
+import ai.floedb.floecat.catalog.rpc.GetSnapshotCreateCounterRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
@@ -692,7 +692,7 @@ class SnapshotServiceImplTest {
   }
 
   @Test
-  void getSnapshotCreateSequenceReturnsPointerStoreSequence() {
+  void getSnapshotCreateCounterReturnsPointerStoreCounter() {
     var svc = new SnapshotServiceImpl();
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
@@ -709,14 +709,14 @@ class SnapshotServiceImplTest {
     when(pc.getAccountId()).thenReturn("acct");
     doNothing().when(svc.authz).require(any(), anyString());
 
-    when(svc.snapshotRepo.currentCreateSequence("acct")).thenReturn(12L);
+    when(svc.snapshotRepo.currentSnapshotCreateCounter("acct")).thenReturn(12L);
 
     var resp =
-        svc.getSnapshotCreateSequence(GetSnapshotCreateSequenceRequest.newBuilder().build())
+        svc.getSnapshotCreateCounter(GetSnapshotCreateCounterRequest.newBuilder().build())
             .await()
             .indefinitely();
 
-    assertEquals(12L, resp.getCurrentAccountCreateSequence());
+    assertEquals(12L, resp.getCurrentAccountSnapshotCreateCounter());
     verify(svc.authz).require(eq(pc), eq("table.read"));
   }
 

@@ -23,7 +23,7 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.service.repo.impl.SnapshotCreateSequenceStore;
+import ai.floedb.floecat.service.repo.impl.SnapshotCreateCounterStore;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -140,7 +140,7 @@ class TransactionIntentApplierSupportTest {
   }
 
   @Test
-  void applyTransactionBestEffortAdvancesSnapshotCreateSequenceForNewSnapshot() throws Exception {
+  void applyTransactionBestEffortAdvancesSnapshotCreateCounterForNewSnapshot() throws Exception {
     var pointers = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
@@ -193,8 +193,8 @@ class TransactionIntentApplierSupportTest {
     var outcome = support.applyTransactionBestEffort(List.of(byId, byTime), intentRepo);
 
     assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
-    var createSequences = new SnapshotCreateSequenceStore(pointers);
-    assertEquals(1L, createSequences.currentSequence(accountId));
+    var createCounters = new SnapshotCreateCounterStore(pointers);
+    assertEquals(1L, createCounters.currentCounter(accountId));
   }
 
   @Test

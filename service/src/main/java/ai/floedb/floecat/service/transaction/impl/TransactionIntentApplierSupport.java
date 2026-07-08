@@ -23,7 +23,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
-import ai.floedb.floecat.service.repo.impl.SnapshotCreateSequenceStore;
+import ai.floedb.floecat.service.repo.impl.SnapshotCreateCounterStore;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -89,7 +89,7 @@ public class TransactionIntentApplierSupport {
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject CatalogOverlay overlay;
-  @Inject SnapshotCreateSequenceStore snapshotCreateSequenceStore;
+  @Inject SnapshotCreateCounterStore snapshotCreateCounterStore;
 
   public boolean isTableByIdPointer(String pointerKey) {
     return pointerKey != null && pointerKey.contains("/tables/by-id/");
@@ -281,9 +281,9 @@ public class TransactionIntentApplierSupport {
       }
     }
 
-    ApplyOutcome sequenceOutcome = appendSnapshotCreateSequenceOps(intents, touchedKeys, ops);
-    if (sequenceOutcome.status != ApplyStatus.APPLIED) {
-      return sequenceOutcome;
+    ApplyOutcome counterOutcome = appendSnapshotCreateCounterOps(intents, touchedKeys, ops);
+    if (counterOutcome.status != ApplyStatus.APPLIED) {
+      return counterOutcome;
     }
     if (ops.size() > MAX_POINTER_TXN_OPS) {
       return ApplyOutcome.conflict(
@@ -342,9 +342,9 @@ public class TransactionIntentApplierSupport {
       }
     }
 
-    ApplyOutcome sequenceOutcome = appendSnapshotCreateSequenceOps(intents, touchedKeys, ops);
-    if (sequenceOutcome.status != ApplyStatus.APPLIED) {
-      return sequenceOutcome;
+    ApplyOutcome counterOutcome = appendSnapshotCreateCounterOps(intents, touchedKeys, ops);
+    if (counterOutcome.status != ApplyStatus.APPLIED) {
+      return counterOutcome;
     }
     if (ops.size() > MAX_POINTER_TXN_OPS - 1) {
       return ApplyOutcome.conflict(
@@ -1021,9 +1021,9 @@ public class TransactionIntentApplierSupport {
     return null;
   }
 
-  private ApplyOutcome appendSnapshotCreateSequenceOps(
+  private ApplyOutcome appendSnapshotCreateCounterOps(
       List<TransactionIntent> intents, Set<String> touchedKeys, List<PointerStore.CasOp> ops) {
-    List<SnapshotCreateSequenceStore.CreateTarget> targets = new ArrayList<>();
+    List<SnapshotCreateCounterStore.CreateIncrement> increments = new ArrayList<>();
     Set<String> seenSnapshotPointers = new HashSet<>();
     for (TransactionIntent intent : intents) {
       if (intent == null || !isSnapshotByIdPointer(intent.getTargetPointerKey())) {
@@ -1057,14 +1057,14 @@ public class TransactionIntentApplierSupport {
       if (!seenSnapshotPointers.add(expectedPointerKey)) {
         continue;
       }
-      targets.add(
-          new SnapshotCreateSequenceStore.CreateTarget(snapshot.getTableId().getAccountId()));
+      increments.add(
+          new SnapshotCreateCounterStore.CreateIncrement(snapshot.getTableId().getAccountId()));
     }
-    if (targets.isEmpty()) {
+    if (increments.isEmpty()) {
       return ApplyOutcome.applied();
     }
 
-    for (PointerStore.CasOp op : snapshotCreateSequences().planCreateOps(targets)) {
+    for (PointerStore.CasOp op : snapshotCreateCounters().planIncrementOps(increments)) {
       ApplyOutcome outcome = addOp(op, casOpKey(op), touchedKeys, ops);
       if (outcome.status != ApplyStatus.APPLIED) {
         return outcome;
@@ -1073,10 +1073,10 @@ public class TransactionIntentApplierSupport {
     return ApplyOutcome.applied();
   }
 
-  private SnapshotCreateSequenceStore snapshotCreateSequences() {
-    return snapshotCreateSequenceStore != null
-        ? snapshotCreateSequenceStore
-        : new SnapshotCreateSequenceStore(pointerStore);
+  private SnapshotCreateCounterStore snapshotCreateCounters() {
+    return snapshotCreateCounterStore != null
+        ? snapshotCreateCounterStore
+        : new SnapshotCreateCounterStore(pointerStore);
   }
 
   private boolean isSnapshotByIdPointer(String pointerKey) {

@@ -64,9 +64,11 @@ message GetSnapshotResponse {
   Snapshot snapshot = 1;
 }
 
-message GetSnapshotCreateSequenceRequest {}
-message GetSnapshotCreateSequenceResponse {
-  int64 current_account_create_sequence = 1;
+message GetSnapshotCreateCounterRequest {}
+message GetSnapshotCreateCounterResponse {
+  // Account-scoped high-water counter for committed snapshot creates.
+  // This is not stored on snapshot blobs and is not a per-snapshot field.
+  int64 current_account_snapshot_create_counter = 1;
 }
 
 message GetCurrentSnapshotPointerRequest {
@@ -124,8 +126,8 @@ message UpdateSnapshotResponse {
 service SnapshotService {
   rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
   rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
-  rpc GetSnapshotCreateSequence(GetSnapshotCreateSequenceRequest)
-      returns (GetSnapshotCreateSequenceResponse);
+  rpc GetSnapshotCreateCounter(GetSnapshotCreateCounterRequest)
+      returns (GetSnapshotCreateCounterResponse);
   rpc GetCurrentSnapshotPointer(GetCurrentSnapshotPointerRequest)
       returns (GetCurrentSnapshotPointerResponse);
   rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);

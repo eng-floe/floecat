@@ -57,7 +57,7 @@ public class SnapshotRepository {
 
   private final GenericResourceRepository<Snapshot, SnapshotKey> repo;
   private final PointerStore pointerStore;
-  private final SnapshotCreateSequenceStore createSequences;
+  private final SnapshotCreateCounterStore createCounters;
   private final TableRepository tableRepo;
   private final CurrentSnapshotPointerRepository currentPointerRepo;
   private final Clock clock;
@@ -77,7 +77,7 @@ public class SnapshotRepository {
             Snapshot::toByteArray,
             "application/x-protobuf");
     this.pointerStore = pointerStore;
-    this.createSequences = new SnapshotCreateSequenceStore(pointerStore);
+    this.createCounters = new SnapshotCreateCounterStore(pointerStore);
     this.tableRepo = tableRepo;
     this.currentPointerRepo = currentPointerRepo;
     this.clock = Clock.systemUTC();
@@ -107,7 +107,7 @@ public class SnapshotRepository {
             Snapshot::toByteArray,
             "application/x-protobuf");
     this.pointerStore = pointerStore;
-    this.createSequences = new SnapshotCreateSequenceStore(pointerStore);
+    this.createCounters = new SnapshotCreateCounterStore(pointerStore);
     this.tableRepo = tableRepo;
     this.currentPointerRepo = currentPointerRepo;
     this.clock = clock;
@@ -124,9 +124,9 @@ public class SnapshotRepository {
         ops.add(new PointerStore.CasUpsert(pointerKey, 0L, snapshotPointer(pointerKey, blobUri)));
       }
       ops.addAll(
-          createSequences.planCreateOps(
+          createCounters.planIncrementOps(
               List.of(
-                  new SnapshotCreateSequenceStore.CreateTarget(
+                  new SnapshotCreateCounterStore.CreateIncrement(
                       snapshot.getTableId().getAccountId()))));
 
       if (pointerStore.compareAndSetBatch(ops)) {
@@ -144,7 +144,7 @@ public class SnapshotRepository {
       return;
     }
     throw new BaseResourceRepository.AbortRetryableException(
-        "snapshot create sequence conflict for: "
+        "snapshot create counter conflict for: "
             + Keys.snapshotPointerById(
                 snapshot.getTableId().getAccountId(),
                 snapshot.getTableId().getId(),
@@ -385,8 +385,8 @@ public class SnapshotRepository {
     return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
-  public long currentCreateSequence(String accountId) {
-    return createSequences.currentSequence(accountId);
+  public long currentSnapshotCreateCounter(String accountId) {
+    return createCounters.currentCounter(accountId);
   }
 
   public int count(ResourceId tableId) {

@@ -158,7 +158,7 @@ class SnapshotRepositoryTest {
   }
 
   @Test
-  void createAdvancesAccountSnapshotCreateSequenceInPointerStore() {
+  void createAdvancesAccountSnapshotCreateCounterInPointerStore() {
     String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var firstTable =
         ResourceId.newBuilder()
@@ -176,11 +176,11 @@ class SnapshotRepositoryTest {
     seedSnapshot(snapshotRepo, account, firstTable, 10, clock.millis(), clock.millis() - 20_000);
     seedSnapshot(snapshotRepo, account, secondTable, 20, clock.millis(), clock.millis() - 10_000);
 
-    assertEquals(2L, snapshotRepo.currentCreateSequence(account));
+    assertEquals(2L, snapshotRepo.currentSnapshotCreateCounter(account));
   }
 
   @Test
-  void duplicateIdenticalSnapshotCreateDoesNotAllocateNewCreateSequence() {
+  void duplicateIdenticalSnapshotCreateDoesNotAdvanceCreateCounter() {
     String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var tableRid =
         ResourceId.newBuilder()
@@ -199,7 +199,7 @@ class SnapshotRepositoryTest {
     snapshotRepo.create(snapshot);
     snapshotRepo.create(snapshot);
 
-    assertEquals(1L, snapshotRepo.currentCreateSequence(account));
+    assertEquals(1L, snapshotRepo.currentSnapshotCreateCounter(account));
   }
 
   @Test

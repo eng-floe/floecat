@@ -485,7 +485,7 @@ public final class Keys {
     return String.format("/accounts/%s/tables/%s/snapshots/by-time/", encode(tid), encode(tbid));
   }
 
-  public static String snapshotCreateSequenceStatePointer(String accountId) {
+  public static String snapshotCreateCounterStatePointer(String accountId) {
     String tid = req("account_id", accountId);
     return String.format("/accounts/%s/snapshots/creates/state", encode(tid));
   }
