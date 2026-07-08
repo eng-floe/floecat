@@ -322,43 +322,7 @@ class MetaGraphTest {
     when(system.resolveNamespace(any(NameRef.class), eq(context)))
         .thenReturn(Optional.of(namespaceId));
 
-    TableNode systemNode =
-        new TableNode() {
-          @Override
-          public ResourceId namespaceId() {
-            return namespaceId;
-          }
-
-          @Override
-          public String displayName() {
-            return "sys_t";
-          }
-
-          @Override
-          public ResourceId id() {
-            return sysTable;
-          }
-
-          @Override
-          public long version() {
-            return 1;
-          }
-
-          @Override
-          public Instant metadataUpdatedAt() {
-            return Instant.EPOCH;
-          }
-
-          @Override
-          public GraphNodeOrigin origin() {
-            return GraphNodeOrigin.SYSTEM;
-          }
-
-          @Override
-          public Map<EngineHintKey, EngineHint> engineHints() {
-            return Map.of();
-          }
-        };
+    TableNode systemNode = prefixSystemTable(sysTable, namespaceId, "sys_t");
 
     when(system.listRelationsInNamespace(ResourceId.getDefaultInstance(), namespaceId, context))
         .thenReturn(List.of(systemNode));
@@ -395,43 +359,7 @@ class MetaGraphTest {
     when(system.resolveNamespace(any(NameRef.class), eq(context)))
         .thenReturn(Optional.of(namespaceId));
 
-    TableNode systemNode =
-        new TableNode() {
-          @Override
-          public ResourceId namespaceId() {
-            return namespaceId;
-          }
-
-          @Override
-          public String displayName() {
-            return "system_table";
-          }
-
-          @Override
-          public ResourceId id() {
-            return sysTable;
-          }
-
-          @Override
-          public long version() {
-            return 1;
-          }
-
-          @Override
-          public Instant metadataUpdatedAt() {
-            return Instant.EPOCH;
-          }
-
-          @Override
-          public GraphNodeOrigin origin() {
-            return GraphNodeOrigin.SYSTEM;
-          }
-
-          @Override
-          public Map<EngineHintKey, EngineHint> engineHints() {
-            return Map.of();
-          }
-        };
+    TableNode systemNode = prefixSystemTable(sysTable, namespaceId, "system_table");
 
     when(system.listRelationsInNamespace(ResourceId.getDefaultInstance(), namespaceId, context))
         .thenReturn(List.of(systemNode));

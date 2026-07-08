@@ -41,13 +41,12 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.testsupport.TestNodes;
+import ai.floedb.floecat.service.testsupport.TestPrincipals;
 import ai.floedb.floecat.stats.spi.StatsStore;
-import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import java.time.Instant;
-import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -125,11 +124,7 @@ class SnapshotServiceImplTest {
     when(svc.tableRepo.update(any(Table.class), eq(7L))).thenReturn(true);
 
     // principal/authz plumbing
-    var pc = mock(PrincipalContext.class);
-    when(svc.principal.get()).thenReturn(pc);
-    when(pc.getCorrelationId()).thenReturn("corr");
-    when(pc.getAccountId()).thenReturn("acct");
-    doNothing().when(svc.authz).require(any(), anyString());
+    var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 
     // snapshot repo behavior: no existing
     when(svc.snapshotRepo.getById(eq(tableId), anyLong())).thenReturn(Optional.empty());
@@ -156,7 +151,7 @@ class SnapshotServiceImplTest {
   @Test
   void createSnapshotRejectsSystemTableBeforeSnapshotRepoWrite() {
     var tableId = tableId("sys_snapshot_create");
-    var svc = serviceWithVisibleTable(tableId, systemTableNode(tableId));
+    var svc = serviceWithVisibleTable(tableId, TestNodes.systemTableNode(tableId));
 
     StatusRuntimeException ex =
         assertThrows(
@@ -181,7 +176,7 @@ class SnapshotServiceImplTest {
   @Test
   void updateSnapshotRejectsSystemTableBeforeSnapshotRepoWrite() {
     var tableId = tableId("sys_snapshot_update");
-    var svc = serviceWithVisibleTable(tableId, systemTableNode(tableId));
+    var svc = serviceWithVisibleTable(tableId, TestNodes.systemTableNode(tableId));
 
     StatusRuntimeException ex =
         assertThrows(
@@ -207,7 +202,7 @@ class SnapshotServiceImplTest {
   @Test
   void deleteSnapshotRejectsSystemTableBeforeSnapshotRepoWrite() {
     var tableId = tableId("sys_snapshot_delete");
-    var svc = serviceWithVisibleTable(tableId, systemTableNode(tableId));
+    var svc = serviceWithVisibleTable(tableId, TestNodes.systemTableNode(tableId));
 
     StatusRuntimeException ex =
         assertThrows(
@@ -253,11 +248,7 @@ class SnapshotServiceImplTest {
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(7L).build());
     when(svc.tableRepo.update(any(Table.class), eq(7L))).thenReturn(true);
 
-    var pc = mock(PrincipalContext.class);
-    when(svc.principal.get()).thenReturn(pc);
-    when(pc.getCorrelationId()).thenReturn("corr");
-    when(pc.getAccountId()).thenReturn("acct");
-    doNothing().when(svc.authz).require(any(), anyString());
+    var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 
     when(svc.snapshotRepo.getById(eq(tableId), anyLong())).thenReturn(Optional.empty());
     doNothing().when(svc.snapshotRepo).create(any(Snapshot.class));
@@ -309,11 +300,7 @@ class SnapshotServiceImplTest {
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(7L).build());
     when(svc.tableRepo.update(any(Table.class), eq(7L))).thenReturn(true);
 
-    var pc = mock(PrincipalContext.class);
-    when(svc.principal.get()).thenReturn(pc);
-    when(pc.getCorrelationId()).thenReturn("corr");
-    when(pc.getAccountId()).thenReturn("acct");
-    doNothing().when(svc.authz).require(any(), anyString());
+    var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 
     when(svc.snapshotRepo.getById(eq(tableId), eq(123L))).thenReturn(Optional.empty());
     doNothing().when(svc.snapshotRepo).create(any(Snapshot.class));
@@ -357,11 +344,7 @@ class SnapshotServiceImplTest {
     var tableRow = Table.newBuilder().setResourceId(tableId).build();
     when(svc.tableRepo.getById(eq(tableId))).thenReturn(Optional.of(tableRow));
 
-    var pc = mock(PrincipalContext.class);
-    when(svc.principal.get()).thenReturn(pc);
-    when(pc.getCorrelationId()).thenReturn("corr");
-    when(pc.getAccountId()).thenReturn("acct");
-    doNothing().when(svc.authz).require(any(), anyString());
+    var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 
     when(svc.snapshotRepo.getById(eq(tableId), eq(100L))).thenReturn(Optional.empty());
     when(svc.snapshotRepo.getById(eq(tableId), eq(200L)))
@@ -416,11 +399,7 @@ class SnapshotServiceImplTest {
     when(svc.tableRepo.getById(eq(tableId)))
         .thenReturn(Optional.of(Table.newBuilder().setResourceId(tableId).build()));
 
-    var pc = mock(PrincipalContext.class);
-    when(svc.principal.get()).thenReturn(pc);
-    when(pc.getCorrelationId()).thenReturn("corr");
-    when(pc.getAccountId()).thenReturn("acct");
-    doNothing().when(svc.authz).require(any(), anyString());
+    var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 
     when(svc.snapshotRepo.getById(eq(tableId), eq(123L))).thenReturn(Optional.empty());
     doNothing().when(svc.snapshotRepo).create(any(Snapshot.class));
@@ -704,24 +683,9 @@ class SnapshotServiceImplTest {
 
     when(svc.overlay.resolve(eq(tableId))).thenReturn(Optional.of(node));
 
-    var pc = mock(PrincipalContext.class);
-    when(svc.principal.get()).thenReturn(pc);
-    when(pc.getCorrelationId()).thenReturn("corr");
-    when(pc.getAccountId()).thenReturn("acct");
-    doNothing().when(svc.authz).require(any(), anyString());
+    var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 
     return svc;
-  }
-
-  private static SystemTableNode systemTableNode(ResourceId tableId) {
-    var namespaceId =
-        ResourceId.newBuilder()
-            .setAccountId(tableId.getAccountId())
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .setId("sys_ns_" + tableId.getId())
-            .build();
-    return new SystemTableNode.EngineSystemTableNode(
-        tableId, 1L, Instant.EPOCH, "engine", "system_table", namespaceId, List.of(), null, null);
   }
 
   private static ResourceId tableId(String id) {

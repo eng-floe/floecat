@@ -17,15 +17,11 @@ package ai.floedb.floecat.service.catalog.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.PutIndexArtifactsRequest;
-import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
@@ -34,13 +30,12 @@ import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.testsupport.TestNodes;
+import ai.floedb.floecat.service.testsupport.TestPrincipals;
 import ai.floedb.floecat.storage.spi.BlobStore;
-import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.smallrye.mutiny.Multi;
-import java.time.Instant;
-import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
@@ -64,12 +59,8 @@ class TableIndexServiceImplTest {
             .setId("sys_index_table")
             .build();
 
-    when(svc.overlay.resolve(tableId)).thenReturn(Optional.of(systemTableNode(tableId)));
-    var pc = mock(PrincipalContext.class);
-    when(svc.principal.get()).thenReturn(pc);
-    when(pc.getCorrelationId()).thenReturn("corr");
-    when(pc.getAccountId()).thenReturn("acct");
-    doNothing().when(svc.authz).require(any(), anyString());
+    when(svc.overlay.resolve(tableId)).thenReturn(Optional.of(TestNodes.systemTableNode(tableId)));
+    var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 
     var request =
         PutIndexArtifactsRequest.newBuilder().setTableId(tableId).setSnapshotId(123L).build();
@@ -81,16 +72,5 @@ class TableIndexServiceImplTest {
 
     assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
     verifyNoInteractions(svc.snapshots, svc.indexArtifacts, svc.blobStore, svc.idempotencyStore);
-  }
-
-  private static SystemTableNode systemTableNode(ResourceId tableId) {
-    var namespaceId =
-        ResourceId.newBuilder()
-            .setAccountId(tableId.getAccountId())
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .setId("sys_ns_" + tableId.getId())
-            .build();
-    return new SystemTableNode.EngineSystemTableNode(
-        tableId, 1L, Instant.EPOCH, "engine", "system_table", namespaceId, List.of(), null, null);
   }
 }
