@@ -22,9 +22,12 @@ import jakarta.enterprise.inject.Instance;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import org.jboss.logging.Logger;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
 final class RefreshingDynamoCaller {
+  private static final Logger LOG = Logger.getLogger(RefreshingDynamoCaller.class);
+
   private volatile Binding binding;
 
   void bind(
@@ -51,6 +54,8 @@ final class RefreshingDynamoCaller {
       } catch (RuntimeException e) {
         if (currentBinding.supportsRefresh()
             && ClosedAwsClientDetector.isConnectionPoolShutdown(e)) {
+          LOG.warnf(
+              e, "DynamoDB connection pool shutdown in %s; refreshing client", callerContext());
           currentBinding.clientFailureHandler().accept(client, e);
           if (attempt == 0) {
             currentBinding = binding(dynamoDbClientManager);
@@ -91,4 +96,19 @@ final class RefreshingDynamoCaller {
       Supplier<DynamoDbClient> dynamoDbSupplier,
       BiConsumer<DynamoDbClient, Throwable> clientFailureHandler,
       boolean supportsRefresh) {}
+
+  private static String callerContext() {
+    String wrapperClassName = RefreshingDynamoCaller.class.getName();
+    for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
+      String className = frame.getClassName();
+      if (className.equals(Thread.class.getName()) || className.equals(wrapperClassName)) {
+        continue;
+      }
+      if (className.startsWith(wrapperClassName + "$")) {
+        continue;
+      }
+      return className + "." + frame.getMethodName();
+    }
+    return "unknown";
+  }
 }

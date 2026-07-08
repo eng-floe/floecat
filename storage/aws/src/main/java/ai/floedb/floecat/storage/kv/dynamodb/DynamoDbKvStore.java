@@ -33,11 +33,14 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import org.jboss.logging.Logger;
 import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
 public final class DynamoDbKvStore implements KvStore, KvAttributes {
+  private static final Logger LOG = Logger.getLogger(DynamoDbKvStore.class);
+
   static final int DELETE_BATCH_LIMIT = Integer.getInteger("floedb.floecat.delete.batch.size", 25);
   private final Supplier<DynamoDbAsyncClient> ddb;
   private final BiConsumer<DynamoDbAsyncClient, Throwable> clientFailureHandler;
@@ -213,15 +216,23 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
           .onFailure()
           .recoverWithUni(
               failure -> {
-                clientFailureHandler.accept(client, failure);
                 if (shouldRefreshAndRetry(failure, attempt)) {
+                  LOG.warnf(
+                      failure,
+                      "DynamoDB async connection pool shutdown in %s; refreshing client",
+                      callerContext());
+                  clientFailureHandler.accept(client, failure);
                   return dynamo(operation, attempt + 1);
                 }
                 return Uni.createFrom().failure(failure);
               });
     } catch (Throwable failure) {
-      clientFailureHandler.accept(client, failure);
       if (shouldRefreshAndRetry(failure, attempt)) {
+        LOG.warnf(
+            failure,
+            "DynamoDB async connection pool shutdown in %s; refreshing client",
+            callerContext());
+        clientFailureHandler.accept(client, failure);
         return dynamo(operation, attempt + 1);
       }
       throw failure;
@@ -234,8 +245,12 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
       try {
         return operation.apply(client);
       } catch (Throwable failure) {
-        clientFailureHandler.accept(client, failure);
         if (shouldRefreshAndRetry(failure, attempt)) {
+          LOG.warnf(
+              failure,
+              "DynamoDB async connection pool shutdown in %s; refreshing client",
+              callerContext());
+          clientFailureHandler.accept(client, failure);
           continue;
         }
         throw failure;
@@ -247,6 +262,21 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
     return supportsClientRefresh
         && attempt == 0
         && ClosedAwsClientDetector.isConnectionPoolShutdown(failure);
+  }
+
+  private static String callerContext() {
+    String wrapperClassName = DynamoDbKvStore.class.getName();
+    for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
+      String className = frame.getClassName();
+      if (className.equals(Thread.class.getName()) || className.equals(wrapperClassName)) {
+        continue;
+      }
+      if (className.startsWith(wrapperClassName + "$")) {
+        continue;
+      }
+      return className + "." + frame.getMethodName();
+    }
+    return "unknown";
   }
 
   // ---- KvStore (reads)
@@ -572,7 +602,6 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
   }
 
   void listTableIfExists(String header) {
-    DynamoDbAsyncClient client = ddb();
     try {
       var req =
           ScanRequest.builder()
@@ -580,7 +609,15 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
               .limit(100) // keep logs sane
               .build();
 
-      var resp = client.scan(req).get();
+      var resp =
+          dynamoBlocking(
+              client -> {
+                try {
+                  return client.scan(req).get();
+                } catch (Exception e) {
+                  throw new RuntimeException(e);
+                }
+              });
 
       System.out.println("\n=== DUMP TABLE: " + this.table + " " + header + " ===");
 
@@ -596,14 +633,9 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
       System.out.println("=== END TABLE DUMP ===\n");
 
-    } catch (ExecutionException e) {
-      clientFailureHandler.accept(client, e);
+    } catch (RuntimeException e) {
       // Table probably does not exist — safe to ignore in tests
       System.out.println("Table not found: " + this.table);
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      clientFailureHandler.accept(client, e);
-      throw new RuntimeException(e);
     }
   }
 

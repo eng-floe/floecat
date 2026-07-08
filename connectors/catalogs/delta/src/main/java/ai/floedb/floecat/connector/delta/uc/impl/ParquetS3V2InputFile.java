@@ -21,14 +21,13 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import org.apache.parquet.io.InputFile;
 import org.apache.parquet.io.SeekableInputStream;
-import software.amazon.awssdk.services.s3.S3Client;
 
 public class ParquetS3V2InputFile implements InputFile {
   private final S3RangeReader reader;
   private final String bucket;
   private final String key;
 
-  ParquetS3V2InputFile(S3Client s3, String s3Uri) {
+  ParquetS3V2InputFile(DeltaS3ClientPool s3, String s3Uri) {
     var u = URI.create(s3Uri.startsWith("s3a://") ? "s3://" + s3Uri.substring(6) : s3Uri);
     this.bucket = u.getHost();
     this.key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();

@@ -128,7 +128,7 @@ final class IcebergConnectorFactory {
         Catalog tableCatalog = catalogLease.tableCatalog();
         try {
           if (source == IcebergSource.GLUE) {
-            var glue = AwsGlueClientFactory.create(props, authProps);
+            var glue = AwsGlueClientFactory.createRefreshing(props, authProps);
             var glueFilter = new GlueIcebergFilter(glue);
             yield new IcebergGlueConnector(
                 "iceberg-glue",

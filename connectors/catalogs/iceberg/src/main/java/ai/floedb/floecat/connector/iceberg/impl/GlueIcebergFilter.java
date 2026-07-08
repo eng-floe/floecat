@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.iceberg.impl;
 
+import ai.floedb.floecat.connector.common.aws.RefreshingAwsClient;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -23,9 +24,9 @@ import software.amazon.awssdk.services.glue.GlueClient;
 import software.amazon.awssdk.services.glue.model.GetTablesRequest;
 
 final class GlueIcebergFilter {
-  private final GlueClient glue;
+  private final RefreshingAwsClient<GlueClient> glue;
 
-  GlueIcebergFilter(GlueClient glue) {
+  GlueIcebergFilter(RefreshingAwsClient<GlueClient> glue) {
     this.glue = glue;
   }
 
@@ -40,7 +41,7 @@ final class GlueIcebergFilter {
         builder.nextToken(token);
       }
 
-      var response = glue.getTables(builder.build());
+      var response = glue.callUnchecked(client -> client.getTables(builder.build()));
       for (var table : response.tableList()) {
         var parameters = table.parameters();
         if (parameters != null) {
@@ -68,7 +69,7 @@ final class GlueIcebergFilter {
         builder.nextToken(token);
       }
 
-      var response = glue.getTables(builder.build());
+      var response = glue.callUnchecked(client -> client.getTables(builder.build()));
       for (var table : response.tableList()) {
         var parameters = table.parameters();
         if (parameters != null) {

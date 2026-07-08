@@ -102,7 +102,7 @@ final class DeltaConnectorFactory {
             tableName);
       }
       case GLUE -> {
-        var glue = AwsGlueClientFactory.create(effectiveOptions, effectiveAuthProps);
+        var glue = AwsGlueClientFactory.createRefreshing(effectiveOptions, effectiveAuthProps);
         yield new DeltaGlueConnector(
             "delta-glue",
             new GlueDeltaCatalog(glue),
@@ -179,21 +179,25 @@ final class DeltaConnectorFactory {
     boolean pathStyle =
         Boolean.parseBoolean(resolveOption(options, "s3.path-style-access", "false"));
 
-    var s3Builder =
-        S3Client.builder()
-            .region(region)
-            .serviceConfiguration(
-                S3Configuration.builder().pathStyleAccessEnabled(pathStyle).build())
-            .credentialsProvider(resolveCredentials(options));
+    var credentials = resolveCredentials(options);
 
     String endpoint = resolveOption(options, "s3.endpoint", null);
-    if (endpoint != null && !endpoint.isBlank()) {
-      s3Builder.endpointOverride(URI.create(endpoint));
-    }
-
-    var s3 = s3Builder.build();
-    Engine engine = DefaultEngine.create(new S3V2FileSystemClient(s3));
-    Function<String, InputFile> inputFn = p -> new ParquetS3V2InputFile(s3, p);
+    var s3Pool =
+        new DeltaS3ClientPool(
+            () -> {
+              var s3Builder =
+                  S3Client.builder()
+                      .region(region)
+                      .serviceConfiguration(
+                          S3Configuration.builder().pathStyleAccessEnabled(pathStyle).build())
+                      .credentialsProvider(credentials);
+              if (endpoint != null && !endpoint.isBlank()) {
+                s3Builder.endpointOverride(URI.create(endpoint));
+              }
+              return s3Builder.build();
+            });
+    Engine engine = DefaultEngine.create(new S3V2FileSystemClient(s3Pool));
+    Function<String, InputFile> inputFn = p -> new ParquetS3V2InputFile(s3Pool, p);
     return new EngineContext(engine, inputFn);
   }
 

@@ -175,8 +175,51 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
           result.message);
     }
 
-    List<ReconcileSnapshotTask> snapshotTasks =
-        snapshotTasksForSuccessfulPlan(principal, connectorId, payload, tableExecution);
+    List<ReconcileSnapshotTask> snapshotTasks;
+    try {
+      snapshotTasks =
+          snapshotTasksForSuccessfulPlan(principal, connectorId, payload, tableExecution);
+    } catch (Exception e) {
+      Exception classified =
+          e instanceof ReconcileFailureException failure
+              ? failure
+              : ReconcileFailureClassifier.normalize(e);
+      ReconcileTableTask task =
+          payload.tableTask() == null ? ReconcileTableTask.empty() : payload.tableTask();
+      LOG.warnf(
+          classified,
+          "PLAN_TABLE snapshot planning failed jobId=%s connectorId=%s tableId=%s source=%s.%s"
+              + " captureMode=%s fullRescan=%s failureKind=%s retryDisposition=%s retryClass=%s"
+              + " message=%s rootCause=%s",
+          lease.jobId,
+          connectorId,
+          task.destinationTableId(),
+          task.sourceNamespace(),
+          task.sourceTable(),
+          payload.captureMode(),
+          payload.fullRescan(),
+          failureKindOf(classified),
+          retryDispositionOf(classified),
+          retryClassOf(classified),
+          blankToEmpty(classified.getMessage()),
+          rootCauseMessage(classified));
+      workerClient.submitPlanTableFailure(
+          remoteLease,
+          failureKindOf(classified),
+          retryDispositionOf(classified),
+          retryClassOf(classified),
+          blankToEmpty(classified.getMessage()));
+      return ExecutionResult.failure(
+          result.tablesScanned,
+          result.tablesChanged,
+          result.viewsScanned,
+          result.viewsChanged,
+          1,
+          result.snapshotsProcessed,
+          result.statsProcessed,
+          blankToEmpty(classified.getMessage()),
+          classified);
+    }
     List<PlannedSnapshotJob> snapshotJobs =
         snapshotTasks.stream().map(task -> new PlannedSnapshotJob(payload.scope(), task)).toList();
     context.beforeHandledCompletion().run();
@@ -304,6 +347,49 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
 
   private String workerAuthorizationHeader(String accountId) {
     return reconcileWorkerAuthProvider.authorizationHeader(accountId).orElse(null);
+  }
+
+  private static String rootCauseMessage(Throwable error) {
+    Throwable root = rootCause(error);
+    if (root == null) {
+      return "";
+    }
+    String message = root.getMessage();
+    return message == null || message.isBlank() ? root.getClass().getSimpleName() : message;
+  }
+
+  private static Throwable rootCause(Throwable error) {
+    var seen = new java.util.HashSet<Throwable>();
+    Throwable cur = error;
+    Throwable last = null;
+    while (cur != null && !seen.contains(cur)) {
+      seen.add(cur);
+      last = cur;
+      cur = cur.getCause();
+    }
+    return last;
+  }
+
+  private static String blankToEmpty(String value) {
+    return value == null ? "" : value;
+  }
+
+  private static ExecutionResult.FailureKind failureKindOf(Throwable error) {
+    return error instanceof ReconcileFailureException failure
+        ? failure.failureKind()
+        : ExecutionResult.FailureKind.INTERNAL;
+  }
+
+  private static ExecutionResult.RetryDisposition retryDispositionOf(Throwable error) {
+    return error instanceof ReconcileFailureException failure
+        ? failure.retryDisposition()
+        : ExecutionResult.RetryDisposition.RETRYABLE;
+  }
+
+  private static ExecutionResult.RetryClass retryClassOf(Throwable error) {
+    return error instanceof ReconcileFailureException failure
+        ? failure.retryClass()
+        : ExecutionResult.RetryClass.TRANSIENT_ERROR;
   }
 
   private static ReconcileTableTask resolvedTableTaskForSnapshotPlanning(
