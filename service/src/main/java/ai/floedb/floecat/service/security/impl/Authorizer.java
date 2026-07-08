@@ -27,9 +27,7 @@ public class Authorizer {
     if (principalContext.getPermissionsList().contains(permission)) {
       return;
     }
-    throw Status.PERMISSION_DENIED
-        .withDescription("missing permission: " + permission)
-        .asRuntimeException();
+    throw denied(principalContext, "missing permission: " + permission);
   }
 
   public void require(PrincipalContext principalContext, List<String> permissions) {
@@ -38,8 +36,25 @@ public class Authorizer {
         return;
       }
     }
-    throw Status.PERMISSION_DENIED
-        .withDescription("missing permissions: " + permissions)
-        .asRuntimeException();
+    throw denied(principalContext, "missing permissions: " + permissions);
+  }
+
+  /**
+   * The exact default instance is not a caller that lacks a grant — it is a caller whose identity
+   * never arrived (interceptor bypassed, or the call context lost before authorization;
+   * eng-floe/floecat#361): every channel degrades to {@link PrincipalContext#getDefaultInstance} on
+   * a total miss, while every auth path populates at least a subject, account id, or correlation
+   * id. Reporting the default instance as UNAUTHENTICATED instead of PERMISSION_DENIED keeps the
+   * next propagation bug diagnosable, without re-coding any legitimately-denied principal a future
+   * auth mode might produce (even one with a blank subject and no permissions, as long as it
+   * carries any other field).
+   */
+  private static RuntimeException denied(PrincipalContext principalContext, String detail) {
+    if (PrincipalContext.getDefaultInstance().equals(principalContext)) {
+      return Status.UNAUTHENTICATED
+          .withDescription("no authenticated principal on this call (" + detail + ")")
+          .asRuntimeException();
+    }
+    return Status.PERMISSION_DENIED.withDescription(detail).asRuntimeException();
   }
 }

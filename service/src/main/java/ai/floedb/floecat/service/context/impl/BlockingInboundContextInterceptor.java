@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.context.impl;
 
+import ai.floedb.floecat.service.common.GrpcInterceptorPriorities;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import io.grpc.Metadata;
 import io.grpc.ServerCall;
@@ -24,16 +25,15 @@ import io.grpc.ServerInterceptor;
 import io.quarkus.grpc.GlobalInterceptor;
 import io.quarkus.oidc.TenantIdentityProvider;
 import io.vertx.core.Vertx;
-import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.spi.Prioritized;
 import jakarta.inject.Inject;
 import java.util.Optional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @ApplicationScoped
 @GlobalInterceptor
-@Priority(0) // Must run before other interceptors
-public class BlockingInboundContextInterceptor implements ServerInterceptor {
+public class BlockingInboundContextInterceptor implements ServerInterceptor, Prioritized {
   private final ServerInterceptor delegate;
 
   @Inject
@@ -81,5 +81,16 @@ public class BlockingInboundContextInterceptor implements ServerInterceptor {
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
       ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
     return delegate.interceptCall(call, headers, next);
+  }
+
+  /**
+   * Highest of floecat's interceptors so this one runs outermost among them (higher = outer; see
+   * {@link GrpcInterceptorPriorities}): the call context and MDC must be populated before
+   * telemetry/logging read them. Only the {@code Prioritized} interface is honored by Quarkus's
+   * interceptor comparator — a {@code @Priority} annotation is silently ignored.
+   */
+  @Override
+  public int getPriority() {
+    return GrpcInterceptorPriorities.INBOUND_CONTEXT;
   }
 }

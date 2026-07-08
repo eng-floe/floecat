@@ -69,6 +69,14 @@ public final class EngineContextProvider {
     String kind = Optional.ofNullable(InboundContextInterceptor.ENGINE_KIND_KEY.get()).orElse("");
     String version =
         Optional.ofNullable(InboundContextInterceptor.ENGINE_VERSION_KEY.get()).orElse("");
-    return EngineContext.of(kind, version);
+    EngineContext fallback = EngineContext.of(kind, version);
+    if (!fallback.hasEngineKind()) {
+      // MDC carrying an engine kind proves the request declared an engine, so an empty engine
+      // context here is the exact condition that silently un-resolves engine-gated system
+      // objects (eng-floe/floecat#361).
+      ResolvedCallContexts.warnOnChannelDisagreement(
+          "floecat_engine_kind", "no channel carries an engine context");
+    }
+    return fallback;
   }
 }

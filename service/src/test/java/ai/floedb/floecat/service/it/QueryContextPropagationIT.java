@@ -400,8 +400,12 @@ class QueryContextPropagationIT {
       fail(label + " stress did not complete within " + TIMEOUT_SECONDS + "s");
     }
 
-    int permissionDenied =
-        failuresByCode.getOrDefault(Status.Code.PERMISSION_DENIED, new AtomicInteger()).get();
+    // Both codes mark a lost call context: PERMISSION_DENIED was the historical form (empty
+    // principal reaching authz), UNAUTHENTICATED is the loud form after the Authorizer learned to
+    // distinguish a missing identity from a missing grant.
+    int contextLosses =
+        failuresByCode.getOrDefault(Status.Code.PERMISSION_DENIED, new AtomicInteger()).get()
+            + failuresByCode.getOrDefault(Status.Code.UNAUTHENTICATED, new AtomicInteger()).get();
 
     StringBuilder summary = new StringBuilder();
     summary
@@ -423,16 +427,17 @@ class QueryContextPropagationIT {
         });
     System.out.println(summary);
 
-    if (permissionDenied > 0) {
+    if (contextLosses > 0) {
       fail(
           "Context propagation failure: "
-              + permissionDenied
+              + contextLosses
               + "/"
               + total
               + " "
               + label
-              + " calls returned PERMISSION_DENIED — the principal context was lost between the"
-              + " inbound interceptor and the service body running on a Mutiny worker. "
+              + " calls returned PERMISSION_DENIED or UNAUTHENTICATED — the principal context was"
+              + " lost between the inbound interceptor and the service body running on a Mutiny"
+              + " worker. "
               + summary);
     }
 
