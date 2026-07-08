@@ -77,9 +77,13 @@ public class FullyQualifiedResolver {
 
     int max = Math.min(names.size(), normalizeLimit(limit));
     List<QualifiedRelation> out = new ArrayList<>(max);
+    var memo =
+        new ScopeMemo(
+            name -> catalogByName(cid, accountId, name),
+            (catalog, path) -> namespaceByPath(cid, accountId, catalog, path));
 
     for (int i = 0; i < max; i++) {
-      var tblEntry = resolveTableEntry(cid, accountId, names.get(i));
+      var tblEntry = resolveTableEntry(memo, cid, accountId, names.get(i));
       if (tblEntry.isPresent()) {
         out.add(tblEntry.get());
       }
@@ -99,9 +103,13 @@ public class FullyQualifiedResolver {
 
     int max = Math.min(names.size(), normalizeLimit(limit));
     List<QualifiedRelation> out = new ArrayList<>(max);
+    var memo =
+        new ScopeMemo(
+            name -> catalogByName(cid, accountId, name),
+            (catalog, path) -> namespaceByPath(cid, accountId, catalog, path));
 
     for (int i = 0; i < max; i++) {
-      var viewEntry = resolveViewEntry(cid, accountId, names.get(i));
+      var viewEntry = resolveViewEntry(memo, cid, accountId, names.get(i));
       if (viewEntry.isPresent()) {
         out.add(viewEntry.get());
       }
@@ -233,18 +241,19 @@ public class FullyQualifiedResolver {
   // Internal helpers (canonical entry resolution)
   // ----------------------------------------------------------------------
 
-  private Optional<QualifiedRelation> resolveTableEntry(String cid, String accountId, NameRef ref) {
+  private Optional<QualifiedRelation> resolveTableEntry(
+      ScopeMemo memo, String cid, String accountId, NameRef ref) {
 
     validateNameRef(cid, ref);
     validateRelationName(cid, ref, "table");
 
-    Optional<Catalog> catalogOpt = catalogByName(cid, accountId, ref.getCatalog());
+    Optional<Catalog> catalogOpt = memo.catalog(ref.getCatalog());
     if (catalogOpt.isEmpty()) {
       return Optional.empty();
     }
     Catalog catalog = catalogOpt.get();
 
-    Optional<Namespace> nsOpt = namespaceByPath(cid, accountId, catalog, ref.getPathList());
+    Optional<Namespace> nsOpt = memo.namespace(catalog, ref.getPathList());
     if (nsOpt.isEmpty()) {
       return Optional.empty();
     }
@@ -267,18 +276,19 @@ public class FullyQualifiedResolver {
             });
   }
 
-  private Optional<QualifiedRelation> resolveViewEntry(String cid, String accountId, NameRef ref) {
+  private Optional<QualifiedRelation> resolveViewEntry(
+      ScopeMemo memo, String cid, String accountId, NameRef ref) {
 
     validateNameRef(cid, ref);
     validateRelationName(cid, ref, "view");
 
-    Optional<Catalog> catalogOpt = catalogByName(cid, accountId, ref.getCatalog());
+    Optional<Catalog> catalogOpt = memo.catalog(ref.getCatalog());
     if (catalogOpt.isEmpty()) {
       return Optional.empty();
     }
     Catalog catalog = catalogOpt.get();
 
-    Optional<Namespace> nsOpt = namespaceByPath(cid, accountId, catalog, ref.getPathList());
+    Optional<Namespace> nsOpt = memo.namespace(catalog, ref.getPathList());
     if (nsOpt.isEmpty()) {
       return Optional.empty();
     }

@@ -196,6 +196,16 @@ public class QueryInputResolver {
         new ResolutionState(
             correlationId, asOfDefault, defaultCatalog, currentSnapshotPinCache, diag);
 
+    // Batch-resolve all NAME inputs up front: names sharing a catalog/namespace resolve their
+    // scope once instead of once per input.
+    List<NameRef> nameInputs =
+        inputs.stream()
+            .filter(in -> in.getTargetCase() == QueryInput.TargetCase.NAME)
+            .map(QueryInput::getName)
+            .toList();
+    Map<NameRef, Optional<ResourceId>> resolvedNames =
+        nameInputs.isEmpty() ? Map.of() : metadataGraph.resolveNames(correlationId, nameInputs);
+
     for (QueryInput in : inputs) {
       diag.count("pin.resolver_inputs");
       SnapshotRef override = in.getSnapshot();
@@ -205,8 +215,8 @@ public class QueryInputResolver {
           diag.count("pin.name_inputs");
           long nameResolveStartNs = System.nanoTime();
           ResourceId rid =
-              metadataGraph
-                  .resolveName(correlationId, in.getName())
+              resolvedNames
+                  .getOrDefault(in.getName(), Optional.empty())
                   .orElseThrow(
                       () ->
                           GrpcErrors.notFound(
@@ -352,17 +362,28 @@ public class QueryInputResolver {
     state.diagnostics.nanos("pin.view_node_resolve", System.nanoTime() - viewResolveStartNs);
     view.ifPresent(
         resolvedView -> {
-          for (var base : resolvedView.baseRelations()) {
+          // Batch-resolve the view's base relations: bases typically share the view's
+          // catalog/namespace, so the scope resolves once for the whole set.
+          List<NameRef> baseRefs =
+              resolvedView.baseRelations().stream()
+                  .map(
+                      base ->
+                          ViewContextUtils.enrichForViewContext(
+                              base, resolvedView, state.defaultCatalog.orElse("")))
+                  .toList();
+          if (baseRefs.isEmpty()) {
+            return;
+          }
+          long baseNameStartNs = System.nanoTime();
+          Map<NameRef, Optional<ResourceId>> baseIds =
+              metadataGraph.resolveNames(state.correlationId, baseRefs);
+          state.diagnostics.nanos(
+              "pin.view_base_name_resolve", System.nanoTime() - baseNameStartNs);
+          for (NameRef baseRef : baseRefs) {
             state.diagnostics.count("pin.view_base_name_resolutions");
-            long baseNameStartNs = System.nanoTime();
-            Optional<ResourceId> baseId =
-                metadataGraph.resolveName(
-                    state.correlationId,
-                    ViewContextUtils.enrichForViewContext(
-                        base, resolvedView, state.defaultCatalog.orElse("")));
-            state.diagnostics.nanos(
-                "pin.view_base_name_resolve", System.nanoTime() - baseNameStartNs);
-            baseId.ifPresent(rid -> collectBaseTables(state, rid, effectiveAsOf, seen));
+            baseIds
+                .getOrDefault(baseRef, Optional.empty())
+                .ifPresent(rid -> collectBaseTables(state, rid, effectiveAsOf, seen));
           }
         });
   }

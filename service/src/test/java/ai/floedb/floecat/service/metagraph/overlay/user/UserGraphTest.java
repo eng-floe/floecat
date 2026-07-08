@@ -285,6 +285,45 @@ class UserGraphTest {
   }
 
   @Test
+  void resolveHydratesFromAFreshPointerNotAStaleCachedMeta() {
+    // Node cache disabled + meta cache enabled: every resolve reaches the hydration path while the
+    // meta cache stays warm — the exact condition under which a stale cached meta (a per-process
+    // cache with no cross-instance invalidation) could hydrate an old-but-still-readable blob.
+    UserGraph g =
+        new UserGraph(
+            catalogRepository,
+            namespaceRepository,
+            snapshotRepository,
+            tableRepository,
+            viewRepository,
+            observability,
+            principalProvider,
+            0L, // node cache disabled
+            null);
+
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid("account", "ns", ResourceKind.RK_NAMESPACE);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("account")
+            .setId("table-stale")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    tableRepository.put(
+        tableWithSchema(tableId, catalogId, namespaceId, "{\"v\":1}"), blobMeta(1L, "blob/v1"));
+    assertThat(schemaOf(g, tableId)).contains("\"v\":1");
+
+    // Cross-instance-style update: the pointer now names blob/v2, but blob/v1 is still readable and
+    // this instance's meta cache still holds v1. Hydration must read the fresh pointer, not trust
+    // the cached meta's blob URI.
+    tableRepository.put(
+        tableWithSchema(tableId, catalogId, namespaceId, "{\"v\":2}"), blobMeta(2L, "blob/v2"));
+
+    assertThat(schemaOf(g, tableId)).contains("\"v\":2");
+  }
+
+  @Test
   void graphLoadRecordsLatency() {
     var ids = seedTable("load-metric", "{}");
     UserTableNode node = graph.table(ids.tableId()).orElseThrow();
@@ -826,6 +865,36 @@ class UserGraphTest {
             .setNanos(updatedAt.getNano())
             .build();
     return MutationMeta.newBuilder().setPointerVersion(version).setUpdatedAt(ts).build();
+  }
+
+  private static MutationMeta blobMeta(long version, String blobUri) {
+    return MutationMeta.newBuilder()
+        .setPointerVersion(version)
+        .setBlobUri(blobUri)
+        .setUpdatedAt(Timestamp.newBuilder().setSeconds(version).build())
+        .build();
+  }
+
+  private static Table tableWithSchema(
+      ResourceId tableId, ResourceId catalogId, ResourceId namespaceId, String schemaJson) {
+    return Table.newBuilder()
+        .setResourceId(tableId)
+        .setCatalogId(catalogId)
+        .setNamespaceId(namespaceId)
+        .setDisplayName("orders")
+        .setSchemaJson(schemaJson)
+        .setUpstream(
+            UpstreamRef.newBuilder()
+                .setFormat(TableFormat.TF_ICEBERG)
+                .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+                .setUri("s3://x")
+                .build())
+        .build();
+  }
+
+  private static String schemaOf(UserGraph g, ResourceId tableId) {
+    UserTableNode node = g.table(tableId).orElseThrow();
+    return g.schemaJsonFor("corr", node, null);
   }
 
   private static ResourceId rid(String account, String id, ResourceKind kind) {

@@ -397,7 +397,15 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected MutationMeta readMetaOrDefault(String pointerKey, String blobUri, Timestamp nowTs) {
-    var pointerOpt = pointerStore.get(pointerKey);
+    return readMetaOrDefault(pointerStore.get(pointerKey), pointerKey, blobUri, nowTs);
+  }
+
+  /**
+   * Meta assembly for callers that already hold the canonical pointer — avoids re-reading the
+   * pointer that was fetched moments earlier to derive {@code blobUri}.
+   */
+  protected MutationMeta readMetaOrDefault(
+      Optional<Pointer> pointerOpt, String pointerKey, String blobUri, Timestamp nowTs) {
     var header = blobStore.head(blobUri);
     long version = pointerOpt.map(Pointer::getVersion).orElse(0L);
     String etag = header.map(BlobHeader::getEtag).orElse("");

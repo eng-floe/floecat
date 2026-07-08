@@ -79,32 +79,37 @@ public class NodeLoader {
     return catalogRepository.listIds(accountId);
   }
 
+  // These fetch the pointer-only meta once and hydrate from the blob it names (via load), rather
+  // than reading the canonical pointer twice — once in getById and again in pointerMetaForSafe.
+  // Called per-item in listing loops, so the extra pointer read added up.
+
   public Optional<NamespaceNode> namespace(ResourceId id) {
     if (id.getKind() != ResourceKind.RK_NAMESPACE) return Optional.empty();
-    return namespaceRepository
-        .getById(id)
-        .map(ns -> toNamespaceNode(ns, namespaceRepository.metaForSafe(id)));
+    return mutationMeta(id).flatMap(meta -> load(id, meta)).map(NamespaceNode.class::cast);
   }
 
   public Optional<UserTableNode> table(ResourceId id) {
     if (id.getKind() != ResourceKind.RK_TABLE) return Optional.empty();
-    return tableRepository.getById(id).map(t -> toTableNode(t, tableRepository.metaForSafe(id)));
+    return mutationMeta(id).flatMap(meta -> load(id, meta)).map(UserTableNode.class::cast);
   }
 
   public Optional<ViewNode> view(ResourceId id) {
     if (id.getKind() != ResourceKind.RK_VIEW) return Optional.empty();
-    return viewRepository.getById(id).map(v -> toViewNode(v, viewRepository.metaForSafe(id)));
+    return mutationMeta(id).flatMap(meta -> load(id, meta)).map(ViewNode.class::cast);
   }
 
-  /** Loads the mutation metadata for the provided resource. */
+  /**
+   * Loads the mutation metadata for the provided resource. Graph consumers only use the pointer
+   * version (cache key) and timestamps, so this is a pointer-only read — no blob HEAD, blank etag.
+   */
   public Optional<MutationMeta> mutationMeta(ResourceId id) {
     try {
       ResourceKind kind = id.getKind();
       return switch (kind) {
-        case RK_CATALOG -> Optional.of(catalogRepository.metaForSafe(id));
-        case RK_NAMESPACE -> Optional.of(namespaceRepository.metaForSafe(id));
-        case RK_TABLE -> Optional.of(tableRepository.metaForSafe(id));
-        case RK_VIEW -> Optional.of(viewRepository.metaForSafe(id));
+        case RK_CATALOG -> Optional.of(catalogRepository.pointerMetaForSafe(id));
+        case RK_NAMESPACE -> Optional.of(namespaceRepository.pointerMetaForSafe(id));
+        case RK_TABLE -> Optional.of(tableRepository.pointerMetaForSafe(id));
+        case RK_VIEW -> Optional.of(viewRepository.pointerMetaForSafe(id));
         default -> Optional.empty();
       };
     } catch (StorageNotFoundException snf) {
@@ -112,14 +117,35 @@ public class NodeLoader {
     }
   }
 
-  /** Rehydrates the relation node for the provided metadata snapshot. */
+  /**
+   * Rehydrates the relation node for the provided metadata snapshot. The metadata already names the
+   * blob, so the blob is fetched directly — skipping the pointer re-read {@code getById} would do —
+   * and the node content stays consistent with the metadata's pointer version. Falls back to a
+   * pointer-based read when the blob has moved (e.g. updated and garbage-collected in between).
+   */
   public Optional<GraphNode> load(ResourceId id, MutationMeta meta) {
+    String blobUri = meta.getBlobUri();
     return switch (id.getKind()) {
-      case RK_CATALOG -> catalogRepository.getById(id).map(catalog -> toCatalogNode(catalog, meta));
+      case RK_CATALOG ->
+          catalogRepository
+              .getByBlobUri(blobUri)
+              .or(() -> catalogRepository.getById(id))
+              .map(catalog -> toCatalogNode(catalog, meta));
       case RK_NAMESPACE ->
-          namespaceRepository.getById(id).map(namespace -> toNamespaceNode(namespace, meta));
-      case RK_TABLE -> tableRepository.getById(id).map(table -> toTableNode(table, meta));
-      case RK_VIEW -> viewRepository.getById(id).map(view -> toViewNode(view, meta));
+          namespaceRepository
+              .getByBlobUri(blobUri)
+              .or(() -> namespaceRepository.getById(id))
+              .map(namespace -> toNamespaceNode(namespace, meta));
+      case RK_TABLE ->
+          tableRepository
+              .getByBlobUri(blobUri)
+              .or(() -> tableRepository.getById(id))
+              .map(table -> toTableNode(table, meta));
+      case RK_VIEW ->
+          viewRepository
+              .getByBlobUri(blobUri)
+              .or(() -> viewRepository.getById(id))
+              .map(view -> toViewNode(view, meta));
       default -> Optional.empty();
     };
   }

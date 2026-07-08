@@ -33,6 +33,9 @@ import java.util.Optional;
 public final class FakeViewRepository extends ViewRepository {
   private final Map<ResourceId, View> entries = new HashMap<>();
   private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
+  // blobUri -> view, so the getByBlobUri hydration fast path is exercised (put() does not touch the
+  // real blob store).
+  private final Map<String, View> byBlob = new HashMap<>();
 
   public FakeViewRepository() {
     super(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -41,6 +44,9 @@ public final class FakeViewRepository extends ViewRepository {
   public void put(View view, MutationMeta meta) {
     entries.put(view.getResourceId(), view);
     metas.put(view.getResourceId(), meta);
+    if (meta != null && meta.getBlobUri() != null && !meta.getBlobUri().isBlank()) {
+      byBlob.put(meta.getBlobUri(), view);
+    }
   }
 
   public void putMeta(ResourceId id, MutationMeta meta) {
@@ -73,6 +79,14 @@ public final class FakeViewRepository extends ViewRepository {
   @Override
   public Optional<View> getById(ResourceId id) {
     return Optional.ofNullable(entries.get(id));
+  }
+
+  @Override
+  public Optional<View> getByBlobUri(String blobUri) {
+    if (blobUri != null && byBlob.containsKey(blobUri)) {
+      return Optional.of(byBlob.get(blobUri));
+    }
+    return super.getByBlobUri(blobUri);
   }
 
   @Override
@@ -120,6 +134,12 @@ public final class FakeViewRepository extends ViewRepository {
       throw new StorageNotFoundException("missing view meta");
     }
     return meta;
+  }
+
+  @Override
+  public MutationMeta pointerMetaForSafe(ResourceId id) {
+    // The fake's meta map is the single source of truth for both meta variants.
+    return metaForSafe(id);
   }
 
   private List<View> matchingViews(String accountId, String catalogId, String namespaceId) {

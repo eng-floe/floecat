@@ -305,6 +305,32 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     return system.isPresent() ? system : userGraph.resolveName(correlationId, ref);
   }
 
+  /**
+   * Batch kind-agnostic name resolution: system names answer from the in-memory registry; the rest
+   * resolve through the user graph in one batch so names sharing a catalog/namespace resolve their
+   * scope once.
+   */
+  @Override
+  public Map<NameRef, Optional<ResourceId>> resolveNames(String correlationId, List<NameRef> refs) {
+    EngineContext ctx = engineContext();
+    var out = new LinkedHashMap<NameRef, Optional<ResourceId>>(refs.size());
+    var userRefs = new ArrayList<NameRef>(refs.size());
+    for (NameRef ref : refs) {
+      if (out.containsKey(ref)) {
+        continue;
+      }
+      Optional<ResourceId> system = systemGraph.resolveName(ref, ctx);
+      out.put(ref, system);
+      if (system.isEmpty()) {
+        userRefs.add(ref);
+      }
+    }
+    if (!userRefs.isEmpty()) {
+      out.putAll(userGraph.resolveNames(correlationId, userRefs));
+    }
+    return out;
+  }
+
   @Override
   public Optional<ResourceId> resolveSystemTable(NameRef ref) {
     EngineContext ctx = engineContext();
@@ -341,8 +367,13 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
       ResourceId tableId,
       SnapshotRef override,
       Optional<Timestamp> asOfDefault) {
-    // System objects don't need snapshot pins
-    if (resolve(tableId).filter(SystemTableNode.class::isInstance).isPresent()) {
+    // System objects don't need snapshot pins. The system graph is an in-memory registry, so probe
+    // it directly instead of the merged resolve, which would hydrate the full user node from
+    // storage just to conclude the table is not a system table.
+    if (systemGraph
+        .resolve(tableId, engineContext())
+        .filter(SystemTableNode.class::isInstance)
+        .isPresent()) {
       return null;
     }
     return userGraph.snapshotPinFor(correlationId, tableId, override, asOfDefault);
@@ -362,31 +393,7 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
   @Override
   public ResolveResult batchResolveTables(
       String correlationId, List<NameRef> items, int limit, String token) {
-
-    validateListToken(correlationId, token);
-
-    if (items == null || items.isEmpty()) {
-      return new ResolveResult(List.of(), 0, "");
-    }
-
-    EngineContext ctx = engineContext();
-    int max = Math.min(items.size(), normalizeLimit(limit));
-
-    List<NameRef> subset = items.subList(0, max);
-    Map<String, CatalogOverlay.QualifiedRelation> merged =
-        collectSystemRelationsForNames(subset, ctx, true);
-
-    List<NameRef> userRefs = unresolvedUserRefs(subset, merged);
-    if (!userRefs.isEmpty() && merged.size() < max) {
-      ResolveResult userResult =
-          toResolveResult(
-              userGraph.resolveTables(correlationId, userRefs, max - merged.size(), token));
-      for (CatalogOverlay.QualifiedRelation userRelation : userResult.relations()) {
-        merged.put(canonicalName(userRelation.name()), userRelation);
-      }
-    }
-
-    return new ResolveResult(new ArrayList<>(merged.values()), merged.size(), "");
+    return batchResolveRelations(correlationId, items, limit, token, true);
   }
 
   /**
@@ -418,6 +425,16 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
   @Override
   public ResolveResult batchResolveViews(
       String correlationId, List<NameRef> items, int limit, String token) {
+    return batchResolveRelations(correlationId, items, limit, token, false);
+  }
+
+  /**
+   * Shared list-resolution behind {@link #batchResolveTables} and {@link #batchResolveViews}:
+   * system names answer from the in-memory registry (aliased back to the user-facing catalog), the
+   * rest resolve through the user graph.
+   */
+  private ResolveResult batchResolveRelations(
+      String correlationId, List<NameRef> items, int limit, String token, boolean tables) {
 
     validateListToken(correlationId, token);
 
@@ -430,13 +447,15 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
 
     List<NameRef> subset = items.subList(0, max);
     Map<String, CatalogOverlay.QualifiedRelation> merged =
-        collectSystemRelationsForNames(subset, ctx, false);
+        collectSystemRelationsForNames(subset, ctx, tables);
 
     List<NameRef> userRefs = unresolvedUserRefs(subset, merged);
     if (!userRefs.isEmpty() && merged.size() < max) {
       ResolveResult userResult =
           toResolveResult(
-              userGraph.resolveViews(correlationId, userRefs, max - merged.size(), token));
+              tables
+                  ? userGraph.resolveTables(correlationId, userRefs, max - merged.size(), token)
+                  : userGraph.resolveViews(correlationId, userRefs, max - merged.size(), token));
       for (CatalogOverlay.QualifiedRelation userRelation : userResult.relations()) {
         merged.put(canonicalName(userRelation.name()), userRelation);
       }

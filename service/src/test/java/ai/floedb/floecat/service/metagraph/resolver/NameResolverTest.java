@@ -117,6 +117,19 @@ class NameResolverTest {
   }
 
   @Test
+  void resolveRelationIdsBlankNameDoesNotPoisonValidSibling() {
+    // Regression: a blank-name ref processed first must not cache an empty scope under the
+    // name-independent (catalog + path) memo key and starve a valid sibling in the same batch.
+    NameRef blank = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("").build();
+    NameRef valid = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("orders").build();
+
+    var resolved = resolver.resolveRelationIds("account", List.of(blank, valid));
+
+    assertThat(resolved.get(blank)).isEmpty();
+    assertThat(resolved.get(valid)).hasValueSatisfying(r -> assertThat(r.getId()).isEqualTo("tbl"));
+  }
+
+  @Test
   void listTableIdsCollectsAcrossNamespaces() {
     ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
 

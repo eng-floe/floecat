@@ -136,4 +136,15 @@ public class ViewRepository {
   public MutationMeta metaForSafe(ResourceId viewResourceId) {
     return repo.metaForSafe(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
   }
+
+  /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
+  public MutationMeta pointerMetaForSafe(ResourceId viewResourceId) {
+    return repo.pointerMetaForSafe(
+        new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
+  }
+
+  /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
+  public Optional<View> getByBlobUri(String blobUri) {
+    return repo.getByBlobUri(blobUri);
+  }
 }

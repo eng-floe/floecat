@@ -109,6 +109,23 @@ public class TableRepository {
     return refs;
   }
 
+  /**
+   * Reads the shared, kind-agnostic relation-name claim ({@link Keys#relationPointerByName}) and
+   * returns the owning relation's id — kind {@code RK_TABLE} or {@code RK_VIEW} — in one pointer
+   * read, with no blob fetch. Tables and views both reserve this claim on create/rename, so a hit
+   * answers kind-agnostic name resolution outright. Empty when the claim is absent (rows created
+   * before the claim existed) or carries no owner; callers must then fall back to the kind-specific
+   * by-name probes.
+   */
+  public Optional<ResourceId> relationNameClaim(
+      String accountId, String catalogId, String namespaceId, String name) {
+    return repo.refByPointer(Keys.relationPointerByName(accountId, catalogId, namespaceId, name))
+        .map(p -> p.getResourceId())
+        .filter(rid -> !rid.getId().isEmpty())
+        .filter(
+            rid -> rid.getKind() == ResourceKind.RK_TABLE || rid.getKind() == ResourceKind.RK_VIEW);
+  }
+
   /** Reads exact by-name table pointers and returns refs without fetching blobs from S3. */
   public List<RelationRef> listRefsByName(
       String accountId, String catalogId, String namespaceId, Set<String> names) {
@@ -153,5 +170,16 @@ public class TableRepository {
 
   public MutationMeta metaForSafe(ResourceId tableResourceId) {
     return repo.metaForSafe(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
+  }
+
+  /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
+  public MutationMeta pointerMetaForSafe(ResourceId tableResourceId) {
+    return repo.pointerMetaForSafe(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
+  }
+
+  /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
+  public Optional<Table> getByBlobUri(String blobUri) {
+    return repo.getByBlobUri(blobUri);
   }
 }

@@ -206,4 +206,15 @@ public class NamespaceRepository {
     return repo.metaForSafe(
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
   }
+
+  /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
+  public MutationMeta pointerMetaForSafe(ResourceId namespaceResourceId) {
+    return repo.pointerMetaForSafe(
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
+  }
+
+  /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
+  public Optional<Namespace> getByBlobUri(String blobUri) {
+    return repo.getByBlobUri(blobUri);
+  }
 }

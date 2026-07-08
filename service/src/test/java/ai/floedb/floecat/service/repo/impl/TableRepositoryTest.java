@@ -194,6 +194,30 @@ class TableRepositoryTest {
   }
 
   @Test
+  void relationNameClaimResolvesTableAndViewInOnePointerRead() {
+    ResourceId tableId = createTable("sales", "us", "orders");
+    Table table = tableRepo.getById(tableId).orElseThrow();
+    String catalogId = table.getCatalogId().getId();
+    String namespaceId = table.getNamespaceId().getId();
+
+    var claimedTable = tableRepo.relationNameClaim(account, catalogId, namespaceId, "orders");
+    assertTrue(claimedTable.isPresent());
+    assertEquals(tableId.getId(), claimedTable.get().getId());
+    assertEquals(ResourceKind.RK_TABLE, claimedTable.get().getKind());
+
+    ViewRepository viewRepo = new ViewRepository(ptr, blobs);
+    View metrics = view(table.getCatalogId(), table.getNamespaceId(), "metrics");
+    viewRepo.create(metrics);
+
+    var claimedView = tableRepo.relationNameClaim(account, catalogId, namespaceId, "metrics");
+    assertTrue(claimedView.isPresent());
+    assertEquals(metrics.getResourceId().getId(), claimedView.get().getId());
+    assertEquals(ResourceKind.RK_VIEW, claimedView.get().getKind());
+
+    assertTrue(tableRepo.relationNameClaim(account, catalogId, namespaceId, "absent").isEmpty());
+  }
+
+  @Test
   void relationClaimReleasedOnDeleteFreesNameForOtherKind() {
     ResourceId tableId = createTable("sales", "us", "orders");
     Table table = tableRepo.getById(tableId).orElseThrow();

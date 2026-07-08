@@ -98,6 +98,17 @@ public class CatalogRepository {
         new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
+  /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
+  public MutationMeta pointerMetaForSafe(ResourceId catalogResourceId) {
+    return repo.pointerMetaForSafe(
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
+  }
+
+  /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
+  public Optional<Catalog> getByBlobUri(String blobUri) {
+    return repo.getByBlobUri(blobUri);
+  }
+
   public List<ResourceId> listIds(String accountId) {
     String prefix = Keys.catalogPointerByNamePrefix(accountId);
     List<Catalog> catalogs = repo.listByPrefix(prefix, Integer.MAX_VALUE, "", new StringBuilder());
