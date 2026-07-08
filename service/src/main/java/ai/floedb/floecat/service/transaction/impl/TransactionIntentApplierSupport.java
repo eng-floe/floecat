@@ -18,15 +18,20 @@ package ai.floedb.floecat.service.transaction.impl;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
+import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
@@ -81,6 +86,7 @@ public class TransactionIntentApplierSupport {
 
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
+  @Inject CatalogOverlay overlay;
 
   public boolean isTableByIdPointer(String pointerKey) {
     return pointerKey != null && pointerKey.contains("/tables/by-id/");
@@ -411,6 +417,12 @@ public class TransactionIntentApplierSupport {
     if (targetValidation.status != ApplyStatus.APPLIED) {
       return targetValidation;
     }
+    ApplyOutcome writeEligibility =
+        validateTableWriteEligibility(
+            nextTable, /* checkExistingTable= */ current != null, /* checkTargetScope= */ true);
+    if (writeEligibility.status != ApplyStatus.APPLIED) {
+      return writeEligibility;
+    }
 
     String nextTableId = nextTable.getResourceId().getId();
     String newNameKey =
@@ -443,6 +455,19 @@ public class TransactionIntentApplierSupport {
       return newNameOutcome;
     }
 
+    String newRelationKey =
+        Keys.relationPointerByName(
+            nextTable.getResourceId().getAccountId(),
+            nextTable.getCatalogId().getId(),
+            nextTable.getNamespaceId().getId(),
+            nextTable.getDisplayName());
+    ApplyOutcome newClaimOutcome =
+        buildRelationClaimUpsertOp(
+            newRelationKey, nextTable.getResourceId(), intent.getBlobUri(), touchedKeys, ops);
+    if (newClaimOutcome.status != ApplyStatus.APPLIED) {
+      return newClaimOutcome;
+    }
+
     if (current != null) {
       Table oldTable = readTable(current.getBlobUri());
       if (oldTable == null) {
@@ -459,6 +484,18 @@ public class TransactionIntentApplierSupport {
             buildOwnedNameDeleteOp(oldNameKey, oldTable.getResourceId().getId(), touchedKeys, ops);
         if (oldNameOutcome.status != ApplyStatus.APPLIED) {
           return oldNameOutcome;
+        }
+        String oldRelationKey =
+            Keys.relationPointerByName(
+                oldTable.getResourceId().getAccountId(),
+                oldTable.getCatalogId().getId(),
+                oldTable.getNamespaceId().getId(),
+                oldTable.getDisplayName());
+        ApplyOutcome oldClaimOutcome =
+            buildOwnedRelationClaimDeleteOp(
+                oldRelationKey, oldTable.getResourceId().getId(), touchedKeys, ops);
+        if (oldClaimOutcome.status != ApplyStatus.APPLIED) {
+          return oldClaimOutcome;
         }
       }
     }
@@ -484,6 +521,12 @@ public class TransactionIntentApplierSupport {
     if (targetValidation.status != ApplyStatus.APPLIED) {
       return targetValidation;
     }
+    ApplyOutcome writeEligibility =
+        validateTableWriteEligibility(
+            currentTable, /* checkExistingTable= */ true, /* checkTargetScope= */ false);
+    if (writeEligibility.status != ApplyStatus.APPLIED) {
+      return writeEligibility;
+    }
 
     long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
     ApplyOutcome deletePrimary =
@@ -502,7 +545,19 @@ public class TransactionIntentApplierSupport {
             currentTable.getCatalogId().getId(),
             currentTable.getNamespaceId().getId(),
             currentTable.getDisplayName());
-    return buildOwnedNameDeleteOp(nameKey, currentTable.getResourceId().getId(), touchedKeys, ops);
+    ApplyOutcome nameDelete =
+        buildOwnedNameDeleteOp(nameKey, currentTable.getResourceId().getId(), touchedKeys, ops);
+    if (nameDelete.status != ApplyStatus.APPLIED) {
+      return nameDelete;
+    }
+    String relationKey =
+        Keys.relationPointerByName(
+            currentTable.getResourceId().getAccountId(),
+            currentTable.getCatalogId().getId(),
+            currentTable.getNamespaceId().getId(),
+            currentTable.getDisplayName());
+    return buildOwnedRelationClaimDeleteOp(
+        relationKey, currentTable.getResourceId().getId(), touchedKeys, ops);
   }
 
   private ApplyOutcome planConnectorIntentOps(
@@ -608,6 +663,68 @@ public class TransactionIntentApplierSupport {
     return ApplyOutcome.applied();
   }
 
+  /**
+   * Evaluates whether a table intent may be applied. The two checks are orthogonal: {@code
+   * checkExistingTable} verifies the table row itself is user-owned and writable (used when the
+   * intent mutates or deletes a row that already exists), while {@code checkTargetScope} verifies
+   * the destination catalog and namespace are writable and mutually consistent (used when the
+   * intent writes a row into a scope). Create passes scope-only, update passes both, delete passes
+   * existing-only.
+   */
+  private ApplyOutcome validateTableWriteEligibility(
+      Table table, boolean checkExistingTable, boolean checkTargetScope) {
+    if (table == null || !table.hasResourceId()) {
+      return ApplyOutcome.conflict(
+          "TABLE_INTENT_INVALID_PAYLOAD", "table payload is missing resource_id", null, null, null);
+    }
+    if (SystemResourceIdGenerator.isSystemId(table.getResourceId())) {
+      return tableImmutableConflict(table.getResourceId().getId());
+    }
+    if (overlay == null) {
+      // The overlay is @Inject-ed on an @ApplicationScoped bean, so this is unreachable in
+      // production. A guard whose purpose is closing write-eligibility gaps must not default to
+      // "allow" on its own null case — treat an absent overlay as retryable rather than applied.
+      return ApplyOutcome.retryable(
+          "TABLE_WRITE_ELIGIBILITY_UNAVAILABLE",
+          "catalog overlay unavailable for write-eligibility check");
+    }
+
+    try {
+      var writePolicy = new CatalogSurfaceWritePolicy(overlay);
+      if (checkExistingTable) {
+        writePolicy.requireWritableTable(table.getResourceId(), "transaction-apply");
+      }
+      if (checkTargetScope) {
+        writePolicy.requireWritableCatalog(
+            table.getCatalogId(), "table.catalog_id", "transaction-apply");
+        var namespace =
+            writePolicy.requireWritableNamespace(
+                table.getNamespaceId(), "table.namespace_id", "transaction-apply");
+        writePolicy.requireNamespaceInCatalog(
+            namespace, table.getNamespaceId(), table.getCatalogId(), "transaction-apply");
+      }
+      return ApplyOutcome.applied();
+    } catch (StatusRuntimeException policyViolation) {
+      return ApplyOutcome.conflict(
+          "TABLE_INTENT_NOT_WRITABLE", "table intent target is not writable", null, null, null);
+    } catch (RuntimeException unexpected) {
+      // Overlay resolution can fail transiently (storage/cache errors). Do not turn that into a
+      // terminal conflict that abandons an otherwise-valid transaction; let it be retried.
+      return ApplyOutcome.retryable(
+          "TABLE_WRITE_ELIGIBILITY_ERROR",
+          "unable to evaluate table write eligibility: " + unexpected.getMessage());
+    }
+  }
+
+  private ApplyOutcome tableImmutableConflict(String tableId) {
+    return ApplyOutcome.conflict(
+        "SYSTEM_OBJECT_IMMUTABLE",
+        "system table is immutable",
+        null,
+        null,
+        tableId == null ? "" : tableId);
+  }
+
   private ApplyOutcome validateTableIntentTarget(String pointerKey, Table nextTable) {
     if (nextTable == null || !nextTable.hasResourceId()) {
       return ApplyOutcome.conflict(
@@ -699,6 +816,59 @@ public class TransactionIntentApplierSupport {
     }
     Pointer next = PointerReferences.blobPointer(key, nextBlobUri, ptr.getVersion() + 1L);
     return addOp(new PointerStore.CasUpsert(key, ptr.getVersion(), next), key, touchedKeys, ops);
+  }
+
+  /**
+   * Reserves the shared, kind-agnostic relation-name claim ({@link Keys#relationPointerByName}) so
+   * a table and a view can never hold the same (namespace, name). Ownership and kind are read from
+   * the claim's stored {@link ResourceId} (stable across renames) rather than from the name or
+   * blob, so a claim held by any other relation — a different table or a view of the same name — is
+   * a hard conflict.
+   */
+  private ApplyOutcome buildRelationClaimUpsertOp(
+      String key,
+      ResourceId owner,
+      String nextBlobUri,
+      Set<String> touchedKeys,
+      List<PointerStore.CasOp> ops) {
+    var ptr = pointerStore.get(key).orElse(null);
+    if (ptr == null) {
+      Pointer created = PointerReferences.blobPointer(key, nextBlobUri, 1L, owner, "");
+      return addOp(new PointerStore.CasUpsert(key, 0L, created), key, touchedKeys, ops);
+    }
+    ResourceId held = ptr.getResourceId();
+    if (!Objects.equals(held.getId(), owner.getId())) {
+      // Same cross-kind invariant that ViewServiceImpl#relationNameConflict enforces on the direct
+      // RPC path. These are two independent claim implementations (this one hand-rolls the CAS ops
+      // rather than routing through the generic repository), so the surfaced codes differ by
+      // channel — RELATION_NAME_CONFLICT here (transaction apply outcome) vs
+      // RELATION_NAME_ALREADY_CLAIMED there (gRPC ALREADY_EXISTS) — but the condition is identical:
+      // the name is already claimed by a relation of any kind.
+      return ApplyOutcome.conflict(
+          "RELATION_NAME_CONFLICT",
+          "relation name is already claimed by another relation",
+          null,
+          null,
+          held.getId());
+    }
+    if (Objects.equals(ptr.getBlobUri(), nextBlobUri)) {
+      return ApplyOutcome.applied();
+    }
+    Pointer next =
+        PointerReferences.blobPointer(key, nextBlobUri, ptr.getVersion() + 1L, owner, "");
+    return addOp(new PointerStore.CasUpsert(key, ptr.getVersion(), next), key, touchedKeys, ops);
+  }
+
+  private ApplyOutcome buildOwnedRelationClaimDeleteOp(
+      String key, String ownerId, Set<String> touchedKeys, List<PointerStore.CasOp> ops) {
+    var ptr = pointerStore.get(key).orElse(null);
+    if (ptr == null) {
+      return ApplyOutcome.applied();
+    }
+    if (Objects.equals(ptr.getResourceId().getId(), ownerId)) {
+      return addOp(new PointerStore.CasDelete(key, ptr.getVersion()), key, touchedKeys, ops);
+    }
+    return ApplyOutcome.applied();
   }
 
   private ApplyOutcome buildOwnedNameDeleteOp(

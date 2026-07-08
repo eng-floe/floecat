@@ -400,6 +400,10 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   var mask = normalizeMask(request.getUpdateMask());
                   var desired = applyNamespaceSpecPatch(current, request.getSpec(), mask, corr);
+                  var desiredPath = new ArrayList<>(desired.getParentsList());
+                  desiredPath.add(desired.getDisplayName());
+                  catalogSurfaceWritePolicy()
+                      .requireNamespacePathWriteEligible(desired.getCatalogId(), desiredPath, corr);
                   if (maskTargets(mask, "properties")) {
                     PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
                         request.getSpec().getPropertiesMap(), corr, "spec.properties");

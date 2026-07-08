@@ -20,6 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -144,6 +146,47 @@ class CatalogSurfaceViewsTest {
     assertEquals(List.of("z_system"), names(systemPage.getViewsList()));
     assertTrue(systemPage.getPage().getNextPageToken().startsWith("view:"));
     verify(viewRepo).list(eq(ACCOUNT_ID), eq("cat"), eq("ns"), eq(1), eq("repo-next"), any());
+  }
+
+  @Test
+  void listViewsRewritesSystemViewCatalogToRequestedCatalog() {
+    // The raw system node carries the system catalog id; the Catalog Surface must report the
+    // requested (user-facing) catalog, matching how tables are rewritten.
+    ResourceId systemCatalogId = id(ResourceKind.RK_CATALOG, "engine_sys");
+    ViewNode systemView =
+        new ViewNode(
+            id(ResourceKind.RK_VIEW, "sys_engine_views"),
+            1L,
+            Instant.now(),
+            systemCatalogId,
+            namespaceId,
+            "engine_views",
+            "select 1",
+            "sql",
+            List.<SchemaColumn>of(),
+            List.of(),
+            List.of(),
+            GraphNodeOrigin.SYSTEM,
+            Map.of(),
+            Optional.empty(),
+            Map.<Long, Map<EngineHintKey, EngineHint>>of(),
+            Map.<EngineHintKey, EngineHint>of());
+    overlay.addRelation(namespaceId, systemView);
+    when(viewRepo.list(eq(ACCOUNT_ID), eq("cat"), eq("ns"), anyInt(), anyString(), any()))
+        .thenAnswer(invocation -> List.of());
+    when(viewRepo.count(ACCOUNT_ID, "cat", "ns")).thenReturn(0);
+
+    var page =
+        surface.listViews(
+            ListViewsRequest.newBuilder()
+                .setNamespaceId(namespaceId)
+                .setPage(PageRequest.newBuilder().setPageSize(10))
+                .build(),
+            ACCOUNT_ID,
+            CORRELATION_ID);
+
+    assertEquals(List.of("engine_views"), names(page.getViewsList()));
+    assertEquals(catalogId, page.getViewsList().get(0).getCatalogId());
   }
 
   @Test

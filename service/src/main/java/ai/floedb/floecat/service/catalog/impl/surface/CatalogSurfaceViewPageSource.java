@@ -91,6 +91,9 @@ final class CatalogSurfaceViewPageSource
 
   @Override
   public View mapSystemNode(ViewNode node) {
-    return CatalogSurfaceViews.viewFromSystemNode(node);
+    // Rewrite to the requested (user-facing) catalog so system views listed through the Catalog
+    // Surface report the same catalog id as sibling tables (the "symlink" model), rather than the
+    // raw system node's catalog id.
+    return CatalogSurfaceViews.viewFromSystemNode(node).toBuilder().setCatalogId(catalogId).build();
   }
 }

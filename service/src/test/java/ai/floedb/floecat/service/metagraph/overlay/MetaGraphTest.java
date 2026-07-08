@@ -24,7 +24,6 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.*;
 
-import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -49,8 +48,6 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
 import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import io.grpc.StatusRuntimeException;
-import io.grpc.protobuf.StatusProto;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
@@ -244,28 +241,14 @@ class MetaGraphTest {
   }
 
   @Test
-  void resolveTable_throwsWhenBothSystemAndUserMatch() {
+  void resolveTable_returnsSystemMatchWithoutUserProbe() {
     NameRef ref = NameRef.newBuilder().setName("t").build();
     when(system.resolveTable(ref, context)).thenReturn(Optional.of(sysTable));
-    when(user.resolveTable("c", ref)).thenReturn(Optional.of(usrTable));
 
-    assertThatThrownBy(() -> meta.resolveTable("c", ref)).isInstanceOf(RuntimeException.class);
-  }
+    Optional<ResourceId> resolved = meta.resolveTable("c", ref);
 
-  private String firstErrorKey(StatusRuntimeException ex) {
-    com.google.rpc.Status status = StatusProto.fromThrowable(ex);
-    return status.getDetailsList().stream()
-        .filter(detail -> detail.is(Error.class))
-        .map(
-            detail -> {
-              try {
-                return detail.unpack(Error.class).getMessageKey();
-              } catch (Exception e) {
-                throw new AssertionError("unable to unpack error detail", e);
-              }
-            })
-        .findFirst()
-        .orElse("");
+    assertThat(resolved).contains(sysTable);
+    verify(user, never()).resolveTable("c", ref);
   }
 
   private UserGraph.ResolveResult userResolveResult(
@@ -298,7 +281,7 @@ class MetaGraphTest {
 
     UserGraph.ResolveResult userResult =
         userResolveResult(1, "user-token", new CatalogOverlay.QualifiedRelation(userRef, userId));
-    when(user.resolveTables(eq("cid"), anyList(), eq(2), eq(""))).thenReturn(userResult);
+    when(user.resolveTables(eq("cid"), anyList(), eq(1), eq(""))).thenReturn(userResult);
 
     CatalogOverlay.ResolveResult merged =
         meta.batchResolveTables("cid", List.of(systemRef, userRef), 2, "");
@@ -311,23 +294,19 @@ class MetaGraphTest {
   }
 
   @Test
-  void resolveTables_list_throwsOnAmbiguousName() {
-    NameRef ref = NameRef.newBuilder().setCatalog("examples").setName("collide").build();
-    NameRef alias = NameRef.newBuilder().setCatalog("examples").setName("alias").build();
+  void resolveTables_list_skipsUserLookupForSystemName() {
+    NameRef ref = NameRef.newBuilder().setCatalog("examples").setName("system_table").build();
 
     when(system.resolveTable(any(NameRef.class), eq(context))).thenReturn(Optional.of(sysTable));
-    when(system.tableName(sysTable, context)).thenReturn(Optional.of(alias));
+    when(system.tableName(sysTable, context))
+        .thenReturn(
+            Optional.of(NameRef.newBuilder().setCatalog("engine").setName("system_table").build()));
 
-    UserGraph.ResolveResult userResult =
-        userResolveResult(1, "", new CatalogOverlay.QualifiedRelation(alias, usrTable));
-    when(user.resolveTables(eq("cid"), anyList(), eq(1), eq(""))).thenReturn(userResult);
+    CatalogOverlay.ResolveResult resolved = meta.batchResolveTables("cid", List.of(ref), 1, "");
 
-    assertThatThrownBy(() -> meta.batchResolveTables("cid", List.of(ref), 1, ""))
-        .isInstanceOf(StatusRuntimeException.class)
-        .satisfies(
-            ex ->
-                assertThat(firstErrorKey((StatusRuntimeException) ex))
-                    .contains("query.input.ambiguous"));
+    assertThat(resolved.relations()).hasSize(1);
+    assertThat(resolved.relations().get(0).resourceId()).isEqualTo(sysTable);
+    verify(user, never()).resolveTables(any(), anyList(), anyInt(), any());
   }
 
   @Test
@@ -394,7 +373,7 @@ class MetaGraphTest {
             new CatalogOverlay.QualifiedRelation(
                 NameRef.newBuilder().setCatalog("examples").addPath("ns").setName("user_t").build(),
                 usrTable));
-    when(user.resolveTables(eq("cid"), eq(prefix), eq(50), eq(""))).thenReturn(userResult);
+    when(user.resolveTables(eq("cid"), eq(prefix), eq(49), eq(""))).thenReturn(userResult);
 
     CatalogOverlay.ResolveResult merged = meta.listTablesByPrefix("cid", prefix, 50, "");
 
@@ -460,7 +439,7 @@ class MetaGraphTest {
         .thenReturn(
             Optional.of(NameRef.newBuilder().setCatalog("engine").setName("system_table").build()));
 
-    when(user.resolveTables(eq("cid"), eq(prefix), eq(50), eq("")))
+    when(user.resolveTables(eq("cid"), eq(prefix), eq(49), eq("")))
         .thenReturn(
             new UserGraph.ResolveResult(
                 new FullyQualifiedResolver.ResolveResult(List.of(), 0, "")));

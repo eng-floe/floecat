@@ -18,12 +18,14 @@ package ai.floedb.floecat.service.repo.util;
 
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.ResourceKey;
 import ai.floedb.floecat.service.repo.model.ResourceSchema;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import com.google.protobuf.Timestamp;
@@ -73,6 +75,25 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   /**
+   * Structural backstop for system-object immutability: rejects any create/update/delete whose
+   * target resolves to a system-owned id, for schemas that opt in via {@link
+   * ResourceSchema#withSystemGuard}. The surface-layer {@code CatalogSurfaceWritePolicy} is the
+   * primary gate (with user-facing errors and overlay-based writability checks); this ensures that
+   * a write path which skips or forgets that policy still cannot persist a mutation against a
+   * system object. Schemas that can never be system-owned leave the hook null and pay nothing.
+   */
+  private void guardSystemObject(K key) {
+    if (schema.resourceIdFromKey == null) {
+      return;
+    }
+    ResourceId id = schema.resourceIdFromKey.apply(key);
+    if (SystemResourceIdGenerator.isSystemId(id)) {
+      throw new SystemObjectImmutableException(
+          "refusing to mutate system " + schema.resourceName + " " + id.getId());
+    }
+  }
+
+  /**
    * Atomically creates a resource: the canonical (by-id) pointer and every secondary (by-name, …)
    * pointer are reserved in a single {@link PointerStore#compareAndSetBatch} transaction. Because
    * the batch is all-or-nothing on both backends, a mid-create storage error (or process death)
@@ -96,6 +117,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         "create",
         () -> {
           K key = schema.keyFromValue.apply(value);
+          guardSystemObject(key);
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           String blobUri = schema.blobUriForKey.apply(key);
 
@@ -198,6 +220,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         "create_if_absent",
         () -> {
           K key = schema.keyFromValue.apply(value);
+          guardSystemObject(key);
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           String blobUri = schema.blobUriForKey.apply(key);
           boolean blobExistedBefore = blobStore.head(blobUri).isPresent();
@@ -334,6 +357,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         "update",
         () -> {
           K key = schema.keyFromValue.apply(updatedValue);
+          guardSystemObject(key);
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           String blobUri = schema.blobUriForKey.apply(key);
 
@@ -459,6 +483,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return observeRepository(
         "delete",
         () -> {
+          guardSystemObject(key);
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           var canonicalPtr = pointerStore.get(canonicalPointer).orElse(null);
           if (canonicalPtr == null) {
@@ -500,6 +525,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return observeRepository(
         "delete_with_precondition",
         () -> {
+          guardSystemObject(key);
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
           Optional<T> current;

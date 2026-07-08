@@ -347,6 +347,12 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                   GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
 
                   var desired = applyTableSpecPatch(current, spec, mask, corr);
+                  var writePolicy = catalogSurfaceWritePolicy();
+                  var desiredNamespace =
+                      writePolicy.requireWritableNamespace(
+                          desired.getNamespaceId(), "namespace_id", corr);
+                  writePolicy.requireNamespaceInCatalog(
+                      desiredNamespace, desired.getNamespaceId(), desired.getCatalogId(), corr);
                   if (hintCleaner.shouldClearHints(mask)) {
                     Table.Builder builder = desired.toBuilder();
                     hintCleaner.cleanTableHints(builder, mask, current, builder.build());

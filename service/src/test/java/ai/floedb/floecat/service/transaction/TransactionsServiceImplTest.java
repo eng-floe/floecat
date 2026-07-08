@@ -40,10 +40,12 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -54,6 +56,7 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.transaction.impl.TransactionIntentApplierSupport;
 import ai.floedb.floecat.service.transaction.impl.TransactionsServiceImpl;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.ConnectorProvisioning;
 import ai.floedb.floecat.transaction.rpc.PrepareTransactionRequest;
@@ -62,6 +65,8 @@ import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
 import ai.floedb.floecat.transaction.rpc.TxChange;
 import com.google.protobuf.util.Timestamps;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -676,12 +681,14 @@ class TransactionsServiceImplTest {
     var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
     var blobStore = Mockito.mock(ai.floedb.floecat.storage.spi.BlobStore.class);
     var resolver = Mockito.mock(NameResolver.class);
+    var overlay = Mockito.mock(CatalogOverlay.class);
 
     inject(service, "txRepo", txRepo);
     inject(service, "intentRepo", intentRepo);
     inject(service, "pointerStore", pointerStore);
     inject(service, "blobStore", blobStore);
     inject(service, "nameResolver", resolver);
+    inject(service, "overlay", overlay);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -698,6 +705,13 @@ class TransactionsServiceImplTest {
     when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(txn));
     when(pointerStore.get(pointerKey))
         .thenReturn(Optional.of(Pointer.newBuilder().setKey(pointerKey).setVersion(7L).build()));
+    when(overlay.resolve(
+            ResourceId.newBuilder()
+                .setAccountId(accountId)
+                .setId(tableId)
+                .setKind(ResourceKind.RK_TABLE)
+                .build()))
+        .thenReturn(Optional.of(Mockito.mock(UserTableNode.class)));
     when(intentRepo.getByTarget(accountId, pointerKey)).thenReturn(Optional.empty());
     when(txRepo.metaFor(accountId, txId))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(1L).build());
@@ -733,6 +747,57 @@ class TransactionsServiceImplTest {
                         && intent.getTargetPointerKey().equals(pointerKey)
                         && intent.hasExpectedVersion()
                         && intent.getExpectedVersion() == 7L));
+  }
+
+  @Test
+  void prepareRejectsSystemTableTargetBeforeCreatingIntent() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
+
+    inject(service, "txRepo", txRepo);
+    inject(service, "intentRepo", intentRepo);
+    inject(service, "pointerStore", pointerStore);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    ResourceId systemTableId =
+        SystemNodeRegistry.resourceId("engine", ResourceKind.RK_TABLE, "information_schema.tables")
+            .toBuilder()
+            .setAccountId(accountId)
+            .build();
+    String pointerKey = Keys.tablePointerById(accountId, systemTableId.getId());
+    Transaction txn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_OPEN)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(txn));
+    when(pointerStore.get(pointerKey)).thenReturn(Optional.empty());
+
+    var request =
+        PrepareTransactionRequest.newBuilder()
+            .setTxId(txId)
+            .addChanges(
+                TxChange.newBuilder()
+                    .setTableId(systemTableId)
+                    .setIntendedBlobUri(Keys.accountRootPrefix(accountId) + "/tables/intended-1"))
+            .build();
+
+    InvocationTargetException reflected =
+        assertThrows(
+            InvocationTargetException.class,
+            () -> invokePreparePrivate(service, accountId, request, Timestamps.fromMillis(10)));
+
+    var cause = reflected.getCause();
+    assertTrue(cause instanceof StatusRuntimeException);
+    assertEquals(
+        Status.Code.PERMISSION_DENIED, ((StatusRuntimeException) cause).getStatus().getCode());
+    verify(intentRepo, never()).create(any());
   }
 
   @Test
@@ -799,11 +864,13 @@ class TransactionsServiceImplTest {
     var intentRepo = Mockito.mock(TransactionIntentRepository.class);
     var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
     var blobStore = Mockito.mock(BlobStore.class);
+    var overlay = Mockito.mock(CatalogOverlay.class);
 
     inject(service, "txRepo", txRepo);
     inject(service, "intentRepo", intentRepo);
     inject(service, "pointerStore", pointerStore);
     inject(service, "blobStore", blobStore);
+    inject(service, "overlay", overlay);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -829,6 +896,13 @@ class TransactionsServiceImplTest {
     when(pointerStore.get(targetKey))
         .thenReturn(Optional.of(PointerReferences.blobPointer(targetKey, tableBlobUri, 7L)));
     when(blobStore.get(tableBlobUri)).thenReturn(table.toByteArray());
+    when(overlay.resolve(
+            ResourceId.newBuilder()
+                .setAccountId(accountId)
+                .setId(tableId)
+                .setKind(ResourceKind.RK_TABLE)
+                .build()))
+        .thenReturn(Optional.of(Mockito.mock(UserTableNode.class)));
     when(intentRepo.getByTarget(accountId, targetKey)).thenReturn(Optional.empty());
     when(txRepo.metaFor(accountId, txId))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(1L).build());

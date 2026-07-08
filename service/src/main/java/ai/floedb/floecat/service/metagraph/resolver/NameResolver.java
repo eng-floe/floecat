@@ -167,74 +167,89 @@ public final class NameResolver {
                                         .map(View::getResourceId))));
   }
 
+  /**
+   * Kind-agnostic name resolution: resolves catalog and namespace once, then probes tables and (on
+   * miss) views. Unlike resolving the table and the view separately, this does not re-resolve the
+   * catalog and namespace for the view probe. A relation name is unique across kinds (enforced by
+   * the shared relation-name claim), so the table-first order is deterministic.
+   */
+  public Optional<ResourceId> resolveRelationId(String accountId, NameRef ref) {
+    return diagnose(
+        "resolve_relation_id",
+        "",
+        accountId,
+        () ->
+            resolveScope(accountId, ref)
+                .flatMap(
+                    scope -> {
+                      String catalogId = scope.catalog().getResourceId().getId();
+                      String namespaceId = scope.namespace().getResourceId().getId();
+                      Optional<ResourceId> table =
+                          tableRepository
+                              .getByName(accountId, catalogId, namespaceId, ref.getName())
+                              .map(Table::getResourceId)
+                              .map(this::requireCanonicalTableId);
+                      if (table.isPresent()) {
+                        return table;
+                      }
+                      return viewRepository
+                          .getByName(accountId, catalogId, namespaceId, ref.getName())
+                          .map(View::getResourceId);
+                    }));
+  }
+
   public Optional<ResolvedRelation> resolveTableRelation(String accountId, NameRef ref) {
     return diagnose(
         "resolve_table_relation",
         "",
         accountId,
-        () -> {
-          if (!validCatalog(ref) || !validName(ref)) return Optional.empty();
-
-          Optional<Catalog> catalogOpt = catalogRepository.getByName(accountId, ref.getCatalog());
-          if (catalogOpt.isEmpty()) return Optional.empty();
-          Catalog catalog = catalogOpt.get();
-
-          Optional<Namespace> nsOpt =
-              namespaceRepository.getByPath(
-                  accountId, catalog.getResourceId().getId(), ref.getPathList());
-          if (nsOpt.isEmpty()) return Optional.empty();
-          Namespace ns = nsOpt.get();
-
-          return tableRepository
-              .getByName(
-                  accountId,
-                  catalog.getResourceId().getId(),
-                  ns.getResourceId().getId(),
-                  ref.getName())
-              .map(
-                  t -> {
-                    ResourceId tableId = requireCanonicalTableId(t.getResourceId());
-                    return new ResolvedRelation(
-                        tableId, canonicalName(catalog, ns, t.getDisplayName(), tableId));
-                  });
-        });
-  }
-
-  public Optional<ResolvedRelation> resolveViewRelation(String accountId, NameRef ref) {
-    return diagnose(
-        "resolve_view_relation",
-        "",
-        accountId,
-        () -> {
-          if (!validCatalog(ref) || !validName(ref)) return Optional.empty();
-
-          Optional<Catalog> catalogOpt = catalogRepository.getByName(accountId, ref.getCatalog());
-          if (catalogOpt.isEmpty()) return Optional.empty();
-          Catalog catalog = catalogOpt.get();
-
-          Optional<Namespace> nsOpt =
-              namespaceRepository.getByPath(
-                  accountId, catalog.getResourceId().getId(), ref.getPathList());
-          if (nsOpt.isEmpty()) return Optional.empty();
-          Namespace ns = nsOpt.get();
-
-          return viewRepository
-              .getByName(
-                  accountId,
-                  catalog.getResourceId().getId(),
-                  ns.getResourceId().getId(),
-                  ref.getName())
-              .map(
-                  v ->
-                      new ResolvedRelation(
-                          v.getResourceId(),
-                          canonicalName(catalog, ns, v.getDisplayName(), v.getResourceId())));
-        });
+        () ->
+            resolveScope(accountId, ref)
+                .flatMap(
+                    scope ->
+                        tableRepository
+                            .getByName(
+                                accountId,
+                                scope.catalog().getResourceId().getId(),
+                                scope.namespace().getResourceId().getId(),
+                                ref.getName())
+                            .map(
+                                t -> {
+                                  ResourceId tableId = requireCanonicalTableId(t.getResourceId());
+                                  return new ResolvedRelation(
+                                      tableId,
+                                      canonicalName(
+                                          scope.catalog(),
+                                          scope.namespace(),
+                                          t.getDisplayName(),
+                                          tableId));
+                                })));
   }
 
   // ----------------------------------------------------------------------
   // Repository helpers
   // ----------------------------------------------------------------------
+
+  /** A validated (catalog, namespace) pair a relation name resolves within. */
+  private record Scope(Catalog catalog, Namespace namespace) {}
+
+  /**
+   * Resolves the catalog and namespace a relation name lives in, validating the reference first.
+   * Shared by the relation resolution methods so the catalog+namespace lookup is written once.
+   */
+  private Optional<Scope> resolveScope(String accountId, NameRef ref) {
+    if (!validCatalog(ref) || !validName(ref)) {
+      return Optional.empty();
+    }
+    Optional<Catalog> catalogOpt = catalogRepository.getByName(accountId, ref.getCatalog());
+    if (catalogOpt.isEmpty()) {
+      return Optional.empty();
+    }
+    Catalog catalog = catalogOpt.get();
+    return namespaceRepository
+        .getByPath(accountId, catalog.getResourceId().getId(), ref.getPathList())
+        .map(ns -> new Scope(catalog, ns));
+  }
 
   private Optional<Catalog> catalogByName(String accountId, String name) {
     return catalogRepository.getByName(accountId, name);

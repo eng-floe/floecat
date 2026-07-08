@@ -398,6 +398,29 @@ public final class Keys {
         + "/tables/by-name/";
   }
 
+  /**
+   * Shared, kind-agnostic relation-name claim pointer. Both tables and views reserve this pointer
+   * for their (namespace, name), so a table and a view can never hold the same name in a namespace:
+   * whichever is created second loses the atomic reservation. This is the source of truth for
+   * cross-kind name uniqueness; the kind-specific {@code .../tables|views/by-name/} pointers remain
+   * the lookup/listing indexes.
+   */
+  public static String relationPointerByName(
+      String accountId, String catalogId, String namespaceId, String relationName) {
+    String tid = req("account_id", accountId);
+    String cid = req("catalog_id", catalogId);
+    String nid = req("namespace_id", namespaceId);
+    String name = req("relation_name", relationName);
+    return "/accounts/"
+        + encode(tid)
+        + "/catalogs/"
+        + encode(cid)
+        + "/namespaces/"
+        + encode(nid)
+        + "/relations/by-name/"
+        + encode(name);
+  }
+
   public static String tableBlobUri(String accountId, String tableId, String sha256) {
     String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);

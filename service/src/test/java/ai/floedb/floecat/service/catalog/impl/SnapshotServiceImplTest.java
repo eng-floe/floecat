@@ -20,6 +20,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
@@ -32,6 +33,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
@@ -40,9 +42,12 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -146,6 +151,79 @@ class SnapshotServiceImplTest {
     verify(svc.snapshotRepo).create(cap.capture());
 
     assertEquals("{\"type\":\"struct\"}", cap.getValue().getSchemaJson());
+  }
+
+  @Test
+  void createSnapshotRejectsSystemTableBeforeSnapshotRepoWrite() {
+    var tableId = tableId("sys_snapshot_create");
+    var svc = serviceWithVisibleTable(tableId, systemTableNode(tableId));
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                svc.createSnapshot(
+                        CreateSnapshotRequest.newBuilder()
+                            .setSpec(
+                                SnapshotSpec.newBuilder()
+                                    .setTableId(tableId)
+                                    .setSnapshotId(123L)
+                                    .setSchemaJson("{}"))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+    verify(svc.snapshotRepo, never()).create(any(Snapshot.class));
+    verifyNoInteractions(svc.currentSnapshotPointerService);
+  }
+
+  @Test
+  void updateSnapshotRejectsSystemTableBeforeSnapshotRepoWrite() {
+    var tableId = tableId("sys_snapshot_update");
+    var svc = serviceWithVisibleTable(tableId, systemTableNode(tableId));
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                svc.updateSnapshot(
+                        UpdateSnapshotRequest.newBuilder()
+                            .setSpec(
+                                SnapshotSpec.newBuilder()
+                                    .setTableId(tableId)
+                                    .setSnapshotId(123L)
+                                    .setSchemaJson("{}"))
+                            .setUpdateMask(FieldMask.newBuilder().addPaths("schema_json"))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+    verify(svc.snapshotRepo, never()).update(any(Snapshot.class), anyLong());
+    verifyNoInteractions(svc.currentSnapshotPointerService);
+  }
+
+  @Test
+  void deleteSnapshotRejectsSystemTableBeforeSnapshotRepoWrite() {
+    var tableId = tableId("sys_snapshot_delete");
+    var svc = serviceWithVisibleTable(tableId, systemTableNode(tableId));
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                svc.deleteSnapshot(
+                        DeleteSnapshotRequest.newBuilder()
+                            .setTableId(tableId)
+                            .setSnapshotId(123L)
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+    verify(svc.snapshotRepo, never()).deleteWithPrecondition(any(), anyLong(), anyLong());
+    verifyNoInteractions(svc.statsStore);
   }
 
   @Test
@@ -610,5 +688,47 @@ class SnapshotServiceImplTest {
     svc.updateSnapshot(req).await().indefinitely();
 
     verify(svc.tableRepo, never()).update(any(Table.class), anyLong());
+  }
+
+  private static SnapshotServiceImpl serviceWithVisibleTable(ResourceId tableId, TableNode node) {
+    var svc = new SnapshotServiceImpl();
+
+    svc.snapshotRepo = mock(SnapshotRepository.class);
+    svc.tableRepo = mock(TableRepository.class);
+    svc.statsStore = mock(StatsStore.class);
+    svc.principal = mock(PrincipalProvider.class);
+    svc.authz = mock(Authorizer.class);
+    svc.idempotencyStore = mock(IdempotencyRepository.class);
+    svc.overlay = mock(CatalogOverlay.class);
+    svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
+
+    when(svc.overlay.resolve(eq(tableId))).thenReturn(Optional.of(node));
+
+    var pc = mock(PrincipalContext.class);
+    when(svc.principal.get()).thenReturn(pc);
+    when(pc.getCorrelationId()).thenReturn("corr");
+    when(pc.getAccountId()).thenReturn("acct");
+    doNothing().when(svc.authz).require(any(), anyString());
+
+    return svc;
+  }
+
+  private static SystemTableNode systemTableNode(ResourceId tableId) {
+    var namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId(tableId.getAccountId())
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("sys_ns_" + tableId.getId())
+            .build();
+    return new SystemTableNode.EngineSystemTableNode(
+        tableId, 1L, Instant.EPOCH, "engine", "system_table", namespaceId, List.of(), null, null);
+  }
+
+  private static ResourceId tableId(String id) {
+    return ResourceId.newBuilder()
+        .setAccountId("acct")
+        .setKind(ResourceKind.RK_TABLE)
+        .setId(id)
+        .build();
   }
 }

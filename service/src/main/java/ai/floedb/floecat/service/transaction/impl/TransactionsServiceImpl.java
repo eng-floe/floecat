@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.transaction.impl;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -40,9 +42,12 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
+import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
@@ -55,6 +60,7 @@ import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.transaction.rpc.AbortTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.AbortTransactionResponse;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionRequest;
@@ -124,6 +130,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   @Inject BlobStore blobStore;
   @Inject TransactionIntentApplierSupport intentApplierSupport;
   @Inject UserGraph metadataGraph;
+  @Inject CatalogOverlay overlay;
   private volatile java.util.concurrent.Executor postCommitExecutor =
       java.util.concurrent.ForkJoinPool.commonPool();
 
@@ -1371,6 +1378,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     String pointerKey = target.pointerKey();
 
     long currentVersion = pointerStore.get(pointerKey).map(Pointer::getVersion).orElse(0L);
+    requireWritableTransactionTarget(accountId, txId, target, change, currentVersion);
     Precondition pre = change.getPrecondition();
     long expectedVersion = currentVersion;
     if (pre != null && pre.hasExpectedVersion()) {
@@ -1473,6 +1481,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     ResolvedTxTarget target = resolveTarget(accountId, change);
     ResourceId tableId = target.tableId();
     String pointerKey = target.pointerKey();
+    long currentVersion = pointerStore.get(pointerKey).map(Pointer::getVersion).orElse(0L);
+    requireWritableTransactionTarget(accountId, txId, target, change, currentVersion);
 
     String blobUri;
     String expectedOwnedNamePointerKey = null;
@@ -1547,6 +1557,110 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
               "unknown payload type for " + pointerKey + ": " + change.getChangePayloadCase());
     }
     return new PlannedIntent(pointerKey, blobUri, 0L, null, null, expectedOwnedNamePointerKey);
+  }
+
+  private void requireWritableTransactionTarget(
+      String accountId,
+      String txId,
+      ResolvedTxTarget target,
+      TxChange change,
+      long currentVersion) {
+    if (target == null || !isTableByIdPointer(target.pointerKey())) {
+      return;
+    }
+    ResourceId tableId = tableIdForWriteTarget(accountId, target);
+    rejectSystemTableId(tableId);
+
+    switch (change.getChangePayloadCase()) {
+      case TABLE -> requireWritableTablePayload(change.getTable(), tableId, currentVersion);
+      case INTENDED_BLOB_URI -> {
+        String blobUri = change.getIntendedBlobUri().trim();
+        if (isDeleteSentinelBlobUri(accountId, txId, target.pointerKey(), blobUri)) {
+          catalogSurfaceWritePolicy()
+              .requireWritableTableForDelete(
+                  tableId,
+                  correlationId(),
+                  currentVersion > 0L || hasMeaningfulPrecondition(change.getPrecondition()));
+          return;
+        }
+        // For an intended-blob write we only have the target's blob URI here, not its bytes: the
+        // blob is not promoted (and so not readable) until apply, so we cannot parse the Table to
+        // learn its catalog/namespace scope at prepare time. We therefore validate only what the
+        // pointer already tells us — that an existing row (currentVersion > 0) is user-owned and
+        // writable. The destination-scope check for a brand-new table is deferred to apply time,
+        // where TransactionIntentApplierSupport.validateTableWriteEligibility reads the promoted
+        // blob and enforces checkTargetScope. Prepare-time is a fast-fail optimization, not the
+        // authoritative gate.
+        if (currentVersion > 0L) {
+          catalogSurfaceWritePolicy().requireWritableTable(tableId, correlationId());
+        }
+      }
+      case PAYLOAD -> {
+        try {
+          requireWritableTablePayload(
+              Table.parseFrom(change.getPayload()), tableId, currentVersion);
+        } catch (Exception e) {
+          throw new IllegalArgumentException(
+              "table payload is unreadable for " + target.pointerKey(), e);
+        }
+      }
+      default -> {
+        // Other payloads are validated by their own target-specific paths.
+      }
+    }
+  }
+
+  private ResourceId tableIdForWriteTarget(String accountId, ResolvedTxTarget target) {
+    if (target.tableId() != null) {
+      return target.tableId();
+    }
+    String tableId = tableIdFromByIdPointer(target.pointerKey());
+    if (tableId == null || tableId.isBlank()) {
+      throw new IllegalArgumentException("missing table reference");
+    }
+    return ResourceId.newBuilder()
+        .setAccountId(accountId)
+        .setKind(ResourceKind.RK_TABLE)
+        .setId(tableId)
+        .build();
+  }
+
+  private void requireWritableTablePayload(
+      Table table, ResourceId targetTableId, long currentVersion) {
+    if (table == null || !table.hasResourceId()) {
+      throw new IllegalArgumentException("table payload missing resource_id");
+    }
+    rejectSystemTableId(table.getResourceId());
+    if (!targetTableId.getId().equals(table.getResourceId().getId())) {
+      throw new IllegalArgumentException("table payload resource_id does not match target");
+    }
+    if (!targetTableId.getAccountId().equals(table.getResourceId().getAccountId())) {
+      throw new IllegalArgumentException("table payload account mismatch for target");
+    }
+
+    var writePolicy = catalogSurfaceWritePolicy();
+    if (currentVersion > 0L) {
+      writePolicy.requireWritableTable(targetTableId, correlationId());
+    }
+    writePolicy.requireWritableCatalog(table.getCatalogId(), "table.catalog_id", correlationId());
+    var namespace =
+        writePolicy.requireWritableNamespace(
+            table.getNamespaceId(), "table.namespace_id", correlationId());
+    writePolicy.requireNamespaceInCatalog(
+        namespace, table.getNamespaceId(), table.getCatalogId(), correlationId());
+  }
+
+  private void rejectSystemTableId(ResourceId tableId) {
+    if (SystemResourceIdGenerator.isSystemId(tableId)) {
+      throw GrpcErrors.permissionDenied(
+          correlationId(),
+          SYSTEM_OBJECT_IMMUTABLE,
+          java.util.Map.of("id", tableId.getId(), "kind", "table"));
+    }
+  }
+
+  private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
+    return new CatalogSurfaceWritePolicy(overlay);
   }
 
   private boolean looksLikeDeleteSentinelBlobUri(String accountId, String blobUri) {

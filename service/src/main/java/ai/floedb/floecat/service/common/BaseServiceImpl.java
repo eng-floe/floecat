@@ -122,6 +122,12 @@ public abstract class BaseServiceImpl {
           sre.getStatus(), errorCodeForStatus(sre.getStatus()), corrId, null, null, t);
     }
 
+    if (t instanceof BaseResourceRepository.SystemObjectImmutableException) {
+      // Repository-layer backstop for system-object immutability (GenericResourceRepository
+      // #guardSystemObject). Reaching here means a write path bypassed the surface write policy;
+      // surface it as the same PERMISSION_DENIED the policy would have produced.
+      return GrpcErrors.permissionDenied(corrId, SYSTEM_OBJECT_IMMUTABLE, null, t);
+    }
     if (t instanceof BaseResourceRepository.NameConflictException
         || t instanceof StorageConflictException) {
       return GrpcErrors.conflict(corrId, null, null, t);

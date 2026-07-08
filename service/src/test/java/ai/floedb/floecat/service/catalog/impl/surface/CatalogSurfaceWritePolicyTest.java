@@ -251,13 +251,17 @@ class CatalogSurfaceWritePolicyTest {
   }
 
   private ViewNode viewNode(ResourceId id, GraphNodeOrigin origin) {
+    return viewNode(id, origin, "orders_view");
+  }
+
+  private ViewNode viewNode(ResourceId id, GraphNodeOrigin origin, String displayName) {
     return new ViewNode(
         id,
         1L,
         Instant.EPOCH,
         catalogId,
         namespaceId,
-        "orders_view",
+        displayName,
         "select 1",
         "sql",
         List.<SchemaColumn>of(),

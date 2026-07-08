@@ -51,7 +51,6 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -234,86 +233,74 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
   /**
    * Resolves a namespace by name reference.
    *
-   * <p>Uses system-first resolution with ambiguity checking. If both system and user graphs contain
-   * a namespace with the same name, an error is thrown.
+   * <p>Uses system-first resolution. Write-side catalog surface policy prevents user namespaces
+   * from occupying system namespace paths, so query resolution does not need a user graph probe
+   * once the system graph matches.
    *
    * @param correlationId correlation ID for error reporting
    * @param ref the name reference to resolve
    * @return the resolved namespace resource ID, if present
-   * @throws GrpcErrors if the namespace is ambiguous
    */
   @Override
   public Optional<ResourceId> resolveNamespace(String correlationId, NameRef ref) {
     EngineContext ctx = engineContext();
     NameRef systemRef = SystemCatalogTranslator.toSystemNamespaceRef(ref, ctx);
-    return resolveWithAmbiguityCheck(
-        correlationId,
-        ref,
-        () -> systemGraph.resolveNamespace(systemRef, ctx),
-        () -> userGraph.resolveNamespace(correlationId, ref));
+    Optional<ResourceId> system = systemGraph.resolveNamespace(systemRef, ctx);
+    return system.isPresent() ? system : userGraph.resolveNamespace(correlationId, ref);
   }
 
   /**
    * Resolves a table by name reference.
    *
-   * <p>Uses system-first resolution with ambiguity checking. If both system and user graphs contain
-   * a table with the same name, an error is thrown.
+   * <p>Uses system-first resolution. Write-side catalog surface policy prevents user relations from
+   * occupying system relation names, so query resolution does not need a user graph probe once the
+   * system graph matches.
    *
    * @param correlationId correlation ID for error reporting
    * @param ref the name reference to resolve
    * @return the resolved table resource ID, if present
-   * @throws GrpcErrors if the table is ambiguous
    */
   @Override
   public Optional<ResourceId> resolveTable(String correlationId, NameRef ref) {
     EngineContext ctx = engineContext();
-    return resolveWithAmbiguityCheck(
-        correlationId,
-        ref,
-        () -> systemGraph.resolveTable(ref, ctx),
-        () -> userGraph.resolveTable(correlationId, ref));
+    Optional<ResourceId> system = systemGraph.resolveTable(ref, ctx);
+    return system.isPresent() ? system : userGraph.resolveTable(correlationId, ref);
   }
 
   /**
    * Resolves a view by name reference.
    *
-   * <p>Uses system-first resolution with ambiguity checking. If both system and user graphs contain
-   * a view with the same name, an error is thrown.
+   * <p>Uses system-first resolution. Write-side catalog surface policy prevents user relations from
+   * occupying system relation names, so query resolution does not need a user graph probe once the
+   * system graph matches.
    *
    * @param correlationId correlation ID for error reporting
    * @param ref the name reference to resolve
    * @return the resolved view resource ID, if present
-   * @throws GrpcErrors if the view is ambiguous
    */
   @Override
   public Optional<ResourceId> resolveView(String correlationId, NameRef ref) {
     EngineContext ctx = engineContext();
-    return resolveWithAmbiguityCheck(
-        correlationId,
-        ref,
-        () -> systemGraph.resolveView(ref, ctx),
-        () -> userGraph.resolveView(correlationId, ref));
+    Optional<ResourceId> system = systemGraph.resolveView(ref, ctx);
+    return system.isPresent() ? system : userGraph.resolveView(correlationId, ref);
   }
 
   /**
    * Resolves a relation (table or view) by name reference.
    *
-   * <p>Uses system-first resolution with ambiguity checking. If both system and user graphs contain
-   * relations with the same name, an error is thrown.
+   * <p>Uses system-first resolution. Write-side catalog surface policy prevents user relations from
+   * occupying system relation names, so query resolution does not need a user graph probe once the
+   * system graph matches.
    *
    * @param correlationId correlation ID for error reporting
    * @param ref the name reference to resolve
    * @return the resolved relation resource ID, if present
-   * @throws GrpcErrors if the relation is ambiguous
    */
   @Override
   public Optional<ResourceId> resolveName(String correlationId, NameRef ref) {
     EngineContext ctx = engineContext();
-    return resolveWithAmbiguityCheck(
-        correlationId,
-        ref,
-        () -> systemGraph.resolveName(ref, ctx),
-        () -> userGraph.resolveName(correlationId, ref));
+    Optional<ResourceId> system = systemGraph.resolveName(ref, ctx);
+    return system.isPresent() ? system : userGraph.resolveName(correlationId, ref);
   }
 
   @Override
@@ -362,9 +349,9 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
   /**
    * Resolves tables for an explicit list of fully-qualified name references.
    *
-   * <p>Performs a full merge between system and user objects. System resolution is attempted first
-   * using the current engine context (kind/version), then user resolution is attempted. If both
-   * resolve to a concrete resource, the name is treated as ambiguous.
+   * <p>System resolution is attempted first using the current engine context (kind/version). Names
+   * that match system objects do not require a user graph lookup because write-side policy prevents
+   * user relations from occupying system relation names.
    *
    * <p>The returned {@link NameRef} for system objects is aliased back to the user-facing catalog
    * name so callers observe a "symlink" effect (e.g. user catalog "examples" shows {@code
@@ -387,15 +374,14 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     Map<String, CatalogOverlay.QualifiedRelation> merged =
         collectSystemRelationsForNames(subset, ctx, true);
 
-    ResolveResult userResult =
-        toResolveResult(userGraph.resolveTables(correlationId, subset, max, token));
-
-    for (CatalogOverlay.QualifiedRelation userRelation : userResult.relations()) {
-      String key = canonicalName(userRelation.name());
-      if (merged.containsKey(key)) {
-        throw ambiguity(correlationId, userRelation.name());
+    List<NameRef> userRefs = unresolvedUserRefs(subset, merged);
+    if (!userRefs.isEmpty() && merged.size() < max) {
+      ResolveResult userResult =
+          toResolveResult(
+              userGraph.resolveTables(correlationId, userRefs, max - merged.size(), token));
+      for (CatalogOverlay.QualifiedRelation userRelation : userResult.relations()) {
+        merged.put(canonicalName(userRelation.name()), userRelation);
       }
-      merged.put(key, userRelation);
     }
 
     return new ResolveResult(new ArrayList<>(merged.values()), merged.size(), "");
@@ -422,8 +408,9 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
 
     List<CatalogOverlay.QualifiedRelation> system =
         firstPage ? collectSystemRelationsInNamespace(prefix, ctx, true, max) : List.of();
+    int userLimit = Math.max(1, max - system.size());
     ResolveResult user =
-        toResolveResult(userGraph.resolveTables(correlationId, prefix, max, userToken));
+        toResolveResult(userGraph.resolveTables(correlationId, prefix, userLimit, userToken));
 
     return mergePrefixResults(system, user, max);
   }
@@ -431,9 +418,9 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
   /**
    * Resolves views for an explicit list of fully-qualified name references.
    *
-   * <p>Performs a full merge between system and user objects. System resolution is attempted first
-   * using the current engine context (kind/version), then user resolution is attempted. If both
-   * resolve to a concrete resource, the name is treated as ambiguous.
+   * <p>System resolution is attempted first using the current engine context (kind/version). Names
+   * that match system objects do not require a user graph lookup because write-side policy prevents
+   * user relations from occupying system relation names.
    *
    * <p>The returned {@link NameRef} for system objects is aliased back to the user-facing catalog
    * name so callers observe a "symlink" effect.
@@ -455,15 +442,14 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     Map<String, CatalogOverlay.QualifiedRelation> merged =
         collectSystemRelationsForNames(subset, ctx, false);
 
-    ResolveResult userResult =
-        toResolveResult(userGraph.resolveViews(correlationId, subset, max, token));
-
-    for (CatalogOverlay.QualifiedRelation userRelation : userResult.relations()) {
-      String key = canonicalName(userRelation.name());
-      if (merged.containsKey(key)) {
-        throw ambiguity(correlationId, userRelation.name());
+    List<NameRef> userRefs = unresolvedUserRefs(subset, merged);
+    if (!userRefs.isEmpty() && merged.size() < max) {
+      ResolveResult userResult =
+          toResolveResult(
+              userGraph.resolveViews(correlationId, userRefs, max - merged.size(), token));
+      for (CatalogOverlay.QualifiedRelation userRelation : userResult.relations()) {
+        merged.put(canonicalName(userRelation.name()), userRelation);
       }
-      merged.put(key, userRelation);
     }
 
     return new ResolveResult(new ArrayList<>(merged.values()), merged.size(), "");
@@ -487,8 +473,9 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
 
     List<CatalogOverlay.QualifiedRelation> system =
         firstPage ? collectSystemRelationsInNamespace(prefix, ctx, false, max) : List.of();
+    int userLimit = Math.max(1, max - system.size());
     ResolveResult user =
-        toResolveResult(userGraph.resolveViews(correlationId, prefix, max, userToken));
+        toResolveResult(userGraph.resolveViews(correlationId, prefix, userLimit, userToken));
 
     return mergePrefixResults(system, user, max);
   }
@@ -634,32 +621,6 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     return userGraph.table(ref.id()).map(RelationNode.class::cast);
   }
 
-  /**
-   * Resolves a name reference with system-first precedence and ambiguity checking.
-   *
-   * <p>If both system and user graphs resolve the name, throws an ambiguity error. Missing names
-   * simply result in an empty optional.
-   *
-   * @param correlationId correlation ID for error reporting
-   * @param ref the name reference to resolve
-   * @param systemResolver supplier for system graph resolution
-   * @param userResolver supplier for user graph resolution
-   * @return the resolved resource ID, if present
-   * @throws GrpcErrors if the name is ambiguous
-   */
-  private Optional<ResourceId> resolveWithAmbiguityCheck(
-      String correlationId,
-      NameRef ref,
-      Supplier<Optional<ResourceId>> systemResolver,
-      Supplier<Optional<ResourceId>> userResolver) {
-    Optional<ResourceId> sys = systemResolver.get();
-    Optional<ResourceId> user = userResolver.get();
-    if (sys.isPresent() && user.isPresent()) {
-      throw ambiguity(correlationId, ref);
-    }
-    return sys.or(() -> user);
-  }
-
   @Override
   public List<SchemaColumn> tableSchema(ResourceId tableId) {
     return resolve(tableId)
@@ -758,6 +719,20 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     return result;
   }
 
+  private List<NameRef> unresolvedUserRefs(
+      List<NameRef> refs, Map<String, CatalogOverlay.QualifiedRelation> systemMatches) {
+    if (systemMatches.isEmpty()) {
+      return refs;
+    }
+    List<NameRef> out = new ArrayList<>();
+    for (NameRef ref : refs) {
+      if (!systemMatches.containsKey(canonicalName(ref))) {
+        out.add(ref);
+      }
+    }
+    return out;
+  }
+
   private List<CatalogOverlay.QualifiedRelation> collectSystemRelationsInNamespace(
       NameRef prefix, EngineContext ctx, boolean tables, int max) {
     Optional<ResourceId> sysNsId =
@@ -799,35 +774,22 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
   private ResolveResult mergePrefixResults(
       List<CatalogOverlay.QualifiedRelation> system, ResolveResult user, int max) {
     List<CatalogOverlay.QualifiedRelation> merged = new ArrayList<>();
-    Set<String> seen = new LinkedHashSet<>();
 
     for (CatalogOverlay.QualifiedRelation rel : system) {
       if (merged.size() >= max) {
         break;
       }
-      if (seen.add(canonicalName(rel.name()))) {
-        merged.add(rel);
-      }
+      merged.add(rel);
     }
 
     for (CatalogOverlay.QualifiedRelation rel : user.relations()) {
       if (merged.size() >= max) {
         break;
       }
-      String key = canonicalName(rel.name());
-      if (seen.add(key)) {
-        merged.add(rel);
-      }
+      merged.add(rel);
     }
 
     return new ResolveResult(merged, user.totalSize(), encodeUserToken(user.nextToken()));
-  }
-
-  private RuntimeException ambiguity(String correlationId, NameRef name) {
-    return GrpcErrors.invalidArgument(
-        correlationId,
-        GeneratedErrorMessages.MessageKey.QUERY_INPUT_AMBIGUOUS,
-        Map.of("name", name.toString()));
   }
 
   // ---- Lightweight ref listing and topology-cache invalidation ----
