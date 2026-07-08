@@ -805,6 +805,52 @@ class ReconcileControlImplTest {
   }
 
   @Test
+  void startCaptureRejectsUnspecifiedDefaultColumnScope() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .startCapture(
+                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
+                            .setScope(
+                                captureScopeWithDefaultColumnScope(
+                                    DefaultColumnScope.DCS_UNSPECIFIED))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void captureNowRejectsUnrecognizedDefaultColumnScope() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .captureNow(
+                        CaptureNowRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
+                            .setScope(captureScopeWithDefaultColumnScopeValue(99))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
   void getReconcileJobDoesNotDoubleCountPlannerProgress() {
     when(service.jobs.get("acct", "plan-1"))
         .thenReturn(Optional.of(job("plan-1", "JS_SUCCEEDED", 3, 2, 0, "")));
@@ -1301,6 +1347,7 @@ class ReconcileControlImplTest {
                 .addOutputs(ai.floedb.floecat.capture.rpc.CaptureOutput.CO_TABLE_STATS)
                 .addOutputs(ai.floedb.floecat.capture.rpc.CaptureOutput.CO_FILE_STATS)
                 .addOutputs(ai.floedb.floecat.capture.rpc.CaptureOutput.CO_COLUMN_STATS)
+                .setDefaultColumnScope(DefaultColumnScope.DCS_FIRST_N)
                 .build())
         .build();
   }
@@ -1311,7 +1358,30 @@ class ReconcileControlImplTest {
         .setCapturePolicy(
             CapturePolicy.newBuilder()
                 .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                .setDefaultColumnScope(DefaultColumnScope.DCS_FIRST_N)
                 .addColumns(CaptureColumnPolicy.newBuilder().setSelector("c1").build())
+                .build())
+        .build();
+  }
+
+  private static CaptureScope captureScopeWithDefaultColumnScope(DefaultColumnScope scope) {
+    return CaptureScope.newBuilder()
+        .setConnectorId(connectorId())
+        .setCapturePolicy(
+            CapturePolicy.newBuilder()
+                .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                .setDefaultColumnScope(scope)
+                .build())
+        .build();
+  }
+
+  private static CaptureScope captureScopeWithDefaultColumnScopeValue(int scopeValue) {
+    return CaptureScope.newBuilder()
+        .setConnectorId(connectorId())
+        .setCapturePolicy(
+            CapturePolicy.newBuilder()
+                .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                .setDefaultColumnScopeValue(scopeValue)
                 .build())
         .build();
   }

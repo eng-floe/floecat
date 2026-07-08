@@ -827,6 +827,13 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
       throw GrpcErrors.invalidArgument(
           correlationId, null, Map.of("field", fieldName + ".max_default_columns"));
     }
+    if (policy.getDefaultColumnScope()
+            == ai.floedb.floecat.capture.rpc.DefaultColumnScope.UNRECOGNIZED
+        || policy.getDefaultColumnScope()
+            == ai.floedb.floecat.capture.rpc.DefaultColumnScope.DCS_UNSPECIFIED) {
+      throw GrpcErrors.invalidArgument(
+          correlationId, null, Map.of("field", fieldName + ".default_column_scope"));
+    }
     for (int i = 0; i < policy.getColumnsCount(); i++) {
       var column = policy.getColumns(i);
       String columnField = fieldName + ".columns[" + i + "]";
