@@ -46,8 +46,4 @@ message CapturePolicy {
   repeated CaptureOutput outputs = 2;
   DefaultColumnScope default_column_scope = 3;
   uint32 max_default_columns = 4;
-  // Generic key-value capture properties forwarded opaquely to the execution engine.
-  // Floecat does not interpret these; the engine reads whatever keys it understands.
-  // Example key shape: "stats.<engine-feature>.<parameter>".
-  map<string, string> properties = 5;
 }

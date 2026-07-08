@@ -824,8 +824,7 @@ class GrpcRemoteReconcileExecutorClient
                     .map(GrpcRemoteReconcileExecutorClient::fromProtoCaptureOutput)
                     .collect(java.util.stream.Collectors.toSet()),
                 fromProtoDefaultColumnScope(execution.getCapturePolicy().getDefaultColumnScope()),
-                execution.getCapturePolicy().getMaxDefaultColumns(),
-                execution.getCapturePolicy().getPropertiesMap())
+                execution.getCapturePolicy().getMaxDefaultColumns())
             : ReconcileCapturePolicy.empty());
   }
 
@@ -1192,8 +1191,7 @@ class GrpcRemoteReconcileExecutorClient
                     .map(GrpcRemoteReconcileExecutorClient::fromProtoCaptureOutput)
                     .collect(java.util.stream.Collectors.toSet()),
                 fromProtoDefaultColumnScope(scope.getCapturePolicy().getDefaultColumnScope()),
-                scope.getCapturePolicy().getMaxDefaultColumns(),
-                scope.getCapturePolicy().getPropertiesMap())
+                scope.getCapturePolicy().getMaxDefaultColumns())
             : ReconcileCapturePolicy.empty(),
         scope.hasSnapshotSelection()
             ? fromProtoSnapshotSelection(scope.getSnapshotSelection())
@@ -1328,7 +1326,6 @@ class GrpcRemoteReconcileExecutorClient
                 .toList())
         .setDefaultColumnScope(toProtoDefaultColumnScope(effective.defaultColumnScope()))
         .setMaxDefaultColumns(effective.maxDefaultColumns())
-        .putAllProperties(effective.properties())
         .build();
   }
 

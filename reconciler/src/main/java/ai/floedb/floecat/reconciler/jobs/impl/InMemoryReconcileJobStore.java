@@ -1984,13 +1984,13 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   }
 
   private static String canonicalCaptureRequest(ReconcileScope.ScopedCaptureRequest request) {
-    return request.tableId()
-        + "|"
-        + request.snapshotId()
-        + "|"
-        + request.targetSpec()
-        + "|"
-        + String.join(",", request.columnSelectors());
+    if (request == null) {
+      return "";
+    }
+    return canonicalValue(request.tableId())
+        + canonicalValue(request.snapshotId())
+        + canonicalValue(request.targetSpec())
+        + canonicalList(request.columnSelectors());
   }
 
   private static String canonicalCapturePolicy(ReconcileCapturePolicy policy) {
@@ -2001,19 +2001,22 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         policy.columns().stream()
             .map(
                 column ->
-                    column.selector() + ":" + column.captureStats() + ":" + column.captureIndex())
+                    canonicalValue(column.selector())
+                        + canonicalValue(column.captureStats())
+                        + canonicalValue(column.captureIndex()))
             .sorted()
             .reduce((a, b) -> a + "," + b)
             .orElse("");
     String outputs =
-        policy.outputs().stream().map(Enum::name).sorted().reduce((a, b) -> a + "," + b).orElse("");
-    return columns
-        + "|"
-        + outputs
-        + "|"
-        + policy.defaultColumnScope().name()
-        + "|"
-        + policy.maxDefaultColumns();
+        policy.outputs().stream()
+            .map(output -> canonicalValue(output.name()))
+            .sorted()
+            .reduce((a, b) -> a + b)
+            .orElse("");
+    return canonicalValue(columns)
+        + canonicalValue(outputs)
+        + canonicalValue(policy.defaultColumnScope().name())
+        + canonicalValue(policy.maxDefaultColumns());
   }
 
   private static String canonicalSnapshotSelection(ReconcileSnapshotSelection selection) {
@@ -2026,6 +2029,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         + "|"
         + selection.snapshotIds().stream()
             .map(String::valueOf)
+            .sorted()
             .reduce((a, b) -> a + "," + b)
             .orElse("");
   }
@@ -2060,6 +2064,25 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         .map(entry -> blankToEmpty(entry.getKey()) + "=" + blankToEmpty(entry.getValue()))
         .reduce((a, b) -> a + "," + b)
         .orElse("");
+  }
+
+  private static String canonicalList(List<?> values) {
+    if (values == null) {
+      return "L-1:";
+    }
+    String prefix = "L" + values.size() + ":";
+    return values.stream()
+        .map(InMemoryReconcileJobStore::canonicalValue)
+        .sorted()
+        .reduce(prefix, (a, b) -> a + b);
+  }
+
+  private static String canonicalValue(Object value) {
+    if (value == null) {
+      return "V-1:";
+    }
+    String stringValue = value.toString();
+    return "V" + stringValue.length() + ":" + stringValue;
   }
 
   private static void requireExplicitSnapshotCoverage(

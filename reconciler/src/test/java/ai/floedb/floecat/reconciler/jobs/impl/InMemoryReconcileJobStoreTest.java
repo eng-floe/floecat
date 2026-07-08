@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -30,6 +31,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
@@ -136,6 +138,99 @@ class InMemoryReconcileJobStoreTest {
             ReconcileExecutionPolicy.of(
                 ReconcileExecutionClass.HEAVY, "remote", java.util.Map.of()),
             "");
+
+    assertNotEquals(first, second);
+  }
+
+  @Test
+  void enqueueDedupesEquivalentExplicitSnapshotSelections() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileScope firstScope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            null,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(),
+                EnumSet.of(ReconcileCapturePolicy.Output.TABLE_STATS),
+                ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+                7),
+            ReconcileSnapshotSelection.explicit(List.of(9L, 3L, 7L)));
+    ReconcileScope secondScope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            null,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(),
+                EnumSet.of(ReconcileCapturePolicy.Output.TABLE_STATS),
+                ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+                7),
+            ReconcileSnapshotSelection.explicit(List.of(7L, 9L, 3L)));
+
+    String first =
+        store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, firstScope);
+    String second =
+        store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, secondScope);
+
+    assertEquals(first, second);
+  }
+
+  @Test
+  void enqueueDoesNotDedupeCapturePoliciesWithDelimiterAmbiguousColumnSelectors() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileScope firstScope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(new ReconcileCapturePolicy.Column("a:true:false,b", true, false)),
+                EnumSet.of(ReconcileCapturePolicy.Output.COLUMN_STATS)));
+    ReconcileScope secondScope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(
+                    new ReconcileCapturePolicy.Column("a", true, false),
+                    new ReconcileCapturePolicy.Column("b", true, false)),
+                EnumSet.of(ReconcileCapturePolicy.Output.COLUMN_STATS)));
+
+    String first =
+        store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, firstScope);
+    String second =
+        store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, secondScope);
+
+    assertNotEquals(first, second);
+  }
+
+  @Test
+  void enqueueDoesNotDedupeCaptureRequestsWithDelimiterAmbiguousColumnSelectors() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileScope firstScope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            List.of(new ReconcileScope.ScopedCaptureRequest("tbl", 11L, "target", List.of("a,b"))),
+            ReconcileCapturePolicy.of(
+                List.of(), EnumSet.of(ReconcileCapturePolicy.Output.COLUMN_STATS)));
+    ReconcileScope secondScope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            List.of(
+                new ReconcileScope.ScopedCaptureRequest("tbl", 11L, "target", List.of("a", "b"))),
+            ReconcileCapturePolicy.of(
+                List.of(), EnumSet.of(ReconcileCapturePolicy.Output.COLUMN_STATS)));
+
+    String first =
+        store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, firstScope);
+    String second =
+        store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, secondScope);
 
     assertNotEquals(first, second);
   }

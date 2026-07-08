@@ -876,15 +876,10 @@ public class ReconcileJobEnqueuer {
     if (request == null) {
       return "";
     }
-    String selectors =
-        request.columnSelectors().stream().sorted().reduce((a, b) -> a + "," + b).orElse("");
-    return request.tableId()
-        + "|"
-        + request.snapshotId()
-        + "|"
-        + request.targetSpec()
-        + "|"
-        + selectors;
+    return canonicalValue(request.tableId())
+        + canonicalValue(request.snapshotId())
+        + canonicalValue(request.targetSpec())
+        + canonicalList(request.columnSelectors());
   }
 
   private static String canonicalCapturePolicy(ReconcileCapturePolicy policy) {
@@ -895,19 +890,22 @@ public class ReconcileJobEnqueuer {
         policy.columns().stream()
             .map(
                 column ->
-                    column.selector() + ":" + column.captureStats() + ":" + column.captureIndex())
+                    canonicalValue(column.selector())
+                        + canonicalValue(column.captureStats())
+                        + canonicalValue(column.captureIndex()))
             .sorted()
             .reduce((a, b) -> a + "," + b)
             .orElse("");
     String outputs =
-        policy.outputs().stream().map(Enum::name).sorted().reduce((a, b) -> a + "," + b).orElse("");
-    return columns
-        + "|"
-        + outputs
-        + "|"
-        + policy.defaultColumnScope().name()
-        + "|"
-        + policy.maxDefaultColumns();
+        policy.outputs().stream()
+            .map(output -> canonicalValue(output.name()))
+            .sorted()
+            .reduce((a, b) -> a + b)
+            .orElse("");
+    return canonicalValue(columns)
+        + canonicalValue(outputs)
+        + canonicalValue(policy.defaultColumnScope().name())
+        + canonicalValue(policy.maxDefaultColumns());
   }
 
   private static String canonicalSnapshotSelection(ReconcileSnapshotSelection selection) {
@@ -956,6 +954,25 @@ public class ReconcileJobEnqueuer {
         .map(String::trim)
         .sorted()
         .toList();
+  }
+
+  private static String canonicalList(List<?> values) {
+    if (values == null) {
+      return "L-1:";
+    }
+    String prefix = "L" + values.size() + ":";
+    return values.stream()
+        .map(ReconcileJobEnqueuer::canonicalValue)
+        .sorted()
+        .reduce(prefix, (a, b) -> a + b);
+  }
+
+  private static String canonicalValue(Object value) {
+    if (value == null) {
+      return "V-1:";
+    }
+    String stringValue = value.toString();
+    return "V" + stringValue.length() + ":" + stringValue;
   }
 
   private static String blankToEmpty(String value) {

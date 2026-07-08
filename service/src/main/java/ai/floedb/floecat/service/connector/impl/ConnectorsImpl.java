@@ -811,13 +811,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       builder.setAuth(maskAuthConfig(connector.getAuth()));
       changed = true;
     }
-    if (connector.hasPolicy() && connector.getPolicy().hasAutoCapturePolicy()) {
-      builder.setPolicy(
-          connector.getPolicy().toBuilder()
-              .setAutoCapturePolicy(maskCapturePolicy(connector.getPolicy().getAutoCapturePolicy()))
-              .build());
-      changed = true;
-    }
     return changed ? builder.build() : connector;
   }
 
@@ -896,16 +889,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     builder.putAllProperties(maskSensitiveMap(credentials.getPropertiesMap()));
     builder.putAllHeaders(maskSensitiveMap(credentials.getHeadersMap()));
     return builder.build();
-  }
-
-  private static CapturePolicy maskCapturePolicy(CapturePolicy policy) {
-    if (policy == null) {
-      return CapturePolicy.getDefaultInstance();
-    }
-    return policy.toBuilder()
-        .clearProperties()
-        .putAllProperties(maskSensitiveMap(policy.getPropertiesMap()))
-        .build();
   }
 
   private static AuthCredentials.TokenExchange maskTokenExchange(
@@ -995,7 +978,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     if (policy == null) {
       return;
     }
-    validateSecretBearingMap(policy.getPropertiesMap(), corr, fieldName + ".properties");
     if (policy.getOutputsCount() == 0) {
       throw GrpcErrors.invalidArgument(corr, null, Map.of("field", fieldName + ".outputs"));
     }

@@ -25,6 +25,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.capture.rpc.CaptureOutput;
+import ai.floedb.floecat.capture.rpc.DefaultColumnScope;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
@@ -55,7 +57,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -474,7 +475,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
-  void submitPlanTableSuccessPreservesCapturePolicyPropertiesInScope() throws Exception {
+  void submitPlanTableSuccessPreservesTypedCapturePolicyInScope() throws Exception {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ManagedChannel channel = mock(ManagedChannel.class);
     ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
@@ -497,9 +498,8 @@ class GrpcRemoteReconcileExecutorClientTest {
             ReconcileCapturePolicy.of(
                 List.of(),
                 Set.of(ReconcileCapturePolicy.Output.TABLE_STATS),
-                ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
-                ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS,
-                Map.of("stats.ndv.sample_fraction", "0.25")),
+                ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+                7),
             ReconcileSnapshotSelection.unspecified());
 
     assertThat(
@@ -525,8 +525,26 @@ class GrpcRemoteReconcileExecutorClientTest {
                 .getSnapshotJobs(0)
                 .getScope()
                 .getCapturePolicy()
-                .getPropertiesMap())
-        .containsEntry("stats.ndv.sample_fraction", "0.25");
+                .getOutputsList())
+        .containsExactly(CaptureOutput.CO_TABLE_STATS);
+    assertThat(
+            requestCaptor
+                .getValue()
+                .getSuccess()
+                .getSnapshotJobs(0)
+                .getScope()
+                .getCapturePolicy()
+                .getDefaultColumnScope())
+        .isEqualTo(DefaultColumnScope.DCS_EXPLICIT_ONLY);
+    assertThat(
+            requestCaptor
+                .getValue()
+                .getSuccess()
+                .getSnapshotJobs(0)
+                .getScope()
+                .getCapturePolicy()
+                .getMaxDefaultColumns())
+        .isEqualTo(7);
   }
 
   @Test

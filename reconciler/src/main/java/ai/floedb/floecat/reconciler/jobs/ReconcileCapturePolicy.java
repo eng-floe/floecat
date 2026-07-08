@@ -21,7 +21,6 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -54,27 +53,19 @@ public final class ReconcileCapturePolicy {
 
   private static final ReconcileCapturePolicy EMPTY =
       new ReconcileCapturePolicy(
-          List.of(), Set.of(), DefaultColumnScope.FIRST_N, DEFAULT_MAX_COLUMNS, Map.of());
+          List.of(), Set.of(), DefaultColumnScope.FIRST_N, DEFAULT_MAX_COLUMNS);
 
   private final List<Column> columns;
   private final Set<Output> outputs;
   private final DefaultColumnScope defaultColumnScope;
   private final int maxDefaultColumns;
 
-  /**
-   * Generic key-value properties forwarded opaquely to the execution engine. Floecat does not
-   * interpret these; the engine reads whatever keys it understands.
-   */
-  @JsonProperty("properties")
-  private final Map<String, String> properties;
-
   @JsonCreator
   private ReconcileCapturePolicy(
       @JsonProperty("columns") List<Column> columns,
       @JsonProperty("outputs") Set<Output> outputs,
       @JsonProperty("defaultColumnScope") DefaultColumnScope defaultColumnScope,
-      @JsonProperty("maxDefaultColumns") Integer maxDefaultColumns,
-      @JsonProperty("properties") Map<String, String> properties) {
+      @JsonProperty("maxDefaultColumns") Integer maxDefaultColumns) {
     this.columns =
         columns == null
             ? List.of()
@@ -93,7 +84,6 @@ public final class ReconcileCapturePolicy {
         maxDefaultColumns == null || maxDefaultColumns <= 0
             ? DEFAULT_MAX_COLUMNS
             : maxDefaultColumns;
-    this.properties = properties == null ? Map.of() : Map.copyOf(properties);
   }
 
   public static ReconcileCapturePolicy empty() {
@@ -101,7 +91,7 @@ public final class ReconcileCapturePolicy {
   }
 
   public static ReconcileCapturePolicy of(List<Column> columns, Set<Output> outputs) {
-    return of(columns, outputs, DefaultColumnScope.FIRST_N, DEFAULT_MAX_COLUMNS, Map.of());
+    return of(columns, outputs, DefaultColumnScope.FIRST_N, DEFAULT_MAX_COLUMNS);
   }
 
   public static ReconcileCapturePolicy of(
@@ -109,20 +99,10 @@ public final class ReconcileCapturePolicy {
       Set<Output> outputs,
       DefaultColumnScope defaultColumnScope,
       int maxDefaultColumns) {
-    return of(columns, outputs, defaultColumnScope, maxDefaultColumns, Map.of());
-  }
-
-  public static ReconcileCapturePolicy of(
-      List<Column> columns,
-      Set<Output> outputs,
-      DefaultColumnScope defaultColumnScope,
-      int maxDefaultColumns,
-      Map<String, String> properties) {
     if ((columns == null || columns.isEmpty()) && (outputs == null || outputs.isEmpty())) {
       return EMPTY;
     }
-    return new ReconcileCapturePolicy(
-        columns, outputs, defaultColumnScope, maxDefaultColumns, properties);
+    return new ReconcileCapturePolicy(columns, outputs, defaultColumnScope, maxDefaultColumns);
   }
 
   @JsonProperty("columns")
@@ -143,11 +123,6 @@ public final class ReconcileCapturePolicy {
   @JsonProperty("maxDefaultColumns")
   public int maxDefaultColumns() {
     return maxDefaultColumns;
-  }
-
-  @JsonProperty("properties")
-  public Map<String, String> properties() {
-    return properties;
   }
 
   @JsonIgnore

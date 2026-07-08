@@ -32,6 +32,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.capture.rpc.CaptureOutput;
 import ai.floedb.floecat.capture.rpc.CapturePolicy;
+import ai.floedb.floecat.capture.rpc.DefaultColumnScope;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -61,7 +62,6 @@ import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.Duration;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -483,7 +483,8 @@ class ReconcileControlImplTest {
                             .setAutoCapturePolicy(
                                 CapturePolicy.newBuilder()
                                     .addOutputs(CaptureOutput.CO_PARQUET_PAGE_INDEX)
-                                    .putProperties("stats.ndv.sample_fraction", "0.1")
+                                    .setDefaultColumnScope(DefaultColumnScope.DCS_EXPLICIT_ONLY)
+                                    .setMaxDefaultColumns(7)
                                     .build())
                             .build())
                     .build()));
@@ -514,8 +515,9 @@ class ReconcileControlImplTest {
         java.util.Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
         scopeCaptor.getValue().capturePolicy().outputs());
     assertEquals(
-        Map.of("stats.ndv.sample_fraction", "0.1"),
-        scopeCaptor.getValue().capturePolicy().properties());
+        ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+        scopeCaptor.getValue().capturePolicy().defaultColumnScope());
+    assertEquals(7, scopeCaptor.getValue().capturePolicy().maxDefaultColumns());
   }
 
   @Test

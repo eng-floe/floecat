@@ -727,8 +727,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                     .map(ReconcileControlImpl::mapCaptureOutput)
                     .collect(java.util.stream.Collectors.toSet()),
                 fromProtoDefaultColumnScope(scope.getCapturePolicy().getDefaultColumnScope()),
-                scope.getCapturePolicy().getMaxDefaultColumns(),
-                scope.getCapturePolicy().getPropertiesMap())
+                scope.getCapturePolicy().getMaxDefaultColumns())
             : ReconcileCapturePolicy.empty(),
         scope.hasSnapshotSelection()
             ? fromProtoSnapshotSelection(scope.getSnapshotSelection())
