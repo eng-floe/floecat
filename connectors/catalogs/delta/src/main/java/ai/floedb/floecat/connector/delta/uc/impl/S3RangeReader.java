@@ -16,7 +16,9 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
+import ai.floedb.floecat.connector.common.aws.RefreshingAwsClient;
 import java.io.IOException;
+import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
@@ -26,7 +28,7 @@ final class S3RangeReader {
 
   private static final int DEFAULT_CHUNK_SIZE = 16 * 1024 * 1024;
 
-  private final DeltaS3ClientPool s3;
+  private final RefreshingAwsClient<S3Client> s3;
   private final String bucket;
   private final String key;
   private final long fileLength;
@@ -40,11 +42,12 @@ final class S3RangeReader {
   private long totalWindows = 0;
   private boolean closed = false;
 
-  S3RangeReader(DeltaS3ClientPool s3, String bucket, String key) throws IOException {
+  S3RangeReader(RefreshingAwsClient<S3Client> s3, String bucket, String key) throws IOException {
     this(s3, bucket, key, DEFAULT_CHUNK_SIZE);
   }
 
-  S3RangeReader(DeltaS3ClientPool s3, String bucket, String key, int chunkSize) throws IOException {
+  S3RangeReader(RefreshingAwsClient<S3Client> s3, String bucket, String key, int chunkSize)
+      throws IOException {
     this.s3 = s3;
     this.bucket = bucket;
     this.key = key;

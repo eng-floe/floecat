@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
+import ai.floedb.floecat.connector.common.aws.RefreshingAwsClient;
 import io.delta.kernel.defaults.engine.fileio.FileIO;
 import io.delta.kernel.defaults.engine.fileio.InputFile;
 import io.delta.kernel.defaults.engine.fileio.OutputFile;
@@ -31,6 +32,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Optional;
+import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
@@ -38,9 +40,9 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.S3Object;
 
 final class S3V2FileSystemClient implements FileIO {
-  private final DeltaS3ClientPool s3;
+  private final RefreshingAwsClient<S3Client> s3;
 
-  S3V2FileSystemClient(DeltaS3ClientPool s3) {
+  S3V2FileSystemClient(RefreshingAwsClient<S3Client> s3) {
     this.s3 = s3;
   }
 
@@ -265,14 +267,14 @@ final class S3V2FileSystemClient implements FileIO {
   }
 
   static final class S3InputFile implements InputFile {
-    private final DeltaS3ClientPool s3;
+    private final RefreshingAwsClient<S3Client> s3;
     private final String resolvedPath;
 
     private final String bucket;
     private final String key;
     private final S3RangeReader rangeReader;
 
-    S3InputFile(DeltaS3ClientPool s3, String resolvedPath) {
+    S3InputFile(RefreshingAwsClient<S3Client> s3, String resolvedPath) {
       this.s3 = s3;
       this.resolvedPath = resolvedPath;
 
