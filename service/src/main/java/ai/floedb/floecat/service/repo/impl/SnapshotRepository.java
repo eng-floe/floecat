@@ -19,8 +19,10 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.SnapshotKey;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -28,11 +30,14 @@ import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.telemetry.StoreOperationSummary;
+import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
@@ -51,6 +56,8 @@ public class SnapshotRepository {
   }
 
   private final GenericResourceRepository<Snapshot, SnapshotKey> repo;
+  private final PointerStore pointerStore;
+  private final SnapshotCreateSequenceStore createSequences;
   private final TableRepository tableRepo;
   private final CurrentSnapshotPointerRepository currentPointerRepo;
   private final Clock clock;
@@ -69,6 +76,8 @@ public class SnapshotRepository {
             Snapshot::parseFrom,
             Snapshot::toByteArray,
             "application/x-protobuf");
+    this.pointerStore = pointerStore;
+    this.createSequences = new SnapshotCreateSequenceStore(pointerStore);
     this.tableRepo = tableRepo;
     this.currentPointerRepo = currentPointerRepo;
     this.clock = Clock.systemUTC();
@@ -97,13 +106,49 @@ public class SnapshotRepository {
             Snapshot::parseFrom,
             Snapshot::toByteArray,
             "application/x-protobuf");
+    this.pointerStore = pointerStore;
+    this.createSequences = new SnapshotCreateSequenceStore(pointerStore);
     this.tableRepo = tableRepo;
     this.currentPointerRepo = currentPointerRepo;
     this.clock = clock;
   }
 
   public void create(Snapshot snapshot) {
-    repo.create(snapshot);
+    String blobUri = snapshotBlobUri(snapshot);
+    repo.putBlob(blobUri, snapshot);
+
+    List<String> snapshotPointerKeys = snapshotPointerKeys(snapshot);
+    for (int attempt = 0; attempt < BaseResourceRepository.CAS_MAX; attempt++) {
+      List<PointerStore.CasOp> ops = new ArrayList<>(snapshotPointerKeys.size() + 1);
+      for (String pointerKey : snapshotPointerKeys) {
+        ops.add(new PointerStore.CasUpsert(pointerKey, 0L, snapshotPointer(pointerKey, blobUri)));
+      }
+      ops.addAll(
+          createSequences.planCreateOps(
+              List.of(
+                  new SnapshotCreateSequenceStore.CreateTarget(
+                      snapshot.getTableId().getAccountId()))));
+
+      if (pointerStore.compareAndSetBatch(ops)) {
+        return;
+      }
+      try {
+        classifySnapshotCreateConflict(blobUri, snapshotPointerKeys);
+      } catch (BaseResourceRepository.AbortRetryableException e) {
+        if (attempt + 1 >= BaseResourceRepository.CAS_MAX) {
+          throw e;
+        }
+        backoffCurrentPointerAdvance(attempt);
+        continue;
+      }
+      return;
+    }
+    throw new BaseResourceRepository.AbortRetryableException(
+        "snapshot create sequence conflict for: "
+            + Keys.snapshotPointerById(
+                snapshot.getTableId().getAccountId(),
+                snapshot.getTableId().getId(),
+                snapshot.getSnapshotId()));
   }
 
   public boolean update(Snapshot snapshot, long expectedPointerVersion) {
@@ -340,6 +385,10 @@ public class SnapshotRepository {
     return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
+  public long currentCreateSequence(String accountId) {
+    return createSequences.currentSequence(accountId);
+  }
+
   public int count(ResourceId tableId) {
     String prefix = Keys.snapshotPointerByIdPrefix(tableId.getAccountId(), tableId.getId());
     return repo.countByPrefix(prefix);
@@ -386,5 +435,67 @@ public class SnapshotRepository {
     } while (!token.isEmpty());
 
     return Optional.ofNullable(best);
+  }
+
+  private static String snapshotBlobUri(Snapshot snapshot) {
+    byte[] bytes = snapshot.toByteArray();
+    return Keys.snapshotBlobUri(
+        snapshot.getTableId().getAccountId(),
+        snapshot.getTableId().getId(),
+        snapshot.getSnapshotId(),
+        Hashing.sha256Hex(bytes));
+  }
+
+  private static Pointer snapshotPointer(String pointerKey, String blobUri) {
+    return PointerReferences.blobPointer(pointerKey, blobUri, 1L);
+  }
+
+  private static List<String> snapshotPointerKeys(Snapshot snapshot) {
+    long upstreamCreatedAtMs =
+        snapshot.hasUpstreamCreatedAt() ? Timestamps.toMillis(snapshot.getUpstreamCreatedAt()) : 0L;
+    LinkedHashSet<String> keys = new LinkedHashSet<>();
+    keys.add(
+        Keys.snapshotPointerById(
+            snapshot.getTableId().getAccountId(),
+            snapshot.getTableId().getId(),
+            snapshot.getSnapshotId()));
+    keys.add(
+        Keys.snapshotPointerByTime(
+            snapshot.getTableId().getAccountId(),
+            snapshot.getTableId().getId(),
+            snapshot.getSnapshotId(),
+            upstreamCreatedAtMs));
+    return List.copyOf(keys);
+  }
+
+  private void classifySnapshotCreateConflict(String blobUri, List<String> pointerKeys) {
+    int present = 0;
+    int absent = 0;
+    for (String pointerKey : pointerKeys) {
+      Pointer pointer = pointerStore.get(pointerKey).orElse(null);
+      if (pointer == null) {
+        absent++;
+        continue;
+      }
+      if (!blobUri.equals(pointer.getBlobUri())) {
+        throw new BaseResourceRepository.NameConflictException(
+            "pointer bound to different blob: " + pointerKey);
+      }
+      present++;
+    }
+    if (absent == 0) {
+      return;
+    }
+    if (present == 0) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "snapshot create conflict, no snapshot pointer present: " + pointerKeys.get(0));
+    }
+    throw new BaseResourceRepository.CorruptionException(
+        "partial snapshot create state ("
+            + present
+            + " present, "
+            + absent
+            + " absent) for: "
+            + pointerKeys);
   }
 }

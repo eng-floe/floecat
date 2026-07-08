@@ -158,6 +158,51 @@ class SnapshotRepositoryTest {
   }
 
   @Test
+  void createAdvancesAccountSnapshotCreateSequenceInPointerStore() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var firstTable =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    var secondTable =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    seedSnapshot(snapshotRepo, account, firstTable, 10, clock.millis(), clock.millis() - 20_000);
+    seedSnapshot(snapshotRepo, account, secondTable, 20, clock.millis(), clock.millis() - 10_000);
+
+    assertEquals(2L, snapshotRepo.currentCreateSequence(account));
+  }
+
+  @Test
+  void duplicateIdenticalSnapshotCreateDoesNotAllocateNewCreateSequence() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(10L)
+            .setIngestedAt(Timestamps.fromMillis(clock.millis()))
+            .setUpstreamCreatedAt(Timestamps.fromMillis(clock.millis() - 10_000))
+            .build();
+
+    snapshotRepo.create(snapshot);
+    snapshotRepo.create(snapshot);
+
+    assertEquals(1L, snapshotRepo.currentCreateSequence(account));
+  }
+
+  @Test
   void maybeAdvanceCurrentSnapshotPointerCreatesPointerWithoutMutatingTable() {
     String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var tableRid =

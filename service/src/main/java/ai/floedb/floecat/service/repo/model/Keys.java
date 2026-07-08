@@ -485,6 +485,11 @@ public final class Keys {
     return String.format("/accounts/%s/tables/%s/snapshots/by-time/", encode(tid), encode(tbid));
   }
 
+  public static String snapshotCreateSequenceStatePointer(String accountId) {
+    String tid = req("account_id", accountId);
+    return String.format("/accounts/%s/snapshots/creates/state", encode(tid));
+  }
+
   public static String snapshotBlobUri(
       String accountId, String tableId, long snapshotId, String sha256) {
     String tid = req("account_id", accountId);
