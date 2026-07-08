@@ -713,6 +713,49 @@ class StatsCliSupportTest {
   }
 
   @Test
+  void analyzeRejectsColumnsWithoutColumnCaptureOutputs() throws Exception {
+    try (Harness h = new Harness()) {
+      h.tableService.tableToReturn =
+          Table.newBuilder()
+              .setResourceId(tableId())
+              .setDisplayName("events")
+              .setNamespaceId(ResourceId.newBuilder().setId("ns-1").build())
+              .setUpstream(
+                  UpstreamRef.newBuilder()
+                      .setConnectorId(ResourceId.newBuilder().setId("conn-1").build())
+                      .build())
+              .build();
+      h.snapshotService.currentSnapshotId = 42L;
+
+      IllegalArgumentException error =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  StatsCliSupport.handle(
+                      "analyze",
+                      List.of(
+                          "catalog.ns.tbl",
+                          "--mode",
+                          "capture-only",
+                          "--capture",
+                          "table-stats",
+                          "--columns",
+                          "c1"),
+                      new PrintStream(new ByteArrayOutputStream()),
+                      h.statisticsStub,
+                      h.indexesStub,
+                      h.snapshotStub,
+                      h.tablesStub,
+                      h.namespacesStub,
+                      h.reconcileControlStub,
+                      ignored -> tableId()));
+
+      assertTrue(error.getMessage().contains("--columns requires --capture column-stats"));
+      assertEquals(0, h.reconcileControlService.captureNowCalls.get());
+    }
+  }
+
+  @Test
   void analyzeDefaultColsStillRequireExplicitCaptureOverride() throws Exception {
     try (Harness h = new Harness()) {
       h.tableService.tableToReturn =
@@ -1013,11 +1056,13 @@ class StatsCliSupportTest {
 
   private static final class CapturingReconcileControlService
       extends ReconcileControlGrpc.ReconcileControlImplBase {
+    final AtomicInteger captureNowCalls = new AtomicInteger();
     CaptureNowRequest lastCaptureNowRequest;
 
     @Override
     public void captureNow(
         CaptureNowRequest request, StreamObserver<CaptureNowResponse> responseObserver) {
+      captureNowCalls.incrementAndGet();
       lastCaptureNowRequest = request;
       responseObserver.onNext(CaptureNowResponse.getDefaultInstance());
       responseObserver.onCompleted();

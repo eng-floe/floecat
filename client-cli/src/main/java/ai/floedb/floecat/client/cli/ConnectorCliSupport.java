@@ -1167,6 +1167,7 @@ final class ConnectorCliSupport {
       throw new IllegalArgumentException(
           "--policy-capture is required when using --policy-columns, --policy-default-cols, or --policy-max-default-cols");
     }
+    CliUtils.requireColumnSelectorOutputs("--policy-columns", "--policy-capture", columns, outputs);
     CapturePolicy.Builder policy =
         CapturePolicy.newBuilder()
             .addAllOutputs(outputs)

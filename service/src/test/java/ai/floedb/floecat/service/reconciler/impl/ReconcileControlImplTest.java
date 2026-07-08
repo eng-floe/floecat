@@ -30,6 +30,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.capture.rpc.CaptureColumnPolicy;
 import ai.floedb.floecat.capture.rpc.CaptureOutput;
 import ai.floedb.floecat.capture.rpc.CapturePolicy;
 import ai.floedb.floecat.capture.rpc.DefaultColumnScope;
@@ -760,6 +761,50 @@ class ReconcileControlImplTest {
   }
 
   @Test
+  void startCaptureRejectsColumnPolicyWithNoEnabledOutputs() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .startCapture(
+                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
+                            .setScope(captureScopeWithDisabledColumnPolicy())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void captureNowRejectsColumnPolicyWithNoEnabledOutputs() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .captureNow(
+                        CaptureNowRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
+                            .setScope(captureScopeWithDisabledColumnPolicy())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
   void getReconcileJobDoesNotDoubleCountPlannerProgress() {
     when(service.jobs.get("acct", "plan-1"))
         .thenReturn(Optional.of(job("plan-1", "JS_SUCCEEDED", 3, 2, 0, "")));
@@ -1256,6 +1301,17 @@ class ReconcileControlImplTest {
                 .addOutputs(ai.floedb.floecat.capture.rpc.CaptureOutput.CO_TABLE_STATS)
                 .addOutputs(ai.floedb.floecat.capture.rpc.CaptureOutput.CO_FILE_STATS)
                 .addOutputs(ai.floedb.floecat.capture.rpc.CaptureOutput.CO_COLUMN_STATS)
+                .build())
+        .build();
+  }
+
+  private static CaptureScope captureScopeWithDisabledColumnPolicy() {
+    return CaptureScope.newBuilder()
+        .setConnectorId(connectorId())
+        .setCapturePolicy(
+            CapturePolicy.newBuilder()
+                .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                .addColumns(CaptureColumnPolicy.newBuilder().setSelector("c1").build())
                 .build())
         .build();
   }

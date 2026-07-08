@@ -130,6 +130,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                         validatedActiveConnector(pc.getAccountId(), request.getScope(), corr);
                     var connectorId = connector.getResourceId();
                     requireSpecifiedCaptureMode(request.getMode(), corr);
+                    validateRequestCapturePolicy(request.getScope(), corr);
                     var mode = mapCaptureMode(request.getMode());
                     var scope = effectiveScope(request.getScope(), connector, mode);
                     requireResolvedCapturePolicy(mode, scope, corr);
@@ -193,6 +194,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
 
                     authz.require(
                         principalContext, List.of("connector.manage", "connector.create"));
+                    validateRequestCapturePolicy(request.getScope(), correlationId);
 
                     var connector =
                         validatedActiveConnector(
@@ -794,6 +796,50 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     if (mode == ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_UNSPECIFIED
         || mode == ai.floedb.floecat.reconciler.rpc.CaptureMode.UNRECOGNIZED) {
       throw GrpcErrors.invalidArgument(correlationId, null, Map.of("field", "mode"));
+    }
+  }
+
+  private static void validateRequestCapturePolicy(CaptureScope scope, String correlationId) {
+    if (scope == null || !scope.hasCapturePolicy()) {
+      return;
+    }
+    validateCapturePolicy(scope.getCapturePolicy(), correlationId, "scope.capture_policy");
+  }
+
+  private static void validateCapturePolicy(
+      CapturePolicy policy, String correlationId, String fieldName) {
+    if (policy == null) {
+      return;
+    }
+    if (policy.getOutputsCount() == 0) {
+      throw GrpcErrors.invalidArgument(
+          correlationId, null, Map.of("field", fieldName + ".outputs"));
+    }
+    for (int i = 0; i < policy.getOutputsCount(); i++) {
+      var output = policy.getOutputs(i);
+      if (output == ai.floedb.floecat.capture.rpc.CaptureOutput.CO_UNSPECIFIED
+          || output == ai.floedb.floecat.capture.rpc.CaptureOutput.UNRECOGNIZED) {
+        throw GrpcErrors.invalidArgument(
+            correlationId, null, Map.of("field", fieldName + ".outputs[" + i + "]"));
+      }
+    }
+    if (policy.getMaxDefaultColumns() < 0) {
+      throw GrpcErrors.invalidArgument(
+          correlationId, null, Map.of("field", fieldName + ".max_default_columns"));
+    }
+    for (int i = 0; i < policy.getColumnsCount(); i++) {
+      var column = policy.getColumns(i);
+      String columnField = fieldName + ".columns[" + i + "]";
+      if (column.getSelector().isBlank()) {
+        throw GrpcErrors.invalidArgument(
+            correlationId, null, Map.of("field", columnField + ".selector"));
+      }
+      if (!column.getCaptureStats() && !column.getCaptureIndex()) {
+        throw GrpcErrors.invalidArgument(
+            correlationId,
+            null,
+            Map.of("field", columnField, "reason", "column capture policy has no enabled outputs"));
+      }
     }
   }
 

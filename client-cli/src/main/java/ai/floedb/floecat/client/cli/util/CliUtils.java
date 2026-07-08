@@ -243,6 +243,22 @@ public final class CliUtils {
     return Set.copyOf(outputs);
   }
 
+  public static boolean hasColumnCaptureOutput(Set<CaptureOutput> outputs) {
+    return outputs != null
+        && (outputs.contains(CaptureOutput.CO_COLUMN_STATS)
+            || outputs.contains(CaptureOutput.CO_PARQUET_PAGE_INDEX));
+  }
+
+  public static void requireColumnSelectorOutputs(
+      String selectorFlag, String captureFlag, List<String> columns, Set<CaptureOutput> outputs) {
+    boolean hasColumns =
+        columns != null && columns.stream().anyMatch(column -> column != null && !column.isBlank());
+    if (hasColumns && !hasColumnCaptureOutput(outputs)) {
+      throw new IllegalArgumentException(
+          selectorFlag + " requires " + captureFlag + " column-stats or " + captureFlag + " index");
+    }
+  }
+
   /** Parses a default column scope token for trigger-time capture policy defaults. */
   public static DefaultColumnScope parseDefaultColumnScope(String s) {
     if (s == null || s.isBlank()) {
@@ -279,6 +295,7 @@ public final class CliUtils {
     if (outputs.isEmpty()) {
       return null;
     }
+    requireColumnSelectorOutputs("--columns", "--capture", columns, outputs);
     CapturePolicy.Builder policy =
         CapturePolicy.newBuilder()
             .addAllOutputs(outputs)

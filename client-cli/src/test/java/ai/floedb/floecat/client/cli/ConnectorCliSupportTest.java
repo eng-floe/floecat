@@ -401,6 +401,39 @@ class ConnectorCliSupportTest {
   }
 
   @Test
+  void connectorCreateRejectsPolicyColumnsWithoutColumnCaptureOutputs() throws Exception {
+    try (Harness h = new Harness()) {
+      IllegalArgumentException ex =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  ConnectorCliSupport.handle(
+                      "connector",
+                      List.of(
+                          "create",
+                          "new-conn",
+                          "ICEBERG",
+                          "s3://bucket",
+                          "src.ns",
+                          "dest-cat",
+                          "--policy-enabled",
+                          "--policy-capture",
+                          "table-stats",
+                          "--policy-columns",
+                          "c1"),
+                      new PrintStream(new ByteArrayOutputStream()),
+                      h.connectorsStub,
+                      h.reconcileControlStub,
+                      h.directoryStub,
+                      () -> "acct-1"));
+
+      assertTrue(
+          ex.getMessage().contains("--policy-columns requires --policy-capture column-stats"));
+      assertEquals(0, h.connectorsService.createConnectorCalls.get());
+    }
+  }
+
+  @Test
   void connectorUpdateCanClearPersistedAutoCapturePolicy() throws Exception {
     try (Harness h = new Harness()) {
       h.connectorsService.connectorToReturn =
@@ -555,6 +588,38 @@ class ConnectorCliSupportTest {
                       () -> "acct-1"));
 
       assertTrue(error.getMessage().contains("--capture is required"));
+      assertEquals(0, h.reconcileControlService.startCaptureCalls.get());
+    }
+  }
+
+  @Test
+  void connectorTriggerRejectsColumnsWithoutColumnCaptureOutputs() throws Exception {
+    try (Harness h = new Harness()) {
+      h.connectorsService.connectorToReturn =
+          Connector.newBuilder().setResourceId(connectorId()).build();
+
+      IllegalArgumentException error =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  ConnectorCliSupport.handle(
+                      "connector",
+                      List.of(
+                          "trigger",
+                          CONNECTOR_UUID,
+                          "--mode",
+                          "capture-only",
+                          "--capture",
+                          "table-stats",
+                          "--columns",
+                          "c1"),
+                      new PrintStream(new ByteArrayOutputStream()),
+                      h.connectorsStub,
+                      h.reconcileControlStub,
+                      h.directoryStub,
+                      () -> "acct-1"));
+
+      assertTrue(error.getMessage().contains("--columns requires --capture column-stats"));
       assertEquals(0, h.reconcileControlService.startCaptureCalls.get());
     }
   }
