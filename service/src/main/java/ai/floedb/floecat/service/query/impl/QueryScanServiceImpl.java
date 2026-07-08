@@ -27,7 +27,6 @@ import ai.floedb.floecat.query.rpc.QueryScanService;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.ScanHandle;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
-import ai.floedb.floecat.service.common.GrpcContextUtil;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.execution.impl.ScanBundleService;
@@ -38,7 +37,6 @@ import com.google.protobuf.Empty;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
-import io.smallrye.mutiny.infrastructure.Infrastructure;
 import jakarta.inject.Inject;
 import java.util.Map;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -121,26 +119,21 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
    */
   public Multi<DeleteFileBatch> streamDeleteFiles(ScanHandle handle) {
     var L = LogHelper.start(LOG, "StreamDeleteFiles");
-    GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
-    return Multi.createFrom()
-        .deferred(
-            () ->
-                grpcCtx.call(
-                    () -> {
-                      String correlationId = principal.get().getCorrelationId();
-                      ScanSession session = requireSession(handle, correlationId);
-                      return scanBundles
-                          .streamDeleteFiles(session, correlationId)
-                          .onFailure()
-                          .invoke(e -> markPlanningFailed(session, correlationId))
-                          .onFailure()
-                          .invoke(e -> queryStore.removeScanSession(handle))
-                          .onFailure()
-                          .transform(e -> toStatus(e, correlationId))
-                          .onCompletion()
-                          .invoke(L::ok);
-                    }))
-        .runSubscriptionOn(Infrastructure.getDefaultExecutor())
+    return this.<DeleteFileBatch>runStream(
+            callCtx -> {
+              String correlationId = callCtx.effectiveCorrelationId();
+              ScanSession session = requireSession(handle, correlationId);
+              return scanBundles
+                  .streamDeleteFiles(session, correlationId)
+                  .onFailure()
+                  .invoke(e -> markPlanningFailed(session, correlationId))
+                  .onFailure()
+                  .invoke(e -> queryStore.removeScanSession(handle))
+                  .onFailure()
+                  .transform(e -> toStatus(e, correlationId))
+                  .onCompletion()
+                  .invoke(L::ok);
+            })
         .onFailure()
         .invoke(L::fail);
   }
@@ -152,30 +145,25 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
    */
   public Multi<DataFileBatch> streamDataFiles(ScanHandle handle) {
     var L = LogHelper.start(LOG, "StreamDataFiles");
-    GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
-    return Multi.createFrom()
-        .deferred(
-            () ->
-                grpcCtx.call(
-                    () -> {
-                      String correlationId = principal.get().getCorrelationId();
-                      ScanSession session = requireSession(handle, correlationId);
-                      return scanBundles
-                          .streamDataFiles(session, correlationId)
-                          .onFailure()
-                          .invoke(e -> markPlanningFailed(session, correlationId))
-                          .onFailure()
-                          .invoke(e -> queryStore.removeScanSession(handle))
-                          .onFailure()
-                          .transform(e -> toStatus(e, correlationId))
-                          .onCompletion()
-                          .invoke(
-                              () -> {
-                                markPlanningCompleted(session, correlationId);
-                                L.ok();
-                              });
-                    }))
-        .runSubscriptionOn(Infrastructure.getDefaultExecutor())
+    return this.<DataFileBatch>runStream(
+            callCtx -> {
+              String correlationId = callCtx.effectiveCorrelationId();
+              ScanSession session = requireSession(handle, correlationId);
+              return scanBundles
+                  .streamDataFiles(session, correlationId)
+                  .onFailure()
+                  .invoke(e -> markPlanningFailed(session, correlationId))
+                  .onFailure()
+                  .invoke(e -> queryStore.removeScanSession(handle))
+                  .onFailure()
+                  .transform(e -> toStatus(e, correlationId))
+                  .onCompletion()
+                  .invoke(
+                      () -> {
+                        markPlanningCompleted(session, correlationId);
+                        L.ok();
+                      });
+            })
         .onTermination()
         .invoke(() -> queryStore.removeScanSession(handle))
         .onFailure()

@@ -150,6 +150,12 @@ public final class InboundCallContextHelper {
             : resolvePrincipal(headerReader, queryId);
 
     PrincipalContext principalContext = resolvedPrincipal.pc();
+    // Stamp the correlation id onto the principal so every principal-carrying channel can also
+    // answer "which request is this" — sites that only have the principal (e.g. error building
+    // deep in service bodies) would otherwise report an empty correlation id.
+    if (!allowUnauthenticated && principalContext.getCorrelationId().isBlank()) {
+      principalContext = principalContext.toBuilder().setCorrelationId(correlationId).build();
+    }
     // queryId from header takes precedence; fall back to what the auth path extracted
     String effectiveQueryId = queryId.isBlank() ? resolvedPrincipal.queryId() : queryId;
 

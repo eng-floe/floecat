@@ -32,4 +32,16 @@ public record ResolvedCallContext(
     return new ResolvedCallContext(
         PrincipalContext.getDefaultInstance(), "", "", EngineContext.empty(), null, null);
   }
+
+  /**
+   * The correlation id service bodies should report: the resolved one, falling back to the id
+   * stamped on the principal. One definition so the fallback cannot drift between call sites again
+   * (it did once, pre-#361: one site fell back to a grpc-context key instead).
+   */
+  public String effectiveCorrelationId() {
+    if (correlationId != null && !correlationId.isBlank()) {
+      return correlationId;
+    }
+    return principalContext.getCorrelationId();
+  }
 }

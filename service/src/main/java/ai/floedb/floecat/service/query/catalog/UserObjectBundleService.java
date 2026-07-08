@@ -560,7 +560,10 @@ public class UserObjectBundleService {
       builder.setViewDefinition(viewBuilder);
     }
 
-    EngineContext ctx = engineContext.engineContext();
+    // The engine captured at iterator construction, not a live provider re-read: this runs on
+    // executor threads where the request context is unreliable, and a silently empty engine would
+    // skip engine-specific decoration with no log line (eng-floe/floecat#361).
+    EngineContext ctx = resolutionContext.engineContext();
     boolean decorationRequired = decorationRequired(ctx);
     Optional<EngineMetadataDecorator> decorator = currentDecorator(ctx);
     RelationDecoration relationDecoration = null;
@@ -1812,7 +1815,11 @@ public class UserObjectBundleService {
       }
       long startNs = System.nanoTime();
       try {
-        Optional<ResourceId> resolved = overlay.resolveName(correlationId, ref);
+        // Pass the engine captured at iterator construction: re-reading it from the request
+        // context per lookup is fragile across executor hops, and an empty engine silently
+        // un-resolves engine-gated system objects (eng-floe/floecat#361).
+        Optional<ResourceId> resolved =
+            overlay.resolveName(correlationId, ref, resolutionContext.engineContext());
         nameResolutionCache.put(key, resolved);
         nameResolutionCacheMisses++;
         return resolved;
@@ -1830,7 +1837,9 @@ public class UserObjectBundleService {
       }
       long startNs = System.nanoTime();
       try {
-        Optional<GraphNode> resolved = overlay.resolve(id);
+        // Pass the engine captured at iterator construction: re-reading it from the request
+        // context per lookup is fragile across executor hops (eng-floe/floecat#361).
+        Optional<GraphNode> resolved = overlay.resolve(id, resolutionContext.engineContext());
         nodeResolutionCache.put(id, resolved);
         nodeResolutionCacheMisses++;
         return resolved;

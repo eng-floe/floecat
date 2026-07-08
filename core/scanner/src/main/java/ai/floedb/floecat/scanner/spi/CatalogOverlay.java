@@ -30,6 +30,7 @@ import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import com.google.protobuf.Timestamp;
 import java.util.List;
 import java.util.Optional;
@@ -48,6 +49,23 @@ public interface CatalogOverlay {
 
   /** Resolves any graph node for the given resource. Engine context is resolved implicitly. */
   Optional<GraphNode> resolve(ResourceId id);
+
+  /**
+   * Resolves any graph node for the given resource using an explicit engine context.
+   *
+   * <p>Prefer this overload wherever the caller already holds the request's engine context (e.g.
+   * from a {@link MetadataResolutionContext}): re-reading the engine from the request context on
+   * every lookup is fragile across executor hops, and a silently empty engine makes engine-gated
+   * system objects unresolvable.
+   *
+   * <p><b>Implementers beware:</b> this default delegates to {@link #resolve(ResourceId)} and
+   * <em>ignores</em> the passed engine context. Any implementation that serves engine-gated objects
+   * must override it, or callers passing an explicit engine silently lose it (test doubles included
+   * — a fake inheriting this default cannot catch engine-threading regressions).
+   */
+  default Optional<GraphNode> resolve(ResourceId id, EngineContext engineContext) {
+    return resolve(id);
+  }
 
   /**
    * Lists every relation under the requested catalog (namespaces, tables, views, plus system
@@ -173,6 +191,18 @@ public interface CatalogOverlay {
       out.computeIfAbsent(ref, r -> resolveName(correlationId, r));
     }
     return out;
+  }
+
+  /**
+   * Resolves a relation (table or view) by name reference using an explicit engine context.
+   *
+   * <p>Prefer this overload wherever the caller already holds the request's engine context — see
+   * {@link #resolve(ResourceId, EngineContext)}, including its note that this default ignores the
+   * passed engine context for implementations that do not override it.
+   */
+  default Optional<ResourceId> resolveName(
+      String correlationId, NameRef ref, EngineContext engineContext) {
+    return resolveName(correlationId, ref);
   }
 
   /** Resolves a system table name without involving the user graph. */
