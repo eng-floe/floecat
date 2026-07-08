@@ -36,6 +36,7 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.spi.TopologyNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.common.PageTokens;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -50,6 +51,7 @@ import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -400,19 +402,7 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
   @Override
   public ResolveResult listTablesByPrefix(
       String correlationId, NameRef prefix, int limit, String token) {
-
-    EngineContext ctx = engineContext();
-    int max = normalizeLimit(limit);
-    String userToken = decodeUserToken(token);
-    boolean firstPage = userToken.isBlank();
-
-    List<CatalogOverlay.QualifiedRelation> system =
-        firstPage ? collectSystemRelationsInNamespace(prefix, ctx, true, max) : List.of();
-    int userLimit = Math.max(1, max - system.size());
-    ResolveResult user =
-        toResolveResult(userGraph.resolveTables(correlationId, prefix, userLimit, userToken));
-
-    return mergePrefixResults(system, user, max);
+    return listRelationsByPrefix(correlationId, prefix, limit, token, true);
   }
 
   /**
@@ -465,19 +455,102 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
   @Override
   public ResolveResult listViewsByPrefix(
       String correlationId, NameRef prefix, int limit, String token) {
+    return listRelationsByPrefix(correlationId, prefix, limit, token, false);
+  }
+
+  /**
+   * Phased prefix listing: system relations first (sorted by canonical name), then user relations.
+   *
+   * <p>Tokens are phase-scoped so neither cursor can advance past rows the page did not emit. A
+   * {@code sys:} token resumes the (bounded, in-memory) system list after the carried name; the
+   * user-phase token is the user graph's own cursor. The user graph is only consulted for rows once
+   * the system rows are fully emitted, so a page filled by system rows never advances — and can
+   * never drop — user results. Reported totals combine both sources.
+   *
+   * <p>NOTE: this reimplements the same "system phase, then user phase, phase-scoped resume token"
+   * shape that {@code CatalogSurfaceRelationPager} generalizes via its {@code Source<P, N>}
+   * abstraction. The duplication is deliberate for now (this path is the just-fixed headline of the
+   * pagination-correctness work); unifying the two phased pagers onto one abstraction is tracked as
+   * a follow-up so a future fix to one does not silently miss the other.
+   */
+  private ResolveResult listRelationsByPrefix(
+      String correlationId, NameRef prefix, int limit, String token, boolean tables) {
 
     EngineContext ctx = engineContext();
     int max = normalizeLimit(limit);
-    String userToken = decodeUserToken(token);
-    boolean firstPage = userToken.isBlank();
 
-    List<CatalogOverlay.QualifiedRelation> system =
-        firstPage ? collectSystemRelationsInNamespace(prefix, ctx, false, max) : List.of();
-    int userLimit = Math.max(1, max - system.size());
+    final boolean sysToken = token != null && token.startsWith(SYS_TOKEN_PREFIX);
+    final String sysResume =
+        sysToken ? PageTokens.decode(SYS_TOKEN_PREFIX, token, correlationId) : "";
+    final boolean userPhase = !sysToken && token != null && !token.isBlank();
+    final String userToken = userPhase ? decodeUserToken(token) : "";
+
+    var merged = new ArrayList<CatalogOverlay.QualifiedRelation>(Math.min(max, 64));
+
+    // System-relation total for the combined count. On a user-phase page the system rows were all
+    // emitted on earlier pages, so only their count is needed here — skip the sorted collect (with
+    // its per-relation name resolution) and count the bounded in-memory nodes directly. The sorted
+    // list is built only while the system phase is actually emitting rows.
+    int systemTotal;
+    if (userPhase) {
+      systemTotal = countSystemRelationsInNamespace(prefix, ctx, tables);
+    } else {
+      List<CatalogOverlay.QualifiedRelation> systemAll =
+          new ArrayList<>(
+              collectSystemRelationsInNamespace(prefix, ctx, tables, Integer.MAX_VALUE));
+      systemAll.sort(Comparator.comparing(rel -> canonicalName(rel.name())));
+      systemTotal = systemAll.size();
+
+      String lastSystemName = "";
+      for (CatalogOverlay.QualifiedRelation rel : systemAll) {
+        String name = canonicalName(rel.name());
+        if (!sysResume.isBlank() && name.compareTo(sysResume) <= 0) {
+          continue;
+        }
+        if (merged.size() >= max) {
+          // System rows remain: continue the system phase next page; the user cursor is untouched.
+          return new ResolveResult(
+              merged,
+              systemTotal + userTotalByPrefix(correlationId, prefix, tables),
+              PageTokens.encode(SYS_TOKEN_PREFIX, lastSystemName));
+        }
+        merged.add(rel);
+        lastSystemName = name;
+      }
+      if (merged.size() >= max) {
+        // Page filled exactly as the system rows ran out. Hand off to the user phase only when
+        // there are user rows to continue into; with none, USER_TOKEN_PREFIX would advertise a
+        // next page that is always empty. The next page starts the user scan from the beginning.
+        int userTotal = userTotalByPrefix(correlationId, prefix, tables);
+        return new ResolveResult(
+            merged, systemTotal + userTotal, userTotal > 0 ? USER_TOKEN_PREFIX : "");
+      }
+    }
+
+    int room = max - merged.size();
     ResolveResult user =
-        toResolveResult(userGraph.resolveViews(correlationId, prefix, userLimit, userToken));
+        toResolveResult(
+            tables
+                ? userGraph.resolveTables(correlationId, prefix, room, userToken)
+                : userGraph.resolveViews(correlationId, prefix, room, userToken));
+    for (CatalogOverlay.QualifiedRelation rel : user.relations()) {
+      if (merged.size() >= max) {
+        break;
+      }
+      merged.add(rel);
+    }
+    return new ResolveResult(
+        merged, systemTotal + user.totalSize(), encodeUserToken(user.nextToken()));
+  }
 
-    return mergePrefixResults(system, user, max);
+  /**
+   * User-relation total for combined counts on system-phase pages. Uses a count-only path (a plain
+   * repo countByPrefix) rather than fetching and discarding a one-row probe.
+   */
+  private int userTotalByPrefix(String correlationId, NameRef prefix, boolean tables) {
+    return tables
+        ? userGraph.countTablesByPrefix(correlationId, prefix)
+        : userGraph.countViewsByPrefix(correlationId, prefix);
   }
 
   /**
@@ -661,6 +734,8 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
    */
   private static final String USER_TOKEN_PREFIX = "u:";
 
+  private static final String SYS_TOKEN_PREFIX = "sys:";
+
   private static int normalizeLimit(int limit) {
     return Math.max(1, limit > 0 ? limit : 50);
   }
@@ -733,6 +808,28 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     return out;
   }
 
+  /**
+   * Counts system relations of the requested kind under a prefix, without the per-relation name
+   * resolution and {@link NameRef} construction {@link #collectSystemRelationsInNamespace} does.
+   * Used for the combined total on user-phase pages, where the sorted system list is not needed.
+   */
+  private int countSystemRelationsInNamespace(NameRef prefix, EngineContext ctx, boolean tables) {
+    Optional<ResourceId> sysNsId =
+        systemGraph.resolveNamespace(
+            SystemCatalogTranslator.toSystemNamespaceRef(prefix, ctx), ctx);
+    if (sysNsId.isEmpty()) {
+      return 0;
+    }
+    int count = 0;
+    for (RelationNode n :
+        systemGraph.listRelationsInNamespace(ResourceId.getDefaultInstance(), sysNsId.get(), ctx)) {
+      if ((tables && n instanceof TableNode) || (!tables && n instanceof ViewNode)) {
+        count++;
+      }
+    }
+    return count;
+  }
+
   private List<CatalogOverlay.QualifiedRelation> collectSystemRelationsInNamespace(
       NameRef prefix, EngineContext ctx, boolean tables, int max) {
     Optional<ResourceId> sysNsId =
@@ -769,27 +866,6 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
     }
 
     return out;
-  }
-
-  private ResolveResult mergePrefixResults(
-      List<CatalogOverlay.QualifiedRelation> system, ResolveResult user, int max) {
-    List<CatalogOverlay.QualifiedRelation> merged = new ArrayList<>();
-
-    for (CatalogOverlay.QualifiedRelation rel : system) {
-      if (merged.size() >= max) {
-        break;
-      }
-      merged.add(rel);
-    }
-
-    for (CatalogOverlay.QualifiedRelation rel : user.relations()) {
-      if (merged.size() >= max) {
-        break;
-      }
-      merged.add(rel);
-    }
-
-    return new ResolveResult(merged, user.totalSize(), encodeUserToken(user.nextToken()));
   }
 
   // ---- Lightweight ref listing and topology-cache invalidation ----

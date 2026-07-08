@@ -77,10 +77,18 @@ public class InMemoryPointerStore implements PointerStore {
     int start = 0;
     if (pageToken != null && !pageToken.isEmpty()) {
       int idx = Collections.binarySearch(keys, pageToken);
-      if (idx < 0) {
+      if (idx >= 0) {
+        start = idx + 1;
+      } else if (pfx.isEmpty() || pageToken.startsWith(pfx)) {
+        // The token names a position inside this keyspace whose row has since been deleted.
+        // Resume at the insertion point, matching DynamoDB's positional exclusiveStartKey
+        // semantics. With a non-blank prefix, a token outside it is rejected as malformed below;
+        // a blank prefix scans the whole store, so there is no keyspace boundary to reject against
+        // and any token is a valid resume position.
+        start = -idx - 1;
+      } else {
         throw new IllegalArgumentException("bad page token");
       }
-      start = idx + 1;
     }
 
     if (start >= keys.size()) {
@@ -109,6 +117,14 @@ public class InMemoryPointerStore implements PointerStore {
     }
 
     return page;
+  }
+
+  @Override
+  public String pageTokenAfterKey(String key) {
+    // This store's page tokens are raw pointer keys ("resume after this key"), so the key itself
+    // is the token. Resuming after a since-deleted key fails the same way an ordinary end-of-page
+    // token for that key would.
+    return key;
   }
 
   @Override

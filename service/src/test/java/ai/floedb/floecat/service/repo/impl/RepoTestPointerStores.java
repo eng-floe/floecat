@@ -81,6 +81,11 @@ final class RepoTestPointerStores {
     public boolean isEmpty() {
       return delegate.isEmpty();
     }
+
+    @Override
+    public String pageTokenAfterKey(String key) {
+      return delegate.pageTokenAfterKey(key);
+    }
   }
 
   /** Fails every batch CAS, simulating a transient storage error that aborts the transaction. */

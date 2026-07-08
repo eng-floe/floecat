@@ -77,6 +77,11 @@ public abstract class KvPointerStore implements PointerStore {
   }
 
   @Override
+  public String pageTokenAfterKey(String key) {
+    return pointers.pageTokenAfterKey(key);
+  }
+
+  @Override
   public int deleteByPrefix(String prefix) {
     return await(() -> pointers.deleteByPrefix(prefix).await().indefinitely());
   }

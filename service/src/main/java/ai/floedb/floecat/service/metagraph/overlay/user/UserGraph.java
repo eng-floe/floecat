@@ -449,6 +449,18 @@ public final class UserGraph {
     return new ResolveResult(fqResult);
   }
 
+  /** Counts user tables under a prefix without fetching any rows. */
+  public int countTablesByPrefix(String cid, NameRef prefix) {
+    validateNameRef(cid, prefix);
+    return fq.countTablesByPrefix(cid, requireAccountId(cid), prefix);
+  }
+
+  /** Counts user views under a prefix without fetching any rows. */
+  public int countViewsByPrefix(String cid, NameRef prefix) {
+    validateNameRef(cid, prefix);
+    return fq.countViewsByPrefix(cid, requireAccountId(cid), prefix);
+  }
+
   // ----------------------------------------------------------------------
   // Unified relation listing (tables + views)
   // ----------------------------------------------------------------------

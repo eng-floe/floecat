@@ -19,6 +19,7 @@ import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
+import java.util.ArrayList;
 import java.util.List;
 
 final class CatalogSurfaceNamespacePageSource implements CatalogSurfaceNamespacePager.Source {
@@ -66,6 +67,13 @@ final class CatalogSurfaceNamespacePageSource implements CatalogSurfaceNamespace
   @Override
   public List<Namespace> listRepo(int limit, String cursor, StringBuilder next) {
     return repo.list(accountId, catalogId.getId(), parentPath, limit, cursor, next);
+  }
+
+  @Override
+  public String cursorAfter(Namespace namespace) {
+    var fullPath = new ArrayList<>(namespace.getParentsList());
+    fullPath.add(namespace.getDisplayName());
+    return repo.listTokenAfter(accountId, catalogId.getId(), fullPath);
   }
 
   @Override

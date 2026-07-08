@@ -95,6 +95,15 @@ public interface KvStore {
       String partitionKey, String sortKeyPrefix, int limit, Optional<String> pageToken);
 
   /**
+   * Returns a page token that resumes a {@link #queryByPartitionKeyPrefix} scan immediately after
+   * the given key, in this store's native token encoding. The default throws; stores that serve
+   * paging must override.
+   */
+  default String pageTokenAfterKey(Key key) {
+    throw new UnsupportedOperationException("pageTokenAfterKey is not supported by this store");
+  }
+
+  /**
    * Remove items
    *
    * @param partitionKey

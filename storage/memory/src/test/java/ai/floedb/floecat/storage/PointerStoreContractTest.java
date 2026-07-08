@@ -148,6 +148,48 @@ public class PointerStoreContractTest {
   }
 
   @Test
+  void pageTokenAfterKey_resumesScanImmediatelyAfterThatKey() {
+    store.compareAndSet(key(1), 0L, pointer(key(1), 1L));
+    store.compareAndSet(key(2), 0L, pointer(key(2), 1L));
+    store.compareAndSet(key(3), 0L, pointer(key(3), 1L));
+
+    String token = store.pageTokenAfterKey(key(1));
+    StringBuilder next = new StringBuilder();
+    List<Pointer> page = store.listPointersByPrefix(prefix(), 10, token, next);
+
+    assertEquals(keysOf(List.of(pointer(key(2), 1L), pointer(key(3), 1L))), keysOf(page));
+  }
+
+  @Test
+  void pageTokenAfterKey_resumesPositionallyWhenTheKeyWasDeleted() {
+    store.compareAndSet(key(1), 0L, pointer(key(1), 1L));
+    store.compareAndSet(key(2), 0L, pointer(key(2), 1L));
+    store.compareAndSet(key(3), 0L, pointer(key(3), 1L));
+
+    String token = store.pageTokenAfterKey(key(2));
+    assertTrue(store.compareAndDelete(key(2), 1L));
+
+    StringBuilder next = new StringBuilder();
+    List<Pointer> page = store.listPointersByPrefix(prefix(), 10, token, next);
+
+    assertEquals(keysOf(List.of(pointer(key(3), 1L))), keysOf(page));
+  }
+
+  @Test
+  void listPointersByPrefix_blankPrefix_resumesPositionallyForAbsentToken() {
+    store.compareAndSet(key(1), 0L, pointer(key(1), 1L));
+    store.compareAndSet(key(3), 0L, pointer(key(3), 1L));
+
+    // Under a blank prefix there is no keyspace boundary, so a token naming a position with no
+    // live row resumes positionally (DynamoDB exclusiveStartKey semantics) rather than being
+    // rejected as malformed.
+    StringBuilder next = new StringBuilder();
+    List<Pointer> page = store.listPointersByPrefix("", 10, key(2), next);
+
+    assertEquals(keysOf(List.of(pointer(key(3), 1L))), keysOf(page));
+  }
+
+  @Test
   void compareAndSetBatch_emptyOps_returns_true() {
     assertTrue(store.compareAndSetBatch(List.of()));
   }

@@ -80,6 +80,19 @@ public interface PointerStore {
   List<Pointer> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut);
 
+  /**
+   * Returns a page token that resumes a {@link #listPointersByPrefix} scan immediately after the
+   * given pointer key, as if a previous page had ended exactly at that key. This lets callers that
+   * post-filter scanned rows emit a cursor at the last row they actually consumed rather than at
+   * the end of an over-fetched batch.
+   *
+   * <p>Stores that serve filtered pagination must override this with their native token encoding.
+   * The default throws, so legacy or test stores that never need it are unaffected.
+   */
+  default String pageTokenAfterKey(String key) {
+    throw new UnsupportedOperationException("pageTokenAfterKey is not supported by this store");
+  }
+
   int deleteByPrefix(String prefix);
 
   int countByPrefix(String prefix);

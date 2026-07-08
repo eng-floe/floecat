@@ -85,6 +85,27 @@ class KvStoreContractTest {
   }
 
   @Test
+  void queryByPartitionKeyPrefix_blankPrefix_resumesPositionallyForAbsentKey() {
+    assertTrue(kv.putCas(record("pk1", "sk0", 1L, "v0"), 0L).await().indefinitely());
+    assertTrue(kv.putCas(record("pk1", "sk2", 1L, "v2"), 0L).await().indefinitely());
+
+    // Token names an absent sort key ("sk1"); a blank prefix has no keyspace boundary, so the
+    // scan resumes positionally (DynamoDB exclusiveStartKey semantics) rather than throwing.
+    String token = kv.pageTokenAfterKey(key("pk1", "sk1"));
+    var page =
+        kv.queryByPartitionKeyPrefix("pk1", "", 10, Optional.of(token)).await().indefinitely();
+
+    assertEquals(1, page.items().size());
+    assertEquals("sk2", page.items().get(0).key().sortKey());
+  }
+
+  @Test
+  void pageTokenAfterKey_emptySortKey_throwsInsteadOfEmptyToken() {
+    // An empty sort key would base64-encode to "", colliding with the "no more pages" sentinel.
+    assertThrows(IllegalArgumentException.class, () -> kv.pageTokenAfterKey(key("pk1", "")));
+  }
+
+  @Test
   void deleteByPrefix_removes_matching_records() {
     putSeries("pk1", "sk", 3);
     putSeries("pk2", "sk", 2);

@@ -27,22 +27,34 @@ import java.util.Map;
 
 final class CatalogSurfaceNamespacePager {
 
+  // System-phase resume token: the carried relative name is a *system* namespace name.
   private static final String NS_TOKEN_PREFIX = "ns:";
 
   private CatalogSurfaceNamespacePager() {}
 
   static Page list(int want, String pageToken, Source source, String corr) {
+    if (want <= 0) {
+      // The fill-return path dereferences the last emitted row, which requires want >= 1; the
+      // single caller clamps, but guard against future call sites.
+      throw new IllegalArgumentException("want must be >= 1");
+    }
 
     final int batch = Math.max(want * 4, 64);
-    final boolean isServiceToken = pageToken != null && pageToken.startsWith(NS_TOKEN_PREFIX);
-    final String resumeAfterRel =
-        isServiceToken ? CatalogSurfaceSupport.decodeToken(NS_TOKEN_PREFIX, pageToken, corr) : "";
-    String cursor = isServiceToken ? "" : pageToken;
+    final boolean isSystemToken = pageToken != null && pageToken.startsWith(NS_TOKEN_PREFIX);
+    final String resumeSystemRel =
+        isSystemToken ? CatalogSurfaceSupport.decodeToken(NS_TOKEN_PREFIX, pageToken, corr) : "";
+    // Anything else (blank or a raw store cursor) resumes the repo scan directly.
+    String cursor = isSystemToken ? "" : (pageToken == null ? "" : pageToken);
 
     var out = new ArrayList<Namespace>(want);
-    String lastEmittedRel = "";
+    Namespace lastEmitted = null;
 
-    if (!isServiceToken) {
+    // Repo (user) phase. The scan over-fetches and post-filters, so when the page fills the
+    // continuation must resume after the last *emitted* row, not after the scanned batch:
+    // source.cursorAfter(lastEmitted) is that precise position. Rows the batch read past (and even
+    // rows read after the store reported exhaustion) are still in the store and are re-served by
+    // the next page's scan.
+    if (!isSystemToken) {
       while (out.size() < want) {
         var next = new StringBuilder();
         final List<Namespace> scanned;
@@ -57,13 +69,8 @@ final class CatalogSurfaceNamespacePager {
             continue;
           }
 
-          var rel = relativeQualifiedName(ns, source.parentPath());
-          if (!resumeAfterRel.isBlank() && rel.compareTo(resumeAfterRel) <= 0) {
-            continue;
-          }
-
           out.add(ns);
-          lastEmittedRel = rel;
+          lastEmitted = ns;
           if (out.size() >= want) {
             break;
           }
@@ -74,34 +81,46 @@ final class CatalogSurfaceNamespacePager {
           break;
         }
       }
-    }
 
-    if (cursor.isBlank() && out.size() < want) {
-      record SysItem(NamespaceNode namespace, String rel) {}
-
-      var sysItems =
-          source.systemNamespaces().stream()
-              .filter(ns -> matches(ns, source))
-              .map(ns -> new SysItem(ns, relativeQualifiedName(ns, source.parentPath())))
-              .sorted(Comparator.comparing(SysItem::rel))
-              .toList();
-
-      for (var it : sysItems) {
-        if (!resumeAfterRel.isBlank() && it.rel().compareTo(resumeAfterRel) <= 0) {
-          continue;
-        }
-        if (out.size() >= want) {
-          break;
-        }
-        out.add(source.mapSystemNode(it.namespace()));
-        lastEmittedRel = it.rel();
+      if (out.size() >= want) {
+        return new Page(out, source.cursorAfter(lastEmitted), countNamespaces(source, corr));
       }
+      // Repo exhausted with room left: fall through to the system phase from its start.
     }
 
-    String nextToken = cursor;
-    if (nextToken.isBlank() && out.size() == want) {
-      nextToken = CatalogSurfaceSupport.encodeToken(NS_TOKEN_PREFIX, lastEmittedRel);
+    // System phase: entered once the repo is exhausted, or directly via a system-phase token. When
+    // transitioning from the repo phase resumeSystemRel is blank, so system namespaces are emitted
+    // from the beginning regardless of where the user phase left off.
+    String lastSystemRel = "";
+    record SysItem(NamespaceNode namespace, String rel) {}
+
+    var sysItems =
+        source.systemNamespaces().stream()
+            .filter(ns -> matches(ns, source))
+            .map(ns -> new SysItem(ns, relativeQualifiedName(ns, source.parentPath())))
+            .sorted(Comparator.comparing(SysItem::rel))
+            .toList();
+
+    // A full page is not the same as having another row to return: only advertise a continuation
+    // when the loop actually stopped before an un-emitted system namespace. Otherwise a page that
+    // exactly consumes the last system row would hand out a token whose next page is empty.
+    boolean hasMoreSystem = false;
+    for (var it : sysItems) {
+      if (!resumeSystemRel.isBlank() && it.rel().compareTo(resumeSystemRel) <= 0) {
+        continue;
+      }
+      if (out.size() >= want) {
+        hasMoreSystem = true;
+        break;
+      }
+      out.add(source.mapSystemNode(it.namespace()));
+      lastSystemRel = it.rel();
     }
+
+    String nextToken =
+        hasMoreSystem && !lastSystemRel.isBlank()
+            ? CatalogSurfaceSupport.encodeToken(NS_TOKEN_PREFIX, lastSystemRel)
+            : "";
 
     int total = countNamespaces(source, corr);
 
@@ -233,6 +252,9 @@ final class CatalogSurfaceNamespacePager {
     boolean recursive();
 
     List<Namespace> listRepo(int limit, String cursor, StringBuilder next);
+
+    /** Repo cursor that resumes the {@link #listRepo} scan immediately after {@code namespace}. */
+    String cursorAfter(Namespace namespace);
 
     List<NamespaceNode> systemNamespaces();
 
