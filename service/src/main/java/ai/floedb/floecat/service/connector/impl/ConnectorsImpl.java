@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.service.connector.impl;
 
-import ai.floedb.floecat.capture.rpc.CapturePolicy;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -52,6 +51,7 @@ import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
+import ai.floedb.floecat.service.common.CapturePolicyValidator;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
@@ -970,48 +970,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "policy.latest_n"));
     }
     if (policy.hasAutoCapturePolicy()) {
-      validateCapturePolicy(policy.getAutoCapturePolicy(), corr, "policy.auto_capture_policy");
-    }
-  }
-
-  private static void validateCapturePolicy(CapturePolicy policy, String corr, String fieldName) {
-    if (policy == null) {
-      return;
-    }
-    if (policy.getOutputsCount() == 0) {
-      throw GrpcErrors.invalidArgument(corr, null, Map.of("field", fieldName + ".outputs"));
-    }
-    for (int i = 0; i < policy.getOutputsCount(); i++) {
-      var output = policy.getOutputs(i);
-      if (output == ai.floedb.floecat.capture.rpc.CaptureOutput.CO_UNSPECIFIED
-          || output == ai.floedb.floecat.capture.rpc.CaptureOutput.UNRECOGNIZED) {
-        throw GrpcErrors.invalidArgument(
-            corr, null, Map.of("field", fieldName + ".outputs[" + i + "]"));
-      }
-    }
-    if (policy.getMaxDefaultColumns() < 0) {
-      throw GrpcErrors.invalidArgument(
-          corr, null, Map.of("field", fieldName + ".max_default_columns"));
-    }
-    if (policy.getDefaultColumnScope()
-            == ai.floedb.floecat.capture.rpc.DefaultColumnScope.UNRECOGNIZED
-        || policy.getDefaultColumnScope()
-            == ai.floedb.floecat.capture.rpc.DefaultColumnScope.DCS_UNSPECIFIED) {
-      throw GrpcErrors.invalidArgument(
-          corr, null, Map.of("field", fieldName + ".default_column_scope"));
-    }
-    for (int i = 0; i < policy.getColumnsCount(); i++) {
-      var column = policy.getColumns(i);
-      String columnField = fieldName + ".columns[" + i + "]";
-      if (column.getSelector().isBlank()) {
-        throw GrpcErrors.invalidArgument(corr, null, Map.of("field", columnField + ".selector"));
-      }
-      if (!column.getCaptureStats() && !column.getCaptureIndex()) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            null,
-            Map.of("field", columnField, "reason", "column capture policy has no enabled outputs"));
-      }
+      CapturePolicyValidator.validate(
+          policy.getAutoCapturePolicy(), corr, "policy.auto_capture_policy");
     }
   }
 

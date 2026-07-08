@@ -851,6 +851,28 @@ class ReconcileControlImplTest {
   }
 
   @Test
+  void startCaptureRejectsZeroMaxDefaultColumns() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .startCapture(
+                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
+                            .setScope(captureScopeWithMaxDefaultColumns(0))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
   void getReconcileJobDoesNotDoubleCountPlannerProgress() {
     when(service.jobs.get("acct", "plan-1"))
         .thenReturn(Optional.of(job("plan-1", "JS_SUCCEEDED", 3, 2, 0, "")));
@@ -1348,6 +1370,7 @@ class ReconcileControlImplTest {
                 .addOutputs(ai.floedb.floecat.capture.rpc.CaptureOutput.CO_FILE_STATS)
                 .addOutputs(ai.floedb.floecat.capture.rpc.CaptureOutput.CO_COLUMN_STATS)
                 .setDefaultColumnScope(DefaultColumnScope.DCS_FIRST_N)
+                .setMaxDefaultColumns(32)
                 .build())
         .build();
   }
@@ -1359,6 +1382,7 @@ class ReconcileControlImplTest {
             CapturePolicy.newBuilder()
                 .addOutputs(CaptureOutput.CO_TABLE_STATS)
                 .setDefaultColumnScope(DefaultColumnScope.DCS_FIRST_N)
+                .setMaxDefaultColumns(32)
                 .addColumns(CaptureColumnPolicy.newBuilder().setSelector("c1").build())
                 .build())
         .build();
@@ -1371,6 +1395,7 @@ class ReconcileControlImplTest {
             CapturePolicy.newBuilder()
                 .addOutputs(CaptureOutput.CO_TABLE_STATS)
                 .setDefaultColumnScope(scope)
+                .setMaxDefaultColumns(32)
                 .build())
         .build();
   }
@@ -1382,6 +1407,19 @@ class ReconcileControlImplTest {
             CapturePolicy.newBuilder()
                 .addOutputs(CaptureOutput.CO_TABLE_STATS)
                 .setDefaultColumnScopeValue(scopeValue)
+                .setMaxDefaultColumns(32)
+                .build())
+        .build();
+  }
+
+  private static CaptureScope captureScopeWithMaxDefaultColumns(int maxDefaultColumns) {
+    return CaptureScope.newBuilder()
+        .setConnectorId(connectorId())
+        .setCapturePolicy(
+            CapturePolicy.newBuilder()
+                .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                .setDefaultColumnScope(DefaultColumnScope.DCS_FIRST_N)
+                .setMaxDefaultColumns(maxDefaultColumns)
                 .build())
         .build();
   }

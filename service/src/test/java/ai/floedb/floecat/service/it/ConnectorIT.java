@@ -1674,7 +1674,13 @@ public class ConnectorIT {
         }
       }
     }
-    return scope.toBuilder().setCapturePolicy(policy.build()).build();
+    return scope.toBuilder()
+        .setCapturePolicy(
+            policy
+                .setDefaultColumnScope(DefaultColumnScope.DCS_FIRST_N)
+                .setMaxDefaultColumns(32)
+                .build())
+        .build();
   }
 
   private long aggregateSnapshotsProcessed(List<ReconcileJobStore.ReconcileJob> jobs) {
@@ -2692,6 +2698,7 @@ public class ConnectorIT {
                                             CapturePolicy.newBuilder()
                                                 .addOutputs(CaptureOutput.CO_TABLE_STATS)
                                                 .setDefaultColumnScopeValue(99)
+                                                .setMaxDefaultColumns(32)
                                                 .build())
                                         .build())
                                 .build())
@@ -2725,6 +2732,41 @@ public class ConnectorIT {
                                                 .addOutputs(CaptureOutput.CO_TABLE_STATS)
                                                 .setDefaultColumnScope(
                                                     DefaultColumnScope.DCS_UNSPECIFIED)
+                                                .setMaxDefaultColumns(32)
+                                                .build())
+                                        .build())
+                                .build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void createConnectorRejectsAutoCapturePolicyZeroMaxDefaultColumns() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-max-default-create", "");
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setDisplayName("policy-max-default-create")
+                                .setKind(ConnectorKind.CK_UNITY)
+                                .setUri("dummy://x")
+                                .setSource(source(List.of("a", "b")))
+                                .setDestination(dest("cat-policy-max-default-create"))
+                                .setPolicy(
+                                    ReconcilePolicy.newBuilder()
+                                        .setAutoCapturePolicy(
+                                            CapturePolicy.newBuilder()
+                                                .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                                                .setDefaultColumnScope(
+                                                    DefaultColumnScope.DCS_FIRST_N)
+                                                .setMaxDefaultColumns(0)
                                                 .build())
                                         .build())
                                 .build())
@@ -2762,6 +2804,9 @@ public class ConnectorIT {
                                         .setAutoCapturePolicy(
                                             CapturePolicy.newBuilder()
                                                 .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                                                .setDefaultColumnScope(
+                                                    DefaultColumnScope.DCS_FIRST_N)
+                                                .setMaxDefaultColumns(32)
                                                 .addColumns(
                                                     CaptureColumnPolicy.newBuilder()
                                                         .setSelector("c1")

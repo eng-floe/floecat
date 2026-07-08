@@ -63,6 +63,7 @@ import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
 import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsRequest;
 import ai.floedb.floecat.reconciler.rpc.UpdateReconcilerSettingsResponse;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
+import ai.floedb.floecat.service.common.CapturePolicyValidator;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -803,51 +804,8 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
     if (scope == null || !scope.hasCapturePolicy()) {
       return;
     }
-    validateCapturePolicy(scope.getCapturePolicy(), correlationId, "scope.capture_policy");
-  }
-
-  private static void validateCapturePolicy(
-      CapturePolicy policy, String correlationId, String fieldName) {
-    if (policy == null) {
-      return;
-    }
-    if (policy.getOutputsCount() == 0) {
-      throw GrpcErrors.invalidArgument(
-          correlationId, null, Map.of("field", fieldName + ".outputs"));
-    }
-    for (int i = 0; i < policy.getOutputsCount(); i++) {
-      var output = policy.getOutputs(i);
-      if (output == ai.floedb.floecat.capture.rpc.CaptureOutput.CO_UNSPECIFIED
-          || output == ai.floedb.floecat.capture.rpc.CaptureOutput.UNRECOGNIZED) {
-        throw GrpcErrors.invalidArgument(
-            correlationId, null, Map.of("field", fieldName + ".outputs[" + i + "]"));
-      }
-    }
-    if (policy.getMaxDefaultColumns() < 0) {
-      throw GrpcErrors.invalidArgument(
-          correlationId, null, Map.of("field", fieldName + ".max_default_columns"));
-    }
-    if (policy.getDefaultColumnScope()
-            == ai.floedb.floecat.capture.rpc.DefaultColumnScope.UNRECOGNIZED
-        || policy.getDefaultColumnScope()
-            == ai.floedb.floecat.capture.rpc.DefaultColumnScope.DCS_UNSPECIFIED) {
-      throw GrpcErrors.invalidArgument(
-          correlationId, null, Map.of("field", fieldName + ".default_column_scope"));
-    }
-    for (int i = 0; i < policy.getColumnsCount(); i++) {
-      var column = policy.getColumns(i);
-      String columnField = fieldName + ".columns[" + i + "]";
-      if (column.getSelector().isBlank()) {
-        throw GrpcErrors.invalidArgument(
-            correlationId, null, Map.of("field", columnField + ".selector"));
-      }
-      if (!column.getCaptureStats() && !column.getCaptureIndex()) {
-        throw GrpcErrors.invalidArgument(
-            correlationId,
-            null,
-            Map.of("field", columnField, "reason", "column capture policy has no enabled outputs"));
-      }
-    }
+    CapturePolicyValidator.validate(
+        scope.getCapturePolicy(), correlationId, "scope.capture_policy");
   }
 
   private static void requireResolvedCapturePolicy(
