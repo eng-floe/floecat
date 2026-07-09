@@ -496,18 +496,6 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     }
     var spec = buildSnapshotSpec(snapshot);
     long snapshotId = snapshot.getSnapshotId();
-    Set<Long> knownSnapshotIds = existingSnapshotIds(ctx, tableId);
-    if (knownSnapshotIds.contains(snapshotId)) {
-      var mask = buildSnapshotUpdateMask(spec);
-      var update = UpdateSnapshotRequest.newBuilder().setSpec(spec).setUpdateMask(mask).build();
-      Optional<Snapshot> existing = fetchSnapshot(ctx, tableId, snapshotId);
-      if (existing.isPresent()
-          && SnapshotHelpers.equalsIgnoringIngested(snapshot, existing.get())) {
-        return;
-      }
-      snapshot(ctx).updateSnapshot(update);
-      return;
-    }
     try {
       snapshot(ctx).createSnapshot(CreateSnapshotRequest.newBuilder().setSpec(spec).build());
       return;

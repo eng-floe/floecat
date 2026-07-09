@@ -45,6 +45,7 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
   private final RemotePlannerWorkerClient workerClient;
   private final ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
   private final boolean enabled;
+  private final boolean workerAuthRequired;
 
   @Inject
   public RemotePlannerReconcileExecutor(
@@ -54,11 +55,22 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
       @ConfigProperty(
               name = "floecat.reconciler.executor.remote-planner.enabled",
               defaultValue = "false")
-          boolean enabled) {
+          boolean enabled,
+      @ConfigProperty(name = "floecat.reconciler.worker.auth.required", defaultValue = "true")
+          boolean workerAuthRequired) {
     this.reconcilerService = reconcilerService;
     this.workerClient = workerClient;
     this.reconcileWorkerAuthProvider = reconcileWorkerAuthProvider;
     this.enabled = enabled;
+    this.workerAuthRequired = workerAuthRequired;
+  }
+
+  RemotePlannerReconcileExecutor(
+      ReconcilerService reconcilerService,
+      RemotePlannerWorkerClient workerClient,
+      ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
+      boolean enabled) {
+    this(reconcilerService, workerClient, reconcileWorkerAuthProvider, enabled, true);
   }
 
   @Override
@@ -501,6 +513,9 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
   }
 
   private String workerAuthorizationHeader(String accountId) {
+    if (!workerAuthRequired) {
+      return null;
+    }
     return reconcileWorkerAuthProvider.authorizationHeader(accountId).orElse(null);
   }
 }

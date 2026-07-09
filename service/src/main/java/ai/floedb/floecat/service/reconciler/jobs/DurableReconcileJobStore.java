@@ -371,7 +371,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         jobIndexStore(),
         leaseManager(),
         readyScanLimit,
-        DurableReconcileJobStore::requiresReadyPointer);
+        DurableReconcileJobStore::requiresReadyPointer,
+        this::isBlockedByAncestorCancellation);
     return readyQueueStore;
   }
 
@@ -386,14 +387,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                 .map(
                     env ->
                         new ReconcileJobCompleter.CanonicalEnvelope(
-                            env.canonicalPointerKey, env.record)),
-        this::backoffMs,
-        (record, dueAtMs) -> readyPointerKeyFor(record, dueAtMs.longValue()),
-        (env, jobId, leaseEpoch) ->
-            clearExecutionLeasesIfOwned(
-                new StoredEnvelope(env.canonicalPointerKey(), env.record()), jobId, leaseEpoch),
-        maxAttempts,
-        baseBackoffMs);
+                            env.canonicalPointerKey, env.record)));
     return completer;
   }
 
@@ -727,9 +721,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                                       + jobId);
                             }
                             StoredReconcileJob next =
-                                applyLeaseOutcomeToChildRecord(
+                                applyLeaseOutcomeToRecord(
                                     loaded.canonicalPointerKey,
-                                    previous,
+                                    jobIndexStore().cloneStoredRecord(previous),
                                     jobId,
                                     leaseEpoch,
                                     completionKind,
@@ -1692,7 +1686,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   @Override
   public boolean isCancellationRequested(String jobId) {
-    return cancellation().isCancellationRequested(jobId);
+    if (cancellation().isCancellationRequested(jobId)) {
+      return true;
+    }
+    StoredEnvelope loaded = loadByAnyAccount(jobId).orElse(null);
+    return loaded != null && isBlockedByAncestorCancellation(loaded.record);
   }
 
   @Override
@@ -2557,6 +2555,31 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return readyQueue().leaseReadyDue(nowMs, request, scanStats);
   }
 
+  private boolean isBlockedByAncestorCancellation(StoredReconcileJob record) {
+    if (record == null) {
+      return false;
+    }
+    String accountId = blankToEmpty(record.accountId);
+    String parentJobId = blankToEmpty(record.parentJobId);
+    java.util.HashSet<String> visited = new java.util.HashSet<>();
+    while (!accountId.isBlank() && !parentJobId.isBlank() && visited.add(parentJobId)) {
+      StoredEnvelope parent = loadByAnyAccount(parentJobId).orElse(null);
+      if (parent == null || parent.record == null || !accountId.equals(parent.record.accountId)) {
+        return false;
+      }
+      if (isCancellationState(parent.record.state)) {
+        return true;
+      }
+      parentJobId = blankToEmpty(parent.record.parentJobId);
+    }
+    return false;
+  }
+
+  private boolean isJobBlockedByAncestorCancellation(String jobId) {
+    StoredEnvelope loaded = loadByAnyAccount(jobId).orElse(null);
+    return loaded != null && isBlockedByAncestorCancellation(loaded.record);
+  }
+
   private String readyPointerKeyFor(StoredReconcileJob record, long dueAtMs) {
     return readyQueue().readyPointerKeyFor(record, dueAtMs);
   }
@@ -2613,31 +2636,36 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       long errors,
       long snapshotsProcessed,
       long statsProcessed) {
-    String terminalState = terminalStateForCompletionKind(completionKind);
+    CompletionKind nextCompletionKind = completionKind;
+    String nextMessage = message;
+    if (isRetryableCompletion(completionKind) && isJobBlockedByAncestorCancellation(jobId)) {
+      nextCompletionKind = CompletionKind.CANCELLED;
+      nextMessage = blank(message) ? "Cancelled" : message;
+    }
+    final CompletionKind effectiveCompletionKind = nextCompletionKind;
+    final String effectiveMessage = nextMessage;
+    String terminalState = terminalStateForCompletionKind(effectiveCompletionKind);
     if (terminalState.isBlank()) {
-      return onHotPath(
-          () ->
-              completer()
-                  .applyLeaseOutcome(
-                      jobId,
-                      leaseEpoch,
-                      completionKind,
-                      finishedAtMs,
-                      message,
-                      tablesScanned,
-                      tablesChanged,
-                      viewsScanned,
-                      viewsChanged,
-                      errors,
-                      snapshotsProcessed,
-                      statsProcessed));
+      return applyLeaseOutcomeDirectly(
+          jobId,
+          leaseEpoch,
+          effectiveCompletionKind,
+          finishedAtMs,
+          effectiveMessage,
+          tablesScanned,
+          tablesChanged,
+          viewsScanned,
+          viewsChanged,
+          errors,
+          snapshotsProcessed,
+          statsProcessed);
     }
     if (applyLeaseOutcomeTransactionally(
         jobId,
         leaseEpoch,
-        completionKind,
+        effectiveCompletionKind,
         finishedAtMs,
-        message,
+        effectiveMessage,
         tablesScanned,
         tablesChanged,
         viewsScanned,
@@ -2649,9 +2677,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     if (isIdempotentTerminalLeaseOutcome(
         jobId,
-        completionKind,
+        effectiveCompletionKind,
         finishedAtMs,
-        message,
+        effectiveMessage,
         tablesScanned,
         tablesChanged,
         viewsScanned,
@@ -2662,6 +2690,42 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return true;
     }
     return false;
+  }
+
+  private boolean applyLeaseOutcomeDirectly(
+      String jobId,
+      String leaseEpoch,
+      CompletionKind completionKind,
+      long finishedAtMs,
+      String message,
+      long tablesScanned,
+      long tablesChanged,
+      long viewsScanned,
+      long viewsChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
+    Optional<StoredEnvelope> updated =
+        mutateByJobIdReturningRecord(
+            jobId,
+            existing ->
+                applyLeaseOutcomeToRecord(
+                    existing.canonicalPointerKey,
+                    existing,
+                    jobId,
+                    leaseEpoch,
+                    completionKind,
+                    finishedAtMs,
+                    message,
+                    tablesScanned,
+                    tablesChanged,
+                    viewsScanned,
+                    viewsChanged,
+                    errors,
+                    snapshotsProcessed,
+                    statsProcessed));
+    updated.ifPresent(env -> clearExecutionLeasesIfOwned(env, jobId, leaseEpoch));
+    return updated.isPresent();
   }
 
   private boolean applyLeaseOutcomeTransactionally(
@@ -2690,9 +2754,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         return false;
       }
       StoredReconcileJob nextChild =
-          applyLeaseOutcomeToChildRecord(
+          applyLeaseOutcomeToRecord(
               loaded.canonicalPointerKey,
-              previousChild,
+              jobIndexStore().cloneStoredRecord(previousChild),
               jobId,
               leaseEpoch,
               completionKind,
@@ -2879,9 +2943,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     };
   }
 
-  private StoredReconcileJob applyLeaseOutcomeToChildRecord(
+  private StoredReconcileJob applyLeaseOutcomeToRecord(
       String canonicalPointerKey,
-      StoredReconcileJob previousChild,
+      StoredReconcileJob nextChild,
       String jobId,
       String leaseEpoch,
       CompletionKind completionKind,
@@ -2900,18 +2964,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             || completionKind == CompletionKind.FAILED_TERMINAL
             || completionKind == CompletionKind.CANCELLED;
     if (!leaseManager()
-        .hasActiveLease(
-            jobId, leaseEpoch, previousChild, op, true, true, allowExpiredWithinGrace)) {
+        .hasActiveLease(jobId, leaseEpoch, nextChild, op, true, true, allowExpiredWithinGrace)) {
       return null;
     }
-    if (isTerminalState(previousChild.state)) {
+    if (isTerminalState(nextChild.state)) {
       return null;
     }
-    StoredReconcileJob nextChild = jobIndexStore().cloneStoredRecord(previousChild);
-    if ("JS_CANCELLING".equals(previousChild.state) && completionKind != CompletionKind.CANCELLED) {
+    if ("JS_CANCELLING".equals(nextChild.state) && completionKind != CompletionKind.CANCELLED) {
       nextChild.state = "JS_CANCELLED";
-      nextChild.message =
-          blank(previousChild.message) ? "Cancelled" : blankToEmpty(previousChild.message);
+      nextChild.message = blank(nextChild.message) ? "Cancelled" : blankToEmpty(nextChild.message);
       if (nextChild.startedAtMs <= 0L) {
         nextChild.startedAtMs = finishedAtMs;
       }
@@ -3314,6 +3375,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       case "JS_SUCCEEDED", "JS_FAILED", "JS_CANCELLED" -> true;
       default -> false;
     };
+  }
+
+  private static boolean isCancellationState(String state) {
+    return "JS_CANCELLING".equals(blankToEmpty(state))
+        || "JS_CANCELLED".equals(blankToEmpty(state));
+  }
+
+  private static boolean isRetryableCompletion(CompletionKind completionKind) {
+    return completionKind == CompletionKind.FAILED_RETRYABLE
+        || completionKind == CompletionKind.FAILED_WAITING_ON_DEPENDENCY;
   }
 
   private static void validateFileGroupResultMatchesCanonical(
