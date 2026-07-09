@@ -82,10 +82,10 @@ message Connector {
 
 enum ConnectorState {
   CS_UNSPECIFIED = 0;
-  CS_CREATING = 1;
-  CS_ACTIVE = 2;
-  CS_PAUSED = 3;
-  CS_DELETING = 4;
+  CS_ACTIVE = 1;
+  CS_PAUSED = 2;
+  CS_DELETING = 3;
+  CS_CREATING = 4;
 }
 
 message AuthConfig {
