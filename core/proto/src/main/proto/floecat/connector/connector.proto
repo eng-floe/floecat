@@ -58,6 +58,11 @@ message DestinationTarget {
   }
 }
 
+message SourceMapping {
+  SourceSelector source = 1;
+  DestinationTarget destination = 2;
+}
+
 message Connector {
   ai.floedb.floecat.common.ResourceId resource_id = 1;
   string display_name = 2;
@@ -65,6 +70,7 @@ message Connector {
   ConnectorKind kind = 4;
   SourceSelector source = 10;
   DestinationTarget destination = 11;
+  repeated SourceMapping mappings = 12;
   string uri = 20;
   AuthConfig auth = 22;
   ReconcilePolicy policy = 30;
@@ -79,6 +85,7 @@ enum ConnectorState {
   CS_ACTIVE = 1;
   CS_PAUSED = 2;
   CS_DELETING = 3;
+  CS_CREATING = 4;
 }
 
 message AuthConfig {
@@ -193,6 +200,7 @@ message ConnectorSpec {
   ConnectorKind kind = 3;
   SourceSelector source = 10;
   DestinationTarget destination = 11;
+  repeated SourceMapping mappings = 12;
   optional string uri = 20;
   AuthConfig auth = 21;
   ReconcilePolicy policy = 30;

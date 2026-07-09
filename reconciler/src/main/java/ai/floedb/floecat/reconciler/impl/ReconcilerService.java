@@ -28,6 +28,7 @@ import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.rpc.SourceMapping;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
@@ -110,80 +111,153 @@ public class ReconcilerService {
     ReconcileContext ctx = buildContext(principal, Optional.ofNullable(bearerToken));
 
     ActiveConnector active = activeConnectorForResult(ctx, connectorId);
-    SourceSelector source = active.source();
-    DestinationTarget dest = active.destination();
 
     try (FloecatConnector connector = connectorOpener.open(active.resolvedConfig())) {
       if (scope.hasTableFilter()) {
         return List.of(
             planStrictTableTask(ctx, connectorId, scope.destinationTableId(), connector));
       }
-      if (!source.hasNamespace() || source.getNamespace().getSegmentsList().isEmpty()) {
-        throw new IllegalArgumentException("connector.source.namespace is required");
-      }
 
-      ResourceId destCatalogId = dest.getCatalogId();
-      String sourceNsFq = fq(source.getNamespace().getSegmentsList());
-      String destNsFq;
-      String tableDisplayHint;
-      Optional<ResourceId> destNamespaceId;
-      destNsFq =
-          dest.hasNamespaceId()
-              ? resolveNamespaceFq(ctx, dest.getNamespaceId())
-              : (dest.hasNamespace() && !dest.getNamespace().getSegmentsList().isEmpty())
-                  ? fq(dest.getNamespace().getSegmentsList())
-                  : sourceNsFq;
-      tableDisplayHint =
-          dest.getTableDisplayName() == null || dest.getTableDisplayName().isBlank()
-              ? null
-              : dest.getTableDisplayName();
-      destNamespaceId = ensureDestinationNamespaceId(ctx, destCatalogId, dest, destNsFq);
-
-      if (dest.hasTableId() && (source.getTable() == null || source.getTable().isBlank())) {
-        throw new IllegalArgumentException(
-            "Pinned destination table id requires connector.source.table; "
-                + "namespace discovery connectors must not set destination.tableId");
+      List<ReconcileTableTask> tasks = new ArrayList<>();
+      for (SourceMapping mapping : effectiveMappings(active)) {
+        tasks.addAll(
+            planTableTasksForMapping(
+                ctx, connector, mapping.getSource(), mapping.getDestination(), scope));
       }
-
-      List<FloecatConnector.PlannedTableTask> planned =
-          connector
-              .planTableTasks(
-                  new FloecatConnector.TablePlanningRequest(
-                      sourceNsFq,
-                      source.getTable(),
-                      destNsFq,
-                      tableDisplayHint,
-                      destinationNamespacePlanningPaths(destNsFq),
-                      null))
-              .stream()
-              .filter(task -> matchesPlannedNamespaceScope(destNamespaceId.orElse(null), scope))
-              .toList();
-      if (dest.hasTableId()) {
-        return List.of(pinnedDestinationTableTask(dest.getTableId(), planned));
-      }
-      return planned.stream()
-          .map(
-              task ->
-                  ReconcileTableTask.discovery(
-                      task.sourceNamespaceFq(),
-                      task.sourceTable(),
-                      destNamespaceId.map(ResourceId::getId).orElse(""),
-                      lookupDestinationTableIdByName(
-                              ctx,
-                              destCatalogId,
-                              destNamespaceId.orElse(null),
-                              destNsFq,
-                              task.destinationTableDisplayName())
-                          .map(ResourceId::getId)
-                          .orElse(null),
-                      task.destinationTableDisplayName()))
-          .toList();
+      return tasks;
     } catch (RuntimeException e) {
       throw e;
     } catch (Exception e) {
       throw new RuntimeException(
           "Failed to plan reconcile tasks for connector " + connectorId.getId(), e);
     }
+  }
+
+  private List<ReconcileTableTask> planTableTasksForMapping(
+      ReconcileContext ctx,
+      FloecatConnector connector,
+      SourceSelector source,
+      DestinationTarget dest,
+      ReconcileScope scope) {
+    if (!source.hasNamespace() || source.getNamespace().getSegmentsList().isEmpty()) {
+      throw new IllegalArgumentException("connector.source.namespace is required");
+    }
+
+    ResourceId destCatalogId = dest.getCatalogId();
+    String sourceNsFq = fq(source.getNamespace().getSegmentsList());
+    String destNsFq =
+        dest.hasNamespaceId()
+            ? resolveNamespaceFq(ctx, dest.getNamespaceId())
+            : (dest.hasNamespace() && !dest.getNamespace().getSegmentsList().isEmpty())
+                ? fq(dest.getNamespace().getSegmentsList())
+                : sourceNsFq;
+    String tableDisplayHint =
+        dest.getTableDisplayName() == null || dest.getTableDisplayName().isBlank()
+            ? null
+            : dest.getTableDisplayName();
+    Optional<ResourceId> destNamespaceId =
+        ensureDestinationNamespaceId(ctx, destCatalogId, dest, destNsFq);
+
+    if (dest.hasTableId() && (source.getTable() == null || source.getTable().isBlank())) {
+      throw new IllegalArgumentException(
+          "Pinned destination table id requires connector.source.table; "
+              + "namespace discovery connectors must not set destination.tableId");
+    }
+
+    List<FloecatConnector.PlannedTableTask> planned =
+        connector
+            .planTableTasks(
+                new FloecatConnector.TablePlanningRequest(
+                    sourceNsFq,
+                    source.getTable(),
+                    destNsFq,
+                    tableDisplayHint,
+                    destinationNamespacePlanningPaths(destNsFq),
+                    null))
+            .stream()
+            .filter(task -> matchesPlannedNamespaceScope(destNamespaceId.orElse(null), scope))
+            .toList();
+    if (dest.hasTableId()) {
+      return List.of(pinnedDestinationTableTask(dest.getTableId(), planned));
+    }
+    return planned.stream()
+        .map(
+            task ->
+                ReconcileTableTask.discovery(
+                    task.sourceNamespaceFq(),
+                    task.sourceTable(),
+                    destNamespaceId.map(ResourceId::getId).orElse(""),
+                    lookupDestinationTableIdByName(
+                            ctx,
+                            destCatalogId,
+                            destNamespaceId.orElse(null),
+                            destNsFq,
+                            task.destinationTableDisplayName())
+                        .map(ResourceId::getId)
+                        .orElse(null),
+                    task.destinationTableDisplayName()))
+        .toList();
+  }
+
+  /**
+   * Resolves the column selectors configured for the mapping that produced this table task, falling
+   * back to the legacy top-level source when no mapping matches.
+   */
+  static Set<String> effectiveColumnSelectors(
+      ActiveConnector active,
+      String sourceNamespaceFq,
+      String sourceTable,
+      String destinationTableId) {
+    return normalizeSelectors(
+        effectiveSourceForTask(active, sourceNamespaceFq, sourceTable, destinationTableId)
+            .getColumnsList());
+  }
+
+  private static SourceSelector effectiveSourceForTask(
+      ActiveConnector active,
+      String sourceNamespaceFq,
+      String sourceTable,
+      String destinationTableId) {
+    List<SourceMapping> mappings = effectiveMappings(active);
+    if (mappings.size() == 1) {
+      return mappings.getFirst().getSource();
+    }
+    SourceSelector tableMatch = null;
+    SourceSelector namespaceMatch = null;
+    for (SourceMapping mapping : mappings) {
+      SourceSelector source = mapping.getSource();
+      DestinationTarget dest = mapping.getDestination();
+      if (!blank(destinationTableId)
+          && dest.hasTableId()
+          && destinationTableId.equals(dest.getTableId().getId())) {
+        return source;
+      }
+      if (!fq(source.getNamespace().getSegmentsList()).equals(sourceNamespaceFq)) {
+        continue;
+      }
+      if (!blank(sourceTable) && sourceTable.equals(source.getTable())) {
+        tableMatch = tableMatch == null ? source : tableMatch;
+      } else if (blank(source.getTable()) && namespaceMatch == null) {
+        namespaceMatch = source;
+      }
+    }
+    if (tableMatch != null) {
+      return tableMatch;
+    }
+    return namespaceMatch != null ? namespaceMatch : active.source();
+  }
+
+  /** Falls back to the legacy singular source/destination pair when mappings is empty. */
+  private static List<SourceMapping> effectiveMappings(ActiveConnector active) {
+    List<SourceMapping> mappings = active.connector().getMappingsList();
+    if (!mappings.isEmpty()) {
+      return mappings;
+    }
+    return List.of(
+        SourceMapping.newBuilder()
+            .setSource(active.source())
+            .setDestination(active.destination())
+            .build());
   }
 
   /** Plans either strict destination-view-id work or namespace discovery view tasks. */
@@ -298,7 +372,12 @@ public class ReconcilerService {
     boolean captureOnly = captureMode == CaptureMode.CAPTURE_ONLY;
     Set<Long> knownSnapshotIds =
         (captureOnly || !fullRescan) ? backend.existingSnapshotIds(ctx, tableId) : Set.of();
-    Set<String> defaultColumnSelectors = normalizeSelectors(active.source().getColumnsList());
+    Set<String> defaultColumnSelectors =
+        effectiveColumnSelectors(
+            active,
+            effectiveTask.sourceNamespace(),
+            effectiveTask.sourceTable(),
+            effectiveTask.destinationTableId());
     ReconcileCapturePolicy capturePolicy = effectiveCapturePolicy(scope, captureMode);
     boolean requiresCaptureOutputs =
         capturePolicy.requestsStats() || capturePolicy.requestsIndexes();

@@ -31,6 +31,9 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.rpc.NamespacePath;
+import ai.floedb.floecat.connector.rpc.SourceMapping;
+import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -780,6 +783,204 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             ReconcileTableTask.discovery("src_cat.src_ns", "new_tbl", "ns-obs2", "new_tbl"));
     assertThat(lookupNamespaceCalls[0]).isEqualTo(1);
     assertThat(ensureNamespaceCalls[0]).isEqualTo(1);
+  }
+
+  @Test
+  void tablePlannerPlansDiscoveryTasksForEachMapping() {
+    configureTwoNamespaceMappingConnector();
+
+    List<ReconcileTableTask> tasks =
+        service.planTableTasks(principal, connectorId, ReconcileScope.empty(), null);
+
+    assertThat(tasks)
+        .containsExactly(
+            ReconcileTableTask.discovery("src_cat.ns_a", "tbl_a", "ns-a", "tbl_a"),
+            ReconcileTableTask.discovery("src_cat.ns_b", "tbl_b", "ns-b", "tbl_b"));
+  }
+
+  @Test
+  void tablePlannerScopeNarrowsAcrossMappingsToMatchingDestinationNamespace() {
+    configureTwoNamespaceMappingConnector();
+
+    List<ReconcileTableTask> tasks =
+        service.planTableTasks(
+            principal, connectorId, ReconcileScope.of(List.of("ns-a"), null), null);
+
+    assertThat(tasks)
+        .containsExactly(ReconcileTableTask.discovery("src_cat.ns_a", "tbl_a", "ns-a", "tbl_a"));
+  }
+
+  @Test
+  void tablePlannerCombinesPinnedAndDiscoveryMappings() {
+    ResourceId destCatalogId =
+        ResourceId.newBuilder().setAccountId("acct").setId(DEST_CATALOG).build();
+    ResourceId pinnedNamespaceId =
+        ResourceId.newBuilder().setAccountId("acct").setId("ns-pinned").build();
+    ResourceId pinnedTableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table-pinned")
+            .build();
+    ResourceId destNamespaceIdB =
+        ResourceId.newBuilder().setAccountId("acct").setId("ns-b").build();
+
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setKind(ConnectorKind.CK_DELTA)
+            .addMappings(
+                SourceMapping.newBuilder()
+                    .setSource(
+                        SourceSelector.newBuilder()
+                            .setTable("tbl_pinned")
+                            .setNamespace(
+                                NamespacePath.newBuilder()
+                                    .addSegments("src_cat")
+                                    .addSegments("ns_pinned")))
+                    .setDestination(
+                        DestinationTarget.newBuilder()
+                            .setCatalogId(destCatalogId)
+                            .setNamespaceId(pinnedNamespaceId)
+                            .setTableId(pinnedTableId)))
+            .addMappings(
+                SourceMapping.newBuilder()
+                    .setSource(
+                        SourceSelector.newBuilder()
+                            .setNamespace(
+                                NamespacePath.newBuilder()
+                                    .addSegments("src_cat")
+                                    .addSegments("ns_b")))
+                    .setDestination(
+                        DestinationTarget.newBuilder()
+                            .setCatalogId(destCatalogId)
+                            .setNamespaceId(destNamespaceIdB)))
+            .build();
+
+    service.backend =
+        new DefaultBackend() {
+          @Override
+          public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+            return connector;
+          }
+
+          @Override
+          public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+            return "dest_ns";
+          }
+
+          @Override
+          public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+            return "dest_cat";
+          }
+
+          @Override
+          public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
+            return Optional.empty();
+          }
+        };
+    service.connectorOpener =
+        mappingAwarePlanner(
+            Map.of(
+                "src_cat.ns_pinned",
+                List.of(
+                    new FloecatConnector.PlannedTableTask(
+                        "src_cat.ns_pinned", "tbl_pinned", "tbl_pinned")),
+                "src_cat.ns_b",
+                List.of(new FloecatConnector.PlannedTableTask("src_cat.ns_b", "tbl_b", "tbl_b"))));
+
+    List<ReconcileTableTask> tasks =
+        service.planTableTasks(principal, connectorId, ReconcileScope.empty(), null);
+
+    assertThat(tasks)
+        .containsExactly(
+            ReconcileTableTask.of("src_cat.ns_pinned", "tbl_pinned", "table-pinned", "tbl_pinned"),
+            ReconcileTableTask.discovery("src_cat.ns_b", "tbl_b", "ns-b", "tbl_b"));
+  }
+
+  private Connector configureTwoNamespaceMappingConnector() {
+    ResourceId destCatalogId =
+        ResourceId.newBuilder().setAccountId("acct").setId(DEST_CATALOG).build();
+    ResourceId destNamespaceIdA =
+        ResourceId.newBuilder().setAccountId("acct").setId("ns-a").build();
+    ResourceId destNamespaceIdB =
+        ResourceId.newBuilder().setAccountId("acct").setId("ns-b").build();
+
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setKind(ConnectorKind.CK_DELTA)
+            .addMappings(
+                SourceMapping.newBuilder()
+                    .setSource(
+                        SourceSelector.newBuilder()
+                            .setNamespace(
+                                NamespacePath.newBuilder()
+                                    .addSegments("src_cat")
+                                    .addSegments("ns_a")))
+                    .setDestination(
+                        DestinationTarget.newBuilder()
+                            .setCatalogId(destCatalogId)
+                            .setNamespaceId(destNamespaceIdA)))
+            .addMappings(
+                SourceMapping.newBuilder()
+                    .setSource(
+                        SourceSelector.newBuilder()
+                            .setNamespace(
+                                NamespacePath.newBuilder()
+                                    .addSegments("src_cat")
+                                    .addSegments("ns_b")))
+                    .setDestination(
+                        DestinationTarget.newBuilder()
+                            .setCatalogId(destCatalogId)
+                            .setNamespaceId(destNamespaceIdB)))
+            .build();
+
+    service.backend =
+        new DefaultBackend() {
+          @Override
+          public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+            return connector;
+          }
+
+          @Override
+          public String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId) {
+            return "dest_ns";
+          }
+
+          @Override
+          public String lookupCatalogName(ReconcileContext ctx, ResourceId catalogId) {
+            return "dest_cat";
+          }
+
+          @Override
+          public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
+            return Optional.empty();
+          }
+        };
+    service.connectorOpener =
+        mappingAwarePlanner(
+            Map.of(
+                "src_cat.ns_a",
+                List.of(new FloecatConnector.PlannedTableTask("src_cat.ns_a", "tbl_a", "tbl_a")),
+                "src_cat.ns_b",
+                List.of(new FloecatConnector.PlannedTableTask("src_cat.ns_b", "tbl_b", "tbl_b"))));
+
+    return connector;
+  }
+
+  private ReconcilerService.ConnectorOpener mappingAwarePlanner(
+      Map<String, List<FloecatConnector.PlannedTableTask>> plannedBySourceNamespace) {
+    return cfg ->
+        new FakeConnector(List.of()) {
+          @Override
+          public List<FloecatConnector.PlannedTableTask> planTableTasks(
+              FloecatConnector.TablePlanningRequest request) {
+            return plannedBySourceNamespace.getOrDefault(request.sourceNamespaceFq(), List.of());
+          }
+        };
   }
 
   @Test

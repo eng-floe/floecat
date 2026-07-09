@@ -112,9 +112,15 @@ and per-column stats for planner scan paths. Snapshot bundles also carry manifes
 maps so downstream APIs can mirror Iceberg’s REST contract.
 
 `ConnectorConfig` encodes:
-- Kind + source/destination selectors (`SourceSelector`, `DestinationTarget`).
+- Kind, display name.
 - URI and arbitrary `properties` map.
 - Authentication configuration (scheme, credentials, headers, properties).
+
+It does not carry source/destination selectors. A connector may have multiple independent
+source->destination pairs (`Connector.mappings`, falling back to the singular
+`source`/`destination` pair when empty); `ReconcilerService` resolves each mapping separately and
+passes its `SourceSelector`/`DestinationTarget` into the per-mapping planning request
+(`TablePlanningRequest`/`ViewPlanningRequest`) rather than into `ConnectorConfig`.
 
 `ConnectorProvider` is a lightweight registry allowing CDI discovery of connector factories.
 

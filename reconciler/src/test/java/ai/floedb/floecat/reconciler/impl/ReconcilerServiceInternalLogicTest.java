@@ -31,6 +31,10 @@ import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
+import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.rpc.NamespacePath;
+import ai.floedb.floecat.connector.rpc.SourceMapping;
+import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationTableMetadata;
@@ -245,6 +249,109 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             any(), any(), any(), locationCaptor.capture(), eq(connector), any());
     assertThat(locationCaptor.getValue())
         .contains("s3://bucket/table/metadata/00001.metadata.json");
+  }
+
+  @Test
+  void effectiveColumnSelectorsResolvesMatchingMappingBySourceTable() {
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .addMappings(mapping("db.sales", "orders", List.of("order_id", "amount")))
+            .addMappings(mapping("db.sales", "customers", List.of("customer_id")))
+            .build();
+    ReconcilerService.ActiveConnector active = activeConnector(connector);
+
+    assertThat(ReconcilerService.effectiveColumnSelectors(active, "db.sales", "orders", "tbl-1"))
+        .containsExactly("order_id", "amount");
+    assertThat(ReconcilerService.effectiveColumnSelectors(active, "db.sales", "customers", "tbl-2"))
+        .containsExactly("customer_id");
+  }
+
+  @Test
+  void effectiveColumnSelectorsResolvesMatchingMappingByNamespaceDiscovery() {
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .addMappings(mapping("db.sales", "", List.of("order_id")))
+            .addMappings(mapping("db.hr", "", List.of("employee_id")))
+            .build();
+    ReconcilerService.ActiveConnector active = activeConnector(connector);
+
+    assertThat(
+            ReconcilerService.effectiveColumnSelectors(active, "db.hr", "employees", "tbl-emp"))
+        .containsExactly("employee_id");
+  }
+
+  @Test
+  void effectiveColumnSelectorsPrefersPinnedDestinationTableId() {
+    ResourceId pinnedTableId =
+        ResourceId.newBuilder()
+            .setAccountId(connectorId.getAccountId())
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl-pinned")
+            .build();
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .addMappings(mapping("db.sales", "orders", List.of("order_id")))
+            .addMappings(
+                mapping("db.sales", "orders", List.of("pinned_col")).toBuilder()
+                    .setDestination(DestinationTarget.newBuilder().setTableId(pinnedTableId))
+                    .build())
+            .build();
+    ReconcilerService.ActiveConnector active = activeConnector(connector);
+
+    assertThat(
+            ReconcilerService.effectiveColumnSelectors(active, "db.sales", "orders", "tbl-pinned"))
+        .containsExactly("pinned_col");
+  }
+
+  @Test
+  void effectiveColumnSelectorsFallsBackToLegacySourceWithoutMappings() {
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setSource(sourceSelector("db.sales", "orders", List.of("legacy_col")))
+            .build();
+    ReconcilerService.ActiveConnector active = activeConnector(connector);
+
+    assertThat(ReconcilerService.effectiveColumnSelectors(active, "db.sales", "orders", "tbl-1"))
+        .containsExactly("legacy_col");
+  }
+
+  private ReconcilerService.ActiveConnector activeConnector(Connector connector) {
+    return new ReconcilerService.ActiveConnector(
+        connector,
+        connector.hasSource() ? connector.getSource() : SourceSelector.getDefaultInstance(),
+        connector.hasDestination()
+            ? connector.getDestination()
+            : DestinationTarget.getDefaultInstance(),
+        null,
+        null);
+  }
+
+  private static SourceMapping mapping(String namespaceFq, String table, List<String> columns) {
+    return SourceMapping.newBuilder()
+        .setSource(sourceSelector(namespaceFq, table, columns))
+        .setDestination(DestinationTarget.getDefaultInstance())
+        .build();
+  }
+
+  private static SourceSelector sourceSelector(
+      String namespaceFq, String table, List<String> columns) {
+    SourceSelector.Builder source =
+        SourceSelector.newBuilder()
+            .setNamespace(
+                NamespacePath.newBuilder().addAllSegments(List.of(namespaceFq.split("\\."))))
+            .addAllColumns(columns);
+    if (!table.isBlank()) {
+      source.setTable(table);
+    }
+    return source.build();
   }
 
   @Test
