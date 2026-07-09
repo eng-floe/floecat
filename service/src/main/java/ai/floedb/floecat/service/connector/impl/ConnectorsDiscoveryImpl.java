@@ -30,11 +30,7 @@ import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.credentials.AuthResolutionContexts;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.repo.IdempotencyRepository;
-import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
-import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
-import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import io.quarkus.grpc.GrpcService;
@@ -54,12 +50,8 @@ import org.jboss.logging.Logger;
 @GrpcService
 public class ConnectorsDiscoveryImpl extends BaseServiceImpl implements ConnectorDiscovery {
   @Inject ConnectorRepository connectorRepo;
-  @Inject CatalogRepository catalogRepo;
-  @Inject NamespaceRepository namespaceRepo;
-  @Inject TableRepository tableRepo;
   @Inject PrincipalProvider principalProvider;
   @Inject Authorizer authz;
-  @Inject IdempotencyRepository idempotencyStore;
   @Inject CredentialResolver credentialResolver;
 
   private static final Logger LOG = Logger.getLogger(ConnectorDiscovery.class);
@@ -224,7 +216,7 @@ public class ConnectorsDiscoveryImpl extends BaseServiceImpl implements Connecto
     var cfg =
         new ConnectorConfig(
             kind,
-            spec.getDisplayName() != null ? spec.getDisplayName() : "",
+            spec.getDisplayName(),
             mustNonEmpty(spec.getUri(), "uri", corr),
             spec.getPropertiesMap(),
             auth);

@@ -33,10 +33,7 @@ import ai.floedb.floecat.connector.rpc.DiscoveryObjectKind;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
-import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
-import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
-import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import java.lang.reflect.Field;
@@ -55,9 +52,6 @@ class ConnectorsDiscoveryImplTest {
   void setUp() throws Exception {
     service = new ConnectorsDiscoveryImpl();
     service.connectorRepo = mock(ConnectorRepository.class);
-    service.catalogRepo = mock(CatalogRepository.class);
-    service.namespaceRepo = mock(NamespaceRepository.class);
-    service.tableRepo = mock(TableRepository.class);
     service.principalProvider = mock(PrincipalProvider.class);
     service.authz = mock(Authorizer.class);
     service.credentialResolver = mock(CredentialResolver.class);
