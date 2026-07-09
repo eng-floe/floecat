@@ -129,11 +129,6 @@ class IcebergConnectorIssuesTest {
     IcebergConnector connector =
         new IcebergConnector("test", null, null, null, false, 0.0d, 0L, null) {
           @Override
-          public List<String> listCatalogs() {
-            return List.of();
-          }
-
-          @Override
           public List<String> listNamespaces() {
             return List.of();
           }
@@ -197,11 +192,6 @@ class IcebergConnectorIssuesTest {
 
     IcebergConnector connector =
         new IcebergConnector("test", null, null, null, false, 0.0d, 0L, null) {
-          @Override
-          public List<String> listCatalogs() {
-            return List.of();
-          }
-
           @Override
           public List<String> listNamespaces() {
             return List.of();

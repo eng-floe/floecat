@@ -100,9 +100,6 @@ public interface FloecatConnector extends Closeable {
 
   ConnectorFormat format();
 
-  List<String> listCatalogs();
-
-  // TODO(adrian): Add optional catalog filter
   List<String> listNamespaces();
 
   List<String> listTables(String namespaceFq);

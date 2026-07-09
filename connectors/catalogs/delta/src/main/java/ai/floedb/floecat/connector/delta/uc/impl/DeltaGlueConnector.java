@@ -39,11 +39,6 @@ final class DeltaGlueConnector extends DeltaConnector {
   }
 
   @Override
-  public List<String> listCatalogs() {
-    return glueCatalog.deltaCatalogs();
-  }
-
-  @Override
   public List<String> listNamespaces() {
     return glueCatalog.deltaNamespaces();
   }

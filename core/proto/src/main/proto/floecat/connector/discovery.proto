@@ -38,7 +38,7 @@ enum DiscoveryObjectKind {
 message DiscoveryObject {
   DiscoveryObjectKind object_kind = 1;
 
-  string catalog_name = 10;
+  // string catalog_name = 10;
   repeated string namespace_segments = 11;
   string object_name = 12;
 
@@ -56,21 +56,9 @@ message DiscoveryStatus {
   string summary = 4;
 }
 
-message DiscoverCatalogsRequest {
-  ConnectorDiscoveryTarget target = 1;
-  ai.floedb.floecat.common.PageRequest page = 2;
-  string query = 3;
-}
-
-message DiscoverCatalogsResponse {
-  repeated DiscoveryObject catalogs = 1;
-  ai.floedb.floecat.common.PageResponse page = 2;
-  DiscoveryStatus status = 3;
-}
-
 message DiscoverNamespacesRequest {
   ConnectorDiscoveryTarget target = 1;
-  optional string catalog_name = 2;
+  // optional string catalog_name = 2;
   ai.floedb.floecat.common.PageRequest page = 3;
   string query = 4;
 }
@@ -83,7 +71,7 @@ message DiscoverNamespacesResponse {
 
 message DiscoverObjectsRequest {
   ConnectorDiscoveryTarget target = 1;
-  optional string catalog_name = 2;
+  // optional string catalog_name = 2;
   repeated string namespace_segments = 3;
   repeated DiscoveryObjectKind kinds = 4; // table/view
   ai.floedb.floecat.common.PageRequest page = 5;
@@ -91,13 +79,12 @@ message DiscoverObjectsRequest {
 }
 
 message DiscoverObjectsResponse {
-  repeated DiscoveryObject  objects = 1;
+  repeated DiscoveryObject objects = 1;
   ai.floedb.floecat.common.PageResponse page = 2;
   DiscoveryStatus status = 3;
 }
 
 service ConnectorDiscovery {
-  rpc DiscoverCatalogs(DiscoverCatalogsRequest) returns (DiscoverCatalogsResponse);
   rpc DiscoverNamespaces(DiscoverNamespacesRequest) returns (DiscoverNamespacesResponse);
   rpc DiscoverObjects(DiscoverObjectsRequest) returns (DiscoverObjectsResponse);
 }

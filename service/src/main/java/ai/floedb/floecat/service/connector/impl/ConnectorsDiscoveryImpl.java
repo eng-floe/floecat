@@ -47,7 +47,7 @@ import java.util.Map;
 import java.util.Set;
 import org.jboss.logging.Logger;
 
-// Note: the connector SPI (listCataogs, listNamespaces, listTables, listViews) always returns a
+// Note: the connector SPI (listNamespaces, listTables, listViews) always returns a
 // full list with no cursor support, so pagination cannot be pushed to the source. Page parameters
 // in these RPCs are ignored and all results are returned in a single response.
 
@@ -65,58 +65,6 @@ public class ConnectorsDiscoveryImpl extends BaseServiceImpl implements Connecto
   private static final Logger LOG = Logger.getLogger(ConnectorDiscovery.class);
 
   @Override
-  public Uni<DiscoverCatalogsResponse> discoverCatalogs(DiscoverCatalogsRequest request) {
-    var L = LogHelper.start(LOG, "DiscoverCatalogs");
-
-    return mapFailures(
-            run(
-                () -> {
-                  var p = principalProvider.get();
-                  var corr = p.getCorrelationId();
-                  authz.require(p, "connector.manage");
-
-                  var cfg = buildConnectorConfig(p.getAccountId(), request.getTarget(), corr);
-                  String query = request.getQuery().trim().toLowerCase(java.util.Locale.ROOT);
-
-                  try (var connector = ConnectorFactory.create(cfg)) {
-                    var refs =
-                        connector.listCatalogs().stream()
-                            .filter(
-                                cat ->
-                                    query.isEmpty()
-                                        || cat.toLowerCase(java.util.Locale.ROOT).contains(query))
-                            .map(
-                                cat ->
-                                    DiscoveryObject.newBuilder()
-                                        .setObjectKind(DiscoveryObjectKind.DOK_CATALOG)
-                                        .setObjectName(cat)
-                                        .setCatalogName(cat)
-                                        .setDisplayName(cat)
-                                        .build())
-                            .toList();
-
-                    return DiscoverCatalogsResponse.newBuilder()
-                        .addAllCatalogs(refs)
-                        .setStatus(
-                            DiscoveryStatus.newBuilder()
-                                .setOk(true)
-                                .setSummary("ok: " + refs.size() + " catalogs"))
-                        .build();
-                  } catch (Exception e) {
-                    LOG.error("DiscoverCatalogs connector error", e);
-                    return DiscoverCatalogsResponse.newBuilder()
-                        .setStatus(buildErrorStatus(e))
-                        .build();
-                  }
-                }),
-            correlationId())
-        .onFailure()
-        .invoke(L::fail)
-        .onItem()
-        .invoke(L::ok);
-  }
-
-  @Override
   public Uni<DiscoverNamespacesResponse> discoverNamespaces(DiscoverNamespacesRequest request) {
     var L = LogHelper.start(LOG, "DiscoverNamespaces");
 
@@ -129,46 +77,36 @@ public class ConnectorsDiscoveryImpl extends BaseServiceImpl implements Connecto
 
                   var cfg = buildConnectorConfig(p.getAccountId(), request.getTarget(), corr);
 
-                  String catalogFilter =
-                      request.hasCatalogName() ? request.getCatalogName().trim() : "";
                   String query = request.getQuery().trim().toLowerCase(java.util.Locale.ROOT);
 
                   try (var connector = ConnectorFactory.create(cfg)) {
                     var namespaces = connector.listNamespaces();
 
-                    var refs =
-                        namespaces.stream()
-                            .filter(
-                                ns ->
-                                    catalogFilter.isEmpty()
-                                        || ns.equals(catalogFilter)
-                                        || ns.startsWith(catalogFilter + "."))
-                            .filter(
-                                ns ->
-                                    query.isEmpty()
-                                        || ns.toLowerCase(java.util.Locale.ROOT).contains(query))
-                            .map(
+                    var refs = namespaces.stream();
+                    if (!query.isEmpty()) {
+                      refs =
+                          refs.filter(ns -> ns.toLowerCase(java.util.Locale.ROOT).contains(query));
+                    }
+
+                    var results =
+                        refs.map(
                                 ns -> {
                                   var segments = List.of(ns.split("\\.", -1));
                                   var b =
                                       DiscoveryObject.newBuilder()
-                                          .setObjectKind(DiscoveryObjectKind.DOK_NAMESPACE);
-                                  if (segments.size() > 1) {
-                                    b.setCatalogName(segments.get(0));
-                                    segments = segments.subList(1, segments.size());
-                                  }
-                                  b.setDisplayName(String.join(".", segments))
-                                      .addAllNamespaceSegments(segments);
+                                          .setObjectKind(DiscoveryObjectKind.DOK_NAMESPACE)
+                                          .setDisplayName(ns)
+                                          .addAllNamespaceSegments(segments);
                                   return b.build();
                                 })
                             .toList();
 
                     return DiscoverNamespacesResponse.newBuilder()
-                        .addAllNamespaces(refs)
+                        .addAllNamespaces(results)
                         .setStatus(
                             DiscoveryStatus.newBuilder()
                                 .setOk(true)
-                                .setSummary("ok: " + refs.size() + " namespaces"))
+                                .setSummary("ok: " + results.size() + " namespaces"))
                         .build();
                   } catch (Exception e) {
                     LOG.error("DiscoverNamespaces connector error", e);
@@ -198,19 +136,11 @@ public class ConnectorsDiscoveryImpl extends BaseServiceImpl implements Connecto
                   var cfg = buildConnectorConfig(p.getAccountId(), request.getTarget(), corr);
 
                   var nsSegments = request.getNamespaceSegmentsList();
-                  String catalogName =
-                      request.hasCatalogName() ? request.getCatalogName().trim() : "";
-                  if (nsSegments.isEmpty() && catalogName.isEmpty()) {
+                  if (nsSegments.isEmpty()) {
                     throw GrpcErrors.invalidArgument(
                         corr, null, Map.of("field", "namespace_segments"));
                   }
-                  List<String> fqSegments = nsSegments;
-                  if (!catalogName.isEmpty()) {
-                    fqSegments = new ArrayList<>();
-                    fqSegments.add(catalogName);
-                    fqSegments.addAll(nsSegments);
-                  }
-                  String namespaceFq = String.join(".", fqSegments);
+                  String namespaceFq = String.join(".", nsSegments);
 
                   Set<DiscoveryObjectKind> requestedKinds =
                       request.getKindsList().isEmpty()
@@ -229,18 +159,13 @@ public class ConnectorsDiscoveryImpl extends BaseServiceImpl implements Connecto
                                   query.isEmpty()
                                       || t.toLowerCase(java.util.Locale.ROOT).contains(query))
                           .map(
-                              t -> {
-                                var b =
-                                    DiscoveryObject.newBuilder()
-                                        .setObjectKind(DiscoveryObjectKind.DOK_TABLE)
-                                        .addAllNamespaceSegments(nsSegments)
-                                        .setObjectName(t)
-                                        .setDisplayName(t);
-                                if (!catalogName.isEmpty()) {
-                                  b.setCatalogName(catalogName);
-                                }
-                                return b.build();
-                              })
+                              t ->
+                                  DiscoveryObject.newBuilder()
+                                      .setObjectKind(DiscoveryObjectKind.DOK_TABLE)
+                                      .addAllNamespaceSegments(nsSegments)
+                                      .setObjectName(t)
+                                      .setDisplayName(t)
+                                      .build())
                           .forEach(objects::add);
                     }
 
@@ -251,18 +176,13 @@ public class ConnectorsDiscoveryImpl extends BaseServiceImpl implements Connecto
                                   query.isEmpty()
                                       || v.toLowerCase(java.util.Locale.ROOT).contains(query))
                           .map(
-                              v -> {
-                                var b =
-                                    DiscoveryObject.newBuilder()
-                                        .setObjectKind(DiscoveryObjectKind.DOK_VIEW)
-                                        .addAllNamespaceSegments(nsSegments)
-                                        .setObjectName(v)
-                                        .setDisplayName(v);
-                                if (!catalogName.isEmpty()) {
-                                  b.setCatalogName(catalogName);
-                                }
-                                return b.build();
-                              })
+                              v ->
+                                  DiscoveryObject.newBuilder()
+                                      .setObjectKind(DiscoveryObjectKind.DOK_VIEW)
+                                      .addAllNamespaceSegments(nsSegments)
+                                      .setObjectName(v)
+                                      .setDisplayName(v)
+                                      .build())
                           .forEach(objects::add);
                     }
 

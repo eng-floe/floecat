@@ -27,7 +27,6 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.connector.rpc.ConnectorDiscoveryTarget;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
-import ai.floedb.floecat.connector.rpc.DiscoverCatalogsRequest;
 import ai.floedb.floecat.connector.rpc.DiscoverNamespacesRequest;
 import ai.floedb.floecat.connector.rpc.DiscoverObjectsRequest;
 import ai.floedb.floecat.connector.rpc.DiscoveryObjectKind;
@@ -82,28 +81,9 @@ class ConnectorsDiscoveryImplTest {
             .build();
 
     fakeConnector = mock(FloecatConnector.class);
-    when(fakeConnector.listCatalogs()).thenReturn(List.of("prod_catalog", "dev_catalog"));
     when(fakeConnector.listNamespaces()).thenReturn(List.of("prod_catalog.orders"));
     when(fakeConnector.listTables("prod_catalog.orders")).thenReturn(List.of("line_items"));
     when(fakeConnector.listViews("prod_catalog.orders")).thenReturn(List.of("orders_view"));
-  }
-
-  @Test
-  void discoverCatalogsReturnsCatalogsFromTheConnector() {
-    try (MockedStatic<ConnectorFactory> factory = mockStatic(ConnectorFactory.class)) {
-      factory.when(() -> ConnectorFactory.create(any())).thenReturn(fakeConnector);
-
-      var response =
-          service
-              .discoverCatalogs(DiscoverCatalogsRequest.newBuilder().setTarget(target).build())
-              .await()
-              .indefinitely();
-
-      assertTrue(response.getStatus().getOk());
-      assertEquals(2, response.getCatalogsCount());
-      assertEquals("prod_catalog", response.getCatalogs(0).getObjectName());
-      assertEquals("dev_catalog", response.getCatalogs(1).getObjectName());
-    }
   }
 
   @Test
@@ -120,9 +100,8 @@ class ConnectorsDiscoveryImplTest {
       assertTrue(response.getStatus().getOk());
       assertEquals(1, response.getNamespacesCount());
       var namespace = response.getNamespaces(0);
-      assertEquals("prod_catalog", namespace.getCatalogName());
-      assertEquals("orders", namespace.getDisplayName());
-      assertEquals(List.of("orders"), namespace.getNamespaceSegmentsList());
+      assertEquals("prod_catalog.orders", namespace.getDisplayName());
+      assertEquals(List.of("prod_catalog", "orders"), namespace.getNamespaceSegmentsList());
     }
   }
 
@@ -147,37 +126,6 @@ class ConnectorsDiscoveryImplTest {
       var kinds = response.getObjectsList().stream().map(o -> o.getObjectKind()).toList();
       assertTrue(kinds.contains(DiscoveryObjectKind.DOK_TABLE));
       assertTrue(kinds.contains(DiscoveryObjectKind.DOK_VIEW));
-    }
-  }
-
-  @Test
-  void discoverObjectsResolvesFullyQualifiedNamespaceFromCatalogNameAndSetsCatalogNameOnObjects() {
-    try (MockedStatic<ConnectorFactory> factory = mockStatic(ConnectorFactory.class)) {
-      factory.when(() -> ConnectorFactory.create(any())).thenReturn(fakeConnector);
-
-      var response =
-          service
-              .discoverObjects(
-                  DiscoverObjectsRequest.newBuilder()
-                      .setTarget(target)
-                      .setCatalogName("prod_catalog")
-                      .addNamespaceSegments("orders")
-                      .build())
-              .await()
-              .indefinitely();
-
-      assertTrue(response.getStatus().getOk());
-      assertEquals(2, response.getObjectsCount());
-      var objectNames = response.getObjectsList().stream().map(o -> o.getObjectName()).toList();
-      assertTrue(objectNames.contains("line_items"));
-      assertTrue(objectNames.contains("orders_view"));
-      response
-          .getObjectsList()
-          .forEach(
-              o -> {
-                assertEquals("prod_catalog", o.getCatalogName());
-                assertEquals(List.of("orders"), o.getNamespaceSegmentsList());
-              });
     }
   }
 

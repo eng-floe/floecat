@@ -446,11 +446,6 @@ class DeltaConnectorTest {
     }
 
     @Override
-    public List<String> listCatalogs() {
-      return List.of();
-    }
-
-    @Override
     public List<String> listTables(String namespaceFq) {
       return List.of();
     }
@@ -490,11 +485,6 @@ class DeltaConnectorTest {
     @Override
     protected Table loadTable(String storageLocation) {
       return table;
-    }
-
-    @Override
-    public List<String> listCatalogs() {
-      return List.of();
     }
 
     @Override
