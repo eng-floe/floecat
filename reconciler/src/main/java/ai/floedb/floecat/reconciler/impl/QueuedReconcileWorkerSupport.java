@@ -612,7 +612,6 @@ class QueuedReconcileWorkerSupport {
                   + tableTask.destinationTableId()));
     }
 
-    SourceSelector source = active.source();
     TableExecutionProgress tableProgress = new TableExecutionProgress();
     ProgressListener trackingProgress =
         (tablesScanned,
@@ -684,7 +683,11 @@ class QueuedReconcileWorkerSupport {
                     return DestinationTableResolution.resolved(
                         destinationTableId, tableMetadataChanged);
                   }),
-              ReconcilerService.normalizeSelectors(source.getColumnsList()),
+              ReconcilerService.effectiveColumnSelectors(
+                  active,
+                  tableTask.sourceNamespace(),
+                  tableTask.sourceTable(),
+                  tableTask.destinationTableId()),
               cancelCheck,
               trackingProgress,
               tableProgress,
@@ -826,7 +829,11 @@ class QueuedReconcileWorkerSupport {
         reconcilerService.connectorOpener.open(active.resolvedConfig())) {
       ResourceId destCatalogId = active.destination().getCatalogId();
       Set<String> defaultColumnSelectors =
-          ReconcilerService.normalizeSelectors(active.source().getColumnsList());
+          ReconcilerService.effectiveColumnSelectors(
+              active,
+              tableTask.sourceNamespace(),
+              tableTask.sourceTable(),
+              tableTask.destinationTableId());
       boolean includeCoreMetadata =
           ReconcilerService.includesMetadata(captureMode)
               && !ReconcilerService.isCaptureOnlyConnector(active.connector());

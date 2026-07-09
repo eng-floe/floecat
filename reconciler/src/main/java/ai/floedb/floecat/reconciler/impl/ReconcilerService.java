@@ -199,6 +199,54 @@ public class ReconcilerService {
         .toList();
   }
 
+  /**
+   * Resolves the column selectors configured for the mapping that produced this table task, falling
+   * back to the legacy top-level source when no mapping matches.
+   */
+  static Set<String> effectiveColumnSelectors(
+      ActiveConnector active,
+      String sourceNamespaceFq,
+      String sourceTable,
+      String destinationTableId) {
+    return normalizeSelectors(
+        effectiveSourceForTask(active, sourceNamespaceFq, sourceTable, destinationTableId)
+            .getColumnsList());
+  }
+
+  private static SourceSelector effectiveSourceForTask(
+      ActiveConnector active,
+      String sourceNamespaceFq,
+      String sourceTable,
+      String destinationTableId) {
+    List<SourceMapping> mappings = effectiveMappings(active);
+    if (mappings.size() == 1) {
+      return mappings.getFirst().getSource();
+    }
+    SourceSelector tableMatch = null;
+    SourceSelector namespaceMatch = null;
+    for (SourceMapping mapping : mappings) {
+      SourceSelector source = mapping.getSource();
+      DestinationTarget dest = mapping.getDestination();
+      if (!blank(destinationTableId)
+          && dest.hasTableId()
+          && destinationTableId.equals(dest.getTableId().getId())) {
+        return source;
+      }
+      if (!fq(source.getNamespace().getSegmentsList()).equals(sourceNamespaceFq)) {
+        continue;
+      }
+      if (!blank(sourceTable) && sourceTable.equals(source.getTable())) {
+        tableMatch = tableMatch == null ? source : tableMatch;
+      } else if (blank(source.getTable()) && namespaceMatch == null) {
+        namespaceMatch = source;
+      }
+    }
+    if (tableMatch != null) {
+      return tableMatch;
+    }
+    return namespaceMatch != null ? namespaceMatch : active.source();
+  }
+
   /** Falls back to the legacy singular source/destination pair when mappings is empty. */
   private static List<SourceMapping> effectiveMappings(ActiveConnector active) {
     List<SourceMapping> mappings = active.connector().getMappingsList();
@@ -324,7 +372,12 @@ public class ReconcilerService {
     boolean captureOnly = captureMode == CaptureMode.CAPTURE_ONLY;
     Set<Long> knownSnapshotIds =
         (captureOnly || !fullRescan) ? backend.existingSnapshotIds(ctx, tableId) : Set.of();
-    Set<String> defaultColumnSelectors = normalizeSelectors(active.source().getColumnsList());
+    Set<String> defaultColumnSelectors =
+        effectiveColumnSelectors(
+            active,
+            effectiveTask.sourceNamespace(),
+            effectiveTask.sourceTable(),
+            effectiveTask.destinationTableId());
     ReconcileCapturePolicy capturePolicy = effectiveCapturePolicy(scope, captureMode);
     boolean requiresCaptureOutputs =
         capturePolicy.requestsStats() || capturePolicy.requestsIndexes();
