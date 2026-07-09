@@ -18,16 +18,12 @@ package ai.floedb.floecat.service.connector.impl;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.rpc.*;
-import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
-import ai.floedb.floecat.connector.spi.ConnectorConfig.Kind;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
-import ai.floedb.floecat.service.credentials.AuthResolutionContexts;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -211,8 +207,8 @@ public class ConnectorsDiscoveryImpl extends BaseServiceImpl implements Connecto
   }
 
   private ConnectorConfig buildConnectorConfigFromSpec(ConnectorSpec spec, String corr) {
-    var kind = resolveKind(spec.getKind(), corr);
-    var auth = toConnectorAuth(spec.getAuth());
+    var kind = ConnectorConfigSupport.resolveKind(spec.getKind(), corr);
+    var auth = ConnectorConfigSupport.toConnectorAuth(spec.getAuth());
     var cfg =
         new ConnectorConfig(
             kind,
@@ -220,7 +216,7 @@ public class ConnectorsDiscoveryImpl extends BaseServiceImpl implements Connecto
             mustNonEmpty(spec.getUri(), "uri", corr),
             spec.getPropertiesMap(),
             auth);
-    return resolveCredentials(cfg, spec.getAuth());
+    return ConnectorConfigSupport.resolveCredentials(cfg, spec.getAuth());
   }
 
   private ConnectorConfig buildConnectorConfigFromId(
@@ -242,8 +238,8 @@ public class ConnectorsDiscoveryImpl extends BaseServiceImpl implements Connecto
       authForResolve = authForResolve.toBuilder().setCredentials(resolvedCreds.get()).build();
     }
 
-    var kind = resolveKind(connector.getKind(), corr);
-    var auth = toConnectorAuth(connector.getAuth());
+    var kind = ConnectorConfigSupport.resolveKind(connector.getKind(), corr);
+    var auth = ConnectorConfigSupport.toConnectorAuth(connector.getAuth());
     var cfg =
         new ConnectorConfig(
             kind,
@@ -251,43 +247,12 @@ public class ConnectorsDiscoveryImpl extends BaseServiceImpl implements Connecto
             connector.getUri(),
             connector.getPropertiesMap(),
             auth);
-    return resolveCredentials(cfg, authForResolve);
-  }
-
-  private static Kind resolveKind(ConnectorKind kind, String corr) {
-    return switch (kind) {
-      case CK_ICEBERG -> Kind.ICEBERG;
-      case CK_DELTA -> Kind.DELTA;
-      case CK_GLUE -> Kind.GLUE;
-      case CK_UNITY -> Kind.UNITY;
-      default -> throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "kind"));
-    };
+    return ConnectorConfigSupport.resolveCredentials(cfg, authForResolve);
   }
 
   private ResourceId scopedConnectorId(String accountId, ResourceId connectorId, String corr) {
     ensureKind(connectorId, ResourceKind.RK_CONNECTOR, "connector_id", corr);
     return connectorId.toBuilder().setAccountId(accountId).build();
-  }
-
-  private static ConnectorConfig.Auth toConnectorAuth(AuthConfig auth) {
-    return new ConnectorConfig.Auth(
-        auth.getScheme(), auth.getPropertiesMap(), auth.getHeaderHintsMap());
-  }
-
-  private static boolean hasAuthCredentials(AuthConfig auth) {
-    if (auth == null || !auth.hasCredentials()) {
-      return false;
-    }
-    return auth.getCredentials().getCredentialCase()
-        != AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET;
-  }
-
-  private ConnectorConfig resolveCredentials(ConnectorConfig base, AuthConfig auth) {
-    if (hasAuthCredentials(auth)) {
-      AuthResolutionContext context = AuthResolutionContexts.fromInboundContext();
-      return CredentialResolverSupport.apply(base, auth.getCredentials(), context);
-    }
-    return base;
   }
 
   private static DiscoveryStatus buildErrorStatus(Exception e) {

@@ -23,7 +23,6 @@ import java.util.Locale;
 import java.util.Map;
 import software.amazon.awssdk.services.glue.GlueClient;
 import software.amazon.awssdk.services.glue.model.Database;
-import software.amazon.awssdk.services.glue.model.GetCatalogsRequest;
 import software.amazon.awssdk.services.glue.model.GetDatabasesRequest;
 import software.amazon.awssdk.services.glue.model.GetTableRequest;
 import software.amazon.awssdk.services.glue.model.GetTablesRequest;
@@ -33,25 +32,6 @@ final class GlueDeltaCatalog implements AutoCloseable {
 
   GlueDeltaCatalog(GlueClient glue) {
     this.glue = glue;
-  }
-
-  List<String> deltaCatalogs() {
-    List<String> out = new ArrayList<>();
-    String token = null;
-    do {
-      var request = GetCatalogsRequest.builder().nextToken(token).maxResults(100).build();
-      var response = glue.getCatalogs(request);
-      for (var cat : response.catalogList()) {
-        String name = cat.name();
-        if (name != null && !name.isBlank() && databaseHasDelta(name)) {
-          out.add(name);
-        }
-      }
-      token = response.nextToken();
-    } while (token != null && !token.isEmpty());
-
-    Collections.sort(out);
-    return out;
   }
 
   List<String> deltaNamespaces() {
