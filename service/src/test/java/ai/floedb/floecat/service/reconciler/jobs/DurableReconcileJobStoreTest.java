@@ -1864,7 +1864,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void leaseNextFallsBackToGlobalReadyRowForFilteredRequests() throws Exception {
+  void leaseNextFilteredRequestsDoNotScanGlobalReadyRows() throws Exception {
     String jobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -1892,21 +1892,70 @@ class DurableReconcileJobStoreTest {
       if (readyKey.equals(queued.readyPointerKey)) {
         continue;
       }
-      if (readyEntryExists(readyKey)) {
-        assertTrue(deleteReadyEntry(readyKey));
-      }
+      assertTrue(deleteReadyEntry(readyKey));
     }
+
+    var filteredLease =
+        store.leaseNext(
+            ReconcileJobStore.LeaseRequest.of(
+                java.util.EnumSet.of(ReconcileExecutionClass.HEAVY), Set.of("remote")));
+
+    assertTrue(filteredLease.isEmpty());
+
+    var lease = store.leaseNext(ReconcileJobStore.LeaseRequest.all()).orElseThrow();
+    assertEquals(jobId, lease.jobId);
+    assertEquals(ReconcileExecutionClass.HEAVY, lease.executionPolicy.executionClass());
+    assertEquals("remote", lease.executionPolicy.lane());
+  }
+
+  @Test
+  void pinnedJobsOnlyCreatePinnedReadyIndexRows() throws Exception {
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileJobKind.PLAN_CONNECTOR,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.empty(),
+            ReconcileExecutionPolicy.of(
+                ReconcileExecutionClass.HEAVY, "remote", Map.of("worker", "remote")),
+            "",
+            "remote-executor");
+
+    StoredReconcileJob queued = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    @SuppressWarnings("unchecked")
+    List<String> readyKeys =
+        (List<String>)
+            invokePrivateMethod(
+                store, "readyPointerKeys", new Class<?>[] {StoredReconcileJob.class}, queued);
+
+    assertEquals(1, readyKeys.size());
+    assertTrue(
+        readyKeys.get(0).contains("/reconcile/jobs/ready/by-pinned-executor/remote-executor/"));
+
+    var otherExecutorLease =
+        store.leaseNext(
+            ReconcileJobStore.LeaseRequest.of(
+                java.util.EnumSet.of(ReconcileExecutionClass.HEAVY),
+                Set.of("remote"),
+                Set.of("other-executor")));
+    assertTrue(otherExecutorLease.isEmpty());
 
     var lease =
         store
             .leaseNext(
                 ReconcileJobStore.LeaseRequest.of(
-                    java.util.EnumSet.of(ReconcileExecutionClass.HEAVY), Set.of("remote")))
+                    java.util.EnumSet.of(ReconcileExecutionClass.HEAVY),
+                    Set.of("remote"),
+                    Set.of("remote-executor")))
             .orElseThrow();
-
     assertEquals(jobId, lease.jobId);
-    assertEquals(ReconcileExecutionClass.HEAVY, lease.executionPolicy.executionClass());
-    assertEquals("remote", lease.executionPolicy.lane());
+    assertEquals("remote-executor", lease.pinnedExecutorId);
   }
 
   @Test
@@ -2103,6 +2152,71 @@ class DurableReconcileJobStoreTest {
     assertEquals("JS_CANCELLED", cancelled.state);
     assertEquals("stop", cancelled.message);
     assertEquals(300L, cancelled.finishedAtMs);
+  }
+
+  @Test
+  void leaseNextSkipsQueuedChildWhenAncestorIsCancelled() {
+    String parentJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String childJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            parentJobId,
+            "");
+
+    store.cancel(ACCOUNT_ID, parentJobId, "stop");
+
+    assertTrue(store.isCancellationRequested(childJobId));
+    assertTrue(store.leaseNext(ReconcileJobStore.LeaseRequest.all()).isEmpty());
+    assertEquals("JS_QUEUED", store.getLeaseView(childJobId).orElseThrow().state);
+  }
+
+  @Test
+  void retryableChildFailureBecomesCancelledWhenAncestorIsCancelling() {
+    String parentJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String childJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            parentJobId,
+            "");
+
+    var parentLease = leaseJob(parentJobId);
+    store.markRunning(parentJobId, parentLease.leaseEpoch, 100L, "executor-parent");
+    var childLease = leaseJob(childJobId);
+    store.markRunning(childJobId, childLease.leaseEpoch, 120L, "executor-child");
+
+    store.cancel(ACCOUNT_ID, parentJobId, "stop");
+    store.markFailed(childJobId, childLease.leaseEpoch, 200L, "expired token", 0L, 0L, 0L, 0L, 1L);
+
+    ReconcileJob child = store.getLeaseView(childJobId).orElseThrow();
+    assertEquals("JS_CANCELLED", child.state);
+    assertEquals(200L, child.finishedAtMs);
+    assertTrue(store.leaseNext(ReconcileJobStore.LeaseRequest.all()).isEmpty());
   }
 
   @Test
@@ -2992,11 +3106,6 @@ class DurableReconcileJobStoreTest {
   private boolean deleteReadyEntry(String readyPointerKey) {
     assertDoesNotThrow(() -> invokePrivateMethod(store, "readyQueue", new Class<?>[] {}));
     return store.readyQueueBackend.deleteReadyEntry(readyPointerKey);
-  }
-
-  private boolean readyEntryExists(String readyPointerKey) {
-    assertDoesNotThrow(() -> invokePrivateMethod(store, "readyQueue", new Class<?>[] {}));
-    return store.readyQueueBackend.loadCanonicalSnapshot(readyPointerKey, null).isPresent();
   }
 
   private ReconcileLeaseStore leaseManager() {

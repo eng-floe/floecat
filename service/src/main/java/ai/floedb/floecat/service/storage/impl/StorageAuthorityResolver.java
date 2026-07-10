@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.storage.impl;
 
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials;
+import ai.floedb.floecat.connector.common.aws.RefreshingAwsClient;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.StorageAuthority;
@@ -221,8 +222,9 @@ public class StorageAuthorityResolver {
             .durationSeconds(duration != null && duration > 0 ? duration : null)
             .build();
 
-    try (StsClient sts = builder.build()) {
-      Credentials credentials = sts.assumeRole(request).credentials();
+    try (var sts = new RefreshingAwsClient<>(builder::build)) {
+      Credentials credentials =
+          sts.callUnchecked(client -> client.assumeRole(request)).credentials();
       return new ResolvedStorageCredentials(
           credentials.accessKeyId(),
           credentials.secretAccessKey(),

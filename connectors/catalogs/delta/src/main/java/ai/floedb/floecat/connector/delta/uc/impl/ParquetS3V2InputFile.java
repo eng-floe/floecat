@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
+import ai.floedb.floecat.connector.common.aws.RefreshingAwsClient;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -28,7 +29,7 @@ public class ParquetS3V2InputFile implements InputFile {
   private final String bucket;
   private final String key;
 
-  ParquetS3V2InputFile(S3Client s3, String s3Uri) {
+  ParquetS3V2InputFile(RefreshingAwsClient<S3Client> s3, String s3Uri) {
     var u = URI.create(s3Uri.startsWith("s3a://") ? "s3://" + s3Uri.substring(6) : s3Uri);
     this.bucket = u.getHost();
     this.key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();

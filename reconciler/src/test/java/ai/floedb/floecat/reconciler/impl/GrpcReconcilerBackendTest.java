@@ -28,6 +28,7 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
+import ai.floedb.floecat.catalog.rpc.CreateSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableResponse;
 import ai.floedb.floecat.catalog.rpc.FileContent;
@@ -51,6 +52,7 @@ import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
@@ -245,6 +247,33 @@ class GrpcReconcilerBackendTest {
         GrpcReconcilerBackend.buildPutTableConstraintsRequest(tableId, 42L, second);
 
     assertThat(request1.getIdempotency().getKey()).isNotEqualTo(request2.getIdempotency().getKey());
+  }
+
+  @Test
+  void ingestSnapshotCreatesWithoutListingAllSnapshots() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+    when(backend.snapshot.createSnapshot(any()))
+        .thenReturn(CreateSnapshotResponse.getDefaultInstance());
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("users")
+            .build();
+    Snapshot snapshot =
+        Snapshot.newBuilder().setTableId(tableId).setSnapshotId(42L).setSchemaJson("{}").build();
+
+    backend.ingestSnapshot(reconcileContext(), tableId, snapshot);
+
+    verify(backend.snapshot).createSnapshot(any());
+    verify(backend.snapshot, org.mockito.Mockito.never()).listSnapshots(any());
+    verify(backend.snapshot, org.mockito.Mockito.never()).getSnapshot(any());
+    verify(backend.snapshot, org.mockito.Mockito.never())
+        .updateSnapshot(any(UpdateSnapshotRequest.class));
   }
 
   @Test

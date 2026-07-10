@@ -35,13 +35,17 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
+  private static final Logger LOG = Logger.getLogger(RemotePlannerReconcileExecutor.class);
+
   private final ReconcilerService reconcilerService;
   private final RemotePlannerWorkerClient workerClient;
   private final ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
   private final boolean enabled;
+  private final boolean workerAuthRequired;
 
   @Inject
   public RemotePlannerReconcileExecutor(
@@ -51,11 +55,22 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
       @ConfigProperty(
               name = "floecat.reconciler.executor.remote-planner.enabled",
               defaultValue = "false")
-          boolean enabled) {
+          boolean enabled,
+      @ConfigProperty(name = "floecat.reconciler.worker.auth.required", defaultValue = "true")
+          boolean workerAuthRequired) {
     this.reconcilerService = reconcilerService;
     this.workerClient = workerClient;
     this.reconcileWorkerAuthProvider = reconcileWorkerAuthProvider;
     this.enabled = enabled;
+    this.workerAuthRequired = workerAuthRequired;
+  }
+
+  RemotePlannerReconcileExecutor(
+      ReconcilerService reconcilerService,
+      RemotePlannerWorkerClient workerClient,
+      ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
+      boolean enabled) {
+    this(reconcilerService, workerClient, reconcileWorkerAuthProvider, enabled, true);
   }
 
   @Override
@@ -288,6 +303,18 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
     } catch (Exception e) {
       Exception classified =
           e instanceof ReconcileFailureException failure ? failure : classifyPlannerFailure(e);
+      LOG.warnf(
+          e,
+          "PLAN_CONNECTOR planning failed jobId=%s accountId=%s connectorId=%s"
+              + " failureKind=%s retryDisposition=%s retryClass=%s message=%s rootCause=%s",
+          lease.jobId,
+          lease.accountId,
+          connectorId == null ? "" : connectorId.getId(),
+          failureKindOf(classified),
+          retryDispositionOf(classified),
+          retryClassOf(classified),
+          blankToEmpty(e.getMessage()),
+          rootCauseMessage(e));
       workerClient.submitPlanConnectorFailure(
           remoteLease,
           failureKindOf(classified),
@@ -348,6 +375,27 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
     return error;
   }
 
+  private static String rootCauseMessage(Throwable error) {
+    Throwable root = rootCause(error);
+    if (root == null) {
+      return "";
+    }
+    String message = root.getMessage();
+    return message == null || message.isBlank() ? root.getClass().getSimpleName() : message;
+  }
+
+  private static Throwable rootCause(Throwable error) {
+    var seen = new java.util.HashSet<Throwable>();
+    Throwable cur = error;
+    Throwable last = null;
+    while (cur != null && !seen.contains(cur)) {
+      seen.add(cur);
+      last = cur;
+      cur = cur.getCause();
+    }
+    return last;
+  }
+
   private static boolean hasAwsCredentialsUnavailable(Throwable error) {
     var seen = new java.util.HashSet<Throwable>();
     Throwable cur = error;
@@ -359,6 +407,10 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
       cur = cur.getCause();
     }
     return false;
+  }
+
+  private static String blankToEmpty(String value) {
+    return value == null ? "" : value;
   }
 
   private static ExecutionResult.FailureKind failureKindOf(Throwable error) {
@@ -461,6 +513,9 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
   }
 
   private String workerAuthorizationHeader(String accountId) {
+    if (!workerAuthRequired) {
+      return null;
+    }
     return reconcileWorkerAuthProvider.authorizationHeader(accountId).orElse(null);
   }
 }

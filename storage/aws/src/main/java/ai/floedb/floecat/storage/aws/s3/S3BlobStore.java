@@ -36,8 +36,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.BiConsumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.core.sync.ResponseTransformer;
@@ -55,6 +57,7 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 @Singleton
 @IfBuildProperty(name = "floecat.blob", stringValue = "s3")
 public class S3BlobStore implements BlobStore {
+  private static final Logger LOG = Logger.getLogger(S3BlobStore.class);
 
   private static final String META_SHA256 = "floecat-sha256";
   private static final String META_CREATED_AT = "floecat-created-at";
@@ -93,7 +96,11 @@ public class S3BlobStore implements BlobStore {
     S3Client client = s3();
     try {
       HeadObjectResponse r =
-          client.headObject(HeadObjectRequest.builder().bucket(bucket).key(k).build());
+          s3Call(
+              "HEAD",
+              k,
+              client,
+              c -> c.headObject(HeadObjectRequest.builder().bucket(bucket).key(k).build()));
 
       String metaSha = (r.metadata() != null) ? r.metadata().get(META_SHA256) : null;
 
@@ -138,10 +145,14 @@ public class S3BlobStore implements BlobStore {
     final String k = normalize(key);
     S3Client client = s3();
     try {
-      return client
-          .getObject(
-              GetObjectRequest.builder().bucket(bucket).key(k).build(),
-              ResponseTransformer.toBytes())
+      return s3Call(
+              "GET",
+              k,
+              client,
+              c ->
+                  c.getObject(
+                      GetObjectRequest.builder().bucket(bucket).key(k).build(),
+                      ResponseTransformer.toBytes()))
           .asByteArray();
     } catch (S3Exception e) {
       if (e.statusCode() == 404) {
@@ -164,7 +175,11 @@ public class S3BlobStore implements BlobStore {
       Long createdAtMs = null;
       try {
         HeadObjectResponse prev =
-            client.headObject(HeadObjectRequest.builder().bucket(bucket).key(k).build());
+            s3Call(
+                "PUT_HEAD",
+                k,
+                client,
+                c -> c.headObject(HeadObjectRequest.builder().bucket(bucket).key(k).build()));
         createdAtMs =
             Optional.ofNullable(prev.metadata().get(META_CREATED_AT))
                 .map(Long::parseLong)
@@ -190,7 +205,7 @@ public class S3BlobStore implements BlobStore {
       PutObjectRequest req =
           PutObjectRequest.builder().bucket(bucket).key(k).contentType(ct).metadata(meta).build();
 
-      client.putObject(req, RequestBody.fromBytes(bytes));
+      s3Call("PUT", k, client, c -> c.putObject(req, RequestBody.fromBytes(bytes)));
     } catch (S3Exception e) {
       throw mapAndWrap("PUT", k, e);
     } catch (SdkClientException e) {
@@ -235,7 +250,8 @@ public class S3BlobStore implements BlobStore {
         b = b.continuationToken(pageToken);
       }
 
-      ListObjectsV2Response resp = client.listObjectsV2(b.build());
+      ListObjectsV2Request req = b.build();
+      ListObjectsV2Response resp = s3Call("LIST", p, client, c -> c.listObjectsV2(req));
 
       var keys = resp.contents().stream().map(o -> o.key()).toList();
 
@@ -261,7 +277,11 @@ public class S3BlobStore implements BlobStore {
     final String k = normalize(key);
     S3Client client = s3();
     try {
-      client.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(k).build());
+      s3Call(
+          "DELETE",
+          k,
+          client,
+          c -> c.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(k).build()));
       return true;
     } catch (S3Exception e) {
       if (e.statusCode() == 404) {
@@ -292,7 +312,7 @@ public class S3BlobStore implements BlobStore {
                 .continuationToken(ct)
                 .build();
 
-        var resp = client.listObjectsV2(req);
+        var resp = s3Call("DELETE_PREFIX_LIST", p, client, c -> c.listObjectsV2(req));
 
         if (!resp.contents().isEmpty()) {
           var objs = resp.contents();
@@ -300,7 +320,11 @@ public class S3BlobStore implements BlobStore {
             var slice = objs.subList(i, Math.min(i + 1000, objs.size()));
             var dels =
                 slice.stream().map(o -> ObjectIdentifier.builder().key(o.key()).build()).toList();
-            client.deleteObjects(b -> b.bucket(bucket).delete(d -> d.objects(dels)));
+            s3Call(
+                "DELETE_PREFIX_BATCH",
+                p,
+                client,
+                c -> c.deleteObjects(b -> b.bucket(bucket).delete(d -> d.objects(dels))));
           }
         }
 
@@ -310,7 +334,8 @@ public class S3BlobStore implements BlobStore {
 
       if (p.endsWith("/")) {
         try {
-          client.deleteObject(b -> b.bucket(bucket).key(p));
+          s3Call(
+              "DELETE_PREFIX_MARKER", p, client, c -> c.deleteObject(b -> b.bucket(bucket).key(p)));
         } catch (Throwable ignore) {
         }
       }
@@ -327,6 +352,28 @@ public class S3BlobStore implements BlobStore {
 
   private S3Client s3() {
     return s3.get();
+  }
+
+  private <T> T s3Call(
+      String operationName, String key, S3Client initialClient, Function<S3Client, T> operation) {
+    S3Client client = initialClient;
+    for (int attempt = 0; ; attempt++) {
+      try {
+        return operation.apply(client);
+      } catch (RuntimeException e) {
+        if (attempt == 0 && ClosedAwsClientDetector.isConnectionPoolShutdown(e)) {
+          LOG.warnf(
+              e,
+              "S3 connection pool shutdown in S3BlobStore.%s key=%s; refreshing client",
+              operationName,
+              key);
+          clientFailureHandler.accept(client, e);
+          client = s3();
+          continue;
+        }
+        throw e;
+      }
+    }
   }
 
   private StorageAbortRetryableException mapClosedPoolOrRethrow(

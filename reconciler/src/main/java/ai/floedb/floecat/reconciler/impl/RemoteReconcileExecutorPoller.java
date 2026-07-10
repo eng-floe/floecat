@@ -217,7 +217,14 @@ public class RemoteReconcileExecutorPoller {
                 return;
               }
               ranLease = true;
+              LOG.infof(
+                  "Leased remote reconcile job jobId=%s kind=%s executor=%s",
+                  assignment.get().lease().lease().jobId,
+                  assignment.get().lease().lease().jobKind,
+                  assignment.get().executor().id());
               runLease(assignment.get());
+            } catch (RuntimeException e) {
+              LOG.errorf(e, "Remote reconcile worker task failed before outcome submission");
             } finally {
               releaseWorkerSlot(ranLease);
             }

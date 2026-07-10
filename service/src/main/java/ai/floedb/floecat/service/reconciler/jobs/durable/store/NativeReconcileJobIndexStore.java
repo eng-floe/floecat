@@ -1183,6 +1183,16 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       return List.of();
     }
     List<String> keys = new ArrayList<>();
+    String pinnedExecutorId = record.pinnedExecutorId();
+    if (!blank(pinnedExecutorId)) {
+      String pinnedExecutorKey =
+          readyPointerKeyFor(
+              record,
+              ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR,
+              dueAtMs,
+              pinnedExecutorId);
+      return pinnedExecutorKey.isBlank() ? List.of() : List.of(pinnedExecutorKey);
+    }
     keys.add(readyPointerKeyFor(record, dueAtMs));
     String executionClassKey =
         readyPointerKeyFor(
@@ -1201,15 +1211,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
             record.executionPolicy().lane());
     if (!executionLaneKey.isBlank()) {
       keys.add(executionLaneKey);
-    }
-    String pinnedExecutorKey =
-        readyPointerKeyFor(
-            record,
-            ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR,
-            dueAtMs,
-            record.pinnedExecutorId());
-    if (!pinnedExecutorKey.isBlank()) {
-      keys.add(pinnedExecutorKey);
     }
     String jobKindKey =
         readyPointerKeyFor(

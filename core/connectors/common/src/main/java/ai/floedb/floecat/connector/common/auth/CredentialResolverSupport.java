@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.common.auth;
 
+import ai.floedb.floecat.connector.common.aws.RefreshingAwsClient;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
@@ -298,7 +299,7 @@ public final class CredentialResolverSupport {
       AuthCredentials.AwsWebIdentity web, Map<String, String> properties) {
     var req = buildAssumeRoleWithWebIdentityRequest(web, properties);
 
-    try (var sts = StsClient.builder().build()) {
+    try (var sts = new RefreshingAwsClient<>(() -> StsClient.builder().build())) {
       return assumeRoleWithWebIdentity(req, sts);
     }
   }
@@ -353,6 +354,13 @@ public final class CredentialResolverSupport {
     return resp.credentials();
   }
 
+  static Credentials assumeRoleWithWebIdentity(
+      AssumeRoleWithWebIdentityRequest req, RefreshingAwsClient<StsClient> sts) {
+    AssumeRoleWithWebIdentityResponse resp =
+        sts.callUnchecked(client -> client.assumeRoleWithWebIdentity(req));
+    return resp.credentials();
+  }
+
   private static void applyAwsCredentials(Map<String, String> options, Credentials creds) {
     if (creds == null) {
       throw new IllegalStateException("AWS STS did not return credentials");
@@ -387,7 +395,7 @@ public final class CredentialResolverSupport {
       builder.region(Region.of(region));
     }
 
-    try (var sts = builder.build()) {
+    try (var sts = new RefreshingAwsClient<>(builder::build)) {
       return assumeRole(req, sts);
     }
   }
@@ -406,6 +414,11 @@ public final class CredentialResolverSupport {
 
   static Credentials assumeRole(AssumeRoleRequest req, StsClient sts) {
     AssumeRoleResponse resp = sts.assumeRole(req);
+    return resp.credentials();
+  }
+
+  static Credentials assumeRole(AssumeRoleRequest req, RefreshingAwsClient<StsClient> sts) {
+    AssumeRoleResponse resp = sts.callUnchecked(client -> client.assumeRole(req));
     return resp.credentials();
   }
 

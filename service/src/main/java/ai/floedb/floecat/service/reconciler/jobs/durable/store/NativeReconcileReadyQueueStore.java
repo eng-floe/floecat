@@ -39,6 +39,7 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
   private ReconcileLeaseStore leaseStore;
   private int readyScanLimit;
   private Predicate<StoredReconcileJob> requiresReadyPointer;
+  private Predicate<StoredReconcileJob> blockedByCancellation;
 
   // Delete ready-queue pointers the scan finds to be non-current (canonical/record gone, the job is
   // waiting, or the pointer was superseded by a requeue) as they are encountered. Requeue/fail
@@ -57,12 +58,15 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
       ReconcileJobIndexStore jobIndexStore,
       ReconcileLeaseStore leaseStore,
       int readyScanLimit,
-      Predicate<StoredReconcileJob> requiresReadyPointer) {
+      Predicate<StoredReconcileJob> requiresReadyPointer,
+      Predicate<StoredReconcileJob> blockedByCancellation) {
     this.readyQueueBackend = readyQueueBackend;
     this.jobIndexStore = jobIndexStore;
     this.leaseStore = leaseStore;
     this.readyScanLimit = readyScanLimit;
     this.requiresReadyPointer = requiresReadyPointer;
+    this.blockedByCancellation =
+        blockedByCancellation == null ? record -> false : blockedByCancellation;
   }
 
   public Optional<LeasedJob> leaseReadyDue(long nowMs, LeaseRequest request) {
@@ -149,6 +153,12 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
     }
     long dueAtMs = readyPointerDueAt(record);
     List<String> keys = new java.util.ArrayList<>();
+    String pinnedExecutorId = record.pinnedExecutorId();
+    if (!blank(pinnedExecutorId)) {
+      String pinnedExecutorKey =
+          readyPointerKeyFor(record, ReadyIndexType.PINNED_EXECUTOR, dueAtMs, pinnedExecutorId);
+      return pinnedExecutorKey.isBlank() ? List.of() : List.of(pinnedExecutorKey);
+    }
     keys.add(readyPointerKeyFor(record, dueAtMs));
     String executionClassKey =
         readyPointerKeyFor(
@@ -164,12 +174,6 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
             record, ReadyIndexType.EXECUTION_LANE, dueAtMs, record.executionPolicy().lane());
     if (!executionLaneKey.isBlank()) {
       keys.add(executionLaneKey);
-    }
-    String pinnedExecutorKey =
-        readyPointerKeyFor(
-            record, ReadyIndexType.PINNED_EXECUTOR, dueAtMs, record.pinnedExecutorId());
-    if (!pinnedExecutorKey.isBlank()) {
-      keys.add(pinnedExecutorKey);
     }
     String jobKindKey =
         readyPointerKeyFor(record, ReadyIndexType.JOB_KIND, dueAtMs, record.jobKind().name());
@@ -238,6 +242,10 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
         if (!matchesLeaseRequest(record, request)) {
           continue;
         }
+        if (blockedByCancellation.test(record)) {
+          pruneStaleReadyEntry(candidate, scanStats);
+          continue;
+        }
         if (shouldStop(scanStats)) {
           return Optional.empty();
         }
@@ -296,7 +304,6 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
                           new ReconcileReadyQueueBackend.ReadyQueueSlice(
                               ReadyIndexType.EXECUTION_LANE, lane)))
               .toList());
-      appendGlobalSelection(selections);
       return List.copyOf(selections);
     }
     if (!effective.jobKinds.isEmpty()) {
@@ -309,7 +316,6 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
                           new ReconcileReadyQueueBackend.ReadyQueueSlice(
                               ReadyIndexType.JOB_KIND, jobKind.name())))
               .toList());
-      appendGlobalSelection(selections);
       return List.copyOf(selections);
     }
     if (!effective.executionClasses.isEmpty()) {
@@ -322,7 +328,6 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
                           new ReconcileReadyQueueBackend.ReadyQueueSlice(
                               ReadyIndexType.EXECUTION_CLASS, executionClass.name())))
               .toList());
-      appendGlobalSelection(selections);
       return List.copyOf(selections);
     }
     List<ReadyIndexSelection> selections = new java.util.ArrayList<>(pinnedSelections);
@@ -357,6 +362,10 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
       return false;
     }
     if (!readyIndexFilterMatchesRecord(candidate, record)) {
+      return false;
+    }
+    if (!blank(record.pinnedExecutorId())
+        && candidate.indexType() != ReadyIndexType.PINNED_EXECUTOR) {
       return false;
     }
     String expectedKey =

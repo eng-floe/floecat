@@ -15,16 +15,20 @@
  */
 package ai.floedb.floecat.storage.kv.dynamodb;
 
+import ai.floedb.floecat.storage.aws.ClosedAwsClientDetector;
+import ai.floedb.floecat.storage.aws.DynamoDbAsyncClientManager;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
-import software.amazon.awssdk.services.dynamodb.waiters.DynamoDbAsyncWaiter;
 
 @ApplicationScoped
 public class DynamoDbTablesBootstrap implements KvAttributes {
@@ -32,6 +36,7 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
   private static final Logger log = LoggerFactory.getLogger(DynamoDbTablesBootstrap.class);
 
   @Inject DynamoDbAsyncClient ddb;
+  @Inject Instance<DynamoDbAsyncClientManager> ddbManager;
 
   // default off; enable per profile
   @ConfigProperty(name = "floecat.kv.auto-create", defaultValue = "false")
@@ -98,7 +103,7 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
             .build();
 
     try {
-      ddb.createTable(req).join();
+      ddbJoin(client -> client.createTable(req));
     } catch (Throwable t) {
       if (isResourceInUse(t)) {
         log.warn("DynamoDB table already exists or is being created: {}", tableName);
@@ -108,11 +113,12 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
     }
 
     if (waitSeconds > 0) {
-      DynamoDbAsyncWaiter waiter = ddb.waiter();
-      waiter
-          .waitUntilTableExists(DescribeTableRequest.builder().tableName(tableName).build())
-          .orTimeout(waitSeconds, TimeUnit.SECONDS)
-          .join();
+      ddbJoin(
+          client ->
+              client
+                  .waiter()
+                  .waitUntilTableExists(DescribeTableRequest.builder().tableName(tableName).build())
+                  .orTimeout(waitSeconds, TimeUnit.SECONDS));
 
       // Optional: also wait until ACTIVE (Local usually is, AWS can lag briefly)
       waitUntilActive(tableName);
@@ -130,8 +136,10 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
     }
     try {
       var current =
-          ddb.describeTimeToLive(DescribeTimeToLiveRequest.builder().tableName(tableName).build())
-              .join();
+          ddbJoin(
+              client ->
+                  client.describeTimeToLive(
+                      DescribeTimeToLiveRequest.builder().tableName(tableName).build()));
 
       var status =
           current.timeToLiveDescription() != null
@@ -161,12 +169,14 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
                 TimeToLiveSpecification.builder().attributeName(ttlAttrName).enabled(true).build())
             .build();
 
-    ddb.updateTimeToLive(update).join();
+    ddbJoin(client -> client.updateTimeToLive(update));
   }
 
   private boolean tableExists(String tableName) {
     try {
-      ddb.describeTable(DescribeTableRequest.builder().tableName(tableName).build()).join();
+      ddbJoin(
+          client ->
+              client.describeTable(DescribeTableRequest.builder().tableName(tableName).build()));
       return true;
     } catch (Throwable t) {
       return isResourceNotFound(t) ? false : rethrow(t);
@@ -179,7 +189,10 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
       long deadline = System.currentTimeMillis() + (waitSeconds * 1000L);
       while (System.currentTimeMillis() < deadline) {
         var desc =
-            ddb.describeTable(DescribeTableRequest.builder().tableName(tableName).build()).join();
+            ddbJoin(
+                client ->
+                    client.describeTable(
+                        DescribeTableRequest.builder().tableName(tableName).build()));
         if (desc.table() != null && TableStatus.ACTIVE.equals(desc.table().tableStatus())) {
           return;
         }
@@ -214,5 +227,52 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
   private static <T> T rethrow(Throwable t) {
     if (t instanceof RuntimeException re) throw re;
     throw new RuntimeException(t);
+  }
+
+  private <T> T ddbJoin(Function<DynamoDbAsyncClient, CompletableFuture<T>> operation) {
+    for (int attempt = 0; ; attempt++) {
+      DynamoDbAsyncClient client = ddbClient();
+      try {
+        return operation.apply(client).join();
+      } catch (RuntimeException e) {
+        if (attempt == 0 && ClosedAwsClientDetector.isConnectionPoolShutdown(e)) {
+          log.warn(
+              "DynamoDB table bootstrap connection pool shutdown in {}; refreshing client",
+              callerContext(),
+              e);
+          refreshDdbClient(client, e);
+          continue;
+        }
+        throw e;
+      }
+    }
+  }
+
+  private DynamoDbAsyncClient ddbClient() {
+    if (ddbManager != null && ddbManager.isResolvable()) {
+      return ddbManager.get().current();
+    }
+    return ddb;
+  }
+
+  private void refreshDdbClient(DynamoDbAsyncClient failedClient, Throwable failure) {
+    if (ddbManager != null && ddbManager.isResolvable()) {
+      ddbManager.get().refreshAfterFailure(failedClient, failure);
+    }
+  }
+
+  private static String callerContext() {
+    String wrapperClassName = DynamoDbTablesBootstrap.class.getName();
+    for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
+      String className = frame.getClassName();
+      if (className.equals(Thread.class.getName()) || className.equals(wrapperClassName)) {
+        continue;
+      }
+      if (className.startsWith(wrapperClassName + "$")) {
+        continue;
+      }
+      return className + "." + frame.getMethodName();
+    }
+    return "unknown";
   }
 }

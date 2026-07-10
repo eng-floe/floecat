@@ -136,15 +136,15 @@ class GrpcRemoteReconcileExecutorClient
           int workerControlMaxInboundMessageSize,
       @ConfigProperty(
               name = "floecat.reconciler.worker-control.grpc.deadline-ms",
-              defaultValue = "10000")
+              defaultValue = "120000")
           long workerControlDefaultDeadlineMs,
       @ConfigProperty(
               name = "floecat.reconciler.worker-control.grpc.lease-deadline-ms",
-              defaultValue = "5000")
+              defaultValue = "120000")
           long workerControlLeaseDeadlineMs,
       @ConfigProperty(
               name = "floecat.reconciler.worker-control.grpc.mutation-deadline-ms",
-              defaultValue = "30000")
+              defaultValue = "120000")
           long workerControlMutationDeadlineMs,
       @ConfigProperty(
               name = "floecat.reconciler.worker-control.grpc.keep-alive-time-ms",
@@ -189,9 +189,9 @@ class GrpcRemoteReconcileExecutorClient
         9100,
         true,
         0,
-        10_000L,
-        5_000L,
-        30_000L,
+        120_000L,
+        120_000L,
+        120_000L,
         30_000L,
         10_000L,
         false,
@@ -212,9 +212,9 @@ class GrpcRemoteReconcileExecutorClient
         9100,
         true,
         0,
-        10_000L,
-        5_000L,
-        30_000L,
+        120_000L,
+        120_000L,
+        120_000L,
         30_000L,
         10_000L,
         false,
@@ -236,9 +236,9 @@ class GrpcRemoteReconcileExecutorClient
         workerControlPort,
         true,
         0,
-        10_000L,
-        5_000L,
-        30_000L,
+        120_000L,
+        120_000L,
+        120_000L,
         30_000L,
         10_000L,
         false,
@@ -1856,14 +1856,14 @@ class GrpcRemoteReconcileExecutorClient
   }
 
   private void attachWorkerAuthorization(Metadata metadata, String accountId) {
+    if (!workerAuthRequired) {
+      return;
+    }
     if (workerAuthHeaderName.isEmpty()) {
       return;
     }
     Optional<String> authorization = reconcileWorkerAuthProvider.authorizationHeader(accountId);
     if (authorization.isEmpty()) {
-      if (!workerAuthRequired) {
-        return;
-      }
       throw new IllegalStateException(
           "Reconcile worker authorization header is required but no worker auth configuration is available");
     }

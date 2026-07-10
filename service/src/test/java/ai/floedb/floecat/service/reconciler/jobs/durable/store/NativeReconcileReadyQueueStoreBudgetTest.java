@@ -42,7 +42,7 @@ class NativeReconcileReadyQueueStoreBudgetTest {
   void scanAbortsBeforeBackendCallsWhenDeadlineAlreadyExpired() {
     CountingBackend backend = new CountingBackend();
     NativeReconcileReadyQueueStore store = new NativeReconcileReadyQueueStore();
-    store.bind(backend, null, null, 128, record -> true);
+    store.bind(backend, null, null, 128, record -> true, record -> false);
 
     LeaseScanStats stats = new LeaseScanStats();
     stats.deadlineAtMs = System.currentTimeMillis() - 1L;
@@ -60,7 +60,7 @@ class NativeReconcileReadyQueueStoreBudgetTest {
   void scanReachesBackendWhenNoDeadlineIsConfigured() {
     CountingBackend backend = new CountingBackend();
     NativeReconcileReadyQueueStore store = new NativeReconcileReadyQueueStore();
-    store.bind(backend, null, null, 128, record -> true);
+    store.bind(backend, null, null, 128, record -> true, record -> false);
 
     LeaseScanStats stats = new LeaseScanStats();
     Optional<LeasedJob> leased =
@@ -75,7 +75,7 @@ class NativeReconcileReadyQueueStoreBudgetTest {
   void scanPrunesOrphanedReadyPointer() {
     PruningBackend backend = new PruningBackend();
     NativeReconcileReadyQueueStore store = new NativeReconcileReadyQueueStore();
-    store.bind(backend, null, null, 128, record -> true);
+    store.bind(backend, null, null, 128, record -> true, record -> false);
 
     LeaseScanStats stats = new LeaseScanStats();
     Optional<LeasedJob> leased =
@@ -93,7 +93,7 @@ class NativeReconcileReadyQueueStoreBudgetTest {
     ReconcileJobIndexStore jobIndexStore = mock(ReconcileJobIndexStore.class);
     ReconcileLeaseStore leaseStore = mock(ReconcileLeaseStore.class);
     AtomicBoolean cancelled = new AtomicBoolean(false);
-    store.bind(backend, jobIndexStore, leaseStore, 128, record -> true);
+    store.bind(backend, jobIndexStore, leaseStore, 128, record -> true, record -> false);
     long dueAtMs = System.currentTimeMillis();
     StoredReconcileJob record = new StoredReconcileJob();
     record.jobId = "job-1";

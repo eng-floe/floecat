@@ -24,11 +24,15 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @ApplicationScoped
 public class StandaloneJavaFileGroupExecutionRunner {
   @Inject CaptureEngineRegistry captureEngineRegistry;
   @Inject ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
+
+  @ConfigProperty(name = "floecat.reconciler.worker.auth.required", defaultValue = "true")
+  boolean workerAuthRequired = true;
 
   public CaptureEngineResult execute(StandaloneFileGroupExecutionPayload payload) {
     if (payload == null
@@ -58,7 +62,7 @@ public class StandaloneJavaFileGroupExecutionRunner {
                 payload.capturePageIndex(),
                 java.util.Optional.of(payload.storageLocation())
                     .filter(location -> !location.isBlank()),
-                reconcileWorkerAuthProvider.authorizationHeader(
+                workerAuthorizationHeader(
                     payload.tableId() == null ? "" : payload.tableId().getAccountId()),
                 java.util.Optional.of(payload.jobId()),
                 java.util.Optional.of(payload.leaseEpoch())));
@@ -89,5 +93,12 @@ public class StandaloneJavaFileGroupExecutionRunner {
       CaptureEngineResult effective = capture == null ? CaptureEngineResult.empty() : capture;
       return new PersistableResult(effective.statsRecords(), effective.stagedIndexArtifacts());
     }
+  }
+
+  private java.util.Optional<String> workerAuthorizationHeader(String accountId) {
+    if (!workerAuthRequired) {
+      return java.util.Optional.empty();
+    }
+    return reconcileWorkerAuthProvider.authorizationHeader(accountId);
   }
 }

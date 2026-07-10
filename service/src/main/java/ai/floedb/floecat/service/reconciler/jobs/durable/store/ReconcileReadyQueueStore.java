@@ -71,7 +71,8 @@ public interface ReconcileReadyQueueStore {
       ReconcileJobIndexStore jobIndexStore,
       ReconcileLeaseStore leaseStore,
       int readyScanLimit,
-      Predicate<StoredReconcileJob> requiresReadyPointer);
+      Predicate<StoredReconcileJob> requiresReadyPointer,
+      Predicate<StoredReconcileJob> blockedByCancellation);
 
   ReadyQueueScanPage scanReadySlice(
       ReconcileReadyQueueBackend.ReadyQueueSlice slice, int pageSize, String pageToken);

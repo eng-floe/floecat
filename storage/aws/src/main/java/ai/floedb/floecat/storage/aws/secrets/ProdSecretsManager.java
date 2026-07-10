@@ -31,6 +31,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicReference;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 import software.amazon.awssdk.services.secretsmanager.model.CreateSecretRequest;
@@ -47,6 +48,7 @@ import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider
 @ApplicationScoped
 @IfBuildProfile("prod")
 public class ProdSecretsManager implements SecretsManager {
+  private static final Logger LOG = Logger.getLogger(ProdSecretsManager.class);
   private static final String ACCOUNT_ID_TAG = "AccountId";
   private static final int MAX_ROLE_SESSION_LENGTH = 64;
   private static final String ROLE_SESSION_PREFIX = "floecat-";
@@ -244,6 +246,11 @@ public class ProdSecretsManager implements SecretsManager {
       if (awsClients == null || !ClosedAwsClientDetector.isConnectionPoolShutdown(e)) {
         throw e;
       }
+      LOG.warnf(
+          e,
+          "Secrets Manager connection pool shutdown in %s accountId=%s; refreshing client",
+          callerContext(),
+          accountId);
       refreshAfterClosedPool(accountId, client, e);
       return operation.run(clientForAccount(accountId));
     }
@@ -323,6 +330,21 @@ public class ProdSecretsManager implements SecretsManager {
       return raw;
     }
     return raw.substring(0, MAX_ROLE_SESSION_LENGTH);
+  }
+
+  private static String callerContext() {
+    String wrapperClassName = ProdSecretsManager.class.getName();
+    for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
+      String className = frame.getClassName();
+      if (className.equals(Thread.class.getName()) || className.equals(wrapperClassName)) {
+        continue;
+      }
+      if (className.startsWith(wrapperClassName + "$")) {
+        continue;
+      }
+      return className + "." + frame.getMethodName();
+    }
+    return "unknown";
   }
 
   private void ensureAwsCredentialsAvailable() {

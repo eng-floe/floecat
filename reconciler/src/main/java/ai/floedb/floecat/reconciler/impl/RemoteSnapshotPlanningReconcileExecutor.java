@@ -54,6 +54,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   private final RemotePlannerWorkerClient workerClient;
   private final ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
   private final boolean enabled;
+  private final boolean workerAuthRequired;
   private final int maxFilesPerGroup;
 
   @Inject
@@ -68,12 +69,24 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       @ConfigProperty(
               name = "floecat.reconciler.executor.remote-snapshot-planner.enabled",
               defaultValue = "false")
-          boolean enabled) {
+          boolean enabled,
+      @ConfigProperty(name = "floecat.reconciler.worker.auth.required", defaultValue = "true")
+          boolean workerAuthRequired) {
     this.backend = backend;
     this.workerClient = workerClient;
     this.reconcileWorkerAuthProvider = reconcileWorkerAuthProvider;
     this.maxFilesPerGroup = Math.max(1, maxFilesPerGroup);
     this.enabled = enabled;
+    this.workerAuthRequired = workerAuthRequired;
+  }
+
+  RemoteSnapshotPlanningReconcileExecutor(
+      ReconcilerBackend backend,
+      RemotePlannerWorkerClient workerClient,
+      ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
+      int maxFilesPerGroup,
+      boolean enabled) {
+    this(backend, workerClient, reconcileWorkerAuthProvider, maxFilesPerGroup, enabled, true);
   }
 
   @Override
@@ -520,6 +533,9 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   }
 
   private String workerAuthorizationHeader(String accountId) {
+    if (!workerAuthRequired) {
+      return null;
+    }
     return reconcileWorkerAuthProvider.authorizationHeader(accountId).orElse(null);
   }
 
