@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
+import ai.floedb.floecat.connector.common.aws.RefreshingAwsClient;
 import io.delta.kernel.defaults.engine.fileio.FileIO;
 import io.delta.kernel.defaults.engine.fileio.InputFile;
 import io.delta.kernel.defaults.engine.fileio.OutputFile;
@@ -39,9 +40,9 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.S3Object;
 
 final class S3V2FileSystemClient implements FileIO {
-  private final S3Client s3;
+  private final RefreshingAwsClient<S3Client> s3;
 
-  S3V2FileSystemClient(S3Client s3) {
+  S3V2FileSystemClient(RefreshingAwsClient<S3Client> s3) {
     this.s3 = s3;
   }
 
@@ -89,7 +90,7 @@ final class S3V2FileSystemClient implements FileIO {
     var bucket = u.getHost();
     var key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
     try {
-      var head = s3.headObject(b -> b.bucket(bucket).key(key));
+      var head = s3.call(client -> client.headObject(b -> b.bucket(bucket).key(key)));
       return FileStatus.of(path, head.contentLength(), Instant.now().toEpochMilli());
     } catch (S3Exception e) {
       if (e.statusCode() == 404) throw new IOException("File not found: " + path, e);
@@ -105,7 +106,7 @@ final class S3V2FileSystemClient implements FileIO {
     String bucket = u.getHost();
     String key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
     try {
-      s3.headObject(b -> b.bucket(bucket).key(key));
+      s3.callUnchecked(client -> client.headObject(b -> b.bucket(bucket).key(key)));
       return false;
     } catch (S3Exception e) {
       if (e.statusCode() == 404) {
@@ -140,7 +141,8 @@ final class S3V2FileSystemClient implements FileIO {
     {
       FileStatus fs = null;
       try {
-        HeadObjectResponse head = s3.headObject(b -> b.bucket(bucket).key(startKey));
+        HeadObjectResponse head =
+            s3.call(client -> client.headObject(b -> b.bucket(bucket).key(startKey)));
         fs =
             FileStatus.of(
                 filePath,
@@ -174,7 +176,8 @@ final class S3V2FileSystemClient implements FileIO {
           req = req.continuationToken(continuationToken);
         }
 
-        ListObjectsV2Response resp = s3.listObjectsV2(req.build());
+        ListObjectsV2Request request = req.build();
+        ListObjectsV2Response resp = s3.callUnchecked(client -> client.listObjectsV2(request));
         continuationToken = resp.isTruncated() ? resp.nextContinuationToken() : null;
 
         List<S3Object> objs = resp.contents();
@@ -264,14 +267,14 @@ final class S3V2FileSystemClient implements FileIO {
   }
 
   static final class S3InputFile implements InputFile {
-    private final S3Client s3;
+    private final RefreshingAwsClient<S3Client> s3;
     private final String resolvedPath;
 
     private final String bucket;
     private final String key;
     private final S3RangeReader rangeReader;
 
-    S3InputFile(S3Client s3, String resolvedPath) {
+    S3InputFile(RefreshingAwsClient<S3Client> s3, String resolvedPath) {
       this.s3 = s3;
       this.resolvedPath = resolvedPath;
 
