@@ -119,7 +119,7 @@ public class ReconcilerService {
       }
 
       List<ReconcileTableTask> tasks = new ArrayList<>();
-      for (SourceMapping mapping : effectiveMappings(active)) {
+      for (SourceMapping mapping : active.mappings()) {
         tasks.addAll(
             planTableTasksForMapping(
                 ctx, connector, mapping.getSource(), mapping.getDestination(), scope));
@@ -199,65 +199,63 @@ public class ReconcilerService {
         .toList();
   }
 
-  /**
-   * Resolves the column selectors configured for the mapping that produced this table task, falling
-   * back to the legacy top-level source when no mapping matches.
-   */
+  /** Resolves the column selectors configured for the mapping that produced this table task. */
   static Set<String> effectiveColumnSelectors(
       ActiveConnector active,
       String sourceNamespaceFq,
       String sourceTable,
       String destinationTableId) {
     return normalizeSelectors(
-        effectiveSourceForTask(active, sourceNamespaceFq, sourceTable, destinationTableId)
+        effectiveMappingForTask(active, sourceNamespaceFq, sourceTable, destinationTableId)
+            .getSource()
             .getColumnsList());
   }
 
-  private static SourceSelector effectiveSourceForTask(
+  /**
+   * Resolves the mapping that produced this table task. Throws a terminal validation failure when
+   * the connector's mappings no longer cover the task, so stale or mis-planned tasks fail loudly
+   * instead of silently running with a default configuration.
+   */
+  static SourceMapping effectiveMappingForTask(
       ActiveConnector active,
       String sourceNamespaceFq,
       String sourceTable,
       String destinationTableId) {
-    List<SourceMapping> mappings = effectiveMappings(active);
+    List<SourceMapping> mappings = active.mappings();
     if (mappings.size() == 1) {
-      return mappings.getFirst().getSource();
+      return mappings.getFirst();
     }
-    SourceSelector tableMatch = null;
-    SourceSelector namespaceMatch = null;
+    SourceMapping tableMatch = null;
+    SourceMapping namespaceMatch = null;
     for (SourceMapping mapping : mappings) {
       SourceSelector source = mapping.getSource();
       DestinationTarget dest = mapping.getDestination();
       if (!blank(destinationTableId)
           && dest.hasTableId()
           && destinationTableId.equals(dest.getTableId().getId())) {
-        return source;
+        return mapping;
       }
       if (!fq(source.getNamespace().getSegmentsList()).equals(sourceNamespaceFq)) {
         continue;
       }
       if (!blank(sourceTable) && sourceTable.equals(source.getTable())) {
-        tableMatch = tableMatch == null ? source : tableMatch;
+        tableMatch = tableMatch == null ? mapping : tableMatch;
       } else if (blank(source.getTable()) && namespaceMatch == null) {
-        namespaceMatch = source;
+        namespaceMatch = mapping;
       }
     }
     if (tableMatch != null) {
       return tableMatch;
     }
-    return namespaceMatch != null ? namespaceMatch : active.source();
-  }
-
-  /** Falls back to the legacy singular source/destination pair when mappings is empty. */
-  private static List<SourceMapping> effectiveMappings(ActiveConnector active) {
-    List<SourceMapping> mappings = active.connector().getMappingsList();
-    if (!mappings.isEmpty()) {
-      return mappings;
+    if (namespaceMatch != null) {
+      return namespaceMatch;
     }
-    return List.of(
-        SourceMapping.newBuilder()
-            .setSource(active.source())
-            .setDestination(active.destination())
-            .build());
+    throw terminalValidation(
+        "No connector mapping matches task source="
+            + sourceNamespaceFq
+            + (blank(sourceTable) ? "" : "." + sourceTable)
+            + " for connector "
+            + active.connector().getResourceId().getId());
   }
 
   /** Plans either strict destination-view-id work or namespace discovery view tasks. */
@@ -289,51 +287,64 @@ public class ReconcilerService {
       if (scope.hasViewFilter()) {
         return List.of(planStrictViewTask(ctx, connectorId, scope.destinationViewId(), connector));
       }
-      SourceSelector source = active.source();
-      DestinationTarget dest = active.destination();
-      if (!source.hasNamespace() || source.getNamespace().getSegmentsList().isEmpty()) {
-        throw new IllegalArgumentException("connector.source.namespace is required");
+      List<ReconcileViewTask> tasks = new ArrayList<>();
+      for (SourceMapping mapping : active.mappings()) {
+        tasks.addAll(
+            planViewTasksForMapping(
+                ctx, connector, mapping.getSource(), mapping.getDestination(), scope));
       }
-      ResourceId destCatalogId = dest.getCatalogId();
-      String sourceNsFq = fq(source.getNamespace().getSegmentsList());
-      String destNsFq =
-          dest.hasNamespaceId()
-              ? resolveNamespaceFq(ctx, dest.getNamespaceId())
-              : (dest.hasNamespace() && !dest.getNamespace().getSegmentsList().isEmpty())
-                  ? fq(dest.getNamespace().getSegmentsList())
-                  : sourceNsFq;
-      Optional<ResourceId> destNamespaceId =
-          ensureDestinationNamespaceId(ctx, destCatalogId, dest, destNsFq);
-      if (!matchesPlannedNamespaceScope(destNamespaceId.orElse(null), scope)) {
-        return List.of();
-      }
-      return connector
-          .planViewTasks(
-              new FloecatConnector.ViewPlanningRequest(
-                  sourceNsFq, destNsFq, destinationNamespacePlanningPaths(destNsFq)))
-          .stream()
-          .map(
-              task ->
-                  ReconcileViewTask.discovery(
-                      task.sourceNamespaceFq(),
-                      task.sourceView(),
-                      destNamespaceId.map(ResourceId::getId).orElse(""),
-                      lookupDestinationViewIdByName(
-                              ctx,
-                              destCatalogId,
-                              destNamespaceId.orElse(null),
-                              destNsFq,
-                              task.destinationViewDisplayName())
-                          .map(ResourceId::getId)
-                          .orElse(null),
-                      task.destinationViewDisplayName()))
-          .toList();
+      return tasks;
     } catch (RuntimeException e) {
       throw e;
     } catch (Exception e) {
       throw new RuntimeException(
           "Failed to plan reconcile view tasks for connector " + connectorId.getId(), e);
     }
+  }
+
+  private List<ReconcileViewTask> planViewTasksForMapping(
+      ReconcileContext ctx,
+      FloecatConnector connector,
+      SourceSelector source,
+      DestinationTarget dest,
+      ReconcileScope scope) {
+    if (!source.hasNamespace() || source.getNamespace().getSegmentsList().isEmpty()) {
+      throw new IllegalArgumentException("connector.source.namespace is required");
+    }
+    ResourceId destCatalogId = dest.getCatalogId();
+    String sourceNsFq = fq(source.getNamespace().getSegmentsList());
+    String destNsFq =
+        dest.hasNamespaceId()
+            ? resolveNamespaceFq(ctx, dest.getNamespaceId())
+            : (dest.hasNamespace() && !dest.getNamespace().getSegmentsList().isEmpty())
+                ? fq(dest.getNamespace().getSegmentsList())
+                : sourceNsFq;
+    Optional<ResourceId> destNamespaceId =
+        ensureDestinationNamespaceId(ctx, destCatalogId, dest, destNsFq);
+    if (!matchesPlannedNamespaceScope(destNamespaceId.orElse(null), scope)) {
+      return List.of();
+    }
+    return connector
+        .planViewTasks(
+            new FloecatConnector.ViewPlanningRequest(
+                sourceNsFq, destNsFq, destinationNamespacePlanningPaths(destNsFq)))
+        .stream()
+        .map(
+            task ->
+                ReconcileViewTask.discovery(
+                    task.sourceNamespaceFq(),
+                    task.sourceView(),
+                    destNamespaceId.map(ResourceId::getId).orElse(""),
+                    lookupDestinationViewIdByName(
+                            ctx,
+                            destCatalogId,
+                            destNamespaceId.orElse(null),
+                            destNsFq,
+                            task.destinationViewDisplayName())
+                        .map(ResourceId::getId)
+                        .orElse(null),
+                    task.destinationViewDisplayName()))
+        .toList();
   }
 
   public List<ReconcileSnapshotTask> planSnapshotTasks(
@@ -1278,14 +1289,26 @@ public class ReconcilerService {
             connector,
             resolveCredentials(config, connector.getAuth(), connectorId),
             sourceStorageLocation(config));
-    return new ActiveConnector(
-        connector,
-        connector.hasSource() ? connector.getSource() : SourceSelector.getDefaultInstance(),
-        connector.hasDestination()
-            ? connector.getDestination()
-            : DestinationTarget.getDefaultInstance(),
-        config,
-        resolved);
+    return new ActiveConnector(connector, connectorMappings(connector), config, resolved);
+  }
+
+  /**
+   * The service normalizes stored connectors so mappings is the single representation; the
+   * deprecated top-level pair is only synthesized here as a defense against reading a legacy
+   * connector through an un-normalized path (e.g. mixed-version deployments).
+   */
+  private static List<SourceMapping> connectorMappings(Connector connector) {
+    if (connector.getMappingsCount() > 0) {
+      return connector.getMappingsList();
+    }
+    if (!connector.hasSource() && !connector.hasDestination()) {
+      return List.of();
+    }
+    return List.of(
+        SourceMapping.newBuilder()
+            .setSource(connector.getSource())
+            .setDestination(connector.getDestination())
+            .build());
   }
 
   ActiveConnector activeConnectorForResult(ReconcileContext ctx, ResourceId connectorId) {
@@ -1546,8 +1569,7 @@ public class ReconcilerService {
 
   record ActiveConnector(
       Connector connector,
-      SourceSelector source,
-      DestinationTarget destination,
+      List<SourceMapping> mappings,
       ConnectorConfig config,
       ConnectorConfig resolvedConfig) {}
 

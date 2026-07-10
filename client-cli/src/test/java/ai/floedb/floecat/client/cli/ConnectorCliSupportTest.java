@@ -48,6 +48,7 @@ import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
 import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
 import ai.floedb.floecat.connector.rpc.ListConnectorsResponse;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
+import ai.floedb.floecat.connector.rpc.SourceMapping;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorResponse;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
@@ -246,10 +247,12 @@ class ConnectorCliSupportTest {
       h.connectorsService.connectorToReturn =
           Connector.newBuilder()
               .setResourceId(connectorId())
-              .setDestination(
-                  DestinationTarget.newBuilder()
-                      .setCatalogId(ResourceId.newBuilder().setId("catalog-1").build())
-                      .build())
+              .addMappings(
+                  SourceMapping.newBuilder()
+                      .setDestination(
+                          DestinationTarget.newBuilder()
+                              .setCatalogId(ResourceId.newBuilder().setId("catalog-1").build())
+                              .build()))
               .build();
 
       ByteArrayOutputStream buf = new ByteArrayOutputStream();
@@ -354,11 +357,13 @@ class ConnectorCliSupportTest {
       h.connectorsService.connectorToReturn =
           Connector.newBuilder()
               .setResourceId(connectorId())
-              .setDestination(
-                  DestinationTarget.newBuilder()
-                      .setTableId(ResourceId.newBuilder().setId("table-1").build())
-                      .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
-                      .build())
+              .addMappings(
+                  SourceMapping.newBuilder()
+                      .setDestination(
+                          DestinationTarget.newBuilder()
+                              .setTableId(ResourceId.newBuilder().setId("table-1").build())
+                              .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
+                              .build()))
               .build();
       h.directoryService.tableDisplayName = "events";
       h.snapshotService.currentSnapshotId = 42L;
@@ -426,11 +431,13 @@ class ConnectorCliSupportTest {
       h.connectorsService.connectorToReturn =
           Connector.newBuilder()
               .setResourceId(connectorId())
-              .setDestination(
-                  DestinationTarget.newBuilder()
-                      .setTableId(ResourceId.newBuilder().setId("table-1").build())
-                      .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
-                      .build())
+              .addMappings(
+                  SourceMapping.newBuilder()
+                      .setDestination(
+                          DestinationTarget.newBuilder()
+                              .setTableId(ResourceId.newBuilder().setId("table-1").build())
+                              .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
+                              .build()))
               .build();
       h.directoryService.tableDisplayName = "events";
       h.snapshotService.currentSnapshotId = 42L;
@@ -466,11 +473,13 @@ class ConnectorCliSupportTest {
       h.connectorsService.connectorToReturn =
           Connector.newBuilder()
               .setResourceId(connectorId())
-              .setDestination(
-                  DestinationTarget.newBuilder()
-                      .setTableId(ResourceId.newBuilder().setId("table-1").build())
-                      .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
-                      .build())
+              .addMappings(
+                  SourceMapping.newBuilder()
+                      .setDestination(
+                          DestinationTarget.newBuilder()
+                              .setTableId(ResourceId.newBuilder().setId("table-1").build())
+                              .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
+                              .build()))
               .build();
       h.directoryService.tableDisplayName = "events";
 
@@ -535,11 +544,13 @@ class ConnectorCliSupportTest {
       h.connectorsService.connectorToReturn =
           Connector.newBuilder()
               .setResourceId(connectorId())
-              .setDestination(
-                  DestinationTarget.newBuilder()
-                      .setTableId(ResourceId.newBuilder().setId("table-1").build())
-                      .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
-                      .build())
+              .addMappings(
+                  SourceMapping.newBuilder()
+                      .setDestination(
+                          DestinationTarget.newBuilder()
+                              .setTableId(ResourceId.newBuilder().setId("table-1").build())
+                              .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
+                              .build()))
               .build();
       h.directoryService.tableDisplayName = "events";
       h.snapshotService.currentSnapshotId = 42L;
@@ -575,10 +586,12 @@ class ConnectorCliSupportTest {
       h.connectorsService.connectorToReturn =
           Connector.newBuilder()
               .setResourceId(connectorId())
-              .setDestination(
-                  DestinationTarget.newBuilder()
-                      .setCatalogId(ResourceId.newBuilder().setId("catalog-1").build())
-                      .build())
+              .addMappings(
+                  SourceMapping.newBuilder()
+                      .setDestination(
+                          DestinationTarget.newBuilder()
+                              .setCatalogId(ResourceId.newBuilder().setId("catalog-1").build())
+                              .build()))
               .build();
       h.directoryService.resolvedViewId = "view-1";
 

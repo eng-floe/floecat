@@ -48,6 +48,7 @@ import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
 import ai.floedb.floecat.connector.rpc.ReconcilePolicy;
 import ai.floedb.floecat.connector.rpc.ReconcileSnapshotScope;
+import ai.floedb.floecat.connector.rpc.SourceMapping;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorRequest;
@@ -274,16 +275,18 @@ final class ConnectorCliSupport {
                 .setAuth(auth)
                 .setPolicy(policy);
 
-        boolean haveSource =
-            !sourceNamespace.isBlank() || !sourceTable.isBlank() || !sourceCols.isEmpty();
-        if (haveSource) {
-          spec.setSource(buildSource(sourceNamespace, sourceTable, sourceCols));
-        }
-
-        boolean haveDest =
-            !destCatalog.isBlank() || !destNamespace.isBlank() || !destTable.isBlank();
-        if (haveDest) {
-          spec.setDestination(buildDest(destCatalog, destNamespace, destTable));
+        boolean haveMapping =
+            !sourceNamespace.isBlank()
+                || !sourceTable.isBlank()
+                || !sourceCols.isEmpty()
+                || !destCatalog.isBlank()
+                || !destNamespace.isBlank()
+                || !destTable.isBlank();
+        if (haveMapping) {
+          spec.addMappings(
+              SourceMapping.newBuilder()
+                  .setSource(buildSource(sourceNamespace, sourceTable, sourceCols))
+                  .setDestination(buildDest(destCatalog, destNamespace, destTable)));
         }
 
         var resp =
@@ -414,20 +417,45 @@ final class ConnectorCliSupport {
           if (notBeforeSec != 0L) mask.add("policy.not_before");
         }
 
-        boolean sourceSet = !sourceNs.isBlank() || !sourceTable.isBlank() || !sourceCols.isEmpty();
-        if (sourceSet) {
-          spec.setSource(buildSource(sourceNs, sourceTable, sourceCols));
-          if (!sourceNs.isBlank()) mask.add("source.namespace");
-          if (!sourceTable.isBlank()) mask.add("source.table");
-          if (!sourceCols.isEmpty()) mask.add("source.columns");
-        }
-
-        boolean destSet = !destCatalog.isBlank() || !destNs.isBlank() || !destTable.isBlank();
-        if (destSet) {
-          spec.setDestination(buildDest(destCatalog, destNs, destTable));
-          if (!destCatalog.isBlank()) mask.add("destination.catalog_display_name");
-          if (!destNs.isBlank()) mask.add("destination.namespace");
-          if (!destTable.isBlank()) mask.add("destination.table_display_name");
+        boolean mappingSet =
+            !sourceNs.isBlank()
+                || !sourceTable.isBlank()
+                || !sourceCols.isEmpty()
+                || !destCatalog.isBlank()
+                || !destNs.isBlank()
+                || !destTable.isBlank();
+        if (mappingSet) {
+          var current =
+              connectors
+                  .getConnector(
+                      GetConnectorRequest.newBuilder().setConnectorId(connectorId).build())
+                  .getConnector();
+          if (current.getMappingsCount() > 1) {
+            out.println(
+                "Connector has multiple mappings; --source-*/--dest-* flags only support"
+                    + " single-mapping connectors.");
+            return;
+          }
+          var base =
+              current.getMappingsCount() == 1
+                  ? current.getMappings(0)
+                  : SourceMapping.getDefaultInstance();
+          var sourceB = base.getSource().toBuilder();
+          if (!sourceNs.isBlank()) sourceB.setNamespace(toNsPath(sourceNs));
+          if (!sourceTable.isBlank()) sourceB.setTable(sourceTable);
+          if (!sourceCols.isEmpty()) sourceB.clearColumns().addAllColumns(sourceCols);
+          var destB = base.getDestination().toBuilder();
+          if (!destCatalog.isBlank()) {
+            destB.clearCatalogId().setCatalogDisplayName(destCatalog);
+          }
+          if (!destNs.isBlank()) {
+            destB.clearNamespaceId().setNamespace(toNsPath(destNs));
+          }
+          if (!destTable.isBlank()) {
+            destB.clearTableId().setTableDisplayName(destTable);
+          }
+          spec.addMappings(SourceMapping.newBuilder().setSource(sourceB).setDestination(destB));
+          mask.add("mappings");
         }
 
         if (mask.isEmpty()) {
@@ -537,11 +565,19 @@ final class ConnectorCliSupport {
                   notBeforeSec));
         }
 
-        boolean sourceSet = !sourceNs.isBlank() || !sourceTable.isBlank() || !sourceCols.isEmpty();
-        if (sourceSet) spec.setSource(buildSource(sourceNs, sourceTable, sourceCols));
-
-        boolean destSet = !destCatalog.isBlank() || !destNs.isBlank() || !destTable.isBlank();
-        if (destSet) spec.setDestination(buildDest(destCatalog, destNs, destTable));
+        boolean mappingSet =
+            !sourceNs.isBlank()
+                || !sourceTable.isBlank()
+                || !sourceCols.isEmpty()
+                || !destCatalog.isBlank()
+                || !destNs.isBlank()
+                || !destTable.isBlank();
+        if (mappingSet) {
+          spec.addMappings(
+              SourceMapping.newBuilder()
+                  .setSource(buildSource(sourceNs, sourceTable, sourceCols))
+                  .setDestination(buildDest(destCatalog, destNs, destTable)));
+        }
 
         var resp =
             connectors.validateConnector(
@@ -1120,6 +1156,18 @@ final class ConnectorCliSupport {
     }
   }
 
+  private static SourceSelector primarySource(Connector connector) {
+    return connector != null && connector.getMappingsCount() > 0
+        ? connector.getMappings(0).getSource()
+        : SourceSelector.getDefaultInstance();
+  }
+
+  private static DestinationTarget primaryDestination(Connector connector) {
+    return connector != null && connector.getMappingsCount() > 0
+        ? connector.getMappings(0).getDestination()
+        : DestinationTarget.getDefaultInstance();
+  }
+
   private static SourceSelector buildSource(String ns, String table, List<String> cols) {
     var b = SourceSelector.newBuilder();
     if (ns != null && !ns.isBlank()) b.setNamespace(toNsPath(ns));
@@ -1191,11 +1239,11 @@ final class ConnectorCliSupport {
       String updated = CliUtils.ts(c.getUpdatedAt());
 
       String destCat = "";
-      if (c.hasDestination()) {
+      if (c.getMappingsCount() > 0 && c.getMappings(0).getDestination().hasCatalogId()) {
         var resp =
             directory.lookupCatalog(
                 LookupCatalogRequest.newBuilder()
-                    .setResourceId(c.getDestination().getCatalogId())
+                    .setResourceId(c.getMappings(0).getDestination().getCatalogId())
                     .build());
         destCat = resp.getDisplayName();
       }
@@ -1228,43 +1276,44 @@ final class ConnectorCliSupport {
           CliUtils.trunc(state, CONNECTOR_W_STATE),
           (CONNECTOR_W_URI > 0 ? CliUtils.trunc(uri, CONNECTOR_W_URI) : uri));
 
-      if (c.hasDestination()) {
+      for (int m = 0; m < c.getMappingsCount(); m++) {
+        var mapping = c.getMappings(m);
+        String label = c.getMappingsCount() > 1 ? "[" + m + "]" : "";
+        var dest = mapping.getDestination();
         String destCatDisplay = "";
         List<String> destNsParts = List.of();
         String destTableDisplay = null;
 
-        if (c.getDestination().hasCatalogId()) {
+        if (dest.hasCatalogId()) {
           var resp =
               directory.lookupCatalog(
-                  LookupCatalogRequest.newBuilder()
-                      .setResourceId(c.getDestination().getCatalogId())
-                      .build());
+                  LookupCatalogRequest.newBuilder().setResourceId(dest.getCatalogId()).build());
           destCatDisplay = resp.getDisplayName();
         }
 
-        if (c.getDestination().hasNamespaceId()) {
+        if (dest.hasNamespaceId()) {
           var nsResp =
               directory.lookupNamespace(
-                  LookupNamespaceRequest.newBuilder()
-                      .setResourceId(c.getDestination().getNamespaceId())
-                      .build());
+                  LookupNamespaceRequest.newBuilder().setResourceId(dest.getNamespaceId()).build());
           var ref = nsResp.getRef();
           ArrayList<String> parts = new ArrayList<>(ref.getPathList());
           if (!ref.getName().isBlank()) parts.add(ref.getName());
           destNsParts = parts;
+        } else if (dest.hasNamespace()) {
+          destNsParts = dest.getNamespace().getSegmentsList();
         }
 
-        if (c.getDestination().hasTableId()) {
+        if (dest.hasTableId()) {
           var tblResp =
               directory.lookupTable(
-                  LookupTableRequest.newBuilder()
-                      .setResourceId(c.getDestination().getTableId())
-                      .build());
+                  LookupTableRequest.newBuilder().setResourceId(dest.getTableId()).build());
           destTableDisplay = tblResp.getName().getName();
+        } else if (dest.hasTableDisplayName() && !dest.getTableDisplayName().isBlank()) {
+          destTableDisplay = dest.getTableDisplayName();
         }
 
-        if (destCatDisplay.isBlank() && c.getDestination().hasCatalogId()) {
-          destCatDisplay = c.getDestination().getCatalogId().getId();
+        if (destCatDisplay.isBlank() && dest.hasCatalogId()) {
+          destCatDisplay = dest.getCatalogId().getId();
         }
 
         boolean anyDest =
@@ -1273,19 +1322,19 @@ final class ConnectorCliSupport {
                 || (destTableDisplay != null && !destTableDisplay.isBlank());
         if (anyDest) {
           String fq = NameRefUtil.joinFqQuoted(destCatDisplay, destNsParts, destTableDisplay);
-          out.println("  destination: " + fq);
+          out.println("  destination" + label + ": " + fq);
         }
-      }
 
-      if (c.hasSource()) {
-        var s = c.getSource();
+        var s = mapping.getSource();
         String sNs = s.hasNamespace() ? String.join(".", s.getNamespace().getSegmentsList()) : "";
         String sTbl = s.getTable();
         String sCols = String.join(",", s.getColumnsList());
         boolean anyS = !sNs.isEmpty() || (sTbl != null && !sTbl.isBlank()) || !sCols.isEmpty();
         if (anyS) {
           out.println(
-              "  source:"
+              "  source"
+                  + label
+                  + ":"
                   + (sNs.isEmpty() ? "" : sNs)
                   + (sTbl == null || sTbl.isBlank() ? "" : "." + sTbl)
                   + (sCols.isEmpty() ? "" : " cols=[" + sCols + "]"));
@@ -1916,7 +1965,7 @@ final class ConnectorCliSupport {
       String destTable,
       List<String> columns,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
-    DestinationTarget destination = connector.getDestination();
+    DestinationTarget destination = primaryDestination(connector);
     String effectiveTable =
         !destTable.isBlank() ? destTable : resolveDestinationTableDisplayName(connector, directory);
     if (effectiveTable == null || effectiveTable.isBlank()) {
@@ -1949,10 +1998,10 @@ final class ConnectorCliSupport {
       Connector connector,
       String destNs,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
-    if (connector == null || !connector.hasDestination()) {
+    if (connector == null || connector.getMappingsCount() == 0) {
       throw new IllegalArgumentException("--dest-ns requires a connector destination");
     }
-    DestinationTarget destination = connector.getDestination();
+    DestinationTarget destination = primaryDestination(connector);
     if (destination.hasNamespaceId() && destNs.isBlank()) {
       return destination.getNamespaceId();
     }
@@ -1995,10 +2044,7 @@ final class ConnectorCliSupport {
 
   private static String resolveDestinationCatalogDisplayName(
       Connector connector, DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
-    if (connector == null || !connector.hasDestination()) {
-      return "";
-    }
-    DestinationTarget destination = connector.getDestination();
+    DestinationTarget destination = primaryDestination(connector);
     if (!destination.hasCatalogId()) {
       return "";
     }
@@ -2012,10 +2058,7 @@ final class ConnectorCliSupport {
 
   private static List<String> resolveDestinationNamespacePath(
       Connector connector, DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
-    if (connector == null || !connector.hasDestination()) {
-      return List.of();
-    }
-    DestinationTarget destination = connector.getDestination();
+    DestinationTarget destination = primaryDestination(connector);
     if (destination.hasNamespaceId()) {
       var ref =
           directory
@@ -2033,18 +2076,15 @@ final class ConnectorCliSupport {
     if (destination.hasNamespace() && destination.getNamespace().getSegmentsCount() > 0) {
       return List.copyOf(destination.getNamespace().getSegmentsList());
     }
-    if (connector.hasSource() && connector.getSource().hasNamespace()) {
-      return List.copyOf(connector.getSource().getNamespace().getSegmentsList());
+    if (primarySource(connector).hasNamespace()) {
+      return List.copyOf(primarySource(connector).getNamespace().getSegmentsList());
     }
     return List.of();
   }
 
   private static String resolveDestinationTableDisplayName(
       Connector connector, DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
-    if (connector == null || !connector.hasDestination()) {
-      return "";
-    }
-    DestinationTarget destination = connector.getDestination();
+    DestinationTarget destination = primaryDestination(connector);
     if (destination.hasTableDisplayName() && !destination.getTableDisplayName().isBlank()) {
       return destination.getTableDisplayName();
     }
@@ -2055,10 +2095,8 @@ final class ConnectorCliSupport {
           .getName()
           .getName();
     }
-    if (connector.hasSource()
-        && connector.getSource().hasTable()
-        && !connector.getSource().getTable().isBlank()) {
-      return connector.getSource().getTable();
+    if (primarySource(connector).hasTable() && !primarySource(connector).getTable().isBlank()) {
+      return primarySource(connector).getTable();
     }
     return "";
   }

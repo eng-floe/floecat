@@ -34,6 +34,7 @@ import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
+import ai.floedb.floecat.connector.rpc.SourceMapping;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestDeltaFixtures;
@@ -707,13 +708,17 @@ public class SeedRunner {
             .setKind(ConnectorKind.CK_ICEBERG)
             .setState(ConnectorState.CS_ACTIVE)
             .setUri(fixture.metadataLocation())
-            .setSource(
-                SourceSelector.newBuilder().setNamespace(sourceNs).setTable(fixture.tableName()))
-            .setDestination(
-                DestinationTarget.newBuilder()
-                    .setCatalogId(catalogId)
-                    .setNamespace(destNs)
-                    .setTableDisplayName(fixture.tableName()))
+            .addMappings(
+                SourceMapping.newBuilder()
+                    .setSource(
+                        SourceSelector.newBuilder()
+                            .setNamespace(sourceNs)
+                            .setTable(fixture.tableName()))
+                    .setDestination(
+                        DestinationTarget.newBuilder()
+                            .setCatalogId(catalogId)
+                            .setNamespace(destNs)
+                            .setTableDisplayName(fixture.tableName())))
             .setAuth(AuthConfig.newBuilder().setScheme("none").build())
             .setCreatedAt(Timestamps.fromMillis(now))
             .setUpdatedAt(Timestamps.fromMillis(now))
@@ -849,13 +854,17 @@ public class SeedRunner {
             .setKind(ConnectorKind.CK_DELTA)
             .setState(ConnectorState.CS_ACTIVE)
             .setUri("http://localhost")
-            .setSource(
-                SourceSelector.newBuilder().setNamespace(sourceNs).setTable(fixture.tableName()))
-            .setDestination(
-                DestinationTarget.newBuilder()
-                    .setCatalogId(catalogId)
-                    .setNamespace(destNs)
-                    .setTableDisplayName(fixture.tableName()))
+            .addMappings(
+                SourceMapping.newBuilder()
+                    .setSource(
+                        SourceSelector.newBuilder()
+                            .setNamespace(sourceNs)
+                            .setTable(fixture.tableName()))
+                    .setDestination(
+                        DestinationTarget.newBuilder()
+                            .setCatalogId(catalogId)
+                            .setNamespace(destNs)
+                            .setTableDisplayName(fixture.tableName())))
             .setAuth(AuthConfig.newBuilder().setScheme("none").build())
             .setCreatedAt(Timestamps.fromMillis(now))
             .setUpdatedAt(Timestamps.fromMillis(now))

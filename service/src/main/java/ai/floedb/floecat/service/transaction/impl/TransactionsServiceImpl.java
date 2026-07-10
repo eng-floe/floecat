@@ -33,6 +33,7 @@ import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
+import ai.floedb.floecat.connector.rpc.SourceMapping;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
@@ -974,18 +975,21 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             .setResourceId(connectorId)
             .setDisplayName(displayName)
             .setKind(ConnectorKind.CK_ICEBERG)
-            .setSource(
-                SourceSelector.newBuilder()
-                    .setNamespace(NamespacePath.newBuilder().addAllSegments(namespacePath).build())
-                    .setTable(sourceTableName)
-                    .build())
-            .setDestination(
-                DestinationTarget.newBuilder()
-                    .setCatalogId(table.getCatalogId())
-                    .setNamespaceId(table.getNamespaceId())
-                    .setTableDisplayName(tableName)
-                    .setTableId(tableId)
-                    .build())
+            .addMappings(
+                SourceMapping.newBuilder()
+                    .setSource(
+                        SourceSelector.newBuilder()
+                            .setNamespace(
+                                NamespacePath.newBuilder().addAllSegments(namespacePath).build())
+                            .setTable(sourceTableName)
+                            .build())
+                    .setDestination(
+                        DestinationTarget.newBuilder()
+                            .setCatalogId(table.getCatalogId())
+                            .setNamespaceId(table.getNamespaceId())
+                            .setTableDisplayName(tableName)
+                            .setTableId(tableId)
+                            .build()))
             .setUri(connectorUri)
             .setAuth(AuthConfig.newBuilder().setScheme("none").build())
             .setCreatedAt(connectorTimestamp == null ? nowTs() : connectorTimestamp)
@@ -1018,13 +1022,16 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                 .setFormat(TableFormat.TF_ICEBERG)
                 .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID);
     upstream.setConnectorId(connector.getResourceId());
-    if (connector.hasSource() && connector.getSource().hasNamespace()) {
-      upstream
-          .clearNamespacePath()
-          .addAllNamespacePath(connector.getSource().getNamespace().getSegmentsList());
-    }
-    if (connector.hasDestination() && !connector.getDestination().getTableDisplayName().isBlank()) {
-      upstream.setTableDisplayName(connector.getDestination().getTableDisplayName());
+    if (connector.getMappingsCount() > 0) {
+      SourceMapping mapping = connector.getMappings(0);
+      if (mapping.getSource().hasNamespace()) {
+        upstream
+            .clearNamespacePath()
+            .addAllNamespacePath(mapping.getSource().getNamespace().getSegmentsList());
+      }
+      if (!mapping.getDestination().getTableDisplayName().isBlank()) {
+        upstream.setTableDisplayName(mapping.getDestination().getTableDisplayName());
+      }
     }
     if (table.hasUpstream() && !table.getUpstream().getUri().isBlank()) {
       upstream.setUri(table.getUpstream().getUri());
@@ -1124,21 +1131,19 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         if (connector == null
             || !connector.hasResourceId()
             || !isGatewayManagedIcebergConnector(connector)
-            || !connector.hasDestination()
-            || !connector.getDestination().hasTableId()
-            || connector.getDestination().getTableId().getId().isBlank()) {
+            || connector.getMappingsCount() == 0
+            || !connector.getMappings(0).getDestination().hasTableId()
+            || connector.getMappings(0).getDestination().getTableId().getId().isBlank()) {
           continue;
         }
+        String destinationTableId = connector.getMappings(0).getDestination().getTableId().getId();
         candidates.putIfAbsent(
-            connector.getResourceId().getId()
-                + "|"
-                + connector.getDestination().getTableId().getId(),
+            connector.getResourceId().getId() + "|" + destinationTableId,
             new PostCommitCaptureCandidate(
                 connector.getResourceId(),
-                connector.getDestination().getTableId().getId(),
+                destinationTableId,
                 true,
-                committedCurrentSnapshotsByTable.get(
-                    connector.getDestination().getTableId().getId())));
+                committedCurrentSnapshotsByTable.get(destinationTableId)));
         continue;
       }
       if (!isTableByIdPointer(intent.getTargetPointerKey())) {
@@ -1730,7 +1735,9 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     }
     try {
       byte[] bytes = blobStore.get(blobUri);
-      return bytes == null ? null : Connector.parseFrom(bytes);
+      return bytes == null
+          ? null
+          : ConnectorRepository.normalizeLegacyMapping(Connector.parseFrom(bytes));
     } catch (Exception e) {
       return null;
     }

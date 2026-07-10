@@ -181,8 +181,10 @@ public class ConnectorIT {
                 .setDisplayName("dummy-conn")
                 .setKind(ConnectorKind.CK_UNITY)
                 .setUri("dummy://ignored")
-                .setSource(source(List.of("db")))
-                .setDestination(dest("cat-e2e"))
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("db")))
+                        .setDestination(dest("cat-e2e")))
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
                 .build());
 
@@ -198,8 +200,10 @@ public class ConnectorIT {
                 .setDisplayName("dummy-conn2")
                 .setKind(ConnectorKind.CK_UNITY)
                 .setUri("dummy://ignored")
-                .setSource(source(List.of("examples", "iceberg")))
-                .setDestination(dest("cat-e2e"))
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("examples", "iceberg")))
+                        .setDestination(dest("cat-e2e")))
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
                 .build());
 
@@ -274,8 +278,10 @@ public class ConnectorIT {
                 .setDisplayName("dummy-stats")
                 .setKind(ConnectorKind.CK_UNITY)
                 .setUri("dummy://ignored")
-                .setSource(source(List.of("db")))
-                .setDestination(dest("cat-stats"))
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("db")))
+                        .setDestination(dest("cat-stats")))
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
                 .build());
 
@@ -352,8 +358,10 @@ public class ConnectorIT {
                 .setDisplayName("fixture-iceberg-simple")
                 .setKind(ConnectorKind.CK_ICEBERG)
                 .setUri(metadataLocation)
-                .setSource(source(List.of("fixtures", "simple")))
-                .setDestination(dest)
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("fixtures", "simple")))
+                        .setDestination(dest))
                 .setAuth(icebergFixtureStorageAuth())
                 .putAllProperties(props)
                 .build());
@@ -412,8 +420,10 @@ public class ConnectorIT {
                 .setDisplayName("fixture-iceberg-plan-files")
                 .setKind(ConnectorKind.CK_ICEBERG)
                 .setUri(metadataLocation)
-                .setSource(source(List.of("fixtures", "simple")))
-                .setDestination(dest)
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("fixtures", "simple")))
+                        .setDestination(dest))
                 .setAuth(icebergFixtureStorageAuth())
                 .putAllProperties(props)
                 .build());
@@ -532,8 +542,10 @@ public class ConnectorIT {
                 .setDisplayName("fixture-iceberg-rust-sidecar")
                 .setKind(ConnectorKind.CK_ICEBERG)
                 .setUri(YB_TPCDS_METADATA_LOCATION)
-                .setSource(source(List.of("fixtures", "yb_iceberg_tpcds")))
-                .setDestination(dest)
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("fixtures", "yb_iceberg_tpcds")))
+                        .setDestination(dest))
                 .setAuth(icebergFixtureStorageAuth())
                 .putAllProperties(props)
                 .build());
@@ -628,8 +640,10 @@ public class ConnectorIT {
                 .setDisplayName("fixture-iceberg-deferred-contract")
                 .setKind(ConnectorKind.CK_ICEBERG)
                 .setUri(metadataLocation)
-                .setSource(source(List.of("fixtures", "simple")))
-                .setDestination(dest)
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("fixtures", "simple")))
+                        .setDestination(dest))
                 .setAuth(icebergFixtureStorageAuth())
                 .putAllProperties(props)
                 .build());
@@ -692,8 +706,10 @@ public class ConnectorIT {
                 .setDisplayName("fixture-iceberg-incremental")
                 .setKind(ConnectorKind.CK_ICEBERG)
                 .setUri(metadataLocation)
-                .setSource(source(List.of("fixtures", "simple")))
-                .setDestination(dest)
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("fixtures", "simple")))
+                        .setDestination(dest))
                 .setAuth(icebergFixtureStorageAuth())
                 .putAllProperties(props)
                 .build());
@@ -766,8 +782,10 @@ public class ConnectorIT {
                 .setDisplayName("fixture-iceberg-incremental-advance")
                 .setKind(ConnectorKind.CK_ICEBERG)
                 .setUri(metadataLocation)
-                .setSource(source(List.of("fixtures", "simple")))
-                .setDestination(dest)
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("fixtures", "simple")))
+                        .setDestination(dest))
                 .setAuth(icebergFixtureStorageAuth())
                 .putAllProperties(props)
                 .build());
@@ -848,8 +866,10 @@ public class ConnectorIT {
                 .setDisplayName("fixture-iceberg-incremental-delete")
                 .setKind(ConnectorKind.CK_ICEBERG)
                 .setUri(metadataLocation)
-                .setSource(source(List.of("fixtures", "simple")))
-                .setDestination(dest)
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("fixtures", "simple")))
+                        .setDestination(dest))
                 .setAuth(icebergFixtureStorageAuth())
                 .putAllProperties(props)
                 .build());
@@ -930,8 +950,10 @@ public class ConnectorIT {
                 .setDisplayName("fixture-iceberg-complex")
                 .setKind(ConnectorKind.CK_ICEBERG)
                 .setUri(metadataLocation)
-                .setSource(source(List.of("sales", "us")))
-                .setDestination(dest)
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("sales", "us")))
+                        .setDestination(dest))
                 .setAuth(icebergFixtureStorageAuth())
                 .putAllProperties(props)
                 .build());
@@ -1000,8 +1022,7 @@ public class ConnectorIT {
                 .setDisplayName("dummy-dest-table")
                 .setKind(ConnectorKind.CK_UNITY)
                 .setUri("dummy://ignored")
-                .setSource(src)
-                .setDestination(dest)
+                .addMappings(SourceMapping.newBuilder().setSource(src).setDestination(dest))
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
                 .build());
 
@@ -1041,8 +1062,10 @@ public class ConnectorIT {
                 .setDisplayName("dummy-scope-miss")
                 .setKind(ConnectorKind.CK_UNITY)
                 .setUri("dummy://ignored")
-                .setSource(source(List.of("db")))
-                .setDestination(dest("cat-scope-miss"))
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("db")))
+                        .setDestination(dest("cat-scope-miss")))
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
                 .build());
 
@@ -1074,12 +1097,15 @@ public class ConnectorIT {
                 .setDisplayName("dummy-plan-views")
                 .setKind(ConnectorKind.CK_UNITY)
                 .setUri("dummy://ignored")
-                .setSource(source(List.of("db")))
-                .setDestination(
-                    DestinationTarget.newBuilder()
-                        .setCatalogDisplayName("cat-plan-views")
-                        .setNamespace(NamespacePath.newBuilder().addSegments("analytics").build())
-                        .build())
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("db")))
+                        .setDestination(
+                            DestinationTarget.newBuilder()
+                                .setCatalogDisplayName("cat-plan-views")
+                                .setNamespace(
+                                    NamespacePath.newBuilder().addSegments("analytics").build())
+                                .build()))
                 .setAuth(AuthConfig.newBuilder().setScheme("none").build())
                 .putProperties("dummy.view.enabled", "true")
                 .putProperties("dummy.view.namespace", "db")
@@ -1140,15 +1166,17 @@ public class ConnectorIT {
               .setDisplayName("delta-conn")
               .setKind(ConnectorKind.CK_DELTA)
               .setUri(uc.baseUri())
-              .setSource(
-                  SourceSelector.newBuilder()
-                      .setNamespace(
-                          NamespacePath.newBuilder()
-                              .addSegments("main")
-                              .addSegments("tpcds")
-                              .build())
-                      .setTable("call_center"))
-              .setDestination(dest("cat-delta"))
+              .addMappings(
+                  SourceMapping.newBuilder()
+                      .setSource(
+                          SourceSelector.newBuilder()
+                              .setNamespace(
+                                  NamespacePath.newBuilder()
+                                      .addSegments("main")
+                                      .addSegments("tpcds")
+                                      .build())
+                              .setTable("call_center"))
+                      .setDestination(dest("cat-delta")))
               .setAuth(deltaFixtureStorageAuth())
               .putAllProperties(deltaFixtureNonSecretS3Options())
               .build();
@@ -1214,15 +1242,17 @@ public class ConnectorIT {
                   .setDisplayName("delta-plan-files")
                   .setKind(ConnectorKind.CK_DELTA)
                   .setUri(uc.baseUri())
-                  .setSource(
-                      SourceSelector.newBuilder()
-                          .setNamespace(
-                              NamespacePath.newBuilder()
-                                  .addSegments("main")
-                                  .addSegments("tpcds")
-                                  .build())
-                          .setTable("call_center"))
-                  .setDestination(dest("cat-delta-plan-files"))
+                  .addMappings(
+                      SourceMapping.newBuilder()
+                          .setSource(
+                              SourceSelector.newBuilder()
+                                  .setNamespace(
+                                      NamespacePath.newBuilder()
+                                          .addSegments("main")
+                                          .addSegments("tpcds")
+                                          .build())
+                                  .setTable("call_center"))
+                          .setDestination(dest("cat-delta-plan-files")))
                   .setAuth(deltaFixtureStorageAuth())
                   .putAllProperties(deltaFixtureNonSecretS3Options())
                   .build());
@@ -1337,8 +1367,10 @@ public class ConnectorIT {
                 .setDisplayName("Glue Iceberg")
                 .setKind(ConnectorKind.CK_ICEBERG)
                 .setUri("https://glue.us-east-1.amazonaws.com/iceberg/")
-                .setSource(source(List.of("tpcds_iceberg")))
-                .setDestination(dest("glue-iceberg-rest"))
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("tpcds_iceberg")))
+                        .setDestination(dest("glue-iceberg-rest")))
                 .setAuth(AuthConfig.newBuilder().setScheme("aws-sigv4").build())
                 .build());
 
@@ -2050,6 +2082,33 @@ public class ConnectorIT {
   }
 
   @Test
+  void createConnectorRejectsDuplicateSourceMappings() {
+    TestSupport.createCatalog(catalogService, "cat-dup", "");
+    var spec =
+        ConnectorSpec.newBuilder()
+            .setDisplayName("dup-mappings")
+            .setKind(ConnectorKind.CK_UNITY)
+            .setUri("dummy://x")
+            .addMappings(
+                SourceMapping.newBuilder()
+                    .setSource(source(List.of("a", "b")))
+                    .setDestination(dest("cat-dup")))
+            .addMappings(
+                SourceMapping.newBuilder()
+                    .setSource(source(List.of("a", "b")))
+                    .setDestination(dest("cat-dup")))
+            .build();
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder().setSpec(spec).build()));
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+  }
+
+  @Test
   void createConnectorIdempotent() {
     TestSupport.createCatalog(catalogService, "cat-idem", "");
     var spec =
@@ -2057,8 +2116,10 @@ public class ConnectorIT {
             .setDisplayName("idem-1")
             .setKind(ConnectorKind.CK_UNITY)
             .setUri("dummy://x")
-            .setSource(source(List.of("a", "b")))
-            .setDestination(dest("cat-idem"))
+            .addMappings(
+                SourceMapping.newBuilder()
+                    .setSource(source(List.of("a", "b")))
+                    .setDestination(dest("cat-idem")))
             .build();
 
     var idem = IdempotencyKey.newBuilder().setKey("fixed-key-1").build();
@@ -2083,8 +2144,10 @@ public class ConnectorIT {
             .setDisplayName("kind-check")
             .setKind(ConnectorKind.CK_UNITY)
             .setUri("dummy://x")
-            .setSource(source(List.of("a", "b")))
-            .setDestination(dest("cat-kind"))
+            .addMappings(
+                SourceMapping.newBuilder()
+                    .setSource(source(List.of("a", "b")))
+                    .setDestination(dest("cat-kind")))
             .build();
 
     var created =
@@ -2130,8 +2193,10 @@ public class ConnectorIT {
             .setDisplayName("auth-mask")
             .setKind(ConnectorKind.CK_UNITY)
             .setUri("dummy://x")
-            .setSource(source(List.of("a", "b")))
-            .setDestination(dest("cat-auth"))
+            .addMappings(
+                SourceMapping.newBuilder()
+                    .setSource(source(List.of("a", "b")))
+                    .setDestination(dest("cat-auth")))
             .setAuth(auth)
             .build();
 
@@ -2169,8 +2234,10 @@ public class ConnectorIT {
                                 .setDisplayName("auth-reject")
                                 .setKind(ConnectorKind.CK_UNITY)
                                 .setUri("dummy://x")
-                                .setSource(source(List.of("a", "b")))
-                                .setDestination(dest("cat-auth-reject"))
+                                .addMappings(
+                                    SourceMapping.newBuilder()
+                                        .setSource(source(List.of("a", "b")))
+                                        .setDestination(dest("cat-auth-reject")))
                                 .setAuth(
                                     AuthConfig.newBuilder()
                                         .setScheme("oauth2")
@@ -2203,8 +2270,10 @@ public class ConnectorIT {
                         .setDisplayName("iceberg-auth-store")
                         .setKind(ConnectorKind.CK_ICEBERG)
                         .setUri("s3://bucket/table/metadata/00001.metadata.json")
-                        .setSource(source(List.of("raw")))
-                        .setDestination(dest("cat-iceberg-auth"))
+                        .addMappings(
+                            SourceMapping.newBuilder()
+                                .setSource(source(List.of("raw")))
+                                .setDestination(dest("cat-iceberg-auth")))
                         .putProperties("iceberg.source", "filesystem")
                         .putProperties("external.namespace", "raw")
                         .setAuth(
@@ -2223,6 +2292,90 @@ public class ConnectorIT {
         credentialResolver.resolve(connectorId.getAccountId(), connectorId.getId()).orElseThrow());
   }
 
+  @SuppressWarnings("deprecation")
+  @Test
+  void legacySourceDestinationConnectorIsNormalizedOnRead() {
+    var connectorId =
+        ResourceId.newBuilder()
+            .setAccountId(seedAccountId.getId())
+            .setId(java.util.UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .build();
+    connectorRepo.create(
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setDisplayName("legacy-conn")
+            .setKind(ConnectorKind.CK_UNITY)
+            .setUri("dummy://ignored")
+            .setState(ConnectorState.CS_ACTIVE)
+            .setSource(source(List.of("db")).toBuilder().setTable("orders").build())
+            .setDestination(dest("cat-legacy"))
+            .build());
+
+    var fetched =
+        connectors
+            .getConnector(GetConnectorRequest.newBuilder().setConnectorId(connectorId).build())
+            .getConnector();
+    assertFalse(fetched.hasSource());
+    assertFalse(fetched.hasDestination());
+    assertEquals(1, fetched.getMappingsCount());
+    assertEquals(
+        List.of("db"), fetched.getMappings(0).getSource().getNamespace().getSegmentsList());
+    assertEquals("orders", fetched.getMappings(0).getSource().getTable());
+    assertEquals("cat-legacy", fetched.getMappings(0).getDestination().getCatalogDisplayName());
+
+    var listed =
+        connectors
+            .listConnectors(ListConnectorsRequest.newBuilder().build())
+            .getConnectorsList()
+            .stream()
+            .filter(c -> c.getResourceId().getId().equals(connectorId.getId()))
+            .findFirst()
+            .orElseThrow();
+    assertFalse(listed.hasSource());
+    assertFalse(listed.hasDestination());
+    assertEquals(1, listed.getMappingsCount());
+    assertEquals("orders", listed.getMappings(0).getSource().getTable());
+  }
+
+  @Test
+  void multiMappingConnectorRoundTripsAllMappings() {
+    TestSupport.createCatalog(catalogService, "cat-multi", "");
+    var created =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("multi-mapping-conn")
+                .setKind(ConnectorKind.CK_UNITY)
+                .setUri("dummy://ignored")
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("db")))
+                        .setDestination(dest("cat-multi")))
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("examples", "iceberg")))
+                        .setDestination(dest("cat-multi")))
+                .setAuth(AuthConfig.newBuilder().setScheme("none"))
+                .build());
+
+    assertEquals(2, created.getMappingsCount());
+
+    var fetched =
+        connectors
+            .getConnector(
+                GetConnectorRequest.newBuilder().setConnectorId(created.getResourceId()).build())
+            .getConnector();
+    assertFalse(fetched.hasSource());
+    assertFalse(fetched.hasDestination());
+    assertEquals(2, fetched.getMappingsCount());
+    assertEquals(
+        List.of("db"), fetched.getMappings(0).getSource().getNamespace().getSegmentsList());
+    assertEquals(
+        List.of("examples", "iceberg"),
+        fetched.getMappings(1).getSource().getNamespace().getSegmentsList());
+  }
+
   @Test
   void icebergConnectorRejectsSecretBearingPropertiesOnCreateAndUpdate() throws Exception {
     TestSupport.createCatalog(catalogService, "cat-iceberg-props", "");
@@ -2238,8 +2391,10 @@ public class ConnectorIT {
                                 .setDisplayName("iceberg-secret-props")
                                 .setKind(ConnectorKind.CK_ICEBERG)
                                 .setUri("s3://bucket/table/metadata/00001.metadata.json")
-                                .setSource(source(List.of("raw")))
-                                .setDestination(dest("cat-iceberg-props"))
+                                .addMappings(
+                                    SourceMapping.newBuilder()
+                                        .setSource(source(List.of("raw")))
+                                        .setDestination(dest("cat-iceberg-props")))
                                 .putProperties("iceberg.source", "filesystem")
                                 .putProperties("s3.secret-access-key", "should-not-store")
                                 .build())
@@ -2254,8 +2409,10 @@ public class ConnectorIT {
                 .setDisplayName("iceberg-safe-props")
                 .setKind(ConnectorKind.CK_ICEBERG)
                 .setUri("s3://bucket/table/metadata/00001.metadata.json")
-                .setSource(source(List.of("raw")))
-                .setDestination(dest("cat-iceberg-props"))
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("raw")))
+                        .setDestination(dest("cat-iceberg-props")))
                 .putProperties("iceberg.source", "filesystem")
                 .putProperties("s3.region", "us-east-1")
                 .build());
@@ -2288,8 +2445,10 @@ public class ConnectorIT {
                                 .setDisplayName("polaris-inline-s3-creds")
                                 .setKind(ConnectorKind.CK_ICEBERG)
                                 .setUri("http://polaris:8181/api/catalog")
-                                .setSource(source(List.of("sales")))
-                                .setDestination(dest("cat-polaris-props"))
+                                .addMappings(
+                                    SourceMapping.newBuilder()
+                                        .setSource(source(List.of("sales")))
+                                        .setDestination(dest("cat-polaris-props")))
                                 .putProperties("iceberg.source", "rest")
                                 .putProperties("rest.flavor", "polaris")
                                 .putProperties("warehouse", "quickstart_catalog")
@@ -2315,8 +2474,10 @@ public class ConnectorIT {
                                 .setDisplayName("delta-inline-s3-creds")
                                 .setKind(ConnectorKind.CK_DELTA)
                                 .setUri("dummy://x")
-                                .setSource(source(List.of("main", "tpcds")))
-                                .setDestination(dest("cat-delta-props"))
+                                .addMappings(
+                                    SourceMapping.newBuilder()
+                                        .setSource(source(List.of("main", "tpcds")))
+                                        .setDestination(dest("cat-delta-props")))
                                 .putProperties("delta.source", "unity")
                                 .putProperties("s3.access-key-id", "should-not-store")
                                 .build())
@@ -2340,8 +2501,10 @@ public class ConnectorIT {
                                 .setDisplayName("glue-inline-s3-creds")
                                 .setKind(ConnectorKind.CK_GLUE)
                                 .setUri("dummy://x")
-                                .setSource(source(List.of("main", "sales")))
-                                .setDestination(dest("cat-glue-props"))
+                                .addMappings(
+                                    SourceMapping.newBuilder()
+                                        .setSource(source(List.of("main", "sales")))
+                                        .setDestination(dest("cat-glue-props")))
                                 .putProperties("s3.access-key-id", "should-not-store")
                                 .build())
                         .build()));
@@ -2364,8 +2527,10 @@ public class ConnectorIT {
                                 .setDisplayName("unity-inline-s3-creds")
                                 .setKind(ConnectorKind.CK_UNITY)
                                 .setUri("dummy://x")
-                                .setSource(source(List.of("main", "sales")))
-                                .setDestination(dest("cat-unity-props"))
+                                .addMappings(
+                                    SourceMapping.newBuilder()
+                                        .setSource(source(List.of("main", "sales")))
+                                        .setDestination(dest("cat-unity-props")))
                                 .putProperties("s3.secret-access-key", "should-not-store")
                                 .build())
                         .build()));
@@ -2381,8 +2546,10 @@ public class ConnectorIT {
             .setDisplayName("idem-2")
             .setKind(ConnectorKind.CK_UNITY)
             .setUri("dummy://x")
-            .setSource(source(List.of("a", "b")))
-            .setDestination(dest("cat-idem-2"))
+            .addMappings(
+                SourceMapping.newBuilder()
+                    .setSource(source(List.of("a", "b")))
+                    .setDestination(dest("cat-idem-2")))
             .build();
 
     var specB =
@@ -2390,8 +2557,10 @@ public class ConnectorIT {
             .setDisplayName("idem-2")
             .setKind(ConnectorKind.CK_UNITY)
             .setUri("dummy://y")
-            .setSource(source(List.of("a", "b")))
-            .setDestination(dest("cat-idem-2"))
+            .addMappings(
+                SourceMapping.newBuilder()
+                    .setSource(source(List.of("a", "b")))
+                    .setDestination(dest("cat-idem-2")))
             .build();
 
     var idem = IdempotencyKey.newBuilder().setKey("fixed-key-2").build();
@@ -2439,8 +2608,10 @@ public class ConnectorIT {
               .setDisplayName("p-" + i)
               .setKind(ConnectorKind.CK_UNITY)
               .setUri("dummy://x")
-              .setSource(source(List.of("a", "b")))
-              .setDestination(dest("cat-p"))
+              .addMappings(
+                  SourceMapping.newBuilder()
+                      .setSource(source(List.of("a", "b")))
+                      .setDestination(dest("cat-p")))
               .build());
     }
     String token = "";
@@ -2470,8 +2641,10 @@ public class ConnectorIT {
                 .setDisplayName("u-a")
                 .setKind(ConnectorKind.CK_UNITY)
                 .setUri("dummy://x")
-                .setSource(source(List.of("a", "b")))
-                .setDestination(dest("cat-u"))
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("a", "b")))
+                        .setDestination(dest("cat-u")))
                 .build());
 
     var b =
@@ -2481,8 +2654,10 @@ public class ConnectorIT {
                 .setDisplayName("u-b")
                 .setKind(ConnectorKind.CK_UNITY)
                 .setUri("dummy://x")
-                .setSource(source(List.of("a", "b")))
-                .setDestination(dest("cat-u"))
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("a", "b")))
+                        .setDestination(dest("cat-u")))
                 .build());
 
     // rename u-a -> u-a1
@@ -2522,8 +2697,10 @@ public class ConnectorIT {
                 .setDisplayName("pre-a")
                 .setKind(ConnectorKind.CK_UNITY)
                 .setUri("dummy://x")
-                .setSource(source(List.of("a", "b")))
-                .setDestination(dest("cat-pre"))
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("a", "b")))
+                        .setDestination(dest("cat-pre")))
                 .build());
 
     FieldMask mask = FieldMask.newBuilder().addPaths("uri").build();
@@ -2559,8 +2736,10 @@ public class ConnectorIT {
                                 .setDisplayName("policy-create-invalid")
                                 .setKind(ConnectorKind.CK_UNITY)
                                 .setUri("dummy://x")
-                                .setSource(source(List.of("a", "b")))
-                                .setDestination(dest("cat-policy-create"))
+                                .addMappings(
+                                    SourceMapping.newBuilder()
+                                        .setSource(source(List.of("a", "b")))
+                                        .setDestination(dest("cat-policy-create")))
                                 .setPolicy(
                                     ReconcilePolicy.newBuilder()
                                         .setScope(ReconcileSnapshotScope.RSS_LATEST_N)
@@ -2582,8 +2761,10 @@ public class ConnectorIT {
                 .setDisplayName("policy-update-invalid")
                 .setKind(ConnectorKind.CK_UNITY)
                 .setUri("dummy://x")
-                .setSource(source(List.of("a", "b")))
-                .setDestination(dest("cat-policy-update"))
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("a", "b")))
+                        .setDestination(dest("cat-policy-update")))
                 .build());
 
     var ex =
@@ -2617,8 +2798,10 @@ public class ConnectorIT {
                 .setDisplayName("del-1")
                 .setKind(ConnectorKind.CK_UNITY)
                 .setUri("dummy://x")
-                .setSource(source(List.of("a", "b")))
-                .setDestination(dest("cat-del"))
+                .addMappings(
+                    SourceMapping.newBuilder()
+                        .setSource(source(List.of("a", "b")))
+                        .setDestination(dest("cat-del")))
                 .build());
 
     connectors.deleteConnector(
@@ -2676,7 +2859,7 @@ public class ConnectorIT {
                         .setDisplayName("v-ok")
                         .setKind(ConnectorKind.CK_UNITY)
                         .setUri("dummy://x")
-                        .setDestination(dest("cat-v")))
+                        .addMappings(SourceMapping.newBuilder().setDestination(dest("cat-v"))))
                 .build());
     assertTrue(ok.getOk());
 
@@ -2691,7 +2874,8 @@ public class ConnectorIT {
                                 .setDisplayName("v-bad")
                                 .setKind(ConnectorKind.CK_UNSPECIFIED)
                                 .setUri("dummy://x")
-                                .setDestination(dest("cat-v")))
+                                .addMappings(
+                                    SourceMapping.newBuilder().setDestination(dest("cat-v"))))
                         .build()));
 
     TestSupport.assertGrpcAndMc(

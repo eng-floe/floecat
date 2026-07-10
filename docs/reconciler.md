@@ -40,9 +40,10 @@ The current job model is split by responsibility:
   plane.
 - **`ReconcilerService`**: core planning/orchestration:
   1. Resolves connector metadata via the service's `Connectors` RPC.
-  2. Plans table work across every entry in the connector's `mappings` list (falling back to the
-     singular `source`/`destination` pair when `mappings` is empty), unioning the results,
-     while preserving destination namespace/table overrides per mapping.
+  2. Plans table and view work across every entry in the connector's `mappings` list (legacy
+     stored connectors are normalized so their singular `source`/`destination` pair becomes
+     `mappings[0]` on read), unioning the results, while preserving destination namespace/table
+     overrides per mapping.
   3. Ensures destination catalogs/namespaces/tables exist and updates connector metadata with
      resolved destination IDs.
   4. Instantiates the connector via `ConnectorFactory`.
@@ -86,9 +87,8 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
 
 ## Important Internal Details
 - **Destination binding**: when reconciling, the service ensures each mapping's declared
-  destination catalog/namespace/table IDs align with actual resources (or the singular
-  destination, for connectors with no `mappings`). Any mismatch triggers a `ConnectorState`
-  update or raises conflicts.
+  destination catalog/namespace/table IDs align with actual resources. Any mismatch triggers a
+  `ConnectorState` update or raises conflicts.
 - **Statistics ingestion**: stats persistence is centralized behind the stats control plane
   and the reconcile executor control plane. `CAPTURE_ONLY` routes capture planning through the
   same reconcile job tree without metadata reconciliation. `METADATA_AND_CAPTURE` performs metadata

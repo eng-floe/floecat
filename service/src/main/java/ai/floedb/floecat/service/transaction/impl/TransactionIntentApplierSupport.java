@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.transaction.impl;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -111,7 +112,7 @@ public class TransactionIntentApplierSupport {
         LOG.debugf("connector blob missing: %s", blobUri);
         return null;
       }
-      return Connector.parseFrom(bytes);
+      return ConnectorRepository.normalizeLegacyMapping(Connector.parseFrom(bytes));
     } catch (Exception e) {
       LOG.debugf("connector blob parse failed: %s", blobUri, e);
       return null;

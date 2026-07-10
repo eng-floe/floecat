@@ -221,7 +221,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             .setId("ns-existing")
             .build();
     int[] ensureNamespaceCalls = {0};
-    int[] updateConnectorCalls = {0};
     int[] listTablesCalls = {0};
     int[] updateTableCalls = {0};
 
@@ -287,12 +286,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           }
 
           @Override
-          public void updateConnectorDestination(
-              ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {
-            updateConnectorCalls[0]++;
-          }
-
-          @Override
           public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId ignoredTableId) {
             return Set.of();
           }
@@ -330,7 +323,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
     assertThat(result.tablesChanged).isEqualTo(1);
     assertThat(ensureNamespaceCalls[0]).isZero();
     assertThat(updateTableCalls[0]).isEqualTo(1);
-    assertThat(updateConnectorCalls[0]).isZero();
     assertThat(listTablesCalls[0]).isZero();
   }
 
@@ -984,6 +976,45 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
   }
 
   @Test
+  void viewPlannerPlansViewsForEachMapping() {
+    configureTwoNamespaceMappingConnector();
+    var viewA =
+        new ai.floedb.floecat.connector.spi.FloecatConnector.ViewDescriptor(
+            "src_cat.ns_a",
+            "view_a",
+            "SELECT 1",
+            "spark",
+            List.of("ns_a"),
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"v\",\"type\":\"int\",\"nullable\":true}]}");
+    var viewB =
+        new ai.floedb.floecat.connector.spi.FloecatConnector.ViewDescriptor(
+            "src_cat.ns_b",
+            "view_b",
+            "SELECT 2",
+            "spark",
+            List.of("ns_b"),
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"v\",\"type\":\"int\",\"nullable\":true}]}");
+    service.connectorOpener =
+        cfg ->
+            new FakeConnector(List.of(viewA, viewB)) {
+              @Override
+              public List<FloecatConnector.ViewDescriptor> listViewDescriptors(String namespaceFq) {
+                return java.util.stream.Stream.of(viewA, viewB)
+                    .filter(view -> view.namespaceFq().equals(namespaceFq))
+                    .toList();
+              }
+            };
+
+    List<ReconcileViewTask> tasks =
+        service.planViewTasks(principal, connectorId, ReconcileScope.empty(), null);
+
+    assertThat(tasks)
+        .containsExactly(
+            ReconcileViewTask.discovery("src_cat.ns_a", "view_a", "ns-a", "view_a"),
+            ReconcileViewTask.discovery("src_cat.ns_b", "view_b", "ns-b", "view_b"));
+  }
+
+  @Test
   void viewPlannerEmitsDiscoveryTasksWithoutDestinationViewId() {
     var viewDesc =
         new ai.floedb.floecat.connector.spi.FloecatConnector.ViewDescriptor(
@@ -1410,10 +1441,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
         this.putConstraints = constraints;
         return true;
       }
-
-      @Override
-      public void updateConnectorDestination(
-          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
     }
 
     class ConstraintsConnector extends FakeConnector {
@@ -1609,10 +1636,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
         return false;
       }
-
-      @Override
-      public void updateConnectorDestination(
-          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
     }
 
     Backend backend = new Backend();
@@ -1754,10 +1777,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
         return targetKind == ai.floedb.floecat.catalog.rpc.StatsTargetKind.STK_TABLE;
       }
-
-      @Override
-      public void updateConnectorDestination(
-          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
     }
 
     Backend backend = new Backend();
@@ -2482,10 +2501,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
         return false;
       }
-
-      @Override
-      public void updateConnectorDestination(
-          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
     }
 
     class TwoSnapshotConnector extends FakeConnector {
@@ -2797,10 +2812,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
         return false;
       }
-
-      @Override
-      public void updateConnectorDestination(
-          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
     }
 
     class KnownSnapshotConnector extends FakeConnector {
@@ -3085,10 +3096,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
 
       @Override
       public void putTargetStats(ReconcileContext ctx, List<TargetStatsRecord> stats) {}
-
-      @Override
-      public void updateConnectorDestination(
-          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
     }
 
     Backend backend = new Backend();
@@ -3234,10 +3241,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
         putConstraintsCalls++;
         return true;
       }
-
-      @Override
-      public void updateConnectorDestination(
-          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
     }
 
     class ConstraintsConnector extends FakeConnector {
@@ -3384,10 +3387,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           ai.floedb.floecat.catalog.rpc.StatsTargetKind targetKind) {
         return false;
       }
-
-      @Override
-      public void updateConnectorDestination(
-          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
     }
 
     class NewSnapshotConnector extends FakeConnector {
@@ -3526,10 +3525,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
         putConstraintsCalls++;
         return false;
       }
-
-      @Override
-      public void updateConnectorDestination(
-          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
     }
 
     class KnownSnapshotConnector extends FakeConnector {
@@ -3688,10 +3683,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
         putConstraintsCalls++;
         return true;
       }
-
-      @Override
-      public void updateConnectorDestination(
-          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
     }
 
     class ThrowingConnector extends FakeConnector {
@@ -3820,10 +3811,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotConstraints constraints) {
         throw new RuntimeException("backend-constraints-fail");
       }
-
-      @Override
-      public void updateConnectorDestination(
-          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
     }
 
     class ConstraintsConnector extends FakeConnector {
@@ -3956,10 +3943,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
         putConstraintsCalls++;
         return true;
       }
-
-      @Override
-      public void updateConnectorDestination(
-          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
     }
 
     class EmptyConstraintsConnector extends FakeConnector {
@@ -4089,10 +4072,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotConstraints constraints) {
         throw new RuntimeException("stats-captured-constraints-fail");
       }
-
-      @Override
-      public void updateConnectorDestination(
-          ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {}
     }
 
     class ConstraintsConnector extends FakeConnector {

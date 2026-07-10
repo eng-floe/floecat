@@ -117,8 +117,9 @@ maps so downstream APIs can mirror Iceberg’s REST contract.
 - Authentication configuration (scheme, credentials, headers, properties).
 
 It does not carry source/destination selectors. A connector may have multiple independent
-source->destination pairs (`Connector.mappings`, falling back to the singular
-`source`/`destination` pair when empty); `ReconcilerService` resolves each mapping separately and
+source->destination pairs (`Connector.mappings`; the deprecated singular `source`/`destination`
+pair on stored connectors is normalized into a single mapping when the connector is read);
+`ReconcilerService` resolves each mapping separately and
 passes its `SourceSelector`/`DestinationTarget` into the per-mapping planning request
 (`TablePlanningRequest`/`ViewPlanningRequest`) rather than into `ConnectorConfig`.
 

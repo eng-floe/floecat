@@ -28,6 +28,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.rpc.SourceMapping;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
@@ -460,12 +461,14 @@ class QueuedReconcileWorkerSupport {
           toExecutionResult(new Result(0, 0, 0, 0, 1, 0, 0, e)), null);
     }
 
+    SourceMapping mapping =
+        ReconcilerService.effectiveMappingForTask(active, viewTask.sourceNamespace(), "", null);
     ResourceId destNamespaceId =
         resolveOrCreateDiscoveryNamespaceId(
             ctx,
             connectorId,
-            active.source(),
-            active.destination(),
+            mapping.getSource(),
+            mapping.getDestination(),
             viewTask.destinationNamespaceId());
     if (!scope.matchesNamespaceId(destNamespaceId.getId())) {
       return new PlannedViewMutationResult(
@@ -484,7 +487,7 @@ class QueuedReconcileWorkerSupport {
                           + " does not match requested scope"))),
           null);
     }
-    ResourceId destCatalogId = active.destination().getCatalogId();
+    ResourceId destCatalogId = mapping.getDestination().getCatalogId();
     String destNsFq = reconcilerService.resolveNamespaceFq(ctx, destNamespaceId);
     String displayName =
         viewTask.destinationViewDisplayName().isBlank()
@@ -776,12 +779,18 @@ class QueuedReconcileWorkerSupport {
       return new Result(0, 0, 0, 0, 1, 0, 0, e);
     }
 
+    SourceMapping mapping =
+        ReconcilerService.effectiveMappingForTask(
+            active,
+            tableTask.sourceNamespace(),
+            tableTask.sourceTable(),
+            tableTask.destinationTableId());
     ResourceId destNamespaceId =
         resolveOrCreateDiscoveryNamespaceId(
             ctx,
             connectorId,
-            active.source(),
-            active.destination(),
+            mapping.getSource(),
+            mapping.getDestination(),
             tableTask.destinationNamespaceId());
     if (!scope.matchesNamespaceId(destNamespaceId.getId())) {
       return new Result(
@@ -827,13 +836,9 @@ class QueuedReconcileWorkerSupport {
 
     try (FloecatConnector connector =
         reconcilerService.connectorOpener.open(active.resolvedConfig())) {
-      ResourceId destCatalogId = active.destination().getCatalogId();
+      ResourceId destCatalogId = mapping.getDestination().getCatalogId();
       Set<String> defaultColumnSelectors =
-          ReconcilerService.effectiveColumnSelectors(
-              active,
-              tableTask.sourceNamespace(),
-              tableTask.sourceTable(),
-              tableTask.destinationTableId());
+          ReconcilerService.normalizeSelectors(mapping.getSource().getColumnsList());
       boolean includeCoreMetadata =
           ReconcilerService.includesMetadata(captureMode)
               && !ReconcilerService.isCaptureOnlyConnector(active.connector());

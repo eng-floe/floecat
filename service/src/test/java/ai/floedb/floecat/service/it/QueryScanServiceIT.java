@@ -356,8 +356,7 @@ class QueryScanServiceIT {
             .setDisplayName("qs-" + suffix)
             .setKind(ConnectorKind.CK_UNITY)
             .setUri("dummy://ignored")
-            .setSource(source)
-            .setDestination(destination)
+            .addMappings(SourceMapping.newBuilder().setSource(source).setDestination(destination))
             .setAuth(AuthConfig.newBuilder().setScheme("none"))
             .build();
 

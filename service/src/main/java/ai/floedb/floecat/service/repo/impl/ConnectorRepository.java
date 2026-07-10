@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.SourceMapping;
 import ai.floedb.floecat.service.repo.model.ConnectorKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
@@ -43,9 +44,29 @@ public class ConnectorRepository {
             pointerStore,
             blobStore,
             Schemas.CONNECTOR,
-            Connector::parseFrom,
+            bytes -> normalizeLegacyMapping(Connector.parseFrom(bytes)),
             Connector::toByteArray,
             "application/x-protobuf");
+  }
+
+  /**
+   * Connectors written before multi-mapping support carry only the deprecated top-level
+   * source/destination pair. Normalize them into mappings[0] on read so the rest of the system can
+   * commit to the mappings list as the single representation.
+   */
+  public static Connector normalizeLegacyMapping(Connector connector) {
+    if (connector.getMappingsCount() > 0
+        || (!connector.hasSource() && !connector.hasDestination())) {
+      return connector;
+    }
+    return connector.toBuilder()
+        .addMappings(
+            SourceMapping.newBuilder()
+                .setSource(connector.getSource())
+                .setDestination(connector.getDestination()))
+        .clearSource()
+        .clearDestination()
+        .build();
   }
 
   public void create(Connector connector) {

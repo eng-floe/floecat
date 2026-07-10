@@ -983,8 +983,10 @@ class TransactionsServiceImplTest {
     assertEquals("s3://warehouse/db/orders", connector.getUri());
     assertEquals("register:pref:db.orders", connector.getDisplayName());
     assertEquals("Filesystem connector", connector.getDescription());
-    assertEquals(List.of("db"), connector.getSource().getNamespace().getSegmentsList());
-    assertEquals("orders", connector.getSource().getTable());
+    assertEquals(1, connector.getMappingsCount());
+    assertEquals(
+        List.of("db"), connector.getMappings(0).getSource().getNamespace().getSegmentsList());
+    assertEquals("orders", connector.getMappings(0).getSource().getTable());
     assertEquals("filesystem", connector.getPropertiesOrThrow("iceberg.source"));
     assertEquals("us-east-1", connector.getPropertiesOrThrow("s3.region"));
     assertNotNull(connector.getResourceId());

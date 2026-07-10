@@ -27,7 +27,6 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.rpc.Connector;
-import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
@@ -198,9 +197,6 @@ public interface ReconcilerBackend {
   String resolveNamespaceFq(ReconcileContext ctx, ResourceId namespaceId);
 
   Connector lookupConnector(ReconcileContext ctx, ResourceId connectorId);
-
-  void updateConnectorDestination(
-      ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination);
 
   Optional<ResourceId> lookupView(ReconcileContext ctx, NameRef view);
 

@@ -336,12 +336,6 @@ abstract class AbstractReconcilerServiceTestBase {
     }
 
     @Override
-    public void updateConnectorDestination(
-        ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
     public ReconcilerBackend.ViewMutationResult ensureView(
         ReconcileContext ctx, ViewSpec spec, String idempotencyKey) {
       throw new UnsupportedOperationException();
@@ -434,12 +428,6 @@ abstract class AbstractReconcilerServiceTestBase {
               connector.getDestination().getCatalogId(),
               connector.getDestination().getNamespaceId(),
               "revenue_view"));
-    }
-
-    @Override
-    public void updateConnectorDestination(
-        ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {
-      // no-op
     }
   }
 

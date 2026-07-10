@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -279,8 +280,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             .build();
     ReconcilerService.ActiveConnector active = activeConnector(connector);
 
-    assertThat(
-            ReconcilerService.effectiveColumnSelectors(active, "db.hr", "employees", "tbl-emp"))
+    assertThat(ReconcilerService.effectiveColumnSelectors(active, "db.hr", "employees", "tbl-emp"))
         .containsExactly("employee_id");
   }
 
@@ -310,6 +310,66 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
   }
 
   @Test
+  void effectiveMappingForTaskCarriesPerMappingDestinationCatalog() {
+    ResourceId salesCatalog =
+        ResourceId.newBuilder()
+            .setAccountId(connectorId.getAccountId())
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat-sales")
+            .build();
+    ResourceId hrCatalog =
+        ResourceId.newBuilder()
+            .setAccountId(connectorId.getAccountId())
+            .setKind(ResourceKind.RK_CATALOG)
+            .setId("cat-hr")
+            .build();
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .addMappings(
+                mapping("db.sales", "", List.of()).toBuilder()
+                    .setDestination(DestinationTarget.newBuilder().setCatalogId(salesCatalog))
+                    .build())
+            .addMappings(
+                mapping("db.hr", "", List.of()).toBuilder()
+                    .setDestination(DestinationTarget.newBuilder().setCatalogId(hrCatalog))
+                    .build())
+            .build();
+    ReconcilerService.ActiveConnector active = activeConnector(connector);
+
+    SourceMapping resolved =
+        ReconcilerService.effectiveMappingForTask(active, "db.hr", "employees", "tbl-emp");
+
+    assertThat(resolved.getDestination().getCatalogId().getId()).isEqualTo("cat-hr");
+    assertThat(
+            ReconcilerService.effectiveMappingForTask(active, "db.sales", "orders", "tbl-ord")
+                .getDestination()
+                .getCatalogId()
+                .getId())
+        .isEqualTo("cat-sales");
+  }
+
+  @Test
+  void effectiveMappingForTaskThrowsWhenNoMappingMatches() {
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .addMappings(mapping("db.sales", "", List.of()))
+            .addMappings(mapping("db.hr", "", List.of()))
+            .build();
+    ReconcilerService.ActiveConnector active = activeConnector(connector);
+
+    assertThatThrownBy(
+            () ->
+                ReconcilerService.effectiveMappingForTask(active, "db.unknown", "orders", "tbl-1"))
+        .isInstanceOf(ReconcileFailureException.class)
+        .hasMessageContaining("No connector mapping matches")
+        .hasMessageContaining("db.unknown.orders");
+  }
+
+  @Test
   void effectiveColumnSelectorsFallsBackToLegacySourceWithoutMappings() {
     Connector connector =
         Connector.newBuilder()
@@ -324,14 +384,17 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
   }
 
   private ReconcilerService.ActiveConnector activeConnector(Connector connector) {
-    return new ReconcilerService.ActiveConnector(
-        connector,
-        connector.hasSource() ? connector.getSource() : SourceSelector.getDefaultInstance(),
-        connector.hasDestination()
-            ? connector.getDestination()
-            : DestinationTarget.getDefaultInstance(),
-        null,
-        null);
+    List<SourceMapping> mappings =
+        connector.getMappingsCount() > 0
+            ? connector.getMappingsList()
+            : (connector.hasSource() || connector.hasDestination())
+                ? List.of(
+                    SourceMapping.newBuilder()
+                        .setSource(connector.getSource())
+                        .setDestination(connector.getDestination())
+                        .build())
+                : List.of();
+    return new ReconcilerService.ActiveConnector(connector, mappings, null, null);
   }
 
   private static SourceMapping mapping(String namespaceFq, String table, List<String> columns) {

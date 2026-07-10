@@ -96,17 +96,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           "kind",
           "uri",
           "properties",
-          "source",
-          "source.namespace",
-          "source.table",
-          "source.columns",
-          "destination",
-          "destination.catalog_id",
-          "destination.catalog_display_name",
-          "destination.namespace",
-          "destination.namespace_id",
-          "destination.table_display_name",
-          "destination.table_id",
           "mappings",
           "auth",
           "auth.scheme",
@@ -252,20 +241,12 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   validatePersistedAuthConfig(spec.getAuth(), corr);
                   validateReconcilePolicy(spec.getPolicy(), corr);
 
-                  boolean hasLegacySourceOrDest = spec.hasSource() || spec.hasDestination();
                   var mappingsIn = spec.getMappingsList();
-                  boolean hasMappings = !mappingsIn.isEmpty();
-
-                  if (hasLegacySourceOrDest && hasMappings) {
-                    throw GrpcErrors.invalidArgument(
-                        corr, null, Map.of("field", "source|destination|mappings"));
-                  }
-                  boolean isShell = !hasLegacySourceOrDest && !hasMappings;
+                  boolean isShell = mappingsIn.isEmpty();
 
                   List<SourceMapping> resolvedMappings = List.of();
-                  DestinationTarget resolvedLegacyDest = null;
 
-                  if (hasMappings) {
+                  if (!isShell) {
                     if (mappingsIn.size() > 1 && spec.getPolicy().getEnabled()) {
                       throw GrpcErrors.invalidArgument(
                           corr, null, Map.of("field", "policy.enabled"));
@@ -274,17 +255,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     for (int i = 0; i < mappingsIn.size(); i++) {
                       built.add(resolveMapping(mappingsIn.get(i), accountId, corr, i));
                     }
+                    validateUniqueMappings(built, corr);
                     resolvedMappings = built;
-                  } else if (!isShell) {
-                    if (!spec.hasSource()
-                        || !spec.getSource().hasNamespace()
-                        || spec.getSource().getNamespace().getSegmentsCount() == 0) {
-                      throw GrpcErrors.invalidArgument(
-                          corr,
-                          GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_SOURCE_NAMESPACE,
-                          Map.of("field", "source.namespace"));
-                    }
-                    resolvedLegacyDest = resolveDestination(spec.getDestination(), accountId, corr);
                   }
 
                   var builder =
@@ -301,16 +273,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                               isShell ? ConnectorState.CS_CREATING : ConnectorState.CS_ACTIVE);
 
                   if (spec.hasDescription()) builder.setDescription(spec.getDescription());
-                  if (hasMappings) {
-                    builder.addAllMappings(resolvedMappings);
-                    if (resolvedMappings.size() == 1) {
-                      var only = resolvedMappings.get(0);
-                      builder.setSource(only.getSource()).setDestination(only.getDestination());
-                    }
-                  } else if (!isShell) {
-                    builder.setSource(spec.getSource());
-                    builder.setDestination(resolvedLegacyDest);
-                  }
+                  builder.addAllMappings(resolvedMappings);
 
                   if (idempotencyKey == null) {
                     var existing = connectorRepo.getByName(accountId, display);
@@ -654,8 +617,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   try (var connector = ConnectorFactory.create(resolved)) {
                     var namespaces = connector.listNamespaces();
 
-                    if (spec.hasSource()) {
-                      var src = spec.getSource();
+                    for (var mapping : spec.getMappingsList()) {
+                      var src = mapping.getSource();
                       var ns =
                           (src.hasNamespace()
                               ? String.join(".", src.getNamespace().getSegmentsList())
@@ -1024,7 +987,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
   private SourceMapping resolveMapping(
       SourceMapping mapping, String accountId, String corr, int index) {
-    var source = mapping.getSource();
+    var source = normalizeSourceSelector(mapping.getSource());
     if (!source.hasNamespace() || source.getNamespace().getSegmentsCount() == 0) {
       throw GrpcErrors.invalidArgument(
           corr,
@@ -1040,6 +1003,40 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     }
 
     return SourceMapping.newBuilder().setSource(source).setDestination(resolvedDest).build();
+  }
+
+  /** Trims source identifiers so stored mappings match the trimmed reconcile task records. */
+  private static SourceSelector normalizeSourceSelector(SourceSelector source) {
+    var b = source.toBuilder();
+    if (source.hasNamespace()) {
+      var cleaned =
+          source.getNamespace().getSegmentsList().stream()
+              .map(s -> s == null ? "" : s.trim())
+              .filter(s -> !s.isEmpty())
+              .toList();
+      b.setNamespace(NamespacePath.newBuilder().addAllSegments(cleaned));
+    }
+    if (source.hasTable()) {
+      var table = source.getTable().trim();
+      if (table.isEmpty()) {
+        b.clearTable();
+      } else {
+        b.setTable(table);
+      }
+    }
+    return b.build();
+  }
+
+  /** Rejects mappings whose (source namespace, source table) selector is ambiguous. */
+  private static void validateUniqueMappings(List<SourceMapping> mappings, String corr) {
+    var seen = new java.util.HashSet<String>();
+    for (int i = 0; i < mappings.size(); i++) {
+      var source = mappings.get(i).getSource();
+      var key = String.join(".", source.getNamespace().getSegmentsList()) + "|" + source.getTable();
+      if (!seen.add(key)) {
+        throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "mappings[" + i + "].source"));
+      }
+    }
   }
 
   private ResourceId scopedConnectorId(String accountId, ResourceId connectorId, String corr) {
@@ -1101,168 +1098,14 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       b.clearProperties().putAllProperties(spec.getPropertiesMap());
     }
 
-    var curSrc = current.hasSource() ? current.getSource() : SourceSelector.getDefaultInstance();
-    var inSrc = spec.hasSource() ? spec.getSource() : SourceSelector.getDefaultInstance();
-
-    if (maskTargets(mask, "source")) {
-      if (!(inSrc.hasNamespace() && inSrc.getNamespace().getSegmentsCount() > 0)) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_SOURCE_NAMESPACE,
-            Map.of("field", "source.namespace"));
-      }
-      b.setSource(inSrc);
-    } else if (maskTargetsUnder(mask, "source")) {
-      var sb = curSrc.toBuilder();
-
-      if (maskTargets(mask, "source.namespace")) {
-        if (!(inSrc.hasNamespace() && inSrc.getNamespace().getSegmentsCount() > 0)) {
-          throw GrpcErrors.invalidArgument(
-              corr,
-              GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_SOURCE_NAMESPACE,
-              Map.of("field", "source.namespace"));
-        }
-        sb.setNamespace(inSrc.getNamespace());
-      }
-
-      if (maskTargets(mask, "source.table")) {
-        if (inSrc.hasTable()) {
-          sb.setTable(inSrc.getTable());
-        } else {
-          sb.clearTable();
-        }
-      }
-
-      if (maskTargets(mask, "source.columns")) {
-        sb.clearColumns().addAllColumns(inSrc.getColumnsList());
-      }
-
-      b.setSource(sb.build());
-    }
-
-    var curDst =
-        current.hasDestination()
-            ? current.getDestination()
-            : DestinationTarget.getDefaultInstance();
-    var inDst =
-        spec.hasDestination() ? spec.getDestination() : DestinationTarget.getDefaultInstance();
-
-    if (maskTargets(mask, "destination")) {
-      boolean hasCatalogRef =
-          inDst.hasCatalogId()
-              || (inDst.hasCatalogDisplayName() && !inDst.getCatalogDisplayName().isBlank());
-      boolean hasNamespaceRef =
-          inDst.hasNamespaceId()
-              || (inDst.hasNamespace() && inDst.getNamespace().getSegmentsCount() > 0);
-
-      if (!hasCatalogRef) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_DESTINATION_CATALOG,
-            Map.of("field", "destination.catalog"));
-      }
-      if (!hasNamespaceRef) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            GeneratedErrorMessages.MessageKey.FIELD,
-            Map.of("field", "destination.namespace"));
-      }
-      if (inDst.hasCatalogId()) {
-        ensureKind(
-            inDst.getCatalogId(), ResourceKind.RK_CATALOG, "spec.destination.catalog_id", corr);
-      }
-      if (inDst.hasNamespaceId()) {
-        ensureKind(
-            inDst.getNamespaceId(),
-            ResourceKind.RK_NAMESPACE,
-            "spec.destination.namespace_id",
-            corr);
-      }
-      if (inDst.hasTableId()) {
-        ensureKind(inDst.getTableId(), ResourceKind.RK_TABLE, "spec.destination.table_id", corr);
-      }
-      b.setDestination(inDst);
-
-    } else if (maskTargetsUnder(mask, "destination")) {
-      var db = curDst.toBuilder();
-
-      boolean touchingCatalogRef =
-          maskTargets(mask, "destination.catalog_id")
-              || maskTargets(mask, "destination.catalog_display_name");
-      if (touchingCatalogRef) {
-        boolean incomingHasCatalog =
-            inDst.hasCatalogId()
-                || (inDst.hasCatalogDisplayName() && !inDst.getCatalogDisplayName().isBlank());
-        if (!incomingHasCatalog) {
-          throw GrpcErrors.invalidArgument(
-              corr,
-              GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_DESTINATION_CATALOG,
-              Map.of("field", "destination.catalog"));
-        }
-        if (inDst.hasCatalogId()) {
-          ensureKind(
-              inDst.getCatalogId(), ResourceKind.RK_CATALOG, "spec.destination.catalog_id", corr);
-          db.setCatalogId(inDst.getCatalogId());
-        } else {
-          db.setCatalogDisplayName(inDst.getCatalogDisplayName());
-        }
-      }
-
-      boolean touchingNamespaceRef =
-          maskTargets(mask, "destination.namespace_id")
-              || maskTargets(mask, "destination.namespace");
-      if (touchingNamespaceRef) {
-        boolean incomingHasNs =
-            inDst.hasNamespaceId()
-                || (inDst.hasNamespace() && inDst.getNamespace().getSegmentsCount() > 0);
-        if (!incomingHasNs) {
-          throw GrpcErrors.invalidArgument(
-              corr,
-              GeneratedErrorMessages.MessageKey.FIELD,
-              Map.of("field", "destination.namespace"));
-        }
-        if (inDst.hasNamespaceId()) {
-          ensureKind(
-              inDst.getNamespaceId(),
-              ResourceKind.RK_NAMESPACE,
-              "spec.destination.namespace_id",
-              corr);
-          db.setNamespaceId(inDst.getNamespaceId());
-        } else {
-          db.setNamespace(inDst.getNamespace());
-        }
-      }
-
-      if (maskTargets(mask, "destination.table_id")) {
-        if (inDst.hasTableId()) {
-          ensureKind(inDst.getTableId(), ResourceKind.RK_TABLE, "spec.destination.table_id", corr);
-          db.setTableId(inDst.getTableId());
-        } else {
-          db.clearTableId();
-        }
-      }
-      if (maskTargets(mask, "destination.table_display_name")) {
-        if (inDst.hasTableDisplayName()) {
-          db.setTableDisplayName(inDst.getTableDisplayName());
-        } else {
-          db.clearTableDisplayName();
-        }
-      }
-
-      b.setDestination(db.build());
-    }
-
     if (maskTargets(mask, "mappings")) {
       var inMappings = spec.getMappingsList();
       var resolvedMappings = new java.util.ArrayList<SourceMapping>(inMappings.size());
       for (int i = 0; i < inMappings.size(); i++) {
         resolvedMappings.add(resolveMapping(inMappings.get(i), accountId, corr, i));
       }
+      validateUniqueMappings(resolvedMappings, corr);
       b.clearMappings().addAllMappings(resolvedMappings);
-      if (resolvedMappings.size() == 1) {
-        var only = resolvedMappings.get(0);
-        b.setSource(only.getSource()).setDestination(only.getDestination());
-      }
     }
 
     var curAuth = current.hasAuth() ? current.getAuth() : AuthConfig.getDefaultInstance();
@@ -1346,40 +1189,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
     var out = b.build();
 
-    boolean touchedDest = maskTargets(mask, "destination") || maskTargetsUnder(mask, "destination");
-    boolean touchedSrc = maskTargets(mask, "source") || maskTargetsUnder(mask, "source");
-
-    if (touchedDest) {
-      var d = out.getDestination();
-      boolean hasCatalogRef =
-          d.hasCatalogId() || (d.hasCatalogDisplayName() && !d.getCatalogDisplayName().isBlank());
-      if (!hasCatalogRef) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_DESTINATION_CATALOG,
-            Map.of("field", "destination.catalog"));
-      }
-      boolean hasNamespaceRef =
-          d.hasNamespaceId() || (d.hasNamespace() && d.getNamespace().getSegmentsCount() > 0);
-      if (!hasNamespaceRef) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            GeneratedErrorMessages.MessageKey.FIELD,
-            Map.of("field", "destination.namespace"));
-      }
-    }
-
-    if (touchedSrc && out.hasSource()) {
-      var s = out.getSource();
-      boolean hasNs = s.hasNamespace() && s.getNamespace().getSegmentsCount() > 0;
-      if (!hasNs) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            GeneratedErrorMessages.MessageKey.CONNECTOR_MISSING_SOURCE_NAMESPACE,
-            Map.of("field", "source.namespace"));
-      }
-    }
-
     if (out.getMappingsCount() > 1 && out.getPolicy().getEnabled()) {
       throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "policy.enabled"));
     }
@@ -1410,25 +1219,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         .scalar("description", s.getDescription())
         .scalar("kind", s.getKind())
         .scalar("uri", s.getUri());
-
-    var source = s.getSource();
-    c.group(
-        "source",
-        g ->
-            g.list("namespace", source.getNamespace().getSegmentsList())
-                .scalar("table", source.getTable())
-                .list("columns", source.getColumnsList()));
-
-    var dest = s.getDestination();
-    c.group(
-        "destination",
-        g ->
-            g.scalar("catalog_id", nullSafeId(dest.getCatalogId()))
-                .scalar("catalog_display_name", dest.getCatalogDisplayName())
-                .scalar("namespace_id", nullSafeId(dest.getNamespaceId()))
-                .list("namespace", dest.getNamespace().getSegmentsList())
-                .scalar("table_id", nullSafeId(dest.getTableId()))
-                .scalar("table_display_name", dest.getTableDisplayName()));
 
     var mappings = s.getMappingsList();
     for (int i = 0; i < mappings.size(); i++) {
@@ -1484,12 +1274,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
             .setKind(connector.getKind())
             .setUri(connector.getUri())
             .putAllProperties(connector.getPropertiesMap());
-    if (connector.hasSource()) {
-      b.setSource(connector.getSource());
-    }
-    if (connector.hasDestination()) {
-      b.setDestination(connector.getDestination());
-    }
     if (connector.getMappingsCount() > 0) {
       b.addAllMappings(connector.getMappingsList());
     }

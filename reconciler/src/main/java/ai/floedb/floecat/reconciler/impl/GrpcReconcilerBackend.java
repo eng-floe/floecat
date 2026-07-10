@@ -76,9 +76,7 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.rpc.Connector;
-import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
-import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
@@ -1229,20 +1227,6 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         && current.getBaseRelationsList().equals(spec.getBaseRelationsList())
         && current.getCreationSearchPathList().equals(spec.getCreationSearchPathList())
         && current.getOutputColumnsList().equals(spec.getOutputColumnsList());
-  }
-
-  @Override
-  public void updateConnectorDestination(
-      ReconcileContext ctx, ResourceId connectorId, DestinationTarget destination) {
-    var spec = ConnectorSpec.newBuilder().setDestination(destination).build();
-    var mask = FieldMask.newBuilder().addPaths("destination").build();
-    connector(ctx)
-        .updateConnector(
-            ai.floedb.floecat.connector.rpc.UpdateConnectorRequest.newBuilder()
-                .setConnectorId(connectorId)
-                .setSpec(spec)
-                .setUpdateMask(mask)
-                .build());
   }
 
   @Override
