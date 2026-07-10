@@ -205,11 +205,13 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
   }
 
   private <T> Uni<T> dynamo(Function<DynamoDbAsyncClient, CompletionStage<T>> operation) {
-    return dynamo(operation, 0);
+    return dynamo(operation, 0, callerContext());
   }
 
   private <T> Uni<T> dynamo(
-      Function<DynamoDbAsyncClient, CompletionStage<T>> operation, int attempt) {
+      Function<DynamoDbAsyncClient, CompletionStage<T>> operation,
+      int attempt,
+      String callerContext) {
     DynamoDbAsyncClient client = ddb();
     try {
       return fromStage(operation.apply(client))
@@ -220,9 +222,9 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
                   LOG.warnf(
                       failure,
                       "DynamoDB async connection pool shutdown in %s; refreshing client",
-                      callerContext());
+                      callerContext);
                   clientFailureHandler.accept(client, failure);
-                  return dynamo(operation, attempt + 1);
+                  return dynamo(operation, attempt + 1, callerContext);
                 }
                 return Uni.createFrom().failure(failure);
               });
@@ -231,9 +233,9 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
         LOG.warnf(
             failure,
             "DynamoDB async connection pool shutdown in %s; refreshing client",
-            callerContext());
+            callerContext);
         clientFailureHandler.accept(client, failure);
-        return dynamo(operation, attempt + 1);
+        return dynamo(operation, attempt + 1, callerContext);
       }
       throw failure;
     }
@@ -634,9 +636,23 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
       System.out.println("=== END TABLE DUMP ===\n");
 
     } catch (RuntimeException e) {
+      if (hasCause(e, InterruptedException.class)) {
+        Thread.currentThread().interrupt();
+      }
       // Table probably does not exist — safe to ignore in tests
       System.out.println("Table not found: " + this.table);
     }
+  }
+
+  private static boolean hasCause(Throwable failure, Class<? extends Throwable> causeType) {
+    Throwable current = failure;
+    while (current != null) {
+      if (causeType.isInstance(current)) {
+        return true;
+      }
+      current = current.getCause();
+    }
+    return false;
   }
 
   private static String pretty(Map<String, AttributeValue> item) {

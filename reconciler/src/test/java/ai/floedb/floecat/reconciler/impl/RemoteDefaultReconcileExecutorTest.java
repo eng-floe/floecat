@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -128,13 +130,84 @@ class RemoteDefaultReconcileExecutorTest {
             any());
   }
 
+  @Test
+  void executeTableReturnsClassifiedSnapshotPlanningFailure() {
+    ReconcilerService reconcilerService = mock(ReconcilerService.class);
+    QueuedReconcileWorkerSupport queuedWorkerSupport = mock(QueuedReconcileWorkerSupport.class);
+    RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
+    ReconcileWorkerAuthProvider authProvider = accountId -> java.util.Optional.of("Bearer token");
+    var executor =
+        new RemoteDefaultReconcileExecutor(
+            reconcilerService, queuedWorkerSupport, workerClient, authProvider, true);
+
+    ReconcileJobStore.LeasedJob lease =
+        tableLease("job-1", "acct-a", ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
+    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
+    ResourceId connectorId = connectorId("acct-a");
+    ReconcileFailureException failure =
+        new ReconcileFailureException(
+            ReconcileExecutor.ExecutionResult.FailureKind.TABLE_MISSING,
+            ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
+            ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+            "missing table",
+            null);
+
+    when(workerClient.getPlanTableInput(remoteLease))
+        .thenReturn(planTablePayload(lease, connectorId));
+    when(queuedWorkerSupport.executePlannedTable(
+            any(),
+            eq(connectorId),
+            eq(false),
+            any(),
+            any(),
+            eq(ReconcilerService.CaptureMode.METADATA_AND_CAPTURE),
+            eq("Bearer token"),
+            any(),
+            any()))
+        .thenReturn(
+            new QueuedReconcileWorkerSupport.TableExecutionResult(
+                ReconcileExecutor.ExecutionResult.success(1, 1, 0, 0, 0, 0, 0, "ok"), List.of()));
+    when(reconcilerService.planSnapshotTasks(
+            any(),
+            eq(connectorId),
+            eq(false),
+            any(),
+            any(),
+            eq(ReconcilerService.CaptureMode.METADATA_AND_CAPTURE),
+            eq("Bearer token")))
+        .thenThrow(failure);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertFalse(result.ok());
+    assertEquals(ReconcileExecutor.ExecutionResult.FailureKind.TABLE_MISSING, result.failureKind);
+    assertEquals(
+        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL, result.retryDisposition);
+    assertEquals(ReconcileExecutor.ExecutionResult.RetryClass.NONE, result.retryClass);
+    verify(workerClient)
+        .submitPlanTableFailure(
+            remoteLease,
+            ReconcileExecutor.ExecutionResult.FailureKind.TABLE_MISSING,
+            ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
+            ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+            "missing table");
+  }
+
   private static ReconcileJobStore.LeasedJob tableLease(String jobId, String accountId) {
+    return tableLease(jobId, accountId, ReconcilerService.CaptureMode.METADATA_ONLY);
+  }
+
+  private static ReconcileJobStore.LeasedJob tableLease(
+      String jobId, String accountId, ReconcilerService.CaptureMode captureMode) {
     return new ReconcileJobStore.LeasedJob(
         jobId,
         accountId,
         "connector-1",
         false,
-        ReconcilerService.CaptureMode.METADATA_ONLY,
+        captureMode,
         ReconcileScope.empty(),
         ReconcileExecutionPolicy.defaults(),
         "lease-" + jobId,

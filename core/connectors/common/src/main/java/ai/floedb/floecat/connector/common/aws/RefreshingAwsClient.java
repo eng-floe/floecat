@@ -40,6 +40,14 @@ public final class RefreshingAwsClient<T extends AutoCloseable> implements AutoC
       T client = current();
       try {
         return operation.call(client);
+      } catch (IOException e) {
+        if (attempt == 0 && isConnectionPoolShutdown(e)) {
+          LOG.warnf(
+              e, "AWS client connection pool shutdown in %s; refreshing client", callerContext());
+          refreshAfterFailure(client);
+          continue;
+        }
+        throw e;
       } catch (RuntimeException e) {
         if (attempt == 0 && isConnectionPoolShutdown(e)) {
           LOG.warnf(

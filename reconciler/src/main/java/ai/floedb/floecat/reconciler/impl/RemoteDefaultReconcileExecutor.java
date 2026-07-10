@@ -203,6 +203,9 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
           e instanceof ReconcileFailureException failure
               ? failure
               : ReconcileFailureClassifier.normalize(e);
+      ExecutionResult.FailureKind failureKind = failureKindOf(classified);
+      ExecutionResult.RetryDisposition retryDisposition = retryDispositionOf(classified);
+      ExecutionResult.RetryClass retryClass = retryClassOf(classified);
       ReconcileTableTask task =
           payload.tableTask() == null ? ReconcileTableTask.empty() : payload.tableTask();
       LOG.warnf(
@@ -217,16 +220,16 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
           task.sourceTable(),
           payload.captureMode(),
           payload.fullRescan(),
-          failureKindOf(classified),
-          retryDispositionOf(classified),
-          retryClassOf(classified),
+          failureKind,
+          retryDisposition,
+          retryClass,
           blankToEmpty(classified.getMessage()),
           rootCauseMessage(classified));
       workerClient.submitPlanTableFailure(
           remoteLease,
-          failureKindOf(classified),
-          retryDispositionOf(classified),
-          retryClassOf(classified),
+          failureKind,
+          retryDisposition,
+          retryClass,
           blankToEmpty(classified.getMessage()));
       return ExecutionResult.failure(
           result.tablesScanned,
@@ -236,6 +239,9 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
           1,
           result.snapshotsProcessed,
           result.statsProcessed,
+          failureKind,
+          retryDisposition,
+          retryClass,
           blankToEmpty(classified.getMessage()),
           classified);
     }
