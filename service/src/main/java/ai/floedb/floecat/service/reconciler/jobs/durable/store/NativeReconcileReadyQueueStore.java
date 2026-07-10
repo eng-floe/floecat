@@ -20,12 +20,13 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeaseRequest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
-import ai.floedb.floecat.service.repo.model.Keys;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -38,31 +39,28 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
   private ReconcileJobIndexStore jobIndexStore;
   private ReconcileLeaseStore leaseStore;
   private int readyScanLimit;
+  private static final int MAX_PAGES_PER_LEASE_SELECTION = 1;
+  private static final int MAX_CANDIDATES_PER_LEASE_SELECTION = 16;
   private Predicate<StoredReconcileJob> requiresReadyPointer;
-
-  // Delete ready-queue pointers the scan finds to be non-current (canonical/record gone, the job is
-  // waiting, or the pointer was superseded by a requeue) as they are encountered. Requeue/fail
-  // paths
-  // leak these stale pointers; left in place they pile up at the head of the due-ordered scan and a
-  // budget-bounded scan never reaches leasable work behind them. Pruning only ever removes pointers
-  // that are NOT a job's current pointer, so it cannot strand leasable work. Kill-switch for
-  // safety.
-  @ConfigProperty(
-      name = "floecat.reconciler.job-store.lease-scan-prune-stale",
-      defaultValue = "true")
-  boolean pruneStaleReadyEntries = true;
+  private Predicate<StoredReconcileJob> blockedByCancellation;
+  private final AtomicInteger pinnedSelectionCursor = new AtomicInteger();
+  private final AtomicInteger unpinnedSelectionCursor = new AtomicInteger();
+  private final ConcurrentMap<ReconcileReadyQueueBackend.ReadyQueueSlice, String> scanPageCursors =
+      new ConcurrentHashMap<>();
 
   public void bind(
       ReconcileReadyQueueBackend readyQueueBackend,
       ReconcileJobIndexStore jobIndexStore,
       ReconcileLeaseStore leaseStore,
       int readyScanLimit,
-      Predicate<StoredReconcileJob> requiresReadyPointer) {
+      Predicate<StoredReconcileJob> requiresReadyPointer,
+      Predicate<StoredReconcileJob> blockedByCancellation) {
     this.readyQueueBackend = readyQueueBackend;
     this.jobIndexStore = jobIndexStore;
     this.leaseStore = leaseStore;
     this.readyScanLimit = readyScanLimit;
     this.requiresReadyPointer = requiresReadyPointer;
+    this.blockedByCancellation = blockedByCancellation;
   }
 
   public Optional<LeasedJob> leaseReadyDue(long nowMs, LeaseRequest request) {
@@ -93,95 +91,49 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
     if (!blank(pinnedExecutorId) && !effective.executorIds.contains(pinnedExecutorId)) {
       return false;
     }
-    return record != null
-        && effective.matches(record.executionPolicy(), pinnedExecutorId, record.jobKind());
+    if (record == null) {
+      return false;
+    }
+    ReconcileExecutionPolicy policy = record.executionPolicy();
+    boolean classMatches =
+        effective.executionClasses.isEmpty()
+            || effective.executionClasses.contains(policy.executionClass());
+    boolean laneMatches =
+        effective.lanes.isEmpty()
+            || effective.lanes.contains(LeaseRequest.anyLaneToken())
+            || effective.lanes.contains(policy.lane())
+            || effective.lanes.contains(blankToEmpty(record.laneKey));
+    boolean kindMatches =
+        effective.jobKinds.isEmpty() || effective.jobKinds.contains(record.jobKind());
+    return classMatches && laneMatches && kindMatches;
   }
 
   public long readyPointerDueAt(StoredReconcileJob record) {
-    return record != null && record.nextAttemptAtMs > 0L
-        ? record.nextAttemptAtMs
-        : System.currentTimeMillis();
+    return ReadyQueueKeys.readyPointerDueAt(record);
   }
 
   public String readyPointerKeyFor(StoredReconcileJob record, long dueAtMs) {
-    return readyPointerKeyForDue(record.accountId, record.laneKey, record.jobId, dueAtMs);
+    return ReadyQueueKeys.readyPointerKeyFor(record, dueAtMs);
   }
 
   public String readyPointerKeyForDue(
       String accountId, String laneKey, String jobId, long dueAtMs) {
-    return Keys.reconcileReadyPointerByDue(dueAtMs, accountId, laneKey, jobId);
+    return ReadyQueueKeys.readyPointerKeyForDue(accountId, laneKey, jobId, dueAtMs);
   }
 
   public String readyPointerKeyFor(
       StoredReconcileJob record, ReadyIndexType indexType, long dueAtMs, String filterValue) {
-    if (record == null) {
-      return "";
-    }
-    String normalizedFilterValue = blankToEmpty(filterValue);
-    return switch (indexType) {
-      case GLOBAL -> readyPointerKeyFor(record, dueAtMs);
-      case EXECUTION_CLASS ->
-          normalizedFilterValue.isBlank()
-              ? ""
-              : Keys.reconcileReadyByExecutionClassPointerByDue(
-                  dueAtMs, normalizedFilterValue, record.accountId, record.jobId);
-      case EXECUTION_LANE ->
-          normalizedFilterValue.isBlank()
-              ? ""
-              : Keys.reconcileReadyByExecutionLanePointerByDue(
-                  dueAtMs, normalizedFilterValue, record.accountId, record.jobId);
-      case PINNED_EXECUTOR ->
-          normalizedFilterValue.isBlank()
-              ? ""
-              : Keys.reconcileReadyByPinnedExecutorPointerByDue(
-                  dueAtMs, normalizedFilterValue, record.accountId, record.jobId);
-      case JOB_KIND ->
-          normalizedFilterValue.isBlank()
-              ? ""
-              : Keys.reconcileReadyByJobKindPointerByDue(
-                  dueAtMs, normalizedFilterValue, record.accountId, record.jobId);
-    };
+    return ReadyQueueKeys.readyPointerKeyFor(record, indexType, dueAtMs, filterValue);
   }
 
   public List<String> readyPointerKeys(StoredReconcileJob record) {
-    if (record == null || !Boolean.TRUE.equals(requiresReadyPointer.test(record))) {
-      return List.of();
-    }
-    long dueAtMs = readyPointerDueAt(record);
-    List<String> keys = new java.util.ArrayList<>();
-    keys.add(readyPointerKeyFor(record, dueAtMs));
-    String executionClassKey =
-        readyPointerKeyFor(
-            record,
-            ReadyIndexType.EXECUTION_CLASS,
-            dueAtMs,
-            record.executionPolicy().executionClass().name());
-    if (!executionClassKey.isBlank()) {
-      keys.add(executionClassKey);
-    }
-    String executionLaneKey =
-        readyPointerKeyFor(
-            record, ReadyIndexType.EXECUTION_LANE, dueAtMs, record.executionPolicy().lane());
-    if (!executionLaneKey.isBlank()) {
-      keys.add(executionLaneKey);
-    }
-    String pinnedExecutorKey =
-        readyPointerKeyFor(
-            record, ReadyIndexType.PINNED_EXECUTOR, dueAtMs, record.pinnedExecutorId());
-    if (!pinnedExecutorKey.isBlank()) {
-      keys.add(pinnedExecutorKey);
-    }
-    String jobKindKey =
-        readyPointerKeyFor(record, ReadyIndexType.JOB_KIND, dueAtMs, record.jobKind().name());
-    if (!jobKindKey.isBlank()) {
-      keys.add(jobKindKey);
-    }
-    return List.copyOf(keys);
+    return ReadyQueueKeys.readyPointerKeys(record, requiresReadyPointer);
   }
 
   private Optional<LeasedJob> leaseReadyDueFromSelection(
       long nowMs, LeaseRequest request, ReadyIndexSelection selection, LeaseScanStats scanStats) {
-    String token = "";
+    ReconcileReadyQueueBackend.ReadyQueueSlice slice = selection.slice();
+    String token = scanPageCursor(slice);
     int pages = 0;
     while (true) {
       if (shouldStop(scanStats)) {
@@ -191,8 +143,13 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
         scanStats.scanCount++;
       }
       ReadyQueueScanPage page =
-          readyQueueBackend.scanReadySlice(selection.slice(), readyScanLimit, token, scanStats);
+          readyQueueBackend.scanReadySlice(
+              slice,
+              Math.min(readyScanLimit, MAX_CANDIDATES_PER_LEASE_SELECTION),
+              token,
+              scanStats);
       if (page.entries().isEmpty()) {
+        clearScanPageCursor(slice);
         return Optional.empty();
       }
 
@@ -204,6 +161,7 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
           scanStats.candidateCount++;
         }
         if (candidate.dueAtMs() > nowMs) {
+          clearScanPageCursor(slice);
           return Optional.empty();
         }
         CanonicalPointerSnapshot canonicalSnapshot =
@@ -214,7 +172,6 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
           return Optional.empty();
         }
         if (canonicalSnapshot == null) {
-          pruneStaleReadyEntry(candidate, scanStats);
           continue;
         }
         var recordOpt = jobIndexStore.readRecord(canonicalSnapshot);
@@ -222,16 +179,17 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
           return Optional.empty();
         }
         if (recordOpt.isEmpty()) {
-          pruneStaleReadyEntry(candidate, scanStats);
           continue;
         }
         StoredReconcileJob record = recordOpt.get();
         if ("JS_WAITING".equals(record.state)) {
-          pruneStaleReadyEntry(candidate, scanStats);
+          continue;
+        }
+        if (blockedByCancellation != null
+            && Boolean.TRUE.equals(blockedByCancellation.test(record))) {
           continue;
         }
         if (!readyPointerMatchesRecord(candidate, record)) {
-          pruneStaleReadyEntry(candidate, scanStats);
           continue;
         }
         // Not stale, just not eligible for this requester: leave the pointer for another lane.
@@ -249,94 +207,116 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
                 canonicalSnapshot,
                 record);
         if (leased.isPresent()) {
+          clearScanPageCursor(slice);
           return leased;
         }
       }
 
       String nextToken = blankToEmpty(page.nextPageToken());
       if (nextToken.isBlank()) {
+        clearScanPageCursor(slice);
         return Optional.empty();
       }
       if (nextToken.equals(token)) {
+        clearScanPageCursor(slice);
         LOG.warn(
             "Reconcile ready pagination token did not advance; aborting ready scan to avoid"
                 + " livelock");
         return Optional.empty();
       }
-      token = nextToken;
+      rememberScanPageCursor(slice, nextToken);
       pages++;
-      if (pages >= 10_000) {
-        LOG.warn("Reconcile ready pagination hit safety page cap; aborting scan");
+      if (pages >= MAX_PAGES_PER_LEASE_SELECTION) {
         return Optional.empty();
       }
+      token = nextToken;
     }
   }
 
   private List<ReadyIndexSelection> readyScanSelections(LeaseRequest request) {
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
-    List<ReadyIndexSelection> pinnedSelections =
-        effective.executorIds.stream()
-            .map(
-                executorId ->
-                    new ReadyIndexSelection(
-                        new ReconcileReadyQueueBackend.ReadyQueueSlice(
-                            ReadyIndexType.PINNED_EXECUTOR, executorId)))
-            .toList();
-    if (!effective.executorIds.isEmpty()) {
-      // Executor IDs identify workers that can accept pinned work; they must not exclude
-      // ordinary unpinned jobs from leasing.
-    }
-    if (!effective.lanes.isEmpty() && !effective.lanes.contains("*")) {
-      List<ReadyIndexSelection> selections = new java.util.ArrayList<>(pinnedSelections);
-      selections.addAll(
-          effective.lanes.stream()
-              .map(
-                  lane ->
-                      new ReadyIndexSelection(
-                          new ReconcileReadyQueueBackend.ReadyQueueSlice(
-                              ReadyIndexType.EXECUTION_LANE, lane)))
-              .toList());
-      appendGlobalSelection(selections);
-      return List.copyOf(selections);
-    }
-    if (!effective.jobKinds.isEmpty()) {
-      List<ReadyIndexSelection> selections = new java.util.ArrayList<>(pinnedSelections);
-      selections.addAll(
-          effective.jobKinds.stream()
-              .map(
-                  jobKind ->
-                      new ReadyIndexSelection(
-                          new ReconcileReadyQueueBackend.ReadyQueueSlice(
-                              ReadyIndexType.JOB_KIND, jobKind.name())))
-              .toList());
-      appendGlobalSelection(selections);
-      return List.copyOf(selections);
-    }
-    if (!effective.executionClasses.isEmpty()) {
-      List<ReadyIndexSelection> selections = new java.util.ArrayList<>(pinnedSelections);
-      selections.addAll(
-          effective.executionClasses.stream()
-              .map(
-                  executionClass ->
-                      new ReadyIndexSelection(
-                          new ReconcileReadyQueueBackend.ReadyQueueSlice(
-                              ReadyIndexType.EXECUTION_CLASS, executionClass.name())))
-              .toList());
-      appendGlobalSelection(selections);
-      return List.copyOf(selections);
-    }
-    List<ReadyIndexSelection> selections = new java.util.ArrayList<>(pinnedSelections);
-    appendGlobalSelection(selections);
+    List<ReadyIndexSelection> selections = new java.util.ArrayList<>(2);
+    choosePinnedSelection(effective).ifPresent(selections::add);
+    chooseUnpinnedSelection(effective).ifPresent(selections::add);
     return List.copyOf(selections);
   }
 
-  private static void appendGlobalSelection(List<ReadyIndexSelection> selections) {
-    selections.add(
+  private Optional<ReadyIndexSelection> choosePinnedSelection(LeaseRequest request) {
+    List<String> executorIds =
+        request.executorIds.stream()
+            .map(NativeReconcileReadyQueueStore::blankToEmpty)
+            .filter(executorId -> !executorId.isBlank())
+            .sorted()
+            .toList();
+    if (executorIds.isEmpty()) {
+      return Optional.empty();
+    }
+    String executorId = executorIds.get(nextIndex(pinnedSelectionCursor, executorIds.size()));
+    return Optional.of(
+        new ReadyIndexSelection(
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                ReadyIndexType.PINNED_EXECUTOR, executorId)));
+  }
+
+  private Optional<ReadyIndexSelection> chooseUnpinnedSelection(LeaseRequest request) {
+    List<String> lanes =
+        request.lanes.stream()
+            .map(NativeReconcileReadyQueueStore::blankToEmpty)
+            .filter(lane -> !lane.isBlank() && !LeaseRequest.anyLaneToken().equals(lane))
+            .sorted()
+            .toList();
+    if (!lanes.isEmpty()) {
+      String lane = lanes.get(nextIndex(unpinnedSelectionCursor, lanes.size()));
+      return Optional.of(
+          new ReadyIndexSelection(
+              new ReconcileReadyQueueBackend.ReadyQueueSlice(ReadyIndexType.EXECUTION_LANE, lane)));
+    }
+    List<String> jobKinds = request.jobKinds.stream().sorted().map(Enum::name).toList();
+    if (!jobKinds.isEmpty()) {
+      String jobKind = jobKinds.get(nextIndex(unpinnedSelectionCursor, jobKinds.size()));
+      return Optional.of(
+          new ReadyIndexSelection(
+              new ReconcileReadyQueueBackend.ReadyQueueSlice(ReadyIndexType.JOB_KIND, jobKind)));
+    }
+    List<String> executionClasses =
+        request.executionClasses.stream().sorted().map(Enum::name).toList();
+    if (!executionClasses.isEmpty()) {
+      String executionClass =
+          executionClasses.get(nextIndex(unpinnedSelectionCursor, executionClasses.size()));
+      return Optional.of(
+          new ReadyIndexSelection(
+              new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                  ReadyIndexType.EXECUTION_CLASS, executionClass)));
+    }
+    return Optional.of(
         new ReadyIndexSelection(
             new ReconcileReadyQueueBackend.ReadyQueueSlice(ReadyIndexType.GLOBAL, "")));
   }
 
-  private boolean readyPointerMatchesRecord(ReadyQueueEntry candidate, StoredReconcileJob record) {
+  private static int nextIndex(AtomicInteger cursor, int size) {
+    return Math.floorMod(cursor.getAndIncrement(), size);
+  }
+
+  private String scanPageCursor(ReconcileReadyQueueBackend.ReadyQueueSlice slice) {
+    return blankToEmpty(scanPageCursors.get(slice));
+  }
+
+  private void rememberScanPageCursor(
+      ReconcileReadyQueueBackend.ReadyQueueSlice slice, String nextToken) {
+    String normalized = blankToEmpty(nextToken);
+    if (slice == null || normalized.isBlank()) {
+      return;
+    }
+    scanPageCursors.put(slice, normalized);
+  }
+
+  private void clearScanPageCursor(ReconcileReadyQueueBackend.ReadyQueueSlice slice) {
+    if (slice != null) {
+      scanPageCursors.remove(slice);
+    }
+  }
+
+  public boolean readyPointerMatchesRecord(ReadyQueueEntry candidate, StoredReconcileJob record) {
     if (record == null
         || candidate == null
         || candidate.readyPointerKey() == null
@@ -353,10 +333,14 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
         || !candidate.jobId().equals(record.jobId)) {
       return false;
     }
-    if (record.nextAttemptAtMs != candidate.dueAtMs()) {
+    if (record.nextAttemptAtMs > 0L && record.nextAttemptAtMs != candidate.dueAtMs()) {
       return false;
     }
     if (!readyIndexFilterMatchesRecord(candidate, record)) {
+      return false;
+    }
+    if (!blank(record.pinnedExecutorId())
+        && candidate.indexType() != ReadyIndexType.PINNED_EXECUTOR) {
       return false;
     }
     String expectedKey =
@@ -378,28 +362,10 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
     return switch (candidate.indexType()) {
       case GLOBAL -> true;
       case EXECUTION_CLASS -> candidate.filterValue().equals(policy.executionClass().name());
-      case EXECUTION_LANE -> candidate.filterValue().equals(policy.lane());
+      case EXECUTION_LANE -> candidate.filterValue().equals(blankToEmpty(record.laneKey));
       case PINNED_EXECUTOR -> candidate.filterValue().equals(record.pinnedExecutorId());
       case JOB_KIND -> candidate.filterValue().equals(record.jobKind().name());
     };
-  }
-
-  private void pruneStaleReadyEntry(ReadyQueueEntry candidate, LeaseScanStats scanStats) {
-    if (!pruneStaleReadyEntries || candidate == null) {
-      return;
-    }
-    String readyPointerKey = candidate.readyPointerKey();
-    if (readyPointerKey == null || readyPointerKey.isBlank()) {
-      return;
-    }
-    try {
-      if (readyQueueBackend.deleteReadyEntry(readyPointerKey) && scanStats != null) {
-        scanStats.prunedCount++;
-      }
-    } catch (RuntimeException e) {
-      // Best-effort cleanup: a failed delete must never abort the lease scan.
-      LOG.debugf("failed to prune stale ready pointer %s: %s", readyPointerKey, e.getMessage());
-    }
   }
 
   private static boolean shouldStop(LeaseScanStats scanStats) {

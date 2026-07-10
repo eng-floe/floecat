@@ -35,6 +35,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 class RemoteDefaultReconcileExecutorTest {
@@ -126,6 +127,50 @@ class RemoteDefaultReconcileExecutorTest {
             eq("Bearer worker-token-acct-b"),
             any(),
             any());
+  }
+
+  @Test
+  void executeTableMarksCompletionStartedWhenRemoteLeasePreconditionFails() {
+    ReconcilerService reconcilerService = mock(ReconcilerService.class);
+    QueuedReconcileWorkerSupport queuedWorkerSupport = mock(QueuedReconcileWorkerSupport.class);
+    RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
+    ReconcileWorkerAuthProvider authProvider = accountId -> java.util.Optional.empty();
+    var executor =
+        new RemoteDefaultReconcileExecutor(
+            reconcilerService, queuedWorkerSupport, workerClient, authProvider, true);
+
+    ReconcileJobStore.LeasedJob lease = tableLease("job-precondition", "acct-a");
+    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
+    when(workerClient.getPlanTableInput(remoteLease))
+        .thenReturn(planTablePayload(lease, connectorId("acct-a")));
+    when(queuedWorkerSupport.executePlannedTable(
+            any(),
+            eq(connectorId("acct-a")),
+            eq(false),
+            any(),
+            any(),
+            eq(ReconcilerService.CaptureMode.METADATA_ONLY),
+            eq(null),
+            any(),
+            any()))
+        .thenReturn(
+            new QueuedReconcileWorkerSupport.TableExecutionResult(
+                ReconcileExecutor.ExecutionResult.success(1, 0, 0, 0, 0, "ok"), List.of()));
+    when(workerClient.submitPlanTableSuccess(
+            any(), any(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
+        .thenThrow(new RemoteLeasePreconditionFailedException("submitPlanTableSuccess", null));
+    AtomicBoolean completionStarted = new AtomicBoolean(false);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (a, b, c, d, e, f, g, h) -> {},
+                () -> completionStarted.set(true)));
+
+    assertTrue(result.cancelled);
+    assertTrue(completionStarted.get());
   }
 
   private static ReconcileJobStore.LeasedJob tableLease(String jobId, String accountId) {

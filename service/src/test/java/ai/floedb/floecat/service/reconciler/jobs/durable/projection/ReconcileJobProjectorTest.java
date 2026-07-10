@@ -246,4 +246,62 @@ class ReconcileJobProjectorTest {
     assertEquals(38L, job.tablesChanged);
     assertEquals(38L, job.snapshotsProcessed);
   }
+
+  @Test
+  void toPublicJobSummaryUsesFreshProjectionOverInflatedCanonicalAggregates() {
+    ReconcilePayloadStore payloadStore = new ReconcilePayloadStore();
+    payloadStore.bind(new InMemoryBlobStore(), new InMemoryPointerStore(), new ObjectMapper());
+    ReconcileJobDetailLoader detailLoader = new ReconcileJobDetailLoader();
+    detailLoader.bind(payloadStore);
+
+    ReconcileJobProjector projector = new ReconcileJobProjector();
+    projector.bind(detailLoader);
+
+    StoredReconcileJob stored = new StoredReconcileJob();
+    stored.jobId = "job-7";
+    stored.accountId = "acct-1";
+    stored.connectorId = "conn-1";
+    stored.jobKind = ReconcileJobKind.PLAN_SNAPSHOT.name();
+    stored.captureMode = CaptureMode.METADATA_AND_CAPTURE.name();
+    stored.executionClass = ReconcileExecutionPolicy.defaults().executionClass().name();
+    stored.executionLane = ReconcileExecutionPolicy.defaults().lane();
+    stored.definition = StoredJobDefinition.of(null, null, null);
+    stored.state = "JS_SUCCEEDED";
+    stored.message = "Succeeded";
+    stored.snapshotsProcessed = 2L;
+    stored.statsProcessed = 54L;
+    stored.indexesProcessed = 54L;
+
+    StoredReconcileJobProjection projection =
+        new StoredReconcileJobProjection(
+            "acct-1",
+            "job-7",
+            1L,
+            "JS_SUCCEEDED",
+            "Succeeded",
+            100L,
+            200L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            1L,
+            27L,
+            27L,
+            1L,
+            18L,
+            1L,
+            0L,
+            18L,
+            0L,
+            "",
+            true);
+
+    ReconcileJob job = projector.toPublicJobSummary(stored, projection);
+
+    assertEquals(1L, job.snapshotsProcessed);
+    assertEquals(27L, job.statsProcessed);
+    assertEquals(27L, job.indexesProcessed);
+  }
 }

@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -117,6 +118,20 @@ class LeasedFileGroupExecutionServiceTest {
     when(idempotencyStore.get(anyString())).thenReturn(Optional.empty());
     when(idempotencyStore.createPending(
             anyString(), anyString(), anyString(), anyString(), any(), any()))
+        .thenReturn(true);
+    when(jobs.applyLeaseOutcome(
+            anyString(),
+            anyString(),
+            any(),
+            anyLong(),
+            anyString(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong()))
         .thenReturn(true);
   }
 
@@ -305,6 +320,20 @@ class LeasedFileGroupExecutionServiceTest {
     ArgumentCaptor<ReconcileFileGroupTask> persisted =
         ArgumentCaptor.forClass(ReconcileFileGroupTask.class);
     verify(jobs).persistFileGroupResult(eq(CHILD_JOB_ID), eq(LEASE_EPOCH), persisted.capture());
+    verify(jobs)
+        .applyLeaseOutcome(
+            eq(CHILD_JOB_ID),
+            eq(LEASE_EPOCH),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            anyLong(),
+            eq("Executed file group group-1"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(3L));
     assertEquals(
         List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 3L)),
         persisted.getValue().fileResults());

@@ -43,6 +43,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
   private final RemotePlannerWorkerClient workerClient;
   private final ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
   private final boolean enabled;
+  private final boolean workerAuthRequired;
 
   @Inject
   public RemoteDefaultReconcileExecutor(
@@ -53,12 +54,30 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
       @ConfigProperty(
               name = "floecat.reconciler.executor.remote-default.enabled",
               defaultValue = "false")
-          boolean enabled) {
+          boolean enabled,
+      @ConfigProperty(name = "floecat.reconciler.worker.auth.required", defaultValue = "true")
+          boolean workerAuthRequired) {
     this.reconcilerService = reconcilerService;
     this.queuedWorkerSupport = queuedWorkerSupport;
     this.workerClient = workerClient;
     this.reconcileWorkerAuthProvider = reconcileWorkerAuthProvider;
     this.enabled = enabled;
+    this.workerAuthRequired = workerAuthRequired;
+  }
+
+  RemoteDefaultReconcileExecutor(
+      ReconcilerService reconcilerService,
+      QueuedReconcileWorkerSupport queuedWorkerSupport,
+      RemotePlannerWorkerClient workerClient,
+      ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
+      boolean enabled) {
+    this(
+        reconcilerService,
+        queuedWorkerSupport,
+        workerClient,
+        reconcileWorkerAuthProvider,
+        enabled,
+        true);
   }
 
   @Override
@@ -74,6 +93,16 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
   @Override
   public Set<ReconcileJobKind> supportedJobKinds() {
     return EnumSet.of(ReconcileJobKind.PLAN_TABLE, ReconcileJobKind.PLAN_VIEW);
+  }
+
+  @Override
+  public Set<String> supportedLanes() {
+    return Set.of();
+  }
+
+  @Override
+  public boolean supportsLane(String lane) {
+    return true;
   }
 
   @Override
@@ -135,34 +164,36 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
           result.failureKind,
           result.retryDisposition,
           result.message);
-      workerClient.submitPlanTableFailure(
-          remoteLease,
-          result.failureKind,
-          result.retryDisposition,
-          result.retryClass,
-          result.message);
+      try {
+        workerClient.submitPlanTableFailure(
+            remoteLease,
+            result.failureKind,
+            result.retryDisposition,
+            result.retryClass,
+            result.message);
+      } catch (RemoteLeasePreconditionFailedException leaseRejected) {
+        return leaseNoLongerValid(context, lease, connectorId, result);
+      }
       return result;
     }
     if (payload.captureMode() == ReconcilerService.CaptureMode.METADATA_ONLY) {
       context.beforeHandledCompletion().run();
-      if (!workerClient.submitPlanTableSuccess(
-          remoteLease,
-          List.of(),
-          result.tablesScanned,
-          result.tablesChanged,
-          result.errors,
-          result.snapshotsProcessed,
-          result.statsProcessed)) {
-        return ExecutionResult.failure(
-            result.tablesScanned,
-            result.tablesChanged,
-            result.viewsScanned,
-            result.viewsChanged,
-            1,
-            result.snapshotsProcessed,
-            result.statsProcessed,
-            "standalone planner result submission was rejected",
-            new IllegalStateException("planner result submission rejected"));
+      boolean accepted;
+      try {
+        accepted =
+            workerClient.submitPlanTableSuccess(
+                remoteLease,
+                List.of(),
+                result.tablesScanned,
+                result.tablesChanged,
+                result.errors,
+                result.snapshotsProcessed,
+                result.statsProcessed);
+      } catch (RemoteLeasePreconditionFailedException leaseRejected) {
+        return leaseNoLongerValid(context, lease, connectorId, result);
+      }
+      if (!accepted) {
+        throw plannerSubmissionRejected();
       }
       return ExecutionResult.successHandled(
           result.tablesScanned,
@@ -175,19 +206,47 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
           result.message);
     }
 
-    List<ReconcileSnapshotTask> snapshotTasks =
-        snapshotTasksForSuccessfulPlan(principal, connectorId, payload, tableExecution);
-    List<PlannedSnapshotJob> snapshotJobs =
-        snapshotTasks.stream().map(task -> new PlannedSnapshotJob(payload.scope(), task)).toList();
-    context.beforeHandledCompletion().run();
-    if (!workerClient.submitPlanTableSuccess(
-        remoteLease,
-        snapshotJobs,
-        result.tablesScanned,
-        result.tablesChanged,
-        result.errors,
-        result.snapshotsProcessed,
-        result.statsProcessed)) {
+    List<ReconcileSnapshotTask> snapshotTasks;
+    try {
+      snapshotTasks =
+          snapshotTasksForSuccessfulPlan(principal, connectorId, payload, tableExecution);
+    } catch (Exception e) {
+      Exception classified =
+          e instanceof ReconcileFailureException failure
+              ? failure
+              : ReconcileFailureClassifier.normalize(e);
+      ExecutionResult.FailureKind failureKind = failureKindOf(classified);
+      ExecutionResult.RetryDisposition retryDisposition = retryDispositionOf(classified);
+      ExecutionResult.RetryClass retryClass = retryClassOf(classified);
+      ReconcileTableTask task =
+          payload.tableTask() == null ? ReconcileTableTask.empty() : payload.tableTask();
+      LOG.warnf(
+          classified,
+          "PLAN_TABLE snapshot planning failed jobId=%s connectorId=%s tableId=%s source=%s.%s"
+              + " captureMode=%s fullRescan=%s failureKind=%s retryDisposition=%s retryClass=%s"
+              + " message=%s rootCause=%s",
+          lease.jobId,
+          connectorId,
+          task.destinationTableId(),
+          task.sourceNamespace(),
+          task.sourceTable(),
+          payload.captureMode(),
+          payload.fullRescan(),
+          failureKind,
+          retryDisposition,
+          retryClass,
+          blankToEmpty(classified.getMessage()),
+          rootCauseMessage(classified));
+      try {
+        workerClient.submitPlanTableFailure(
+            remoteLease,
+            failureKind,
+            retryDisposition,
+            retryClass,
+            blankToEmpty(classified.getMessage()));
+      } catch (RemoteLeasePreconditionFailedException leaseRejected) {
+        return leaseNoLongerValid(context, lease, connectorId, result);
+      }
       return ExecutionResult.failure(
           result.tablesScanned,
           result.tablesChanged,
@@ -196,8 +255,31 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
           1,
           result.snapshotsProcessed,
           result.statsProcessed,
-          "standalone planner result submission was rejected",
-          new IllegalStateException("planner result submission rejected"));
+          failureKind,
+          retryDisposition,
+          retryClass,
+          blankToEmpty(classified.getMessage()),
+          classified);
+    }
+    List<PlannedSnapshotJob> snapshotJobs =
+        snapshotTasks.stream().map(task -> new PlannedSnapshotJob(payload.scope(), task)).toList();
+    context.beforeHandledCompletion().run();
+    boolean accepted;
+    try {
+      accepted =
+          workerClient.submitPlanTableSuccess(
+              remoteLease,
+              snapshotJobs,
+              result.tablesScanned,
+              result.tablesChanged,
+              result.errors,
+              result.snapshotsProcessed,
+              result.statsProcessed);
+    } catch (RemoteLeasePreconditionFailedException leaseRejected) {
+      return leaseNoLongerValid(context, lease, connectorId, result);
+    }
+    if (!accepted) {
+      throw plannerSubmissionRejected();
     }
     return ExecutionResult.successHandled(
         result.tablesScanned,
@@ -253,16 +335,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
                     planned.mutation().viewSpec(),
                     planned.mutation().idempotencyKey()));
     if (!submit.accepted()) {
-      return ExecutionResult.failure(
-          result.tablesScanned,
-          result.tablesChanged,
-          result.viewsScanned,
-          result.viewsChanged,
-          1,
-          result.snapshotsProcessed,
-          result.statsProcessed,
-          "standalone planner result submission was rejected",
-          new IllegalStateException("planner result submission rejected"));
+      throw plannerSubmissionRejected();
     }
     long viewsChanged = submit.viewsChanged();
     return ExecutionResult.successHandled(
@@ -274,6 +347,35 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
         result.snapshotsProcessed,
         result.statsProcessed,
         result.message);
+  }
+
+  private ExecutionResult leaseNoLongerValid(
+      ExecutionContext context,
+      ReconcileJobStore.LeasedJob lease,
+      ResourceId connectorId,
+      ExecutionResult result) {
+    LOG.infof(
+        "PLAN_TABLE result submission ignored because reconcile lease is no longer valid jobId=%s connectorId=%s",
+        lease.jobId, connectorId);
+    context.beforeHandledCompletion().run();
+    return ExecutionResult.cancelled(
+        result.tablesScanned,
+        result.tablesChanged,
+        result.viewsScanned,
+        result.viewsChanged,
+        result.errors,
+        result.snapshotsProcessed,
+        result.statsProcessed,
+        "Lease no longer valid");
+  }
+
+  private static ReconcileFailureException plannerSubmissionRejected() {
+    return new ReconcileFailureException(
+        ExecutionResult.FailureKind.INTERNAL,
+        ExecutionResult.RetryDisposition.RETRYABLE,
+        ExecutionResult.RetryClass.STATE_UNCERTAIN,
+        "standalone planner result submission was rejected",
+        new IllegalStateException("planner result submission rejected"));
   }
 
   private List<ReconcileSnapshotTask> snapshotTasksForSuccessfulPlan(
@@ -303,7 +405,53 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
   }
 
   private String workerAuthorizationHeader(String accountId) {
+    if (!workerAuthRequired) {
+      return null;
+    }
     return reconcileWorkerAuthProvider.authorizationHeader(accountId).orElse(null);
+  }
+
+  private static String rootCauseMessage(Throwable error) {
+    Throwable root = rootCause(error);
+    if (root == null) {
+      return "";
+    }
+    String message = root.getMessage();
+    return message == null || message.isBlank() ? root.getClass().getSimpleName() : message;
+  }
+
+  private static Throwable rootCause(Throwable error) {
+    var seen = new java.util.HashSet<Throwable>();
+    Throwable cur = error;
+    Throwable last = null;
+    while (cur != null && !seen.contains(cur)) {
+      seen.add(cur);
+      last = cur;
+      cur = cur.getCause();
+    }
+    return last;
+  }
+
+  private static String blankToEmpty(String value) {
+    return value == null ? "" : value;
+  }
+
+  private static ExecutionResult.FailureKind failureKindOf(Throwable error) {
+    return error instanceof ReconcileFailureException failure
+        ? failure.failureKind()
+        : ExecutionResult.FailureKind.INTERNAL;
+  }
+
+  private static ExecutionResult.RetryDisposition retryDispositionOf(Throwable error) {
+    return error instanceof ReconcileFailureException failure
+        ? failure.retryDisposition()
+        : ExecutionResult.RetryDisposition.RETRYABLE;
+  }
+
+  private static ExecutionResult.RetryClass retryClassOf(Throwable error) {
+    return error instanceof ReconcileFailureException failure
+        ? failure.retryClass()
+        : ExecutionResult.RetryClass.TRANSIENT_ERROR;
   }
 
   private static ReconcileTableTask resolvedTableTaskForSnapshotPlanning(

@@ -19,10 +19,13 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.projection;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
+import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 @ApplicationScoped
@@ -31,10 +34,15 @@ public class ReconcileJobProjectionStore {
 
   private PointerStore pointerStore;
   private ReconcilePayloadStore payloadStore;
+  private ReconcileJobIndexStore jobIndexStore;
 
-  public void bind(PointerStore pointerStore, ReconcilePayloadStore payloadStore) {
+  public void bind(
+      PointerStore pointerStore,
+      ReconcilePayloadStore payloadStore,
+      ReconcileJobIndexStore jobIndexStore) {
     this.pointerStore = pointerStore;
     this.payloadStore = payloadStore;
+    this.jobIndexStore = jobIndexStore;
   }
 
   public Optional<StoredReconcileJobProjection> load(String accountId, String jobId) {
@@ -63,12 +71,6 @@ public class ReconcileJobProjectionStore {
           && currentProjection.appliedGeneration() > projection.appliedGeneration()) {
         return;
       }
-      if (currentProjection != null
-          && currentProjection.appliedGeneration() == projection.appliedGeneration()
-          && current != null
-          && !blobUri.equals(current.getBlobUri())) {
-        return;
-      }
       if (current != null && blobUri.equals(current.getBlobUri())) {
         return;
       }
@@ -79,6 +81,33 @@ public class ReconcileJobProjectionStore {
     }
     throw new IllegalStateException(
         "Failed to upsert reconcile job projection for job " + projection.jobId());
+  }
+
+  public boolean upsertWithCanonicalMutation(
+      StoredReconcileJobProjection expectedProjection,
+      StoredReconcileJobProjection projection,
+      ReconcileJobIndexStore.JobIndexWriteBatch canonicalMutation) {
+    if (projection == null || blank(projection.accountId()) || blank(projection.jobId())) {
+      return true;
+    }
+    String key = Keys.reconcileJobProjectionPointer(projection.accountId(), projection.jobId());
+    String blobUri = payloadStore.encodeInlineJobProjection(projection);
+    Pointer current = pointerStore.get(key).orElse(null);
+    long expectedVersion = current == null ? 0L : current.getVersion();
+    StoredReconcileJobProjection currentProjection =
+        current == null
+            ? null
+            : payloadStore.readInlineJobProjection(current.getBlobUri()).orElse(null);
+    if (!Objects.equals(currentProjection, expectedProjection)) {
+      return false;
+    }
+    return jobIndexStore.compareAndSetBatchWithPointerOps(
+        canonicalMutation,
+        List.of(
+            new PointerStore.CasUpsert(
+                key,
+                expectedVersion,
+                PointerReferences.inlineJsonPointer(key, blobUri, expectedVersion + 1L))));
   }
 
   public void delete(String accountId, String jobId) {

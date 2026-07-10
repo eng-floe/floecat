@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import java.util.List;
@@ -107,6 +108,22 @@ class ReconcileExecutorRegistryTest {
   }
 
   @Test
+  void executorSelectionUsesCanonicalLeaseLaneKey() {
+    ReconcileJobStore.LeasedJob lease =
+        defaultLease(
+            ReconcileExecutionPolicy.of(ReconcileExecutionClass.HEAVY, "", Map.of()), "", "remote");
+
+    ReconcileExecutor wrongLane = new TestExecutor("wrong-lane", 1, true, true, false, true);
+    ReconcileExecutor matching = new TestExecutor("matching", 2, true, true, true, true);
+
+    ReconcileExecutorRegistry registry =
+        new ReconcileExecutorRegistry(List.of(wrongLane, matching));
+
+    assertThat(registry.executorFor(lease)).isPresent();
+    assertThat(registry.executorFor(lease).orElseThrow().id()).isEqualTo("matching");
+  }
+
+  @Test
   void leaseRequestAggregatesSupportedClassesAndLanes() {
     ReconcileExecutorRegistry registry =
         new ReconcileExecutorRegistry(
@@ -159,6 +176,19 @@ class ReconcileExecutorRegistryTest {
                 "",
                 ai.floedb.floecat.reconciler.jobs.ReconcileJobKind.PLAN_CONNECTOR))
         .isTrue();
+  }
+
+  @Test
+  void leaseRequestForSingleExecutorKeepsExecutorCapabilitiesScoped() {
+    ReconcileExecutor planner = new KindExecutor("planner", ReconcileJobKind.PLAN_CONNECTOR);
+    ReconcileExecutor snapshots = new KindExecutor("snapshots", ReconcileJobKind.PLAN_SNAPSHOT);
+    ReconcileExecutorRegistry registry = new ReconcileExecutorRegistry(List.of(planner, snapshots));
+
+    var request = registry.leaseRequestFor(snapshots);
+
+    assertThat(request.executorIds).containsExactly("snapshots");
+    assertThat(request.jobKinds).containsExactly(ReconcileJobKind.PLAN_SNAPSHOT);
+    assertThat(request.lanes).containsExactly(ReconcileJobStore.LeaseRequest.anyLaneToken());
   }
 
   @Test
@@ -224,6 +254,11 @@ class ReconcileExecutorRegistryTest {
 
   private static ReconcileJobStore.LeasedJob defaultLease(
       ReconcileExecutionPolicy executionPolicy, String pinnedExecutorId) {
+    return defaultLease(executionPolicy, pinnedExecutorId, "");
+  }
+
+  private static ReconcileJobStore.LeasedJob defaultLease(
+      ReconcileExecutionPolicy executionPolicy, String pinnedExecutorId, String laneKey) {
     return new ReconcileJobStore.LeasedJob(
         "job-1",
         "acct",
@@ -234,7 +269,14 @@ class ReconcileExecutorRegistryTest {
         executionPolicy,
         "lease-1",
         pinnedExecutorId,
-        "");
+        "",
+        ReconcileJobKind.PLAN_CONNECTOR,
+        ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask.empty(),
+        "",
+        laneKey);
   }
 
   private record TestExecutor(
@@ -286,6 +328,23 @@ class ReconcileExecutorRegistryTest {
     @Override
     public java.util.Set<String> supportedLanes() {
       return supportsRemoteLane ? java.util.Set.of("", "remote") : java.util.Set.of("");
+    }
+
+    @Override
+    public ExecutionResult execute(ExecutionContext context) {
+      throw new UnsupportedOperationException();
+    }
+  }
+
+  private record KindExecutor(String id, ReconcileJobKind jobKind) implements ReconcileExecutor {
+    @Override
+    public java.util.Set<ReconcileJobKind> supportedJobKinds() {
+      return java.util.Set.of(jobKind);
+    }
+
+    @Override
+    public java.util.Set<String> supportedLanes() {
+      return java.util.Set.of();
     }
 
     @Override

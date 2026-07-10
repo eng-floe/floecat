@@ -233,7 +233,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
                   definition.viewTask(),
                   snapshotTask,
                   fileGroupTask,
-                  current.parentJobId()));
+                  current.parentJobId(),
+                  current.laneKey));
         } catch (RuntimeException e) {
           if (isMissingRequiredJobDefinition(e)) {
             failLeaseCanonicalOnHydrationFailure(

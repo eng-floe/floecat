@@ -40,7 +40,6 @@ public interface ReconcileReadyQueueStore {
     public BooleanSupplier cancelled = () -> false;
     public boolean abortedByDeadline;
     public boolean abortedByCaller;
-    public int prunedCount;
 
     public boolean shouldStop() {
       if (cancelled != null && cancelled.getAsBoolean()) {
@@ -71,7 +70,8 @@ public interface ReconcileReadyQueueStore {
       ReconcileJobIndexStore jobIndexStore,
       ReconcileLeaseStore leaseStore,
       int readyScanLimit,
-      Predicate<StoredReconcileJob> requiresReadyPointer);
+      Predicate<StoredReconcileJob> requiresReadyPointer,
+      Predicate<StoredReconcileJob> blockedByCancellation);
 
   ReadyQueueScanPage scanReadySlice(
       ReconcileReadyQueueBackend.ReadyQueueSlice slice, int pageSize, String pageToken);
@@ -81,6 +81,8 @@ public interface ReconcileReadyQueueStore {
   Optional<LeasedJob> leaseReadyDue(long nowMs, LeaseRequest request, LeaseScanStats scanStats);
 
   boolean matchesLeaseRequest(StoredReconcileJob record, LeaseRequest request);
+
+  boolean readyPointerMatchesRecord(ReadyQueueEntry candidate, StoredReconcileJob record);
 
   long readyPointerDueAt(StoredReconcileJob record);
 

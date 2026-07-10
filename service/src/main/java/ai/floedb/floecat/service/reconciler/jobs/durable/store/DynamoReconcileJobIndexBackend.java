@@ -23,6 +23,7 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import ai.floedb.floecat.storage.kv.KvAttributes;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -49,6 +50,11 @@ import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledExcepti
 @Singleton
 @IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
 public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend {
+  private static final String KIND_GENERIC_POINTER = "Pointer";
+  private static final String GENERIC_POINTER_GLOBAL_PK = "_ACCOUNT_DIR";
+  private static final String ATTR_GENERIC_BLOB_URI = "blob_uri";
+  private static final String ATTR_GENERIC_REFERENCE_KIND = "reference_kind";
+
   @Inject Instance<DynamoDbClientManager> dynamoDbClientManager;
   private final RefreshingDynamoCaller dynamoCaller = new RefreshingDynamoCaller();
 
@@ -125,7 +131,13 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
 
   @Override
   public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
-    return compareAndSetDynamo(batch);
+    return compareAndSetBatch(batch, List.of());
+  }
+
+  @Override
+  public boolean compareAndSetBatch(
+      ReconcileJobIndexStore.JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
+    return compareAndSetDynamo(batch, extraPointerOps == null ? List.of() : extraPointerOps);
   }
 
   @Override
@@ -264,33 +276,48 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     return deleted;
   }
 
-  private boolean compareAndSetDynamo(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
+  private boolean compareAndSetDynamo(
+      ReconcileJobIndexStore.JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
     List<TransactWriteItem> tx = new ArrayList<>();
-    for (ReconcileJobIndexStore.JobIndexWriteOp op : batch.writes()) {
-      if (op instanceof ReconcileJobIndexStore.JobIndexUpsert upsert) {
-        tx.add(buildPointerUpsert(upsert));
-      } else if (op instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
-        tx.add(buildPointerDelete(delete));
+    if (batch != null) {
+      for (ReconcileJobIndexStore.JobIndexWriteOp op : batch.writes()) {
+        if (op instanceof ReconcileJobIndexStore.JobIndexUpsert upsert) {
+          tx.add(buildPointerUpsert(upsert));
+        } else if (op instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
+          tx.add(buildPointerDelete(delete));
+        }
+      }
+      for (var upsert : batch.readyMutation().upserts()) {
+        ReadyQueueBackendSupport.ReadyQueueRow row =
+            ReadyQueueBackendSupport.toReadyQueueRow(
+                upsert.readyPointerKey(), upsert.canonicalPointerKey());
+        if (row != null) {
+          tx.add(buildReadyUpsert(row));
+        }
+      }
+      for (String readyPointerKey : batch.readyMutation().deletes()) {
+        // Resolve the delete key from the ready pointer alone: a delete fires when a canonical
+        // mutation (requeue/fail/terminal) supersedes the old ready pointer, and the canonical it
+        // referenced is being rewritten in this same transaction. Passing a blank canonical here
+        // made
+        // the row resolve to null, so no delete item was added and the old ready row leaked — the
+        // backlog source the prune path is meant to drain.
+        ReadyQueueBackendSupport.ReadyQueueRow row =
+            ReadyQueueBackendSupport.toReadyQueueRow(readyPointerKey);
+        if (row != null) {
+          tx.add(buildReadyDelete(row));
+        }
       }
     }
-    for (var upsert : batch.readyMutation().upserts()) {
-      ReadyQueueBackendSupport.ReadyQueueRow row =
-          ReadyQueueBackendSupport.toReadyQueueRow(
-              upsert.readyPointerKey(), upsert.canonicalPointerKey());
-      if (row != null) {
-        tx.add(buildReadyUpsert(row));
-      }
-    }
-    for (String readyPointerKey : batch.readyMutation().deletes()) {
-      // Resolve the delete key from the ready pointer alone: a delete fires when a canonical
-      // mutation (requeue/fail/terminal) supersedes the old ready pointer, and the canonical it
-      // referenced is being rewritten in this same transaction. Passing a blank canonical here made
-      // the row resolve to null, so no delete item was added and the old ready row leaked — the
-      // backlog source the prune path is meant to drain.
-      ReadyQueueBackendSupport.ReadyQueueRow row =
-          ReadyQueueBackendSupport.toReadyQueueRow(readyPointerKey);
-      if (row != null) {
-        tx.add(buildReadyDelete(row));
+    for (PointerStore.CasOp op : extraPointerOps) {
+      if (op instanceof PointerStore.CasUpsert upsert) {
+        tx.add(buildGenericPointerUpsert(upsert));
+      } else if (op instanceof PointerStore.CasDelete delete) {
+        tx.add(buildGenericPointerDelete(delete.key(), delete.expectedVersion()));
+      } else if (op instanceof PointerStore.CasCheck check) {
+        tx.add(buildGenericPointerCheck(check.key(), check.expectedVersion()));
+      } else if (op instanceof PointerStore.CasCheckAbsent check) {
+        tx.add(buildGenericPointerCheckAbsent(check.key()));
       }
     }
     try {
@@ -654,6 +681,83 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     }
     return TransactWriteItem.builder().put(put.build()).build();
   }
+
+  private TransactWriteItem buildGenericPointerUpsert(PointerStore.CasUpsert upsert) {
+    GenericPointerKey key = genericPointerKey(upsert.key());
+    Map<String, AttributeValue> item = new HashMap<>();
+    item.put(ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
+    item.put(ATTR_SORT_KEY, AttributeValue.fromS(key.sortKey()));
+    item.put(ATTR_KIND, AttributeValue.fromS(KIND_GENERIC_POINTER));
+    item.put(ATTR_VERSION, AttributeValue.fromN(Long.toString(upsert.expectedVersion() + 1L)));
+    item.put(ATTR_GENERIC_BLOB_URI, AttributeValue.fromS(upsert.next().getBlobUri()));
+    if (upsert.next().getReferenceKind()
+        != ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_UNSPECIFIED) {
+      item.put(
+          ATTR_GENERIC_REFERENCE_KIND,
+          AttributeValue.fromS(upsert.next().getReferenceKind().name()));
+    }
+    return buildPut(item, upsert.expectedVersion());
+  }
+
+  private TransactWriteItem buildGenericPointerDelete(String pointerKey, long expectedVersion) {
+    GenericPointerKey key = genericPointerKey(pointerKey);
+    return buildDelete(key.partitionKey(), key.sortKey(), expectedVersion);
+  }
+
+  private TransactWriteItem buildGenericPointerCheck(String pointerKey, long expectedVersion) {
+    GenericPointerKey key = genericPointerKey(pointerKey);
+    return TransactWriteItem.builder()
+        .conditionCheck(
+            software.amazon.awssdk.services.dynamodb.model.ConditionCheck.builder()
+                .tableName(table)
+                .key(
+                    Map.of(
+                        ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()),
+                        ATTR_SORT_KEY, AttributeValue.fromS(key.sortKey())))
+                .conditionExpression("#v = :expected")
+                .expressionAttributeNames(Map.of("#v", ATTR_VERSION))
+                .expressionAttributeValues(
+                    Map.of(":expected", AttributeValue.fromN(Long.toString(expectedVersion))))
+                .build())
+        .build();
+  }
+
+  private TransactWriteItem buildGenericPointerCheckAbsent(String pointerKey) {
+    GenericPointerKey key = genericPointerKey(pointerKey);
+    return TransactWriteItem.builder()
+        .conditionCheck(
+            software.amazon.awssdk.services.dynamodb.model.ConditionCheck.builder()
+                .tableName(table)
+                .key(
+                    Map.of(
+                        ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()),
+                        ATTR_SORT_KEY, AttributeValue.fromS(key.sortKey())))
+                .conditionExpression("attribute_not_exists(#pk)")
+                .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
+                .build())
+        .build();
+  }
+
+  private static GenericPointerKey genericPointerKey(String pointerKey) {
+    String key = pointerKey == null ? "" : pointerKey;
+    String k = key.startsWith("/") ? key.substring(1) : key;
+    if (k.startsWith("accounts/by-id/") || k.startsWith("accounts/by-name/")) {
+      return new GenericPointerKey(GENERIC_POINTER_GLOBAL_PK, k);
+    }
+    if (!k.startsWith("accounts/")) {
+      throw new IllegalArgumentException("unexpected key: " + pointerKey);
+    }
+    int firstSlash = k.indexOf('/');
+    int secondSlash = k.indexOf('/', firstSlash + 1);
+    if (secondSlash < 0) {
+      throw new IllegalArgumentException("bad key: " + pointerKey);
+    }
+    String accountId = k.substring(firstSlash + 1, secondSlash);
+    String remainder = k.substring(secondSlash + 1);
+    return new GenericPointerKey("accounts/" + accountId, remainder);
+  }
+
+  private record GenericPointerKey(String partitionKey, String sortKey) {}
 
   private TransactWriteItem buildDelete(String partitionKey, String sortKey, long expectedVersion) {
     return TransactWriteItem.builder()

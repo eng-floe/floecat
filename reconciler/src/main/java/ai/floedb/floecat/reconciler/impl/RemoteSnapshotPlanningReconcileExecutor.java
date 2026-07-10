@@ -54,6 +54,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   private final RemotePlannerWorkerClient workerClient;
   private final ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
   private final boolean enabled;
+  private final boolean workerAuthRequired;
   private final int maxFilesPerGroup;
 
   @Inject
@@ -68,12 +69,24 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       @ConfigProperty(
               name = "floecat.reconciler.executor.remote-snapshot-planner.enabled",
               defaultValue = "false")
-          boolean enabled) {
+          boolean enabled,
+      @ConfigProperty(name = "floecat.reconciler.worker.auth.required", defaultValue = "true")
+          boolean workerAuthRequired) {
     this.backend = backend;
     this.workerClient = workerClient;
     this.reconcileWorkerAuthProvider = reconcileWorkerAuthProvider;
     this.maxFilesPerGroup = Math.max(1, maxFilesPerGroup);
     this.enabled = enabled;
+    this.workerAuthRequired = workerAuthRequired;
+  }
+
+  RemoteSnapshotPlanningReconcileExecutor(
+      ReconcilerBackend backend,
+      RemotePlannerWorkerClient workerClient,
+      ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
+      int maxFilesPerGroup,
+      boolean enabled) {
+    this(backend, workerClient, reconcileWorkerAuthProvider, maxFilesPerGroup, enabled, true);
   }
 
   @Override
@@ -177,16 +190,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
           plannedCapture.snapshotTask(),
           fileGroupJobs,
           plannedCapture.directStats())) {
-        return ExecutionResult.failure(
-            0,
-            0,
-            0,
-            0,
-            1,
-            0,
-            0,
-            "standalone planner result submission was rejected",
-            new IllegalStateException("planner result submission rejected"));
+        throw plannerSubmissionRejected();
       }
       return ExecutionResult.successHandled(
           0,
@@ -208,6 +212,15 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
           e instanceof ReconcileFailureException
               ? e
               : (RuntimeException) ReconcileFailureClassifier.normalize(e);
+      if (classified instanceof RemoteLeasePreconditionFailedException) {
+        LOG.infof(
+            "Snapshot planning result submission ignored because reconcile lease is no longer valid jobId=%s tableId=%s snapshotId=%d",
+            lease.jobId, task.tableId(), task.snapshotId());
+        return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Lease no longer valid");
+      }
+      if (retryClassOf(classified) == ExecutionResult.RetryClass.STATE_UNCERTAIN) {
+        throw classified;
+      }
       String failureDetail = failureDetail(classified);
       LOG.errorf(
           classified,
@@ -215,12 +228,19 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
           lease.jobId,
           task.tableId(),
           task.snapshotId());
-      workerClient.submitPlanSnapshotFailure(
-          remoteLease,
-          failureKindOf(classified),
-          retryDispositionOf(classified),
-          retryClassOf(classified),
-          failureDetail);
+      try {
+        workerClient.submitPlanSnapshotFailure(
+            remoteLease,
+            failureKindOf(classified),
+            retryDispositionOf(classified),
+            retryClassOf(classified),
+            failureDetail);
+      } catch (RemoteLeasePreconditionFailedException leaseRejected) {
+        LOG.infof(
+            "Snapshot planning failure submission ignored because reconcile lease is no longer valid jobId=%s tableId=%s snapshotId=%d",
+            lease.jobId, task.tableId(), task.snapshotId());
+        return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Lease no longer valid");
+      }
       if (isObsoleteFailureKind(failureKindOf(classified))) {
         return ExecutionResult.obsolete(
             0,
@@ -285,6 +305,15 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     return failureKind == ExecutionResult.FailureKind.CONNECTOR_MISSING
         || failureKind == ExecutionResult.FailureKind.TABLE_MISSING
         || failureKind == ExecutionResult.FailureKind.VIEW_MISSING;
+  }
+
+  private static ReconcileFailureException plannerSubmissionRejected() {
+    return new ReconcileFailureException(
+        ExecutionResult.FailureKind.INTERNAL,
+        ExecutionResult.RetryDisposition.RETRYABLE,
+        ExecutionResult.RetryClass.STATE_UNCERTAIN,
+        "standalone planner result submission was rejected",
+        new IllegalStateException("planner result submission rejected"));
   }
 
   private static String failureDetail(Throwable error) {
@@ -520,6 +549,9 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
   }
 
   private String workerAuthorizationHeader(String accountId) {
+    if (!workerAuthRequired) {
+      return null;
+    }
     return reconcileWorkerAuthProvider.authorizationHeader(accountId).orElse(null);
   }
 

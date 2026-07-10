@@ -55,14 +55,14 @@ public class ReconcileExecutorRegistry {
           .filter(executor -> executor.supportsJobKind(lease.jobKind))
           .filter(
               executor -> executor.supportsExecutionClass(lease.executionPolicy.executionClass()))
-          .filter(executor -> executor.supportsLane(lease.executionPolicy.lane()))
+          .filter(executor -> executor.supportsLane(lease.laneKey))
           .filter(executor -> executor.supports(lease))
           .findFirst();
     }
     return executors.stream()
         .filter(executor -> executor.supportsJobKind(lease.jobKind))
         .filter(executor -> executor.supportsExecutionClass(lease.executionPolicy.executionClass()))
-        .filter(executor -> executor.supportsLane(lease.executionPolicy.lane()))
+        .filter(executor -> executor.supportsLane(lease.laneKey))
         .filter(executor -> executor.supports(lease))
         .findFirst();
   }
@@ -106,6 +106,40 @@ public class ReconcileExecutorRegistry {
             .collect(
                 java.util.stream.Collectors.toCollection(
                     () -> EnumSet.noneOf(ReconcileJobKind.class)));
+    return ReconcileJobStore.LeaseRequest.of(executionClasses, lanes, executorIds, jobKinds);
+  }
+
+  public ReconcileJobStore.LeaseRequest leaseRequestFor(ReconcileExecutor executor) {
+    if (executor == null) {
+      return ReconcileJobStore.LeaseRequest.all();
+    }
+    Set<ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass> executionClasses =
+        executor.supportedExecutionClasses() == null
+            ? Set.of()
+            : executor.supportedExecutionClasses().stream()
+                .collect(
+                    java.util.stream.Collectors.toCollection(
+                        () ->
+                            EnumSet.noneOf(
+                                ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass.class)));
+    Set<String> supportedLanes = executor.supportedLanes();
+    Set<String> lanes =
+        supportedLanes == null || supportedLanes.isEmpty()
+            ? Set.of(ReconcileJobStore.LeaseRequest.anyLaneToken())
+            : supportedLanes.stream()
+                .map(lane -> lane == null ? "" : lane.trim())
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    Set<String> executorIds =
+        executor.id() == null || executor.id().trim().isEmpty()
+            ? Set.of()
+            : Set.of(executor.id().trim());
+    Set<ReconcileJobKind> jobKinds =
+        executor.supportedJobKinds() == null
+            ? Set.of()
+            : executor.supportedJobKinds().stream()
+                .collect(
+                    java.util.stream.Collectors.toCollection(
+                        () -> EnumSet.noneOf(ReconcileJobKind.class)));
     return ReconcileJobStore.LeaseRequest.of(executionClasses, lanes, executorIds, jobKinds);
   }
 }

@@ -385,15 +385,28 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                       List<TargetStatsRecord> mergedPartialAggregates =
                           mergedPartialAggregates(
                               tableId, latestTask.snapshotId(), latestTask, partialAggregates);
-                      jobs.persistFileGroupResult(
-                          lease.jobId,
-                          lease.leaseEpoch,
+                      ReconcileFileGroupTask persistedTask =
                           latestTask
                               .withFileResults(validatedFileResults)
-                              .withPartialAggregateRecords(mergedPartialAggregates));
+                              .withPartialAggregateRecords(mergedPartialAggregates);
+                      jobs.persistFileGroupResult(lease.jobId, lease.leaseEpoch, persistedTask);
+                      boolean accepted =
+                          jobs.applyLeaseOutcome(
+                              lease.jobId,
+                              lease.leaseEpoch,
+                              ReconcileJobStore.CompletionKind.SUCCEEDED,
+                              System.currentTimeMillis(),
+                              "Executed file group " + latestTask.groupId(),
+                              0L,
+                              0L,
+                              0L,
+                              0L,
+                              0L,
+                              0L,
+                              fileGroupStatsProcessed(persistedTask));
                       return new IdempotencyGuard.CreateResult<>(
                           SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
-                              .setAccepted(true)
+                              .setAccepted(accepted)
                               .build(),
                           tableId);
                     },
@@ -405,6 +418,16 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                     SubmitLeasedFileGroupExecutionResultResponse::parseFrom))
         .body
         .getAccepted();
+  }
+
+  private static long fileGroupStatsProcessed(ReconcileFileGroupTask fileGroupTask) {
+    if (fileGroupTask == null || fileGroupTask.fileResults() == null) {
+      return 0L;
+    }
+    return fileGroupTask.fileResults().stream()
+        .filter(java.util.Objects::nonNull)
+        .mapToLong(ReconcileFileResult::statsProcessed)
+        .sum();
   }
 
   public boolean persistFailure(

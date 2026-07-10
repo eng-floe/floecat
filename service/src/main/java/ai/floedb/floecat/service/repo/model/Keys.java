@@ -1018,6 +1018,16 @@ public final class Keys {
     return reconcileDirtyParentPointerPrefix() + encode(tid) + "/" + encode(pid);
   }
 
+  public static String reconcileCancellationCleanupPointerPrefix() {
+    return "/accounts/by-id/reconcile/jobs/cancellation-cleanup/";
+  }
+
+  public static String reconcileCancellationCleanupPointer(String accountId, String rootJobId) {
+    String tid = req("account_id", accountId);
+    String jid = req("root_job_id", rootJobId);
+    return reconcileCancellationCleanupPointerPrefix() + encode(tid) + "/" + encode(jid);
+  }
+
   public static String reconcileJobProjectionPointer(String accountId, String jobId) {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);

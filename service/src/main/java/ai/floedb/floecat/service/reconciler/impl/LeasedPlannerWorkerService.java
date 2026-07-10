@@ -17,12 +17,12 @@
 package ai.floedb.floecat.service.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
-import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -30,9 +30,18 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
+import ai.floedb.floecat.service.common.BaseServiceImpl;
+import ai.floedb.floecat.service.common.IdempotencyGuard;
+import ai.floedb.floecat.service.common.MutationOps;
+import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -41,11 +50,11 @@ import java.util.List;
 import java.util.Optional;
 
 @ApplicationScoped
-public class LeasedPlannerWorkerService {
+public class LeasedPlannerWorkerService extends BaseServiceImpl {
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerBackend backend;
-  @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
   @Inject ConnectorRepository connectorRepo;
+  @Inject IdempotencyRepository idempotencyStore;
 
   record PlanConnectorPayload(
       String jobId,
@@ -122,6 +131,10 @@ public class LeasedPlannerWorkerService {
             leaseEpoch,
             ReconcileJobKind.PLAN_CONNECTOR);
     Boolean cancelled = cancelIfCanonicalConnectorMissing(lease);
+    if (cancelled != null) {
+      return cancelled;
+    }
+    cancelled = cancelIfCancellationRequested(lease);
     if (cancelled != null) {
       return cancelled;
     }
@@ -243,7 +256,7 @@ public class LeasedPlannerWorkerService {
       long errors,
       long snapshotsProcessed,
       long statsProcessed,
-      List<PlannedSnapshotJob> snapshotJobs) {
+      int chunkCount) {
     ReconcileJobStore.LeasedJob lease =
         requireLeasedJob(
             principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_TABLE);
@@ -251,25 +264,14 @@ public class LeasedPlannerWorkerService {
     if (cancelled != null) {
       return cancelled;
     }
-    long plannedSnapshotJobs =
-        nullToEmpty(snapshotJobs).stream()
-            .filter(job -> job != null && !job.snapshotTask().isEmpty())
-            .count();
-    for (PlannedSnapshotJob snapshotJob : nullToEmpty(snapshotJobs)) {
-      if (snapshotJob == null || snapshotJob.snapshotTask().isEmpty()) {
-        continue;
-      }
-      jobs.enqueueSnapshotPlan(
-          lease.accountId,
-          lease.connectorId,
-          lease.fullRescan,
-          lease.captureMode,
-          snapshotJob.scope(),
-          snapshotJob.snapshotTask(),
-          effectiveExecutionPolicy(lease),
-          lease.jobId,
-          lease.pinnedExecutorId);
+    cancelled = cancelIfCancellationRequested(lease);
+    if (cancelled != null) {
+      return cancelled;
     }
+    List<SubmitLeasedPlanTableResultRequest.Chunk> stagedChunks =
+        loadStagedPlanTableChunks(principalContext, jobId, leaseEpoch, chunkCount);
+    long plannedSnapshotJobs =
+        stagedChunks.stream().mapToLong(chunk -> chunk.getSnapshotJobsCount()).sum();
     boolean accepted =
         completePlanSuccess(
             jobId,
@@ -287,6 +289,77 @@ public class LeasedPlannerWorkerService {
       return false;
     }
     return true;
+  }
+
+  public boolean persistPlanTableSnapshotChunk(
+      PrincipalContext principalContext,
+      String jobId,
+      String leaseEpoch,
+      SubmitLeasedPlanTableResultRequest.Chunk chunk,
+      List<PlannedSnapshotJob> snapshotJobs) {
+    ReconcileJobStore.LeasedJob lease =
+        requireLeasedJob(
+            principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_TABLE);
+    Boolean cancelled = cancelIfCanonicalConnectorMissing(lease);
+    if (cancelled != null) {
+      return cancelled;
+    }
+    cancelled = cancelIfCancellationRequested(lease);
+    if (cancelled != null) {
+      return cancelled;
+    }
+    SubmitLeasedPlanTableResultRequest.Chunk stagedChunk =
+        chunk == null
+            ? SubmitLeasedPlanTableResultRequest.Chunk.newBuilder().build()
+            : chunk.toBuilder().setChunkIndex(Math.max(0, chunk.getChunkIndex())).build();
+    byte[] requestBytes = stagedChunk.toByteArray();
+    java.util.ArrayList<ReconcileJobStore.BulkEnqueueSpec> childSpecs =
+        new java.util.ArrayList<>(nullToEmpty(snapshotJobs).size());
+    for (PlannedSnapshotJob snapshotJob : nullToEmpty(snapshotJobs)) {
+      if (snapshotJob == null || snapshotJob.snapshotTask().isEmpty()) {
+        continue;
+      }
+      childSpecs.add(
+          ReconcileJobStore.BulkEnqueueSpec.of(
+              lease.accountId,
+              lease.connectorId,
+              lease.fullRescan,
+              lease.captureMode,
+              snapshotJob.scope(),
+              ReconcileJobKind.PLAN_SNAPSHOT,
+              ReconcileTableTask.empty(),
+              ReconcileViewTask.empty(),
+              snapshotJob.snapshotTask(),
+              ReconcileFileGroupTask.empty(),
+              effectiveExecutionPolicy(lease),
+              lease.jobId,
+              lease.pinnedExecutorId));
+    }
+    return runIdempotentCreate(
+                () ->
+                    MutationOps.createProto(
+                        principalContext.getAccountId(),
+                        "SubmitLeasedPlanTableResult",
+                        planTableChunkIdempotencyKey(
+                            jobId, leaseEpoch, stagedChunk.getChunkIndex()),
+                        () -> requestBytes,
+                        () -> {
+                          if (!childSpecs.isEmpty()) {
+                            ReconcileJobStore.BulkEnqueueResult enqueueResult =
+                                jobs.bulkEnqueue(childSpecs);
+                            enqueueResult.requireAllSucceeded("table snapshot child enqueue");
+                          }
+                          return new IdempotencyGuard.CreateResult<>(
+                              stagedChunk, connectorId(lease));
+                        },
+                        ignored -> MutationMeta.getDefaultInstance(),
+                        idempotencyStore,
+                        nowTs(),
+                        idempotencyTtlSeconds(),
+                        principalContext::getCorrelationId,
+                        SubmitLeasedPlanTableResultRequest.Chunk::parseFrom))
+            .body
+        != null;
   }
 
   public boolean persistPlanTableFailure(
@@ -387,7 +460,8 @@ public class LeasedPlannerWorkerService {
       PrincipalContext principalContext,
       String jobId,
       String leaseEpoch,
-      ReconcileSnapshotTask plannedSnapshotTask) {
+      ReconcileSnapshotTask plannedSnapshotTask,
+      int chunkCount) {
     ReconcileJobStore.ReconcileJob currentJob =
         jobs.getLeaseView(jobId)
             .orElseThrow(
@@ -434,9 +508,28 @@ public class LeasedPlannerWorkerService {
     if (cancelled != null) {
       return cancelled;
     }
-    List<PlannedFileGroupJob> plannedJobs = plannedFileGroupJobs(finalizedSnapshotTask);
+    cancelled = cancelIfCancellationRequested(lease);
+    if (cancelled != null) {
+      return cancelled;
+    }
     long plannedFileGroupJobs =
-        plannedJobs.stream().filter(job -> job != null && !job.fileGroupTask().isEmpty()).count();
+        durableSnapshotTask.completionMode() == ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
+            ? Math.max(0L, durableSnapshotTask.fileGroupCount())
+            : 0L;
+    List<SubmitLeasedPlanSnapshotResultRequest.Chunk> stagedChunks =
+        loadStagedPlanSnapshotChunks(principalContext, jobId, leaseEpoch, chunkCount);
+    long stagedFileGroupJobs =
+        stagedChunks.stream().mapToLong(chunk -> chunk.getFileGroupJobsCount()).sum();
+    if (plannedFileGroupJobs != stagedFileGroupJobs) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription(
+              "snapshot plan declared file_group_count="
+                  + plannedFileGroupJobs
+                  + " but staged "
+                  + stagedFileGroupJobs
+                  + " file group job(s)")
+          .asRuntimeException();
+    }
     boolean adopted =
         jobs.adoptSnapshotPlanManifest(
             lease.jobId,
@@ -444,22 +537,87 @@ public class LeasedPlannerWorkerService {
             durableSnapshotTask,
             durableSnapshotTask.fileGroupPlanBlobUri(),
             true);
-    if (!adopted) {
+    if (!adopted && !currentSnapshotPlanAdopted(jobId, durableSnapshotTask)) {
       return currentSnapshotPlanSuccess(jobId, durableSnapshotTask);
     }
-    ChildJobSummary childSummary =
-        childJobSummary(
-            lease.accountId,
+    boolean enqueuedFinalizer = false;
+    if (plannedFileGroupJobs == 0L) {
+      jobs.enqueueSnapshotFinalization(
+          lease.accountId,
+          lease.connectorId,
+          lease.fullRescan,
+          lease.captureMode,
+          effectiveScope(lease),
+          durableSnapshotTask,
+          effectiveExecutionPolicy(lease),
+          lease.jobId,
+          "");
+      enqueuedFinalizer = true;
+    }
+    boolean accepted =
+        completePlanSuccess(
+            jobId,
+            leaseEpoch,
+            "Snapshot plan recorded for "
+                + finalizedSnapshotTask.sourceNamespace()
+                + "."
+                + finalizedSnapshotTask.sourceTable()
+                + " with "
+                + plannedFileGroupJobs
+                + " file group(s)",
+            plannedFileGroupJobs > 0L || enqueuedFinalizer,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L);
+    if (!accepted) {
+      return currentSnapshotPlanSuccess(jobId, durableSnapshotTask);
+    }
+    return true;
+  }
+
+  public boolean persistPlanSnapshotFileGroupChunk(
+      PrincipalContext principalContext,
+      String jobId,
+      String leaseEpoch,
+      ReconcileSnapshotTask plannedSnapshotTask,
+      SubmitLeasedPlanSnapshotResultRequest.Chunk chunk,
+      List<PlannedFileGroupJob> plannedJobs) {
+    ReconcileJobStore.LeasedJob lease =
+        requireLeasedJob(
+            principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_SNAPSHOT);
+    Boolean cancelled = cancelIfCanonicalConnectorMissing(lease);
+    if (cancelled != null) {
+      return cancelled;
+    }
+    cancelled = cancelIfCancellationRequested(lease);
+    if (cancelled != null) {
+      return cancelled;
+    }
+    ReconcileSnapshotTask durableSnapshotTask = durableSnapshotTask(plannedSnapshotTask);
+    SubmitLeasedPlanSnapshotResultRequest.Chunk stagedChunk =
+        chunk == null
+            ? SubmitLeasedPlanSnapshotResultRequest.Chunk.newBuilder().build()
+            : chunk.toBuilder().setChunkIndex(Math.max(0, chunk.getChunkIndex())).build();
+    byte[] requestBytes = stagedChunk.toByteArray();
+    boolean adopted =
+        jobs.adoptSnapshotPlanManifest(
             lease.jobId,
-            plannedJobs.stream()
-                .map(PlannedFileGroupJob::fileGroupTask)
-                .filter(fileGroupTask -> fileGroupTask != null && !fileGroupTask.isEmpty())
-                .toList());
+            lease.leaseEpoch,
+            durableSnapshotTask,
+            durableSnapshotTask.fileGroupPlanBlobUri(),
+            true);
+    if (!adopted && !currentSnapshotPlanAdopted(jobId, durableSnapshotTask)) {
+      return currentSnapshotPlanSuccess(jobId, durableSnapshotTask);
+    }
     java.util.Set<String> existingFileGroupKeys =
-        new java.util.LinkedHashSet<>(childSummary.existingExecFileGroupKeys());
+        new java.util.LinkedHashSet<>(existingExecFileGroupKeys(lease.accountId, lease.jobId));
     java.util.ArrayList<ReconcileJobStore.BulkEnqueueSpec> childSpecs =
-        new java.util.ArrayList<>(plannedJobs.size());
-    for (PlannedFileGroupJob fileGroupJob : plannedJobs) {
+        new java.util.ArrayList<>(nullToEmpty(plannedJobs).size());
+    for (PlannedFileGroupJob fileGroupJob : nullToEmpty(plannedJobs)) {
       if (fileGroupJob == null || fileGroupJob.fileGroupTask().isEmpty()) {
         continue;
       }
@@ -486,69 +644,31 @@ public class LeasedPlannerWorkerService {
         existingFileGroupKeys.add(fileGroupKey);
       }
     }
-    if (!childSpecs.isEmpty()) {
-      ReconcileJobStore.BulkEnqueueResult enqueueResult = jobs.bulkEnqueue(childSpecs);
-      enqueueResult.requireAllSucceeded("snapshot file-group child enqueue");
-    }
-    boolean enqueuedFinalizer = false;
-    if (plannedFileGroupJobs == 0L) {
-      jobs.enqueueSnapshotFinalization(
-          lease.accountId,
-          lease.connectorId,
-          lease.fullRescan,
-          lease.captureMode,
-          effectiveScope(lease),
-          durableSnapshotTask,
-          effectiveExecutionPolicy(lease),
-          lease.jobId,
-          "");
-      enqueuedFinalizer = true;
-    } else if (childSummary.snapshotFinalizeReady()) {
-      jobs.enqueueSnapshotFinalization(
-          lease.accountId,
-          lease.connectorId,
-          lease.fullRescan,
-          lease.captureMode,
-          effectiveScope(lease),
-          durableSnapshotTask,
-          effectiveExecutionPolicy(lease),
-          lease.jobId,
-          "");
-      enqueuedFinalizer = true;
-    }
-    boolean accepted =
-        completePlanSuccess(
-            jobId,
-            leaseEpoch,
-            "Snapshot plan recorded for "
-                + finalizedSnapshotTask.sourceNamespace()
-                + "."
-                + finalizedSnapshotTask.sourceTable()
-                + " with "
-                + plannedFileGroupJobs
-                + " file group(s)",
-            !childSpecs.isEmpty() || enqueuedFinalizer,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L);
-    if (!accepted) {
-      return currentSnapshotPlanSuccess(jobId, durableSnapshotTask);
-    }
-    return true;
-  }
-
-  private List<PlannedFileGroupJob> plannedFileGroupJobs(ReconcileSnapshotTask snapshotTask) {
-    ReconcileSnapshotTask effective =
-        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
-    if (effective.completionMode() != ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
-        || !effective.fileGroupPlanRecorded()) {
-      return List.of();
-    }
-    return snapshotPlanBlobStore.loadPlanJobs(effective);
+    return runIdempotentCreate(
+                () ->
+                    MutationOps.createProto(
+                        principalContext.getAccountId(),
+                        "SubmitLeasedPlanSnapshotResult",
+                        planSnapshotChunkIdempotencyKey(
+                            jobId, leaseEpoch, stagedChunk.getChunkIndex()),
+                        () -> requestBytes,
+                        () -> {
+                          if (!childSpecs.isEmpty()) {
+                            ReconcileJobStore.BulkEnqueueResult enqueueResult =
+                                jobs.bulkEnqueue(childSpecs);
+                            enqueueResult.requireAllSucceeded("snapshot file-group child enqueue");
+                          }
+                          return new IdempotencyGuard.CreateResult<>(
+                              stagedChunk, tableId(lease, durableSnapshotTask));
+                        },
+                        ignored -> MutationMeta.getDefaultInstance(),
+                        idempotencyStore,
+                        nowTs(),
+                        idempotencyTtlSeconds(),
+                        principalContext::getCorrelationId,
+                        SubmitLeasedPlanSnapshotResultRequest.Chunk::parseFrom))
+            .body
+        != null;
   }
 
   private static String execFileGroupKey(ReconcileFileGroupTask fileGroupTask) {
@@ -563,17 +683,11 @@ public class LeasedPlannerWorkerService {
     return planId + "|" + groupId;
   }
 
-  private ChildJobSummary childJobSummary(
-      String accountId, String parentJobId, List<ReconcileFileGroupTask> expectedFileGroups) {
+  private java.util.Set<String> existingExecFileGroupKeys(String accountId, String parentJobId) {
     if (accountId == null || accountId.isBlank() || parentJobId == null || parentJobId.isBlank()) {
-      return new ChildJobSummary(java.util.Set.of(), false);
+      return java.util.Set.of();
     }
-    java.util.Set<String> expectedKeys = expectedExecFileGroupKeys(expectedFileGroups);
     java.util.Set<String> existingKeys = new java.util.LinkedHashSet<>();
-    java.util.Set<String> succeededKeys = new java.util.LinkedHashSet<>();
-    boolean hasLiveFinalizer = false;
-    boolean sawNonSucceededExpectedChild = false;
-    boolean sawExpectedChildren = false;
     String pageToken = "";
     do {
       ReconcileJobStore.ReconcileJobPage page =
@@ -583,12 +697,6 @@ public class LeasedPlannerWorkerService {
       }
       for (ReconcileJobStore.ReconcileJob child : page.jobs) {
         if (child == null) {
-          continue;
-        }
-        if (child.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
-            && !"JS_CANCELLED".equals(child.state)
-            && !"JS_FAILED".equals(child.state)) {
-          hasLiveFinalizer = true;
           continue;
         }
         if (child.jobKind != ReconcileJobKind.EXEC_FILE_GROUP
@@ -601,44 +709,11 @@ public class LeasedPlannerWorkerService {
           continue;
         }
         existingKeys.add(key);
-        if (!expectedKeys.contains(key)) {
-          continue;
-        }
-        sawExpectedChildren = true;
-        if (!"JS_SUCCEEDED".equals(child.state)) {
-          sawNonSucceededExpectedChild = true;
-          continue;
-        }
-        succeededKeys.add(key);
       }
       pageToken = page.nextPageToken == null ? "" : page.nextPageToken;
     } while (!pageToken.isBlank());
-    boolean finalizeReady =
-        !expectedKeys.isEmpty()
-            && !hasLiveFinalizer
-            && !sawNonSucceededExpectedChild
-            && sawExpectedChildren
-            && succeededKeys.containsAll(expectedKeys);
-    return new ChildJobSummary(existingKeys, finalizeReady);
+    return java.util.Set.copyOf(existingKeys);
   }
-
-  private static java.util.Set<String> expectedExecFileGroupKeys(
-      List<ReconcileFileGroupTask> expectedFileGroups) {
-    if (expectedFileGroups == null || expectedFileGroups.isEmpty()) {
-      return java.util.Set.of();
-    }
-    java.util.Set<String> expectedKeys = new java.util.LinkedHashSet<>();
-    for (ReconcileFileGroupTask expected : expectedFileGroups) {
-      String key = execFileGroupKey(expected);
-      if (!key.isBlank()) {
-        expectedKeys.add(key);
-      }
-    }
-    return expectedKeys;
-  }
-
-  private record ChildJobSummary(
-      java.util.Set<String> existingExecFileGroupKeys, boolean snapshotFinalizeReady) {}
 
   private static ReconcileSnapshotTask durableSnapshotTask(ReconcileSnapshotTask snapshotTask) {
     ReconcileSnapshotTask effective =
@@ -688,6 +763,179 @@ public class LeasedPlannerWorkerService {
   record PlannedViewJob(ReconcileScope scope, ReconcileViewTask viewTask) {}
 
   record PlannedSnapshotJob(ReconcileScope scope, ReconcileSnapshotTask snapshotTask) {}
+
+  private List<SubmitLeasedPlanTableResultRequest.Chunk> loadStagedPlanTableChunks(
+      PrincipalContext principalContext, String jobId, String leaseEpoch, int chunkCount) {
+    int expectedChunkCount = Math.max(0, chunkCount);
+    if (expectedChunkCount == 0) {
+      requireNoStagedPlanTableChunkAt(principalContext, jobId, leaseEpoch, 0, expectedChunkCount);
+      return List.of();
+    }
+    java.util.ArrayList<SubmitLeasedPlanTableResultRequest.Chunk> chunks =
+        new java.util.ArrayList<>(expectedChunkCount);
+    for (int chunkIndex = 0; chunkIndex < expectedChunkCount; chunkIndex++) {
+      chunks.add(loadStagedPlanTableChunk(principalContext, jobId, leaseEpoch, chunkIndex));
+    }
+    requireNoStagedPlanTableChunkAt(
+        principalContext, jobId, leaseEpoch, expectedChunkCount, expectedChunkCount);
+    return List.copyOf(chunks);
+  }
+
+  private List<SubmitLeasedPlanSnapshotResultRequest.Chunk> loadStagedPlanSnapshotChunks(
+      PrincipalContext principalContext, String jobId, String leaseEpoch, int chunkCount) {
+    int expectedChunkCount = Math.max(0, chunkCount);
+    if (expectedChunkCount == 0) {
+      requireNoStagedPlanSnapshotChunkAt(
+          principalContext, jobId, leaseEpoch, 0, expectedChunkCount);
+      return List.of();
+    }
+    java.util.ArrayList<SubmitLeasedPlanSnapshotResultRequest.Chunk> chunks =
+        new java.util.ArrayList<>(expectedChunkCount);
+    for (int chunkIndex = 0; chunkIndex < expectedChunkCount; chunkIndex++) {
+      chunks.add(loadStagedPlanSnapshotChunk(principalContext, jobId, leaseEpoch, chunkIndex));
+    }
+    requireNoStagedPlanSnapshotChunkAt(
+        principalContext, jobId, leaseEpoch, expectedChunkCount, expectedChunkCount);
+    return List.copyOf(chunks);
+  }
+
+  private void requireNoStagedPlanTableChunkAt(
+      PrincipalContext principalContext,
+      String jobId,
+      String leaseEpoch,
+      int chunkIndex,
+      int declaredChunkCount) {
+    if (stagedPlanTableChunkExists(principalContext, jobId, leaseEpoch, chunkIndex)) {
+      throw new IllegalArgumentException(
+          "plan-table success declared chunk_count="
+              + declaredChunkCount
+              + " but a staged chunk exists at index "
+              + chunkIndex
+              + "; the declared count is too low and would drop child snapshot jobs");
+    }
+  }
+
+  private void requireNoStagedPlanSnapshotChunkAt(
+      PrincipalContext principalContext,
+      String jobId,
+      String leaseEpoch,
+      int chunkIndex,
+      int declaredChunkCount) {
+    if (stagedPlanSnapshotChunkExists(principalContext, jobId, leaseEpoch, chunkIndex)) {
+      throw new IllegalArgumentException(
+          "plan-snapshot success declared chunk_count="
+              + declaredChunkCount
+              + " but a staged chunk exists at index "
+              + chunkIndex
+              + "; the declared count is too low and would drop child file-group jobs");
+    }
+  }
+
+  private boolean stagedPlanTableChunkExists(
+      PrincipalContext principalContext, String jobId, String leaseEpoch, int chunkIndex) {
+    String idempotencyKey =
+        Keys.idempotencyKey(
+            principalContext.getAccountId(),
+            "SubmitLeasedPlanTableResult",
+            planTableChunkIdempotencyKey(jobId, leaseEpoch, chunkIndex));
+    return idempotencyStore
+        .get(idempotencyKey)
+        .map(record -> record.getStatus() == IdempotencyRecord.Status.SUCCEEDED)
+        .orElse(false);
+  }
+
+  private boolean stagedPlanSnapshotChunkExists(
+      PrincipalContext principalContext, String jobId, String leaseEpoch, int chunkIndex) {
+    String idempotencyKey =
+        Keys.idempotencyKey(
+            principalContext.getAccountId(),
+            "SubmitLeasedPlanSnapshotResult",
+            planSnapshotChunkIdempotencyKey(jobId, leaseEpoch, chunkIndex));
+    return idempotencyStore
+        .get(idempotencyKey)
+        .map(record -> record.getStatus() == IdempotencyRecord.Status.SUCCEEDED)
+        .orElse(false);
+  }
+
+  private SubmitLeasedPlanTableResultRequest.Chunk loadStagedPlanTableChunk(
+      PrincipalContext principalContext, String jobId, String leaseEpoch, int chunkIndex) {
+    String idempotencyKey =
+        Keys.idempotencyKey(
+            principalContext.getAccountId(),
+            "SubmitLeasedPlanTableResult",
+            planTableChunkIdempotencyKey(jobId, leaseEpoch, chunkIndex));
+    IdempotencyRecord record =
+        idempotencyStore
+            .get(idempotencyKey)
+            .orElseThrow(
+                () ->
+                    new StorageAbortRetryableException(
+                        "plan-table result chunk not yet staged: key=" + idempotencyKey));
+    if (record.getStatus() != IdempotencyRecord.Status.SUCCEEDED) {
+      throw new StorageAbortRetryableException(
+          "plan-table result chunk is not complete: key=" + idempotencyKey);
+    }
+    try {
+      SubmitLeasedPlanTableResultRequest.Chunk chunk =
+          SubmitLeasedPlanTableResultRequest.Chunk.parseFrom(record.getPayload());
+      if (chunk.getChunkIndex() != chunkIndex) {
+        throw new IllegalArgumentException("staged plan-table result chunk identity mismatch");
+      }
+      return chunk;
+    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+      throw new ai.floedb.floecat.service.repo.util.BaseResourceRepository.CorruptionException(
+          "failed to parse staged plan-table result chunk", e);
+    }
+  }
+
+  private SubmitLeasedPlanSnapshotResultRequest.Chunk loadStagedPlanSnapshotChunk(
+      PrincipalContext principalContext, String jobId, String leaseEpoch, int chunkIndex) {
+    String idempotencyKey =
+        Keys.idempotencyKey(
+            principalContext.getAccountId(),
+            "SubmitLeasedPlanSnapshotResult",
+            planSnapshotChunkIdempotencyKey(jobId, leaseEpoch, chunkIndex));
+    IdempotencyRecord record =
+        idempotencyStore
+            .get(idempotencyKey)
+            .orElseThrow(
+                () ->
+                    new StorageAbortRetryableException(
+                        "plan-snapshot result chunk not yet staged: key=" + idempotencyKey));
+    if (record.getStatus() != IdempotencyRecord.Status.SUCCEEDED) {
+      throw new StorageAbortRetryableException(
+          "plan-snapshot result chunk is not complete: key=" + idempotencyKey);
+    }
+    try {
+      SubmitLeasedPlanSnapshotResultRequest.Chunk chunk =
+          SubmitLeasedPlanSnapshotResultRequest.Chunk.parseFrom(record.getPayload());
+      if (chunk.getChunkIndex() != chunkIndex) {
+        throw new IllegalArgumentException("staged plan-snapshot result chunk identity mismatch");
+      }
+      return chunk;
+    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+      throw new ai.floedb.floecat.service.repo.util.BaseResourceRepository.CorruptionException(
+          "failed to parse staged plan-snapshot result chunk", e);
+    }
+  }
+
+  private static String planTableChunkIdempotencyKey(
+      String jobId, String leaseEpoch, int chunkIndex) {
+    return blankToEmpty(jobId)
+        + ":"
+        + blankToEmpty(leaseEpoch)
+        + ":chunk:"
+        + Math.max(0, chunkIndex);
+  }
+
+  private static String planSnapshotChunkIdempotencyKey(
+      String jobId, String leaseEpoch, int chunkIndex) {
+    return blankToEmpty(jobId)
+        + ":"
+        + blankToEmpty(leaseEpoch)
+        + ":chunk:"
+        + Math.max(0, chunkIndex);
+  }
 
   private ReconcileJobStore.LeasedJob requireLeasedJob(
       String corr, String jobId, String leaseEpoch, ReconcileJobKind expectedKind) {
@@ -775,6 +1023,25 @@ public class LeasedPlannerWorkerService {
         0L);
   }
 
+  private Boolean cancelIfCancellationRequested(ReconcileJobStore.LeasedJob lease) {
+    if (lease == null || !jobs.isCancellationRequested(lease.jobId)) {
+      return null;
+    }
+    return jobs.applyLeaseOutcome(
+        lease.jobId,
+        lease.leaseEpoch,
+        ReconcileJobStore.CompletionKind.CANCELLED,
+        System.currentTimeMillis(),
+        "Cancelled",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+  }
+
   private boolean canonicalConnectorExists(ReconcileJobStore.LeasedJob lease) {
     if (connectorRepo == null || lease == null) {
       return true;
@@ -800,6 +1067,14 @@ public class LeasedPlannerWorkerService {
         .filter(current -> current.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
         .filter(
             current -> "JS_SUCCEEDED".equals(current.state) || "JS_WAITING".equals(current.state))
+        .map(current -> durableSnapshotTask.equals(current.snapshotTask))
+        .orElse(false);
+  }
+
+  private boolean currentSnapshotPlanAdopted(
+      String jobId, ReconcileSnapshotTask durableSnapshotTask) {
+    return jobs.getLeaseView(jobId)
+        .filter(current -> current.jobKind == ReconcileJobKind.PLAN_SNAPSHOT)
         .map(current -> durableSnapshotTask.equals(current.snapshotTask))
         .orElse(false);
   }
@@ -924,6 +1199,17 @@ public class LeasedPlannerWorkerService {
         .setAccountId(lease.accountId)
         .setId(lease.connectorId)
         .setKind(ResourceKind.RK_CONNECTOR)
+        .build();
+  }
+
+  private static ResourceId tableId(
+      ReconcileJobStore.LeasedJob lease, ReconcileSnapshotTask snapshotTask) {
+    ReconcileSnapshotTask effective =
+        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
+    return ResourceId.newBuilder()
+        .setAccountId(lease.accountId)
+        .setId(effective.tableId())
+        .setKind(ResourceKind.RK_TABLE)
         .build();
   }
 

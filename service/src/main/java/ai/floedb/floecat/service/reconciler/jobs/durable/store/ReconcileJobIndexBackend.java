@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
 import java.util.Optional;
 
@@ -25,6 +26,14 @@ public interface ReconcileJobIndexBackend {
   Optional<JobIndexEntrySnapshot> loadIndexEntry(String pointerKey);
 
   boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch);
+
+  default boolean compareAndSetBatch(
+      ReconcileJobIndexStore.JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
+    if (extraPointerOps != null && !extraPointerOps.isEmpty()) {
+      return false;
+    }
+    return compareAndSetBatch(batch);
+  }
 
   JobIndexQueryPage listCanonicalEntries(String accountId, int limit, String pageToken);
 

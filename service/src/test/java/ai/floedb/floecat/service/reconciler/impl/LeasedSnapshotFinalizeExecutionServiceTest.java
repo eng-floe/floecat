@@ -169,7 +169,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
-  void finalizeChunkedSuccessIgnoresPersistedFileStatsCoverageForFullRescan() {
+  void finalizeChunkedSuccessReplacesFileGroupStatsForFullRescan() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -202,14 +202,14 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
     service.finalizeChunkedSuccess(lease, snapshotTask, tableId, SNAPSHOT_ID);
 
-    verify(persistence, never()).listFileStats(tableId, SNAPSHOT_ID);
-    verify(persistence, never())
-        .replaceAllStatsForSnapshot(eq(tableId), eq(SNAPSHOT_ID), anyList());
+    verify(persistence)
+        .replaceFileGroupStatsForSnapshot(
+            tableId, SNAPSHOT_ID, List.of("s3://bucket/file-1.parquet"), List.of());
     verify(persistence, never()).persistStats(anyList());
   }
 
   @Test
-  void finalizeChunkedSuccessBuildsAggregatesForFullRescanRemoteFinalize() {
+  void finalizeChunkedSuccessReplacesMergedAggregatesForFullRescanRemoteFinalize() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -268,7 +268,9 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
     service.finalizeChunkedSuccess(lease, snapshotTask, tableId, SNAPSHOT_ID);
 
-    verify(persistence).persistStats(List.of(aggregateRecord));
+    verify(persistence)
+        .replaceFileGroupStatsForSnapshot(
+            tableId, SNAPSHOT_ID, List.of("s3://bucket/file-1.parquet"), List.of(aggregateRecord));
     verify(persistence)
         .mergeCompletedGroupPartials(
             eq(tableId),
@@ -278,13 +280,52 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                     FloecatConnector.StatsTargetKind.TABLE,
                     FloecatConnector.StatsTargetKind.COLUMN)),
             eq(List.of(completedGroup)));
-    verify(persistence, never()).listFileStats(eq(tableId), eq(SNAPSHOT_ID));
-    verify(persistence, never())
-        .replaceAllStatsForSnapshot(eq(tableId), eq(SNAPSHOT_ID), anyList());
+    verify(persistence, never()).persistStats(anyList());
   }
 
   @Test
-  void persistStatsChunkPersistsFinalizerAggregateStatsForFileGroupSnapshot() {
+  void persistStatsChunkPersistsFinalizerAggregateStatsForIncrementalFileGroupSnapshot() {
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            1);
+    ReconcileJobStore.LeasedJob lease = leasedJobWithStatsOutputs(false);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(TABLE_ID)
+            .build();
+    TargetStatsRecord aggregateRecord = mock(TargetStatsRecord.class);
+    when(coverageService.expectedCoverage(snapshotTask))
+        .thenReturn(
+            new SnapshotFinalizeCoverageService.ExpectedCoverage(
+                SnapshotFinalizeCoverageService.PlannedCoverageState.NON_EMPTY,
+                List.of(),
+                List.of("s3://bucket/file-1.parquet"),
+                ""));
+    when(persistence.validateAggregateStats(List.of(aggregateRecord), tableId, SNAPSHOT_ID))
+        .thenReturn(List.of(aggregateRecord));
+
+    service.persistStatsChunk(
+        lease, snapshotTask, tableId, SNAPSHOT_ID, 0, List.of(aggregateRecord));
+
+    verify(persistence).persistStats(List.of(aggregateRecord));
+    verify(jobs)
+        .persistSnapshotFinalizeDirectStatsProgress(
+            lease.jobId, lease.leaseEpoch, lease.fullRescan, 0, 1);
+    verify(persistence, never()).mergeCompletedGroupPartials(any(), anyLong(), anySet(), anyList());
+  }
+
+  @Test
+  void persistStatsChunkDoesNotPersistFinalizerAggregateStatsForFullFileGroupSnapshot() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -317,8 +358,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     service.persistStatsChunk(
         lease, snapshotTask, tableId, SNAPSHOT_ID, 0, List.of(aggregateRecord));
 
-    verify(persistence).persistStats(List.of(aggregateRecord));
-    verify(jobs)
+    verify(persistence, never()).persistStats(anyList());
+    verify(jobs, never())
         .persistSnapshotFinalizeDirectStatsProgress(
             lease.jobId, lease.leaseEpoch, lease.fullRescan, 0, 1);
     verify(persistence, never()).mergeCompletedGroupPartials(any(), anyLong(), anySet(), anyList());
@@ -338,7 +379,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                 "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
                 1)
             .withDirectStatsPersistedRecordCountForChunk(0, 1);
-    ReconcileJobStore.LeasedJob lease = leasedJobWithAggregateOutputs(true);
+    ReconcileJobStore.LeasedJob lease = leasedJobWithAggregateOutputs(false);
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId(ACCOUNT_ID)
