@@ -32,7 +32,7 @@ public class StandaloneJavaFileGroupExecutionRunner {
   @Inject ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
 
   @ConfigProperty(name = "floecat.reconciler.worker.auth.required", defaultValue = "true")
-  boolean workerAuthRequired;
+  boolean workerAuthRequired = true;
 
   public CaptureEngineResult execute(StandaloneFileGroupExecutionPayload payload) {
     if (payload == null
