@@ -62,7 +62,6 @@ import com.google.protobuf.MessageLite;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
-import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.AbstractStub;
 import io.grpc.stub.MetadataUtils;
@@ -1244,14 +1243,8 @@ class GrpcRemoteReconcileExecutorClient
 
   private static RuntimeException leasePreconditionOrOriginal(
       String operation, RuntimeException error) {
-    Throwable current = error;
-    var seen = new java.util.HashSet<Throwable>();
-    while (current != null && seen.add(current)) {
-      if (current instanceof StatusRuntimeException statusError
-          && statusError.getStatus().getCode() == Status.Code.FAILED_PRECONDITION) {
-        return new RemoteLeasePreconditionFailedException(operation, error);
-      }
-      current = current.getCause();
+    if (ReconcileLeaseGrpcStatus.isLeasePreconditionFailure(error)) {
+      return new RemoteLeasePreconditionFailedException(operation, error);
     }
     return error;
   }

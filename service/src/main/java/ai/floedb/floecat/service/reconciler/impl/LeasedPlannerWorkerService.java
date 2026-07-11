@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
+import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -941,9 +942,7 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
       String corr, String jobId, String leaseEpoch, ReconcileJobKind expectedKind) {
     boolean renewed = jobs.renewLease(jobId, leaseEpoch);
     if (!renewed) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription("reconcile lease is no longer valid")
-          .asRuntimeException();
+      throw ReconcileLeaseGrpcStatus.leasePreconditionFailed("reconcile lease is no longer valid");
     }
     ReconcileJobStore.ReconcileJob job =
         jobs.getLeaseView(jobId)
@@ -958,13 +957,11 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
           .asRuntimeException();
     }
     if (!isActiveLeasedState(job.state)) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription(
-              "reconcile job is no longer active for lease "
-                  + jobId
-                  + " state="
-                  + blankToEmpty(job.state))
-          .asRuntimeException();
+      throw ReconcileLeaseGrpcStatus.leasePreconditionFailed(
+          "reconcile job is no longer active for lease "
+              + jobId
+              + " state="
+              + blankToEmpty(job.state));
     }
     return new ReconcileJobStore.LeasedJob(
         job.jobId,
@@ -993,9 +990,8 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
         jobs.getCompletionLeaseView(jobId, leaseEpoch, true)
             .orElseThrow(
                 () ->
-                    Status.FAILED_PRECONDITION
-                        .withDescription("reconcile lease is no longer valid")
-                        .asRuntimeException());
+                    ReconcileLeaseGrpcStatus.leasePreconditionFailed(
+                        "reconcile lease is no longer valid"));
     if (lease.jobKind != expectedKind) {
       throw Status.FAILED_PRECONDITION
           .withDescription("reconcile job is not a " + expectedKind + " job")

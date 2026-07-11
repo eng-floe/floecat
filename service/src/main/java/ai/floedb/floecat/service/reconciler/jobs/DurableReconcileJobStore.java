@@ -2554,6 +2554,19 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     int committedMutations = 0;
     for (ReconcileJobIndexStore.CanonicalRecordMutation mutation : mutations) {
       int mutationWriteItems = cancellationMutationWriteItems(mutation);
+      if (mutationWriteItems > CANCELLATION_BATCH_WRITE_ITEM_LIMIT) {
+        LOG.warnf(
+            "reconcile cancellation cleanup skipped oversized mutation accountId=%s rootJobId=%s"
+                + " jobId=%s write_items=%d max_write_items=%d",
+            blankToEmpty(accountId),
+            blankToEmpty(rootJobId),
+            mutation == null || mutation.current() == null
+                ? ""
+                : blankToEmpty(mutation.current().jobId),
+            Integer.valueOf(mutationWriteItems),
+            Integer.valueOf(CANCELLATION_BATCH_WRITE_ITEM_LIMIT));
+        return new CancellationCommitStats(false, batches, committedMutations, writeItems);
+      }
       if (!chunk.isEmpty()
           && chunkWriteItems + mutationWriteItems > CANCELLATION_BATCH_WRITE_ITEM_LIMIT) {
         if (!commitCancellationMutationChunk(accountId, rootJobId, chunk, chunkWriteItems)) {

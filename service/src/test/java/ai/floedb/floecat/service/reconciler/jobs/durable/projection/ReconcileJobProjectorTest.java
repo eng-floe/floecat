@@ -22,6 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.ReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
@@ -32,9 +34,31 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloa
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class ReconcileJobProjectorTest {
+  @Test
+  void failedExecFileGroupProjectionDoesNotCountGroupAsCompleted() {
+    ReconcileJobProjector projector = new ReconcileJobProjector();
+    ReconcileFileGroupTask task =
+        ReconcileFileGroupTask.of(
+            "plan-1",
+            "group-1",
+            "table-1",
+            42L,
+            List.of("s3://bucket/file-1.parquet"),
+            List.of(ReconcileFileResult.failed("s3://bucket/file-1.parquet", "boom")));
+
+    ReconcileJobProjector.JobProjection projection =
+        projector.projectExecFileGroup(task, "JS_FAILED");
+
+    assertEquals(1L, projection.plannedFileGroups());
+    assertEquals(0L, projection.completedFileGroups());
+    assertEquals(1L, projection.failedFileGroups());
+    assertEquals(1L, projection.failedFiles());
+  }
+
   @Test
   void projectSelfPublicJobDoesNotLoadSnapshotPayloadForParentCapableJobs() {
     ReconcilePayloadStore payloadStore = new ReconcilePayloadStore();

@@ -485,7 +485,10 @@ public class ReconcileJobProjector {
       }
     }
     long completedFileGroups =
-        "JS_SUCCEEDED".equals(state) || completedFiles > 0L || failedFiles > 0L ? 1L : 0L;
+        !("JS_FAILED".equals(state) || "JS_CANCELLED".equals(state))
+                && ("JS_SUCCEEDED".equals(state) || completedFiles > 0L || failedFiles > 0L)
+            ? 1L
+            : 0L;
     return new JobProjection(
         indexesProcessed,
         1L,

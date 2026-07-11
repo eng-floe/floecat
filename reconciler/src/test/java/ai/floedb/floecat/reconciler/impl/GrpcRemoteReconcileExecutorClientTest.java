@@ -350,7 +350,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
-  void submitPlanSnapshotFailureMapsFailedPreconditionToLeasePreconditionException()
+  void submitPlanSnapshotFailureMapsLeaseFailedPreconditionToLeasePreconditionException()
       throws Exception {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ManagedChannel channel = mock(ManagedChannel.class);
@@ -359,9 +359,7 @@ class GrpcRemoteReconcileExecutorClientTest {
     client.enqueueTransport(channel, stub);
     when(stub.submitLeasedPlanSnapshotResult(any()))
         .thenThrow(
-            Status.FAILED_PRECONDITION
-                .withDescription("server text is intentionally not inspected")
-                .asRuntimeException());
+            ReconcileLeaseGrpcStatus.leasePreconditionFailed("reconcile lease is no longer valid"));
     when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
 
     assertThrows(
@@ -373,6 +371,35 @@ class GrpcRemoteReconcileExecutorClientTest {
                 ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
                 ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR,
                 "failed"));
+  }
+
+  @Test
+  void submitPlanSnapshotFailurePropagatesIntegrityFailedPrecondition() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.submitLeasedPlanSnapshotResult(any()))
+        .thenThrow(
+            Status.FAILED_PRECONDITION
+                .withDescription(
+                    "snapshot plan declared file_group_count=1 but staged 0 file group job(s)")
+                .asRuntimeException());
+    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                client.submitPlanSnapshotFailure(
+                    remotePlanSnapshotLease(),
+                    ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
+                    ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+                    ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR,
+                    "failed"));
+
+    assertThat(ex.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
   }
 
   @Test
