@@ -669,4 +669,38 @@ class SnapshotHelperTest {
     assertThatThrownBy(() -> localHelper.tablePinFor("corr", table, null, Optional.empty()))
         .hasMessageContaining("INTERNAL");
   }
+
+  @Test
+  void currentRejectsASnapshotWhoseGenerationWasRemoved() {
+    // Generation removal (deleteAllStats) clears stats_generation_ref WITHOUT clearing currency, so
+    // currency can point at an unfinalized snapshot. CURRENT must reject it — consistent with the
+    // explicit-id (reject) and AS_OF (skip) paths — not pin a snapshot that would then scan empty.
+    var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
+    when(tracking.tracksStatsGenerations()).thenReturn(true);
+    helper = new SnapshotHelper(repository, roots, committer, tracking);
+    ResourceId tableId = tableId("tbl");
+    seedSnapshot(tableId, 7, "2024-02-01T00:00:00Z");
+    // Finalize 7 (generation ref present -> becomes current), then remove its generation.
+    committer.commit(
+        tableId,
+        TableRootMutations.upsertSnapshot(
+            roots,
+            tableId,
+            SnapshotManifestEntry.newBuilder()
+                .setSnapshotId(7)
+                .setSnapshotRef(
+                    BlobRef.newBuilder().setUri("s3://tbl/snap-7.pb").setVersion("etag-s7"))
+                .setStatsGenerationRef(BlobRef.newBuilder().setUri("s3://tbl/stats/7/gen.pb"))
+                .setUpstreamCreatedAt(ts("2024-02-01T00:00:00Z"))
+                .build(),
+            BlobRef.newBuilder().setUri("s3://tbl/table.pb").setVersion("etag-t").build(),
+            true));
+    committer.commit(tableId, TableRootMutations.setStatsGeneration(roots, tableId, 7, null));
+
+    var root = roots.get(tableId).orElseThrow();
+    org.junit.jupiter.api.Assertions.assertEquals(
+        7L, root.getCurrentSnapshotId(), "currency stays on 7 after generation removal");
+    assertThatThrownBy(() -> helper.tablePinFor("corr", tableId, null, Optional.empty()))
+        .hasMessageContaining("NOT_FOUND");
+  }
 }

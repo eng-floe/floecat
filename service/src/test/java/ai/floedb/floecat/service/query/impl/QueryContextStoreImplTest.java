@@ -443,4 +443,47 @@ class QueryContextStoreImplTest {
       store.close();
     }
   }
+
+  @org.junit.jupiter.api.Test
+  void activeContextsAreNotSizeEvictedSoTheirPinsStayRooted() {
+    // A committed context is a durable GC root; size-evicting a live query's context would unroot
+    // its pins and let GC delete a blob it is still reading. ACTIVE contexts weigh 0, so a cap of
+    // 1 evicts none of them — all their pinned blobs stay rooted.
+    var store = QueryContextStores.forTesting(1L);
+    try {
+      for (int i = 0; i < 50; i++) {
+        var pin =
+            ai.floedb.floecat.query.rpc.TablePin.newBuilder()
+                .setTableId(
+                    ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+                        .setAccountId("acct")
+                        .setId("t" + i)
+                        .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE))
+                .setPinKind(ai.floedb.floecat.query.rpc.PinKind.PIN_KIND_CURRENT)
+                .setSnapshotId(1L)
+                .setRootUri("s3://t" + i + "/root.pb")
+                .build();
+        store.put(
+            QueryContext.newActive(
+                "q-" + i,
+                PrincipalContext.newBuilder().setAccountId("acct").build(),
+                new byte[0],
+                RelationPinSet.newBuilder().addPins(QueryPins.ofTable(pin)).build().toByteArray(),
+                new byte[0],
+                new byte[0],
+                60_000L,
+                1L,
+                CATALOG));
+      }
+
+      var roots = store.referencedPinBlobUris();
+      for (int i = 0; i < 50; i++) {
+        assertThat(roots)
+            .as("active context q-%s must not be size-evicted", i)
+            .contains("s3://t" + i + "/root.pb");
+      }
+    } finally {
+      store.close();
+    }
+  }
 }

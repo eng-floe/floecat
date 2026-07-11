@@ -93,7 +93,14 @@ public class QueryContextStoreImpl implements QueryContextStore {
   void init() {
     cache =
         Caffeine.newBuilder()
-            .maximumSize(Math.max(1, maxSize))
+            // A committed context is a durable GC root: while a query is ACTIVE its pinned blobs
+            // must survive, and CasBlobGc treats referencedPinBlobUris() as live roots. Size
+            // eviction would silently unroot a live query's pins under load and let GC delete a
+            // blob it is still reading. So ACTIVE contexts weigh 0 — they are bounded solely by
+            // the safety-expiry TTL (the intended bound, releasing an abandoned query's pins);
+            // only terminal contexts count toward the size cap.
+            .maximumWeight(Math.max(1, maxSize))
+            .weigher((String k, QueryContext ctx) -> ctx != null && ctx.isActive() ? 0 : 1)
             .expireAfterWrite(Duration.ofMinutes(Math.max(1, safetyExpiryMinutes)))
             .recordStats()
             .removalListener(

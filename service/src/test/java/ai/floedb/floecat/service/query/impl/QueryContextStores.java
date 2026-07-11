@@ -31,4 +31,16 @@ public final class QueryContextStores {
     store.init();
     return store;
   }
+
+  /** As {@link #forTesting()} but with an explicit size cap (to exercise eviction weighting). */
+  public static QueryContextStoreImpl forTesting(long maxSize) {
+    QueryContextStoreImpl store = new QueryContextStoreImpl();
+    store.defaultTtlMs = 60_000L;
+    store.endedGraceMs = 15_000L;
+    store.maxSize = maxSize;
+    store.safetyExpiryMinutes = 10L;
+    store.resolvingPinGraceMs = 60_000L;
+    store.init();
+    return store;
+  }
 }
