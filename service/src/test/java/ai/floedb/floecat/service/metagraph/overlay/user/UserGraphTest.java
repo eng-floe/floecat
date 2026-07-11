@@ -36,13 +36,19 @@ import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.query.rpc.PinKind;
+import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
+import ai.floedb.floecat.service.catalog.impl.TableRootMutations;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.testsupport.FakeCatalogRepository;
 import ai.floedb.floecat.service.testsupport.FakeNamespaceRepository;
 import ai.floedb.floecat.service.testsupport.FakeTableRepository;
 import ai.floedb.floecat.service.testsupport.FakeViewRepository;
 import ai.floedb.floecat.service.testsupport.SecurityTestSupport.FakePrincipalProvider;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
+import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
+import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
@@ -66,6 +72,8 @@ class UserGraphTest {
   FakePrincipalProvider principalProvider;
   UserGraph graph;
   TestObservability observability;
+  TableRootRepository tableRootRepository;
+  TableRootCommitter rootCommitter;
 
   @BeforeEach
   void setUp() {
@@ -77,6 +85,9 @@ class UserGraphTest {
 
     observability = new TestObservability();
     principalProvider = new FakePrincipalProvider("account");
+    tableRootRepository =
+        new TableRootRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    rootCommitter = new TableRootCommitter(tableRootRepository);
     graph =
         new UserGraph(
             catalogRepository,
@@ -84,6 +95,7 @@ class UserGraphTest {
             snapshotRepository,
             tableRepository,
             viewRepository,
+            tableRootRepository,
             observability,
             principalProvider,
             1024L,
@@ -247,6 +259,7 @@ class UserGraphTest {
             snapshotRepository,
             tableRepository,
             viewRepository,
+            tableRootRepository,
             observability,
             principalProvider,
             42L, // cache size
@@ -274,6 +287,7 @@ class UserGraphTest {
             snapshotRepository,
             tableRepository,
             viewRepository,
+            tableRootRepository,
             observability,
             principalProvider,
             0L, // cache size (disabled)
@@ -296,6 +310,7 @@ class UserGraphTest {
             snapshotRepository,
             tableRepository,
             viewRepository,
+            tableRootRepository,
             observability,
             principalProvider,
             0L, // node cache disabled
@@ -528,41 +543,91 @@ class UserGraphTest {
   }
 
   @Test
-  void snapshotPinUsesOverrides() {
+  void tablePinUsesOverrides() {
+    // UserGraph delegates to SnapshotHelper, which resolves pins through the table root; seed the
+    // table blob, the snapshot, and the root entry the resolution follows.
     ResourceId tableId = rid("account", "tbl-override", ResourceKind.RK_TABLE);
-    SnapshotRef override = SnapshotRef.newBuilder().setSnapshotId(42).build();
+    tableRepository.putMeta(tableId, blobMeta(1L, "s3://tbl-override/table.pb"));
+    snapshotRepository.put(
+        tableId,
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(42)
+            .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(50))
+            .build());
+    commitRootEntry(tableId, 42, 50, "s3://tbl-override/table.pb");
 
-    SnapshotPin pin = graph.snapshotPinFor("corr", tableId, override, Optional.empty());
-
+    TablePin pin =
+        graph.tablePinFor(
+            "corr", tableId, SnapshotRef.newBuilder().setSnapshotId(42).build(), Optional.empty());
+    assertThat(pin.getPinKind()).isEqualTo(PinKind.PIN_KIND_SNAPSHOT_ID);
     assertThat(pin.getSnapshotId()).isEqualTo(42);
+    assertThat(pin.getTableBlobUri()).isEqualTo("s3://tbl-override/table.pb");
+    assertThat(pin.getSnapshotBlobUri()).isEqualTo("s3://tbl-override/snap-42.pb");
 
     Timestamp ts = Timestamp.newBuilder().setSeconds(123).build();
-    SnapshotRef asOf = SnapshotRef.newBuilder().setAsOf(ts).build();
-    SnapshotPin pinTs = graph.snapshotPinFor("corr", tableId, asOf, Optional.empty());
-    assertThat(pinTs.hasAsOf()).isTrue();
-    assertThat(pinTs.getAsOf()).isEqualTo(ts);
+    TablePin pinTs =
+        graph.tablePinFor(
+            "corr", tableId, SnapshotRef.newBuilder().setAsOf(ts).build(), Optional.empty());
+    assertThat(pinTs.getPinKind()).isEqualTo(PinKind.PIN_KIND_AS_OF);
+    assertThat(pinTs.getOriginalAsOf()).isEqualTo(ts);
+    assertThat(pinTs.getSnapshotId()).isEqualTo(42); // predecessor at or before the timestamp
   }
 
   @Test
-  void snapshotPinUsesDefaultAndCurrent() {
+  void tablePinUsesDefaultAndCurrent() {
     ResourceId tableId = rid("account", "tbl-default", ResourceKind.RK_TABLE);
+    tableRepository.putMeta(tableId, blobMeta(1L, "s3://tbl-default/table.pb"));
     Timestamp defaultTs = Timestamp.newBuilder().setSeconds(456).build();
 
-    SnapshotPin defaultPin = graph.snapshotPinFor("corr", tableId, null, Optional.of(defaultTs));
-    assertThat(defaultPin.hasAsOf()).isTrue();
-    assertThat(defaultPin.getAsOf()).isEqualTo(defaultTs);
+    // AS_OF default resolves once to the predecessor entry on the root manifest.
+    snapshotRepository.put(
+        tableId,
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(100)
+            .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(200))
+            .build());
+    commitRootEntry(tableId, 100, 200, "s3://tbl-default/table.pb");
+    TablePin defaultPin = graph.tablePinFor("corr", tableId, null, Optional.of(defaultTs));
+    assertThat(defaultPin.getPinKind()).isEqualTo(PinKind.PIN_KIND_AS_OF);
+    assertThat(defaultPin.getOriginalAsOf()).isEqualTo(defaultTs);
+    assertThat(defaultPin.getSnapshotId()).isEqualTo(100);
 
-    Snapshot snapshot =
+    // CURRENT (no override, no default) pins the root's current snapshot (the advance rule moved
+    // currency to the newer entry when it was committed).
+    snapshotRepository.put(
+        tableId,
         Snapshot.newBuilder()
             .setTableId(tableId)
             .setSnapshotId(9999L)
-            .setSchemaJson("{}")
-            .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(123))
-            .build();
-    snapshotRepository.put(tableId, snapshot);
-
-    SnapshotPin current = graph.snapshotPinFor("corr", tableId, null, Optional.empty());
+            .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(300))
+            .build());
+    commitRootEntry(tableId, 9999, 300, "s3://tbl-default/table.pb");
+    TablePin current = graph.tablePinFor("corr", tableId, null, Optional.empty());
+    assertThat(current.getPinKind()).isEqualTo(PinKind.PIN_KIND_CURRENT);
     assertThat(current.getSnapshotId()).isEqualTo(9999);
+    assertThat(current.getTableBlobUri()).isEqualTo("s3://tbl-default/table.pb");
+  }
+
+  /** Commit a snapshot's manifest entry onto the table root, refs matching the fakes' identity. */
+  private void commitRootEntry(
+      ResourceId tableId, long snapshotId, long upstreamSeconds, String tableBlobUri) {
+    rootCommitter.commit(
+        tableId,
+        TableRootMutations.upsertSnapshot(
+            tableRootRepository,
+            tableId,
+            ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
+                .setSnapshotId(snapshotId)
+                .setSnapshotRef(
+                    ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
+                        .setUri("s3://" + tableId.getId() + "/snap-" + snapshotId + ".pb")
+                        .setVersion("etag-s" + snapshotId))
+                .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(upstreamSeconds))
+                .build(),
+            ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(tableBlobUri).build(),
+            true));
   }
 
   @Test

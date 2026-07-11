@@ -35,11 +35,11 @@ import ai.floedb.floecat.query.rpc.QueryService;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.query.rpc.RenewQueryRequest;
 import ai.floedb.floecat.query.rpc.RenewQueryResponse;
-import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -155,10 +155,10 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
 
                   var metadata =
                       metadataAssembler.assemble(
-                          correlationId, request.getInputsList(), asOfDefault, catalogId);
+                          queryId, correlationId, request.getInputsList(), asOfDefault, catalogId);
 
                   byte[] expansionBytes = metadata.expansionMap().toByteArray();
-                  byte[] snapshotBytes = metadata.snapshotSet().toByteArray();
+                  byte[] relationPinBytes = metadata.relationPinSet().toByteArray();
                   byte[] obligationsBytes = metadata.obligationsBytes();
 
                   var ctx =
@@ -166,13 +166,16 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           queryId,
                           pc,
                           expansionBytes,
-                          snapshotBytes,
+                          relationPinBytes,
                           obligationsBytes,
                           asOfDefaultBytes,
                           ttlMs,
                           1L,
                           catalogId);
 
+                  // The resolved pin blobs are already transient GC roots (the resolver registered
+                  // them at construction, protected through resolution and until this commit), so
+                  // storing the context — a durable GC root — needs no lease here.
                   boolean clientProvidedId = request.hasQueryId();
                   boolean inserted;
                   if (clientProvidedId) {
@@ -200,6 +203,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           .setSnapshots(metadata.snapshotSet())
                           .setExpansion(metadata.expansionMap())
                           .addAllObligations(metadata.obligations())
+                          .addAllRelationPins(QueryPins.identities(metadata.relationPinSet()))
                           .build();
 
                   return BeginQueryResponse.newBuilder().setQuery(descriptor).build();
@@ -312,13 +316,13 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           .setCreatedAt(ts(ctx.getCreatedAtMs()))
                           .setExpiresAt(ts(ctx.getExpiresAtMs()));
 
-                  if (ctx.getSnapshotSet() != null) {
-                    try {
-                      builder.setSnapshots(SnapshotSet.parseFrom(ctx.getSnapshotSet()));
-                    } catch (InvalidProtocolBufferException e) {
-                      throw GrpcErrors.internal(
-                          correlationId, QUERY_SNAPSHOT_PARSE_FAILED, Map.of("query_id", queryId));
-                    }
+                  if (ctx.getRelationPins() != null) {
+                    // Expose both descriptor views of the stored pins: the snapshot-selector
+                    // projection and the opaque per-relation identities BeginQuery advertises, so a
+                    // caller that polls GetQuery keeps the cache/change-detection contract.
+                    var pins = ctx.parseRelationPins(correlationId);
+                    builder.setSnapshots(QueryPins.toSnapshotSet(pins));
+                    builder.addAllRelationPins(QueryPins.identities(pins));
                   }
 
                   if (ctx.getExpansionMap() != null) {

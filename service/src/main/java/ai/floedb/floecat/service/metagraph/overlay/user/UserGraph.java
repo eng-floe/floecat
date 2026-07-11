@@ -23,7 +23,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
 import ai.floedb.floecat.metagraph.model.*;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.cache.GraphCacheManager;
@@ -32,10 +33,12 @@ import ai.floedb.floecat.service.metagraph.loader.NodeLoader;
 import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
+import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.telemetry.Observability;
@@ -97,31 +100,35 @@ public final class UserGraph {
       SnapshotRepository snapshotRepo,
       TableRepository tableRepo,
       ViewRepository viewRepo,
+      TableRootRepository tableRootRepo,
+      TableRootCommitter rootCommitter,
       Observability observability,
       PrincipalProvider principal,
       @ConfigProperty(name = "floecat.metadata.graph.cache-max-size", defaultValue = "50000")
           long cacheMaxSize,
       @ConfigProperty(name = "floecat.metadata.graph.meta-cache-ttl-seconds", defaultValue = "2")
           long metaCacheTtlSeconds,
-      EngineHintManager engineHints) {
+      EngineHintManager engineHints,
+      ai.floedb.floecat.stats.spi.StatsStore statsStore) {
     this.cache =
         new GraphCacheManager(
             cacheMaxSize > 0, cacheMaxSize, Math.max(0L, metaCacheTtlSeconds), observability);
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
-    this.snapshots = new SnapshotHelper(snapshotRepo);
+    this.snapshots = new SnapshotHelper(snapshotRepo, tableRootRepo, rootCommitter, statsStore);
     this.hints = engineHints;
     this.principal = principal;
   }
 
-  /** TEST-ONLY constructor with explicit cache knobs. */
+  /** TEST-ONLY constructor with explicit cache knobs; no legacy-root synthesis. */
   public UserGraph(
       CatalogRepository catalogRepo,
       NamespaceRepository nsRepo,
       SnapshotRepository snapshotRepo,
       TableRepository tableRepo,
       ViewRepository viewRepo,
+      TableRootRepository tableRootRepo,
       Observability observability,
       PrincipalProvider principal,
       long cacheMaxSize,
@@ -132,20 +139,24 @@ public final class UserGraph {
         snapshotRepo,
         tableRepo,
         viewRepo,
+        tableRootRepo,
+        new TableRootCommitter(tableRootRepo),
         observability,
         principal,
         cacheMaxSize,
         2L,
-        engineHints);
+        engineHints,
+        null);
   }
 
-  /** TEST-ONLY constructor */
+  /** TEST-ONLY constructor; no legacy-root synthesis. */
   public UserGraph(
       CatalogRepository catalogRepo,
       NamespaceRepository nsRepo,
       SnapshotRepository snapshotRepo,
       TableRepository tableRepo,
       ViewRepository viewRepo,
+      TableRootRepository tableRootRepo,
       Observability observability) {
     this(
         catalogRepo,
@@ -153,6 +164,8 @@ public final class UserGraph {
         snapshotRepo,
         tableRepo,
         viewRepo,
+        tableRootRepo,
+        new TableRootCommitter(tableRootRepo),
         observability,
         new PrincipalProvider() {
           @Override
@@ -162,6 +175,7 @@ public final class UserGraph {
         },
         1024L,
         2L,
+        null,
         null);
   }
 
@@ -347,10 +361,9 @@ public final class UserGraph {
    * @param asOfDefault default timestamp for time travel queries
    * @return the snapshot pin for the table
    */
-  public SnapshotPin snapshotPinFor(
+  public TablePin tablePinFor(
       String cid, ResourceId tableId, SnapshotRef override, Optional<Timestamp> asOfDefault) {
-
-    return snapshots.snapshotPinFor(cid, tableId, override, asOfDefault);
+    return snapshots.tablePinFor(cid, tableId, override, asOfDefault);
   }
 
   /**
@@ -389,7 +402,19 @@ public final class UserGraph {
    * @return the schema JSON string
    */
   public String schemaJsonFor(String cid, UserTableNode tbl, SnapshotRef snapshot) {
-    return snapshots.schemaJsonFor(cid, tbl, snapshot, tbl::schemaJson);
+    return schemaJsonFor(cid, tbl, snapshot, "");
+  }
+
+  /**
+   * Gets the schema JSON for a table, preferring the pinned snapshot blob. When {@code
+   * snapshotBlobUri} names a pinned snapshot blob, the schema is read from that immutable blob
+   * rather than re-hydrating the snapshot through the live {@code (table, snapshot id)} pointer,
+   * which an in-place {@code UpdateSnapshot} can repoint after the pin was validated. Empty uri
+   * resolves the snapshot reference against the live pointer.
+   */
+  public String schemaJsonFor(
+      String cid, UserTableNode tbl, SnapshotRef snapshot, String snapshotBlobUri) {
+    return snapshots.schemaJsonFor(cid, tbl, snapshot, snapshotBlobUri, tbl::schemaJson);
   }
 
   /**
@@ -401,13 +426,41 @@ public final class UserGraph {
    * @return the schema resolution containing the table and schema JSON
    */
   public SchemaResolution schemaFor(String cid, ResourceId tblId, SnapshotRef snapshot) {
+    return schemaFor(cid, tblId, snapshot, "", "");
+  }
+
+  /**
+   * Schema resolution for a pinned query. When {@code tableBlobUri} names a pinned table blob, the
+   * table node is loaded from that immutable blob so the mapper interprets the (snapshot-sourced)
+   * schema with the pinned table's format/connector metadata — never the drifted current pointer —
+   * and the resolution survives a drop/unpublish of the current table. Empty uri reads the current
+   * pointer (a non-pinned caller).
+   *
+   * @param cid correlation ID for error reporting
+   * @param tblId the table resource ID
+   * @param snapshot the snapshot reference
+   * @param tableBlobUri the pinned table blob, or empty to read the current pointer
+   * @param snapshotBlobUri the pinned snapshot blob, or empty to resolve via the live pointer
+   * @return the schema resolution containing the table and schema JSON
+   */
+  public SchemaResolution schemaFor(
+      String cid,
+      ResourceId tblId,
+      SnapshotRef snapshot,
+      String tableBlobUri,
+      String snapshotBlobUri) {
     UserTableNode tbl =
-        table(tblId)
-            .orElseThrow(
-                () ->
-                    GrpcErrors.notFound(
-                        cid, GeneratedErrorMessages.MessageKey.TABLE, Map.of("id", tblId.getId())));
-    return new SchemaResolution(tbl, schemaJsonFor(cid, tbl, snapshot));
+        (tableBlobUri == null || tableBlobUri.isEmpty())
+            ? table(tblId)
+                .orElseThrow(
+                    () ->
+                        GrpcErrors.notFound(
+                            cid,
+                            GeneratedErrorMessages.MessageKey.TABLE,
+                            Map.of("id", tblId.getId())))
+            : PinValidator.requirePinnedTableBlob(
+                nodes.tableFromBlob(tblId, tableBlobUri), cid, tblId);
+    return new SchemaResolution(tbl, schemaJsonFor(cid, tbl, snapshot, snapshotBlobUri));
   }
 
   public record SchemaResolution(UserTableNode table, String schemaJson) {}

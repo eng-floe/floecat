@@ -99,6 +99,20 @@ public class NodeLoader {
   }
 
   /**
+   * Loads a table node from a specific immutable blob rather than the current pointer. Unlike
+   * {@link #load}, there is no pointer fallback: a query pinned to this blob must read that exact
+   * blob, so a miss returns empty (the caller fails hard) instead of silently drifting to current
+   * state.
+   */
+  public Optional<UserTableNode> tableFromBlob(ResourceId id, String blobUri) {
+    if (id.getKind() != ResourceKind.RK_TABLE || blobUri == null || blobUri.isEmpty()) {
+      return Optional.empty();
+    }
+    MutationMeta meta = MutationMeta.newBuilder().setBlobUri(blobUri).build();
+    return tableRepository.getByBlobUri(blobUri).map(table -> toTableNode(table, meta));
+  }
+
+  /**
    * Loads the mutation metadata for the provided resource. Graph consumers only use the pointer
    * version (cache key) and timestamps, so this is a pointer-only read — no blob HEAD, blank etag.
    */

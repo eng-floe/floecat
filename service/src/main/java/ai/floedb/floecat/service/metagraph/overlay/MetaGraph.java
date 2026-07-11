@@ -31,7 +31,6 @@ import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.spi.TopologyNames;
@@ -398,21 +397,19 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
    * @return the snapshot pin, or null for system tables
    */
   @Override
-  public SnapshotPin snapshotPinFor(
+  public ai.floedb.floecat.query.rpc.TablePin tablePinFor(
       String correlationId,
       ResourceId tableId,
       SnapshotRef override,
       Optional<Timestamp> asOfDefault) {
-    // System objects don't need snapshot pins. The system graph is an in-memory registry, so probe
-    // it directly instead of the merged resolve, which would hydrate the full user node from
-    // storage just to conclude the table is not a system table.
+    // System tables have no snapshots and are never pinned.
     if (systemGraph
         .resolve(tableId, engineContext())
         .filter(SystemTableNode.class::isInstance)
         .isPresent()) {
       return null;
     }
-    return userGraph.snapshotPinFor(correlationId, tableId, override, asOfDefault);
+    return userGraph.tablePinFor(correlationId, tableId, override, asOfDefault);
   }
 
   /**
@@ -688,12 +685,19 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
    * @param correlationId correlation ID for error reporting
    * @param tableId the table resource ID
    * @param snapshot the snapshot reference
+   * @param tableBlobUri the pinned table blob, or empty to read the current pointer
+   * @param snapshotBlobUri the pinned snapshot blob, or empty to resolve via the live pointer
    * @return the schema resolution, or null if not found
    */
   @Override
   public SchemaResolution schemaFor(
-      String correlationId, ResourceId tableId, SnapshotRef snapshot) {
-    UserGraph.SchemaResolution delegate = userGraph.schemaFor(correlationId, tableId, snapshot);
+      String correlationId,
+      ResourceId tableId,
+      SnapshotRef snapshot,
+      String tableBlobUri,
+      String snapshotBlobUri) {
+    UserGraph.SchemaResolution delegate =
+        userGraph.schemaFor(correlationId, tableId, snapshot, tableBlobUri, snapshotBlobUri);
     if (delegate == null) {
       return null;
     }

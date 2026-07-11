@@ -28,7 +28,10 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.ViewNode;
+import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
@@ -48,9 +51,8 @@ public class QueryInputResolverTest {
 
   @BeforeEach
   void init() {
-    resolver = new QueryInputResolver();
     metadataGraph = new FakeGraph();
-    resolver.metadataGraph = metadataGraph;
+    resolver = new QueryInputResolver(metadataGraph);
   }
 
   NameRef name(String cat, String... parts) {
@@ -68,6 +70,36 @@ public class QueryInputResolverTest {
 
   ResourceId viewRid(String id) {
     return ResourceId.newBuilder().setId(id).setKind(ResourceKind.RK_VIEW).build();
+  }
+
+  /**
+   * As each pin is constructed, the resolver registers its blobs as transient GC roots — the single
+   * transparent seam that protects a resolved-but-not-yet-persisted blob on every resolve path.
+   */
+  @Test
+  void registersResolvedPinBlobsAsTransientRoots() {
+    var store = org.mockito.Mockito.mock(QueryContextStore.class);
+    var withStore = new QueryInputResolver(metadataGraph, store);
+
+    NameRef n = name("c", "ns", "t");
+    metadataGraph.bind(n, rid("T1"));
+
+    withStore.resolveInputs(
+        "q1",
+        "cid",
+        List.of(QueryInput.newBuilder().setName(n).build()),
+        Optional.empty(),
+        Optional.empty(),
+        new java.util.LinkedHashMap<>(),
+        null);
+
+    // Registered under the stable query id (not the per-RPC correlation id), so the committing RPC
+    // releases the roots by the same key regardless of which RPC resolved the pins.
+    org.mockito.Mockito.verify(store)
+        .registerResolvingPinBlobs(
+            org.mockito.ArgumentMatchers.eq("q1"),
+            org.mockito.ArgumentMatchers.argThat(
+                uris -> uris.contains("s3://T1/table.pb") && uris.contains("s3://T1/snap.pb")));
   }
 
   /** Resolving a name that maps only to a table should return the table id. */
@@ -200,6 +232,7 @@ public class QueryInputResolverTest {
     NameRef n = name("c", "ns", "t3");
     ResourceId tableId = rid("T3");
     metadataGraph.bind(n, tableId);
+    metadataGraph.setAsOfSnapshot(tableId, 321L);
     Timestamp ts = Timestamp.newBuilder().setSeconds(100).build();
 
     QueryInput qi =
@@ -214,22 +247,25 @@ public class QueryInputResolverTest {
             .snapshotSet()
             .getPins(0);
 
-    assertFalse(p.hasSnapshotId());
-    assertEquals(ts, p.getAsOf());
+    // AS_OF resolves to a concrete snapshot; the projected pin names it, not the raw timestamp.
+    assertTrue(p.hasSnapshotId());
+    assertEquals(321L, p.getSnapshotId());
+    // The timestamp is still what the resolver hands tablePinFor to resolve against.
     FakeGraph.PinCall call = metadataGraph.pinCalls().get(metadataGraph.pinCalls().size() - 1);
     assertEquals(Optional.empty(), call.asOfDefault());
     assertEquals(ts, call.override().getAsOf());
   }
 
   /**
-   * If no snapshot override is given but an as-of-default is provided, the resolver must use a
-   * timestamp-based pin.
+   * If no snapshot override is given but an as-of-default is provided, the resolver must pin via
+   * that timestamp, resolving it to a concrete snapshot.
    */
   @Test
   void snapshot_asof_default() {
     NameRef n = name("c", "ns", "t4");
     ResourceId tableId = rid("T4");
     metadataGraph.bind(n, tableId);
+    metadataGraph.setAsOfSnapshot(tableId, 654L);
 
     Timestamp ts = Timestamp.newBuilder().setSeconds(50).build();
 
@@ -243,8 +279,9 @@ public class QueryInputResolverTest {
             .snapshotSet()
             .getPins(0);
 
-    assertFalse(p.hasSnapshotId());
-    assertEquals(ts, p.getAsOf());
+    // The as-of default resolves to a concrete snapshot; the pin names it.
+    assertTrue(p.hasSnapshotId());
+    assertEquals(654L, p.getSnapshotId());
     FakeGraph.PinCall call = metadataGraph.pinCalls().get(metadataGraph.pinCalls().size() - 1);
     assertEquals(Optional.of(ts), call.asOfDefault());
     assertEquals(SnapshotRef.WhichCase.WHICH_NOT_SET, call.override().getWhichCase());
@@ -380,6 +417,7 @@ public class QueryInputResolverTest {
     NameRef n = name("c", "ns", "t6");
     ResourceId tableId = rid("T6");
     metadataGraph.bind(n, tableId);
+    metadataGraph.setAsOfSnapshot(tableId, 987L);
 
     Timestamp ts = Timestamp.newBuilder().setSeconds(999).build();
 
@@ -398,8 +436,8 @@ public class QueryInputResolverTest {
             .snapshotSet()
             .getPins(0);
 
-    assertEquals(0L, p.getSnapshotId());
-    assertEquals(ts, p.getAsOf());
+    // The surviving as_of resolves to the concrete snapshot, not the discarded snapshot_id 555.
+    assertEquals(987L, p.getSnapshotId());
   }
 
   /**
@@ -543,6 +581,8 @@ public class QueryInputResolverTest {
     ResourceId base = rid("BASE_ASOF");
     ResourceId viewId = viewRid("V1");
     metadataGraph.addNode(viewNode(viewId, List.of(nameRef(base))));
+    // AS-OF resolves to a concrete snapshot at pin time; that resolved id is what the pin carries.
+    metadataGraph.setAsOfSnapshot(base, 555L);
 
     Timestamp ts = Timestamp.newBuilder().setSeconds(202).build();
 
@@ -560,10 +600,10 @@ public class QueryInputResolverTest {
 
     assertEquals(1, pins.size());
     assertEquals("BASE_ASOF", pins.get(0).getTableId().getId());
-    assertEquals(0L, pins.get(0).getSnapshotId());
-    assertEquals(ts, pins.get(0).getAsOf());
+    // The projected pin names the resolved snapshot, not the raw timestamp.
+    assertEquals(555L, pins.get(0).getSnapshotId());
 
-    // Ensure the effective AS-OF was passed through to snapshotPinFor for the base table.
+    // Ensure the effective AS-OF was passed through to tablePinFor for the base table.
     FakeGraph.PinCall call = metadataGraph.pinCalls().get(metadataGraph.pinCalls().size() - 1);
     assertEquals("BASE_ASOF", call.tableId().getId());
 
@@ -595,12 +635,11 @@ public class QueryInputResolverTest {
   }
 
   @Test
-  void stronger_pin_wins_when_same_table_seen_twice() {
-    ResourceId base = rid("BASE_STRONG");
-    ResourceId viewId = viewRid("V_STRONG");
-    metadataGraph.addNode(viewNode(viewId, List.of(nameRef(base))));
-
-    Timestamp ts = Timestamp.newBuilder().setSeconds(300).build();
+  void first_touch_pin_reused_when_same_table_seen_twice() {
+    // First-touch wins: an explicit snapshot pins the table, and a later current-snapshot
+    // reference to the same table reuses that pin rather than upgrading or replacing it.
+    ResourceId base = rid("BASE_REUSE");
+    metadataGraph.setCurrentSnapshot(base, 42L);
 
     List<SnapshotPin> pins =
         resolver
@@ -608,12 +647,91 @@ public class QueryInputResolverTest {
                 "cid",
                 List.of(
                     QueryInput.newBuilder()
-                        .setViewId(viewId)
+                        .setTableId(base)
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(888))
+                        .build(),
+                    QueryInput.newBuilder().setTableId(base).build()),
+                Optional.empty(),
+                Optional.empty())
+            .snapshotSet()
+            .getPinsList();
+
+    assertEquals(1, pins.size());
+    assertEquals("BASE_REUSE", pins.get(0).getTableId().getId());
+    assertEquals(888, pins.get(0).getSnapshotId());
+  }
+
+  @Test
+  void conflicting_explicit_snapshots_for_same_table_fail() {
+    // Two incompatible temporal intents for the same table must fail planning rather than
+    // silently depend on resolution order.
+    ResourceId base = rid("BASE_CONFLICT");
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            resolver.resolveInputs(
+                "cid",
+                List.of(
+                    QueryInput.newBuilder()
+                        .setTableId(base)
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(888))
+                        .build(),
+                    QueryInput.newBuilder()
+                        .setTableId(base)
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(999))
+                        .build()),
+                Optional.empty(),
+                Optional.empty()));
+  }
+
+  @Test
+  void conflicting_asof_and_explicit_snapshot_for_same_table_fail() {
+    // An AS_OF reference resolves to a concrete snapshot; if a later explicit-snapshot reference to
+    // the same table names a different snapshot, the two temporal intents conflict and planning
+    // fails — the AS_OF must not silently win or be upgraded by resolution order.
+    ResourceId base = rid("BASE_ASOF_CONFLICT");
+    metadataGraph.setAsOfSnapshot(base, 700L);
+    Timestamp ts = Timestamp.newBuilder().setSeconds(303).build();
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            resolver.resolveInputs(
+                "cid",
+                List.of(
+                    QueryInput.newBuilder()
+                        .setTableId(base)
                         .setSnapshot(SnapshotRef.newBuilder().setAsOf(ts))
                         .build(),
                     QueryInput.newBuilder()
                         .setTableId(base)
-                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(888))
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(999))
+                        .build()),
+                Optional.empty(),
+                Optional.empty()));
+  }
+
+  @Test
+  void asof_and_explicit_resolving_to_same_snapshot_are_compatible() {
+    // First-touch AS_OF resolves to snapshot 700; a later explicit reference to the same snapshot
+    // is compatible and reuses the pin, which still projects the resolved snapshot id.
+    ResourceId base = rid("BASE_ASOF_REUSE");
+    metadataGraph.setAsOfSnapshot(base, 700L);
+    Timestamp ts = Timestamp.newBuilder().setSeconds(404).build();
+
+    List<SnapshotPin> pins =
+        resolver
+            .resolveInputs(
+                "cid",
+                List.of(
+                    QueryInput.newBuilder()
+                        .setTableId(base)
+                        .setSnapshot(SnapshotRef.newBuilder().setAsOf(ts))
+                        .build(),
+                    QueryInput.newBuilder()
+                        .setTableId(base)
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(700))
                         .build()),
                 Optional.empty(),
                 Optional.empty())
@@ -621,9 +739,8 @@ public class QueryInputResolverTest {
             .getPinsList();
 
     assertEquals(1, pins.size());
-    assertEquals("BASE_STRONG", pins.get(0).getTableId().getId());
-    assertEquals(888, pins.get(0).getSnapshotId());
-    assertEquals(0, pins.get(0).getAsOf().getSeconds());
+    assertEquals("BASE_ASOF_REUSE", pins.get(0).getTableId().getId());
+    assertEquals(700L, pins.get(0).getSnapshotId());
   }
 
   @Test
@@ -631,10 +748,12 @@ public class QueryInputResolverTest {
     ResourceId tableId = rid("CACHE_TABLE");
     metadataGraph.setCurrentSnapshot(tableId, 1234L);
     QueryInput input = QueryInput.newBuilder().setTableId(tableId).build();
-    Map<ResourceId, SnapshotPin> cache = new HashMap<>();
+    Map<ResourceId, TablePin> cache = new HashMap<>();
 
-    resolver.resolveInputs("cid-a", List.of(input), Optional.empty(), Optional.empty(), cache);
-    resolver.resolveInputs("cid-b", List.of(input), Optional.empty(), Optional.empty(), cache);
+    resolver.resolveInputs(
+        "", "cid-a", List.of(input), Optional.empty(), Optional.empty(), cache, null);
+    resolver.resolveInputs(
+        "", "cid-b", List.of(input), Optional.empty(), Optional.empty(), cache, null);
 
     long tablePinCalls =
         metadataGraph.pinCalls().stream().filter(call -> call.tableId().equals(tableId)).count();
@@ -744,6 +863,7 @@ public class QueryInputResolverTest {
     private final Map<NameRef, ResourceId> nameBindings = new HashMap<>();
     private final Map<NameRef, RuntimeException> failures = new HashMap<>();
     private final Map<String, Long> currentSnapshots = new HashMap<>();
+    private final Map<String, Long> asOfSnapshots = new HashMap<>();
     private final List<PinCall> pinCalls = new ArrayList<>();
     private final Map<ResourceId, String> catalogNames = new HashMap<>();
 
@@ -789,7 +909,7 @@ public class QueryInputResolverTest {
     }
 
     @Override
-    public SnapshotPin snapshotPinFor(
+    public TablePin tablePinFor(
         String correlationId,
         ResourceId tableId,
         SnapshotRef override,
@@ -797,16 +917,29 @@ public class QueryInputResolverTest {
 
       pinCalls.add(new PinCall(correlationId, tableId, override, asOfDefault));
 
-      SnapshotPin.Builder builder = SnapshotPin.newBuilder().setTableId(tableId);
+      TablePin.Builder builder =
+          TablePin.newBuilder()
+              .setTableId(tableId)
+              .setTableBlobUri("s3://" + tableId.getId() + "/table.pb")
+              .setSnapshotBlobUri("s3://" + tableId.getId() + "/snap.pb");
 
       if (override != null && override.hasSnapshotId()) {
-        builder.setSnapshotId(override.getSnapshotId());
+        builder.setPinKind(PinKind.PIN_KIND_SNAPSHOT_ID).setSnapshotId(override.getSnapshotId());
       } else if (override != null && override.hasAsOf()) {
-        builder.setAsOf(override.getAsOf());
+        // Mirror the real resolver: AS_OF resolves once to a concrete snapshot at pin time. The
+        // timestamp is kept only as provenance; the resolved snapshot id is the pin's identity.
+        builder
+            .setPinKind(PinKind.PIN_KIND_AS_OF)
+            .setOriginalAsOf(override.getAsOf())
+            .setSnapshotId(asOfSnapshots.getOrDefault(tableId.getId(), 0L));
       } else if (asOfDefault.isPresent()) {
-        builder.setAsOf(asOfDefault.get());
+        builder
+            .setPinKind(PinKind.PIN_KIND_AS_OF)
+            .setOriginalAsOf(asOfDefault.get())
+            .setSnapshotId(asOfSnapshots.getOrDefault(tableId.getId(), 0L));
       } else {
         long snapshot = currentSnapshots.getOrDefault(tableId.getId(), 0L);
+        builder.setPinKind(PinKind.PIN_KIND_CURRENT);
         if (snapshot > 0) builder.setSnapshotId(snapshot);
       }
 
@@ -825,6 +958,10 @@ public class QueryInputResolverTest {
 
     void setCurrentSnapshot(ResourceId id, long snapshotId) {
       currentSnapshots.put(id.getId(), snapshotId);
+    }
+
+    void setAsOfSnapshot(ResourceId id, long snapshotId) {
+      asOfSnapshots.put(id.getId(), snapshotId);
     }
 
     List<PinCall> pinCalls() {

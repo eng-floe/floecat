@@ -37,7 +37,7 @@ import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.utils.EngineContext;
@@ -213,18 +213,18 @@ class MetaGraphTest {
   }
 
   @Test
-  void snapshotPinFor_system_returnsNull() {
-    SnapshotPin pin = meta.snapshotPinFor("c", sysTable, null, Optional.empty());
+  void tablePinFor_system_returnsNull() {
+    TablePin pin = meta.tablePinFor("c", sysTable, null, Optional.empty());
 
     assertThat(pin).isNull();
   }
 
   @Test
-  void snapshotPinFor_user_delegates() {
-    SnapshotPin expected = SnapshotPin.newBuilder().build();
-    when(user.snapshotPinFor(any(), any(), any(), any())).thenReturn(expected);
+  void tablePinFor_user_delegates() {
+    TablePin expected = TablePin.newBuilder().build();
+    when(user.tablePinFor(any(), any(), any(), any())).thenReturn(expected);
 
-    SnapshotPin pin = meta.snapshotPinFor("c", usrTable, null, Optional.empty());
+    TablePin pin = meta.tablePinFor("c", usrTable, null, Optional.empty());
 
     assertThat(pin).isEqualTo(expected);
   }

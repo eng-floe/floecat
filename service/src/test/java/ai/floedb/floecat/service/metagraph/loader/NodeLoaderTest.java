@@ -65,6 +65,58 @@ class NodeLoaderTest {
   }
 
   @Test
+  void tableFromBlobReadsThePinnedBlobAndNeverTheCurrentPointer() {
+    FakeTableRepository tableRepo = new FakeTableRepository();
+    NodeLoader loader =
+        new NodeLoader(
+            new FakeCatalogRepository(),
+            new FakeNamespaceRepository(),
+            tableRepo,
+            new FakeViewRepository());
+
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("account")
+            .setId("t1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    tableRepo.put(
+        Table.newBuilder()
+            .setResourceId(tableId)
+            .setDisplayName("orders")
+            .setSchemaJson("{}")
+            .build(),
+        MutationMeta.newBuilder().setPointerVersion(1L).setBlobUri("blob/pinned").build());
+
+    assertThat(loader.tableFromBlob(tableId, "blob/pinned")).isPresent();
+
+    // Read straight from the pinned blob: no pointer read, no getById fallback to current state.
+    assertThat(tableRepo.metaForSafeCount(tableId)).isEqualTo(0);
+    assertThat(tableRepo.getByIdCount(tableId)).isEqualTo(0);
+  }
+
+  @Test
+  void tableFromBlobIsEmptyWhenThePinnedBlobIsGone() {
+    FakeTableRepository tableRepo = new FakeTableRepository();
+    NodeLoader loader =
+        new NodeLoader(
+            new FakeCatalogRepository(),
+            new FakeNamespaceRepository(),
+            tableRepo,
+            new FakeViewRepository());
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("account")
+            .setId("t1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    // No fallback to the current pointer: a missing pinned blob is empty, so the caller fails hard.
+    assertThat(loader.tableFromBlob(tableId, "blob/absent")).isEmpty();
+    assertThat(tableRepo.getByIdCount(tableId)).isEqualTo(0);
+  }
+
+  @Test
   void parseFqn_nameOnly() {
     NameRef ref = NodeLoader.parseFqn("tbl");
     assertEquals("tbl", ref.getName());

@@ -19,7 +19,6 @@ package ai.floedb.floecat.service.testsupport;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.GraphNode;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
 import java.util.*;
 
 public final class FakeUserGraph {
@@ -55,10 +54,6 @@ public final class FakeUserGraph {
 
   List<GraphNode> listRelations(ResourceId cat) {
     return List.copyOf(relations);
-  }
-
-  SnapshotPin snapshotPinFor(String cid, ResourceId id, Object o, Optional<?> ts) {
-    return SnapshotPin.newBuilder().setSnapshotId(1).build();
   }
 
   Optional<NameRef> tableName(ResourceId id) {
