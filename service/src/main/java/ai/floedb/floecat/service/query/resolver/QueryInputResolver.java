@@ -330,6 +330,23 @@ public class QueryInputResolver {
     state.diagnostics.count(
         "pin.asof_snapshot_pins",
         (override != null && override.hasAsOf()) || asOfDefault.isPresent());
+    // Explicit snapshot_id: before re-resolving against the LIVE root (which throws NOT_FOUND once
+    // the snapshot has been deleted), reuse the query's existing committed pin if it already froze
+    // this exact snapshot — mirroring the CURRENT path's cache reuse and the first-touch-wins
+    // rule. A snapshot deleted mid-query keeps its pin's blobs GC-rooted, so a client restating the
+    // pinned id must get the pin back, not a hard NOT_FOUND. Only a DIFFERENT id re-resolves.
+    if (override != null && override.hasSnapshotId() && queryStore != null) {
+      Optional<TablePin> reused =
+          queryStore
+              .get(state.queryId)
+              .flatMap(
+                  ctx -> QueryPins.findTablePin(ctx.parseRelationPins(state.correlationId), rid))
+              .filter(pin -> pin.getSnapshotId() == override.getSnapshotId());
+      if (reused.isPresent()) {
+        state.diagnostics.count("pin.explicit_snapshot_pin_reuse");
+        return reused.get();
+      }
+    }
     long snapshotPinStartNs = System.nanoTime();
     TablePin resolved = metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault);
     state.diagnostics.count("pin.snapshot_calls");

@@ -195,6 +195,119 @@ public class QueryInputResolverTest {
     assertTrue(call.asOfDefault().isEmpty());
   }
 
+  @Test
+  void explicitSnapshotIdReusesTheExistingPinInsteadOfReResolving() {
+    // A snapshot deleted mid-query keeps its pin's blobs GC-rooted; a client restating the pinned
+    // id on a later DescribeInputs must get the pin back, not a hard NOT_FOUND from re-resolving
+    // against the live root. Reuse short-circuits before tablePinFor is ever called.
+    ResourceId tableId = rid("T2");
+    NameRef n = name("c", "ns", "t2");
+    metadataGraph.bind(n, tableId);
+
+    var existingPin =
+        ai.floedb.floecat.query.rpc.TablePin.newBuilder()
+            .setTableId(tableId)
+            .setPinKind(ai.floedb.floecat.query.rpc.PinKind.PIN_KIND_SNAPSHOT_ID)
+            .setSnapshotId(777)
+            .setTableBlobUri("s3://T2/pinned-table.pb")
+            .setSnapshotBlobUri("s3://T2/pinned-snap.pb")
+            .build();
+    var committed =
+        ai.floedb.floecat.service.query.impl.QueryContext.newActive(
+            "q-reuse",
+            ai.floedb.floecat.common.rpc.PrincipalContext.newBuilder().setAccountId("a").build(),
+            new byte[0],
+            ai.floedb.floecat.query.rpc.RelationPinSet.newBuilder()
+                .addPins(ai.floedb.floecat.service.query.QueryPins.ofTable(existingPin))
+                .build()
+                .toByteArray(),
+            new byte[0],
+            new byte[0],
+            60_000L,
+            1L,
+            rid("cat"));
+    var store = org.mockito.Mockito.mock(QueryContextStore.class);
+    org.mockito.Mockito.when(store.get("q-reuse")).thenReturn(java.util.Optional.of(committed));
+    var withStore = new QueryInputResolver(metadataGraph, store);
+
+    QueryInput qi =
+        QueryInput.newBuilder()
+            .setName(n)
+            .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(777))
+            .build();
+
+    SnapshotPin p =
+        withStore
+            .resolveInputs(
+                "q-reuse",
+                "cid",
+                List.of(qi),
+                Optional.<com.google.protobuf.Timestamp>empty(),
+                Optional.<ResourceId>empty(),
+                new java.util.LinkedHashMap<>(),
+                null)
+            .snapshotSet()
+            .getPins(0);
+
+    assertEquals(777, p.getSnapshotId());
+    assertTrue(
+        metadataGraph.pinCalls().isEmpty(),
+        "reuse must short-circuit before re-resolving against the live root");
+  }
+
+  @Test
+  void restatingADifferentSnapshotIdStillReResolves() {
+    // Reuse triggers ONLY when the restated id matches the pinned one; a different id must
+    // re-resolve (and reconcile) as before.
+    ResourceId tableId = rid("T3");
+    NameRef n = name("c", "ns", "t3");
+    metadataGraph.bind(n, tableId);
+    var existingPin =
+        ai.floedb.floecat.query.rpc.TablePin.newBuilder()
+            .setTableId(tableId)
+            .setPinKind(ai.floedb.floecat.query.rpc.PinKind.PIN_KIND_SNAPSHOT_ID)
+            .setSnapshotId(100)
+            .build();
+    var committed =
+        ai.floedb.floecat.service.query.impl.QueryContext.newActive(
+            "q-diff",
+            ai.floedb.floecat.common.rpc.PrincipalContext.newBuilder().setAccountId("a").build(),
+            new byte[0],
+            ai.floedb.floecat.query.rpc.RelationPinSet.newBuilder()
+                .addPins(ai.floedb.floecat.service.query.QueryPins.ofTable(existingPin))
+                .build()
+                .toByteArray(),
+            new byte[0],
+            new byte[0],
+            60_000L,
+            1L,
+            rid("cat"));
+    var store = org.mockito.Mockito.mock(QueryContextStore.class);
+    org.mockito.Mockito.when(store.get("q-diff")).thenReturn(java.util.Optional.of(committed));
+    var withStore = new QueryInputResolver(metadataGraph, store);
+
+    QueryInput qi =
+        QueryInput.newBuilder()
+            .setName(n)
+            .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(200))
+            .build();
+
+    withStore
+        .resolveInputs(
+            "q-diff",
+            "cid",
+            List.of(qi),
+            Optional.<com.google.protobuf.Timestamp>empty(),
+            Optional.<ResourceId>empty(),
+            new java.util.LinkedHashMap<>(),
+            null)
+        .snapshotSet();
+
+    assertTrue(
+        !metadataGraph.pinCalls().isEmpty(), "a different restated id must re-resolve, not reuse");
+  }
+
+  /** A snapshot_id override of zero is valid and must be preserved end-to-end. */
   /** A snapshot_id override of zero is valid and must be preserved end-to-end. */
   @Test
   void snapshot_override_id_zero() {
