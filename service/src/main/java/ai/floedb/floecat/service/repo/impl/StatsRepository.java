@@ -32,6 +32,7 @@ import ai.floedb.floecat.stats.spi.StatsTargetType;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.types.Hashing;
+import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.StringValue;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -519,10 +520,61 @@ public class StatsRepository implements StatsStore {
     if (active.isEmpty()) {
       return new StatsStorePage(List.of(), "");
     }
+    return listInGeneration(
+        tableId, snapshotId, active.get().generationId(), targetType, limit, pageToken);
+  }
+
+  /**
+   * Generation-scoped list: the token is the generation manifest blob URI captured from {@link
+   * #activeStatsGeneration}; its immutable blob names the generation whose keyspace is read. A
+   * missing manifest is a broken retention invariant (frozen generations are retained while
+   * referenced) and fails loudly rather than falling back to the live generation.
+   */
+  @Override
+  public StatsStorePage listTargetStatsInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationToken,
+      Optional<StatsTargetType> targetType,
+      int limit,
+      String pageToken) {
+    // A missing frozen manifest is the broken-retention invariant this wants to surface loudly.
+    // InMemoryBlobStore returns null on a miss; S3BlobStore throws StorageNotFoundException and
+    // never returns null — so catch both, or the descriptive error is dead code in production.
+    byte[] bytes;
+    try {
+      bytes = blobStore.get(generationToken);
+    } catch (ai.floedb.floecat.storage.errors.StorageNotFoundException e) {
+      bytes = null;
+    }
+    if (bytes == null) {
+      throw new BaseResourceRepository.NotFoundException(
+          "frozen stats generation manifest missing for snapshot "
+              + snapshotId
+              + ": "
+              + generationToken);
+    }
+    String generationId;
+    try {
+      generationId = StringValue.parseFrom(bytes).getValue();
+    } catch (InvalidProtocolBufferException e) {
+      throw new BaseResourceRepository.CorruptionException(
+          "unreadable stats generation manifest: " + generationToken, e);
+    }
+    return listInGeneration(tableId, snapshotId, generationId, targetType, limit, pageToken);
+  }
+
+  private StatsStorePage listInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      Optional<StatsTargetType> targetType,
+      int limit,
+      String pageToken) {
     StringBuilder next = new StringBuilder();
     List<TargetStatsRecord> rows =
         targetStatsStorage.listByPrefix(
-            listPrefix(tableId, snapshotId, active.get().generationId(), targetType),
+            listPrefix(tableId, snapshotId, generationId, targetType),
             Math.max(1, limit),
             pageToken,
             next);
@@ -597,11 +649,10 @@ public class StatsRepository implements StatsStore {
       throw e;
     }
 
-    current.ifPresent(
-        active -> {
-          deleteGeneration(active.accountId(), active.tableId(), snapshotId, active.generationId());
-          deleteQuietly(() -> blobStore.delete(active.manifestBlobUri()));
-        });
+    // The superseded generation is deliberately NOT deleted here: queries freeze their generation
+    // and keep reading its immutable keyspace to completion, so stats stay deterministic at a
+    // given pointer with no per-page guard. GC collects a generation once no retained table root
+    // and no live query references it.
   }
 
   @Override
@@ -651,6 +702,26 @@ public class StatsRepository implements StatsStore {
       throw new BaseResourceRepository.AbortRetryableException(
           "active target stats generation update conflicted for snapshot " + snapshotId);
     }
+  }
+
+  @Override
+  public boolean tracksStatsGenerations() {
+    return true;
+  }
+
+  /**
+   * The active generation's manifest blob URI serves as the opaque token: it embeds the generation
+   * id, and both replaceAllStatsForSnapshot (pointer swap to a new manifest) and
+   * deleteAllStatsForSnapshot (pointer removal) change it. One pointer read, no blob fetch. Empty
+   * means this snapshot has no generation yet (a comparable state, per the SPI contract), never
+   * "cannot say" — hence {@link #tracksStatsGenerations()} is true.
+   */
+  @Override
+  public Optional<String> activeStatsGeneration(ResourceId tableId, long snapshotId) {
+    String manifestPointer =
+        Keys.snapshotTargetStatsManifestPointer(
+            tableId.getAccountId(), tableId.getId(), snapshotId);
+    return pointerStore.get(manifestPointer).map(Pointer::getBlobUri);
   }
 
   private Optional<ActiveSnapshotStats> activeGeneration(ResourceId tableId, long snapshotId) {
@@ -797,6 +868,74 @@ public class StatsRepository implements StatsStore {
         generationId,
         StatsTargetIdentity.storageId(record.getTarget()),
         Hashing.sha256Hex(TargetStatsRecords.contentHashImage(record).toByteArray()));
+  }
+
+  /**
+   * GC hook: reclaim this table's superseded stats generations. A generation survives while any of
+   * these hold — its manifest blob URI is protected (referenced by a retained or pinned table root,
+   * or frozen by a live scan stream), it is the snapshot's LIVE active generation (the
+   * creation-window safeguard: a just-activated generation whose root commit has not landed), its
+   * manifest blob does not exist yet (an in-flight replace writes records before publishing), or
+   * its manifest blob is younger than {@code minAgeMs} — the publish→flip window: the manifest is
+   * written BEFORE the active pointer flips and before the root commit references it, so during
+   * that instant a brand-new generation is neither live nor rooted and only its age protects it
+   * (the same guard the blob sweep applies). Everything else — record pointers, record blobs, and
+   * the manifest blob — is deleted. Returns the number of generations reclaimed.
+   */
+  public int deleteUnreferencedGenerations(
+      ResourceId tableId,
+      java.util.function.Predicate<String> isProtectedManifestUri,
+      long nowMs,
+      long minAgeMs) {
+    String accountId = tableId.getAccountId();
+    String prefix = Keys.snapshotRootPrefix(accountId, tableId.getId());
+    var candidates = new java.util.LinkedHashSet<Keys.GenerationKey>();
+    String token = "";
+    while (true) {
+      StringBuilder next = new StringBuilder();
+      List<Pointer> page = pointerStore.listPointersByPrefix(prefix, 500, token, next);
+      for (Pointer pointer : page) {
+        Keys.GenerationKey generation = Keys.generationFromTargetPointerKey(pointer.getKey());
+        if (generation != null) {
+          candidates.add(generation);
+        }
+      }
+      token = next.toString();
+      if (token.isBlank()) {
+        break;
+      }
+    }
+
+    int reclaimed = 0;
+    for (Keys.GenerationKey candidate : candidates) {
+      long snapshotId = candidate.snapshotId();
+      String generationId = candidate.generationId();
+      String manifestUri =
+          Keys.snapshotTargetStatsManifestBlobUri(
+              accountId, tableId.getId(), snapshotId, generationId);
+      // One HEAD answers both existence and age: absent means unpublished (an in-flight replace
+      // writes records before publishing) or already reclaimed — not ours to touch.
+      var header = blobStore.head(manifestUri).orElse(null);
+      if (header == null) {
+        continue;
+      }
+      if (minAgeMs > 0
+          && nowMs - com.google.protobuf.util.Timestamps.toMillis(header.getLastModifiedAt())
+              < minAgeMs) {
+        continue; // publish->flip window: too young to be provably unreferenced
+      }
+      if (isProtectedManifestUri.test(manifestUri)) {
+        continue;
+      }
+      String liveActive = activeStatsGeneration(tableId, snapshotId).orElse("");
+      if (manifestUri.equals(liveActive)) {
+        continue; // creation-window safeguard: active pointer target survives regardless of roots
+      }
+      deleteGeneration(accountId, tableId.getId(), snapshotId, generationId);
+      deleteQuietly(() -> blobStore.delete(manifestUri));
+      reclaimed++;
+    }
+    return reclaimed;
   }
 
   private void deleteGeneration(

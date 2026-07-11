@@ -40,6 +40,9 @@ public final class ScanSession {
   private final String queryId;
   private final ResourceId tableId;
   private final long snapshotId;
+  // Opaque token of the stats generation active at initScan, or null when the store tracks none.
+  // File streaming re-checks it per page so a mid-scan stats replacement fails instead of tearing.
+  private final String statsGeneration;
   private final TableInfo tableInfo;
   private final boolean includeColumnStats;
   private final boolean excludePartitionDataJson;
@@ -59,6 +62,7 @@ public final class ScanSession {
     this.queryId = builder.queryId;
     this.tableId = builder.tableId;
     this.snapshotId = builder.snapshotId;
+    this.statsGeneration = builder.statsGeneration;
     this.tableInfo = builder.tableInfo;
     this.includeColumnStats = builder.includeColumnStats;
     this.excludePartitionDataJson = builder.excludePartitionDataJson;
@@ -87,6 +91,11 @@ public final class ScanSession {
 
   public long snapshotId() {
     return snapshotId;
+  }
+
+  /** May be null when the stats store does not track generations. */
+  public String statsGeneration() {
+    return statsGeneration;
   }
 
   public TableInfo tableInfo() {
@@ -239,6 +248,7 @@ public final class ScanSession {
     private String queryId;
     private ResourceId tableId;
     private long snapshotId;
+    private String statsGeneration;
     private TableInfo tableInfo;
     private boolean includeColumnStats;
     private boolean excludePartitionDataJson;
@@ -267,6 +277,11 @@ public final class ScanSession {
 
     public Builder snapshotId(long snapshotId) {
       this.snapshotId = snapshotId;
+      return this;
+    }
+
+    public Builder statsGeneration(String statsGeneration) {
+      this.statsGeneration = statsGeneration;
       return this;
     }
 
