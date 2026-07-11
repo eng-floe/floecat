@@ -29,34 +29,44 @@ import java.util.Map;
 
 @ApplicationScoped
 public class CurrentSnapshotPointerService {
+
   @Inject SnapshotRepository snapshotRepo;
+  @Inject TableRootWriter rootWriter;
 
   public void maybeAdvance(ResourceId tableId, long snapshotId, String corr) {
-    Snapshot candidate =
-        snapshotRepo
-            .getById(tableId, snapshotId)
-            .orElseThrow(
-                () ->
-                    GrpcErrors.notFound(
-                        corr,
-                        SNAPSHOT,
-                        Map.of(
-                            "table_id", tableId.getId(),
-                            "id", Long.toString(snapshotId))));
-    maybeAdvance(tableId, candidate, corr);
+    maybeAdvance(tableId, loadCandidate(tableId, snapshotId, corr), corr);
   }
 
+  private Snapshot loadCandidate(ResourceId tableId, long snapshotId, String corr) {
+    return snapshotRepo
+        .getById(tableId, snapshotId)
+        .orElseThrow(
+            () ->
+                GrpcErrors.notFound(
+                    corr,
+                    SNAPSHOT,
+                    Map.of(
+                        "table_id", tableId.getId(),
+                        "id", Long.toString(snapshotId))));
+  }
+
+  /**
+   * Advance the current-snapshot pointer to {@code candidate} if it should become current, and
+   * record the snapshot's entry on the table root. Every snapshot write funnels through here —
+   * create, finalize, in-place update, reconcile — and the root entry upsert re-captures the
+   * snapshot's immutable blob identity each time, so an in-place rewrite of the current snapshot
+   * refreshes the pinned identity with no separate republish step.
+   */
   public void maybeAdvance(ResourceId tableId, Snapshot candidate, String corr) {
     var result = snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate);
     if (result == null) {
       return;
     }
     switch (result) {
-      case UPDATED, UNCHANGED -> {
-        return;
-      }
       case TABLE_MISSING -> throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
       case CONFLICT -> throw GrpcErrors.aborted(corr, Map.of("id", tableId.getId()));
+      default -> {}
     }
+    rootWriter.commitSnapshotEntry(tableId, candidate);
   }
 }

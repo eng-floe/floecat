@@ -35,6 +35,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -71,6 +72,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
   @Inject IdempotencyRepository idempotencyStore;
   @Inject StatsOrchestrator statsOrchestrator;
   @Inject CatalogOverlay overlay;
+  @Inject TableRootWriter rootWriter;
 
   private static final Logger LOG = Logger.getLogger(TableStatisticsService.class);
 
@@ -187,6 +189,24 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                 .ifNull()
                 .failWith(
                     () -> GrpcErrors.invalidArgument(correlationId(), TARGET_STATS_EMPTY, Map.of()))
+                .invoke(
+                    () -> {
+                      // Publication happens ONCE, after the whole stream persisted. The root
+                      // commit is the generation's publication point — and, under the visibility
+                      // gate, potentially the snapshot's visibility commit — so publishing on the
+                      // first chunk would let queries pin a generation whose later chunks were
+                      // still in flight (or never arrived). A stream that fails mid-way leaves
+                      // the half-written generation unpublished: the root keeps serving the
+                      // previous one, and the live-active pointer protects the partial write
+                      // from GC until a retry completes.
+                      StreamState finalState = state.get();
+                      if (rootWriter != null
+                          && upserted.get() > 0
+                          && finalState.tableId() != null) {
+                        rootWriter.commitStatsGeneration(
+                            finalState.tableId(), finalState.snapshotId());
+                      }
+                    })
                 .replaceWith(
                     () -> PutTargetStatsResponse.newBuilder().setUpserted(upserted.get()).build()),
             correlationId())

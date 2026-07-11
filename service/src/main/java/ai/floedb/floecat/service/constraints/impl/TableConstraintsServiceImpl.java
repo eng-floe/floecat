@@ -43,6 +43,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -77,8 +78,16 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject CatalogOverlay overlay;
+  @Inject TableRootWriter rootWriter;
 
   private static final Logger LOG = Logger.getLogger(TableConstraintsServiceImpl.class);
+
+  /** Record the snapshot's (possibly new or removed) constraints bundle on the table root. */
+  private void commitConstraintsToRoot(ResourceId tableId, long snapshotId) {
+    if (rootWriter != null) {
+      rootWriter.commitConstraints(tableId, snapshotId);
+    }
+  }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
     return new CatalogSurfaceWritePolicy(overlay);
@@ -192,6 +201,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                     boolean changed =
                         constraints.putSnapshotConstraints(
                             request.getTableId(), request.getSnapshotId(), normalized);
+                    commitConstraintsToRoot(request.getTableId(), request.getSnapshotId());
                     var meta =
                         constraints.metaFor(request.getTableId(), request.getSnapshotId(), tsNow);
                     return PutTableConstraintsResponse.newBuilder()
@@ -215,6 +225,8 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                                             request.getTableId(),
                                             request.getSnapshotId(),
                                             normalized);
+                                    commitConstraintsToRoot(
+                                        request.getTableId(), request.getSnapshotId());
                                     return new IdempotencyGuard.CreateResult<>(
                                         PutTableConstraintsResponse.newBuilder()
                                             .setConstraints(normalized)
@@ -344,8 +356,15 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
 
                   var meta = constraints.metaForSafe(tableId, snapshotId);
                   if (!constraints.deleteSnapshotConstraints(tableId, snapshotId)) {
+                    // Already gone — either a double-delete or a prior attempt that deleted the
+                    // bundle then failed its root commit and is retrying. Clear the root ref
+                    // idempotently before reporting not-found, so a pinned-ref never outlives the
+                    // bundle it points at (new pins would copy a dangling ref; root-chain GC would
+                    // anchor the dead blob).
+                    commitConstraintsToRoot(tableId, snapshotId);
                     throw constraintsBundleNotFound(tableId, snapshotId);
                   }
+                  commitConstraintsToRoot(tableId, snapshotId);
 
                   return DeleteTableConstraintsResponse.newBuilder().setMeta(meta).build();
                 }),
@@ -512,6 +531,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
         }
         SnapshotConstraints created = mutator.apply(SnapshotConstraints.newBuilder().build());
         if (constraints.createSnapshotConstraintsIfAbsent(tableId, snapshotId, created)) {
+          commitConstraintsToRoot(tableId, snapshotId);
           return constraints.getSnapshotConstraints(tableId, snapshotId).orElse(created);
         }
         continue;
@@ -524,6 +544,11 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
 
       SnapshotConstraints next = mutator.apply(current);
       if (ConstraintNormalizer.normalize(next).equals(ConstraintNormalizer.normalize(current))) {
+        // No change THIS attempt — but a prior attempt may have applied the mutation and then
+        // failed its root commit, leaving the root ref stale. Convergence is idempotent (it reads
+        // the live bundle meta; a matching ref no-ops in the committer), so attempt it on this
+        // exit path too rather than short-circuiting before the root catches up.
+        commitConstraintsToRoot(tableId, snapshotId);
         return current;
       }
       try {
@@ -531,6 +556,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
             constraints.updateSnapshotConstraints(
                 tableId, snapshotId, next, currentMeta.getPointerVersion());
         if (updated) {
+          commitConstraintsToRoot(tableId, snapshotId);
           return constraints.getSnapshotConstraints(tableId, snapshotId).orElse(next);
         }
       } catch (BaseResourceRepository.NotFoundException ignore) {

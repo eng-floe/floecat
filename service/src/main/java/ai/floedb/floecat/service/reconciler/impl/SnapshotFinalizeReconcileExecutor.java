@@ -393,6 +393,9 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     }
     String corr = lease == null || lease.jobId == null ? "" : lease.jobId;
     try {
+      // A reconcile pass may re-finalize a snapshot that is already current; the advance is a
+      // pointer no-op then, but it still re-commits the snapshot's root entry — the periodic
+      // self-heal that converges a root a failed commit left behind.
       currentSnapshotPointerService.maybeAdvance(tableId, snapshotTask.snapshotId(), corr);
       return null;
     } catch (RuntimeException e) {

@@ -82,6 +82,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   @Inject CatalogOverlay overlay;
   @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
   @Inject StatsOrchestrator statsOrchestrator;
+  @Inject TableRootWriter rootWriter;
 
   private static final Logger LOG = Logger.getLogger(SnapshotService.class);
 
@@ -91,6 +92,13 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
       return;
     }
     currentSnapshotPointerService.maybeAdvance(tableId, candidate, corr);
+  }
+
+  /** Drop the deleted snapshot's entry from the table root. */
+  private void removeSnapshotFromRoot(ResourceId tableId, long snapshotId) {
+    if (rootWriter != null) {
+      rootWriter.removeSnapshot(tableId, snapshotId);
+    }
   }
 
   private void ensureTableVisible(ResourceId tableId, String corr) {
@@ -271,6 +279,9 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   var tableId = request.getTableId();
                   ensureTableVisible(tableId, correlationId());
 
+                  // Reports the QUERY-VISIBLE current snapshot: the repository's default
+                  // current-snapshot read is gate-aware, so the CLI and callers of this RPC
+                  // always agree with what queries see.
                   var response = GetCurrentSnapshotPointerResponse.newBuilder();
                   snapshotRepo
                       .getCurrentSnapshotPointer(tableId)
@@ -457,6 +468,13 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                     }
                     statsStore.deleteAllStatsForSnapshot(tableId, snapshotId);
                     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+                    // Converge the root on THIS path too: the by-id pointer is gone (either a
+                    // client double-delete, or a prior attempt that deleted the pointer then failed
+                    // its root commit and is retrying here). removeSnapshotFromRoot is idempotent —
+                    // a no-op when the entry is already absent — so every exit path of
+                    // DeleteSnapshot leaves the root free of the deleted snapshot, and a still-
+                    // failing commit surfaces as a retryable error rather than a false success.
+                    removeSnapshotFromRoot(tableId, snapshotId);
                     return DeleteSnapshotResponse.newBuilder().build();
                   }
 
@@ -478,6 +496,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
                     statsStore.deleteAllStatsForSnapshot(tableId, snapshotId);
                     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+                    removeSnapshotFromRoot(tableId, snapshotId);
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
                     throw GrpcErrors.preconditionFailed(
@@ -600,6 +619,9 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   }
 
                   var outMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
+                  // The snapshot blob was just rewritten in place: the advance funnel re-upserts
+                  // this
+                  // is the current snapshot, even when the pointer id does not move.
                   maybeAdvanceCurrentSnapshot(tableId, desired, corr);
 
                   return UpdateSnapshotResponse.newBuilder()

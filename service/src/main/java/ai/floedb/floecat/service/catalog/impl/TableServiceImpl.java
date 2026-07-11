@@ -81,6 +81,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject TopologyGraph topology;
   @Inject MarkerStore markerStore;
   @Inject PointerStore pointerStore;
+  @Inject TableRootWriter rootWriter;
   @Inject EngineHintSchemaCleaner hintCleaner;
   @Inject CatalogOverlay overlay;
 
@@ -235,6 +236,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     metadataGraph.invalidate(tableResourceId);
                     topology.evictRelationRefs(table.getNamespaceId());
                     var meta = tableRepo.metaForSafe(tableResourceId);
+                    commitDefinitionToRoot(tableResourceId, meta);
                     return CreateTableResponse.newBuilder().setTable(table).setMeta(meta).build();
                   }
 
@@ -291,6 +293,11 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                   this::correlationId,
                                   Table::parseFrom));
 
+                  // Parity with the non-idempotent path: record the definition on the root at
+                  // create time. Idempotent (the committer no-ops when the ref already matches), so
+                  // it is safe on both a genuine create and an idempotent replay, and it saves the
+                  // first reader a lazy root synthesis.
+                  commitDefinitionToRoot(result.body.getResourceId(), result.meta);
                   return CreateTableResponse.newBuilder()
                       .setTable(result.body)
                       .setMeta(result.meta)
@@ -417,6 +424,10 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
                   var outMeta = tableRepo.metaForSafe(tableId);
                   var latest = tableRepo.getById(tableId).orElse(desired);
+
+                  // The table blob changed (e.g. schema DDL) without a new snapshot: republish the
+                  // coherent current pair last so a CURRENT pin sees the new table blob.
+                  commitDefinitionToRoot(tableId, outMeta);
 
                   return UpdateTableResponse.newBuilder().setTable(latest).setMeta(outMeta).build();
                 }),
@@ -792,5 +803,17 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   private void purgeSnapshotsAndStats(ResourceId tableId) {
     String prefix = Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId());
     pointerStore.deleteByPrefix(prefix);
+    // The table-root pointer lives outside the snapshot prefix; left behind it would shadow the
+    // initial state of a table later recreated with the same id. Its blobs are reclaimed by
+    // CasBlobGc once the table drops out of the live set.
+    pointerStore.delete(Keys.tableRootByTable(tableId.getAccountId(), tableId.getId()));
+  }
+
+  /** Record the table's (possibly new) immutable definition blob on its root. */
+  private void commitDefinitionToRoot(
+      ResourceId tableId, ai.floedb.floecat.common.rpc.MutationMeta meta) {
+    if (rootWriter != null) {
+      rootWriter.commitDefinition(tableId, meta);
+    }
   }
 }
