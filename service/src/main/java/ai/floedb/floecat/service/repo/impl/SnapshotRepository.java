@@ -309,9 +309,27 @@ public class SnapshotRepository {
         // NEVER fall back to the ungated legacy pointer once a root pointer exists.
         return Optional.empty();
       }
-      return getById(tableId, lookup.root().getCurrentSnapshotId());
+      // Load the snapshot the ROOT published (its manifest entry's immutable snapshot_ref), not
+      // the live (table, snapshot_id) pointer: an in-place UpdateSnapshot rewrites that pointer
+      // before its root re-commit, so getById could serve a blob the current root never
+      // referenced (and would keep serving it if the root commit then failed). The root is the
+      // publication boundary for reads.
+      return snapshotFromRootEntry(tableId, lookup.root(), lookup.root().getCurrentSnapshotId());
     }
     return latestRegisteredSnapshot(tableId);
+  }
+
+  /**
+   * Loads a snapshot by the immutable {@code snapshot_ref} the root's manifest entry carries. A
+   * missing entry or ref is a broken root invariant (removal clears currency in the same commit),
+   * surfaced as empty rather than by walking to the mutable pointer.
+   */
+  private Optional<Snapshot> snapshotFromRootEntry(
+      ResourceId tableId, ai.floedb.floecat.catalog.rpc.TableRoot root, long snapshotId) {
+    var head = root.hasSnapshotManifestRef() ? root.getSnapshotManifestRef() : null;
+    return SnapshotManifests.findEntry(roots, head, snapshotId)
+        .filter(entry -> entry.hasSnapshotRef() && !entry.getSnapshotRef().getUri().isEmpty())
+        .flatMap(entry -> getByBlobUri(entry.getSnapshotRef().getUri()));
   }
 
   /**
@@ -389,7 +407,9 @@ public class SnapshotRepository {
     if (lookup.root() == null || !lookup.root().hasCurrentSnapshotId()) {
       return Optional.empty(); // gated or unreadable root: never the ungated legacy pointer
     }
-    return getById(tableId, lookup.root().getCurrentSnapshotId())
+    // Resolve through the root's published snapshot_ref, not the live pointer (see
+    // getCurrentSnapshot).
+    return snapshotFromRootEntry(tableId, lookup.root(), lookup.root().getCurrentSnapshotId())
         .map(snap -> visibleCurrentPointer(tableId, snap));
   }
 

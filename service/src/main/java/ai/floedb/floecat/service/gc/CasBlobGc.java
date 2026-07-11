@@ -438,7 +438,13 @@ public class CasBlobGc {
         if (!referenced.contains(normalized)) {
           if (minAgeMs > 0) {
             var header = blobStore.head(key).orElse(null);
-            if (header != null) {
+            if (header == null) {
+              // No header (transient HEAD failure, or read-after-write metadata lag): we cannot
+              // prove the blob is old enough, so fail SAFE and skip it, matching the generation
+              // reclaim. The next pass retries once the metadata is readable.
+              continue;
+            }
+            {
               long lastModified =
                   com.google.protobuf.util.Timestamps.toMillis(header.getLastModifiedAt());
               // nowMs is FROZEN at pass start, so this grace is anchored to pass-start, NOT to

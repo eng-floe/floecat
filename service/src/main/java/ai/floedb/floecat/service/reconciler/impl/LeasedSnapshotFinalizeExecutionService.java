@@ -217,7 +217,13 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
             persistence.validateReplacementStats(statsRecords, tableId, snapshotId);
         if (directStats.isEmpty()) {
           if (lease.fullRescan && chunkIndex == 0) {
-            persistence.deleteAllStatsForSnapshot(tableId, snapshotId);
+            // A full-rescan finalize that finds no files RE-FINALIZES a LIVE snapshot: it must
+            // RETAIN superseded generations (a live query may have frozen one), not eagerly wipe
+            // every generation's blobs. Publish an empty generation exactly like the non-empty
+            // branch below — retention leaves the old generation for deleteUnreferencedGenerations
+            // to reclaim under its reference/age guards. deleteAllStatsForSnapshot's whole-prefix
+            // teardown is reserved for actual snapshot deletion.
+            persistence.replaceAllStatsForSnapshot(tableId, snapshotId, java.util.List.of());
             jobs.persistSnapshotFinalizeDirectStatsProgress(
                 lease.jobId, lease.leaseEpoch, true, 0, 0);
           }

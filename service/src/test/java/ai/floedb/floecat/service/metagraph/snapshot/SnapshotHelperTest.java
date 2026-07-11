@@ -703,4 +703,40 @@ class SnapshotHelperTest {
     assertThatThrownBy(() -> helper.tablePinFor("corr", tableId, null, Optional.empty()))
         .hasMessageContaining("NOT_FOUND");
   }
+
+  @Test
+  void anEmptyButFinalizedTableIsQueryableViaCurrent() {
+    // A genuinely empty table is FINALIZED with an empty generation — publishActiveGeneration
+    // writes the manifest and sets the active pointer even for zero records, so the entry carries
+    // a stats_generation_ref that points at an empty generation. That is DISTINCT from a
+    // generation-REMOVED snapshot (no ref at all): the empty one must pin and scan to zero rows,
+    // not be rejected. The gate keys on presence, not on the generation being non-empty.
+    var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
+    when(tracking.tracksStatsGenerations()).thenReturn(true);
+    helper = new SnapshotHelper(repository, roots, committer, tracking);
+    ResourceId tableId = tableId("tbl");
+    seedSnapshot(tableId, 3, "2024-02-01T00:00:00Z");
+    committer.commit(
+        tableId,
+        TableRootMutations.upsertSnapshot(
+            roots,
+            tableId,
+            SnapshotManifestEntry.newBuilder()
+                .setSnapshotId(3)
+                .setSnapshotRef(
+                    BlobRef.newBuilder().setUri("s3://tbl/snap-3.pb").setVersion("etag-s3"))
+                // A ref to an EMPTY generation — the snapshot is finalized, it just lists nothing.
+                .setStatsGenerationRef(BlobRef.newBuilder().setUri("s3://tbl/stats/3/empty-gen.pb"))
+                .setUpstreamCreatedAt(ts("2024-02-01T00:00:00Z"))
+                .build(),
+            BlobRef.newBuilder().setUri("s3://tbl/table.pb").setVersion("etag-t").build(),
+            true));
+
+    TablePin pin = helper.tablePinFor("corr", tableId, null, Optional.empty());
+
+    assertThat(pin.getPinKind()).isEqualTo(PinKind.PIN_KIND_CURRENT);
+    assertThat(pin.getSnapshotId()).isEqualTo(3L);
+    // The pin carries the empty generation, so the scan freezes IT (an empty scan), not ABSENT.
+    assertThat(pin.getStatsGenerationRefUri()).isEqualTo("s3://tbl/stats/3/empty-gen.pb");
+  }
 }

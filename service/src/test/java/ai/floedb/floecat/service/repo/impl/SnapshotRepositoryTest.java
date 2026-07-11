@@ -655,6 +655,66 @@ class SnapshotRepositoryTest {
   }
 
   @Test
+  void getCurrentSnapshotServesTheRootsRefNotAnInPlaceRewrite() {
+    // getCurrentSnapshot must read the snapshot blob the ROOT published (its manifest entry's
+    // snapshot_ref), not the live (table, snapshot_id) pointer. An in-place rewrite moves the
+    // pointer before the root re-commit, so getById would serve a blob the current root never
+    // referenced. Simulate divergence: the by-id pointer names a NEW blob, the root entry an OLD
+    // one.
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    tableRepo.create(table(account, tableRid));
+    long t = clock.millis();
+    // The live snapshot (by-id) carries the "rewritten" metadata location.
+    snapshotRepo.create(
+        Snapshot.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(9)
+            .setIngestedAt(Timestamps.fromMillis(t))
+            .setUpstreamCreatedAt(Timestamps.fromMillis(t - 1_000))
+            .setMetadataLocation("s3://REWRITTEN/meta.json")
+            .build());
+    // Capture the immutable blob URI the root will reference (the ORIGINAL), then rewrite the
+    // by-id pointer to a different blob so the two diverge.
+    String rootRefUri = snapshotRepo.metaForSafe(tableRid, 9L).getBlobUri();
+    snapshotRepo.update(
+        snapshotRepo.getById(tableRid, 9L).orElseThrow().toBuilder()
+            .setMetadataLocation("s3://REWRITTEN-AGAIN/meta.json")
+            .build(),
+        snapshotRepo.metaForSafe(tableRid, 9L).getPointerVersion());
+
+    // Commit a root whose entry references the ORIGINAL blob (rootRefUri), currency = 9.
+    var rootsRepo = new TableRootRepository(ptr, blobs);
+    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(rootsRepo);
+    committer.commit(
+        tableRid,
+        ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
+            rootsRepo,
+            tableRid,
+            ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
+                .setSnapshotId(9)
+                .setSnapshotRef(
+                    ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(rootRefUri))
+                .setUpstreamCreatedAt(Timestamps.fromMillis(t - 1_000))
+                .build(),
+            null,
+            false));
+    committer.commit(
+        tableRid, current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(9L).build());
+
+    var served = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
+    assertEquals(
+        "s3://REWRITTEN/meta.json",
+        served.getMetadataLocation(),
+        "getCurrentSnapshot serves the root's published blob, not the later by-id rewrite");
+  }
+
+  @Test
   void theVisiblePointerTimestampIsAStablePropertyOfTheSnapshot() {
     String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var tableRid =
@@ -686,6 +746,10 @@ class SnapshotRepositoryTest {
               tableId,
               ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
                   .setSnapshotId(snap.getSnapshotId())
+                  .setSnapshotRef(
+                      ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
+                          .setUri(
+                              snapshotRepo.metaForSafe(tableId, snap.getSnapshotId()).getBlobUri()))
                   .setUpstreamCreatedAt(snap.getUpstreamCreatedAt())
                   .build(),
               null,

@@ -553,7 +553,12 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
     service.persistStatsChunk(lease, snapshotTask, tableId, SNAPSHOT_ID, 0, List.of());
 
-    verify(persistence).deleteAllStatsForSnapshot(tableId, SNAPSHOT_ID);
+    // A full-rescan finalize that finds no files re-finalizes a LIVE snapshot: it publishes an
+    // empty generation via replaceAllStatsForSnapshot (which RETAINS superseded generations for
+    // pinned readers), NOT the whole-prefix deleteAllStatsForSnapshot teardown (reserved for
+    // actual snapshot deletion).
+    verify(persistence).replaceAllStatsForSnapshot(tableId, SNAPSHOT_ID, List.of());
+    verify(persistence, never()).deleteAllStatsForSnapshot(tableId, SNAPSHOT_ID);
     verify(jobs)
         .persistSnapshotFinalizeDirectStatsProgress(lease.jobId, lease.leaseEpoch, true, 0, 0);
 

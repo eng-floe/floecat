@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.gc;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -608,6 +609,37 @@ class CasBlobGcTest {
       assertTrue(
           blobs.head(freshRoot).isPresent(),
           "a root blob younger than min-age must survive even unreferenced (mid-sweep-commit fence)");
+    } finally {
+      System.setProperty("floecat.gc.cas.min-age-ms", "0");
+    }
+  }
+
+  @Test
+  void aBlobWithNoReadableHeaderIsSkippedNotDeleted() {
+    // A missing HEAD (transient failure or read-after-write lag) must fail SAFE: we cannot prove
+    // the blob is old enough, so skip it this pass rather than delete an unreferenced-looking
+    // blob that might be brand new — matching the generation reclaim.
+    System.setProperty("floecat.gc.cas.min-age-ms", "30000");
+    boolean[] hideHead = {true};
+    var headlessBlobs =
+        new InMemoryBlobStore() {
+          @Override
+          public java.util.Optional<ai.floedb.floecat.common.rpc.BlobHeader> head(String key) {
+            return hideHead[0] ? java.util.Optional.empty() : super.head(key);
+          }
+        };
+    gc.blobStore = headlessBlobs;
+    try {
+      String orphan = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-headless");
+      headlessBlobs.put(orphan, "x".getBytes(StandardCharsets.UTF_8), "text/plain");
+
+      var result = gc.runForAccount(ACCOUNT_ID);
+
+      assertEquals(
+          0, result.blobsDeleted(), "a blob whose header cannot be read must not be deleted");
+      hideHead[0] = false; // the blob is still there — only the HEAD was hidden
+      assertTrue(
+          headlessBlobs.head(orphan).isPresent(), "the blob survived the poisoned-head pass");
     } finally {
       System.setProperty("floecat.gc.cas.min-age-ms", "0");
     }

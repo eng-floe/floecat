@@ -40,8 +40,10 @@ public final class ScanSession {
   private final String queryId;
   private final ResourceId tableId;
   private final long snapshotId;
-  // Opaque token of the stats generation active at initScan, or null when the store tracks none.
-  // File streaming re-checks it per page so a mid-scan stats replacement fails instead of tearing.
+  // Opaque token of the stats generation the PINNED root referenced, frozen at initScan, or null
+  // when the store tracks none. File streaming reads this one immutable generation keyspace to
+  // completion: superseded generations are RETAINED (replaceAllStatsForSnapshot no longer deletes
+  // them), so the scan stays deterministic at the frozen pointer with no per-page re-check.
   private final String statsGeneration;
   private final TableInfo tableInfo;
   private final boolean includeColumnStats;
