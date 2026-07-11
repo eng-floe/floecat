@@ -19,11 +19,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -196,6 +199,41 @@ class TableRootWriterTest {
     var root = roots.get(tableId).orElseThrow();
     assertEquals(3L, root.getCurrentSnapshotId());
     assertEquals("s3://t/table.pb", root.getDefinitionRef().getUri());
+  }
+
+  @Test
+  void resyncPrunesSnapshotsNoLongerRegistered() {
+    // Root holds entries 3 and 7. A transaction expired snapshot 3 (cleared its pointers by raw
+    // CAS, never through removeSnapshot); only 7 is still registered. The resync must drop 3.
+    committer.commit(
+        tableId, TableRootMutations.upsertSnapshot(roots, tableId, finalizedEntry(3), null, true));
+    committer.commit(
+        tableId, TableRootMutations.upsertSnapshot(roots, tableId, finalizedEntry(7), null, true));
+
+    when(tableRepo.metaForSafe(tableId))
+        .thenReturn(
+            MutationMeta.newBuilder().setBlobUri("s3://t/table.pb").setEtag("etag-t").build());
+    when(snapshotRepo.latestRegisteredSnapshotPointer(tableId))
+        .thenReturn(
+            Optional.of(
+                ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer.newBuilder()
+                    .setTableId(tableId)
+                    .setSnapshotId(7)
+                    .build()));
+    when(snapshotRepo.metaForSafe(tableId, 7L))
+        .thenReturn(MutationMeta.newBuilder().setBlobUri("s3://t/snap-7.pb").setEtag("v7").build());
+    when(snapshotRepo.getById(tableId, 7L)).thenReturn(Optional.empty());
+    when(snapshotRepo.list(eq(tableId), anyInt(), any(), any()))
+        .thenReturn(java.util.List.of(Snapshot.newBuilder().setSnapshotId(7).build()));
+
+    writer.resyncFromCommittedState(tableId);
+
+    var root = roots.get(tableId).orElseThrow();
+    assertFalse(
+        SnapshotManifests.findEntry(roots, root.getSnapshotManifestRef(), 3).isPresent(),
+        "expired snapshot 3 pruned from the root");
+    assertTrue(SnapshotManifests.findEntry(roots, root.getSnapshotManifestRef(), 7).isPresent());
+    assertEquals(7L, root.getCurrentSnapshotId());
   }
 
   @Test

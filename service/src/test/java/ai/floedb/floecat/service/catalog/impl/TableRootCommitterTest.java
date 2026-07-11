@@ -229,9 +229,11 @@ class TableRootCommitterTest {
                           .build(),
                       null,
                       false));
+              // No /snapshots/current in this unit harness: null exercises the ordering-rule
+              // fallback, so currency still converges on the newest across concurrent finalizes.
               commitWithRetry(
                   TableRootMutations.setStatsGeneration(
-                      roots, TABLE, sid, ref("s3://t/stats/" + sid + "/gen.pb")));
+                      roots, TABLE, sid, ref("s3://t/stats/" + sid + "/gen.pb"), null));
             }
             return null;
           });

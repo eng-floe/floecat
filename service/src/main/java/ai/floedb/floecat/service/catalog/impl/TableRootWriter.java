@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.catalog.impl;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
+import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.common.rpc.MutationMeta;
@@ -147,7 +148,16 @@ public class TableRootWriter {
                   .activeStatsGeneration(tableId, snapshotId)
                   .map(uri -> BlobRef.newBuilder().setUri(uri).build())
                   .orElse(null);
-          return TableRootMutations.setStatsGeneration(roots, tableId, snapshotId, generationRef)
+          // Read /snapshots/current INSIDE the mutator (like the resync): the finalize advances
+          // currency only when this snapshot IS the committed current, so a lost CAS must re-read
+          // the authoritative selection per attempt rather than a value captured before the winner.
+          Long committedCurrentSnapshotId =
+              snapshots
+                  .latestRegisteredSnapshotPointer(tableId)
+                  .map(CurrentSnapshotPointer::getSnapshotId)
+                  .orElse(null);
+          return TableRootMutations.setStatsGeneration(
+                  roots, tableId, snapshotId, generationRef, committedCurrentSnapshotId)
               .apply(current);
         });
   }
@@ -230,8 +240,14 @@ public class TableRootWriter {
                       .ifPresent(s -> builder.setUpstreamCreatedAt(s.getUpstreamCreatedAt()));
                   entry = builder.build();
                 }
+                // The registered-snapshot set, re-read per attempt: transactional
+                // expire/remove-snapshots clears snapshot pointers by raw CAS without funneling
+                // through removeSnapshot, so the resync is the only place a deleted snapshot's root
+                // entry gets pruned. A store fault listing them throws and aborts the attempt (the
+                // marker stays) rather than pruning against a partial set.
+                java.util.Set<Long> liveSnapshotIds = registeredSnapshotIds(tableId);
                 return TableRootMutations.resync(
-                        roots, tableId, definitionRef, entry, gateOnFinalize)
+                        roots, tableId, definitionRef, entry, gateOnFinalize, liveSnapshotIds)
                     .apply(current);
               });
           // A drop can race the commit: the committer persists synthesized history even on a
@@ -242,6 +258,22 @@ public class TableRootWriter {
           }
           return converged[0];
         });
+  }
+
+  /** Every currently-registered snapshot id (a live by-id pointer), paged in full. */
+  private java.util.Set<Long> registeredSnapshotIds(ResourceId tableId) {
+    java.util.Set<Long> ids = new java.util.HashSet<>();
+    String token = "";
+    StringBuilder next = new StringBuilder();
+    do {
+      next.setLength(0);
+      java.util.List<Snapshot> page = snapshots.list(tableId, 500, token, next);
+      for (Snapshot s : page) {
+        ids.add(s.getSnapshotId());
+      }
+      token = next.toString();
+    } while (!token.isEmpty());
+    return ids;
   }
 
   /** Deletes the table's root pointer; true when gone (or already absent), false on contention. */

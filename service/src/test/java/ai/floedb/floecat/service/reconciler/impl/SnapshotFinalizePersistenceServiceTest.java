@@ -23,6 +23,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
+import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -70,9 +71,14 @@ class SnapshotFinalizePersistenceServiceTest {
     when(persistence.statsStore.activeStatsGeneration(any(), anyLong()))
         .thenReturn(Optional.empty());
 
+    var snapshotRepo = mock(ai.floedb.floecat.service.repo.impl.SnapshotRepository.class);
+    when(snapshotRepo.latestRegisteredSnapshotPointer(any()))
+        .thenReturn(
+            Optional.of(
+                CurrentSnapshotPointer.newBuilder().setTableId(tableId).setSnapshotId(5).build()));
     var committer = new TableRootCommitter(roots);
     persistence.rootWriter =
-        new TableRootWriter(roots, committer, null, null, null, persistence.statsStore);
+        new TableRootWriter(roots, committer, null, snapshotRepo, null, persistence.statsStore);
 
     committer.commit(
         tableId,

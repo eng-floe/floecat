@@ -695,7 +695,7 @@ class SnapshotHelperTest {
                 .build(),
             BlobRef.newBuilder().setUri("s3://tbl/table.pb").setVersion("etag-t").build(),
             true));
-    committer.commit(tableId, TableRootMutations.setStatsGeneration(roots, tableId, 7, null));
+    committer.commit(tableId, TableRootMutations.setStatsGeneration(roots, tableId, 7, null, null));
 
     var root = roots.get(tableId).orElseThrow();
     org.junit.jupiter.api.Assertions.assertEquals(

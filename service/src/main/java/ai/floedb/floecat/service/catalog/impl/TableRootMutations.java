@@ -22,7 +22,10 @@ import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.impl.SnapshotManifests;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * The standard {@link TableRootCommitter.RootMutator}s for table-state changes. Each is a pure
@@ -31,10 +34,11 @@ import java.util.Optional;
  * walks the manifest through one {@link SnapshotManifests.Chain}, so find, currency check, and
  * rewrite read each page blob at most once per attempt.
  *
- * <p>The current-snapshot advance rule lives here: a snapshot becomes current when its
- * upstream_created_at is newer than the incumbent's (snapshot id breaks ties); an entry update for
- * the already-current snapshot keeps currency without an advance. This is the rule the
- * current-snapshot pointer machinery applied; the root absorbs it.
+ * <p>Currency at finalize follows the committed {@code /snapshots/current} pointer: a snapshot
+ * becomes current when it finalizes AND that pointer names it (see {@link #setStatsGeneration}). The
+ * ordering rule — newer upstream_created_at wins, snapshot id breaks ties — is the fallback when the
+ * committed pointer is unknown, and the rule registration ({@link #upsertSnapshot}) still applies in
+ * non-gated deployments; both live in {@link #shouldAdvance}.
  */
 public final class TableRootMutations {
 
@@ -127,12 +131,24 @@ public final class TableRootMutations {
   /**
    * Sets the stats-generation ref on an existing snapshot's entry — the generation publish, which
    * is also the snapshot's VISIBILITY commit: a non-null ref finalizes the snapshot, so the same
-   * CAS applies the advance rule and may make it current. Snapshot, file list, indexes, and stats
-   * become queryable together, or not at all. A null ref (generation removal) never touches
-   * currency.
+   * CAS may make it current. Snapshot, file list, indexes, and stats become queryable together, or
+   * not at all. A null ref (generation removal) never touches currency.
+   *
+   * <p>Currency advances to the finalizing snapshot iff it IS the committed current — {@code
+   * committedCurrentSnapshotId}, read from {@code /snapshots/current}. That pointer is the single
+   * source of currency truth: for floescan appends it is maintained by the same ordering the old
+   * root-local advance rule re-derived, and for transactional commits it is the client's explicit
+   * selection (a rollback/set-ref to an older, not-yet-finalized snapshot). Re-deriving order here
+   * instead would ignore that selection and let a newer snapshot's finalize steal currency the
+   * commit never granted it. {@code null} (current pointer unreadable, e.g. mid-drop) falls back to
+   * the ordering rule, preserving prior behavior in that degenerate case.
    */
   public static TableRootCommitter.RootMutator setStatsGeneration(
-      TableRootRepository roots, ResourceId tableId, long snapshotId, BlobRef generationRef) {
+      TableRootRepository roots,
+      ResourceId tableId,
+      long snapshotId,
+      BlobRef generationRef,
+      Long committedCurrentSnapshotId) {
     return updateEntry(
         roots,
         tableId,
@@ -146,7 +162,8 @@ public final class TableRootMutations {
           }
           return b.build();
         },
-        generationRef != null);
+        generationRef != null,
+        committedCurrentSnapshotId);
   }
 
   /** Sets the constraints ref on an existing snapshot's entry (constraints write). */
@@ -165,49 +182,105 @@ public final class TableRootMutations {
           }
           return b.build();
         },
-        false);
+        false,
+        null);
   }
 
   /**
-   * Re-derives the root's table-level legs from the committed pointer families: the definition ref
-   * and the current-snapshot selection. Currency is FORCED to the committed pointer, not run
-   * through the advance rule — the caller observed an authoritative selection (a transactional
-   * commit may legitimately move currency to any snapshot, including an older one). {@code
-   * currentEntry == null} means the committed state has no current snapshot and clears currency.
+   * Re-derives the root's table-level legs from the committed pointer families: the definition ref,
+   * the current-snapshot selection, and snapshot MEMBERSHIP. Currency is FORCED to the committed
+   * pointer, not run through the advance rule — the caller observed an authoritative selection (a
+   * transactional commit may legitimately move currency to any snapshot, including an older one).
+   * {@code currentEntry == null} means the committed state has no current snapshot and clears
+   * currency.
    *
    * <p>{@code gateOnFinalize}: when the deployment gates visibility on finalize, currency is forced
    * only onto a FINALIZED entry (one carrying its generation ref). A transaction that committed a
    * brand-new snapshot registers its entry here, but the previous finalized snapshot keeps serving
    * until the post-commit finalize publishes — the same gate every writer obeys.
+   *
+   * <p>{@code liveSnapshotIds}: the ids still registered (a live by-id pointer). Entries for
+   * snapshots absent from this set are pruned — a transactional expire/remove-snapshots clears the
+   * snapshot pointers via raw CAS and never funnels through {@link #removeSnapshot}, so without
+   * this the root would retain deleted snapshots forever (GC-reachable blobs, phantom enumeration).
+   * The committed current is never pruned. {@code null} skips membership reconciliation
+   * (currency-only).
    */
   public static TableRootCommitter.RootMutator resync(
       TableRootRepository roots,
       ResourceId tableId,
       BlobRef definitionRef,
       SnapshotManifestEntry currentEntry,
-      boolean gateOnFinalize) {
+      boolean gateOnFinalize,
+      Set<Long> liveSnapshotIds) {
     return current -> {
       TableRoot base = baseRoot(current, tableId, definitionRef);
       TableRoot.Builder next = base.toBuilder();
       if (definitionRef != null && !definitionRef.getUri().isEmpty()) {
         next.setDefinitionRef(definitionRef);
       }
+
+      SnapshotManifests.Chain chain = SnapshotManifests.chain(roots, tableId, manifestHead(base));
+      BlobRef head = manifestHead(base);
+      Long committedCurrentId = null;
       if (currentEntry == null) {
         next.clearCurrentSnapshotId();
       } else {
-        SnapshotManifests.Chain chain = SnapshotManifests.chain(roots, tableId, manifestHead(base));
         SnapshotManifestEntry merged =
             chain
                 .findEntry(currentEntry.getSnapshotId())
                 .map(existing -> preserveAuxRefs(existing, currentEntry))
                 .orElse(currentEntry);
-        next.setSnapshotManifestRef(chain.upsert(merged));
+        head = chain.upsert(merged);
+        committedCurrentId = merged.getSnapshotId();
         if (!gateOnFinalize || merged.hasStatsGenerationRef()) {
           next.setCurrentSnapshotId(merged.getSnapshotId());
         }
       }
+
+      if (liveSnapshotIds != null) {
+        head = pruneUnregistered(chain, head, liveSnapshotIds, committedCurrentId, next);
+      }
+
+      if (head == null) {
+        next.clearSnapshotManifestRef();
+      } else {
+        next.setSnapshotManifestRef(head);
+      }
       return next.build();
     };
+  }
+
+  /**
+   * Removes chain entries whose snapshot is no longer registered ({@code liveSnapshotIds}), never
+   * touching {@code protectedId} (the committed current, always live). Clears currency if it
+   * removes the snapshot currency happens to point at. Returns the new head (may be {@code null} if
+   * the chain empties).
+   */
+  private static BlobRef pruneUnregistered(
+      SnapshotManifests.Chain chain,
+      BlobRef head,
+      Set<Long> liveSnapshotIds,
+      Long protectedId,
+      TableRoot.Builder next) {
+    List<Long> toRemove = new ArrayList<>();
+    chain
+        .withHead(head)
+        .forEachEntry(
+            e -> {
+              long id = e.getSnapshotId();
+              if ((protectedId == null || id != protectedId) && !liveSnapshotIds.contains(id)) {
+                toRemove.add(id);
+              }
+            });
+    BlobRef newHead = head;
+    for (long id : toRemove) {
+      newHead = chain.withHead(newHead).remove(id);
+      if (next.hasCurrentSnapshotId() && next.getCurrentSnapshotId() == id) {
+        next.clearCurrentSnapshotId();
+      }
+    }
+    return newHead;
   }
 
   /**
@@ -220,7 +293,8 @@ public final class TableRootMutations {
       ResourceId tableId,
       long snapshotId,
       java.util.function.UnaryOperator<SnapshotManifestEntry> change,
-      boolean advanceOnChange) {
+      boolean advanceOnChange,
+      Long committedCurrentSnapshotId) {
     return current -> {
       if (current.isEmpty()) {
         return null; // no root yet: nothing to attach the ref to
@@ -235,13 +309,34 @@ public final class TableRootMutations {
       if (changed.equals(existing.get())) {
         return null;
       }
-      boolean advanceNow = advanceOnChange && shouldAdvance(chain, base, changed);
+      boolean advanceNow =
+          advanceOnChange
+              && advancesToCommittedCurrent(chain, base, changed, committedCurrentSnapshotId);
       TableRoot.Builder next = base.toBuilder().setSnapshotManifestRef(chain.upsert(changed));
       if (advanceNow) {
         next.setCurrentSnapshotId(changed.getSnapshotId());
       }
       return next.build();
     };
+  }
+
+  /**
+   * Whether finalizing {@code candidate} should make it current. When the committed current pointer
+   * ({@code /snapshots/current}) is known, currency projects it exactly — advance iff the candidate
+   * IS that snapshot — so a transactional selection of an older, not-yet-finalized snapshot is
+   * honored and a newer snapshot's finalize cannot steal currency the commit never granted. When it
+   * is unknown ({@code null}: current pointer unreadable / mid-drop), fall back to the ordering
+   * rule.
+   */
+  private static boolean advancesToCommittedCurrent(
+      SnapshotManifests.Chain chain,
+      TableRoot base,
+      SnapshotManifestEntry candidate,
+      Long committedCurrentSnapshotId) {
+    if (committedCurrentSnapshotId != null) {
+      return committedCurrentSnapshotId == candidate.getSnapshotId();
+    }
+    return shouldAdvance(chain, base, candidate);
   }
 
   private static TableRoot baseRoot(

@@ -113,7 +113,7 @@ class TableRootMutationsTest {
     commit(
         TableRootMutations.upsertSnapshot(
             roots, TABLE, entry(7, 1_000), ref("s3://t/def.pb"), true));
-    commit(TableRootMutations.setStatsGeneration(roots, TABLE, 7, ref("s3://t/gen-1.pb")));
+    commit(TableRootMutations.setStatsGeneration(roots, TABLE, 7, ref("s3://t/gen-1.pb"), 7L));
     commit(TableRootMutations.setConstraints(roots, TABLE, 7, ref("s3://t/constraints-1.pb")));
 
     // The in-place snapshot update carries a new snapshot blob but no aux refs of its own.
@@ -180,7 +180,8 @@ class TableRootMutationsTest {
     long versionBefore = roots.metaForSafe(TABLE).getPointerVersion();
 
     committer.commit(TABLE, TableRootMutations.removeSnapshot(roots, TABLE, 99));
-    committer.commit(TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 99, ref("g")));
+    committer.commit(
+        TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 99, ref("g"), null));
     committer.commit(TABLE, TableRootMutations.setConstraints(roots, TABLE, 99, ref("c")));
 
     assertEquals(versionBefore, roots.metaForSafe(TABLE).getPointerVersion());
@@ -221,14 +222,14 @@ class TableRootMutationsTest {
     commit(TableRootMutations.upsertSnapshot(roots, TABLE, entry(2, 2_000), null, true));
 
     TableRoot afterGen =
-        commit(TableRootMutations.setStatsGeneration(roots, TABLE, 1, ref("s3://t/gen-a.pb")));
+        commit(TableRootMutations.setStatsGeneration(roots, TABLE, 1, ref("s3://t/gen-a.pb"), 2L));
 
     var e1 = SnapshotManifests.findEntry(roots, afterGen.getSnapshotManifestRef(), 1).orElseThrow();
     assertEquals("s3://t/gen-a.pb", e1.getStatsGenerationRef().getUri());
     assertEquals(2L, afterGen.getCurrentSnapshotId());
 
     // Clearing works too (generation retired without a replacement).
-    TableRoot cleared = commit(TableRootMutations.setStatsGeneration(roots, TABLE, 1, null));
+    TableRoot cleared = commit(TableRootMutations.setStatsGeneration(roots, TABLE, 1, null, null));
     assertFalse(
         SnapshotManifests.findEntry(roots, cleared.getSnapshotManifestRef(), 1)
             .orElseThrow()
@@ -287,7 +288,8 @@ class TableRootMutationsTest {
             7,
             ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
                 .setUri("s3://t/stats/7/gen-1.pb")
-                .build()));
+                .build(),
+            7L));
 
     var root = roots.get(TABLE).orElseThrow();
     assertEquals(7, root.getCurrentSnapshotId());
@@ -307,11 +309,41 @@ class TableRootMutationsTest {
     committer.commit(
         TABLE, TableRootMutations.upsertSnapshot(roots, TABLE, entry(7, 7_000), null, false));
     var gen = ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri("s3://t/gen.pb").build();
-    committer.commit(TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 7, gen));
-    // Snapshot 3 finalizes out of order: the advance rule keeps 7 current.
-    committer.commit(TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 3, gen));
+    committer.commit(TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 7, gen, 7L));
+    // Snapshot 3 finalizes out of order: it is not the committed current (7), so it cannot steal.
+    committer.commit(TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 3, gen, 7L));
 
     assertEquals(7, roots.get(TABLE).orElseThrow().getCurrentSnapshotId());
+  }
+
+  @Test
+  void finalizeHonorsCommittedCurrentEvenWhenItIsOlderThanTheIncumbent() {
+    // The bug: a transaction moved /snapshots/current to an OLDER, not-yet-finalized snapshot (3)
+    // while a NEWER snapshot (7) is the finalized incumbent. Ordering (shouldAdvance) would refuse
+    // to promote 3 over 7 and would let any newer finalize steal currency. Currency must instead
+    // follow the committed current pointer.
+    var gen = ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri("s3://t/gen.pb").build();
+    committer.commit(
+        TABLE, TableRootMutations.upsertSnapshot(roots, TABLE, entry(7, 7_000), null, false));
+    committer.commit(TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 7, gen, 7L));
+    assertEquals(7, roots.get(TABLE).orElseThrow().getCurrentSnapshotId());
+
+    // Transactional rollback: committed current is now the older snapshot 3, registered
+    // unfinalized.
+    committer.commit(
+        TABLE, TableRootMutations.upsertSnapshot(roots, TABLE, entry(3, 3_000), null, false));
+    committer.commit(TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 3, gen, 3L));
+    assertEquals(
+        3, roots.get(TABLE).orElseThrow().getCurrentSnapshotId(), "older committed current wins");
+
+    // A newer snapshot 9 finalizes while 3 is still the committed current: it must NOT steal it.
+    committer.commit(
+        TABLE, TableRootMutations.upsertSnapshot(roots, TABLE, entry(9, 9_000), null, false));
+    committer.commit(TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 9, gen, 3L));
+    assertEquals(
+        3,
+        roots.get(TABLE).orElseThrow().getCurrentSnapshotId(),
+        "a non-committed newer snapshot cannot steal currency");
   }
 
   @Test
@@ -319,9 +351,9 @@ class TableRootMutationsTest {
     committer.commit(
         TABLE, TableRootMutations.upsertSnapshot(roots, TABLE, entry(7, 7_000), null, false));
     var gen = ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri("s3://t/gen.pb").build();
-    committer.commit(TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 7, gen));
+    committer.commit(TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 7, gen, 7L));
 
-    committer.commit(TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 7, null));
+    committer.commit(TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 7, null, null));
 
     var root = roots.get(TABLE).orElseThrow();
     assertEquals(7, root.getCurrentSnapshotId());
@@ -333,6 +365,50 @@ class TableRootMutationsTest {
   }
 
   @Test
+  void resyncPrunesSnapshotsThatAreNoLongerRegistered() {
+    // Transactional expire/remove-snapshots clears a non-current snapshot's pointers by raw CAS,
+    // never through removeSnapshot. The resync's membership reconcile must drop its root entry.
+    committer.commit(
+        TABLE, TableRootMutations.upsertSnapshot(roots, TABLE, entry(3, 3_000), null, true));
+    committer.commit(
+        TABLE, TableRootMutations.upsertSnapshot(roots, TABLE, entry(7, 7_000), null, true));
+    assertTrue(
+        SnapshotManifests.findEntry(
+                roots, roots.get(TABLE).orElseThrow().getSnapshotManifestRef(), 3)
+            .isPresent());
+
+    // Snapshot 3 was expired transactionally: only 7 remains registered.
+    committer.commit(
+        TABLE,
+        TableRootMutations.resync(
+            roots, TABLE, null, entry(7, 7_000), false, java.util.Set.of(7L)));
+
+    var root = roots.get(TABLE).orElseThrow();
+    assertFalse(
+        SnapshotManifests.findEntry(roots, root.getSnapshotManifestRef(), 3).isPresent(),
+        "expired snapshot pruned from the root chain");
+    assertTrue(SnapshotManifests.findEntry(roots, root.getSnapshotManifestRef(), 7).isPresent());
+    assertEquals(7L, root.getCurrentSnapshotId());
+  }
+
+  @Test
+  void resyncClearsCurrencyWhenTheCurrentSnapshotIsNoLongerRegistered() {
+    // Degenerate: the snapshot currency points at is gone from the registry (and not re-selected).
+    // Membership reconcile drops its entry and clears currency rather than dangling.
+    committer.commit(
+        TABLE, TableRootMutations.upsertSnapshot(roots, TABLE, entry(5, 5_000), null, true));
+    assertEquals(5L, roots.get(TABLE).orElseThrow().getCurrentSnapshotId());
+
+    // No committed current, snapshot 5 no longer registered.
+    committer.commit(
+        TABLE, TableRootMutations.resync(roots, TABLE, null, null, false, java.util.Set.of()));
+
+    var root = roots.get(TABLE).orElseThrow();
+    assertFalse(root.hasCurrentSnapshotId());
+    assertFalse(SnapshotManifests.findEntry(roots, root.getSnapshotManifestRef(), 5).isPresent());
+  }
+
+  @Test
   void gatedResyncDoesNotForceCurrencyOntoAnUnfinalizedEntry() {
     // The gated table already serves snapshot 3 (finalized); a transaction commits snapshot 7 and
     // moves the legacy pointer. The resync registers 7 but the previous finalized snapshot keeps
@@ -340,9 +416,12 @@ class TableRootMutationsTest {
     committer.commit(
         TABLE, TableRootMutations.upsertSnapshot(roots, TABLE, entry(3, 3_000), null, false));
     var gen = ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri("s3://t/gen-3.pb").build();
-    committer.commit(TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 3, gen));
+    committer.commit(TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 3, gen, 3L));
 
-    committer.commit(TABLE, TableRootMutations.resync(roots, TABLE, null, entry(7, 7_000), true));
+    committer.commit(
+        TABLE,
+        TableRootMutations.resync(
+            roots, TABLE, null, entry(7, 7_000), true, java.util.Set.of(3L, 7L)));
 
     var root = roots.get(TABLE).orElseThrow();
     assertEquals(3, root.getCurrentSnapshotId());
@@ -374,7 +453,7 @@ class TableRootMutationsTest {
     committer.commit(
         TABLE,
         TableRootMutations.setStatsGeneration(
-            roots, TABLE, 0, BlobRef.newBuilder().setUri("s3://t/stats/0/gen.pb").build()));
+            roots, TABLE, 0, BlobRef.newBuilder().setUri("s3://t/stats/0/gen.pb").build(), 0L));
 
     var root = roots.get(TABLE).orElseThrow();
     assertTrue(root.hasCurrentSnapshotId(), "id 0 becomes current at its visibility commit");
