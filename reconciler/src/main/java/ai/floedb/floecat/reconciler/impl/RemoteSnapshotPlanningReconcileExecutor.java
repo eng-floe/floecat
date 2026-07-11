@@ -216,6 +216,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
         LOG.infof(
             "Snapshot planning result submission ignored because reconcile lease is no longer valid jobId=%s tableId=%s snapshotId=%d",
             lease.jobId, task.tableId(), task.snapshotId());
+        context.beforeHandledCompletion().run();
         return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Lease no longer valid");
       }
       if (retryClassOf(classified) == ExecutionResult.RetryClass.STATE_UNCERTAIN) {
@@ -239,6 +240,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
         LOG.infof(
             "Snapshot planning failure submission ignored because reconcile lease is no longer valid jobId=%s tableId=%s snapshotId=%d",
             lease.jobId, task.tableId(), task.snapshotId());
+        context.beforeHandledCompletion().run();
         return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Lease no longer valid");
       }
       if (isObsoleteFailureKind(failureKindOf(classified))) {

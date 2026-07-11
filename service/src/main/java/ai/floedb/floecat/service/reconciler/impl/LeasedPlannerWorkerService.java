@@ -868,10 +868,7 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
     IdempotencyRecord record =
         idempotencyStore
             .get(idempotencyKey)
-            .orElseThrow(
-                () ->
-                    new StorageAbortRetryableException(
-                        "plan-table result chunk not yet staged: key=" + idempotencyKey));
+            .orElseThrow(() -> missingDeclaredPlanChunk("plan-table", idempotencyKey, chunkIndex));
     if (record.getStatus() != IdempotencyRecord.Status.SUCCEEDED) {
       throw new StorageAbortRetryableException(
           "plan-table result chunk is not complete: key=" + idempotencyKey);
@@ -900,9 +897,7 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
         idempotencyStore
             .get(idempotencyKey)
             .orElseThrow(
-                () ->
-                    new StorageAbortRetryableException(
-                        "plan-snapshot result chunk not yet staged: key=" + idempotencyKey));
+                () -> missingDeclaredPlanChunk("plan-snapshot", idempotencyKey, chunkIndex));
     if (record.getStatus() != IdempotencyRecord.Status.SUCCEEDED) {
       throw new StorageAbortRetryableException(
           "plan-snapshot result chunk is not complete: key=" + idempotencyKey);
@@ -927,6 +922,18 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
         + blankToEmpty(leaseEpoch)
         + ":chunk:"
         + Math.max(0, chunkIndex);
+  }
+
+  private static RuntimeException missingDeclaredPlanChunk(
+      String planKind, String idempotencyKey, int chunkIndex) {
+    return Status.FAILED_PRECONDITION
+        .withDescription(
+            planKind
+                + " success declared chunk index "
+                + chunkIndex
+                + " but no staged chunk exists: key="
+                + idempotencyKey)
+        .asRuntimeException();
   }
 
   private static String planSnapshotChunkIdempotencyKey(

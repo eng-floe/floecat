@@ -37,6 +37,7 @@ import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.reconciler.impl.FileGroupExecutionSupport;
+import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -404,9 +405,10 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                               0L,
                               0L,
                               fileGroupStatsProcessed(persistedTask));
+                      requireAcceptedLeaseOutcome(accepted, lease.jobId);
                       return new IdempotencyGuard.CreateResult<>(
                           SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
-                              .setAccepted(accepted)
+                              .setAccepted(true)
                               .build(),
                           tableId);
                     },
@@ -418,6 +420,13 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                     SubmitLeasedFileGroupExecutionResultResponse::parseFrom))
         .body
         .getAccepted();
+  }
+
+  private static void requireAcceptedLeaseOutcome(boolean accepted, String jobId) {
+    if (!accepted) {
+      throw ReconcileLeaseGrpcStatus.leasePreconditionFailed(
+          "reconcile lease is no longer valid for job " + jobId);
+    }
   }
 
   private static long fileGroupStatsProcessed(ReconcileFileGroupTask fileGroupTask) {

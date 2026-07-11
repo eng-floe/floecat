@@ -56,6 +56,7 @@ import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanConnectorResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanViewResultRequest;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanViewResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.MessageLite;
@@ -503,18 +504,22 @@ class GrpcRemoteReconcileExecutorClient
               .setViewTask(toProtoViewTask(viewJob.viewTask()))
               .build());
     }
-    return invokeWorkerControlMutationOnce(
-        "submitLeasedPlanConnectorResult",
-        correlationId(lease),
-        lease.lease().accountId,
-        stub ->
-            stub.submitLeasedPlanConnectorResult(
-                    SubmitLeasedPlanConnectorResultRequest.newBuilder()
-                        .setJobId(lease.lease().jobId)
-                        .setLeaseEpoch(lease.lease().leaseEpoch)
-                        .setSuccess(success.build())
-                        .build())
-                .getAccepted());
+    try {
+      return invokeWorkerControlMutationOnce(
+          "submitLeasedPlanConnectorResult",
+          correlationId(lease),
+          lease.lease().accountId,
+          stub ->
+              stub.submitLeasedPlanConnectorResult(
+                      SubmitLeasedPlanConnectorResultRequest.newBuilder()
+                          .setJobId(lease.lease().jobId)
+                          .setLeaseEpoch(lease.lease().leaseEpoch)
+                          .setSuccess(success.build())
+                          .build())
+                  .getAccepted());
+    } catch (RuntimeException error) {
+      throw leasePreconditionOrOriginal("submitLeasedPlanConnectorResult", error);
+    }
   }
 
   public boolean submitPlanConnectorFailure(
@@ -523,24 +528,28 @@ class GrpcRemoteReconcileExecutorClient
       ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
       ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       String message) {
-    return invokeWorkerControlMutationOnce(
-        "submitLeasedPlanConnectorResult",
-        correlationId(lease),
-        lease.lease().accountId,
-        stub ->
-            stub.submitLeasedPlanConnectorResult(
-                    SubmitLeasedPlanConnectorResultRequest.newBuilder()
-                        .setJobId(lease.lease().jobId)
-                        .setLeaseEpoch(lease.lease().leaseEpoch)
-                        .setFailure(
-                            SubmitLeasedPlanConnectorResultRequest.Failure.newBuilder()
-                                .setMessage(message == null ? "" : message)
-                                .setFailureKind(toProtoFailureKind(failureKind))
-                                .setRetryDisposition(toProtoRetryDisposition(retryDisposition))
-                                .setRetryClass(toProtoRetryClass(retryClass))
-                                .build())
-                        .build())
-                .getAccepted());
+    try {
+      return invokeWorkerControlMutationOnce(
+          "submitLeasedPlanConnectorResult",
+          correlationId(lease),
+          lease.lease().accountId,
+          stub ->
+              stub.submitLeasedPlanConnectorResult(
+                      SubmitLeasedPlanConnectorResultRequest.newBuilder()
+                          .setJobId(lease.lease().jobId)
+                          .setLeaseEpoch(lease.lease().leaseEpoch)
+                          .setFailure(
+                              SubmitLeasedPlanConnectorResultRequest.Failure.newBuilder()
+                                  .setMessage(message == null ? "" : message)
+                                  .setFailureKind(toProtoFailureKind(failureKind))
+                                  .setRetryDisposition(toProtoRetryDisposition(retryDisposition))
+                                  .setRetryClass(toProtoRetryClass(retryClass))
+                                  .build())
+                          .build())
+                  .getAccepted());
+    } catch (RuntimeException error) {
+      throw leasePreconditionOrOriginal("submitLeasedPlanConnectorResult", error);
+    }
   }
 
   public StandalonePlanTablePayload getPlanTableInput(RemoteLeasedJob lease) {
@@ -716,18 +725,23 @@ class GrpcRemoteReconcileExecutorClient
               .setIdempotencyKey(mutation.idempotencyKey() == null ? "" : mutation.idempotencyKey())
               .build());
     }
-    var response =
-        invokeWorkerControlMutationOnce(
-            "submitLeasedPlanViewResult",
-            correlationId(lease),
-            lease.lease().accountId,
-            stub ->
-                stub.submitLeasedPlanViewResult(
-                    SubmitLeasedPlanViewResultRequest.newBuilder()
-                        .setJobId(lease.lease().jobId)
-                        .setLeaseEpoch(lease.lease().leaseEpoch)
-                        .setSuccess(success.build())
-                        .build()));
+    SubmitLeasedPlanViewResultResponse response;
+    try {
+      response =
+          invokeWorkerControlMutationOnce(
+              "submitLeasedPlanViewResult",
+              correlationId(lease),
+              lease.lease().accountId,
+              stub ->
+                  stub.submitLeasedPlanViewResult(
+                      SubmitLeasedPlanViewResultRequest.newBuilder()
+                          .setJobId(lease.lease().jobId)
+                          .setLeaseEpoch(lease.lease().leaseEpoch)
+                          .setSuccess(success.build())
+                          .build()));
+    } catch (RuntimeException error) {
+      throw leasePreconditionOrOriginal("submitLeasedPlanViewResult", error);
+    }
     return new RemotePlannerWorkerClient.PlanViewSubmitResult(
         response.getAccepted(), response.getViewsChanged());
   }
@@ -738,24 +752,28 @@ class GrpcRemoteReconcileExecutorClient
       ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
       ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       String message) {
-    return invokeWorkerControlMutationOnce(
-        "submitLeasedPlanViewResult",
-        correlationId(lease),
-        lease.lease().accountId,
-        stub ->
-            stub.submitLeasedPlanViewResult(
-                    SubmitLeasedPlanViewResultRequest.newBuilder()
-                        .setJobId(lease.lease().jobId)
-                        .setLeaseEpoch(lease.lease().leaseEpoch)
-                        .setFailure(
-                            SubmitLeasedPlanViewResultRequest.Failure.newBuilder()
-                                .setMessage(message == null ? "" : message)
-                                .setFailureKind(toProtoFailureKind(failureKind))
-                                .setRetryDisposition(toProtoRetryDisposition(retryDisposition))
-                                .setRetryClass(toProtoRetryClass(retryClass))
-                                .build())
-                        .build())
-                .getAccepted());
+    try {
+      return invokeWorkerControlMutationOnce(
+          "submitLeasedPlanViewResult",
+          correlationId(lease),
+          lease.lease().accountId,
+          stub ->
+              stub.submitLeasedPlanViewResult(
+                      SubmitLeasedPlanViewResultRequest.newBuilder()
+                          .setJobId(lease.lease().jobId)
+                          .setLeaseEpoch(lease.lease().leaseEpoch)
+                          .setFailure(
+                              SubmitLeasedPlanViewResultRequest.Failure.newBuilder()
+                                  .setMessage(message == null ? "" : message)
+                                  .setFailureKind(toProtoFailureKind(failureKind))
+                                  .setRetryDisposition(toProtoRetryDisposition(retryDisposition))
+                                  .setRetryClass(toProtoRetryClass(retryClass))
+                                  .build())
+                          .build())
+                  .getAccepted());
+    } catch (RuntimeException error) {
+      throw leasePreconditionOrOriginal("submitLeasedPlanViewResult", error);
+    }
   }
 
   public StandalonePlanSnapshotPayload getPlanSnapshotInput(RemoteLeasedJob lease) {

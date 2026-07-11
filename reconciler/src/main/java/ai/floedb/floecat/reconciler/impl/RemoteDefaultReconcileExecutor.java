@@ -316,24 +316,33 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
       return result;
     }
     if (result.error != null) {
-      workerClient.submitPlanViewFailure(
-          remoteLease,
-          result.failureKind,
-          result.retryDisposition,
-          result.retryClass,
-          result.message);
+      try {
+        workerClient.submitPlanViewFailure(
+            remoteLease,
+            result.failureKind,
+            result.retryDisposition,
+            result.retryClass,
+            result.message);
+      } catch (RemoteLeasePreconditionFailedException leaseRejected) {
+        return leaseNoLongerValid(context, remoteLease.lease(), connectorId, result);
+      }
       return result;
     }
     context.beforeHandledCompletion().run();
-    var submit =
-        workerClient.submitPlanViewSuccess(
-            remoteLease,
-            planned.mutation() == null
-                ? null
-                : new PlannedViewMutation(
-                    planned.mutation().destinationViewId(),
-                    planned.mutation().viewSpec(),
-                    planned.mutation().idempotencyKey()));
+    RemotePlannerWorkerClient.PlanViewSubmitResult submit;
+    try {
+      submit =
+          workerClient.submitPlanViewSuccess(
+              remoteLease,
+              planned.mutation() == null
+                  ? null
+                  : new PlannedViewMutation(
+                      planned.mutation().destinationViewId(),
+                      planned.mutation().viewSpec(),
+                      planned.mutation().idempotencyKey()));
+    } catch (RemoteLeasePreconditionFailedException leaseRejected) {
+      return leaseNoLongerValid(context, remoteLease.lease(), connectorId, result);
+    }
     if (!submit.accepted()) {
       throw plannerSubmissionRejected();
     }
@@ -355,8 +364,8 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
       ResourceId connectorId,
       ExecutionResult result) {
     LOG.infof(
-        "PLAN_TABLE result submission ignored because reconcile lease is no longer valid jobId=%s connectorId=%s",
-        lease.jobId, connectorId);
+        "%s result submission ignored because reconcile lease is no longer valid jobId=%s connectorId=%s",
+        lease.jobKind, lease.jobId, connectorId);
     context.beforeHandledCompletion().run();
     return ExecutionResult.cancelled(
         result.tablesScanned,

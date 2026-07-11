@@ -173,6 +173,41 @@ class RemoteDefaultReconcileExecutorTest {
     assertTrue(completionStarted.get());
   }
 
+  @Test
+  void executeViewMarksCompletionStartedWhenRemoteLeasePreconditionFails() {
+    ReconcilerService reconcilerService = mock(ReconcilerService.class);
+    QueuedReconcileWorkerSupport queuedWorkerSupport = mock(QueuedReconcileWorkerSupport.class);
+    RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
+    ReconcileWorkerAuthProvider authProvider = accountId -> java.util.Optional.empty();
+    var executor =
+        new RemoteDefaultReconcileExecutor(
+            reconcilerService, queuedWorkerSupport, workerClient, authProvider, true);
+
+    ReconcileJobStore.LeasedJob lease = viewLease("job-view-precondition", "acct-a");
+    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
+    when(workerClient.getPlanViewInput(remoteLease))
+        .thenReturn(planViewPayload(lease, connectorId("acct-a")));
+    when(queuedWorkerSupport.prepareViewMutation(
+            any(), eq(connectorId("acct-a")), any(), any(), eq(null), any(), any()))
+        .thenReturn(
+            new QueuedReconcileWorkerSupport.PlannedViewMutationResult(
+                ReconcileExecutor.ExecutionResult.success(0, 0, 1, 0, 0, 0, 0, "ok"), null));
+    when(workerClient.submitPlanViewSuccess(any(), any()))
+        .thenThrow(new RemoteLeasePreconditionFailedException("submitPlanViewSuccess", null));
+    AtomicBoolean completionStarted = new AtomicBoolean(false);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (a, b, c, d, e, f, g, h) -> {},
+                () -> completionStarted.set(true)));
+
+    assertTrue(result.cancelled);
+    assertTrue(completionStarted.get());
+  }
+
   private static ReconcileJobStore.LeasedJob tableLease(String jobId, String accountId) {
     return new ReconcileJobStore.LeasedJob(
         jobId,
@@ -193,6 +228,26 @@ class RemoteDefaultReconcileExecutorTest {
         "");
   }
 
+  private static ReconcileJobStore.LeasedJob viewLease(String jobId, String accountId) {
+    return new ReconcileJobStore.LeasedJob(
+        jobId,
+        accountId,
+        "connector-1",
+        false,
+        ReconcilerService.CaptureMode.METADATA_ONLY,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.defaults(),
+        "lease-" + jobId,
+        "",
+        "",
+        ReconcileJobKind.PLAN_VIEW,
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.of("src", "view", "ns", "view-1"),
+        ReconcileSnapshotTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask.empty(),
+        "parent-job");
+  }
+
   private static StandalonePlanTablePayload planTablePayload(
       ReconcileJobStore.LeasedJob lease, ResourceId connectorId) {
     return new StandalonePlanTablePayload(
@@ -204,6 +259,12 @@ class RemoteDefaultReconcileExecutorTest {
         false,
         ReconcileScope.empty(),
         lease.tableTask);
+  }
+
+  private static StandalonePlanViewPayload planViewPayload(
+      ReconcileJobStore.LeasedJob lease, ResourceId connectorId) {
+    return new StandalonePlanViewPayload(
+        lease.jobId, lease.leaseEpoch, lease.parentJobId, connectorId, lease.scope, lease.viewTask);
   }
 
   private static ResourceId connectorId(String accountId) {

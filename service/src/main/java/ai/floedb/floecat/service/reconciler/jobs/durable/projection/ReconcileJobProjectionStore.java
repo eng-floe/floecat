@@ -71,6 +71,7 @@ public class ReconcileJobProjectionStore {
           && currentProjection.appliedGeneration() > projection.appliedGeneration()) {
         return;
       }
+      // Same-generation writers are allowed to converge via last-writer-wins; reads self-heal.
       if (current != null && blobUri.equals(current.getBlobUri())) {
         return;
       }

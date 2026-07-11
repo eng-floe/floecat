@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
@@ -125,9 +126,10 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                               0L,
                               1L,
                               snapshotTask.directStatsPersistedRecordCount());
+                      requireAcceptedLeaseOutcome(accepted, lease.jobId);
                       return new IdempotencyGuard.CreateResult<>(
                           SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
-                              .setAccepted(accepted)
+                              .setAccepted(true)
                               .build(),
                           tableId);
                     },
@@ -283,6 +285,13 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       }
       default ->
           throw Status.FAILED_PRECONDITION.withDescription(coverage.message()).asRuntimeException();
+    }
+  }
+
+  private static void requireAcceptedLeaseOutcome(boolean accepted, String jobId) {
+    if (!accepted) {
+      throw ReconcileLeaseGrpcStatus.leasePreconditionFailed(
+          "reconcile lease is no longer valid for job " + jobId);
     }
   }
 

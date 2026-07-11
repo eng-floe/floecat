@@ -75,7 +75,7 @@ public final class ReconcileLeaseGrpcStatus {
           return true;
         }
       } catch (com.google.protobuf.InvalidProtocolBufferException ignored) {
-        return false;
+        continue;
       }
     }
     return false;

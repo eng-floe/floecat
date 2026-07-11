@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anySet;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -44,6 +45,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.service.repo.IdempotencyRepository;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.EnumSet;
 import java.util.List;
@@ -166,6 +169,62 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     assertEquals(
         "INVALID_ARGUMENT: snapshot finalize chunk must not include stats records for this submission",
         error.getMessage());
+  }
+
+  @Test
+  void persistSuccessDoesNotFinalizeIdempotencyWhenLeaseOutcomeRejected() {
+    IdempotencyRepository idempotencyStore = mock(IdempotencyRepository.class);
+    service.idempotencyStore = idempotencyStore;
+    when(principal.getAccountId()).thenReturn(ACCOUNT_ID);
+    when(idempotencyStore.get(anyString())).thenReturn(java.util.Optional.empty());
+    when(idempotencyStore.createPending(
+            anyString(), anyString(), anyString(), anyString(), any(), any()))
+        .thenReturn(true);
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            0);
+    when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(java.util.Optional.of(finalizeJobView(snapshotTask)));
+    when(coverageService.expectedCoverage(snapshotTask))
+        .thenReturn(
+            new SnapshotFinalizeCoverageService.ExpectedCoverage(
+                SnapshotFinalizeCoverageService.PlannedCoverageState.EXPLICIT_EMPTY,
+                List.of(),
+                List.of(),
+                ""));
+    when(jobs.applyLeaseOutcome(
+            anyString(),
+            anyString(),
+            any(),
+            anyLong(),
+            anyString(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong()))
+        .thenReturn(false);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1"));
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    verify(idempotencyStore, never())
+        .finalizeSuccess(
+            anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
   }
 
   @Test
@@ -608,6 +667,37 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         ReconcileTableTask.empty(),
         ReconcileViewTask.empty(),
         ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.empty(),
+        "parent-job");
+  }
+
+  private static ReconcileJobStore.ReconcileJob finalizeJobView(
+      ReconcileSnapshotTask snapshotTask) {
+    return new ReconcileJobStore.ReconcileJob(
+        FINALIZE_JOB_ID,
+        ACCOUNT_ID,
+        "connector",
+        "JS_RUNNING",
+        "",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        0L,
+        0L,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.defaults(),
+        "",
+        "",
+        ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.empty(),
+        snapshotTask,
         ReconcileFileGroupTask.empty(),
         "parent-job");
   }

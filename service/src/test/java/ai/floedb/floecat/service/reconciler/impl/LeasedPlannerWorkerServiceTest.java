@@ -52,6 +52,8 @@ import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -457,6 +459,27 @@ class LeasedPlannerWorkerServiceTest {
             eq(0L),
             eq(0L),
             eq(0L));
+  }
+
+  @Test
+  void persistPlanTableSuccessRejectsMissingDeclaredChunk() {
+    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(jobs.getLeaseView("job-1"))
+        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_TABLE)));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service.persistPlanTableSuccess(
+                    principal, "job-1", "lease-1", 1L, 1L, 0L, 0L, 0L, 1));
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    assertTrue(error.getStatus().getDescription().contains("declared chunk index 0"));
+    verify(jobs, never())
+        .applyLeaseOutcome(
+            any(), any(), any(), anyLong(), any(), anyLong(), anyLong(), anyLong(), anyLong(),
+            anyLong(), anyLong(), anyLong());
   }
 
   @Test

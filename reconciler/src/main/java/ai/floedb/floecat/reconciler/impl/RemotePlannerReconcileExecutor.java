@@ -286,7 +286,13 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
         return cancelled(tablesPlanned, viewsPlanned);
       }
       context.beforeHandledCompletion().run();
-      if (!workerClient.submitPlanConnectorSuccess(remoteLease, tableJobs, viewJobs)) {
+      boolean accepted;
+      try {
+        accepted = workerClient.submitPlanConnectorSuccess(remoteLease, tableJobs, viewJobs);
+      } catch (RemoteLeasePreconditionFailedException leaseRejected) {
+        return leaseNoLongerValid(context, lease, connectorId, tablesPlanned, viewsPlanned);
+      }
+      if (!accepted) {
         throw plannerSubmissionRejected();
       }
       return ExecutionResult.successHandled(
@@ -310,12 +316,16 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
           retryClassOf(classified),
           blankToEmpty(e.getMessage()),
           rootCauseMessage(e));
-      workerClient.submitPlanConnectorFailure(
-          remoteLease,
-          failureKindOf(classified),
-          retryDispositionOf(classified),
-          retryClassOf(classified),
-          classified.getMessage());
+      try {
+        workerClient.submitPlanConnectorFailure(
+            remoteLease,
+            failureKindOf(classified),
+            retryDispositionOf(classified),
+            retryClassOf(classified),
+            classified.getMessage());
+      } catch (RemoteLeasePreconditionFailedException leaseRejected) {
+        return leaseNoLongerValid(context, lease, connectorId, tablesPlanned, viewsPlanned);
+      }
       String message = e.getMessage();
       if (message == null || message.isBlank()) {
         message = e.getClass().getSimpleName();
@@ -343,6 +353,20 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
           failureMessage,
           classified);
     }
+  }
+
+  private ExecutionResult leaseNoLongerValid(
+      ExecutionContext context,
+      ReconcileJobStore.LeasedJob lease,
+      ResourceId connectorId,
+      long tablesPlanned,
+      long viewsPlanned) {
+    LOG.infof(
+        "PLAN_CONNECTOR result submission ignored because reconcile lease is no longer valid jobId=%s connectorId=%s",
+        lease.jobId, connectorId);
+    context.beforeHandledCompletion().run();
+    return ExecutionResult.cancelled(
+        tablesPlanned, 0, viewsPlanned, 0, 0, 0, 0, "Lease no longer valid");
   }
 
   private static Exception classifyPlannerFailure(Exception error) {

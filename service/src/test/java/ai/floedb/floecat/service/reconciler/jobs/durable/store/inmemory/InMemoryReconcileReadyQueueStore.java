@@ -41,6 +41,9 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
 
   private record ReadyIndexSelection(ReconcileReadyQueueBackend.ReadyQueueSlice slice) {}
 
+  private record ScanPageCursorKey(
+      ReconcileReadyQueueBackend.ReadyQueueSlice slice, String requestKey) {}
+
   private ReconcileReadyQueueBackend readyQueueBackend;
   private ReconcileJobIndexStore jobIndexStore;
   private ReconcileLeaseStore leaseStore;
@@ -48,12 +51,13 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
   private static final int MAX_PAGES_PER_LEASE_SELECTION = 1;
   private static final int MAX_CANDIDATES_PER_LEASE_SELECTION = 16;
   private Predicate<StoredReconcileJob> requiresReadyPointer;
+  private Predicate<StoredReconcileJob> blockedByCancellation;
   private final AtomicInteger pinnedSelectionCursor = new AtomicInteger();
   private final AtomicInteger unpinnedSelectionCursor = new AtomicInteger();
-  private final ConcurrentMap<ReconcileReadyQueueBackend.ReadyQueueSlice, String> scanPageCursors =
+  private final ConcurrentMap<ScanPageCursorKey, String> scanPageCursors =
       new ConcurrentHashMap<>();
-  private final ConcurrentMap<ReconcileReadyQueueBackend.ReadyQueueSlice, ReentrantLock>
-      scanPageLocks = new ConcurrentHashMap<>();
+  private final ConcurrentMap<ScanPageCursorKey, ReentrantLock> scanPageLocks =
+      new ConcurrentHashMap<>();
 
   @Override
   public void bind(
@@ -68,6 +72,7 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
     this.leaseStore = leaseStore;
     this.readyScanLimit = readyScanLimit;
     this.requiresReadyPointer = requiresReadyPointer;
+    this.blockedByCancellation = blockedByCancellation;
   }
 
   @Override
@@ -208,12 +213,13 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
   private Optional<LeasedJob> leaseReadyDueFromSelection(
       long nowMs, LeaseRequest request, ReadyIndexSelection selection, LeaseScanStats scanStats) {
     ReconcileReadyQueueBackend.ReadyQueueSlice slice = selection.slice();
-    ReentrantLock lock = scanPageLocks.computeIfAbsent(slice, ignored -> new ReentrantLock());
+    ScanPageCursorKey cursorKey = new ScanPageCursorKey(slice, leaseRequestCursorKey(request));
+    ReentrantLock lock = scanPageLocks.computeIfAbsent(cursorKey, ignored -> new ReentrantLock());
     if (!lock.tryLock()) {
       return Optional.empty();
     }
     try {
-      String token = scanPageCursor(slice);
+      String token = scanPageCursor(cursorKey);
       int pages = 0;
       while (true) {
         if (shouldStop(scanStats)) {
@@ -229,7 +235,7 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
                 token,
                 scanStats);
         if (page.entries().isEmpty()) {
-          clearScanPageCursor(slice);
+          clearScanPageCursor(cursorKey);
           return Optional.empty();
         }
 
@@ -241,7 +247,7 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
             scanStats.candidateCount++;
           }
           if (candidate.dueAtMs() > nowMs) {
-            clearScanPageCursor(slice);
+            clearScanPageCursor(cursorKey);
             return Optional.empty();
           }
           CanonicalPointerSnapshot canonicalSnapshot =
@@ -268,6 +274,10 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
           if (!readyPointerMatchesRecord(candidate, record)) {
             continue;
           }
+          if (blockedByCancellation != null
+              && Boolean.TRUE.equals(blockedByCancellation.test(record))) {
+            continue;
+          }
           if (!matchesLeaseRequest(record, request)) {
             continue;
           }
@@ -279,23 +289,23 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
                   canonicalSnapshot,
                   record);
           if (leased.isPresent()) {
-            clearScanPageCursor(slice);
+            clearScanPageCursor(cursorKey);
             return leased;
           }
         }
 
         String nextToken = blankToEmpty(page.nextPageToken());
         if (nextToken.isBlank()) {
-          clearScanPageCursor(slice);
+          clearScanPageCursor(cursorKey);
           return Optional.empty();
         }
         if (nextToken.equals(token)) {
-          clearScanPageCursor(slice);
+          clearScanPageCursor(cursorKey);
           LOG.warn(
               "Reconcile ready pagination token did not advance; aborting ready scan to avoid livelock");
           return Optional.empty();
         }
-        rememberScanPageCursor(slice, nextToken);
+        rememberScanPageCursor(cursorKey, nextToken);
         pages++;
         if (pages >= MAX_PAGES_PER_LEASE_SELECTION) {
           return Optional.empty();
@@ -371,23 +381,40 @@ public final class InMemoryReconcileReadyQueueStore implements ReconcileReadyQue
     return Math.floorMod(cursor.getAndIncrement(), size);
   }
 
-  private String scanPageCursor(ReconcileReadyQueueBackend.ReadyQueueSlice slice) {
-    return blankToEmpty(scanPageCursors.get(slice));
+  private String scanPageCursor(ScanPageCursorKey cursorKey) {
+    return blankToEmpty(scanPageCursors.get(cursorKey));
   }
 
-  private void rememberScanPageCursor(
-      ReconcileReadyQueueBackend.ReadyQueueSlice slice, String nextToken) {
+  private void rememberScanPageCursor(ScanPageCursorKey cursorKey, String nextToken) {
     String normalized = blankToEmpty(nextToken);
-    if (slice == null || normalized.isBlank()) {
+    if (cursorKey == null || cursorKey.slice() == null || normalized.isBlank()) {
       return;
     }
-    scanPageCursors.put(slice, normalized);
+    scanPageCursors.put(cursorKey, normalized);
   }
 
-  private void clearScanPageCursor(ReconcileReadyQueueBackend.ReadyQueueSlice slice) {
-    if (slice != null) {
-      scanPageCursors.remove(slice);
+  private void clearScanPageCursor(ScanPageCursorKey cursorKey) {
+    if (cursorKey != null) {
+      scanPageCursors.remove(cursorKey);
     }
+  }
+
+  private static String leaseRequestCursorKey(LeaseRequest request) {
+    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
+    return "classes="
+        + effective.executionClasses.stream().map(Enum::name).sorted().toList()
+        + "|lanes="
+        + effective.lanes.stream()
+            .map(InMemoryReconcileReadyQueueStore::blankToEmpty)
+            .sorted()
+            .toList()
+        + "|executors="
+        + effective.executorIds.stream()
+            .map(InMemoryReconcileReadyQueueStore::blankToEmpty)
+            .sorted()
+            .toList()
+        + "|kinds="
+        + effective.jobKinds.stream().map(Enum::name).sorted().toList();
   }
 
   @Override
