@@ -2712,6 +2712,64 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void retryThenSuccessClearsPriorFailureFromParentProjection() {
+    configureRetryPolicy(2, 0L, 0L);
+
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 50L, "executor-connector");
+    store.markWaiting(
+        connectorJobId,
+        connectorLease.leaseEpoch,
+        60L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    var firstTableLease = leaseJob(tableJobId);
+    store.markRunning(tableJobId, firstTableLease.leaseEpoch, 100L, "executor-table");
+    store.markFailed(
+        tableJobId, firstTableLease.leaseEpoch, 110L, "transient", 1L, 0L, 0L, 0L, 1L, 0L, 0L);
+    runProjectionMaintenance();
+    runProjectionMaintenance();
+
+    assertEquals(1L, projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow().errors());
+
+    var secondTableLease = leaseJob(tableJobId);
+    store.markRunning(tableJobId, secondTableLease.leaseEpoch, 120L, "executor-table");
+    store.markSucceeded(tableJobId, secondTableLease.leaseEpoch, 130L, 1L, 1L, 0L, 0L, 0L, 0L);
+    runProjectionMaintenance();
+    runProjectionMaintenance();
+
+    assertEquals(0L, projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow().errors());
+  }
+
+  @Test
   void retryThenFailureTransitionsToTerminalFailed() {
     configureRetryPolicy(2, 0L, 0L);
 
@@ -2962,6 +3020,55 @@ class DurableReconcileJobStoreTest {
     assertEquals("JS_CANCELLING", store.getLeaseView(parentJobId).orElseThrow().state);
     assertEquals("JS_RUNNING", child.state);
     assertTrue(store.isCancellationRequested(childJobId));
+  }
+
+  @Test
+  void maintenanceCancelsRunningDescendantWithoutLiveLeaseUnderCancellingParent() {
+    String parentJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String childJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            parentJobId,
+            "");
+    String grandchildJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileSnapshotTask.of("table-1", 1L, "db", "orders", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            childJobId,
+            "");
+    var childLease = leaseJob(childJobId);
+    store.markRunning(childJobId, childLease.leaseEpoch, 100L, "executor-table");
+    assertTrue(
+        store.leaseStore.clearLeaseIfEpochMatches(ACCOUNT_ID, childJobId, childLease.leaseEpoch));
+
+    store.cancel(ACCOUNT_ID, parentJobId, "stop");
+    runCancellationMaintenance();
+    runCancellationMaintenance();
+    runCancellationMaintenance();
+    runCancellationMaintenance();
+
+    assertEquals("JS_CANCELLED", store.getLeaseView(parentJobId).orElseThrow().state);
+    assertEquals("JS_CANCELLED", store.getLeaseView(childJobId).orElseThrow().state);
+    assertEquals("JS_CANCELLED", store.getLeaseView(grandchildJobId).orElseThrow().state);
+    assertTrue(store.leaseNext(ReconcileJobStore.LeaseRequest.all()).isEmpty());
   }
 
   @Test
@@ -3701,7 +3808,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void maintenanceRepairsStaleCancellingRootBeforeReplacementEnqueue() {
+  void enqueueDoesNotDedupeToStaleCancellingRoot() {
     String connectorJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -3742,23 +3849,6 @@ class DurableReconcileJobStoreTest {
                       return current;
                     }));
 
-    String blockedReplacementJobId =
-        store.enqueue(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.empty());
-
-    assertEquals(connectorJobId, blockedReplacementJobId);
-    assertEquals("JS_CANCELLING", store.getLeaseView(connectorJobId).orElseThrow().state);
-    assertEquals("JS_QUEUED", store.getLeaseView(tableJobId).orElseThrow().state);
-
-    requestCancellationCleanup(ACCOUNT_ID, connectorJobId);
-    runCancellationMaintenance();
-    runCancellationMaintenance();
-    runCancellationMaintenance();
-
     String replacementJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -3768,8 +3858,8 @@ class DurableReconcileJobStoreTest {
             ReconcileScope.empty());
 
     assertNotEquals(connectorJobId, replacementJobId);
-    assertEquals("JS_CANCELLED", store.getLeaseView(connectorJobId).orElseThrow().state);
-    assertEquals("JS_CANCELLED", store.getLeaseView(tableJobId).orElseThrow().state);
+    assertEquals("JS_CANCELLING", store.getLeaseView(connectorJobId).orElseThrow().state);
+    assertEquals("JS_QUEUED", store.getLeaseView(tableJobId).orElseThrow().state);
     assertEquals("JS_QUEUED", store.getLeaseView(replacementJobId).orElseThrow().state);
   }
 

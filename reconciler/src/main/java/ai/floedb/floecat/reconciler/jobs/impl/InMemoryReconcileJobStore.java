@@ -184,7 +184,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     String activeJobId = activeJobIdByDedupeKey.get(dedupeKey);
     if (activeJobId != null) {
       ReconcileJob existing = jobs.get(activeJobId);
-      if (existing != null && !isTerminalState(existing.state)) {
+      if (existing != null && isDedupeActiveState(existing.state)) {
         return activeJobId;
       }
       activeJobIdByDedupeKey.remove(dedupeKey, activeJobId);
@@ -510,6 +510,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     return "JS_SUCCEEDED".equals(state)
         || "JS_FAILED".equals(state)
         || "JS_CANCELLED".equals(state);
+  }
+
+  private static boolean isDedupeActiveState(String state) {
+    return !isTerminalState(state) && !"JS_CANCELLING".equals(state);
   }
 
   private static String aggregateState(ReconcileJob planJob, List<ReconcileJob> children) {

@@ -246,11 +246,20 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
       return Optional.empty();
     }
     try {
-      return readRecord(
-          new CanonicalPointerSnapshot(
-              canonicalPointer.pointerKey(),
-              canonicalPointer.blobUri(),
-              canonicalPointer.version()));
+      Optional<StoredReconcileJob> record =
+          readRecord(
+              new CanonicalPointerSnapshot(
+                  canonicalPointer.pointerKey(),
+                  canonicalPointer.blobUri(),
+                  canonicalPointer.version()));
+      if (record.isPresent() && !isDedupeActiveState(record.get().state)) {
+        jobIndexBackend.compareAndSetBatch(
+            new JobIndexWriteBatch(
+                List.of(new JobIndexDelete(dedupePointer.pointerKey(), dedupePointer.version())),
+                ReadyQueueMutation.empty()));
+        return Optional.empty();
+      }
+      return record;
     } catch (RuntimeException e) {
       return Optional.empty();
     }
@@ -573,18 +582,18 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
 
     String previousDedupePointerKey = previous == null ? "" : indexes.dedupePointerKey(previous);
     String currentDedupePointerKey = indexes.dedupePointerKey(current);
-    boolean previousTerminal = previous != null && isTerminalState(previous.state);
-    boolean currentTerminal = isTerminalState(current.state);
-    if (currentTerminal) {
+    boolean previousDedupeActive = previous != null && isDedupeActiveState(previous.state);
+    boolean currentDedupeActive = isDedupeActiveState(current.state);
+    if (!currentDedupeActive) {
       String dedupePointerToDelete =
           previousDedupePointerKey.isBlank() ? currentDedupePointerKey : previousDedupePointerKey;
       if (!dedupePointerToDelete.isBlank()
-          && (!previousTerminal
+          && (previousDedupeActive
               || !Objects.equals(previousDedupePointerKey, currentDedupePointerKey))) {
         appendOwnedDelete(ops, dedupePointerToDelete, canonicalPointerKey);
       }
     } else if (!currentDedupePointerKey.isBlank()
-        && (previousTerminal
+        && (!previousDedupeActive
             || !Objects.equals(previousDedupePointerKey, currentDedupePointerKey))) {
       appendReferenceUpsert(ops, currentDedupePointerKey, canonicalPointerKey);
       if (!previousDedupePointerKey.isBlank()
@@ -1146,5 +1155,9 @@ public final class InMemoryReconcileJobIndexStore implements ReconcileJobIndexSt
       case "JS_SUCCEEDED", "JS_FAILED", "JS_CANCELLED" -> true;
       default -> false;
     };
+  }
+
+  private static boolean isDedupeActiveState(String state) {
+    return !isTerminalState(state) && !"JS_CANCELLING".equals(blankToEmpty(state));
   }
 }

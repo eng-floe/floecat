@@ -205,7 +205,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     if (record.isEmpty()) {
       return Optional.empty();
     }
-    if (isTerminalState(record.get().state)) {
+    if (!isDedupeActiveState(record.get().state)) {
       jobIndexBackend.compareAndSetBatch(
           new JobIndexWriteBatch(
               List.of(new JobIndexDelete(dedupePointer.pointerKey(), dedupePointer.version())),
@@ -474,18 +474,18 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     }
     String previousDedupePointerKey = previous == null ? "" : indexes.dedupePointerKey(previous);
     String currentDedupePointerKey = indexes.dedupePointerKey(current);
-    boolean previousTerminal = previous != null && isTerminalState(previous.state);
-    boolean currentTerminal = isTerminalState(current.state);
-    if (currentTerminal) {
+    boolean previousDedupeActive = previous != null && isDedupeActiveState(previous.state);
+    boolean currentDedupeActive = isDedupeActiveState(current.state);
+    if (!currentDedupeActive) {
       String dedupePointerToDelete =
           previousDedupePointerKey.isBlank() ? currentDedupePointerKey : previousDedupePointerKey;
       if (!dedupePointerToDelete.isBlank()
-          && (!previousTerminal
+          && (previousDedupeActive
               || !Objects.equals(previousDedupePointerKey, currentDedupePointerKey))) {
         appendOwnedDelete(ops, dedupePointerToDelete, canonicalPointerKey);
       }
     } else if (!currentDedupePointerKey.isBlank()
-        && (previousTerminal
+        && (!previousDedupeActive
             || !Objects.equals(previousDedupePointerKey, currentDedupePointerKey))) {
       appendReferenceUpsert(ops, currentDedupePointerKey, canonicalPointerKey);
       if (!previousDedupePointerKey.isBlank()
@@ -741,6 +741,10 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       case "JS_SUCCEEDED", "JS_FAILED", "JS_CANCELLED" -> true;
       default -> false;
     };
+  }
+
+  private static boolean isDedupeActiveState(String state) {
+    return !isTerminalState(state) && !"JS_CANCELLING".equals(state);
   }
 
   private JobIndexWriteBatch queuedJobInsertOps(

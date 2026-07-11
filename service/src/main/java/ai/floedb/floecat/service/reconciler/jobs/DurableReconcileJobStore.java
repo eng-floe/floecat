@@ -2174,7 +2174,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         continue;
       }
       boolean hasNonTerminalChildren =
-          cancellationCleanupMayNeedDescendantState(child) && hasNonTerminalDirectChildren(child);
+          cancellationCleanupMayNeedDescendantState(child, now)
+              && hasNonTerminalDirectChildren(child);
       StoredReconcileJob next =
           directChildCancellationState(child, message, now, hasNonTerminalChildren);
       StoredReconcileJob effectiveChild = next == null ? child : next;
@@ -2304,7 +2305,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         && hasNonTerminalChildren;
   }
 
-  private boolean cancellationCleanupMayNeedDescendantState(StoredReconcileJob child) {
+  private boolean cancellationCleanupMayNeedDescendantState(StoredReconcileJob child, long now) {
     if (child == null || !isParentCapable(child.jobKind())) {
       return false;
     }
@@ -2313,7 +2314,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return false;
     }
     if ("JS_RUNNING".equals(state)) {
-      return false;
+      return !leaseManager().hasLiveLease(child, true, now);
     }
     return !("JS_CANCELLED".equals(state) && child.finishedAtMs > 0L && child.childrenFinalized);
   }
@@ -2328,7 +2329,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (terminal && (!"JS_CANCELLED".equals(state) || !hasNonTerminalChildren)) {
       return null;
     }
-    if ("JS_RUNNING".equals(state)) {
+    if ("JS_RUNNING".equals(state) && leaseManager().hasLiveLease(child, true, now)) {
       return null;
     }
     if ("JS_CANCELLING".equals(state) && leaseManager().hasLiveLease(child, true, now)) {
@@ -2936,6 +2937,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     return Math.max(0L, record.statsProcessed) == Math.max(0L, projection.statsProcessed())
         && Math.max(0L, record.indexesProcessed) == Math.max(0L, projection.indexesProcessed())
+        && Math.max(0L, record.errors) == Math.max(0L, projection.errors())
         && Math.max(0L, record.snapshotsProcessed) == Math.max(0L, projection.snapshotsProcessed())
         && Math.max(0L, record.plannedFileGroups) == Math.max(0L, projection.plannedFileGroups())
         && Math.max(0L, record.plannedFiles) == Math.max(0L, projection.plannedFiles())
@@ -2979,7 +2981,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         previous.tablesChanged(),
         previous.viewsScanned(),
         previous.viewsChanged(),
-        previous.errors(),
+        Math.max(0L, record.errors),
         Math.max(0L, record.snapshotsProcessed),
         Math.max(0L, record.statsProcessed),
         Math.max(0L, record.indexesProcessed),
@@ -3010,6 +3012,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     long statsDelta = projectionDelta(previousProjection, nextProjection, AggregateCounter.STATS);
     long indexesDelta =
         projectionDelta(previousProjection, nextProjection, AggregateCounter.INDEXES);
+    long errorsDelta = projectionDelta(previousProjection, nextProjection, AggregateCounter.ERRORS);
     long plannedFileGroupsDelta =
         projectionDelta(previousProjection, nextProjection, AggregateCounter.PLANNED_FILE_GROUPS);
     long plannedFilesDelta =
@@ -3024,6 +3027,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         projectionDelta(previousProjection, nextProjection, AggregateCounter.FAILED_FILES);
     if (statsDelta == 0L
         && indexesDelta == 0L
+        && errorsDelta == 0L
         && snapshotsDelta == 0L
         && plannedFileGroupsDelta == 0L
         && plannedFilesDelta == 0L
@@ -3041,6 +3045,26 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         || !isParentCapable(loadedParent.record().jobKind())) {
       return false;
     }
+    boolean childSnapshotCountOwnedByTable =
+        loadedParent.record().jobKind() == ReconcileJobKind.PLAN_TABLE
+            && child.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT;
+    if (childSnapshotCountOwnedByTable) {
+      snapshotsDelta = 0L;
+    }
+    if (statsDelta == 0L
+        && indexesDelta == 0L
+        && errorsDelta == 0L
+        && snapshotsDelta == 0L
+        && plannedFileGroupsDelta == 0L
+        && plannedFilesDelta == 0L
+        && completedFileGroupsDelta == 0L
+        && failedFileGroupsDelta == 0L
+        && completedFilesDelta == 0L
+        && failedFilesDelta == 0L) {
+      projections().upsert(nextProjection);
+      requestProjectionRefresh(loadedParent.record().accountId, loadedParent.record().jobId, 0L);
+      return true;
+    }
     var parentSnapshot =
         jobIndexStore().loadCanonicalSnapshot(loadedParent.canonicalPointerKey()).orElse(null);
     if (parentSnapshot == null) {
@@ -3053,6 +3077,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     nextParent.statsProcessed = Math.max(0L, Math.max(0L, nextParent.statsProcessed) + statsDelta);
     nextParent.indexesProcessed =
         Math.max(0L, Math.max(0L, nextParent.indexesProcessed) + indexesDelta);
+    nextParent.errors = Math.max(0L, Math.max(0L, nextParent.errors) + errorsDelta);
     nextParent.plannedFileGroups =
         Math.max(0L, Math.max(0L, nextParent.plannedFileGroups) + plannedFileGroupsDelta);
     nextParent.plannedFiles =
@@ -3080,6 +3105,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     record.snapshotsProcessed = aggregate.snapshotsProcessed();
     record.statsProcessed = aggregate.statsProcessed();
     record.indexesProcessed = aggregate.indexesProcessed();
+    record.errors = aggregate.errors();
     record.plannedFileGroups = aggregate.plannedFileGroups();
     record.plannedFiles = aggregate.plannedFiles();
     record.completedFileGroups = aggregate.completedFileGroups();
@@ -3152,6 +3178,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       @Override
       long value(StoredReconcileJobProjection projection) {
         return projection.indexesProcessed();
+      }
+    },
+    ERRORS {
+      @Override
+      long value(StoredReconcileJobProjection projection) {
+        return projection.errors();
       }
     },
     SNAPSHOTS {

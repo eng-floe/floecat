@@ -139,8 +139,9 @@ public class ReconcileAncestorRollupService {
     if (parent.jobKind() == ReconcileJobKind.PLAN_TABLE) {
       tablesScanned = Math.max(selfTablesScanned, aggregate.tablesScanned());
       tablesChanged = Math.max(selfTablesChanged, aggregate.tablesChanged());
-      snapshotsProcessed = Math.max(canonicalSnapshotsProcessed, aggregate.snapshotsProcessed());
-      snapshotsProcessed = capTableSnapshotsProcessed(parent, snapshotsProcessed);
+      snapshotsProcessed =
+          tableSnapshotsProcessed(
+              parent, canonicalSnapshotsProcessed, aggregate.snapshotsProcessed());
       statsProcessed = Math.max(canonicalStatsProcessed, aggregate.statsProcessed());
       indexesProcessed = Math.max(canonicalIndexesProcessed, aggregate.indexesProcessed());
     }
@@ -435,16 +436,19 @@ public class ReconcileAncestorRollupService {
     return parent != null && parent.childrenFinalized;
   }
 
-  private static long capTableSnapshotsProcessed(
-      StoredReconcileJob parent, long snapshotsProcessed) {
+  private static long tableSnapshotsProcessed(
+      StoredReconcileJob parent, long canonicalSnapshotsProcessed, long childSnapshotsProcessed) {
     if (parent == null || parent.jobKind() != ReconcileJobKind.PLAN_TABLE) {
-      return Math.max(0L, snapshotsProcessed);
+      return Math.max(0L, Math.max(canonicalSnapshotsProcessed, childSnapshotsProcessed));
     }
     long expectedSnapshots = Math.max(0L, parent.expectedDirectChildren);
-    if (!parent.childrenFinalized || expectedSnapshots <= 0L) {
-      return Math.max(0L, snapshotsProcessed);
+    if (expectedSnapshots > 0L) {
+      return expectedSnapshots;
     }
-    return Math.min(Math.max(0L, snapshotsProcessed), expectedSnapshots);
+    if (childSnapshotsProcessed > 0L) {
+      return Math.max(0L, childSnapshotsProcessed);
+    }
+    return Math.max(0L, Math.max(canonicalSnapshotsProcessed, childSnapshotsProcessed));
   }
 
   private static boolean isDependencyWaitingQueuedChild(ProjectedPublicJob projected) {
@@ -603,7 +607,7 @@ public class ReconcileAncestorRollupService {
         && parent.jobKind() == ReconcileJobKind.PLAN_TABLE
         && childRecord != null
         && childRecord.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT) {
-      return Math.max(1L, projected.snapshotsProcessed());
+      return 1L;
     }
     return projected.snapshotsProcessed();
   }

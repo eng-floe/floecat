@@ -84,7 +84,7 @@ class ReconcileAncestorRollupServiceTest {
   }
 
   @Test
-  void tableRollupKeepsCanonicalProgressWhenSnapshotChildRollupIsLower() {
+  void tableRollupUsesExpectedSnapshotChildrenInsteadOfChildSnapshotPayloads() {
     ReconcileAncestorRollupService rollups = rollups();
     StoredReconcileJob table = job("table", ReconcileJobKind.PLAN_TABLE, "connector", "JS_WAITING");
     table.childrenFinalized = true;
@@ -109,6 +109,23 @@ class ReconcileAncestorRollupServiceTest {
     assertEquals(474L, projection.snapshotsProcessed());
     assertEquals(600L, projection.statsProcessed());
     assertEquals(600L, projection.indexesProcessed());
+  }
+
+  @Test
+  void tableRollupCountsSnapshotChildrenOnceWhenNoExpectedCountExists() {
+    ReconcileAncestorRollupService rollups = rollups();
+    StoredReconcileJob table = job("table", ReconcileJobKind.PLAN_TABLE, "connector", "JS_WAITING");
+
+    StoredReconcileJob snapshotOne =
+        job("snapshot-1", ReconcileJobKind.PLAN_SNAPSHOT, table.jobId, "JS_SUCCEEDED");
+    snapshotOne.snapshotsProcessed = 300L;
+    StoredReconcileJob snapshotTwo =
+        job("snapshot-2", ReconcileJobKind.PLAN_SNAPSHOT, table.jobId, "JS_SUCCEEDED");
+    snapshotTwo.snapshotsProcessed = 300L;
+
+    var projection = rollups.recomputeParentProjection(table, List.of(snapshotOne, snapshotTwo));
+
+    assertEquals(2L, projection.snapshotsProcessed());
   }
 
   @Test
