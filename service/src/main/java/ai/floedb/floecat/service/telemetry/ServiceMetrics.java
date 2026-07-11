@@ -284,4 +284,27 @@ public final class ServiceMetrics {
         new MetricId(
             "floecat.service.stats.sync.latency", MetricType.TIMER, "ms", CONTRACT, "service");
   }
+
+  /** CAS blob-GC backlog health: the signals that answer "is GC falling behind?". */
+  public static final class Gc {
+    private Gc() {}
+
+    /**
+     * Accounts whose delete phase was skipped ("poisoned") in the last tick because a root-chain
+     * walk could not complete. A persistently non-zero value means an account's garbage is
+     * accumulating until the corrupt chain is repaired.
+     */
+    public static final MetricId CAS_POISONED_ACCOUNTS =
+        new MetricId(
+            "floecat.service.gc.cas.poisoned_accounts", MetricType.GAUGE, "", CONTRACT, "service");
+
+    /**
+     * Age in milliseconds of the LEAST-recently cleanly-swept account — the direct "GC is N behind"
+     * signal. It climbs when an account is poisoned or is starved by the per-tick deadline, and
+     * resets as each account completes a clean sweep.
+     */
+    public static final MetricId CAS_OLDEST_SWEEP_AGE =
+        new MetricId(
+            "floecat.service.gc.cas.oldest_sweep_age", MetricType.GAUGE, "ms", CONTRACT, "service");
+  }
 }
