@@ -147,6 +147,85 @@ class TransactionsServiceImplTest {
   }
 
   @Test
+  void commitAppliedResyncsTheTouchedTableRoots() throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
+    var rootWriter = Mockito.mock(ai.floedb.floecat.service.catalog.impl.TableRootWriter.class);
+
+    inject(service, "txRepo", txRepo);
+    inject(service, "intentRepo", intentRepo);
+    inject(service, "intentApplierSupport", applier);
+    inject(service, "rootWriter", rootWriter);
+
+    Transaction txn =
+        Transaction.newBuilder()
+            .setAccountId("acct")
+            .setTxId("tx-1")
+            .setState(TransactionState.TS_PREPARED)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
+    // The applier moves this table's definition pointer AND its current-snapshot pointer by raw
+    // CAS; both intents dedupe to one root resync for the table.
+    TransactionIntent tableIntent =
+        TransactionIntent.newBuilder()
+            .setAccountId("acct")
+            .setTxId("tx-1")
+            .setTargetPointerKey("/accounts/acct/tables/by-id/tbl-1")
+            .setBlobUri("s3://bucket/table-1")
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+    TransactionIntent currentIntent =
+        TransactionIntent.newBuilder()
+            .setAccountId("acct")
+            .setTxId("tx-1")
+            .setTargetPointerKey("/accounts/acct/tables/tbl-1/snapshots/current")
+            .setBlobUri("s3://bucket/current-1")
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    Transaction txnApplied = txn.toBuilder().setState(TransactionState.TS_APPLIED).build();
+    when(txRepo.getById("acct", "tx-1"))
+        .thenReturn(
+            Optional.of(txn), Optional.of(txn), Optional.of(txnApplying), Optional.of(txnApplied));
+    when(intentRepo.listByTx("acct", "tx-1")).thenReturn(List.of(tableIntent, currentIntent));
+    when(intentRepo.getByTarget("acct", "/accounts/acct/tables/by-id/tbl-1"))
+        .thenReturn(Optional.of(tableIntent));
+    when(intentRepo.getByTarget("acct", "/accounts/acct/tables/tbl-1/snapshots/current"))
+        .thenReturn(Optional.of(currentIntent));
+    when(applier.applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any()))
+        .thenReturn(TransactionIntentApplierSupport.ApplyOutcome.applied());
+    when(txRepo.metaFor("acct", "tx-1"))
+        .thenReturn(
+            MutationMeta.newBuilder().setPointerVersion(11L).build(),
+            MutationMeta.newBuilder().setPointerVersion(12L).build());
+    when(txRepo.update(
+            argThat(
+                updated -> updated != null && updated.getState() == TransactionState.TS_APPLYING),
+            anyLong()))
+        .thenReturn(true);
+
+    Transaction committed =
+        invokeCommitPrivate(
+            service,
+            "acct",
+            CommitTransactionRequest.newBuilder().setTxId("tx-1").build(),
+            Timestamps.fromMillis(10));
+
+    assertEquals(TransactionState.TS_APPLIED, committed.getState());
+    var expectedTable =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl-1")
+            .build();
+    verify(rootWriter).resyncFromCommittedState(expectedTable);
+    Mockito.verifyNoMoreInteractions(rootWriter);
+  }
+
+  @Test
   void commitRetryableDoesNotCleanupIntents() throws Exception {
     var service = new TransactionsServiceImpl();
     var txRepo = Mockito.mock(TransactionRepository.class);

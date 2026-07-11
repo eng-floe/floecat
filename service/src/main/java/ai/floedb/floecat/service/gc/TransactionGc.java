@@ -17,6 +17,9 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -38,6 +41,7 @@ public class TransactionGc {
 
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
+  @Inject TableRootWriter rootWriter;
 
   public record Result(int scanned, int deleted, int intentsDeleted) {}
 
@@ -55,6 +59,12 @@ public class TransactionGc {
     int scanned = 0;
     int deleted = 0;
     int intentsDeleted = 0;
+
+    // Re-drive pending root resyncs FIRST: this pass is the convergence guarantee for
+    // transactions-only tables, and running it after the (potentially deadline-consuming)
+    // transaction scan let a high-write account starve it indefinitely. Cleanup of old
+    // transactions can wait for the next pass; a divergent root should not.
+    redrivePendingRootResyncs(accountId, pageSize, deadlineMs);
 
     String prefix = Keys.transactionPointerByIdPrefix(accountId);
     String token = "";
@@ -91,6 +101,51 @@ public class TransactionGc {
 
     intentsDeleted += cleanupDanglingTargetIntents(accountId, pageSize, deadlineMs);
     return new Result(scanned, deleted, intentsDeleted);
+  }
+
+  /**
+   * Re-drives root resyncs whose original post-transaction attempt was absorbed. The transaction
+   * was durable, so the failure left a {@link Keys#rootResyncPendingPointer} marker; a table only
+   * ever touched by REST transactions has no other writer to converge its root, making this pass
+   * the convergence guarantee. The marker is cleared only after a successful resync.
+   */
+  private void redrivePendingRootResyncs(String accountId, int pageSize, long deadlineMs) {
+    String prefix = Keys.rootResyncPendingPrefix(accountId);
+    String token = "";
+    StringBuilder next = new StringBuilder();
+    do {
+      if (System.currentTimeMillis() > deadlineMs) {
+        return;
+      }
+      List<Pointer> rows = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
+      for (Pointer p : rows) {
+        String tableId = markerSuffix(prefix, p.getKey());
+        if (tableId == null || tableId.isBlank()) {
+          continue;
+        }
+        var rid =
+            ResourceId.newBuilder()
+                .setAccountId(accountId)
+                .setId(tableId)
+                .setKind(ResourceKind.RK_TABLE)
+                .build();
+        if (rootWriter.resyncFromCommittedState(rid)) {
+          pointerStore.compareAndDelete(p.getKey(), p.getVersion());
+        } else {
+          LOG.debugf("root resync re-drive still failing for table %s", tableId);
+        }
+      }
+      token = next.toString();
+      next.setLength(0);
+    } while (!token.isEmpty());
+  }
+
+  private static String markerSuffix(String prefix, String fullKey) {
+    if (fullKey == null || !fullKey.startsWith(prefix)) {
+      return null;
+    }
+    String suffix = fullKey.substring(prefix.length());
+    return suffix.isBlank() ? null : URLDecoder.decode(suffix, StandardCharsets.UTF_8);
   }
 
   private boolean shouldCollect(String accountId, Transaction txn, long nowMs, long minAgeMs) {

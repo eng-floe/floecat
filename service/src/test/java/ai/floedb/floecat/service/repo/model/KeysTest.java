@@ -73,4 +73,22 @@ class KeysTest {
         Keys.snapshotIndexSidecarBlobUri(
             "acct id", "table id", 7L, "file:s3://b/p/a rquet", "deadbeef"));
   }
+
+  @Test
+  void tableIdFromSnapshotPointerKeyCoversEverySnapshotPointerShape() {
+    // A transaction touching ANY snapshot pointer must schedule a root resync, not only the
+    // current-snapshot pointer. The extractor recovers the (percent-decoded) table id from all
+    // of by-id, by-time, and current — and rejects unrelated keys.
+    assertEquals(
+        "tbl", Keys.tableIdFromSnapshotPointerKey(Keys.snapshotPointerById("a", "tbl", 3L)));
+    assertEquals(
+        "tbl", Keys.tableIdFromSnapshotPointerKey(Keys.snapshotPointerByTime("a", "tbl", 3L, 9L)));
+    assertEquals(
+        "tbl", Keys.tableIdFromSnapshotPointerKey(Keys.currentSnapshotPointerByTable("a", "tbl")));
+    assertEquals(
+        "t bl", Keys.tableIdFromSnapshotPointerKey(Keys.snapshotPointerById("a", "t bl", 3L)));
+    assertEquals(null, Keys.tableIdFromSnapshotPointerKey(Keys.tableRootByTable("a", "tbl")));
+    assertEquals(null, Keys.tableIdFromSnapshotPointerKey("/accounts/a/connectors/by-id/c"));
+    assertEquals(null, Keys.tableIdFromSnapshotPointerKey(null));
+  }
 }

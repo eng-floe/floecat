@@ -1387,12 +1387,18 @@ public final class Keys {
    * Recovers the table id from a current-snapshot pointer key produced by {@link
    * #currentSnapshotPointerByTable}, or {@code null} when the key has another shape.
    */
-  public static String tableIdFromCurrentSnapshotPointerKey(String pointerKey) {
+  /**
+   * Recovers the table id from ANY snapshot-scoped pointer key ({@code
+   * /accounts/{a}/tables/{t}/snapshots/...} — by-id, by-time, current, stats), or {@code null} when
+   * the key has another shape. Used so a transaction touching any snapshot pointer schedules a root
+   * resync, not only the current-snapshot pointer.
+   */
+  public static String tableIdFromSnapshotPointerKey(String pointerKey) {
     if (pointerKey == null) {
       return null;
     }
     int start = pointerKey.indexOf("/tables/");
-    int end = pointerKey.lastIndexOf("/snapshots/current");
+    int end = pointerKey.indexOf("/snapshots/");
     if (start < 0 || end <= start + "/tables/".length()) {
       return null;
     }

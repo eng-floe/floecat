@@ -43,6 +43,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
+import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -130,6 +132,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   @Inject BlobStore blobStore;
   @Inject TransactionIntentApplierSupport intentApplierSupport;
   @Inject UserGraph metadataGraph;
+  @Inject TableRootWriter rootWriter;
+  @Inject RootResyncQueue rootResyncQueue;
   @Inject CatalogOverlay overlay;
   private volatile java.util.concurrent.Executor postCommitExecutor =
       java.util.concurrent.ForkJoinPool.commonPool();
@@ -762,7 +766,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                 "lock ownership mismatch");
         if (failed.getState() == TransactionState.TS_APPLIED) {
           schedulePostCommitCaptureBootstrap(accountId, failed.getTxId(), List.copyOf(intents));
-          invalidateTouchedGraphEntries(intents);
+          convergeAfterApply(intents);
           return failed;
         }
         logCommitFailure(
@@ -787,7 +791,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       Transaction applied =
           latest.getState() == TransactionState.TS_APPLIED ? latest : appliedCandidate;
       schedulePostCommitCaptureBootstrap(accountId, applied.getTxId(), List.copyOf(intents));
-      invalidateTouchedGraphEntries(intents);
+      convergeAfterApply(intents);
       return applied;
     }
 
@@ -796,7 +800,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       if (latest.getState() == TransactionState.TS_APPLIED) {
         Transaction applied = latest;
         schedulePostCommitCaptureBootstrap(accountId, applied.getTxId(), List.copyOf(intents));
-        invalidateTouchedGraphEntries(intents);
+        convergeAfterApply(intents);
         return applied;
       }
       annotateIntentApplyFailure(intents, outcome, now);
@@ -811,7 +815,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
               "cannot transition to apply_failed_conflict");
       if (failed.getState() == TransactionState.TS_APPLIED) {
         schedulePostCommitCaptureBootstrap(accountId, failed.getTxId(), List.copyOf(intents));
-        invalidateTouchedGraphEntries(intents);
+        convergeAfterApply(intents);
         return failed;
       }
       logCommitFailure(accountId, failed, outcome, intents);
@@ -830,7 +834,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             "cannot transition to apply_failed_retryable");
     if (failed.getState() == TransactionState.TS_APPLIED) {
       schedulePostCommitCaptureBootstrap(accountId, failed.getTxId(), List.copyOf(intents));
-      invalidateTouchedGraphEntries(intents);
+      convergeAfterApply(intents);
       return failed;
     }
     logCommitFailure(accountId, failed, outcome, intents);
@@ -1997,6 +2001,72 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   private void cleanupIntents(String accountId, String txId) {
     List<TransactionIntent> intents = intentRepo.listByTx(accountId, txId);
     cleanupIntentsBestEffort(intents);
+  }
+
+  /** Post-apply convergence: graph caches and table roots re-derive from committed pointers. */
+  private void convergeAfterApply(List<TransactionIntent> intents) {
+    invalidateTouchedGraphEntries(intents);
+    resyncTouchedTableRoots(intents);
+  }
+
+  /**
+   * The transaction applier mutates table-definition and current-snapshot pointers by raw CAS,
+   * bypassing the writer funnels that keep table roots in step — so after a successful apply the
+   * root of every touched table is re-derived from the committed pointers. Absorb semantics: a
+   * failed resync self-heals on the table's next commit or first pinned read.
+   */
+  private void resyncTouchedTableRoots(List<TransactionIntent> intents) {
+    if (intents == null || intents.isEmpty() || rootWriter == null) {
+      return;
+    }
+    LinkedHashMap<String, ResourceId> touched = new LinkedHashMap<>();
+    for (var intent : intents) {
+      if (intent == null) {
+        continue;
+      }
+      String tableId = tableIdFromByIdPointer(intent.getTargetPointerKey());
+      if (tableId == null) {
+        // ANY snapshot-scoped pointer (by-id, by-time, current) implies the table's snapshot set
+        // changed — an add, in-place rewrite, or a non-current delete — and the root must resync,
+        // not only when the current-snapshot pointer moved. The applier applies snapshot pointer
+        // intents generically, so this must match all of them.
+        tableId = Keys.tableIdFromSnapshotPointerKey(intent.getTargetPointerKey());
+      }
+      if (tableId == null || tableId.isBlank()) {
+        continue;
+      }
+      touched.putIfAbsent(
+          tableId,
+          ResourceId.newBuilder()
+              .setAccountId(intent.getAccountId())
+              .setKind(ResourceKind.RK_TABLE)
+              .setId(tableId)
+              .build());
+    }
+    touched.values().forEach(this::resyncRootOrLeaveMarker);
+  }
+
+  /**
+   * The transaction is durable, so a failed root resync is absorbed — but a table only ever touched
+   * by REST transactions has no other writer to converge its root, so the failure must leave a
+   * durable marker for the periodic transaction GC to re-drive.
+   */
+  private void resyncRootOrLeaveMarker(ResourceId tableId) {
+    if (rootWriter.resyncFromCommittedState(tableId)) {
+      return;
+    }
+    try {
+      rootResyncQueue.enqueue(tableId);
+    } catch (RuntimeException e) {
+      // The transaction is durable, so this cannot fail the RPC — but with both the resync AND
+      // its marker unrecorded, a transactions-only table has NO remaining convergence path until
+      // unrelated future traffic touches it. Escalate accordingly.
+      LOG.errorf(
+          e,
+          "root resync for table %s failed AND its re-drive marker could not be recorded; the"
+              + " root stays divergent until the table's next write",
+          tableId.getId());
+    }
   }
 
   private void invalidateTouchedGraphEntries(List<TransactionIntent> intents) {
