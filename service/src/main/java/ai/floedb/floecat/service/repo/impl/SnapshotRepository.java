@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
@@ -53,6 +54,8 @@ public class SnapshotRepository {
   private final GenericResourceRepository<Snapshot, SnapshotKey> repo;
   private final TableRepository tableRepo;
   private final CurrentSnapshotPointerRepository currentPointerRepo;
+  private final PointerStore pointerStore;
+  private final TableRootRepository roots;
   private final Clock clock;
 
   @Inject
@@ -60,18 +63,22 @@ public class SnapshotRepository {
       PointerStore pointerStore,
       BlobStore blobStore,
       TableRepository tableRepo,
+      CurrentSnapshotPointerRepository currentPointerRepo,
+      TableRootRepository roots) {
+    this(pointerStore, blobStore, tableRepo, currentPointerRepo, roots, Clock.systemUTC());
+  }
+
+  public SnapshotRepository(
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      TableRepository tableRepo,
       CurrentSnapshotPointerRepository currentPointerRepo) {
-    this.repo =
-        new GenericResourceRepository<>(
-            pointerStore,
-            blobStore,
-            Schemas.SNAPSHOT,
-            Snapshot::parseFrom,
-            Snapshot::toByteArray,
-            "application/x-protobuf");
-    this.tableRepo = tableRepo;
-    this.currentPointerRepo = currentPointerRepo;
-    this.clock = Clock.systemUTC();
+    this(
+        pointerStore,
+        blobStore,
+        tableRepo,
+        currentPointerRepo,
+        new TableRootRepository(pointerStore, blobStore));
   }
 
   public SnapshotRepository(
@@ -89,6 +96,23 @@ public class SnapshotRepository {
       TableRepository tableRepo,
       CurrentSnapshotPointerRepository currentPointerRepo,
       Clock clock) {
+    this(
+        pointerStore,
+        blobStore,
+        tableRepo,
+        currentPointerRepo,
+        new TableRootRepository(pointerStore, blobStore),
+        clock);
+  }
+
+  /** The one constructor that assigns state; every other overload delegates here. */
+  private SnapshotRepository(
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      TableRepository tableRepo,
+      CurrentSnapshotPointerRepository currentPointerRepo,
+      TableRootRepository roots,
+      Clock clock) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -99,6 +123,8 @@ public class SnapshotRepository {
             "application/x-protobuf");
     this.tableRepo = tableRepo;
     this.currentPointerRepo = currentPointerRepo;
+    this.pointerStore = pointerStore;
+    this.roots = roots;
     this.clock = clock;
   }
 
@@ -107,11 +133,13 @@ public class SnapshotRepository {
   }
 
   public boolean update(Snapshot snapshot, long expectedPointerVersion) {
-    boolean updated = repo.update(snapshot, expectedPointerVersion);
-    if (updated) {
-      maybeAdvanceCurrentSnapshotPointer(snapshot.getTableId(), snapshot);
-    }
-    return updated;
+    // Deliberately does NOT advance the current-snapshot pointer here. The advance must go through
+    // the service layer (SnapshotServiceImpl.updateSnapshot → CurrentSnapshotPointerService), which
+    // re-upserts the root entry after advancing — otherwise an UpdateSnapshot that makes a
+    // snapshot current would move the pointer but leave the pinned identity stale, and new CURRENT
+    // query pins would resolve the old snapshot. Advancing here silently pre-empted that service
+    // advance (it saw the pointer already moved → UNCHANGED → no publish).
+    return repo.update(snapshot, expectedPointerVersion);
   }
 
   public boolean delete(ResourceId tableId, long snapshotId) {
@@ -137,6 +165,27 @@ public class SnapshotRepository {
 
   public Optional<Snapshot> getById(ResourceId tableId, long snapshotId) {
     return repo.getByKey(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
+  }
+
+  /**
+   * Loads a snapshot directly from its immutable blob URI, bypassing the (table, snapshot id)
+   * pointer. Used to read the exact snapshot blob a query pinned: an in-place UpdateSnapshot on the
+   * same id republishes the pointer to a new blob, so resolving by id could drift the scan to that
+   * newer blob between pin validation and the read — reading the pinned URI cannot.
+   */
+  public Optional<Snapshot> getByBlobUri(String blobUri) {
+    return repo.getByBlobUri(blobUri);
+  }
+
+  /**
+   * The version (etag) of the immutable snapshot blob at {@code blobUri}, or {@code null} if no
+   * blob is there, via a single HEAD. Lets a pin validator confirm the exact pinned snapshot blob
+   * is present and unchanged without going through the (table, snapshot id) pointer, which an
+   * in-place {@code UpdateSnapshot} can repoint to a newer blob while the pinned blob is still
+   * retained.
+   */
+  public String blobEtag(String blobUri) {
+    return repo.blobEtag(blobUri);
   }
 
   public CurrentSnapshotPointerUpdateResult maybeAdvanceCurrentSnapshotPointer(
@@ -239,7 +288,67 @@ public class SnapshotRepository {
     return value.isBlank() ? null : value;
   }
 
+  /**
+   * The QUERY-VISIBLE current snapshot — what every read surface (RPCs, CLI, system scans, metadata
+   * fallbacks) must report. When the table has a root, its currency is the single truth: under the
+   * visibility gate a snapshot becomes current only when finalized, and a root without currency
+   * means the table has no queryable snapshot (no fallback to the ingest pointer). A table with no
+   * root yet (un-migrated legacy) reads its legacy pointer until the first pin or write migrates
+   * it. Write-side plumbing that needs the raw ingest pointer — the reconciler's finalize target,
+   * credential vending, migration/staging inputs — must ask for {@link #latestRegisteredSnapshot}
+   * explicitly.
+   */
   public Optional<Snapshot> getCurrentSnapshot(ResourceId tableId) {
+    if (tableId == null) {
+      return Optional.empty();
+    }
+    RootLookup lookup = lookupRoot(tableId);
+    if (lookup.pointerExists()) {
+      if (lookup.root() == null || !lookup.root().hasCurrentSnapshotId()) {
+        // Gated (registered but nothing finalized), or the root blob is unreadable — either way,
+        // NEVER fall back to the ungated legacy pointer once a root pointer exists.
+        return Optional.empty();
+      }
+      return getById(tableId, lookup.root().getCurrentSnapshotId());
+    }
+    return latestRegisteredSnapshot(tableId);
+  }
+
+  /**
+   * The table's root, distinguishing "no root pointer" (a legacy, un-migrated table — the legacy
+   * fallback is legitimate) from "root pointer present but blob unreadable" (a superseded root
+   * swept between the two reads, or corruption). The latter retries once — the pointer has
+   * necessarily moved on a sweep race — and then resolves to a present-but-unreadable lookup so
+   * callers stay GATED instead of walking to the legacy pointer.
+   */
+  private RootLookup lookupRoot(ResourceId tableId) {
+    for (int attempt = 0; attempt < 2; attempt++) {
+      MutationMeta meta = roots.metaForSafe(tableId);
+      if (meta == null || meta.getBlobUri().isEmpty()) {
+        return new RootLookup(false, null);
+      }
+      var root = roots.getByBlobUri(meta.getBlobUri()).orElse(null);
+      if (root != null) {
+        return new RootLookup(true, root);
+      }
+    }
+    // Both reads missed: the pointer names a blob that is not there (corruption, or a
+    // pathological double sweep race). The caller stays GATED — but silently invisible tables
+    // are undebuggable, so leave the operator a trace.
+    LOG.warnf(
+        "table %s has a root pointer whose blob is unreadable; readers stay gated until repaired",
+        tableId.getId());
+    return new RootLookup(true, null);
+  }
+
+  private record RootLookup(boolean pointerExists, ai.floedb.floecat.catalog.rpc.TableRoot root) {}
+
+  /**
+   * The latest REGISTERED snapshot (the raw ingest-time pointer), regardless of the visibility
+   * gate. Write-side only: finalize targets, credential vending for writers of a not-yet-finalized
+   * snapshot, and migration/staging inputs. Never report this to readers.
+   */
+  public Optional<Snapshot> latestRegisteredSnapshot(ResourceId tableId) {
     if (tableId == null) {
       return Optional.empty();
     }
@@ -268,7 +377,43 @@ public class SnapshotRepository {
     return latestSnapshotByTime(tableId);
   }
 
+  /** Pointer-shaped view of {@link #getCurrentSnapshot} — the query-visible current snapshot. */
   public Optional<CurrentSnapshotPointer> getCurrentSnapshotPointer(ResourceId tableId) {
+    if (tableId == null) {
+      return Optional.empty();
+    }
+    RootLookup lookup = lookupRoot(tableId);
+    if (!lookup.pointerExists()) {
+      return currentPointerRepo.get(tableId);
+    }
+    if (lookup.root() == null || !lookup.root().hasCurrentSnapshotId()) {
+      return Optional.empty(); // gated or unreadable root: never the ungated legacy pointer
+    }
+    return getById(tableId, lookup.root().getCurrentSnapshotId())
+        .map(snap -> visibleCurrentPointer(tableId, snap));
+  }
+
+  /**
+   * Read-side pointer view over a root-resolved current snapshot. Unlike the durable pointer the
+   * write path builds, its timestamp is a stable property of the snapshot (ingest time) — a caller
+   * polling the pointer for change must not observe a perpetual update.
+   */
+  private static CurrentSnapshotPointer visibleCurrentPointer(ResourceId tableId, Snapshot snap) {
+    CurrentSnapshotPointer.Builder builder =
+        CurrentSnapshotPointer.newBuilder().setTableId(tableId).setSnapshotId(snap.getSnapshotId());
+    if (snap.hasIngestedAt()) {
+      builder.setUpdatedAt(snap.getIngestedAt());
+    } else if (snap.hasUpstreamCreatedAt()) {
+      builder.setUpdatedAt(snap.getUpstreamCreatedAt());
+    }
+    if (snap.hasUpstreamCreatedAt()) {
+      builder.setUpstreamCreatedAt(snap.getUpstreamCreatedAt());
+    }
+    return builder.build();
+  }
+
+  /** Raw ingest-time pointer; see {@link #latestRegisteredSnapshot} for when this is legitimate. */
+  public Optional<CurrentSnapshotPointer> latestRegisteredSnapshotPointer(ResourceId tableId) {
     if (tableId == null) {
       return Optional.empty();
     }
@@ -308,24 +453,20 @@ public class SnapshotRepository {
   }
 
   public Optional<Snapshot> getAsOf(ResourceId tableId, Timestamp asOf) {
-    String prefix = Keys.snapshotPointerByTimePrefix(tableId.getAccountId(), tableId.getId());
     long asOfMs = Timestamps.toMillis(asOf);
-
-    String token = "";
-    StringBuilder next = new StringBuilder();
-    do {
-      List<Snapshot> batch = repo.listByPrefix(prefix, 200, token, next);
-      for (Snapshot snapshot : batch) {
-        long createdMs = Timestamps.toMillis(snapshot.getUpstreamCreatedAt());
-        if (createdMs <= asOfMs) {
-          return Optional.of(snapshot);
-        }
-      }
-      token = next.toString();
-      next.setLength(0);
-    } while (!token.isEmpty());
-
-    return Optional.empty();
+    if (asOfMs < 0) {
+      // Before the epoch: no snapshot can have committed at or before this, and the by-time key
+      // encoding requires a non-negative timestamp. Return empty rather than throwing.
+      return Optional.empty();
+    }
+    // Indexed predecessor lookup. The by-time index is ordered newest-first (key = inverted
+    // commit time). The boundary is the smallest possible key in the asOf group (inverted time =
+    // MAX-asOfMs, largest inverted snapshot id); resuming strictly after it seeks past every newer
+    // snapshot to the first one committed at or before asOf — a single indexed read, with no scan
+    // of newer snapshots and no blob materialization.
+    String boundary =
+        Keys.snapshotPointerByTime(tableId.getAccountId(), tableId.getId(), Long.MAX_VALUE, asOfMs);
+    return firstByTimeAtOrAfter(tableId, pointerStore.pageTokenAfterKey(boundary));
   }
 
   public List<Snapshot> list(
@@ -359,32 +500,37 @@ public class SnapshotRepository {
   }
 
   private Optional<Snapshot> latestSnapshotByTime(ResourceId tableId) {
-    String prefix = Keys.snapshotPointerByTimePrefix(tableId.getAccountId(), tableId.getId());
-    String token = "";
-    StringBuilder next = new StringBuilder();
-    Snapshot best = null;
-    long bestCreatedMs = Long.MIN_VALUE;
+    // Newest-first index: the first entry is the latest snapshot, and ties on commit time are
+    // ordered by descending snapshot id, so the first entry is also the highest-id of that time.
+    return firstByTimeAtOrAfter(tableId, "");
+  }
 
-    do {
-      List<Snapshot> batch = repo.listByPrefix(prefix, 200, token, next);
-      for (Snapshot snapshot : batch) {
-        long createdMs = Timestamps.toMillis(snapshot.getUpstreamCreatedAt());
-        if (best == null) {
-          best = snapshot;
-          bestCreatedMs = createdMs;
-          continue;
+  /**
+   * The first by-time index entry at or after {@code seekToken} that HYDRATES. The by-id and
+   * by-time pointers are independent secondaries created and deleted non-atomically, so a delete or
+   * partial registration can leave the newest by-time entry dangling; committing to a single seek
+   * would then hide older, fully-intact snapshots behind a spurious not-found. The common case
+   * stays one pointer read + one blob read; dangling entries are skipped oldward.
+   */
+  private Optional<Snapshot> firstByTimeAtOrAfter(ResourceId tableId, String seekToken) {
+    String prefix = Keys.snapshotPointerByTimePrefix(tableId.getAccountId(), tableId.getId());
+    String token = seekToken;
+    while (true) {
+      StringBuilder next = new StringBuilder();
+      List<Pointer> rows = pointerStore.listPointersByPrefix(prefix, 8, token, next);
+      for (Pointer row : rows) {
+        Optional<Snapshot> snapshot = getById(tableId, Keys.snapshotIdFromByTimeKey(row.getKey()));
+        if (snapshot.isPresent()) {
+          return snapshot;
         }
-        if (createdMs != bestCreatedMs) {
-          return Optional.of(best);
-        }
-        if (snapshot.getSnapshotId() > best.getSnapshotId()) {
-          best = snapshot;
-        }
+        LOG.debugf(
+            "by-time entry %s of table %s is dangling; advancing to the next older snapshot",
+            row.getKey(), tableId.getId());
       }
       token = next.toString();
-      next.setLength(0);
-    } while (!token.isEmpty());
-
-    return Optional.ofNullable(best);
+      if (rows.isEmpty() || token.isBlank()) {
+        return Optional.empty();
+      }
+    }
   }
 }

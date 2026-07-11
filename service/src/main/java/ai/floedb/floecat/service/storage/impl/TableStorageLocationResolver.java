@@ -68,8 +68,10 @@ final class TableStorageLocationResolver {
     if (table == null || snapshotRepo == null) {
       return null;
     }
+    // Credential vending scopes WRITERS: the latest registered snapshot is right even before it
+    // finalizes (its files are being written under this location right now).
     return snapshotRepo
-        .getCurrentSnapshot(table.getResourceId())
+        .latestRegisteredSnapshot(table.getResourceId())
         .map(SnapshotRepository::metadataLocation)
         .orElse(null);
   }

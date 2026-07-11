@@ -96,7 +96,7 @@ class ServerSideFileIoPropertiesResolverTest {
   @Test
   void resolveFallsBackToSnapshotMetadataRootWhenNoTableRootExists() {
     when(repo.list(eq("acct"), anyInt(), eq(""), any())).thenReturn(List.of(databricksAuthority()));
-    when(snapshotRepo.getCurrentSnapshot(tableWithSnapshotMetadataOnly().getResourceId()))
+    when(snapshotRepo.latestRegisteredSnapshot(tableWithSnapshotMetadataOnly().getResourceId()))
         .thenReturn(
             Optional.of(
                 Snapshot.newBuilder()

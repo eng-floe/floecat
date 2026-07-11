@@ -185,7 +185,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     if (snapshotRepo != null) {
       location =
           snapshotRepo
-              .getCurrentSnapshot(table.getResourceId())
+              .latestRegisteredSnapshot(table.getResourceId())
               .map(SnapshotRepository::metadataLocation)
               .map(LeasedFileGroupExecutionService::deriveTableRootLocation)
               .orElse("");
