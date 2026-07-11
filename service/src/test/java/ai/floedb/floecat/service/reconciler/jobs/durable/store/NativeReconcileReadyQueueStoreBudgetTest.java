@@ -20,8 +20,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -73,7 +75,7 @@ class NativeReconcileReadyQueueStoreBudgetTest {
   }
 
   @Test
-  void scanSkipsOrphanedReadyPointerWithoutPruning() {
+  void scanPrunesOrphanedReadyPointer() {
     PruningBackend backend = new PruningBackend();
     NativeReconcileReadyQueueStore store = new NativeReconcileReadyQueueStore();
     store.bind(backend, null, null, 128, record -> true, record -> false);
@@ -83,7 +85,8 @@ class NativeReconcileReadyQueueStoreBudgetTest {
         store.leaseReadyDue(System.currentTimeMillis(), LeaseRequest.all(), stats);
 
     assertTrue(leased.isEmpty());
-    assertTrue(backend.deleted.isEmpty());
+    assertEquals(List.of("rp-orphan"), backend.deleted);
+    assertEquals(1, stats.stalePointerSkipCount);
   }
 
   @Test
@@ -181,7 +184,121 @@ class NativeReconcileReadyQueueStoreBudgetTest {
 
     assertTrue(leased.isEmpty());
     assertEquals(1, backend.scanReadySliceCalls);
-    assertTrue(backend.deleted.isEmpty());
+    assertEquals(List.of("rp-page-1"), backend.deleted);
+  }
+
+  @Test
+  void failedLeaseClassifiesRunningRaceWithoutPruningReadyPointer() {
+    NativeReconcileReadyQueueStore store = new NativeReconcileReadyQueueStore();
+    ReconcileReadyQueueBackend backend = mock(ReconcileReadyQueueBackend.class);
+    ReconcileJobIndexStore jobIndexStore = mock(ReconcileJobIndexStore.class);
+    ReconcileLeaseStore leaseStore = mock(ReconcileLeaseStore.class);
+    store.bind(backend, jobIndexStore, leaseStore, 128, record -> true, record -> false);
+    long dueAtMs = System.currentTimeMillis();
+    StoredReconcileJob queued = queuedRecord("job-1", dueAtMs, store);
+    StoredReconcileJob running = queuedRecord("job-1", dueAtMs, store);
+    running.state = "JS_RUNNING";
+    ReconcileReadyQueueStore.ReadyQueueEntry candidate = candidateFor(queued, "/canonical", store);
+    CanonicalPointerSnapshot snapshot =
+        new CanonicalPointerSnapshot("/canonical", "blob://job", 7L);
+
+    when(backend.scanReadySlice(any(), eq(16), eq(""), any()))
+        .thenReturn(new ReconcileReadyQueueStore.ReadyQueueScanPage(List.of(candidate), ""));
+    when(backend.loadCanonicalSnapshot(eq("/canonical"), any())).thenReturn(Optional.of(snapshot));
+    when(jobIndexStore.readRecord(snapshot)).thenReturn(Optional.of(queued), Optional.of(running));
+    when(leaseStore.leaseCanonical(
+            eq("/canonical"),
+            eq(queued.readyPointerKey),
+            anyLong(),
+            eq(snapshot),
+            eq(queued),
+            any()))
+        .thenReturn(Optional.empty());
+
+    LeaseScanStats stats = new LeaseScanStats();
+    Optional<LeasedJob> leased =
+        store.leaseReadyDue(System.currentTimeMillis(), LeaseRequest.all(), stats);
+
+    assertTrue(leased.isEmpty());
+    assertEquals(1, stats.leaseRaceRunningSkipCount);
+    verify(backend, org.mockito.Mockito.never()).deleteReadyEntry(queued.readyPointerKey);
+  }
+
+  @Test
+  void failedLeaseClassifiesTerminalRaceAndPrunesReadyPointer() {
+    NativeReconcileReadyQueueStore store = new NativeReconcileReadyQueueStore();
+    ReconcileReadyQueueBackend backend = mock(ReconcileReadyQueueBackend.class);
+    ReconcileJobIndexStore jobIndexStore = mock(ReconcileJobIndexStore.class);
+    ReconcileLeaseStore leaseStore = mock(ReconcileLeaseStore.class);
+    store.bind(backend, jobIndexStore, leaseStore, 128, record -> true, record -> false);
+    long dueAtMs = System.currentTimeMillis();
+    StoredReconcileJob queued = queuedRecord("job-1", dueAtMs, store);
+    StoredReconcileJob terminal = queuedRecord("job-1", dueAtMs, store);
+    terminal.state = "JS_SUCCEEDED";
+    ReconcileReadyQueueStore.ReadyQueueEntry candidate = candidateFor(queued, "/canonical", store);
+    CanonicalPointerSnapshot snapshot =
+        new CanonicalPointerSnapshot("/canonical", "blob://job", 7L);
+
+    when(backend.scanReadySlice(any(), eq(16), eq(""), any()))
+        .thenReturn(new ReconcileReadyQueueStore.ReadyQueueScanPage(List.of(candidate), ""));
+    when(backend.loadCanonicalSnapshot(eq("/canonical"), any())).thenReturn(Optional.of(snapshot));
+    when(jobIndexStore.readRecord(snapshot)).thenReturn(Optional.of(queued), Optional.of(terminal));
+    when(leaseStore.leaseCanonical(
+            eq("/canonical"),
+            eq(queued.readyPointerKey),
+            anyLong(),
+            eq(snapshot),
+            eq(queued),
+            any()))
+        .thenReturn(Optional.empty());
+
+    LeaseScanStats stats = new LeaseScanStats();
+    Optional<LeasedJob> leased =
+        store.leaseReadyDue(System.currentTimeMillis(), LeaseRequest.all(), stats);
+
+    assertTrue(leased.isEmpty());
+    assertEquals(1, stats.leaseRaceTerminalSkipCount);
+    verify(backend).deleteReadyEntry(queued.readyPointerKey);
+  }
+
+  @Test
+  void failedLeaseUsesLeaseAttemptFailureReasonWhenReadyEntryStillMatches() {
+    NativeReconcileReadyQueueStore store = new NativeReconcileReadyQueueStore();
+    ReconcileReadyQueueBackend backend = mock(ReconcileReadyQueueBackend.class);
+    ReconcileJobIndexStore jobIndexStore = mock(ReconcileJobIndexStore.class);
+    ReconcileLeaseStore leaseStore = mock(ReconcileLeaseStore.class);
+    store.bind(backend, jobIndexStore, leaseStore, 128, record -> true, record -> false);
+    long dueAtMs = System.currentTimeMillis();
+    StoredReconcileJob queued = queuedRecord("job-1", dueAtMs, store);
+    ReconcileReadyQueueStore.ReadyQueueEntry candidate = candidateFor(queued, "/canonical", store);
+    CanonicalPointerSnapshot snapshot =
+        new CanonicalPointerSnapshot("/canonical", "blob://job", 7L);
+
+    when(backend.scanReadySlice(any(), eq(16), eq(""), any()))
+        .thenReturn(new ReconcileReadyQueueStore.ReadyQueueScanPage(List.of(candidate), ""));
+    when(backend.loadCanonicalSnapshot(eq("/canonical"), any())).thenReturn(Optional.of(snapshot));
+    when(jobIndexStore.readRecord(snapshot)).thenReturn(Optional.of(queued), Optional.of(queued));
+    when(leaseStore.leaseCanonical(
+            eq("/canonical"),
+            eq(queued.readyPointerKey),
+            anyLong(),
+            eq(snapshot),
+            eq(queued),
+            any()))
+        .thenAnswer(
+            invocation -> {
+              ReconcileLeaseStore.LeaseAttemptStats stats = invocation.getArgument(5);
+              stats.recordFailure("cas_conflict");
+              return Optional.empty();
+            });
+
+    LeaseScanStats stats = new LeaseScanStats();
+    Optional<LeasedJob> leased =
+        store.leaseReadyDue(System.currentTimeMillis(), LeaseRequest.all(), stats);
+
+    assertTrue(leased.isEmpty());
+    assertEquals(1, stats.skipCounts().get("lease_conflict_cas_conflict"));
+    verify(backend, org.mockito.Mockito.never()).deleteReadyEntry(queued.readyPointerKey);
   }
 
   @Test
@@ -316,6 +433,33 @@ class NativeReconcileReadyQueueStoreBudgetTest {
     }
   }
 
+  private static StoredReconcileJob queuedRecord(
+      String jobId, long dueAtMs, NativeReconcileReadyQueueStore store) {
+    StoredReconcileJob record = new StoredReconcileJob();
+    record.jobId = jobId;
+    record.accountId = "acct-1";
+    record.jobKind = ReconcileJobKind.PLAN_CONNECTOR.name();
+    record.state = "JS_QUEUED";
+    record.executionClass = "DEFAULT";
+    record.executionLane = "default";
+    record.laneKey = "default";
+    record.nextAttemptAtMs = dueAtMs;
+    record.readyPointerKey = store.readyPointerKeyFor(record, dueAtMs);
+    return record;
+  }
+
+  private static ReconcileReadyQueueStore.ReadyQueueEntry candidateFor(
+      StoredReconcileJob record, String canonicalPointerKey, NativeReconcileReadyQueueStore store) {
+    return new ReconcileReadyQueueStore.ReadyQueueEntry(
+        record.readyPointerKey,
+        canonicalPointerKey,
+        record.accountId,
+        record.jobId,
+        record.nextAttemptAtMs,
+        ReconcileReadyQueueStore.ReadyIndexType.GLOBAL,
+        "");
+  }
+
   private static final class PruningBackend implements ReconcileReadyQueueBackend {
     final List<String> deleted = new ArrayList<>();
 
@@ -377,7 +521,7 @@ class NativeReconcileReadyQueueStoreBudgetTest {
 
     @Override
     public boolean deleteReadyEntry(String readyPointerKey) {
-      throw new UnsupportedOperationException();
+      return true;
     }
 
     @Override
@@ -430,6 +574,7 @@ class NativeReconcileReadyQueueStoreBudgetTest {
 
   private static final class CursorBackend implements ReconcileReadyQueueBackend {
     final List<String> pageTokens = new ArrayList<>();
+    final List<String> deleted = new ArrayList<>();
 
     @Override
     public ReconcileReadyQueueStore.ReadyQueueScanPage scanReadySlice(
@@ -460,7 +605,8 @@ class NativeReconcileReadyQueueStoreBudgetTest {
 
     @Override
     public boolean deleteReadyEntry(String readyPointerKey) {
-      throw new UnsupportedOperationException();
+      deleted.add(readyPointerKey);
+      return true;
     }
 
     @Override

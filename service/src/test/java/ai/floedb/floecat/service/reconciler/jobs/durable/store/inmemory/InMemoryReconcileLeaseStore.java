@@ -861,7 +861,11 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
   }
 
   private boolean requiresLaneLease(StoredReconcileJob record) {
-    return record != null && !blank(record.accountId) && !blank(record.laneKey);
+    return record != null
+        && record.jobKind() != ReconcileJobKind.EXEC_FILE_GROUP
+        && record.jobKind() != ReconcileJobKind.PLAN_SNAPSHOT
+        && !blank(record.accountId)
+        && !blank(record.laneKey);
   }
 
   private boolean requiresSnapshotLease(StoredReconcileJob record) {

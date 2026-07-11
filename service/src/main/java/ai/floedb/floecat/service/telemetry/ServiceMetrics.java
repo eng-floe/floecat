@@ -194,6 +194,55 @@ public final class ServiceMetrics {
             "",
             CONTRACT,
             "service");
+    public static final MetricId LEASE_NEXT_LATENCY =
+        new MetricId(
+            "floecat.service.reconcile.lease_next.latency",
+            MetricType.TIMER,
+            "ms",
+            CONTRACT,
+            "service");
+    public static final MetricId LEASE_NEXT_CANDIDATES =
+        new MetricId(
+            "floecat.service.reconcile.lease_next.candidates",
+            MetricType.SUMMARY,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId LEASE_NEXT_SCANS =
+        new MetricId(
+            "floecat.service.reconcile.lease_next.scans",
+            MetricType.SUMMARY,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId LEASE_NEXT_OUTCOMES =
+        new MetricId(
+            "floecat.service.reconcile.lease_next.outcomes.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId LEASE_NEXT_SKIPS =
+        new MetricId(
+            "floecat.service.reconcile.lease_next.skips.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId LEASE_SCAN_PERMITS_IN_USE =
+        new MetricId(
+            "floecat.service.reconcile.lease_scan.permits.in_use",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId LEASE_SCAN_PERMITS_AVAILABLE =
+        new MetricId(
+            "floecat.service.reconcile.lease_scan.permits.available",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
   }
 
   public static final class Stats {

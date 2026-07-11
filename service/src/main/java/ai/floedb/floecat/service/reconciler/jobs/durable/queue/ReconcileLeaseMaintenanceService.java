@@ -17,7 +17,8 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.CanonicalPointerSnapshot;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReadyQueuePruneSupport;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReadyQueuePruneSupport.ReadyEntryPruneReason;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
@@ -171,7 +172,14 @@ public class ReconcileLeaseMaintenanceService {
           return new ReadyPruneStats(false, pages, scanned, pruned, blockedPruned);
         }
         scanned++;
-        ReadyEntryPruneReason pruneReason = readyEntryPruneReason(readyEntry);
+        ReadyEntryPruneReason pruneReason =
+            ReadyQueuePruneSupport.readyEntryPruneReason(
+                readyEntry,
+                readyQueueBackend,
+                readyQueueStore,
+                jobIndexStore,
+                blockedByCancellation,
+                null);
         if (pruneReason != ReadyEntryPruneReason.NONE
             && readyQueueBackend.deleteReadyEntry(readyEntry.readyPointerKey())) {
           pruned++;
@@ -202,32 +210,6 @@ public class ReconcileLeaseMaintenanceService {
         return new ReadyPruneStats(true, pages, scanned, pruned, blockedPruned);
       }
     }
-  }
-
-  private ReadyEntryPruneReason readyEntryPruneReason(
-      ReconcileReadyQueueStore.ReadyQueueEntry readyEntry) {
-    if (readyEntry == null || blank(readyEntry.readyPointerKey())) {
-      return ReadyEntryPruneReason.NONE;
-    }
-    CanonicalPointerSnapshot canonicalSnapshot =
-        readyQueueBackend
-            .loadCanonicalSnapshot(readyEntry.canonicalPointerKey(), null)
-            .orElse(null);
-    if (canonicalSnapshot == null) {
-      return ReadyEntryPruneReason.STALE;
-    }
-    var record = jobIndexStore.readRecord(canonicalSnapshot);
-    if (record.isEmpty()) {
-      return ReadyEntryPruneReason.STALE;
-    }
-    if (blockedByCancellation != null
-        && Boolean.TRUE.equals(blockedByCancellation.test(record.get()))) {
-      return ReadyEntryPruneReason.CANCELLATION_BLOCKED;
-    }
-    if (!readyQueueStore.readyPointerMatchesRecord(readyEntry, record.get())) {
-      return ReadyEntryPruneReason.STALE;
-    }
-    return ReadyEntryPruneReason.NONE;
   }
 
   private void logMaintenanceSummary(
@@ -287,11 +269,5 @@ public class ReconcileLeaseMaintenanceService {
     boolean active() {
       return !completed || scanned > 0 || pruned > 0 || blockedPruned > 0;
     }
-  }
-
-  private enum ReadyEntryPruneReason {
-    NONE,
-    STALE,
-    CANCELLATION_BLOCKED
   }
 }

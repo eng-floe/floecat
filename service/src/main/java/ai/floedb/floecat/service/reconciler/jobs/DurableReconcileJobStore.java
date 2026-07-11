@@ -73,9 +73,13 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQue
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.Context;
 import io.grpc.Deadline;
@@ -84,6 +88,7 @@ import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -179,6 +184,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Inject ReconcileReadyQueueStore readyQueueStore;
   @Inject ReconcileReadyQueueBackend readyQueueBackend;
   @Inject ConnectorRepository connectorRepo;
+  @Inject Observability observability;
   private int maxAttempts = DEFAULT_MAX_ATTEMPTS;
   private long baseBackoffMs = DEFAULT_BASE_BACKOFF_MS;
   private long maxBackoffMs = DEFAULT_MAX_BACKOFF_MS;
@@ -555,6 +561,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                 .getOptionalValue("floecat.reconciler.job-store.lease-scan-budget-ms", Long.class)
                 .orElse(DEFAULT_LEASE_SCAN_BUDGET_MS));
     leaseScanPermits = new Semaphore(leaseMaxConcurrency, true);
+    observeLeaseScanPermitGauges();
   }
 
   @Override
@@ -1019,6 +1026,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Override
   public Optional<LeasedJob> leaseNext(LeaseRequest request) {
     Semaphore permits = leaseScanPermits;
+    long startedAtMs = System.currentTimeMillis();
     boolean acquired;
     try {
       acquired = permits.tryAcquire(leaseAcquireTimeoutMs, TimeUnit.MILLISECONDS);
@@ -1027,15 +1035,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       throw new CancellationException("reconcile lease scan admission interrupted");
     }
     if (!acquired) {
+      observeLeaseNext(startedAtMs, new LeaseScanStats(), "capacity_exceeded");
       throw new LeaseScanCapacityExceededException(
           "reconcile lease scan capacity exhausted cap=" + leaseMaxConcurrency);
     }
-    long startedAtMs = System.currentTimeMillis();
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
     LeaseScanStats scanStats = new LeaseScanStats();
     configureLeaseScanStats(scanStats, startedAtMs);
     try {
       Optional<LeasedJob> leased;
+      String outcome;
       try {
         leased = leaseReadyDue(startedAtMs, effective, scanStats);
       } catch (LeaseScanAbortedException aborted) {
@@ -1045,6 +1054,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           scanStats.abortedByDeadline = true;
         }
         leased = Optional.empty();
+      }
+      if (scanStats.abortedByCaller) {
+        outcome = "caller_cancelled";
+      } else if (scanStats.abortedByDeadline) {
+        outcome = "deadline_aborted";
+      } else {
+        outcome = leased.isPresent() ? "leased" : "empty";
       }
       long totalMs = System.currentTimeMillis() - startedAtMs;
       if (scanStats.abortedByCaller) {
@@ -1061,7 +1077,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             "leaseNext total_ms=%d scan_count=%d candidate_count=%d leased=%s",
             totalMs, scanStats.scanCount, scanStats.candidateCount, leased.isPresent());
       }
+      observeLeaseNext(startedAtMs, scanStats, outcome);
       return leased;
+    } catch (RuntimeException e) {
+      observeLeaseNext(startedAtMs, scanStats, "error");
+      throw e;
     } finally {
       permits.release();
     }
@@ -1923,6 +1943,25 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     long requestedGeneration = Math.max(0L, parent.projectionRequestedGeneration);
     long previousAppliedGeneration = Math.max(0L, parent.projectionAppliedGeneration);
     var previousProjection = projections().load(accountId, parentJobId).orElse(null);
+    if (hasCurrentTerminalProjection(parent, previousProjection)) {
+      if (blankToEmpty(parent.parentJobId).isBlank()) {
+        rootSummaries().upsert(toRootListSummary(parent, previousProjection));
+      }
+      enqueueSnapshotFinalizationForPlanSnapshotIfEligible(
+          projector().toPublicJob(parent, previousProjection, true),
+          snapshotTaskFromStored(parent));
+      advanceAppliedProjectionGeneration(accountId, parentJobId, requestedGeneration);
+      LOG.debugf(
+          "reconcile terminal projection refresh skipped accountId=%s jobId=%s kind=%s"
+              + " requestedGeneration=%d previousAppliedGeneration=%d projectionGeneration=%d",
+          accountId,
+          parentJobId,
+          parent.jobKind(),
+          Long.valueOf(requestedGeneration),
+          Long.valueOf(previousAppliedGeneration),
+          Long.valueOf(previousProjection.appliedGeneration()));
+      return;
+    }
     if (!projectionNeedsRefresh(parent, previousProjection)
         && projectionAggregateMatchesCanonical(parent, previousProjection)) {
       if (blankToEmpty(parent.parentJobId).isBlank()) {
@@ -1946,9 +1985,47 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           Long.valueOf(previousProjection.appliedGeneration()));
       return;
     }
+    if (previousProjection != null
+        && projectionAggregateMatchesCanonical(parent, previousProjection)
+        && requestedGeneration > Math.max(0L, previousProjection.appliedGeneration())
+        && canPublishCanonicalProjectionPatch(parent, previousProjection)) {
+      var nextProjection =
+          projectionWithCanonicalFields(parent, previousProjection, requestedGeneration);
+      projections().upsert(nextProjection);
+      LOG.infof(
+          "reconcile projection generation patch accountId=%s jobId=%s kind=%s parentJobId=%s"
+              + " requestedGeneration=%d previousAppliedGeneration=%d projectionGeneration=%d"
+              + " state=%s tables=%d/%d stats=%d indexes=%d fileGroups=%d/%d files=%d/%d",
+          accountId,
+          parentJobId,
+          parent.jobKind(),
+          blankToEmpty(parent.parentJobId),
+          Long.valueOf(requestedGeneration),
+          Long.valueOf(previousAppliedGeneration),
+          Long.valueOf(nextProjection.appliedGeneration()),
+          nextProjection.state(),
+          Long.valueOf(nextProjection.tablesChanged()),
+          Long.valueOf(nextProjection.tablesScanned()),
+          Long.valueOf(nextProjection.statsProcessed()),
+          Long.valueOf(nextProjection.indexesProcessed()),
+          Long.valueOf(nextProjection.completedFileGroups()),
+          Long.valueOf(nextProjection.plannedFileGroups()),
+          Long.valueOf(nextProjection.completedFiles()),
+          Long.valueOf(nextProjection.plannedFiles()));
+      if (blankToEmpty(parent.parentJobId).isBlank()) {
+        rootSummaries().upsert(toRootListSummary(parent, nextProjection));
+      }
+      enqueueSnapshotFinalizationForPlanSnapshotIfEligible(
+          projector().toPublicJob(parent, nextProjection, true), snapshotTaskFromStored(parent));
+      advanceAppliedProjectionGeneration(accountId, parentJobId, requestedGeneration);
+      if (propagateDirtyParent && requestedGeneration > previousAppliedGeneration) {
+        markDirtyParent(parent.accountId, parent.parentJobId);
+      }
+      return;
+    }
     if (canPublishCanonicalAggregatePatch(parent, previousProjection)) {
       var nextProjection =
-          projectionWithCanonicalAggregates(parent, previousProjection, requestedGeneration);
+          projectionWithCanonicalFields(parent, previousProjection, requestedGeneration);
       boolean projectionChanged = !Objects.equals(previousProjection, nextProjection);
       if (projectionChanged) {
         if (!commitProjectionAggregateChange(parent, previousProjection, nextProjection)) {
@@ -2832,6 +2909,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return null;
     }
     var storedProjection = projectionFor(record).orElse(null);
+    if (hasCurrentTerminalProjection(record, storedProjection)) {
+      return storedProjection;
+    }
     if (!projectionNeedsRefresh(record, storedProjection)
         && projectionAggregateMatchesCanonical(record, storedProjection)) {
       return storedProjection;
@@ -2862,6 +2942,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return record;
     }
     var projection = projections().load(record.accountId, record.jobId).orElse(null);
+    if (refreshStaleProjection && hasCurrentTerminalProjection(record, projection)) {
+      return copyProjectedAggregateSummaryRecord(record, projection);
+    }
     if (refreshStaleProjection && projectionNeedsRefresh(record, projection)) {
       var refreshedProjection = recomputeSummaryProjection(record, true, persistProjection);
       if (persistProjection && refreshedProjection != null) {
@@ -2922,6 +3005,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (projection == null) {
       return true;
     }
+    if (hasCurrentTerminalProjection(record, projection)) {
+      return false;
+    }
     long requestedGeneration = Math.max(0L, record.projectionRequestedGeneration);
     long appliedGeneration = Math.max(0L, projection.appliedGeneration());
     if (requestedGeneration > appliedGeneration) {
@@ -2935,7 +3021,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (record == null || projection == null || !isParentCapable(record.jobKind())) {
       return true;
     }
-    return Math.max(0L, record.statsProcessed) == Math.max(0L, projection.statsProcessed())
+    return Math.max(0L, record.tablesScanned) == Math.max(0L, projection.tablesScanned())
+        && Math.max(0L, record.tablesChanged) == Math.max(0L, projection.tablesChanged())
+        && Math.max(0L, record.viewsScanned) == Math.max(0L, projection.viewsScanned())
+        && Math.max(0L, record.viewsChanged) == Math.max(0L, projection.viewsChanged())
+        && Math.max(0L, record.statsProcessed) == Math.max(0L, projection.statsProcessed())
         && Math.max(0L, record.indexesProcessed) == Math.max(0L, projection.indexesProcessed())
         && Math.max(0L, record.errors) == Math.max(0L, projection.errors())
         && Math.max(0L, record.snapshotsProcessed) == Math.max(0L, projection.snapshotsProcessed())
@@ -2948,12 +3038,30 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         && Math.max(0L, record.failedFiles) == Math.max(0L, projection.failedFiles());
   }
 
-  private boolean canPublishCanonicalAggregatePatch(
-      StoredReconcileJob record, StoredReconcileJobProjection projection) {
+  private boolean hasCurrentTerminalProjection(
+      StoredReconcileJob record,
+      ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobProjection
+          projection) {
     if (record == null || projection == null || !isParentCapable(record.jobKind())) {
       return false;
     }
-    if (projectionAggregateMatchesCanonical(record, projection)) {
+    if (!isTerminalState(record.state)) {
+      return false;
+    }
+    long requestedGeneration = Math.max(0L, record.projectionRequestedGeneration);
+    long appliedGeneration = Math.max(0L, projection.appliedGeneration());
+    return appliedGeneration >= requestedGeneration;
+  }
+
+  private boolean canPublishCanonicalAggregatePatch(
+      StoredReconcileJob record, StoredReconcileJobProjection projection) {
+    return canPublishCanonicalProjectionPatch(record, projection)
+        && !projectionAggregateMatchesCanonical(record, projection);
+  }
+
+  private boolean canPublishCanonicalProjectionPatch(
+      StoredReconcileJob record, StoredReconcileJobProjection projection) {
+    if (record == null || projection == null || !isParentCapable(record.jobKind())) {
       return false;
     }
     String canonicalState = blankToEmpty(record.state);
@@ -2967,7 +3075,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return true;
   }
 
-  private StoredReconcileJobProjection projectionWithCanonicalAggregates(
+  private StoredReconcileJobProjection projectionWithCanonicalFields(
       StoredReconcileJob record, StoredReconcileJobProjection previous, long appliedGeneration) {
     return new StoredReconcileJobProjection(
         previous.accountId(),
@@ -2977,10 +3085,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         previous.message(),
         previous.startedAtMs(),
         previous.finishedAtMs(),
-        previous.tablesScanned(),
-        previous.tablesChanged(),
-        previous.viewsScanned(),
-        previous.viewsChanged(),
+        Math.max(0L, record.tablesScanned),
+        Math.max(0L, record.tablesChanged),
+        Math.max(0L, record.viewsScanned),
+        Math.max(0L, record.viewsChanged),
         Math.max(0L, record.errors),
         Math.max(0L, record.snapshotsProcessed),
         Math.max(0L, record.statsProcessed),
@@ -3360,18 +3468,26 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       boolean refreshStaleProjection,
       boolean persistProjection) {
     if (child != null && refreshStaleProjection && isParentCapable(child.jobKind())) {
-      var refreshedProjection = recomputeSummaryProjection(child, true, persistProjection);
-      if (persistProjection && refreshedProjection != null) {
-        projections().upsert(refreshedProjection);
+      var projection = projections().load(child.accountId, child.jobId).orElse(null);
+      if (hasCurrentTerminalProjection(child, projection)) {
+        StoredReconcileJob terminalSummary = copyProjectedAggregateSummaryRecord(child, projection);
+        return projectedSummaryRecordForConnectorTable(parent, child, terminalSummary);
       }
-      if (refreshedProjection != null) {
-        StoredReconcileJob refreshedSummary =
-            shouldKeepCanonicalStateForTerminalProjection(child, refreshedProjection)
-                    || shouldKeepProjectionAggregatesForTerminalCanonicalState(
-                        child, refreshedProjection)
-                ? copyProjectedAggregateSummaryRecord(child, refreshedProjection)
-                : copyProjectedSummaryRecord(child, refreshedProjection);
-        return projectedSummaryRecordForConnectorTable(parent, child, refreshedSummary);
+      if (projectionNeedsRefresh(child, projection)
+          || !projectionAggregateMatchesCanonical(child, projection)) {
+        var refreshedProjection = recomputeSummaryProjection(child, true, persistProjection);
+        if (persistProjection && refreshedProjection != null) {
+          projections().upsert(refreshedProjection);
+        }
+        if (refreshedProjection != null) {
+          StoredReconcileJob refreshedSummary =
+              shouldKeepCanonicalStateForTerminalProjection(child, refreshedProjection)
+                      || shouldKeepProjectionAggregatesForTerminalCanonicalState(
+                          child, refreshedProjection)
+                  ? copyProjectedAggregateSummaryRecord(child, refreshedProjection)
+                  : copyProjectedSummaryRecord(child, refreshedProjection);
+          return projectedSummaryRecordForConnectorTable(parent, child, refreshedSummary);
+        }
       }
     }
     StoredReconcileJob summary =
@@ -3831,6 +3947,74 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private Optional<LeasedJob> leaseReadyDue(
       long nowMs, LeaseRequest request, LeaseScanStats scanStats) {
     return readyQueue().leaseReadyDue(nowMs, request, scanStats);
+  }
+
+  private void observeLeaseScanPermitGauges() {
+    if (observability == null) {
+      return;
+    }
+    observability.gauge(
+        ServiceMetrics.Reconcile.LEASE_SCAN_PERMITS_IN_USE,
+        () -> Math.max(0, leaseMaxConcurrency - leaseScanPermits.availablePermits()),
+        "Current number of reconcile lease scan permits in use",
+        Tag.of(TagKey.COMPONENT, "service"),
+        Tag.of(TagKey.OPERATION, "lease_scan"));
+    observability.gauge(
+        ServiceMetrics.Reconcile.LEASE_SCAN_PERMITS_AVAILABLE,
+        () -> Math.max(0, leaseScanPermits.availablePermits()),
+        "Current number of reconcile lease scan permits available",
+        Tag.of(TagKey.COMPONENT, "service"),
+        Tag.of(TagKey.OPERATION, "lease_scan"));
+  }
+
+  private void observeLeaseNext(long startedAtMs, LeaseScanStats stats, String outcome) {
+    if (observability == null) {
+      return;
+    }
+    LeaseScanStats effective = stats == null ? new LeaseScanStats() : stats;
+    String result = blankToEmpty(outcome);
+    if (result.isBlank()) {
+      result = "unknown";
+    }
+    Tag component = Tag.of(TagKey.COMPONENT, "service");
+    Tag operation = Tag.of(TagKey.OPERATION, "lease_next");
+    Tag resultTag = Tag.of(TagKey.RESULT, result);
+    long elapsedMs = Math.max(0L, System.currentTimeMillis() - startedAtMs);
+    observability.timer(
+        ServiceMetrics.Reconcile.LEASE_NEXT_LATENCY,
+        Duration.ofMillis(elapsedMs),
+        component,
+        operation,
+        resultTag);
+    observability.summary(
+        ServiceMetrics.Reconcile.LEASE_NEXT_CANDIDATES,
+        effective.candidateCount,
+        component,
+        operation,
+        resultTag);
+    observability.summary(
+        ServiceMetrics.Reconcile.LEASE_NEXT_SCANS,
+        effective.scanCount,
+        component,
+        operation,
+        resultTag);
+    observability.counter(
+        ServiceMetrics.Reconcile.LEASE_NEXT_OUTCOMES, 1.0, component, operation, resultTag);
+    effective
+        .skipCounts()
+        .forEach((reason, count) -> observeLeaseNextSkip(component, operation, reason, count));
+  }
+
+  private void observeLeaseNextSkip(Tag component, Tag operation, String reason, int count) {
+    if (count <= 0) {
+      return;
+    }
+    observability.counter(
+        ServiceMetrics.Reconcile.LEASE_NEXT_SKIPS,
+        count,
+        component,
+        operation,
+        Tag.of(TagKey.REASON, reason));
   }
 
   private boolean isBlockedByAncestorCancellation(StoredReconcileJob record) {

@@ -216,9 +216,32 @@ public class ReconcileAncestorRollupService {
       }
       String logicalTarget = connectorDirectChildLogicalTarget(child);
       StoredReconcileJob current = byLogicalTarget.get(logicalTarget);
-      byLogicalTarget.put(logicalTarget, chooseRepresentativeChild(current, child));
+      byLogicalTarget.put(logicalTarget, chooseConnectorLogicalChild(current, child));
     }
     return List.copyOf(byLogicalTarget.values());
+  }
+
+  private StoredReconcileJob chooseConnectorLogicalChild(
+      StoredReconcileJob current, StoredReconcileJob candidate) {
+    if (candidate == null) {
+      return current;
+    }
+    if (current == null) {
+      return candidate;
+    }
+    int createdComparison = Long.compare(candidate.createdAtMs, current.createdAtMs);
+    if (createdComparison != 0) {
+      return createdComparison > 0 ? candidate : current;
+    }
+    int startedComparison = Long.compare(candidate.startedAtMs, current.startedAtMs);
+    if (startedComparison != 0) {
+      return startedComparison > 0 ? candidate : current;
+    }
+    int updatedComparison = Long.compare(candidate.updatedAtMs, current.updatedAtMs);
+    if (updatedComparison != 0) {
+      return updatedComparison > 0 ? candidate : current;
+    }
+    return chooseRepresentativeChild(current, candidate);
   }
 
   private String connectorDirectChildLogicalTarget(StoredReconcileJob child) {

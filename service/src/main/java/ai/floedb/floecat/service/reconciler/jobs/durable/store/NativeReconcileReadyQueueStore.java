@@ -26,6 +26,7 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
 import org.jboss.logging.Logger;
 
@@ -47,6 +48,8 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
   private final AtomicInteger unpinnedSelectionCursor = new AtomicInteger();
   private final ConcurrentMap<ReconcileReadyQueueBackend.ReadyQueueSlice, String> scanPageCursors =
       new ConcurrentHashMap<>();
+  private final ConcurrentMap<ReconcileReadyQueueBackend.ReadyQueueSlice, ReentrantLock>
+      scanPageLocks = new ConcurrentHashMap<>();
 
   public void bind(
       ReconcileReadyQueueBackend readyQueueBackend,
@@ -133,104 +136,190 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
   private Optional<LeasedJob> leaseReadyDueFromSelection(
       long nowMs, LeaseRequest request, ReadyIndexSelection selection, LeaseScanStats scanStats) {
     ReconcileReadyQueueBackend.ReadyQueueSlice slice = selection.slice();
-    String token = scanPageCursor(slice);
-    int pages = 0;
-    while (true) {
-      if (shouldStop(scanStats)) {
-        return Optional.empty();
-      }
-      if (scanStats != null) {
-        scanStats.scanCount++;
-      }
-      ReadyQueueScanPage page =
-          readyQueueBackend.scanReadySlice(
-              slice,
-              Math.min(readyScanLimit, MAX_CANDIDATES_PER_LEASE_SELECTION),
-              token,
-              scanStats);
-      if (page.entries().isEmpty()) {
-        clearScanPageCursor(slice);
-        return Optional.empty();
-      }
-
-      for (ReadyQueueEntry candidate : page.entries()) {
+    ReentrantLock lock = scanPageLocks.computeIfAbsent(slice, ignored -> new ReentrantLock());
+    if (!lock.tryLock()) {
+      return Optional.empty();
+    }
+    try {
+      String token = scanPageCursor(slice);
+      int pages = 0;
+      while (true) {
         if (shouldStop(scanStats)) {
           return Optional.empty();
         }
         if (scanStats != null) {
-          scanStats.candidateCount++;
+          scanStats.scanCount++;
         }
-        if (candidate.dueAtMs() > nowMs) {
+        ReadyQueueScanPage page =
+            readyQueueBackend.scanReadySlice(
+                slice,
+                Math.min(readyScanLimit, MAX_CANDIDATES_PER_LEASE_SELECTION),
+                token,
+                scanStats);
+        if (page.entries().isEmpty()) {
           clearScanPageCursor(slice);
           return Optional.empty();
         }
-        CanonicalPointerSnapshot canonicalSnapshot =
-            readyQueueBackend
-                .loadCanonicalSnapshot(candidate.canonicalPointerKey(), scanStats)
-                .orElse(null);
-        if (shouldStop(scanStats)) {
-          return Optional.empty();
-        }
-        if (canonicalSnapshot == null) {
-          continue;
-        }
-        var recordOpt = jobIndexStore.readRecord(canonicalSnapshot);
-        if (shouldStop(scanStats)) {
-          return Optional.empty();
-        }
-        if (recordOpt.isEmpty()) {
-          continue;
-        }
-        StoredReconcileJob record = recordOpt.get();
-        if ("JS_WAITING".equals(record.state)) {
-          continue;
-        }
-        if (blockedByCancellation != null
-            && Boolean.TRUE.equals(blockedByCancellation.test(record))) {
-          continue;
-        }
-        if (!readyPointerMatchesRecord(candidate, record)) {
-          continue;
-        }
-        // Not stale, just not eligible for this requester: leave the pointer for another lane.
-        if (!matchesLeaseRequest(record, request)) {
-          continue;
-        }
-        if (shouldStop(scanStats)) {
-          return Optional.empty();
-        }
-        var leased =
-            leaseStore.leaseCanonical(
-                candidate.canonicalPointerKey(),
-                candidate.readyPointerKey(),
-                nowMs,
-                canonicalSnapshot,
-                record);
-        if (leased.isPresent()) {
-          clearScanPageCursor(slice);
-          return leased;
-        }
-      }
 
-      String nextToken = blankToEmpty(page.nextPageToken());
-      if (nextToken.isBlank()) {
-        clearScanPageCursor(slice);
-        return Optional.empty();
+        for (ReadyQueueEntry candidate : page.entries()) {
+          if (shouldStop(scanStats)) {
+            return Optional.empty();
+          }
+          if (scanStats != null) {
+            scanStats.candidateCount++;
+          }
+          if (candidate.dueAtMs() > nowMs) {
+            recordSkip(scanStats, "not_due");
+            clearScanPageCursor(slice);
+            return Optional.empty();
+          }
+          CanonicalPointerSnapshot canonicalSnapshot =
+              readyQueueBackend
+                  .loadCanonicalSnapshot(candidate.canonicalPointerKey(), scanStats)
+                  .orElse(null);
+          if (shouldStop(scanStats)) {
+            return Optional.empty();
+          }
+          if (canonicalSnapshot == null) {
+            recordSkip(scanStats, "stale_pointer");
+            deleteStaleReadyEntry(candidate);
+            continue;
+          }
+          var recordOpt = jobIndexStore.readRecord(canonicalSnapshot);
+          if (shouldStop(scanStats)) {
+            return Optional.empty();
+          }
+          if (recordOpt.isEmpty()) {
+            recordSkip(scanStats, "missing_record");
+            deleteStaleReadyEntry(candidate);
+            continue;
+          }
+          StoredReconcileJob record = recordOpt.get();
+          if ("JS_WAITING".equals(record.state)) {
+            recordSkip(scanStats, "waiting");
+            deleteStaleReadyEntry(candidate);
+            continue;
+          }
+          ReadyQueuePruneSupport.ReadyEntryPruneReason pruneReason =
+              ReadyQueuePruneSupport.readyEntryPruneReason(
+                  candidate, this, record, blockedByCancellation);
+          if (pruneReason == ReadyQueuePruneSupport.ReadyEntryPruneReason.CANCELLATION_BLOCKED) {
+            recordSkip(scanStats, "cancellation_blocked");
+            deleteStaleReadyEntry(candidate);
+            continue;
+          }
+          if (pruneReason == ReadyQueuePruneSupport.ReadyEntryPruneReason.STALE) {
+            recordSkip(scanStats, "pointer_mismatch");
+            deleteStaleReadyEntry(candidate);
+            continue;
+          }
+          // Not stale, just not eligible for this requester: leave the pointer for another lane.
+          if (!matchesLeaseRequest(record, request)) {
+            recordSkip(scanStats, "request_mismatch");
+            continue;
+          }
+          if (shouldStop(scanStats)) {
+            return Optional.empty();
+          }
+          ReconcileLeaseStore.LeaseAttemptStats leaseAttemptStats =
+              new ReconcileLeaseStore.LeaseAttemptStats();
+          var leased =
+              leaseStore.leaseCanonical(
+                  candidate.canonicalPointerKey(),
+                  candidate.readyPointerKey(),
+                  nowMs,
+                  canonicalSnapshot,
+                  record,
+                  leaseAttemptStats);
+          if (leased.isPresent()) {
+            clearScanPageCursor(slice);
+            return leased;
+          }
+          recordSkip(
+              scanStats, classifyFailedLease(candidate, request, scanStats, leaseAttemptStats));
+        }
+
+        String nextToken = blankToEmpty(page.nextPageToken());
+        if (nextToken.isBlank()) {
+          clearScanPageCursor(slice);
+          return Optional.empty();
+        }
+        if (nextToken.equals(token)) {
+          clearScanPageCursor(slice);
+          LOG.warn(
+              "Reconcile ready pagination token did not advance; aborting ready scan to avoid"
+                  + " livelock");
+          return Optional.empty();
+        }
+        rememberScanPageCursor(slice, nextToken);
+        pages++;
+        if (pages >= MAX_PAGES_PER_LEASE_SELECTION) {
+          return Optional.empty();
+        }
+        token = nextToken;
       }
-      if (nextToken.equals(token)) {
-        clearScanPageCursor(slice);
-        LOG.warn(
-            "Reconcile ready pagination token did not advance; aborting ready scan to avoid"
-                + " livelock");
-        return Optional.empty();
-      }
-      rememberScanPageCursor(slice, nextToken);
-      pages++;
-      if (pages >= MAX_PAGES_PER_LEASE_SELECTION) {
-        return Optional.empty();
-      }
-      token = nextToken;
+    } finally {
+      lock.unlock();
     }
+  }
+
+  private static void recordSkip(LeaseScanStats scanStats, String reason) {
+    if (scanStats != null) {
+      scanStats.recordSkip(reason);
+    }
+  }
+
+  private String classifyFailedLease(
+      ReadyQueueEntry candidate,
+      LeaseRequest request,
+      LeaseScanStats scanStats,
+      ReconcileLeaseStore.LeaseAttemptStats leaseAttemptStats) {
+    String leaseFailureReason =
+        leaseAttemptStats == null ? "" : blankToEmpty(leaseAttemptStats.failureReason());
+    CanonicalPointerSnapshot currentSnapshot =
+        readyQueueBackend
+            .loadCanonicalSnapshot(candidate.canonicalPointerKey(), scanStats)
+            .orElse(null);
+    if (currentSnapshot == null) {
+      deleteStaleReadyEntry(candidate);
+      return "lease_race_missing";
+    }
+    var currentRecordOpt = jobIndexStore.readRecord(currentSnapshot);
+    if (currentRecordOpt.isEmpty()) {
+      deleteStaleReadyEntry(candidate);
+      return "lease_race_missing";
+    }
+    StoredReconcileJob currentRecord = currentRecordOpt.get();
+    String state = blankToEmpty(currentRecord.state);
+    if (isTerminalState(state)) {
+      deleteStaleReadyEntry(candidate);
+      return "lease_race_terminal";
+    }
+    if ("JS_RUNNING".equals(state)) {
+      return "lease_race_running";
+    }
+    if (!"JS_QUEUED".equals(state)) {
+      deleteStaleReadyEntry(candidate);
+      return "lease_race_not_queued";
+    }
+    if (!readyPointerMatchesRecord(candidate, currentRecord)) {
+      deleteStaleReadyEntry(candidate);
+      return "lease_race_pointer_mismatch";
+    }
+    if (!matchesLeaseRequest(currentRecord, request)) {
+      return "lease_race_other";
+    }
+    if (!leaseFailureReason.isBlank()) {
+      return "lease_conflict_" + leaseFailureReason;
+    }
+    return "lease_race";
+  }
+
+  private void deleteStaleReadyEntry(ReadyQueueEntry candidate) {
+    if (candidate == null || blank(candidate.readyPointerKey())) {
+      return;
+    }
+    readyQueueBackend.deleteReadyEntry(candidate.readyPointerKey());
   }
 
   private List<ReadyIndexSelection> readyScanSelections(LeaseRequest request) {
@@ -378,5 +467,12 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
 
   private static boolean blank(String value) {
     return value == null || value.isBlank();
+  }
+
+  private static boolean isTerminalState(String state) {
+    return switch (blankToEmpty(state)) {
+      case "JS_SUCCEEDED", "JS_FAILED", "JS_CANCELLED" -> true;
+      default -> false;
+    };
   }
 }
