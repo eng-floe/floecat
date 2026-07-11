@@ -16,9 +16,21 @@
 
 package ai.floedb.floecat.service.repo.model;
 
-public record CurrentSnapshotPointerKey(String accountId, String tableId, String sha256)
-    implements ResourceKey {
-  public CurrentSnapshotPointerKey(String accountId, String tableId) {
-    this(accountId, tableId, "");
+import ai.floedb.floecat.catalog.rpc.BlobRef;
+import ai.floedb.floecat.common.rpc.MutationMeta;
+
+/** Conversions between pointer metadata and the immutable blob refs the table root stores. */
+public final class BlobRefs {
+
+  private BlobRefs() {}
+
+  /**
+   * The (uri, etag) ref of the blob a pointer names, or {@code null} when nothing is resolvable.
+   */
+  public static BlobRef refFrom(MutationMeta meta) {
+    if (meta == null || meta.getBlobUri().isEmpty()) {
+      return null;
+    }
+    return BlobRef.newBuilder().setUri(meta.getBlobUri()).setVersion(meta.getEtag()).build();
   }
 }

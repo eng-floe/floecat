@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.repo.util;
 
+import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -100,6 +101,19 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
   public boolean existsByKey(K key) {
     return observeRepository("exists_by_key", () -> existsByKeyUnobserved(key));
+  }
+
+  /**
+   * The version (etag) of the immutable blob at {@code blobUri}, or {@code null} if no blob is
+   * there, using a HEAD (no body fetch, no parse). Lets a validator confirm a pinned blob is both
+   * present and the exact version captured at pin time in a single O(1) probe.
+   */
+  public String blobEtag(String blobUri) {
+    if (blobUri == null || blobUri.isBlank()) {
+      return null;
+    }
+    return observeRepository(
+        "blob_etag", () -> blobStore.head(blobUri).map(BlobHeader::getEtag).orElse(null));
   }
 
   private Optional<T> getByKeyUnobserved(K key) {
