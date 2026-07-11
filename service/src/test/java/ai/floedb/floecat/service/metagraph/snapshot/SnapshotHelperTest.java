@@ -108,6 +108,31 @@ class SnapshotHelperTest {
     commitEntry(tableId, snapshotId, createdAt);
   }
 
+  /**
+   * Commit a FINALIZED manifest entry (carrying a stats-generation ref) onto the table root, with
+   * the standard table.pb definition ref. Snapshot ref uri/version derive from the id; the
+   * generation uri is passed explicitly so callers can name empty/named generations.
+   */
+  private void commitFinalizedEntry(
+      ResourceId tableId, long snapshotId, String createdAt, String statsGenUri) {
+    committer.commit(
+        tableId,
+        TableRootMutations.upsertSnapshot(
+            roots,
+            tableId,
+            SnapshotManifestEntry.newBuilder()
+                .setSnapshotId(snapshotId)
+                .setSnapshotRef(
+                    BlobRef.newBuilder()
+                        .setUri("s3://tbl/snap-" + snapshotId + ".pb")
+                        .setVersion("etag-s" + snapshotId))
+                .setStatsGenerationRef(BlobRef.newBuilder().setUri(statsGenUri))
+                .setUpstreamCreatedAt(ts(createdAt))
+                .build(),
+            BlobRef.newBuilder().setUri("s3://tbl/table.pb").setVersion("etag-t").build(),
+            true));
+  }
+
   @Test
   void schemaJsonUsesSnapshotPayload() {
     ResourceId tableId = tableId("tbl");
@@ -530,20 +555,7 @@ class SnapshotHelperTest {
     seedSnapshot(tableId, 11, "2024-02-01T00:00:00Z");
     seedSnapshot(tableId, 12, "2024-03-01T00:00:00Z");
     // 11 finalized (generation ref present), 12 registered only.
-    committer.commit(
-        tableId,
-        TableRootMutations.upsertSnapshot(
-            roots,
-            tableId,
-            SnapshotManifestEntry.newBuilder()
-                .setSnapshotId(11)
-                .setSnapshotRef(
-                    BlobRef.newBuilder().setUri("s3://tbl/snap-11.pb").setVersion("etag-s11"))
-                .setStatsGenerationRef(BlobRef.newBuilder().setUri("s3://tbl/stats/11/gen.pb"))
-                .setUpstreamCreatedAt(ts("2024-02-01T00:00:00Z"))
-                .build(),
-            BlobRef.newBuilder().setUri("s3://tbl/table.pb").setVersion("etag-t").build(),
-            true));
+    commitFinalizedEntry(tableId, 11, "2024-02-01T00:00:00Z", "s3://tbl/stats/11/gen.pb");
     committer.commit(
         tableId,
         TableRootMutations.upsertSnapshot(
@@ -681,20 +693,7 @@ class SnapshotHelperTest {
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 7, "2024-02-01T00:00:00Z");
     // Finalize 7 (generation ref present -> becomes current), then remove its generation.
-    committer.commit(
-        tableId,
-        TableRootMutations.upsertSnapshot(
-            roots,
-            tableId,
-            SnapshotManifestEntry.newBuilder()
-                .setSnapshotId(7)
-                .setSnapshotRef(
-                    BlobRef.newBuilder().setUri("s3://tbl/snap-7.pb").setVersion("etag-s7"))
-                .setStatsGenerationRef(BlobRef.newBuilder().setUri("s3://tbl/stats/7/gen.pb"))
-                .setUpstreamCreatedAt(ts("2024-02-01T00:00:00Z"))
-                .build(),
-            BlobRef.newBuilder().setUri("s3://tbl/table.pb").setVersion("etag-t").build(),
-            true));
+    commitFinalizedEntry(tableId, 7, "2024-02-01T00:00:00Z", "s3://tbl/stats/7/gen.pb");
     committer.commit(tableId, TableRootMutations.setStatsGeneration(roots, tableId, 7, null, null));
 
     var root = roots.get(tableId).orElseThrow();
@@ -716,21 +715,9 @@ class SnapshotHelperTest {
     helper = new SnapshotHelper(repository, roots, committer, tracking);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 3, "2024-02-01T00:00:00Z");
-    committer.commit(
-        tableId,
-        TableRootMutations.upsertSnapshot(
-            roots,
-            tableId,
-            SnapshotManifestEntry.newBuilder()
-                .setSnapshotId(3)
-                .setSnapshotRef(
-                    BlobRef.newBuilder().setUri("s3://tbl/snap-3.pb").setVersion("etag-s3"))
-                // A ref to an EMPTY generation — the snapshot is finalized, it just lists nothing.
-                .setStatsGenerationRef(BlobRef.newBuilder().setUri("s3://tbl/stats/3/empty-gen.pb"))
-                .setUpstreamCreatedAt(ts("2024-02-01T00:00:00Z"))
-                .build(),
-            BlobRef.newBuilder().setUri("s3://tbl/table.pb").setVersion("etag-t").build(),
-            true));
+    // The stats-generation ref points at an EMPTY generation — the snapshot is finalized, it just
+    // lists nothing.
+    commitFinalizedEntry(tableId, 3, "2024-02-01T00:00:00Z", "s3://tbl/stats/3/empty-gen.pb");
 
     TablePin pin = helper.tablePinFor("corr", tableId, null, Optional.empty());
 

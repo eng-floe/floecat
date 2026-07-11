@@ -29,20 +29,28 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository.CurrentSnapshotPoi
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class CurrentSnapshotPointerServiceTest {
 
-  @Test
-  void maybeAdvanceByIdFailsWhenSnapshotIsMissing() {
-    var tableId =
+  private ResourceId tableId;
+  private CurrentSnapshotPointerService service;
+
+  @BeforeEach
+  void setUp() {
+    tableId =
         ResourceId.newBuilder()
             .setAccountId("acct")
             .setId("tbl")
             .setKind(ResourceKind.RK_TABLE)
             .build();
-    var service = new CurrentSnapshotPointerService();
+    service = new CurrentSnapshotPointerService();
     service.snapshotRepo = mock(SnapshotRepository.class);
+  }
+
+  @Test
+  void maybeAdvanceByIdFailsWhenSnapshotIsMissing() {
     when(service.snapshotRepo.getById(tableId, 123L)).thenReturn(Optional.empty());
 
     StatusRuntimeException thrown =
@@ -54,15 +62,7 @@ class CurrentSnapshotPointerServiceTest {
 
   @Test
   void maybeAdvanceRecommitsTheRootEntryOnUnchanged() {
-    var tableId =
-        ResourceId.newBuilder()
-            .setAccountId("acct")
-            .setId("tbl")
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
     var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
-    var service = new CurrentSnapshotPointerService();
-    service.snapshotRepo = mock(SnapshotRepository.class);
     service.rootWriter = mock(TableRootWriter.class);
     // An in-place UpdateSnapshot of the already-current snapshot leaves the pointer id unchanged,
     // but the blob may have been rewritten: the root entry is re-committed so pinned identity
@@ -77,20 +77,12 @@ class CurrentSnapshotPointerServiceTest {
 
   @Test
   void advanceCommitsTheSnapshotEntryOntoTheTableRoot() {
-    var tableId =
-        ResourceId.newBuilder()
-            .setAccountId("acct")
-            .setId("tbl")
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
     var candidate =
         Snapshot.newBuilder()
             .setTableId(tableId)
             .setSnapshotId(7L)
             .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(1_000L))
             .build();
-    var service = new CurrentSnapshotPointerService();
-    service.snapshotRepo = mock(SnapshotRepository.class);
     var roots =
         new ai.floedb.floecat.service.repo.impl.TableRootRepository(
             new ai.floedb.floecat.storage.memory.InMemoryPointerStore(),

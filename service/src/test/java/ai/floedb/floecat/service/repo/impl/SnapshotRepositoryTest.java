@@ -139,14 +139,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void getCurrentSnapshotUsesCurrentPointer() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long createdMs = clock.millis() - 10_000;
     seedSnapshot(snapshotRepo, account, tableRid, 0, clock.millis(), createdMs);
@@ -160,14 +154,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void maybeAdvanceCurrentSnapshotPointerCreatesPointerWithoutMutatingTable() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long createdMs = clock.millis() - 10_000;
     seedSnapshot(snapshotRepo, account, tableRid, 1, clock.millis(), createdMs);
@@ -183,14 +171,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void updateDoesNotAdvanceCurrentSnapshotPointer() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long t = clock.millis();
     seedSnapshot(snapshotRepo, account, tableRid, 1, t, t - 10_000); // newest by commit time
@@ -279,14 +261,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void getCurrentSnapshotUsesPointerEvenWhenSnapshotIsNotNewestByTime() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long newestCreatedMs = clock.millis() - 5_000;
     long olderCreatedMs = newestCreatedMs - 1_000;
@@ -304,14 +280,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void getCurrentSnapshotFallsBackToLatestSnapshotWhenCurrentPointerIsMissing() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
     seedSnapshot(snapshotRepo, account, tableRid, 204, clock.millis(), clock.millis() - 10_000);
 
     Snapshot fallback = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
@@ -321,14 +291,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void getCurrentSnapshotFallsBackToLatestSnapshotWhenCurrentPointerIsDangling() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
     seedCurrentPointer(tableRid, 999_999L, clock.millis());
     seedSnapshot(snapshotRepo, account, tableRid, 101, clock.millis(), clock.millis() - 20_000);
     seedSnapshot(snapshotRepo, account, tableRid, 204, clock.millis(), clock.millis() - 10_000);
@@ -340,14 +304,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void maybeAdvanceCurrentSnapshotPointerDoesNotDowngradeNewerPointer() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long newerCreatedMs = clock.millis() - 10_000;
     long olderCreatedMs = newerCreatedMs - 10_000;
@@ -366,14 +324,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void maybeAdvanceCurrentSnapshotPointerDoesNotRewriteSameSnapshotIdWhenTimestampDiffers() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long originalCreatedMs = clock.millis() - 20_000;
     long conflictingCreatedMs = clock.millis() - 10_000;
@@ -408,14 +360,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void maybeAdvanceCurrentSnapshotPointerRetriesWhenPointerChangesBeforeCas() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long newestCreatedMs = clock.millis() - 10_000;
     long middleCreatedMs = newestCreatedMs - 10_000;
@@ -446,14 +392,7 @@ class SnapshotRepositoryTest {
 
   @Test
   void maybeAdvanceCurrentSnapshotPointerReturnsConflictAfterBoundedCasRetries() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
     FailingCurrentSnapshotPointerRepository failingCurrentRepo =
         new FailingCurrentSnapshotPointerRepository(ptr, blobs);
     SnapshotRepository repo = new SnapshotRepository(ptr, blobs, tableRepo, failingCurrentRepo);
@@ -472,14 +411,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void rootCurrencyIsTheCurrentSnapshotEvenWhenTheIngestPointerIsAhead() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long t = clock.millis();
     seedSnapshot(snapshotRepo, account, tableRid, 1, t, t - 20_000);
@@ -501,14 +434,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void rootWithoutCurrencyGatesTheTableEvenWhenTheIngestPointerIsSet() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long t = clock.millis();
     seedSnapshot(snapshotRepo, account, tableRid, 1, t, t - 10_000);
@@ -526,14 +453,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void tableWithoutARootStillReadsTheLegacyPointer() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long t = clock.millis();
     seedSnapshot(snapshotRepo, account, tableRid, 7, t, t - 10_000);
@@ -552,14 +473,8 @@ class SnapshotRepositoryTest {
   void aDanglingRootPointerStaysGatedInsteadOfFallingBackToTheLegacyPointer() {
     // A root POINTER that exists with an unreadable blob is a swept/corrupt root, not an
     // un-migrated table: falling back to the raw legacy pointer would bypass the visibility gate.
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long t = clock.millis();
     seedSnapshot(snapshotRepo, account, tableRid, 5, t, t - 10_000);
@@ -584,14 +499,8 @@ class SnapshotRepositoryTest {
   void aTransientlySweptRootBlobRecoversOnTheRetry() {
     // The pointer exists but the first blob read misses (superseded root swept between the two
     // reads); the retry re-follows the pointer and must serve currency, not gate a live table.
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
     long t = clock.millis();
     seedSnapshot(snapshotRepo, account, tableRid, 6, t, t - 10_000);
     seedRootWithCurrency(tableRid, 6L, t - 10_000);
@@ -625,14 +534,8 @@ class SnapshotRepositoryTest {
     // or partial registration can leave the NEWEST by-time entry dangling. AS_OF and
     // latest-by-time must advance past it to the older intact snapshot, not report a spurious
     // not-found for a healthy table.
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long older = clock.millis() - 100_000;
     long newer = clock.millis() - 50_000;
@@ -661,14 +564,7 @@ class SnapshotRepositoryTest {
     // pointer before the root re-commit, so getById would serve a blob the current root never
     // referenced. Simulate divergence: the by-id pointer names a NEW blob, the root entry an OLD
     // one.
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
     long t = clock.millis();
     // The live snapshot (by-id) carries the "rewritten" metadata location.
     snapshotRepo.create(
@@ -716,14 +612,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void theVisiblePointerTimestampIsAStablePropertyOfTheSnapshot() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long ingestedMs = clock.millis() - 5_000;
     seedSnapshot(snapshotRepo, account, tableRid, 4, ingestedMs, ingestedMs - 1_000);
@@ -818,6 +708,18 @@ class SnapshotRepositoryTest {
         .build();
   }
 
+  private ResourceId newSeededTable() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    tableRepo.create(table(account, tableRid));
+    return tableRid;
+  }
+
   private static final class FailingCurrentSnapshotPointerRepository
       extends CurrentSnapshotPointerRepository {
     private final AtomicInteger createAttempts = new AtomicInteger();
@@ -868,14 +770,7 @@ class SnapshotRepositoryTest {
   @Test
   @Timeout(20)
   void snapshotRepoCreateConcurrentSnapshots() throws Exception {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tblId =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tblId));
+    var tblId = newSeededTable();
 
     int WORKERS = 24;
     int OPS = 200;

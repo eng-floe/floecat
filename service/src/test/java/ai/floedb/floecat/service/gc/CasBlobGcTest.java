@@ -98,9 +98,7 @@ class CasBlobGcTest {
     String statsBlob = Keys.snapshotTargetStatsBlobUri(ACCOUNT_ID, TABLE_ID, targetId, "sha-stats");
     String statsPtr = Keys.snapshotTargetStatsPointer(ACCOUNT_ID, TABLE_ID, snapshotId, targetId);
 
-    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
-    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
-    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    seedCurrentTable();
 
     blobs.put(statsBlob, "stats".getBytes(StandardCharsets.UTF_8), "text/plain");
     putPointer(statsPtr, statsBlob);
@@ -221,43 +219,17 @@ class CasBlobGcTest {
   @Test
   void currentRootChainProtectsEverythingItReferences() {
     // Make the table discoverable so the per-table pass runs.
-    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
-    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
-    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    seedCurrentTable();
 
     // A root whose entry references a snapshot blob NO live pointer names (an in-place update
     // moved the pointer on) and a superseded generation manifest (only the root's ref names it).
-    var tableId =
-        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
-            .setAccountId(ACCOUNT_ID)
-            .setId(TABLE_ID)
-            .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
-            .build();
+    var tableId = tableRid();
     String oldSnapBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "sha-old-snap");
     blobs.put(oldSnapBlob, "snap".getBytes(StandardCharsets.UTF_8), "text/plain");
     String genManifest =
         Keys.snapshotTargetStatsManifestBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "gen-old");
     blobs.put(genManifest, "gen".getBytes(StandardCharsets.UTF_8), "text/plain");
-    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(gc.tableRootRepo);
-    committer.commit(
-        tableId,
-        ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
-            gc.tableRootRepo,
-            tableId,
-            ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
-                .setSnapshotId(7L)
-                .setSnapshotRef(
-                    ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
-                        .setUri(oldSnapBlob)
-                        .setVersion("v-old"))
-                .setStatsGenerationRef(
-                    ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(genManifest))
-                .build(),
-            ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
-                .setUri(tableBlob)
-                .setVersion("v-t")
-                .build(),
-            true));
+    commitRoot(7L, oldSnapBlob, "v-old", genManifest);
     var rootMeta = gc.tableRootRepo.metaForSafe(tableId);
     var root = gc.tableRootRepo.get(tableId).orElseThrow();
     String pageBlob = root.getSnapshotManifestRef().getUri();
@@ -272,9 +244,7 @@ class CasBlobGcTest {
 
   @Test
   void supersededUnpinnedRootBlobsAreSwept() {
-    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
-    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
-    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    seedCurrentTable();
 
     // A superseded root blob nothing references: not the current pointer, no pin.
     String oldRoot = Keys.tableRootBlobUri(ACCOUNT_ID, TABLE_ID, "sha-old-root");
@@ -287,38 +257,14 @@ class CasBlobGcTest {
 
   @Test
   void aPinnedRootChainSurvivesSupersession() {
-    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
-    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
-    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    seedCurrentTable();
 
     // A superseded root (not the current pointer target) that a live query pinned. The pin roots
     // the root URI; the chain expansion must protect its page and refs too.
-    var tableId =
-        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
-            .setAccountId(ACCOUNT_ID)
-            .setId(TABLE_ID)
-            .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
-            .build();
+    var tableId = tableRid();
     String pinnedSnapBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 3L, "sha-pinned-snap");
     blobs.put(pinnedSnapBlob, "snap".getBytes(StandardCharsets.UTF_8), "text/plain");
-    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(gc.tableRootRepo);
-    committer.commit(
-        tableId,
-        ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
-            gc.tableRootRepo,
-            tableId,
-            ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
-                .setSnapshotId(3L)
-                .setSnapshotRef(
-                    ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
-                        .setUri(pinnedSnapBlob)
-                        .setVersion("v3"))
-                .build(),
-            ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
-                .setUri(tableBlob)
-                .setVersion("v-t")
-                .build(),
-            true));
+    commitRoot(3L, pinnedSnapBlob, "v3", null);
     var pinnedRootUri = gc.tableRootRepo.metaForSafe(tableId).getBlobUri();
     String pinnedPage =
         gc.tableRootRepo.get(tableId).orElseThrow().getSnapshotManifestRef().getUri();
@@ -346,9 +292,7 @@ class CasBlobGcTest {
     // active pointer to G2 while the current root still references G1. In that window G1 is
     // neither live nor pinned — only the root names it — and the generation reclaim must not
     // collect it, or every pin taken on the root serves a deleted generation.
-    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
-    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
-    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    seedCurrentTable();
 
     String g1Manifest = Keys.snapshotTargetStatsManifestBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "gen-1");
     blobs.put(g1Manifest, "g1".getBytes(StandardCharsets.UTF_8), "text/plain");
@@ -364,34 +308,9 @@ class CasBlobGcTest {
     putPointer(Keys.snapshotTargetStatsManifestPointer(ACCOUNT_ID, TABLE_ID, 7L), g2Manifest);
 
     // The current root still references G1: root commit for the G2 activation has not landed.
-    var tableId =
-        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
-            .setAccountId(ACCOUNT_ID)
-            .setId(TABLE_ID)
-            .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
-            .build();
     String snapBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "sha-snap");
     blobs.put(snapBlob, "snap".getBytes(StandardCharsets.UTF_8), "text/plain");
-    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(gc.tableRootRepo);
-    committer.commit(
-        tableId,
-        ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
-            gc.tableRootRepo,
-            tableId,
-            ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
-                .setSnapshotId(7L)
-                .setSnapshotRef(
-                    ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
-                        .setUri(snapBlob)
-                        .setVersion("v7"))
-                .setStatsGenerationRef(
-                    ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(g1Manifest))
-                .build(),
-            ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
-                .setUri(tableBlob)
-                .setVersion("v-t")
-                .build(),
-            true));
+    commitRoot(7L, snapBlob, "v7", g1Manifest);
 
     gc.runForAccount(ACCOUNT_ID);
 
@@ -405,9 +324,7 @@ class CasBlobGcTest {
     // A pin registered after the sweep started protects its root's WHOLE chain — including the
     // generation manifests its entries reference — not just the pin's own blob URIs. The pinned
     // root here is superseded (no pointer names it), so only the mid-sweep pin can save G1.
-    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
-    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
-    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    seedCurrentTable();
 
     String g1Manifest = Keys.snapshotTargetStatsManifestBlobUri(ACCOUNT_ID, TABLE_ID, 3L, "gen-1");
     blobs.put(g1Manifest, "g1".getBytes(StandardCharsets.UTF_8), "text/plain");
@@ -416,34 +333,10 @@ class CasBlobGcTest {
         Keys.snapshotTargetStatsGenerationPointer(ACCOUNT_ID, TABLE_ID, 3L, "gen-1", targetId),
         Keys.snapshotTargetStatsBlobUri(ACCOUNT_ID, TABLE_ID, 3L, "gen-1", targetId, "sha-rec"));
 
-    var tableId =
-        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
-            .setAccountId(ACCOUNT_ID)
-            .setId(TABLE_ID)
-            .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
-            .build();
+    var tableId = tableRid();
     String snapBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 3L, "sha-snap");
     blobs.put(snapBlob, "snap".getBytes(StandardCharsets.UTF_8), "text/plain");
-    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(gc.tableRootRepo);
-    committer.commit(
-        tableId,
-        ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
-            gc.tableRootRepo,
-            tableId,
-            ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
-                .setSnapshotId(3L)
-                .setSnapshotRef(
-                    ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
-                        .setUri(snapBlob)
-                        .setVersion("v3"))
-                .setStatsGenerationRef(
-                    ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(g1Manifest))
-                .build(),
-            ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
-                .setUri(tableBlob)
-                .setVersion("v-t")
-                .build(),
-            true));
+    commitRoot(3L, snapBlob, "v3", g1Manifest);
     String pinnedRootUri = gc.tableRootRepo.metaForSafe(tableId).getBlobUri();
     // Supersede the root (nothing but the pin will name it) and register the pin only after the
     // sweep's initial root snapshot (first read empty, later reads pinned).
@@ -467,9 +360,7 @@ class CasBlobGcTest {
     // and not pinned.
     System.setProperty("floecat.gc.cas.min-age-ms", "3600000");
     try {
-      String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
-      blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
-      putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+      seedCurrentTable();
 
       String youngManifest =
           Keys.snapshotTargetStatsManifestBlobUri(ACCOUNT_ID, TABLE_ID, 9L, "gen-new");
@@ -495,34 +386,10 @@ class CasBlobGcTest {
     // Manifest pages and the refs inside them are reachable ONLY through chain walks. If a walk
     // cannot complete (missing page blob, transient storage error), the referenced set is not
     // trustworthy and NOTHING may be deleted this pass — an orphan elsewhere must survive too.
-    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
-    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
-    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    seedCurrentTable();
 
-    var tableId =
-        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
-            .setAccountId(ACCOUNT_ID)
-            .setId(TABLE_ID)
-            .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
-            .build();
-    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(gc.tableRootRepo);
-    committer.commit(
-        tableId,
-        ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
-            gc.tableRootRepo,
-            tableId,
-            ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
-                .setSnapshotId(1L)
-                .setSnapshotRef(
-                    ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
-                        .setUri(Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 1L, "sha-s"))
-                        .setVersion("v1"))
-                .build(),
-            ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
-                .setUri(tableBlob)
-                .setVersion("v-t")
-                .build(),
-            true));
+    var tableId = tableRid();
+    commitRoot(1L, Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 1L, "sha-s"), "v1", null);
     // Break the chain: sweep the manifest page blob out from under the root.
     String pageUri = gc.tableRootRepo.get(tableId).orElseThrow().getSnapshotManifestRef().getUri();
     blobs.delete(pageUri);
@@ -543,16 +410,9 @@ class CasBlobGcTest {
     // Content-addressed pages are acyclic by construction, so a repeated prevPageRef means
     // corruption. The walk must fail safe (poison the sweep, delete nothing) rather than loop
     // forever on the GC background thread, which has no request timeout to rescue it.
-    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
-    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
-    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    String tableBlob = seedCurrentTable();
 
-    var tableId =
-        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
-            .setAccountId(ACCOUNT_ID)
-            .setId(TABLE_ID)
-            .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
-            .build();
+    var tableId = tableRid();
     // A root whose manifest page points back at itself (self-cycle) — the minimal malformed chain.
     var pageRef =
         ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
@@ -595,9 +455,7 @@ class CasBlobGcTest {
     // root with a fresh blob under a long min-age — it must survive.
     System.setProperty("floecat.gc.cas.min-age-ms", "3600000");
     try {
-      String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
-      blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
-      putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+      seedCurrentTable();
 
       // A root blob no pointer names yet (its CAS pointer would be written microseconds later) —
       // the exact shape of a root committed after this table's one-time mark.
@@ -648,5 +506,48 @@ class CasBlobGcTest {
   private void putPointer(String key, String blobUri) {
     Pointer ptr = PointerReferences.blobPointer(key, blobUri, 1L);
     pointers.compareAndSet(key, 0L, ptr);
+  }
+
+  private String seedCurrentTable() {
+    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
+    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
+    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    return tableBlob;
+  }
+
+  private ai.floedb.floecat.common.rpc.ResourceId tableRid() {
+    return ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+        .setAccountId(ACCOUNT_ID)
+        .setId(TABLE_ID)
+        .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
+        .build();
+  }
+
+  private void commitRoot(
+      long snapshotId, String snapBlobUri, String snapVersion, String genManifestUri) {
+    var tableId = tableRid();
+    var entry =
+        ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
+            .setSnapshotId(snapshotId)
+            .setSnapshotRef(
+                ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
+                    .setUri(snapBlobUri)
+                    .setVersion(snapVersion));
+    if (genManifestUri != null) {
+      entry.setStatsGenerationRef(
+          ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(genManifestUri));
+    }
+    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(gc.tableRootRepo);
+    committer.commit(
+        tableId,
+        ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
+            gc.tableRootRepo,
+            tableId,
+            entry.build(),
+            ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
+                .setUri(Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table"))
+                .setVersion("v-t")
+                .build(),
+            true));
   }
 }

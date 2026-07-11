@@ -82,6 +82,23 @@ class QueryContextStoreImplTest {
     return RelationPinSet.newBuilder().addPins(QueryPins.ofTable(pin)).build().toByteArray();
   }
 
+  private QueryContext active(String queryId, String corrId, byte[] pins) {
+    var principal = PrincipalContext.newBuilder().setAccountId("acct");
+    if (corrId != null) {
+      principal.setCorrelationId(corrId);
+    }
+    return QueryContext.newActive(
+        queryId,
+        principal.build(),
+        new byte[0],
+        pins,
+        new byte[0],
+        new byte[0],
+        60_000L,
+        1L,
+        CATALOG);
+  }
+
   @Test
   void referencedPinBlobUrisIncludesRootConstraintsAndFrozenScanGenerations() {
     TablePin pin =
@@ -127,17 +144,7 @@ class QueryContextStoreImplTest {
 
   @Test
   void referencedPinBlobUrisIncludesBothTableAndSnapshotBlobsOfLiveContexts() {
-    store.put(
-        QueryContext.newActive(
-            "q1",
-            PrincipalContext.newBuilder().setAccountId("acct").build(),
-            new byte[0],
-            pinBytes("s3://t1/table.pb", "s3://t1/snap-7.pb"),
-            new byte[0],
-            new byte[0],
-            60_000L,
-            1L,
-            CATALOG));
+    store.put(active("q1", null, pinBytes("s3://t1/table.pb", "s3://t1/snap-7.pb")));
 
     assertThat(store.referencedPinBlobUris())
         .containsExactlyInAnyOrder("s3://t1/table.pb", "s3://t1/snap-7.pb");
@@ -145,17 +152,7 @@ class QueryContextStoreImplTest {
 
   @Test
   void referencedUrisUnionCommittedContextsAndResolvingPins() {
-    store.put(
-        QueryContext.newActive(
-            "q1",
-            PrincipalContext.newBuilder().setAccountId("acct").build(),
-            new byte[0],
-            pinBytes("s3://t1/table.pb", "s3://t1/snap-7.pb"),
-            new byte[0],
-            new byte[0],
-            60_000L,
-            1L,
-            CATALOG));
+    store.put(active("q1", null, pinBytes("s3://t1/table.pb", "s3://t1/snap-7.pb")));
     // A committed context AND an in-flight resolution are both roots simultaneously.
     store.registerResolvingPinBlobs("corr-1", List.of("s3://t2/resolving.pb"));
 
@@ -184,17 +181,7 @@ class QueryContextStoreImplTest {
     // The committing context carries the same query id its pins were registered under, so the
     // commit
     // releases its own resolving registration (and only its own).
-    store.put(
-        QueryContext.newActive(
-            "q1",
-            PrincipalContext.newBuilder().setAccountId("acct").setCorrelationId("corr-1").build(),
-            new byte[0],
-            pinBytes("s3://t1/table.pb", "s3://t1/snap-7.pb"),
-            new byte[0],
-            new byte[0],
-            60_000L,
-            1L,
-            CATALOG));
+    store.put(active("q1", "corr-1", pinBytes("s3://t1/table.pb", "s3://t1/snap-7.pb")));
 
     // Still rooted — now via the committed context. Deleting the context leaves nothing, proving
     // the resolving registration was dropped (not double-counted / lingering).
@@ -213,19 +200,7 @@ class QueryContextStoreImplTest {
     store.registerResolvingPinBlobs("q1", List.of("s3://t1/table.pb", "s3://t1/snap-7.pb"));
 
     store.replace(
-        QueryContext.newActive(
-            "q1",
-            PrincipalContext.newBuilder()
-                .setAccountId("acct")
-                .setCorrelationId("begin-query-corr")
-                .build(),
-            new byte[0],
-            pinBytes("s3://t1/table.pb", "s3://t1/snap-7.pb"),
-            new byte[0],
-            new byte[0],
-            60_000L,
-            1L,
-            CATALOG));
+        active("q1", "begin-query-corr", pinBytes("s3://t1/table.pb", "s3://t1/snap-7.pb")));
 
     // Rooted only via the committed context now; deleting it leaves nothing, proving the resolving
     // registration was released on commit despite the differing correlation id.
@@ -240,17 +215,7 @@ class QueryContextStoreImplTest {
     // a different query.
     store.registerResolvingPinBlobs("q1", List.of("s3://a.pb", "s3://b.pb", "s3://c.pb"));
 
-    store.put(
-        QueryContext.newActive(
-            "q1",
-            PrincipalContext.newBuilder().setAccountId("acct").setCorrelationId("corr-1").build(),
-            new byte[0],
-            pinBytes("s3://a.pb", "s3://b.pb"),
-            new byte[0],
-            new byte[0],
-            60_000L,
-            1L,
-            CATALOG));
+    store.put(active("q1", "corr-1", pinBytes("s3://a.pb", "s3://b.pb")));
 
     store.delete("q1"); // remove the committed-context roots, leaving only the resolving remainder
     assertThat(store.referencedPinBlobUris()).containsExactly("s3://c.pb");
@@ -264,17 +229,7 @@ class QueryContextStoreImplTest {
     store.registerResolvingPinBlobs("qA", List.of("s3://shared/table.pb", "s3://shared/snap.pb"));
     store.registerResolvingPinBlobs("qB", List.of("s3://shared/table.pb", "s3://shared/snap.pb"));
 
-    store.put(
-        QueryContext.newActive(
-            "qA",
-            PrincipalContext.newBuilder().setAccountId("acct").setCorrelationId("corr-A").build(),
-            new byte[0],
-            pinBytes("s3://shared/table.pb", "s3://shared/snap.pb"),
-            new byte[0],
-            new byte[0],
-            60_000L,
-            1L,
-            CATALOG));
+    store.put(active("qA", "corr-A", pinBytes("s3://shared/table.pb", "s3://shared/snap.pb")));
 
     // A ends and is removed from the cache before B commits. B's resolving registration must still
     // root the shared blob.

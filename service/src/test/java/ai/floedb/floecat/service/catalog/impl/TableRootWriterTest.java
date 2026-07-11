@@ -26,6 +26,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
+import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.common.rpc.MutationMeta;
@@ -98,6 +99,24 @@ class TableRootWriterTest {
         .orElseThrow();
   }
 
+  private CurrentSnapshotPointer pointer(long snapshotId) {
+    return CurrentSnapshotPointer.newBuilder()
+        .setTableId(tableId)
+        .setSnapshotId(snapshotId)
+        .build();
+  }
+
+  private MutationMeta snapMeta(long id) {
+    return MutationMeta.newBuilder()
+        .setBlobUri("s3://t/snap-" + id + ".pb")
+        .setEtag("v" + id)
+        .build();
+  }
+
+  private MutationMeta tableMeta() {
+    return MutationMeta.newBuilder().setBlobUri("s3://t/table.pb").setEtag("etag-t").build();
+  }
+
   @Test
   void commitStatsGenerationRecordsTheActiveGenerationOnTheEntry() {
     when(statsStore.activeStatsGeneration(tableId, 7L))
@@ -168,30 +187,10 @@ class TableRootWriterTest {
     // OLDER — but finalized — snapshot: the resync must follow it, not re-apply the advance rule.
     // (An unfinalized target would be gated; see the gated-resync mutation test.)
     committer.commit(
-        tableId,
-        TableRootMutations.upsertSnapshot(
-            roots,
-            tableId,
-            SnapshotManifestEntry.newBuilder()
-                .setSnapshotId(3)
-                .setSnapshotRef(BlobRef.newBuilder().setUri("s3://t/snap-3.pb").setVersion("v3"))
-                .setStatsGenerationRef(BlobRef.newBuilder().setUri("s3://t/stats/3/gen.pb"))
-                .setUpstreamCreatedAt(Timestamps.fromMillis(3_000))
-                .build(),
-            null,
-            true));
-    when(tableRepo.metaForSafe(tableId))
-        .thenReturn(
-            MutationMeta.newBuilder().setBlobUri("s3://t/table.pb").setEtag("etag-t").build());
-    when(snapshotRepo.latestRegisteredSnapshotPointer(tableId))
-        .thenReturn(
-            Optional.of(
-                ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(3)
-                    .build()));
-    when(snapshotRepo.metaForSafe(tableId, 3L))
-        .thenReturn(MutationMeta.newBuilder().setBlobUri("s3://t/snap-3.pb").setEtag("v3").build());
+        tableId, TableRootMutations.upsertSnapshot(roots, tableId, finalizedEntry(3), null, true));
+    when(tableRepo.metaForSafe(tableId)).thenReturn(tableMeta());
+    when(snapshotRepo.latestRegisteredSnapshotPointer(tableId)).thenReturn(Optional.of(pointer(3)));
+    when(snapshotRepo.metaForSafe(tableId, 3L)).thenReturn(snapMeta(3));
     when(snapshotRepo.getById(tableId, 3L)).thenReturn(Optional.empty());
 
     writer.resyncFromCommittedState(tableId);
@@ -210,18 +209,9 @@ class TableRootWriterTest {
     committer.commit(
         tableId, TableRootMutations.upsertSnapshot(roots, tableId, finalizedEntry(7), null, true));
 
-    when(tableRepo.metaForSafe(tableId))
-        .thenReturn(
-            MutationMeta.newBuilder().setBlobUri("s3://t/table.pb").setEtag("etag-t").build());
-    when(snapshotRepo.latestRegisteredSnapshotPointer(tableId))
-        .thenReturn(
-            Optional.of(
-                ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(7)
-                    .build()));
-    when(snapshotRepo.metaForSafe(tableId, 7L))
-        .thenReturn(MutationMeta.newBuilder().setBlobUri("s3://t/snap-7.pb").setEtag("v7").build());
+    when(tableRepo.metaForSafe(tableId)).thenReturn(tableMeta());
+    when(snapshotRepo.latestRegisteredSnapshotPointer(tableId)).thenReturn(Optional.of(pointer(7)));
+    when(snapshotRepo.metaForSafe(tableId, 7L)).thenReturn(snapMeta(7));
     when(snapshotRepo.getById(tableId, 7L)).thenReturn(Optional.empty());
     when(snapshotRepo.list(eq(tableId), anyInt(), any(), any()))
         .thenReturn(java.util.List.of(Snapshot.newBuilder().setSnapshotId(7).build()));
@@ -249,16 +239,9 @@ class TableRootWriterTest {
   @Test
   void resyncLeavesTheRootUntouchedWhenTheCommittedSnapshotHasNoBlob() {
     long versionBefore = roots.metaForSafe(tableId).getPointerVersion();
-    when(tableRepo.metaForSafe(tableId))
-        .thenReturn(
-            MutationMeta.newBuilder().setBlobUri("s3://t/table.pb").setEtag("etag-t").build());
+    when(tableRepo.metaForSafe(tableId)).thenReturn(tableMeta());
     when(snapshotRepo.latestRegisteredSnapshotPointer(tableId))
-        .thenReturn(
-            Optional.of(
-                ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(99)
-                    .build()));
+        .thenReturn(Optional.of(pointer(99)));
     when(snapshotRepo.metaForSafe(tableId, 99L)).thenReturn(MutationMeta.getDefaultInstance());
 
     writer.resyncFromCommittedState(tableId);
@@ -313,25 +296,11 @@ class TableRootWriterTest {
         tableId, TableRootMutations.upsertSnapshot(cRoots, tableId, finalizedEntry(7), null, true));
     updateFailures[0] = 1;
 
-    when(tableRepo.metaForSafe(tableId))
-        .thenReturn(
-            MutationMeta.newBuilder().setBlobUri("s3://t/table.pb").setEtag("etag-t").build());
+    when(tableRepo.metaForSafe(tableId)).thenReturn(tableMeta());
     when(snapshotRepo.latestRegisteredSnapshotPointer(tableId))
-        .thenReturn(
-            Optional.of(
-                ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(5)
-                    .build()),
-            Optional.of(
-                ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(7)
-                    .build()));
-    when(snapshotRepo.metaForSafe(tableId, 5L))
-        .thenReturn(MutationMeta.newBuilder().setBlobUri("s3://t/snap-5.pb").setEtag("v5").build());
-    when(snapshotRepo.metaForSafe(tableId, 7L))
-        .thenReturn(MutationMeta.newBuilder().setBlobUri("s3://t/snap-7.pb").setEtag("v7").build());
+        .thenReturn(Optional.of(pointer(5)), Optional.of(pointer(7)));
+    when(snapshotRepo.metaForSafe(tableId, 5L)).thenReturn(snapMeta(5));
+    when(snapshotRepo.metaForSafe(tableId, 7L)).thenReturn(snapMeta(7));
     when(snapshotRepo.getById(any(), anyLong())).thenReturn(Optional.empty());
 
     cWriter.resyncFromCommittedState(tableId);
@@ -434,12 +403,7 @@ class TableRootWriterTest {
     when(tableRepo.metaForSafe(tableId))
         .thenReturn(MutationMeta.newBuilder().setBlobUri("s3://t/table.pb").setEtag("e").build());
     when(snapshotRepo.latestRegisteredSnapshotPointer(tableId))
-        .thenReturn(
-            Optional.of(
-                ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshotId(99)
-                    .build()));
+        .thenReturn(Optional.of(pointer(99)));
     when(snapshotRepo.metaForSafe(tableId, 99L)).thenReturn(MutationMeta.getDefaultInstance());
 
     assertFalse(

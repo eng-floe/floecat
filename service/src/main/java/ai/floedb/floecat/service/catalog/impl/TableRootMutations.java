@@ -35,10 +35,10 @@ import java.util.Set;
  * rewrite read each page blob at most once per attempt.
  *
  * <p>Currency at finalize follows the committed {@code /snapshots/current} pointer: a snapshot
- * becomes current when it finalizes AND that pointer names it (see {@link #setStatsGeneration}). The
- * ordering rule — newer upstream_created_at wins, snapshot id breaks ties — is the fallback when the
- * committed pointer is unknown, and the rule registration ({@link #upsertSnapshot}) still applies in
- * non-gated deployments; both live in {@link #shouldAdvance}.
+ * becomes current when it finalizes AND that pointer names it (see {@link #setStatsGeneration}).
+ * The ordering rule — newer upstream_created_at wins, snapshot id breaks ties — is the fallback
+ * when the committed pointer is unknown, and the rule registration ({@link #upsertSnapshot}) still
+ * applies in non-gated deployments; both live in {@link #shouldAdvance}.
  */
 public final class TableRootMutations {
 

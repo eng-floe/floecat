@@ -62,30 +62,14 @@ class TransactionGcTest {
     String txPtr = Keys.transactionPointerById(accountId, txId);
     pointers.compareAndSet(txPtr, 0L, PointerReferences.blobPointer(txPtr, txBlob, 1L));
 
-    var intent =
-        TransactionIntent.newBuilder()
-            .setTxId(txId)
-            .setAccountId(accountId)
-            .setTargetPointerKey(targetKey)
-            .setBlobUri("s3://example/blob")
-            .setExpectedVersion(1L)
-            .setCreatedAt(now())
-            .build();
-    var intentSha = Hashing.sha256Hex(intent.toByteArray());
-    var intentBlob = Keys.transactionIntentBlobUri(accountId, txId, intentSha);
-    blobs.put(intentBlob, intent.toByteArray(), "application/x-protobuf");
+    putIntent(pointers, blobs, accountId, txId, targetKey);
 
-    String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
-    pointers.compareAndSet(byTarget, 0L, PointerReferences.blobPointer(byTarget, intentBlob, 1L));
-    String byTx = Keys.transactionIntentPointerByTx(accountId, txId, targetKey);
-    pointers.compareAndSet(byTx, 0L, PointerReferences.blobPointer(byTx, intentBlob, 1L));
-
-    var gc = new TransactionGc();
-    inject(gc, "pointerStore", pointers);
-    inject(gc, "blobStore", blobs);
+    var gc = newGc(pointers, blobs);
 
     gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
 
+    String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
+    String byTx = Keys.transactionIntentPointerByTx(accountId, txId, targetKey);
     assertTrue(pointers.get(byTarget).isEmpty(), "by-target intent pointer should be deleted");
     assertTrue(pointers.get(byTx).isEmpty(), "by-tx intent pointer should be deleted");
   }
@@ -115,9 +99,7 @@ class TransactionGcTest {
         Timestamps.fromMillis(System.currentTimeMillis() - 300_000L));
     putIntent(pointers, blobs, accountId, txId, targetKey);
 
-    var gc = new TransactionGc();
-    inject(gc, "pointerStore", pointers);
-    inject(gc, "blobStore", blobs);
+    var gc = newGc(pointers, blobs);
 
     gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
 
@@ -150,9 +132,7 @@ class TransactionGcTest {
     String byTx = Keys.transactionIntentPointerByTx(accountId, txId, targetKey);
     pointers.get(byTx).ifPresent(ptr -> pointers.compareAndDelete(ptr.getKey(), ptr.getVersion()));
 
-    var gc = new TransactionGc();
-    inject(gc, "pointerStore", pointers);
-    inject(gc, "blobStore", blobs);
+    var gc = newGc(pointers, blobs);
     gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
 
     String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
@@ -178,9 +158,7 @@ class TransactionGcTest {
     String byTx = Keys.transactionIntentPointerByTx(accountId, txId, targetKey);
     pointers.get(byTx).ifPresent(ptr -> pointers.compareAndDelete(ptr.getKey(), ptr.getVersion()));
 
-    var gc = new TransactionGc();
-    inject(gc, "pointerStore", pointers);
-    inject(gc, "blobStore", blobs);
+    var gc = newGc(pointers, blobs);
     gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
 
     String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
@@ -223,9 +201,7 @@ class TransactionGcTest {
     pointers.compareAndSet(
         staleByTx, 0L, PointerReferences.blobPointer(staleByTx, activeIntentBlob, 1L));
 
-    var gc = new TransactionGc();
-    inject(gc, "pointerStore", pointers);
-    inject(gc, "blobStore", blobs);
+    var gc = newGc(pointers, blobs);
     gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
 
     assertTrue(
@@ -249,9 +225,7 @@ class TransactionGcTest {
         state,
         Timestamps.fromMillis(System.currentTimeMillis() - 300_000L));
 
-    var gc = new TransactionGc();
-    inject(gc, "pointerStore", pointers);
-    inject(gc, "blobStore", blobs);
+    var gc = newGc(pointers, blobs);
 
     gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
 
@@ -443,9 +417,7 @@ class TransactionGcTest {
             mock(ai.floedb.floecat.service.repo.impl.ConstraintRepository.class),
             statsStore);
 
-    var gc = new TransactionGc();
-    inject(gc, "pointerStore", pointers);
-    inject(gc, "blobStore", blobs);
+    var gc = newGc(pointers, blobs);
     inject(gc, "rootWriter", writer);
 
     gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
@@ -486,9 +458,7 @@ class TransactionGcTest {
             mock(ai.floedb.floecat.service.repo.impl.ConstraintRepository.class),
             mock(ai.floedb.floecat.stats.spi.StatsStore.class));
 
-    var gc = new TransactionGc();
-    inject(gc, "pointerStore", pointers);
-    inject(gc, "blobStore", blobs);
+    var gc = newGc(pointers, blobs);
     inject(gc, "rootWriter", writer);
 
     gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
@@ -502,5 +472,13 @@ class TransactionGcTest {
     Field f = target.getClass().getDeclaredField(field);
     f.setAccessible(true);
     f.set(target, value);
+  }
+
+  private static TransactionGc newGc(InMemoryPointerStore pointers, InMemoryBlobStore blobs)
+      throws Exception {
+    var gc = new TransactionGc();
+    inject(gc, "pointerStore", pointers);
+    inject(gc, "blobStore", blobs);
+    return gc;
   }
 }

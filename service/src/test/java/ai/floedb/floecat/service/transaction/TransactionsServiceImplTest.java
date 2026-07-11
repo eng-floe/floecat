@@ -79,33 +79,48 @@ import org.mockito.Mockito;
 
 class TransactionsServiceImplTest {
 
-  @Test
-  void commitAppliedUsesAtomicApplyWithoutSeparateIntentCleanup() throws Exception {
+  private TransactionRepository txRepo;
+  private TransactionIntentRepository intentRepo;
+  private TransactionIntentApplierSupport applier;
+
+  private TransactionsServiceImpl newService() throws Exception {
     var service = new TransactionsServiceImpl();
-    var txRepo = Mockito.mock(TransactionRepository.class);
-    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
-    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
+    txRepo = Mockito.mock(TransactionRepository.class);
+    intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    applier = Mockito.mock(TransactionIntentApplierSupport.class);
 
     inject(service, "txRepo", txRepo);
     inject(service, "intentRepo", intentRepo);
     inject(service, "intentApplierSupport", applier);
+    return service;
+  }
 
-    Transaction txn =
-        Transaction.newBuilder()
-            .setAccountId("acct")
-            .setTxId("tx-1")
-            .setState(TransactionState.TS_PREPARED)
-            .setUpdatedAt(Timestamps.fromMillis(1))
-            .build();
+  private TransactionIntent defaultIntent() {
+    return TransactionIntent.newBuilder()
+        .setAccountId("acct")
+        .setTxId("tx-1")
+        .setTargetPointerKey("/accounts/acct/custom/key-1")
+        .setBlobUri("s3://bucket/blob-1")
+        .setCreatedAt(Timestamps.fromMillis(1))
+        .build();
+  }
+
+  private Transaction preparedTxn() {
+    return Transaction.newBuilder()
+        .setAccountId("acct")
+        .setTxId("tx-1")
+        .setState(TransactionState.TS_PREPARED)
+        .setUpdatedAt(Timestamps.fromMillis(1))
+        .build();
+  }
+
+  @Test
+  void commitAppliedUsesAtomicApplyWithoutSeparateIntentCleanup() throws Exception {
+    var service = newService();
+
+    Transaction txn = preparedTxn();
     Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
-    TransactionIntent intent =
-        TransactionIntent.newBuilder()
-            .setAccountId("acct")
-            .setTxId("tx-1")
-            .setTargetPointerKey("/accounts/acct/custom/key-1")
-            .setBlobUri("s3://bucket/blob-1")
-            .setCreatedAt(Timestamps.fromMillis(1))
-            .build();
+    TransactionIntent intent = defaultIntent();
 
     Transaction txnApplied = txn.toBuilder().setState(TransactionState.TS_APPLIED).build();
     when(txRepo.getById("acct", "tx-1"))
@@ -148,24 +163,11 @@ class TransactionsServiceImplTest {
 
   @Test
   void commitAppliedResyncsTheTouchedTableRoots() throws Exception {
-    var service = new TransactionsServiceImpl();
-    var txRepo = Mockito.mock(TransactionRepository.class);
-    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
-    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
+    var service = newService();
     var rootWriter = Mockito.mock(ai.floedb.floecat.service.catalog.impl.TableRootWriter.class);
-
-    inject(service, "txRepo", txRepo);
-    inject(service, "intentRepo", intentRepo);
-    inject(service, "intentApplierSupport", applier);
     inject(service, "rootWriter", rootWriter);
 
-    Transaction txn =
-        Transaction.newBuilder()
-            .setAccountId("acct")
-            .setTxId("tx-1")
-            .setState(TransactionState.TS_PREPARED)
-            .setUpdatedAt(Timestamps.fromMillis(1))
-            .build();
+    Transaction txn = preparedTxn();
     Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
     // The applier moves this table's definition pointer AND its current-snapshot pointer by raw
     // CAS; both intents dedupe to one root resync for the table.
@@ -215,43 +217,18 @@ class TransactionsServiceImplTest {
             Timestamps.fromMillis(10));
 
     assertEquals(TransactionState.TS_APPLIED, committed.getState());
-    var expectedTable =
-        ResourceId.newBuilder()
-            .setAccountId("acct")
-            .setKind(ResourceKind.RK_TABLE)
-            .setId("tbl-1")
-            .build();
+    var expectedTable = resourceId("tbl-1", ResourceKind.RK_TABLE);
     verify(rootWriter).resyncFromCommittedState(expectedTable);
     Mockito.verifyNoMoreInteractions(rootWriter);
   }
 
   @Test
   void commitRetryableDoesNotCleanupIntents() throws Exception {
-    var service = new TransactionsServiceImpl();
-    var txRepo = Mockito.mock(TransactionRepository.class);
-    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
-    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
+    var service = newService();
 
-    inject(service, "txRepo", txRepo);
-    inject(service, "intentRepo", intentRepo);
-    inject(service, "intentApplierSupport", applier);
-
-    Transaction txn =
-        Transaction.newBuilder()
-            .setAccountId("acct")
-            .setTxId("tx-1")
-            .setState(TransactionState.TS_PREPARED)
-            .setUpdatedAt(Timestamps.fromMillis(1))
-            .build();
+    Transaction txn = preparedTxn();
     Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
-    TransactionIntent intent =
-        TransactionIntent.newBuilder()
-            .setAccountId("acct")
-            .setTxId("tx-1")
-            .setTargetPointerKey("/accounts/acct/custom/key-1")
-            .setBlobUri("s3://bucket/blob-1")
-            .setCreatedAt(Timestamps.fromMillis(1))
-            .build();
+    TransactionIntent intent = defaultIntent();
 
     when(txRepo.getById("acct", "tx-1"))
         .thenReturn(Optional.of(txn), Optional.of(txn), Optional.of(txnApplying));
@@ -305,32 +282,12 @@ class TransactionsServiceImplTest {
   @Test
   void commitRetryableReturnsAppliedWhenConcurrentCommitWinsBeforeFailureTransition()
       throws Exception {
-    var service = new TransactionsServiceImpl();
-    var txRepo = Mockito.mock(TransactionRepository.class);
-    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
-    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
+    var service = newService();
 
-    inject(service, "txRepo", txRepo);
-    inject(service, "intentRepo", intentRepo);
-    inject(service, "intentApplierSupport", applier);
-
-    Transaction txn =
-        Transaction.newBuilder()
-            .setAccountId("acct")
-            .setTxId("tx-1")
-            .setState(TransactionState.TS_PREPARED)
-            .setUpdatedAt(Timestamps.fromMillis(1))
-            .build();
+    Transaction txn = preparedTxn();
     Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
     Transaction txnApplied = txn.toBuilder().setState(TransactionState.TS_APPLIED).build();
-    TransactionIntent intent =
-        TransactionIntent.newBuilder()
-            .setAccountId("acct")
-            .setTxId("tx-1")
-            .setTargetPointerKey("/accounts/acct/custom/key-1")
-            .setBlobUri("s3://bucket/blob-1")
-            .setCreatedAt(Timestamps.fromMillis(1))
-            .build();
+    TransactionIntent intent = defaultIntent();
 
     when(txRepo.getById("acct", "tx-1"))
         .thenReturn(Optional.of(txn), Optional.of(txn), Optional.of(txnApplied));
@@ -367,14 +324,7 @@ class TransactionsServiceImplTest {
   @Test
   void commitLockMismatchReturnsAppliedWhenConcurrentCommitWinsBeforeFailureTransition()
       throws Exception {
-    var service = new TransactionsServiceImpl();
-    var txRepo = Mockito.mock(TransactionRepository.class);
-    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
-    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
-
-    inject(service, "txRepo", txRepo);
-    inject(service, "intentRepo", intentRepo);
-    inject(service, "intentApplierSupport", applier);
+    var service = newService();
 
     Transaction txn =
         Transaction.newBuilder()
@@ -384,14 +334,7 @@ class TransactionsServiceImplTest {
             .setUpdatedAt(Timestamps.fromMillis(1))
             .build();
     Transaction txnApplied = txn.toBuilder().setState(TransactionState.TS_APPLIED).build();
-    TransactionIntent intent =
-        TransactionIntent.newBuilder()
-            .setAccountId("acct")
-            .setTxId("tx-1")
-            .setTargetPointerKey("/accounts/acct/custom/key-1")
-            .setBlobUri("s3://bucket/blob-1")
-            .setCreatedAt(Timestamps.fromMillis(1))
-            .build();
+    TransactionIntent intent = defaultIntent();
 
     when(txRepo.getById("acct", "tx-1")).thenReturn(Optional.of(txn), Optional.of(txnApplied));
     when(intentRepo.listByTx("acct", "tx-1")).thenReturn(List.of(intent));
@@ -419,14 +362,7 @@ class TransactionsServiceImplTest {
 
   @Test
   void commitFromRetryableCanTransitionToApplied() throws Exception {
-    var service = new TransactionsServiceImpl();
-    var txRepo = Mockito.mock(TransactionRepository.class);
-    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
-    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
-
-    inject(service, "txRepo", txRepo);
-    inject(service, "intentRepo", intentRepo);
-    inject(service, "intentApplierSupport", applier);
+    var service = newService();
 
     Transaction txn =
         Transaction.newBuilder()
@@ -436,14 +372,7 @@ class TransactionsServiceImplTest {
             .setUpdatedAt(Timestamps.fromMillis(1))
             .build();
     Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
-    TransactionIntent intent =
-        TransactionIntent.newBuilder()
-            .setAccountId("acct")
-            .setTxId("tx-1")
-            .setTargetPointerKey("/accounts/acct/custom/key-1")
-            .setBlobUri("s3://bucket/blob-1")
-            .setCreatedAt(Timestamps.fromMillis(1))
-            .build();
+    TransactionIntent intent = defaultIntent();
 
     Transaction txnApplied = txn.toBuilder().setState(TransactionState.TS_APPLIED).build();
     when(txRepo.getById("acct", "tx-1"))
@@ -476,33 +405,13 @@ class TransactionsServiceImplTest {
 
   @Test
   void commitConflictAnnotatesIntentAndTransitionsToConflictState() throws Exception {
-    var service = new TransactionsServiceImpl();
-    var txRepo = Mockito.mock(TransactionRepository.class);
-    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
-    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
+    var service = newService();
     var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
-
-    inject(service, "txRepo", txRepo);
-    inject(service, "intentRepo", intentRepo);
-    inject(service, "intentApplierSupport", applier);
     inject(service, "pointerStore", pointerStore);
 
-    Transaction txn =
-        Transaction.newBuilder()
-            .setAccountId("acct")
-            .setTxId("tx-1")
-            .setState(TransactionState.TS_PREPARED)
-            .setUpdatedAt(Timestamps.fromMillis(1))
-            .build();
+    Transaction txn = preparedTxn();
     Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
-    TransactionIntent intent =
-        TransactionIntent.newBuilder()
-            .setAccountId("acct")
-            .setTxId("tx-1")
-            .setTargetPointerKey("/accounts/acct/custom/key-1")
-            .setBlobUri("s3://bucket/blob-1")
-            .setCreatedAt(Timestamps.fromMillis(1))
-            .build();
+    TransactionIntent intent = defaultIntent();
 
     when(txRepo.getById("acct", "tx-1"))
         .thenReturn(Optional.of(txn), Optional.of(txn), Optional.of(txnApplying));
@@ -568,15 +477,8 @@ class TransactionsServiceImplTest {
 
   @Test
   void commitApplyingConflictFinalizesAppliedWhenIntentsAlreadyApplied() throws Exception {
-    var service = new TransactionsServiceImpl();
-    var txRepo = Mockito.mock(TransactionRepository.class);
-    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
-    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
+    var service = newService();
     var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
-
-    inject(service, "txRepo", txRepo);
-    inject(service, "intentRepo", intentRepo);
-    inject(service, "intentApplierSupport", applier);
     inject(service, "pointerStore", pointerStore);
 
     Transaction txn =
@@ -586,14 +488,7 @@ class TransactionsServiceImplTest {
             .setState(TransactionState.TS_APPLYING)
             .setUpdatedAt(Timestamps.fromMillis(1))
             .build();
-    TransactionIntent intent =
-        TransactionIntent.newBuilder()
-            .setAccountId("acct")
-            .setTxId("tx-1")
-            .setTargetPointerKey("/accounts/acct/custom/key-1")
-            .setBlobUri("s3://bucket/blob-1")
-            .setCreatedAt(Timestamps.fromMillis(1))
-            .build();
+    TransactionIntent intent = defaultIntent();
 
     Transaction txnApplied = txn.toBuilder().setState(TransactionState.TS_APPLIED).build();
     when(txRepo.getById("acct", "tx-1"))
@@ -634,14 +529,7 @@ class TransactionsServiceImplTest {
 
   @Test
   void commitApplyingIgnoresExpiryAndFinalizesApplied() throws Exception {
-    var service = new TransactionsServiceImpl();
-    var txRepo = Mockito.mock(TransactionRepository.class);
-    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
-    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
-
-    inject(service, "txRepo", txRepo);
-    inject(service, "intentRepo", intentRepo);
-    inject(service, "intentApplierSupport", applier);
+    var service = newService();
 
     Transaction txn =
         Transaction.newBuilder()
@@ -652,14 +540,7 @@ class TransactionsServiceImplTest {
             .setUpdatedAt(Timestamps.fromMillis(1))
             .setExpiresAt(Timestamps.fromMillis(2))
             .build();
-    TransactionIntent intent =
-        TransactionIntent.newBuilder()
-            .setAccountId("acct")
-            .setTxId("tx-1")
-            .setTargetPointerKey("/accounts/acct/custom/key-1")
-            .setBlobUri("s3://bucket/blob-1")
-            .setCreatedAt(Timestamps.fromMillis(1))
-            .build();
+    TransactionIntent intent = defaultIntent();
 
     Transaction txnApplied = txn.toBuilder().setState(TransactionState.TS_APPLIED).build();
     when(txRepo.getById("acct", "tx-1"))
@@ -685,27 +566,14 @@ class TransactionsServiceImplTest {
 
   @Test
   void commitAppliedInvalidatesTouchedTableGraphEntry() throws Exception {
-    var service = new TransactionsServiceImpl();
-    var txRepo = Mockito.mock(TransactionRepository.class);
-    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
-    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
+    var service = newService();
     var metadataGraph = Mockito.mock(UserGraph.class);
-
-    inject(service, "txRepo", txRepo);
-    inject(service, "intentRepo", intentRepo);
-    inject(service, "intentApplierSupport", applier);
     inject(service, "metadataGraph", metadataGraph);
 
     String accountId = "acct";
     String txId = "tx-1";
     String tableId = "table-1";
-    Transaction txn =
-        Transaction.newBuilder()
-            .setAccountId(accountId)
-            .setTxId(txId)
-            .setState(TransactionState.TS_PREPARED)
-            .setUpdatedAt(Timestamps.fromMillis(1))
-            .build();
+    Transaction txn = preparedTxn();
     Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
     TransactionIntent intent =
         TransactionIntent.newBuilder()
@@ -1231,15 +1099,7 @@ class TransactionsServiceImplTest {
 
     String accountId = "acct";
     String txId = "tx-1";
-    Transaction preparedTxn =
-        Transaction.newBuilder()
-            .setAccountId(accountId)
-            .setTxId(txId)
-            .setState(TransactionState.TS_PREPARED)
-            .setUpdatedAt(Timestamps.fromMillis(1))
-            .build();
-
-    when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(preparedTxn));
+    when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(preparedTxn()));
 
     IllegalArgumentException error =
         assertThrows(
@@ -1381,14 +1241,7 @@ class TransactionsServiceImplTest {
 
   @Test
   void commitPreparedIntentCountMismatchFailsBeforeAtomicApply() throws Exception {
-    var service = new TransactionsServiceImpl();
-    var txRepo = Mockito.mock(TransactionRepository.class);
-    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
-    var applier = Mockito.mock(TransactionIntentApplierSupport.class);
-
-    inject(service, "txRepo", txRepo);
-    inject(service, "intentRepo", intentRepo);
-    inject(service, "intentApplierSupport", applier);
+    var service = newService();
 
     Transaction txn =
         Transaction.newBuilder()
@@ -1398,14 +1251,7 @@ class TransactionsServiceImplTest {
             .putProperties("floecat.transaction.prepared-intent-count", "2")
             .setUpdatedAt(Timestamps.fromMillis(1))
             .build();
-    TransactionIntent intent =
-        TransactionIntent.newBuilder()
-            .setAccountId("acct")
-            .setTxId("tx-1")
-            .setTargetPointerKey("/accounts/acct/custom/key-1")
-            .setBlobUri("s3://bucket/blob-1")
-            .setCreatedAt(Timestamps.fromMillis(1))
-            .build();
+    TransactionIntent intent = defaultIntent();
 
     when(txRepo.getById("acct", "tx-1")).thenReturn(Optional.of(txn), Optional.of(txn));
     when(txRepo.metaFor("acct", "tx-1"))

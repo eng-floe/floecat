@@ -39,6 +39,8 @@ import org.junit.jupiter.api.function.Executable;
 class QueryContextTest {
   private final Clock clock = Clock.systemUTC();
 
+  private static final ResourceId CAT = ResourceId.newBuilder().setId("cat-it").build();
+
   private static PrincipalContext pc(ResourceId accountId, String subject, String queryId) {
     var b =
         PrincipalContext.newBuilder()
@@ -48,6 +50,12 @@ class QueryContextTest {
       b.setQueryId(queryId);
     }
     return b.build();
+  }
+
+  private QueryContext active(String queryId, byte[] relationPins, byte[] asOf, long ttl) {
+    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
+    var pc = pc(accountId, "alice", queryId);
+    return QueryContext.newActive(queryId, pc, null, relationPins, null, asOf, ttl, 1, CAT);
   }
 
   @Test
@@ -92,19 +100,7 @@ class QueryContextTest {
 
   @Test
   void extendLease_isMonotonic() {
-    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
-    var pc = pc(accountId, "alice", "p1");
-    var ctx =
-        QueryContext.newActive(
-            "p1",
-            pc,
-            null,
-            null,
-            null,
-            null,
-            200,
-            1,
-            ResourceId.newBuilder().setId("cat-it").build());
+    var ctx = active("p1", null, null, 200);
     long originalExp = ctx.getExpiresAtMs();
 
     var same = ctx.extendLease(originalExp - 50, 2);
@@ -118,19 +114,7 @@ class QueryContextTest {
 
   @Test
   void end_commit_setsStateAndGrace() {
-    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
-    var pc = pc(accountId, "alice", "p1");
-    var ctx =
-        QueryContext.newActive(
-            "p1",
-            pc,
-            null,
-            null,
-            null,
-            null,
-            100,
-            1,
-            ResourceId.newBuilder().setId("cat-it").build());
+    var ctx = active("p1", null, null, 100);
     long targetGrace = clock.millis() + 500;
     var ended = ctx.end(true, targetGrace, 2);
 
@@ -141,19 +125,7 @@ class QueryContextTest {
 
   @Test
   void asExpired_onlyIfActive() {
-    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
-    var pc = pc(accountId, "alice", "p1");
-    var ctx =
-        QueryContext.newActive(
-            "p1",
-            pc,
-            null,
-            null,
-            null,
-            null,
-            100,
-            1,
-            ResourceId.newBuilder().setId("cat-it").build());
+    var ctx = active("p1", null, null, 100);
 
     var expired = ctx.asExpired(2);
     assertEquals(QueryContext.State.EXPIRED, expired.getState());
@@ -239,20 +211,9 @@ class QueryContextTest {
 
   @Test
   void parseAsOfDefaultMemoized() {
-    ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
-    var pc = pc(accountId, "alice", "p-asof");
     Timestamp asOf = Timestamp.newBuilder().setSeconds(1_701_000_000L).setNanos(123).build();
     var ctx =
-        QueryContext.newActive(
-            "p-asof",
-            pc,
-            null,
-            SnapshotSet.getDefaultInstance().toByteArray(),
-            null,
-            asOf.toByteArray(),
-            500,
-            1,
-            ResourceId.newBuilder().setId("cat-it").build());
+        active("p-asof", SnapshotSet.getDefaultInstance().toByteArray(), asOf.toByteArray(), 500);
 
     Timestamp first = ctx.parseAsOfDefault("corr-asof").orElseThrow();
     Timestamp second = ctx.parseAsOfDefault("corr-asof").orElseThrow();

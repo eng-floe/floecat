@@ -73,13 +73,24 @@ class ScanBundleServiceTest {
   private SnapshotRepository snapshotRepo;
   private ScanBundleService service;
   private ServerSideFileIoPropertiesResolver resolver;
+  private StatsStore statsStore;
 
   @BeforeEach
   void setUp() {
     tableRepo = mock(TableRepository.class);
     snapshotRepo = mock(SnapshotRepository.class);
     resolver = mock(ServerSideFileIoPropertiesResolver.class);
-    service = new ScanBundleService(tableRepo, snapshotRepo, mock(StatsStore.class), resolver);
+    statsStore = mock(StatsStore.class);
+    service = new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver);
+  }
+
+  private void stubPinnedBlobsPresent() {
+    when(tableRepo.getByBlobUri(TABLE_BLOB_URI))
+        .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE_ID).build()));
+    when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI))
+        .thenReturn(
+            Optional.of(Snapshot.newBuilder().setTableId(TABLE_ID).setSnapshotId(42L).build()));
+    when(resolver.applyToTableProperties(any(), any(), any())).thenReturn(Map.of());
   }
 
   @Test
@@ -138,8 +149,6 @@ class ScanBundleServiceTest {
 
   @Test
   void pinnedScanKeepsServingItsFrozenGenerationThroughAReplacement() {
-    var statsStore = mock(StatsStore.class);
-    service = new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver);
     // The generation frozen at initScan ("gen-1") was superseded mid-stream ("gen-2" is live).
     // Retention keeps gen-1's immutable keyspace readable, so the scan streams it to completion —
     // deterministic at the frozen pointer, no live-pointer probes, no abort.
@@ -161,8 +170,6 @@ class ScanBundleServiceTest {
 
   @Test
   void generationlessStoreServesTheLiveState() {
-    var statsStore = mock(StatsStore.class);
-    service = new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver);
     when(statsStore.listTargetStats(eq(TABLE_ID), eq(42L), any(), anyInt(), any()))
         .thenReturn(new StatsStorePage(java.util.List.of(), ""));
 
@@ -180,8 +187,6 @@ class ScanBundleServiceTest {
     // The store tracks generations but the snapshot had none at initScan (frozen "absent"). A
     // first generation published mid-stream stays invisible: the scan deterministically serves
     // the state it froze — nothing — rather than a torn or surprise file list.
-    var statsStore = mock(StatsStore.class);
-    service = new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver);
     when(statsStore.activeStatsGeneration(TABLE_ID, 42L)).thenReturn(Optional.of("gen-1"));
 
     var session = session("");
@@ -201,16 +206,9 @@ class ScanBundleServiceTest {
     // The pin carries the generation its root referenced ("gen-1"). A later finalize made "gen-2"
     // live (and committed a new root) before InitScan — but the pinned scan must read gen-1, the
     // generation its snapshot was finalized with, and never consult the live store.
-    var statsStore = mock(StatsStore.class);
-    service = new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver);
     when(statsStore.tracksStatsGenerations()).thenReturn(true);
     when(statsStore.activeStatsGeneration(TABLE_ID, 42L)).thenReturn(Optional.of("gen-2"));
-    when(tableRepo.getByBlobUri(TABLE_BLOB_URI))
-        .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE_ID).build()));
-    when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI))
-        .thenReturn(
-            Optional.of(Snapshot.newBuilder().setTableId(TABLE_ID).setSnapshotId(42L).build()));
-    when(resolver.applyToTableProperties(any(), any(), any())).thenReturn(Map.of());
+    stubPinnedBlobsPresent();
 
     var init = service.initScan("corr", PIN.toBuilder().setStatsGenerationRefUri("gen-1").build());
 
@@ -222,15 +220,8 @@ class ScanBundleServiceTest {
   void initScanCapturesAbsentGenerationWhenThePinCarriesNone() {
     // A pin with no generation ref (should not happen under the gate for a finalized snapshot, but
     // the frozen "absent" state is the safe default) yields an empty scan, never a live read.
-    var statsStore = mock(StatsStore.class);
-    service = new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver);
     when(statsStore.tracksStatsGenerations()).thenReturn(true);
-    when(tableRepo.getByBlobUri(TABLE_BLOB_URI))
-        .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE_ID).build()));
-    when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI))
-        .thenReturn(
-            Optional.of(Snapshot.newBuilder().setTableId(TABLE_ID).setSnapshotId(42L).build()));
-    when(resolver.applyToTableProperties(any(), any(), any())).thenReturn(Map.of());
+    stubPinnedBlobsPresent();
 
     var init = service.initScan("corr", PIN);
 
@@ -240,14 +231,7 @@ class ScanBundleServiceTest {
 
   @Test
   void initScanCapturesNoGenerationWhenStoreTracksNone() {
-    var statsStore = mock(StatsStore.class);
-    service = new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver);
-    when(tableRepo.getByBlobUri(TABLE_BLOB_URI))
-        .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE_ID).build()));
-    when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI))
-        .thenReturn(
-            Optional.of(Snapshot.newBuilder().setTableId(TABLE_ID).setSnapshotId(42L).build()));
-    when(resolver.applyToTableProperties(any(), any(), any())).thenReturn(Map.of());
+    stubPinnedBlobsPresent();
 
     var init = service.initScan("corr", PIN);
 

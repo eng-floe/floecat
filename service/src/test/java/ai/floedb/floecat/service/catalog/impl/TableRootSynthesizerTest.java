@@ -106,6 +106,11 @@ class TableRootSynthesizerTest {
             .build());
   }
 
+  private void advanceCurrentTo(long id) {
+    snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
+        tableId, snapshotRepo.getById(tableId, id).orElseThrow());
+  }
+
   private void legacySnapshot(long id, long upstreamMs) {
     snapshotRepo.create(
         Snapshot.newBuilder()
@@ -121,8 +126,7 @@ class TableRootSynthesizerTest {
     legacySnapshot(1, 1_000);
     legacySnapshot(2, 2_000);
     legacySnapshot(3, 3_000);
-    snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
-        tableId, snapshotRepo.getById(tableId, 2).orElseThrow());
+    advanceCurrentTo(2);
     when(statsRepo.activeStatsGeneration(tableId, 1L))
         .thenReturn(Optional.of("s3://legacy/gen-1.pb"));
     when(statsRepo.activeStatsGeneration(tableId, 2L))
@@ -154,8 +158,7 @@ class TableRootSynthesizerTest {
   void firstCommitOnALegacyTablePersistsHistoryPlusTheMutation() {
     legacySnapshot(1, 1_000);
     legacySnapshot(2, 2_000);
-    snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
-        tableId, snapshotRepo.getById(tableId, 2).orElseThrow());
+    advanceCurrentTo(2);
 
     // The first-ever root commit: a brand-new snapshot arrives on this legacy table.
     SnapshotManifestEntry incoming =
@@ -184,8 +187,7 @@ class TableRootSynthesizerTest {
     legacySnapshot(1, 1_000);
     when(statsRepo.activeStatsGeneration(tableId, 1L))
         .thenReturn(Optional.of("s3://legacy/gen-1.pb"));
-    snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
-        tableId, snapshotRepo.getById(tableId, 1).orElseThrow());
+    advanceCurrentTo(1);
 
     TableRoot materialized = committer.ensureRoot(tableId).orElseThrow();
     assertEquals(1L, materialized.getRootSeq());
@@ -204,8 +206,7 @@ class TableRootSynthesizerTest {
     // brand-new table synthesizes its root right after the legacy pointer advanced; importing
     // unfinalized currency would let registration bypass the gate.
     legacySnapshot(1, 1_000);
-    snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
-        tableId, snapshotRepo.getById(tableId, 1).orElseThrow());
+    advanceCurrentTo(1);
 
     TableRoot synthesized = synthesizer.synthesize(tableId).orElseThrow();
 

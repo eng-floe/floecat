@@ -70,6 +70,10 @@ class TableRootCommitterTest {
     return BlobRef.newBuilder().setUri(uri).setVersion("v-" + uri).build();
   }
 
+  private void commitDefinition(String uri) {
+    committer.commit(TABLE, current -> TableRoot.newBuilder().setDefinitionRef(ref(uri)).build());
+  }
+
   @Test
   void commitCreatesTheFirstRootAndStampsSeqAndTimestamp() {
     TableRoot committed =
@@ -88,9 +92,7 @@ class TableRootCommitterTest {
 
   @Test
   void commitAppliesTheMutatorToTheCurrentRootAndBumpsSeq() {
-    committer.commit(
-        TABLE,
-        current -> TableRoot.newBuilder().setDefinitionRef(ref("s3://tbl/def-1.pb")).build());
+    commitDefinition("s3://tbl/def-1.pb");
 
     TableRoot second =
         committer
@@ -107,9 +109,7 @@ class TableRootCommitterTest {
 
   @Test
   void lostCasRerunsTheMutatorAgainstTheWinnersRoot() {
-    committer.commit(
-        TABLE,
-        current -> TableRoot.newBuilder().setDefinitionRef(ref("s3://tbl/def-1.pb")).build());
+    commitDefinition("s3://tbl/def-1.pb");
 
     // First mutator invocation triggers a competing commit AFTER its reads, so its CAS loses; the
     // retry re-runs the mutator against the winner's root and both mutations land.
@@ -137,9 +137,7 @@ class TableRootCommitterTest {
 
   @Test
   void noOpMutatorCommitsNothing() {
-    committer.commit(
-        TABLE,
-        current -> TableRoot.newBuilder().setDefinitionRef(ref("s3://tbl/def-1.pb")).build());
+    commitDefinition("s3://tbl/def-1.pb");
     long versionBefore = roots.metaForSafe(TABLE).getPointerVersion();
 
     Optional<TableRoot> result = committer.commit(TABLE, current -> null);
@@ -150,9 +148,7 @@ class TableRootCommitterTest {
 
   @Test
   void unchangedMutatorOutputCommitsNothing() {
-    committer.commit(
-        TABLE,
-        current -> TableRoot.newBuilder().setDefinitionRef(ref("s3://tbl/def-1.pb")).build());
+    commitDefinition("s3://tbl/def-1.pb");
     long versionBefore = roots.metaForSafe(TABLE).getPointerVersion();
 
     committer.commit(TABLE, current -> current.orElseThrow());
