@@ -544,6 +544,55 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
   }
 
   /**
+   * Stats are served from the query's pinned snapshot, not from whatever other snapshots happen to
+   * have stats in storage. Guards the downstream-consumes-the-pin contract for the stats path.
+   */
+  @Test
+  void statsResolvedAtPinnedSnapshotNotOtherSnapshots() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createService(
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 10, /* maxTargets= */ 10);
+    long pinnedSnapshot = 500L;
+    long otherSnapshot = 999L;
+    // Distinct stats exist at both snapshots; only the pinned snapshot's stats must be served.
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE,
+            pinnedSnapshot,
+            42L,
+            ScalarStats.newBuilder().setRowCount(111L).putProperties("column_id", "42").build(),
+            null));
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE,
+            otherSnapshot,
+            42L,
+            ScalarStats.newBuilder().setRowCount(222L).putProperties("column_id", "42").build(),
+            null));
+    QueryContext ctx = queryContextWithPin("query-pinned-snap", pinnedSnapshot);
+    store.seed(ctx);
+    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(42L));
+
+    List<TargetStatsResult> results =
+        flatten(
+            service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely());
+
+    TargetStatsResult hit =
+        results.stream()
+            .filter(r -> r.getStatus() == StatsResultStatus.STATS_RESULT_HIT_COMPLETE)
+            .findFirst()
+            .orElseThrow();
+    assertEquals(pinnedSnapshot, hit.getSnapshotId());
+    assertEquals(111L, hit.getStats().getScalar().getRowCount());
+    // The response echoes the query's pinned snapshot so the planner can detect staleness.
+    assertTrue(hit.hasPinnedSnapshotId());
+    assertEquals(pinnedSnapshot, hit.getPinnedSnapshotId());
+  }
+
+  /**
    * A ScalarStats row that exists in storage with only required row_count must still be returned as
    * FOUND — not NOT_FOUND. Sparse connectors may omit optional metrics while still reporting the
    * enclosing row count.
@@ -897,7 +946,7 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
   }
 
   @Test
-  void snapshotIdOverride_fetchesStatsFromSpecifiedSnapshot() {
+  void snapshotIdRestatingPinServesFromPinnedSnapshot() {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
     StatsRepository repository = createRepository();
@@ -906,33 +955,67 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
             repository, store, /* chunkSize= */ 5, /* maxTables= */ 5, /* maxTargets= */ 10);
 
     long pinnedSnapshotId = 500L;
-    long overrideSnapshotId = 490L;
-
-    // Put stats at the override snapshot (490) but not at the pinned snapshot (500).
     repository.putTargetStats(
         TargetStatsRecords.columnRecord(
-            TABLE, overrideSnapshotId, 1L, sampleStats(TABLE, overrideSnapshotId, 1L), null));
+            TABLE, pinnedSnapshotId, 1L, sampleStats(TABLE, pinnedSnapshotId, 1L), null));
 
-    QueryContext ctx = queryContextWithPin("snap-override", pinnedSnapshotId);
+    QueryContext ctx = queryContextWithPin("snap-restate", pinnedSnapshotId);
     store.seed(ctx);
 
-    // Request with explicit snapshot_id=490 — must return stats from that snapshot,
-    // not fail with NOT_FOUND (which is what the pinned snapshot 500 would produce).
+    // A request snapshot_id equal to the pinned snapshot is a harmless restatement.
     FetchTargetStatsRequest request =
         FetchTargetStatsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
-            .addTables(tableRequestWithSnapshot(TABLE, List.of(1L), overrideSnapshotId))
+            .addTables(tableRequestWithSnapshot(TABLE, List.of(1L), pinnedSnapshotId))
             .build();
-    List<TargetStatsBundleChunk> chunks =
-        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
-
-    List<TargetStatsResult> results = flatten(chunks);
+    List<TargetStatsResult> results =
+        flatten(
+            service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely());
     assertEquals(1, results.size());
-    assertEquals(
-        StatsResultStatus.STATS_RESULT_HIT_COMPLETE,
-        results.get(0).getStatus(),
-        "snapshot_id override must serve stats from snapshot 490");
-    assertEquals(overrideSnapshotId, results.get(0).getSnapshotId());
+    assertEquals(StatsResultStatus.STATS_RESULT_HIT_COMPLETE, results.get(0).getStatus());
+    assertEquals(pinnedSnapshotId, results.get(0).getSnapshotId());
+  }
+
+  @Test
+  void snapshotIdDivergingFromPinFailsAsConsistencyError() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createService(
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 5, /* maxTargets= */ 10);
+
+    long pinnedSnapshotId = 500L;
+    long divergentSnapshotId = 490L;
+    // Stats exist at the divergent snapshot, but the pin is authoritative — the request must NOT be
+    // able to redirect reads there (this is what would let correctness constraints drift).
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE, divergentSnapshotId, 1L, sampleStats(TABLE, divergentSnapshotId, 1L), null));
+
+    QueryContext ctx = queryContextWithPin("snap-diverge", pinnedSnapshotId);
+    store.seed(ctx);
+
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTables(tableRequestWithSnapshot(TABLE, List.of(1L), divergentSnapshotId))
+            .build();
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .streamTargets("corr", ctx, request)
+                    .collect()
+                    .asList()
+                    .await()
+                    .indefinitely());
+    // A divergent request snapshot is a query-consistency error, not a generic failure: assert the
+    // FAILED_PRECONDITION status that QUERY_TABLE_PIN_CONFLICT maps to, so a regression to
+    // INVALID_ARGUMENT/INTERNAL (or a dropped conflict) is caught.
+    assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
   }
 
   @Test
@@ -980,6 +1063,12 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
         results.get(0).getStatus(),
         "stale stats at snapshot 480 must be returned with HIT_STALE status");
     assertEquals(480L, results.get(0).getSnapshotId(), "returned snapshot must be 480 (stale)");
+    // The divergent pinned-snapshot stamp is the whole reason the field exists: served 480, pin
+    // 481.
+    assertEquals(
+        481L,
+        results.get(0).getPinnedSnapshotId(),
+        "result must stamp the pinned snapshot (481) so the planner sees the served stats are stale");
 
     TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
     assertEquals(1L, end.getStaleTargets(), "one stale target must be counted in end chunk");
@@ -1007,6 +1096,7 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     assertEquals(1, results.size());
     assertEquals(StatsResultStatus.STATS_RESULT_HIT_STALE, results.get(0).getStatus());
     assertEquals(460L, results.get(0).getSnapshotId());
+    assertEquals(461L, results.get(0).getPinnedSnapshotId(), "served 460 is stale against pin 461");
     TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
     assertEquals(1L, end.getReturnedTargets());
     assertEquals(1L, end.getStaleTargets());

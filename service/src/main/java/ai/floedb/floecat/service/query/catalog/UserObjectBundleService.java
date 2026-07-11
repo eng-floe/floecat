@@ -21,6 +21,7 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
@@ -40,14 +41,14 @@ import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationKind;
+import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.RelationResolutions;
 import ai.floedb.floecat.query.rpc.ResolutionFailure;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.SqlDefinition;
+import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleEnd;
@@ -59,7 +60,9 @@ import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
@@ -83,7 +86,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -118,6 +120,7 @@ public class UserObjectBundleService {
   private final EngineContextProvider engineContext;
   private final boolean engineSpecificEnabled;
   private final StatsProviderFactory statsFactory;
+  private final PinValidator pinValidator;
   private final long slowRpcMs;
   private final LogicalSchemaMapper logicalSchemaMapper = new LogicalSchemaMapper();
   private final FlightEndpointRef floecatFlightEndpoint;
@@ -160,6 +163,7 @@ public class UserObjectBundleService {
       StatsProviderFactory statsFactory,
       EngineMetadataDecoratorProvider decoratorProvider,
       EngineContextProvider engineContext,
+      PinValidator pinValidator,
       @ConfigProperty(name = "floecat.catalog.bundle.emit_engine_specific", defaultValue = "true")
           boolean engineSpecificEnabled,
       @ConfigProperty(name = "floecat.flight.advertised-host", defaultValue = "localhost")
@@ -175,6 +179,7 @@ public class UserObjectBundleService {
     this.statsFactory = statsFactory;
     this.decoratorProvider = decoratorProvider;
     this.engineContext = engineContext;
+    this.pinValidator = pinValidator;
     this.engineSpecificEnabled = engineSpecificEnabled;
     this.slowRpcMs = Math.max(0L, slowRpcMs);
     this.floecatFlightEndpoint =
@@ -198,6 +203,8 @@ public class UserObjectBundleService {
       int flightPort,
       boolean grpcPlainText,
       String quarkusProfile) {
+    // Test-only: these tests never reach per-read pin validation (their schema flows go through
+    // the fake overlay). Fail explicitly if one ever does, rather than NPE-ing on null repos.
     this(
         overlay,
         inputResolver,
@@ -205,6 +212,13 @@ public class UserObjectBundleService {
         statsFactory,
         decoratorProvider,
         engineContext,
+        new PinValidator(null) {
+          @Override
+          public void validate(String correlationId, ai.floedb.floecat.query.rpc.TablePin pin) {
+            throw new IllegalStateException(
+                "test-only UserObjectBundleService has no repositories to validate pins");
+          }
+        },
         engineSpecificEnabled,
         flightHost,
         flightPort,
@@ -311,14 +325,14 @@ public class UserObjectBundleService {
     }
   }
 
-  private SnapshotSet collectChunkPins(
+  private RelationPinSet collectChunkPins(
       String correlationId,
       QueryContext ctx,
       List<ResolvedRelation> relations,
-      Map<ResourceId, SnapshotPin> currentSnapshotPinCache,
+      Map<ResourceId, TablePin> currentSnapshotPinCache,
       PhaseDiagnostics diagnostics) {
     if (relations == null || relations.isEmpty()) {
-      return SnapshotSet.getDefaultInstance();
+      return RelationPinSet.getDefaultInstance();
     }
     diagnostics.add("pin.relations", relations.size());
     List<QueryInput> inputs = new ArrayList<>(relations.size());
@@ -332,7 +346,7 @@ public class UserObjectBundleService {
     diagnostics.nanos("pin.build_inputs", System.nanoTime() - buildInputsStartNs);
     diagnostics.add("pin.inputs", inputs.size());
     if (inputs.isEmpty()) {
-      return SnapshotSet.getDefaultInstance();
+      return RelationPinSet.getDefaultInstance();
     }
     long asOfStartNs = System.nanoTime();
     var asOfDefault = ctx.parseAsOfDefault(correlationId);
@@ -340,6 +354,7 @@ public class UserObjectBundleService {
     long resolverStartNs = System.nanoTime();
     var resolution =
         inputResolver.resolveInputs(
+            ctx.getQueryId(),
             correlationId,
             inputs,
             asOfDefault,
@@ -347,8 +362,8 @@ public class UserObjectBundleService {
             currentSnapshotPinCache,
             diagnostics);
     diagnostics.nanos("pin.resolver", System.nanoTime() - resolverStartNs);
-    SnapshotSet incoming = resolution.snapshotSet();
-    SnapshotSet pins = incoming == null ? SnapshotSet.getDefaultInstance() : incoming;
+    RelationPinSet incoming = resolution.relationPinSet();
+    RelationPinSet pins = incoming == null ? RelationPinSet.getDefaultInstance() : incoming;
     diagnostics.add("pin.output_pins", pins.getPinsCount());
     return pins;
   }
@@ -500,11 +515,7 @@ public class UserObjectBundleService {
             : relation.node() instanceof UserTableNode userTable
                 ? UserObjectBundleUtils.qualifyNestedColumnNames(
                     logicalSchemaForRelation(
-                            correlationId,
-                            relation.relationId(),
-                            userTable,
-                            relation.selectedInput(),
-                            queryContext)
+                            correlationId, relation.relationId(), userTable, queryContext)
                         .getColumnsList())
                 : overlay.tableSchema(relation.node().id());
 
@@ -552,6 +563,16 @@ public class UserObjectBundleService {
         .map(StatsProviderFactory::toRelationStats)
         .ifPresent(builder::setStats);
     timings.addStatsLookupNanos(System.nanoTime() - statsLookupStartNs);
+
+    // Attach the opaque pin identity so the planner's catalog cache can distinguish the same table
+    // across different query pins. Only tables are pinned (views pin their base tables); relations
+    // that have not been pinned leave the field unset.
+    if (relation.relationId().getKind() == ResourceKind.RK_TABLE) {
+      queryContext
+          .findTablePin(relation.relationId(), correlationId)
+          .map(QueryPins::identity)
+          .ifPresent(builder::setPinIdentity);
+    }
 
     // If this is a view, keep a mutable builder around for decoration.
     ViewDefinition.Builder viewBuilder = null;
@@ -1112,42 +1133,26 @@ public class UserObjectBundleService {
       String correlationId,
       ResourceId relationId,
       UserTableNode userTable,
-      QueryInput selectedInput,
       QueryContext queryContext) {
-    SnapshotRef snapshotRef = explicitSnapshotOverride(selectedInput);
-    if (snapshotRef == null) {
-      snapshotRef = snapshotRefFromPin(queryContext.findSnapshotPin(relationId, correlationId));
-    }
-    if (snapshotRef == null) {
+    Optional<TablePin> pin = queryContext.findTablePin(relationId, correlationId);
+    if (pin.isEmpty()) {
+      // Not yet pinned (e.g. a relation resolved outside the pinned set): fall back to the table's
+      // default schema.
       return logicalSchemaMapper.map(userTable);
     }
+    // Consume the pinned snapshot identity, validating the pinned blobs; a bad pinned blob fails
+    // hard rather than falling back to current catalog state.
+    pinValidator.validate(correlationId, pin.get());
+    SnapshotRef snapshotRef =
+        SnapshotRef.newBuilder().setSnapshotId(pin.get().getSnapshotId()).build();
     CatalogOverlay.SchemaResolution resolved =
-        overlay.schemaFor(correlationId, relationId, snapshotRef);
+        overlay.schemaFor(
+            correlationId,
+            relationId,
+            snapshotRef,
+            pin.get().getTableBlobUri(),
+            pin.get().getSnapshotBlobUri());
     return logicalSchemaMapper.map(resolved.table(), resolved.schemaJson());
-  }
-
-  private SnapshotRef explicitSnapshotOverride(QueryInput selectedInput) {
-    if (selectedInput == null || !selectedInput.hasSnapshot()) {
-      return null;
-    }
-    SnapshotRef snapshot = selectedInput.getSnapshot();
-    return switch (snapshot.getWhichCase()) {
-      case SNAPSHOT_ID, AS_OF -> snapshot;
-      default -> null;
-    };
-  }
-
-  private SnapshotRef snapshotRefFromPin(Optional<SnapshotPin> pin) {
-    if (pin.isEmpty()) {
-      return null;
-    }
-    if (pin.get().hasSnapshotId()) {
-      return SnapshotRef.newBuilder().setSnapshotId(pin.get().getSnapshotId()).build();
-    }
-    if (pin.get().hasAsOf()) {
-      return SnapshotRef.newBuilder().setAsOf(pin.get().getAsOf()).build();
-    }
-    return null;
   }
 
   private NameRef canonicalName(ResourceId id, GraphNode node) {
@@ -1192,58 +1197,17 @@ public class UserObjectBundleService {
     return origin == GraphNodeOrigin.SYSTEM ? Origin.ORIGIN_BUILTIN : Origin.ORIGIN_USER;
   }
 
-  private QueryContext mergeSnapshotSet(
-      QueryContext existing, SnapshotSet incoming, String correlationId) {
+  private QueryContext mergeRelationPins(
+      QueryContext existing, RelationPinSet incoming, String correlationId) {
     if (incoming == null || incoming.getPinsCount() == 0) {
       return existing;
     }
-    SnapshotSet current = parseSnapshotSet(existing, correlationId);
-    SnapshotSet merged = mergeSnapshotSets(current, incoming);
+    RelationPinSet current = existing.parseRelationPins(correlationId);
+    RelationPinSet merged = QueryPins.mergeSets(current, incoming, correlationId);
     if (current.equals(merged)) {
       return existing;
     }
-    return existing.toBuilder().snapshotSet(merged.toByteArray()).build();
-  }
-
-  private SnapshotSet parseSnapshotSet(QueryContext ctx, String correlationId) {
-    return ctx.parseSnapshotSet(correlationId);
-  }
-
-  private SnapshotSet mergeSnapshotSets(SnapshotSet existing, SnapshotSet incoming) {
-    if (existing.getPinsCount() == 0 && incoming.getPinsCount() == 0) {
-      return existing;
-    }
-    Map<String, SnapshotPin> merged = new LinkedHashMap<>();
-    for (SnapshotPin pin : existing.getPinsList()) {
-      merged.put(pinKey(pin.getTableId()), pin);
-    }
-    for (SnapshotPin pin : incoming.getPinsList()) {
-      merged.merge(pinKey(pin.getTableId()), pin, UserObjectBundleService::mergePin);
-    }
-    return SnapshotSet.newBuilder().addAllPins(merged.values()).build();
-  }
-
-  private static SnapshotPin mergePin(SnapshotPin current, SnapshotPin incoming) {
-    if (incoming == null) {
-      return current;
-    }
-    if (current == null) {
-      return incoming;
-    }
-    if (current.hasSnapshotId()) {
-      return current;
-    }
-    if (incoming.hasSnapshotId()) {
-      return incoming;
-    }
-    if (current.hasAsOf()) {
-      return current;
-    }
-    return incoming;
-  }
-
-  private static String pinKey(ResourceId rid) {
-    return String.join(":", rid.getAccountId(), rid.getKind().name(), rid.getId());
+    return existing.toBuilder().relationPins(merged.toByteArray()).build();
   }
 
   private record ResolvedRelation(
@@ -1295,12 +1259,12 @@ public class UserObjectBundleService {
     private final ArrayDeque<EagerBaseCursor> eagerBaseQueue = new ArrayDeque<>();
     private final Set<String> eagerBaseSeen = new HashSet<>();
     private final Map<RelationCacheKey, RelationInfo> relationInfoCache = new HashMap<>();
-    private final Map<ResourceId, SnapshotPin> currentSnapshotPinCache = new HashMap<>();
+    private final Map<ResourceId, TablePin> currentSnapshotPinCache = new HashMap<>();
     private final TimingAccumulator timings = new TimingAccumulator();
     private final PhaseDiagnostics diagnostics = diagnostics("get_user_objects");
     private final long streamStartNs = System.nanoTime();
     private final Span parentSpan = Span.current();
-    private SnapshotSet pendingChunkPins = SnapshotSet.getDefaultInstance();
+    private RelationPinSet pendingChunkPins = RelationPinSet.getDefaultInstance();
 
     private int seq = 1;
     private int nextInputIndex = 0;
@@ -1409,7 +1373,7 @@ public class UserObjectBundleService {
       if (!toPin.isEmpty()) {
         long pinStartNs = System.nanoTime();
         try {
-          SnapshotSet chunkPins =
+          RelationPinSet chunkPins =
               collectChunkPins(correlationId, ctx, toPin, currentSnapshotPinCache, diagnostics);
           long accumulateStartNs = System.nanoTime();
           try {
@@ -1458,7 +1422,7 @@ public class UserObjectBundleService {
             continue;
           }
           ResourceId baseId = baseIdOpt.get();
-          String baseKey = pinKey(baseId);
+          String baseKey = QueryPins.pinKey(baseId);
           if (eagerBaseSeen.contains(baseKey)) {
             continue; // deduplicate
           }
@@ -1933,11 +1897,11 @@ public class UserObjectBundleService {
     }
 
     // Track every pin that must be durable before the next chunk is emitted.
-    private void accumulateChunkPins(SnapshotSet incomingPins) {
+    private void accumulateChunkPins(RelationPinSet incomingPins) {
       if (incomingPins == null || incomingPins.getPinsCount() == 0) {
         return;
       }
-      pendingChunkPins = mergeSnapshotSets(pendingChunkPins, incomingPins);
+      pendingChunkPins = QueryPins.mergeSets(pendingChunkPins, incomingPins, correlationId);
     }
 
     private void commitChunkPins() {
@@ -1949,11 +1913,13 @@ public class UserObjectBundleService {
             "Committing chunk pins query_id=%s pin_count=%d",
             ctx.getQueryId(), pendingChunkPins.getPinsCount());
       }
-      var updated =
+      RelationPinSet toCommit = pendingChunkPins;
+      // The resolver registered these pins' blobs as transient GC roots at resolution, so they are
+      // protected across the collect→commit window; this update makes the context a durable root.
+      Optional<QueryContext> updated =
           queryStore.update(
-              ctx.getQueryId(),
-              existing -> mergeSnapshotSet(existing, pendingChunkPins, correlationId));
-      pendingChunkPins = SnapshotSet.getDefaultInstance();
+              ctx.getQueryId(), existing -> mergeRelationPins(existing, toCommit, correlationId));
+      pendingChunkPins = RelationPinSet.getDefaultInstance();
       if (updated.isEmpty()) {
         LOG.warnf(
             "Failed to commit chunk pins query_id=%s query context missing", ctx.getQueryId());

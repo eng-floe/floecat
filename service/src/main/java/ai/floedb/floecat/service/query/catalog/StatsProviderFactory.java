@@ -193,6 +193,8 @@ public final class StatsProviderFactory {
 
     private OptionalLong resolveLatestSnapshotId(ResourceId tableId) {
       try {
+        // "Latest" means latest QUERY-VISIBLE: the repository's default current-snapshot read is
+        // gate-aware, so system scans agree with what queries can read.
         Optional<Snapshot> snapshot = snapshotRepository.getCurrentSnapshot(tableId);
         if (snapshot.isPresent()) {
           return OptionalLong.of(snapshot.get().getSnapshotId());

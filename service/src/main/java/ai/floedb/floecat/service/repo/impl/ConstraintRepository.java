@@ -50,6 +50,16 @@ public class ConstraintRepository {
   }
 
   /**
+   * Load a constraints bundle by its immutable, content-addressed blob URI — the ref a pinned table
+   * root's manifest entry carries. Never consults the live (table, snapshot) pointer, so a pinned
+   * query keeps reading the exact bundle its root references even after an in-place constraints
+   * write repoints the pointer to a newer blob.
+   */
+  public Optional<SnapshotConstraints> getByBlobUri(String blobUri) {
+    return repo.getByBlobUri(blobUri);
+  }
+
+  /**
    * Put constraints for a snapshot. Returns true when storage changed, false for exact-idempotent
    * replays.
    */

@@ -17,13 +17,22 @@
 package ai.floedb.floecat.service.query.catalog;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.function.LongFunction;
 
+/**
+ * Resolves the pinned snapshot id for the stats/constraints path from the query context.
+ *
+ * <p>This intentionally consumes only the snapshot id, not the full pin blob identity: a table pin
+ * is validated (its immutable table and snapshot blobs confirmed present at the captured versions)
+ * once, when it is created, and every pin is blob-backed. Its blobs are GC-rooted for the query's
+ * lifetime, so they cannot disappear mid-query. Stats are best-effort and may be stale, so the hot
+ * stats path does not re-run per-read blob validation; the snapshot id alone scopes the lookup
+ * coherently.
+ */
 final class SnapshotPinResolver implements SnapshotPinLookup {
 
   private final QueryContextStore queryStore;
@@ -46,8 +55,25 @@ final class SnapshotPinResolver implements SnapshotPinLookup {
     if (ctx == null) {
       return OptionalLong.empty();
     }
-    Optional<SnapshotPin> pin = ctx.findSnapshotPin(tableId, correlationId);
-    return pin.isPresent() ? OptionalLong.of(pin.get().getSnapshotId()) : OptionalLong.empty();
+    // Every pin resolves to a concrete snapshot at construction, so a present pin always carries
+    // its snapshot id (0 is a real id, never a sentinel — absence is the empty Optional).
+    return ctx.findSnapshotPin(tableId, correlationId)
+        .map(p -> OptionalLong.of(p.getSnapshotId()))
+        .orElseGet(OptionalLong::empty);
+  }
+
+  @Override
+  public Optional<PinnedConstraintsRef> pinnedConstraintsRef(ResourceId tableId) {
+    QueryContext ctx = liveContext();
+    if (ctx == null) {
+      return Optional.empty();
+    }
+    return ctx.findTablePin(tableId, correlationId)
+        .filter(pin -> !pin.getConstraintsRefUri().isEmpty())
+        .map(
+            pin ->
+                new PinnedConstraintsRef(
+                    pin.getConstraintsRefUri(), pin.getConstraintsRefVersion()));
   }
 
   <T> Optional<T> withPinnedSnapshot(

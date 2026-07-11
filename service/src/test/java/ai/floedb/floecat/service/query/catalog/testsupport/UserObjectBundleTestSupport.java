@@ -29,15 +29,18 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
+import ai.floedb.floecat.query.rpc.PinKind;
+import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.ScanHandle;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.query.rpc.SnapshotSet;
+import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
+import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
 import java.time.Instant;
@@ -221,26 +224,33 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public SnapshotPin snapshotPinFor(
+    /**
+     * Mirrors production pin construction: every pin resolves to a concrete snapshot and captures
+     * blob identity (construction fails otherwise, so blob-less pins never exist). An AS_OF
+     * reference resolves to the fake's single snapshot, keeping the timestamp only as provenance.
+     */
+    public TablePin tablePinFor(
         String correlationId,
         ResourceId tableId,
         ai.floedb.floecat.common.rpc.SnapshotRef override,
         Optional<Timestamp> asOfDefault) {
-      SnapshotPin.Builder pin = SnapshotPin.newBuilder().setTableId(tableId);
-      if (override != null) {
-        if (override.hasSnapshotId()) {
-          pin.setSnapshotId(override.getSnapshotId());
-          return pin.build();
-        }
-        if (override.hasAsOf()) {
-          pin.setAsOf(override.getAsOf());
-          return pin.build();
-        }
+      long snapshotId = 1L;
+      PinKind kind = PinKind.PIN_KIND_CURRENT;
+      Timestamp originalAsOf = null;
+      if (override != null && override.hasSnapshotId()) {
+        kind = PinKind.PIN_KIND_SNAPSHOT_ID;
+        snapshotId = override.getSnapshotId();
+      } else if (override != null && override.hasAsOf()) {
+        kind = PinKind.PIN_KIND_AS_OF;
+        originalAsOf = override.getAsOf();
+      } else if (asOfDefault.isPresent()) {
+        kind = PinKind.PIN_KIND_AS_OF;
+        originalAsOf = asOfDefault.get();
       }
-      if (asOfDefault.isPresent()) {
-        pin.setAsOf(asOfDefault.get());
-      } else {
-        pin.setSnapshotId(1L);
+      TablePin.Builder pin =
+          SnapshotTestSupport.blobBackedPin(tableId, snapshotId).toBuilder().setPinKind(kind);
+      if (originalAsOf != null) {
+        pin.setOriginalAsOf(originalAsOf);
       }
       return pin.build();
     }
@@ -293,7 +303,9 @@ public final class UserObjectBundleTestSupport {
     public SchemaResolution schemaFor(
         String correlationId,
         ResourceId tableId,
-        ai.floedb.floecat.common.rpc.SnapshotRef snapshot) {
+        ai.floedb.floecat.common.rpc.SnapshotRef snapshot,
+        String tableBlobUri,
+        String snapshotBlobUri) {
       throw unsupported();
     }
 
@@ -357,9 +369,12 @@ public final class UserObjectBundleTestSupport {
     private final List<List<QueryInput>> calls = new ArrayList<>();
     private int nextSnapshotId = 1;
 
-    public TestQueryInputResolver() {}
+    public TestQueryInputResolver() {
+      super(null);
+    }
 
     public TestQueryInputResolver(int nextSnapshotId) {
+      super(null);
       this.nextSnapshotId = nextSnapshotId;
     }
 
@@ -369,13 +384,15 @@ public final class UserObjectBundleTestSupport {
 
     @Override
     public ResolutionResult resolveInputs(
+        String queryId,
         String correlationId,
         List<QueryInput> inputs,
         Optional<Timestamp> asOfDefault,
         Optional<ResourceId> defaultCatalogId,
-        Map<ResourceId, SnapshotPin> currentSnapshotPinCache) {
+        Map<ResourceId, TablePin> currentSnapshotPinCache,
+        PhaseDiagnostics diagnostics) {
       List<ResourceId> resolved = new ArrayList<>(inputs.size());
-      SnapshotSet.Builder pins = SnapshotSet.newBuilder();
+      RelationPinSet.Builder pins = RelationPinSet.newBuilder();
       for (QueryInput input : inputs) {
         calls.add(List.of(input));
         switch (input.getTargetCase()) {
@@ -383,7 +400,7 @@ public final class UserObjectBundleTestSupport {
             ResourceId rid = input.getTableId();
             resolved.add(rid);
             pins.addPins(
-                SnapshotPin.newBuilder().setTableId(rid).setSnapshotId(nextSnapshotId++).build());
+                QueryPins.ofTable(SnapshotTestSupport.blobBackedPin(rid, nextSnapshotId++)));
           }
           case VIEW_ID -> resolved.add(input.getViewId());
           case NAME -> {}
@@ -391,18 +408,6 @@ public final class UserObjectBundleTestSupport {
         }
       }
       return new ResolutionResult(resolved, pins.build(), null);
-    }
-
-    @Override
-    public ResolutionResult resolveInputs(
-        String correlationId,
-        List<QueryInput> inputs,
-        Optional<Timestamp> asOfDefault,
-        Optional<ResourceId> defaultCatalogId,
-        Map<ResourceId, SnapshotPin> currentSnapshotPinCache,
-        PhaseDiagnostics diagnostics) {
-      return resolveInputs(
-          correlationId, inputs, asOfDefault, defaultCatalogId, currentSnapshotPinCache);
     }
   }
 
@@ -456,6 +461,17 @@ public final class UserObjectBundleTestSupport {
     @Override
     public long size() {
       return contexts.size();
+    }
+
+    @Override
+    public java.util.Set<String> referencedPinBlobUris() {
+      return java.util.Set.of();
+    }
+
+    @Override
+    public void registerResolvingPinBlobs(
+        String correlationId, java.util.Collection<String> blobUris) {
+      // no-op: this fake does not model GC roots
     }
 
     @Override
