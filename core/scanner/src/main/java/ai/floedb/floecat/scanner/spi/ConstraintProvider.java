@@ -49,6 +49,16 @@ public interface ConstraintProvider {
     /** Constraint set for this relation under the supplied caller context. */
     List<ConstraintDefinition> constraints();
 
+    /**
+     * Version of the underlying constraint bundle — its {@code MutationMeta.pointer_version}. Lets
+     * a consumer version-tag the bundle it caches and detect an in-place constraint change under a
+     * stable snapshot. 0 when unknown (e.g. system constraints, or a provider that does not track
+     * it).
+     */
+    default long version() {
+      return 0L;
+    }
+
     /** Optional provider-specific metadata. */
     default Map<String, String> properties() {
       return Map.of();

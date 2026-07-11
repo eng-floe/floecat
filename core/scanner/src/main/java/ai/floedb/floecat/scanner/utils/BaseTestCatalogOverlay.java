@@ -26,7 +26,7 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import com.google.protobuf.Timestamp;
 import java.util.ArrayList;
@@ -128,7 +128,7 @@ public abstract class BaseTestCatalogOverlay implements CatalogOverlay {
   }
 
   @Override
-  public SnapshotPin snapshotPinFor(
+  public TablePin tablePinFor(
       String correlationId,
       ResourceId tableId,
       SnapshotRef override,
@@ -229,7 +229,11 @@ public abstract class BaseTestCatalogOverlay implements CatalogOverlay {
 
   @Override
   public SchemaResolution schemaFor(
-      String correlationId, ResourceId tableId, SnapshotRef snapshot) {
+      String correlationId,
+      ResourceId tableId,
+      SnapshotRef snapshot,
+      String tableBlobUri,
+      String snapshotBlobUri) {
     throw unsupported();
   }
 

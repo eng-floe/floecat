@@ -21,6 +21,7 @@ option java_package = "ai.floedb.floecat.query.rpc";
 option java_outer_classname = "QueryLifecycleProto";
 
 import "floecat/common/common.proto";
+import "floecat/query/pinning.proto";
 import "google/protobuf/timestamp.proto";
 
 /**
@@ -61,7 +62,11 @@ enum QueryStatus {
 }
 
 /**
- * A single pinned snapshot resulting from BeginQuery().
+ * A single pinned snapshot, the wire projection of a resolved table pin.
+ *
+ * Every pin resolves to a concrete snapshot at construction, so the server
+ * always emits snapshot_id. The as_of arm is wire-legacy: kept for old
+ * clients' decoders, never produced anymore.
  */
 message SnapshotPin {
   ai.floedb.floecat.common.ResourceId table_id = 1;
@@ -130,6 +135,11 @@ message QueryDescriptor {
   SnapshotSet snapshots = 6;
   ExpansionMap expansion = 7;
   repeated TableObligations obligations = 8;
+
+  // Opaque, planner-facing identity of each pinned relation: a stable fingerprint of the resolved
+  // physical identity plus its provenance, carrying no blob URIs. Preferred over `snapshots` (a
+  // snapshot-selector projection kept for older readers); the two describe the same pins.
+  repeated RelationPinIdentity relation_pins = 9;
 }
 
 /** BeginQuery: creates a new query context. */

@@ -1,0 +1,201 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package ai.floedb.floecat.query;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.query.rpc";
+option java_outer_classname = "PinningProto";
+
+import "floecat/common/common.proto";
+import "google/protobuf/timestamp.proto";
+
+/**
+ * QUERY TABLE PINNING
+ * -------------------
+ * A pin is one coherent table read state, chosen at the first query-context
+ * resolution of a table and reused by every later schema/scan/stats/constraints
+ * read in that query. It replaces the snapshot-selector-shaped SnapshotPin as the
+ * query consistency boundary.
+ *
+ * Two shapes live here, for two audiences:
+ *   - TablePin / RelationPin: the server-side resolved pin, stored in QueryContext.
+ *     It carries the immutable blob identity Floecat needs to fetch metadata and
+ *     build scans. It is never returned to the planner in full.
+ *   - RelationPinIdentity: the opaque, planner-facing identity. It carries no blob
+ *     URIs; it exists so the catalog cache can distinguish the same table across
+ *     different query pins, and for diagnostics.
+ *
+ * V1 populates table pins only. The relation-shaped envelope leaves room for a
+ * future ViewPin (historical view schema) without changing this contract.
+ */
+
+/**
+ * How a table pin's snapshot was chosen. The stored pin records the kind of the
+ * first successful resolution; compatible later requests never upgrade it.
+ */
+enum PinKind {
+  PIN_KIND_UNSPECIFIED = 0;
+
+  /** Current table + current snapshot, from the pinned table root. */
+  PIN_KIND_CURRENT = 1;
+
+  /** A timestamp resolved once to a concrete snapshot id at pin time. */
+  PIN_KIND_AS_OF = 2;
+
+  /** An explicit snapshot id supplied by the caller. */
+  PIN_KIND_SNAPSHOT_ID = 3;
+}
+
+/**
+ * Resolved coherent read state for one table, stored in QueryContext.
+ *
+ * The physical identity that defines the pin is (snapshot_id, snapshot_blob_version)
+ * — the DATA identity. CURRENT, AS_OF, and explicit snapshot requests that resolve
+ * to the same physical identity are the same pin; table_blob_version is carried as
+ * provenance for table-scoped properties and is deliberately not part of identity.
+ *
+ * Blob URIs are server-side only and must never be surfaced to the planner.
+ */
+message TablePin {
+  /** Stable identity of the pinned table. Pins are keyed by this within a query. */
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+
+  /** How the first successful resolution chose the snapshot. */
+  PinKind pin_kind = 2;
+
+  /** The resolved concrete snapshot id (never a special/current sentinel once pinned). */
+  int64 snapshot_id = 3;
+
+  /** Immutable version of the pinned table metadata blob. */
+  string table_blob_version = 4;
+
+  /** Immutable version of the pinned snapshot metadata blob. */
+  string snapshot_blob_version = 5;
+
+  /** Server-side location of the immutable table blob. Never sent to the planner. */
+  string table_blob_uri = 6;
+
+  /** Server-side location of the immutable snapshot blob. Never sent to the planner. */
+  string snapshot_blob_uri = 7;
+
+  /**
+   * For AS_OF pins, the timestamp originally requested. Provenance only: later
+   * reads use snapshot_id, never this timestamp. Unset for CURRENT / SNAPSHOT_ID.
+   */
+  google.protobuf.Timestamp original_as_of = 8;
+
+  /**
+   * Optional diagnostics. Requested as-of values seen for this pin. These must
+   * not make two otherwise-identical resolved pins conflict.
+   */
+  google.protobuf.Timestamp first_original_as_of = 9;
+  google.protobuf.Timestamp last_requested_as_of = 10;
+
+  /**
+   * Server-side location of the immutable table root this pin resolved through. The root is the
+   * single object all pinned reads follow refs out of: definition, snapshot manifest, stats
+   * generations, constraints. Never sent to the planner.
+   */
+  string root_uri = 12;
+
+  /** Content-hash version of the pinned root blob. */
+  string root_version = 13;
+
+  /**
+   * Ref of the constraints bundle frozen for the pinned snapshot, copied from the pinned root's
+   * manifest entry at construction. Unset when no bundle existed at pin time — the query then
+   * deterministically serves "no constraints" for its lifetime, even if a bundle appears later.
+   * The URI is server-side only; the version is echoed on served constraints results.
+   */
+  string constraints_ref_uri = 14;
+  string constraints_ref_version = 15;
+
+  /**
+   * Ref (manifest blob URI) of the stats generation the PINNED root's manifest entry referenced,
+   * frozen at construction. A scan streams its file list from THIS generation, so it reads exactly
+   * the generation the pinned snapshot was finalized with — never a newer one a re-stats/reconcile
+   * published (and committed a new root for) between BeginQuery and InitScan. Retention plus the
+   * pin's root-chain GC roots keep this generation readable for the query's lifetime. Unset for
+   * stores that do not track generations (the scan then serves live state). Server-side only.
+   */
+  string stats_generation_ref_uri = 16;
+}
+
+/**
+ * Relation-shaped envelope over a pin. V1 always sets table_pin. A future ViewPin
+ * can be added to the oneof for historical view schema without replacing this type.
+ */
+message RelationPin {
+  oneof pin {
+    TablePin table_pin = 1;
+    // ViewPin view_pin = 2; // reserved: historical view schema support.
+  }
+}
+
+/**
+ * All relation pins for one query, replacing SnapshotSet. Downstream reads look up
+ * a pin by the pinned table's stable table_id.
+ */
+message RelationPinSet {
+  repeated RelationPin pins = 1;
+}
+
+/**
+ * Opaque, planner-facing pin identity. Returned on relation-resolution responses so
+ * the catalog cache can distinguish the same table across different query pins.
+ *
+ * It carries NO blob URIs and confers no authority to fetch blobs or build scans:
+ * Floecat remains authoritative for those. Core treats this purely as a cache key
+ * and diagnostic provenance.
+ */
+message RelationPinIdentity {
+  /**
+   * Stable hash of the pinned relation's immutable DATA identity: relation kind, table id, snapshot
+   * id, and snapshot blob version. It deliberately EXCLUDES table_blob_version and constraints_version
+   * (both carried below as separate authority/provenance fields) and pin_kind, as well as mutable
+   * display names, current relation names, query id, and TTL. Excluding table_blob_version is
+   * load-bearing: a benign ALTER (or a constraint change) that does not move the snapshot must not
+   * fragment the schema-cache identity — CURRENT, AS_OF, and explicit-snapshot requests that resolve
+   * to the same physical data are the same pin and share one fingerprint. Two queries that pin the
+   * same physical data produce the same fingerprint; two that pin different data do not.
+   */
+  string pin_fingerprint = 1;
+
+  /** Kind of the pin this identity describes. */
+  PinKind pin_kind = 2;
+
+  /** Immutable version of the pinned table metadata blob. */
+  string table_blob_version = 3;
+
+  /** The resolved concrete snapshot id. */
+  int64 snapshot_id = 4;
+
+  /** Immutable version of the pinned snapshot metadata blob. */
+  string snapshot_blob_version = 5;
+
+  /** AS_OF provenance only; not authority and not part of the fingerprint. */
+  google.protobuf.Timestamp original_as_of = 6;
+
+  /**
+   * Content-hash version of the constraints bundle frozen on the pin (from the pinned root's
+   * manifest entry). Empty when no bundle existed at pin time. This is the separate signal a
+   * caller compares against a cached bundle to decide whether it is still current, letting a warm
+   * query skip the constraints RPC. Deliberately NOT part of pin_fingerprint (a constraint change
+   * must not fragment the schema cache identity).
+   */
+  string constraints_ref_version = 7;
+}

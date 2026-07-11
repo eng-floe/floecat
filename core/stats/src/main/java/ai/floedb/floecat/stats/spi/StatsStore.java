@@ -135,6 +135,50 @@ public interface StatsStore {
       String pageToken);
 
   /**
+   * Whether this store tracks stats generations at all. When {@code false}, {@link
+   * #activeStatsGeneration} is meaningless (always empty) and readers skip generation checks
+   * entirely. When {@code true}, an empty {@link #activeStatsGeneration} result means specifically
+   * "this snapshot has no stats generation yet" — a real, comparable state, distinct from "the
+   * store cannot say" — so readers must still compare it page to page (a generation appearing
+   * mid-pagination is a change like any other).
+   */
+  default boolean tracksStatsGenerations() {
+    return false;
+  }
+
+  /**
+   * Opaque token identifying the currently-active stats generation for a table snapshot, if the
+   * store tracks generations (see {@link #tracksStatsGenerations}). {@link
+   * #replaceAllStatsForSnapshot} and {@link #deleteAllStatsForSnapshot} change the token;
+   * per-record upserts within a generation do not have to. A multi-page reader captures the token
+   * (or its absence) before its first page and compares before consuming each page, so a
+   * mid-pagination replacement — or a first generation appearing under a scan that started with
+   * none — is detected instead of silently mixing pages from different generations.
+   */
+  default Optional<String> activeStatsGeneration(ResourceId tableId, long snapshotId) {
+    return Optional.empty();
+  }
+
+  /**
+   * Like {@link #listTargetStats}, but reads within the specific generation named by {@code
+   * generationToken} — a token previously returned by {@link #activeStatsGeneration} — instead of
+   * resolving the live active generation. A reader that froze its generation at first touch keeps a
+   * deterministic view of that immutable keyspace while newer generations publish (superseded
+   * generations are retained until GC finds them unreferenced). Stores that do not track
+   * generations serve the live state; the token is meaningless to them. A tracking store must fail
+   * loudly when the token's generation is gone rather than falling back to the live one.
+   */
+  default StatsStorePage listTargetStatsInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationToken,
+      Optional<StatsTargetType> targetType,
+      int limit,
+      String pageToken) {
+    return listTargetStats(tableId, snapshotId, targetType, limit, pageToken);
+  }
+
+  /**
    * Counts target stats records for a table snapshot with optional target-type filtering.
    *
    * <p>{@code targetType=Optional.empty()} means "all target types".

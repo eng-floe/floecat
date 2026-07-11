@@ -28,6 +28,7 @@ package ai.floedb.floecat.query;
 
 import "floecat/common/common.proto";
 import "floecat/query/engine_specific.proto";
+import "floecat/query/pinning.proto";
 import "floecat/query/sql_objects.proto";
 import "floecat/query/system_objects_registry.proto";
 
@@ -256,6 +257,15 @@ message RelationInfo {
     FlightEndpointRef flight_endpoint = 9;
     string storage_path = 10;
   }
+
+  /**
+   * Opaque pin identity for catalog-cache identity and diagnostics. Lets the
+   * planner distinguish the same table across different query pins. Carries no
+   * blob URIs and no authority to fetch blobs — Floecat stays authoritative for
+   * metadata and scans. Set for relations that have been pinned; a resolution
+   * that has not pinned the table leaves it unset.
+   */
+  RelationPinIdentity pin_identity = 11;
 
   /** Optional engine-specific metadata extensions. */
   repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
