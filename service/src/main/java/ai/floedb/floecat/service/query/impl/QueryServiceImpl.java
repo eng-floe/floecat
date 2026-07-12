@@ -183,6 +183,10 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                   boolean clientProvidedId = request.hasQueryId();
                   boolean inserted = queryStore.putIfAbsent(ctx);
                   if (!inserted) {
+                    // The context was not stored, so it will never root its pins — release the
+                    // resolving-pin roots it registered rather than leaving them to expire via the
+                    // fail-safe grace (which a client colliding on the same id could hold open).
+                    queryStore.discardResolvingPins(ctx);
                     if (clientProvidedId) {
                       throw GrpcErrors.alreadyExists(
                           correlationId,

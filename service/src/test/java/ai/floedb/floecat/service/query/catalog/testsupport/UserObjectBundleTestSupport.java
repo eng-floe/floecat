@@ -475,6 +475,11 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
+    public void discardResolvingPins(QueryContext ctx) {
+      // no-op: this fake does not model GC roots
+    }
+
+    @Override
     public void replace(QueryContext ctx) {
       contexts.put(ctx.getQueryId(), ctx);
     }

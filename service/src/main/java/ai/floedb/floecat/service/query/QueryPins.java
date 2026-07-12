@@ -276,9 +276,12 @@ public final class QueryPins {
   }
 
   private static boolean sameTable(ResourceId a, ResourceId b) {
-    // Strict identity on both legs: a pin lookup must carry the fully-resolved (account, id). A
-    // blank accountId on one side is a DIFFERENT identity, never a wildcard match — see
+    // Same identity as pinKey (account + kind + id): a lookup must carry the fully-resolved id AND
+    // the right kind, so a non-RK_TABLE id reusing a pinned table's account/id cannot match a table
+    // pin. A blank accountId on one side is a DIFFERENT identity, never a wildcard — see
     // QueryContextTest.requireSnapshotPinDoesNotMatchWhenAccountIsMissingOnOneSide.
-    return a.getAccountId().equals(b.getAccountId()) && a.getId().equals(b.getId());
+    return a.getAccountId().equals(b.getAccountId())
+        && a.getKind() == b.getKind()
+        && a.getId().equals(b.getId());
   }
 }

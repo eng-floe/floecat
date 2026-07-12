@@ -451,4 +451,18 @@ class QueryContextStoreImplTest {
 
     assertThat(store.extendLease("q-ended", Long.MAX_VALUE)).isEmpty();
   }
+
+  @Test
+  void discardResolvingPinsReleasesAFailedRequestsRoots() {
+    // A BeginQuery that fails to store its context (e.g. a query-id collision) must release the
+    // resolving-pin roots it registered, rather than leaving them rooted until the grace expires.
+    store.registerResolvingPinBlobs("q-collide", List.of("s3://t/resolving.pb"));
+    assertThat(store.referencedPinBlobUris()).contains("s3://t/resolving.pb");
+
+    QueryContext failed =
+        active("q-collide", null, pinBytes("s3://t/resolving.pb", "s3://t/snap.pb"));
+    store.discardResolvingPins(failed);
+
+    assertThat(store.referencedPinBlobUris()).doesNotContain("s3://t/resolving.pb");
+  }
 }

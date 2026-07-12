@@ -130,4 +130,25 @@ class SnapshotFinalizePersistenceServiceTest {
 
     assertFalse(entry().hasStatsGenerationRef());
   }
+
+  @Test
+  void emptyReFinalizeCommitsTheGenerationEvenWhenTheMarkerAlreadyExists() {
+    // Regression: a re-finalize that finds the empty marker already present must STILL commit the
+    // generation onto the root. A prior attempt may have created the marker but failed the root
+    // commit; the current pointer is already on this snapshot, so advanceCurrentSnapshot stays
+    // UNCHANGED and nothing else would attach the stats_generation_ref — leaving the empty snapshot
+    // permanently gated-invisible.
+    when(persistence.statsStore.getTargetStats(any(), anyLong(), any()))
+        .thenReturn(
+            Optional.of(
+                TargetStatsRecords.tableRecord(
+                    tableId, 5L, TableValueStats.newBuilder().setRowCount(0L).build(), null)));
+    when(persistence.statsStore.activeStatsGeneration(tableId, 5L))
+        .thenReturn(Optional.of("s3://t/stats/5/empty-gen.pb"));
+
+    long result = persistence.persistEmptySnapshotCompletionMarker(tableId, 5L, false);
+
+    assertEquals(0L, result, "marker already present → no new marker created");
+    assertEquals("s3://t/stats/5/empty-gen.pb", entry().getStatsGenerationRef().getUri());
+  }
 }

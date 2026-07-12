@@ -69,12 +69,13 @@ public class CurrentSnapshotPointerService {
     }
     rootWriter.commitSnapshotEntry(tableId, candidate);
     if (result == SnapshotRepository.CurrentSnapshotPointerUpdateResult.UPDATED) {
-      // The committed current pointer just moved onto `candidate`. Under the finalize gate,
-      // commitSnapshotEntry defers currency, and an in-place update of an ALREADY-finalized
-      // snapshot (e.g. UpdateSnapshot bumping upstream_created_at) triggers no later finalize to
-      // publish its currency onto the root. Reconcile root currency now through the finalize path:
-      // a no-op when the gate is off, or when the candidate is not yet finalized (its own finalize
-      // will publish it), or when the root already names it.
+      // The committed current pointer just moved onto `candidate`. commitSnapshotEntry advances the
+      // root's current_snapshot_id at registration; what the finalize gate defers is query-time
+      // VISIBILITY (an entry without a stats_generation_ref is not pinnable). An in-place update of
+      // an ALREADY-finalized snapshot (e.g. UpdateSnapshot bumping upstream_created_at) triggers no
+      // later finalize to attach that generation ref, so reconcile it now through the finalize
+      // path: a no-op when the gate is off, when the candidate is not yet finalized (its own
+      // finalize will publish it), or when the root entry already carries the ref.
       rootWriter.commitStatsGeneration(tableId, candidate.getSnapshotId());
     }
   }

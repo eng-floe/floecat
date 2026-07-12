@@ -303,4 +303,21 @@ class QueryPinsTest {
     org.junit.jupiter.api.Assertions.assertEquals(
         java.util.List.of("/accounts/a/tables/t/table/d.pb"), QueryPins.gcRootUris(bare));
   }
+
+  @Test
+  void findTablePinRequiresMatchingResourceKind() {
+    RelationPinSet pins =
+        RelationPinSet.newBuilder().addPins(QueryPins.ofTable(current("a", 4))).build();
+    // Identity is account + kind + id (matching pinKey): a non-table id reusing a pinned table's
+    // account/id must NOT match the table pin.
+    ResourceId asView =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("a")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    assertThat(QueryPins.findTablePin(pins, asView)).isEmpty();
+    assertThat(QueryPins.findTablePin(pins, tableId("a")).orElseThrow().getSnapshotId())
+        .isEqualTo(4);
+  }
 }

@@ -118,6 +118,15 @@ public interface QueryContextStore extends AutoCloseable {
    */
   void registerResolvingPinBlobs(String queryId, Collection<String> blobUris);
 
+  /**
+   * Release the resolving-pin roots {@code ctx} registered, without storing it. Call when a
+   * BeginQuery fails to commit the context (e.g. a client query-id collision): a successful {@code
+   * putIfAbsent} drops these transparently, but a rejected insert would otherwise leave the failed
+   * request's resolved blobs rooted until the fail-safe grace expires — which a client repeatedly
+   * colliding on the same id could hold open indefinitely.
+   */
+  void discardResolvingPins(QueryContext ctx);
+
   // ---------------------------------------------------------------------
   //  Scan session helpers
   // ---------------------------------------------------------------------

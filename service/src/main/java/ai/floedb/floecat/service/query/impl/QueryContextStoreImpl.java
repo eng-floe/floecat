@@ -318,6 +318,14 @@ public class QueryContextStoreImpl implements QueryContextStore {
    * <p>URI-precise within that entry, so a not-yet-committed URI (e.g. a later streaming chunk)
    * stays protected, and the entry is dropped when it empties out.
    */
+  @Override
+  public void discardResolvingPins(QueryContext ctx) {
+    // Same mechanism a successful insert uses, but for a context that will NOT be stored: release
+    // exactly the resolving-pin blobs this query registered so a rejected BeginQuery (id collision)
+    // does not hold them rooted until the grace expires.
+    dropResolvingPinsRootedBy(ctx);
+  }
+
   private void dropResolvingPinsRootedBy(QueryContext committed) {
     if (committed == null || resolvingPinBlobs.isEmpty()) {
       return;

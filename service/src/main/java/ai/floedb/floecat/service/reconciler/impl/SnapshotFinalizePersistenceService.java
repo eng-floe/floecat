@@ -128,6 +128,14 @@ public class SnapshotFinalizePersistenceService {
     if (statsStore
         .getTargetStats(tableId, snapshotId, StatsTargetIdentity.tableTarget())
         .isPresent()) {
+      // The empty generation already exists (a prior finalize attempt created it). Still commit it
+      // onto the root: a prior attempt may have created the marker but failed
+      // commitGenerationToRoot
+      // (transient CAS exhaustion), and the caller's advanceCurrentSnapshot only republishes when
+      // the current pointer MOVES — for an already-current empty snapshot it stays UNCHANGED, so
+      // nothing else would attach the stats_generation_ref and the snapshot would be permanently
+      // gated-invisible. commitGenerationToRoot is idempotent.
+      commitGenerationToRoot(tableId, snapshotId);
       return 0L;
     }
     if (statsStore.putTargetStatsIfAbsent(zeroMarker)) {
@@ -138,6 +146,8 @@ public class SnapshotFinalizePersistenceService {
     if (statsStore
         .getTargetStats(tableId, snapshotId, StatsTargetIdentity.tableTarget())
         .isPresent()) {
+      // Lost the create race to a concurrent attempt; ensure the generation is on the root anyway.
+      commitGenerationToRoot(tableId, snapshotId);
       return 0L;
     }
     throw new IllegalStateException(
