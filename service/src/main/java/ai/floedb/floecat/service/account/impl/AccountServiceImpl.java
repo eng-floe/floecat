@@ -590,6 +590,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
         "account_delete_cleanup_snapshot_prefix account_id=%s table_id=%s",
         tableId.getAccountId(), tableId.getId());
     pointerStore.deleteByPrefix(Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId()));
+    pointerStore.delete(Keys.tableRootByTable(tableId.getAccountId(), tableId.getId()));
     summary.snapshotPrefixesDeleted++;
   }
 
