@@ -256,6 +256,72 @@ public class QueryInputResolverTest {
   }
 
   @Test
+  void asOfReusesTheExistingPinInsteadOfReResolving() {
+    // Same first-touch-wins reuse as explicit snapshot_id, extended to AS_OF: a snapshot pinned
+    // as-of a timestamp at BeginQuery keeps its blobs GC-rooted for the query's lifetime, so a
+    // later
+    // DescribeInputs restating the same as-of must get the pin back — not re-resolve against the
+    // live root (which, if that snapshot has since expired, would resolve a DIFFERENT snapshot and
+    // fail with a pin CONFLICT, or throw NOT_FOUND_AT_TIME).
+    ResourceId tableId = rid("T4");
+    NameRef n = name("c", "ns", "t4");
+    metadataGraph.bind(n, tableId);
+    com.google.protobuf.Timestamp asOf =
+        com.google.protobuf.Timestamp.newBuilder().setSeconds(1_700_000_000L).build();
+
+    var existingPin =
+        ai.floedb.floecat.query.rpc.TablePin.newBuilder()
+            .setTableId(tableId)
+            .setPinKind(ai.floedb.floecat.query.rpc.PinKind.PIN_KIND_AS_OF)
+            .setOriginalAsOf(asOf)
+            .setSnapshotId(555)
+            .setTableBlobUri("s3://T4/pinned-table.pb")
+            .setSnapshotBlobUri("s3://T4/pinned-snap.pb")
+            .build();
+    var committed =
+        ai.floedb.floecat.service.query.impl.QueryContext.newActive(
+            "q-asof",
+            ai.floedb.floecat.common.rpc.PrincipalContext.newBuilder().setAccountId("a").build(),
+            new byte[0],
+            ai.floedb.floecat.query.rpc.RelationPinSet.newBuilder()
+                .addPins(ai.floedb.floecat.service.query.QueryPins.ofTable(existingPin))
+                .build()
+                .toByteArray(),
+            new byte[0],
+            new byte[0],
+            60_000L,
+            1L,
+            rid("cat"));
+    var store = org.mockito.Mockito.mock(QueryContextStore.class);
+    org.mockito.Mockito.when(store.get("q-asof")).thenReturn(java.util.Optional.of(committed));
+    var withStore = new QueryInputResolver(metadataGraph, store);
+
+    QueryInput qi =
+        QueryInput.newBuilder()
+            .setName(n)
+            .setSnapshot(SnapshotRef.newBuilder().setAsOf(asOf))
+            .build();
+
+    SnapshotPin p =
+        withStore
+            .resolveInputs(
+                "q-asof",
+                "cid",
+                List.of(qi),
+                Optional.<com.google.protobuf.Timestamp>empty(),
+                Optional.<ResourceId>empty(),
+                new java.util.LinkedHashMap<>(),
+                null)
+            .snapshotSet()
+            .getPins(0);
+
+    assertEquals(555, p.getSnapshotId());
+    assertTrue(
+        metadataGraph.pinCalls().isEmpty(),
+        "an AS_OF pin restated with the same timestamp must reuse, not re-resolve");
+  }
+
+  @Test
   void restatingADifferentSnapshotIdStillReResolves() {
     // Reuse triggers ONLY when the restated id matches the pinned one; a different id must
     // re-resolve (and reconcile) as before.

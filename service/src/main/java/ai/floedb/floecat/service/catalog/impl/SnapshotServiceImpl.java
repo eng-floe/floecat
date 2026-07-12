@@ -75,13 +75,17 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
   @Inject SnapshotRepository snapshotRepo;
   @Inject TableRepository tableRepo;
-  @Inject StatsStore statsStore;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject CatalogOverlay overlay;
   @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
   @Inject StatsOrchestrator statsOrchestrator;
+
+  // Retained as a collaborator so DeleteSnapshot's contract — that it does NOT physically tear down
+  // a snapshot's stats generations, which pinned queries still read — is unit-assertable. Physical
+  // reclamation is reference-aware CasBlobGc's job once no live pin holds the generation.
+  @Inject StatsStore statsStore;
   @Inject TableRootWriter rootWriter;
 
   private static final Logger LOG = Logger.getLogger(SnapshotService.class);
@@ -469,7 +473,6 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                       throw GrpcErrors.notFound(
                           correlationId, SNAPSHOT, Map.of("id", Long.toString(snapshotId)));
                     }
-                    statsStore.deleteAllStatsForSnapshot(tableId, snapshotId);
                     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
                     // Converge the root on THIS path too: the by-id pointer is gone (either a
                     // client double-delete, or a prior attempt that deleted the pointer then failed
@@ -497,8 +500,16 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
 
-                    statsStore.deleteAllStatsForSnapshot(tableId, snapshotId);
                     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+                    // Do NOT eagerly tear down the snapshot's stats generations here. A query that
+                    // pinned this snapshot froze its stats_generation_ref and reads pages through
+                    // that frozen manifest for the query's lifetime; a whole-prefix delete would
+                    // pull the manifest out from under an active pinned scan (it fails loudly).
+                    // removeSnapshotFromRoot drops the entry so no new pin references the
+                    // generation;
+                    // reference-aware CasBlobGc then reclaims it once no live pin holds it — the
+                    // same
+                    // retention path superseded generations already take.
                     removeSnapshotFromRoot(tableId, snapshotId);
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);

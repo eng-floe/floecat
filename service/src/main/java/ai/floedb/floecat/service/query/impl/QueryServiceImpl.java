@@ -183,10 +183,14 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                   boolean clientProvidedId = request.hasQueryId();
                   boolean inserted = queryStore.putIfAbsent(ctx);
                   if (!inserted) {
-                    // The context was not stored, so it will never root its pins — release the
-                    // resolving-pin roots it registered rather than leaving them to expire via the
-                    // fail-safe grace (which a client colliding on the same id could hold open).
-                    queryStore.discardResolvingPins(ctx);
+                    // A context already owns this query id (an incumbent). Do NOT try to release
+                    // this rejected context's resolving-pin roots: they were registered under the
+                    // shared query id and unioned into the incumbent's resolving entry, so dropping
+                    // them by URI would also unroot blobs the incumbent may still be resolving — a
+                    // GC sweep in that window could then delete a live blob. The rejected
+                    // registration is already bounded (the map is size-capped, and the entry is
+                    // released by the incumbent's own commit or the fail-safe grace), so leaving it
+                    // in place is the safe choice.
                     if (clientProvidedId) {
                       throw GrpcErrors.alreadyExists(
                           correlationId,

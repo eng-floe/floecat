@@ -453,16 +453,21 @@ class QueryContextStoreImplTest {
   }
 
   @Test
-  void discardResolvingPinsReleasesAFailedRequestsRoots() {
-    // A BeginQuery that fails to store its context (e.g. a query-id collision) must release the
-    // resolving-pin roots it registered, rather than leaving them rooted until the grace expires.
-    store.registerResolvingPinBlobs("q-collide", List.of("s3://t/resolving.pb"));
+  void aRejectedSameIdRequestDoesNotUnrootTheIncumbentsResolvingBlobs() {
+    // Regression: an incumbent owns query id "q" and is mid-resolution with a resolving-pin blob
+    // registered under "q" but not yet committed. A second request colliding on the same client id
+    // fails putIfAbsent. That rejection must NOT release the shared resolving entry — the blobs
+    // were
+    // unioned under the same id, so dropping them would unroot a blob the incumbent still needs and
+    // CasBlobGc could delete it mid-use. The rejected registration is left to the incumbent's own
+    // commit or the fail-safe grace instead.
+    store.put(active("q", null, pinBytes("s3://t/table.pb", "s3://t/committed.pb")));
+    store.registerResolvingPinBlobs("q", List.of("s3://t/resolving.pb"));
     assertThat(store.referencedPinBlobUris()).contains("s3://t/resolving.pb");
 
-    QueryContext failed =
-        active("q-collide", null, pinBytes("s3://t/resolving.pb", "s3://t/snap.pb"));
-    store.discardResolvingPins(failed);
+    QueryContext newcomer = active("q", null, pinBytes("s3://t/table.pb", "s3://t/resolving.pb"));
+    assertThat(store.putIfAbsent(newcomer)).isFalse();
 
-    assertThat(store.referencedPinBlobUris()).doesNotContain("s3://t/resolving.pb");
+    assertThat(store.referencedPinBlobUris()).contains("s3://t/resolving.pb");
   }
 }

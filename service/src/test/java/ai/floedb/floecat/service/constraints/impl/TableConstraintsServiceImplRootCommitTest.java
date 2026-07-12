@@ -122,6 +122,9 @@ class TableConstraintsServiceImplRootCommitTest {
 
   @Test
   void deleteCommitsTheClearedBundleOntoTheRoot() {
+    // deleteSnapshotConstraints removes only the (table, snapshot) pointer; the content-addressed
+    // bundle blob is retained for pinned readers and reclaimed by CasBlobGc, so the pointer delete
+    // is safe. The root ref is cleared so no new pin references the retired bundle.
     when(service.constraints.deleteSnapshotConstraints(tableId, 5L)).thenReturn(true);
 
     service
@@ -138,9 +141,9 @@ class TableConstraintsServiceImplRootCommitTest {
 
   @Test
   void deleteOnAnAlreadyGoneBundleStillClearsTheRootRef() {
-    // A retry after a prior attempt deleted the bundle but failed its root commit: the pointer is
+    // A retry after a prior attempt deleted the pointer but failed its root commit: the pointer is
     // already gone, so deleteSnapshotConstraints returns false. The root ref must STILL be cleared
-    // before reporting not-found — a stale ref would keep the deleted bundle visible to new pins
+    // before reporting not-found — a stale ref would keep the removed bundle visible to new pins
     // and anchor its blob in root-chain GC.
     when(service.constraints.deleteSnapshotConstraints(tableId, 5L)).thenReturn(false);
 

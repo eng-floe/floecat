@@ -355,12 +355,18 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                   ensureTableWritable(tableId);
 
                   var meta = constraints.metaForSafe(tableId, snapshotId);
+                  // deleteSnapshotConstraints removes only the (table, snapshot) pointers — the
+                  // constraints bundle is a content-addressed CAS blob, so the blob itself is NOT
+                  // deleted here. A query that pinned this snapshot reads the bundle by its frozen
+                  // blob URI (getByBlobUri), independent of the pointer, and reference-aware
+                  // CasBlobGc reclaims the blob only once no live pin holds it — so removing the
+                  // pointer cannot break a pinned reader.
                   if (!constraints.deleteSnapshotConstraints(tableId, snapshotId)) {
                     // Already gone — either a double-delete or a prior attempt that deleted the
-                    // bundle then failed its root commit and is retrying. Clear the root ref
+                    // pointer then failed its root commit and is retrying. Clear the root ref
                     // idempotently before reporting not-found, so a pinned-ref never outlives the
-                    // bundle it points at (new pins would copy a dangling ref; root-chain GC would
-                    // anchor the dead blob).
+                    // pointer it points at (new pins would copy a stale ref; root-chain GC would
+                    // anchor the retired blob).
                     commitConstraintsToRoot(tableId, snapshotId);
                     throw constraintsBundleNotFound(tableId, snapshotId);
                   }

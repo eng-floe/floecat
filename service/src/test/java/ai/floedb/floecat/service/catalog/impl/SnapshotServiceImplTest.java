@@ -691,6 +691,30 @@ class SnapshotServiceImplTest {
         .indefinitely();
 
     verify(svc.rootWriter).removeSnapshot(tableId, 123L);
+    // The stats generations must NOT be torn down here — a query that pinned this snapshot still
+    // reads them through its frozen stats_generation_ref; reference-aware CasBlobGc reclaims them.
+    verify(svc.statsStore, never()).deleteAllStatsForSnapshot(tableId, 123L);
+  }
+
+  @Test
+  void deleteSnapshotRemovesItFromTheRootWithoutTearingDownPinnedStats() {
+    var tableId = tableId("del-snap-pinned-stats");
+    var svc = serviceWithVisibleTable(tableId, TestNodes.tableNode(tableId, "{}"));
+    svc.statsOrchestrator = mock(StatsOrchestrator.class);
+    svc.rootWriter = mock(TableRootWriter.class);
+    when(svc.snapshotRepo.metaFor(tableId, 123L))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(4L).build());
+    when(svc.snapshotRepo.deleteWithPrecondition(tableId, 123L, 4L)).thenReturn(true);
+
+    svc.deleteSnapshot(
+            DeleteSnapshotRequest.newBuilder().setTableId(tableId).setSnapshotId(123L).build())
+        .await()
+        .indefinitely();
+
+    verify(svc.rootWriter).removeSnapshot(tableId, 123L);
+    // The success path must defer stats reclamation to reference-aware CasBlobGc, never eagerly
+    // delete the generation blobs an active pinned scan still reads (it would fail loudly).
+    verify(svc.statsStore, never()).deleteAllStatsForSnapshot(tableId, 123L);
   }
 
   private static SnapshotServiceImpl serviceWithVisibleTable(ResourceId tableId, TableNode node) {

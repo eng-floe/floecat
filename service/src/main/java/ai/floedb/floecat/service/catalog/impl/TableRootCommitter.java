@@ -104,6 +104,7 @@ public class TableRootCommitter {
    */
   public Optional<TableRoot> commit(ResourceId tableId, RootMutator mutator) {
     BaseResourceRepository.AbortRetryableException lastRetryable = null;
+    BaseResourceRepository.NotFoundException lastGone = null;
     for (int attempt = 0; attempt < MAX_COMMIT_ATTEMPTS; attempt++) {
       boolean won;
       TableRoot desired;
@@ -140,6 +141,7 @@ public class TableRootCommitter {
         // The root pointer was deleted between our read and the CAS (a racing DROP / account
         // cascade). Honor the retry-merge contract instead of failing terminally: re-read so the
         // next attempt derives from the deleted state ("no root"), and the mutator decides.
+        lastGone = gone;
         won = false;
         desired = null;
       } catch (BaseResourceRepository.RepoException terminal) {
@@ -154,16 +156,32 @@ public class TableRootCommitter {
             "table root commit interrupted for table " + tableId.getId());
       }
     }
+    String reason;
+    Throwable cause;
+    if (lastRetryable != null) {
+      reason =
+          "; a retryable store fault occurred during retries (see cause), not only CAS"
+              + " contention";
+      cause = lastRetryable;
+    } else if (lastGone != null) {
+      // Every attempt lost to a racing root-pointer deletion (DROP / account cascade), not to a
+      // CAS version race — surface that distinctly so the log doesn't misattribute it to
+      // contention.
+      reason =
+          "; the root pointer was repeatedly deleted mid-commit (racing DROP / account"
+              + " cascade), see cause";
+      cause = lastGone;
+    } else {
+      reason = " under CAS contention";
+      cause = null;
+    }
     throw new CommitFailedException(
         "table root commit exhausted "
             + MAX_COMMIT_ATTEMPTS
             + " attempts for table "
             + tableId.getId()
-            + (lastRetryable != null
-                ? "; a retryable store fault occurred during retries (see cause), not only CAS"
-                    + " contention"
-                : " under CAS contention"),
-        lastRetryable);
+            + reason,
+        cause);
   }
 
   private static boolean backoff(int attempt) {

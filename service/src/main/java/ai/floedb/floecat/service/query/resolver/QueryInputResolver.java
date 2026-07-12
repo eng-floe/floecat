@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
+import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TablePin;
@@ -330,20 +331,25 @@ public class QueryInputResolver {
     state.diagnostics.count(
         "pin.asof_snapshot_pins",
         (override != null && override.hasAsOf()) || asOfDefault.isPresent());
-    // Explicit snapshot_id: before re-resolving against the LIVE root (which throws NOT_FOUND once
-    // the snapshot has been deleted), reuse the query's existing committed pin if it already froze
-    // this exact snapshot — mirroring the CURRENT path's cache reuse and the first-touch-wins
-    // rule. A snapshot deleted mid-query keeps its pin's blobs GC-rooted, so a client restating the
-    // pinned id must get the pin back, not a hard NOT_FOUND. Only a DIFFERENT id re-resolves.
-    if (override != null && override.hasSnapshotId() && queryStore != null) {
+    // Before re-resolving against the LIVE root (which throws once the pinned snapshot has left the
+    // manifest — deleted or expired), reuse the query's existing committed pin if it already froze
+    // THIS same request, mirroring the CURRENT path's per-request cache and the first-touch-wins
+    // rule. A snapshot pinned at BeginQuery keeps its blobs GC-rooted for the query's lifetime, so
+    // a
+    // later DescribeInputs restating the same request must get the pin back — not a spurious
+    // NOT_FOUND or a QUERY_TABLE_PIN_CONFLICT from resolving a different snapshot at the same time.
+    // Covers explicit snapshot_id AND AS_OF (incl. an asOfDefault): both resolve deterministically
+    // to one frozen snapshot. Only a genuinely different request (other id / other as-of)
+    // re-resolves.
+    if (queryStore != null) {
       Optional<TablePin> reused =
           queryStore
               .get(state.queryId)
               .flatMap(
                   ctx -> QueryPins.findTablePin(ctx.parseRelationPins(state.correlationId), rid))
-              .filter(pin -> pin.getSnapshotId() == override.getSnapshotId());
+              .filter(pin -> reusableFor(pin, override, asOfDefault));
       if (reused.isPresent()) {
-        state.diagnostics.count("pin.explicit_snapshot_pin_reuse");
+        state.diagnostics.count("pin.committed_pin_reuse");
         return reused.get();
       }
     }
@@ -375,6 +381,26 @@ public class QueryInputResolver {
       return Optional.of(override.getAsOf());
     }
     return asOfDefault;
+  }
+
+  /**
+   * Whether a query's already-committed pin froze the SAME request this resolution is making, so it
+   * can be reused instead of re-resolving against the live root. Explicit snapshot_id: the ids
+   * match. AS_OF (or an asOfDefault): the pin is an AS_OF pin frozen for the same original
+   * timestamp — later reads use its resolved snapshot_id, so reusing preserves within-query
+   * consistency even after that snapshot leaves the live manifest. CURRENT is deliberately never
+   * reused here: it is served from the per-request cache above, and a fresh CURRENT request is
+   * meant to re-resolve to the live current.
+   */
+  private boolean reusableFor(TablePin pin, SnapshotRef override, Optional<Timestamp> asOfDefault) {
+    if (override != null && override.hasSnapshotId()) {
+      return pin.getSnapshotId() == override.getSnapshotId();
+    }
+    Optional<Timestamp> asOf = effectiveAsOf(override, asOfDefault);
+    return asOf.isPresent()
+        && pin.getPinKind() == PinKind.PIN_KIND_AS_OF
+        && pin.hasOriginalAsOf()
+        && pin.getOriginalAsOf().equals(asOf.get());
   }
 
   private void collectBaseTables(

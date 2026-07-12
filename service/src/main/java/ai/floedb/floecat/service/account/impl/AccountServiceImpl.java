@@ -591,6 +591,13 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
         tableId.getAccountId(), tableId.getId());
     pointerStore.deleteByPrefix(Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId()));
     pointerStore.delete(Keys.tableRootByTable(tableId.getAccountId(), tableId.getId()));
+    // The root-resync re-drive marker lives under /accounts/{a}/root-resyncs/by-table/, outside the
+    // per-table /tables/{t}/ subtree the prefixes above cover. Delete it here so a failed
+    // post-commit
+    // resync on a transaction-only table does not survive account deletion as a durable orphan (its
+    // only other reaper, TransactionGc.redrivePendingRootResyncs, never runs for a deleted
+    // account).
+    pointerStore.delete(Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId()));
     summary.snapshotPrefixesDeleted++;
   }
 

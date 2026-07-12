@@ -303,29 +303,20 @@ public class QueryContextStoreImpl implements QueryContextStore {
    * Drop transient resolving-pin roots that are now rooted by a just-committed context, so the
    * lifecycle is bound to the pin commit rather than the fail-safe grace.
    *
-   * <p>Only the committed context's <b>own</b> resolving registration is touched — the entry keyed
-   * by its query id, which is exactly the key under which its pins were registered during
-   * resolution. Keying on the query id (not the committing RPC's correlation id, which changes
-   * across BeginQuery/DescribeInputs/GetUserObjects) is what makes register and release agree, so a
-   * pin resolved on a later RPC is actually released on commit instead of lingering until the grace
-   * expires. Dropping across <i>all</i> queries was unsafe: when two concurrent queries pin the
-   * same physical blob (same table + snapshot), one query's commit would remove that shared URI
-   * from the other's still-resolving registration; if the committing query then ended and expired
-   * from the cache before the second query committed, the blob would be rooted by neither and
-   * {@code CasBlobGc} could delete a blob still in use. Scoping the drop to the committing query's
-   * own entry keeps every other in-flight query's registration intact.
+   * <p>Called ONLY for a context that just won its {@code putIfAbsent} — at that moment it uniquely
+   * owns its query id, so touching the entry keyed by that id touches only its own registration.
+   * Keying on the query id (not the committing RPC's correlation id, which changes across
+   * BeginQuery/DescribeInputs/GetUserObjects) is what makes register and release agree, so a pin
+   * resolved on a later RPC is actually released on commit instead of lingering until the grace
+   * expires. It must NOT be called for a context that failed to insert: a rejected same-id context
+   * shares the incumbent's entry, and dropping by URI would unroot blobs the incumbent is still
+   * resolving — {@code CasBlobGc} could then delete a blob still in use. A rejected context's
+   * registration is instead left to the incumbent's own commit or the fail-safe grace (bounded, and
+   * the map is size-capped).
    *
    * <p>URI-precise within that entry, so a not-yet-committed URI (e.g. a later streaming chunk)
    * stays protected, and the entry is dropped when it empties out.
    */
-  @Override
-  public void discardResolvingPins(QueryContext ctx) {
-    // Same mechanism a successful insert uses, but for a context that will NOT be stored: release
-    // exactly the resolving-pin blobs this query registered so a rejected BeginQuery (id collision)
-    // does not hold them rooted until the grace expires.
-    dropResolvingPinsRootedBy(ctx);
-  }
-
   private void dropResolvingPinsRootedBy(QueryContext committed) {
     if (committed == null || resolvingPinBlobs.isEmpty()) {
       return;
