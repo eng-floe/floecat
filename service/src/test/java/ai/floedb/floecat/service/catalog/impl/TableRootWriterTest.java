@@ -227,6 +227,36 @@ class TableRootWriterTest {
   }
 
   @Test
+  void resyncEntryCarriesTheActiveStatsGenerationAndConstraintsRefs() {
+    // A transactional resync builds a FRESH manifest entry (no prior entry for preserveAuxRefs to
+    // copy from). A finalized + constrained snapshot must land WITH both refs — otherwise it is
+    // gated-invisible (no stats generation) and its constraints are dropped.
+    when(tableRepo.metaForSafe(tableId)).thenReturn(tableMeta());
+    when(snapshotRepo.latestRegisteredSnapshotPointer(tableId)).thenReturn(Optional.of(pointer(7)));
+    when(snapshotRepo.metaForSafe(tableId, 7L)).thenReturn(snapMeta(7));
+    when(snapshotRepo.getById(eq(tableId), anyLong())).thenReturn(Optional.empty());
+    when(snapshotRepo.list(eq(tableId), anyInt(), any(), any()))
+        .thenReturn(java.util.List.of(Snapshot.newBuilder().setSnapshotId(7).build()));
+    when(statsStore.activeStatsGeneration(tableId, 7L))
+        .thenReturn(Optional.of("s3://t/stats/7/gen.pb"));
+    when(constraintRepo.metaForSafe(tableId, 7L))
+        .thenReturn(
+            MutationMeta.newBuilder()
+                .setBlobUri("s3://t/constraints/7.pb")
+                .setEtag("etag-c7")
+                .build());
+
+    writer.resyncFromCommittedState(tableId);
+
+    var entry =
+        SnapshotManifests.findEntry(
+                roots, roots.get(tableId).orElseThrow().getSnapshotManifestRef(), 7)
+            .orElseThrow();
+    assertEquals("s3://t/stats/7/gen.pb", entry.getStatsGenerationRef().getUri());
+    assertEquals("s3://t/constraints/7.pb", entry.getConstraintsRef().getUri());
+  }
+
+  @Test
   void resyncStaysUnconvergedWhenALiveSnapshotBlobIsUnresolvable() {
     // 7 is the committed current (resolvable); 9 is a registered non-current snapshot whose blob is
     // not yet resolvable. Membership is incomplete, so resync must NOT report convergence — the

@@ -124,6 +124,31 @@ class CasBlobGcTest {
   }
 
   @Test
+  void constraintsBlobsGcHonorsPointers() {
+    // A live constraints pointer must protect its blob even at min-age=0 — the write window where
+    // ConstraintRepository publishes the pointer before commitConstraints records the ref on the
+    // root. Symmetric with statsBlobsGcHonorsPointers.
+    long snapshotId = 1L;
+    String constraintsBlob =
+        Keys.snapshotConstraintsBlobUri(ACCOUNT_ID, TABLE_ID, snapshotId, "sha-c");
+    String constraintsPtr = Keys.snapshotConstraintsPointer(ACCOUNT_ID, TABLE_ID, snapshotId);
+
+    seedCurrentTable();
+
+    blobs.put(constraintsBlob, "c".getBytes(StandardCharsets.UTF_8), "application/octet-stream");
+    putPointer(constraintsPtr, constraintsBlob);
+
+    gc.runForAccount(ACCOUNT_ID);
+    assertTrue(
+        blobs.head(constraintsBlob).isPresent(),
+        "a live constraints pointer protects its blob before the root records the ref");
+
+    pointers.delete(constraintsPtr);
+    gc.runForAccount(ACCOUNT_ID);
+    assertFalse(blobs.head(constraintsBlob).isPresent());
+  }
+
+  @Test
   void keepsBlobPinnedByActiveQuery() {
     // A blob no current pointer references, but that a live query has pinned, must survive GC.
     String blobUri = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-pinned");

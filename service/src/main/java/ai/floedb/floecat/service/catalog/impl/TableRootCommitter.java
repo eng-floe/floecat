@@ -136,6 +136,12 @@ public class TableRootCommitter {
         lastRetryable = retryable;
         won = false;
         desired = null;
+      } catch (BaseResourceRepository.NotFoundException gone) {
+        // The root pointer was deleted between our read and the CAS (a racing DROP / account
+        // cascade). Honor the retry-merge contract instead of failing terminally: re-read so the
+        // next attempt derives from the deleted state ("no root"), and the mutator decides.
+        won = false;
+        desired = null;
       } catch (BaseResourceRepository.RepoException terminal) {
         throw new CommitFailedException(
             "table root commit failed for table " + tableId.getId(), terminal);

@@ -162,6 +162,17 @@ public class CasBlobGc {
               null,
               pageSize,
               p -> p.getKey() != null && p.getKey().contains(Keys.SEG_STATS));
+
+      // Constraints pointers live under a SIBLING prefix (/constraints/by-snapshot/), not under
+      // /snapshots/, so they need their own scan. A constraints blob is deletable (it matches the
+      // delete predicate) and its pointer goes live before commitConstraints records the ref on the
+      // root — this scan protects the blob during that window, symmetric with the stats pointers.
+      pointersScanned +=
+          collectPointers(
+              Keys.snapshotConstraintsPointerPrefix(accountId, tableId),
+              referenced,
+              null,
+              pageSize);
     }
 
     // Active query pins are GC roots: an immutable blob a live query pinned must survive even after
@@ -463,13 +474,14 @@ public class CasBlobGc {
           long lastModified =
               com.google.protobuf.util.Timestamps.toMillis(header.getLastModifiedAt());
           // nowMs is FROZEN at pass start, so this grace is anchored to pass-start, NOT to
-          // wall-clock-now. That is what protects a root (or any blob) committed AFTER its table's
-          // one-time reference mark: its lastModified is later than nowMs, so the difference is
+          // wall-clock-now. That protects a root (or any blob) committed AFTER its table's one-time
+          // reference mark: its lastModified is STRICTLY later than nowMs, so the difference is
           // negative — below min-age — and it is skipped no matter how long the sweep runs. This
-          // runs unconditionally, not only when min-age > 0: even min-age=0 must keep the
-          // negative-age protection, or a blob written mid-sweep with no live pin would be swept
-          // the same pass. A blob is deletable only if it was already unreferenced-and-old at pass
-          // start.
+          // runs unconditionally, not only when min-age > 0. (The lone edge is a blob whose
+          // lastModified == nowMs exactly: at min-age=0, 0 < 0 is false, so it is eligible. That is
+          // unreachable in practice — nowMs is stamped before any blob the sweep could race, and
+          // the default min-age is 30s — but note the fence is exact only for min-age > 0.) A blob
+          // is deletable only if it was already unreferenced-and-old at pass start.
           if (nowMs - lastModified < minAgeMs) {
             continue;
           }

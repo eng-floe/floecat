@@ -282,6 +282,21 @@ public class TableRootWriter {
         .getById(tableId, snapshotId)
         .filter(Snapshot::hasUpstreamCreatedAt)
         .ifPresent(s -> builder.setUpstreamCreatedAt(s.getUpstreamCreatedAt()));
+    // Attach the finalized aux refs the same way TableRootSynthesizer.entryFor does. A resync
+    // creates a fresh entry (no prior entry for preserveAuxRefs to copy from), so without this a
+    // finalized snapshot would land WITHOUT its stats_generation_ref — invisible under the gate —
+    // and a constrained snapshot would drop its constraints_ref.
+    if (statsStore != null) {
+      statsStore
+          .activeStatsGeneration(tableId, snapshotId)
+          .ifPresent(uri -> builder.setStatsGenerationRef(BlobRef.newBuilder().setUri(uri)));
+    }
+    if (constraints != null) {
+      BlobRef constraintsRef = BlobRefs.refFrom(constraints.metaForSafe(tableId, snapshotId));
+      if (constraintsRef != null) {
+        builder.setConstraintsRef(constraintsRef);
+      }
+    }
     return java.util.Optional.of(builder.build());
   }
 

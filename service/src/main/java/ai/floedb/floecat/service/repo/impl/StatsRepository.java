@@ -923,9 +923,13 @@ public class StatsRepository implements StatsStore {
           < minAgeMs) {
         // publish->flip window: too young to be provably unreferenced. Runs UNCONDITIONALLY, not
         // only when min-age > 0 — matching the CAS blob sweep. nowMs is frozen at pass start, so a
-        // generation whose manifest was published mid-sweep has lastModified later than nowMs
-        // (negative age, below any min-age including 0) and is fenced; without this, min-age=0
-        // would let GC delete a generation out from under an in-flight replace/first publish.
+        // generation whose manifest was published mid-sweep has lastModified STRICTLY later than
+        // nowMs (negative age, below any min-age including 0) and is fenced; without this,
+        // min-age=0
+        // would let GC delete a generation out from under an in-flight replace/first publish. (The
+        // exact-tie lastModified == nowMs is eligible at min-age=0, but is unreachable — nowMs is
+        // stamped before any manifest the sweep could race — so the fence is exact for min-age >
+        // 0.)
         continue;
       }
       if (isProtectedManifestUri.test(manifestUri)) {

@@ -345,11 +345,6 @@ public class SnapshotRepository {
    * surfaced as empty rather than by walking to the mutable pointer.
    */
   private Optional<Snapshot> snapshotFromRootEntry(
-      ResourceId tableId, ai.floedb.floecat.catalog.rpc.TableRoot root, long snapshotId) {
-    return snapshotFromRootEntry(tableId, root, snapshotId, false);
-  }
-
-  private Optional<Snapshot> snapshotFromRootEntry(
       ResourceId tableId,
       ai.floedb.floecat.catalog.rpc.TableRoot root,
       long snapshotId,
