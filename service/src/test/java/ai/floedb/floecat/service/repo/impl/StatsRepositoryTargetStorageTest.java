@@ -755,6 +755,34 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void negativeAgeGenerationSurvivesReclaimEvenAtMinAgeZero() {
+    // A generation whose manifest was published AFTER the pass began (lastModified later than the
+    // frozen pass-start nowMs) must be fenced even at min-age 0 — GC must not reclaim an in-flight
+    // publish mid-sweep. Simulate by passing a pass-start an hour before the (just-written) blobs.
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository statsRepository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 3L;
+    var record =
+        ai.floedb.floecat.stats.identity.TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            ai.floedb.floecat.catalog.rpc.TableValueStats.newBuilder().setRowCount(1L).build(),
+            null);
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+    String gen1 = statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+
+    long passStartBeforeTheWrites = System.currentTimeMillis() - 3_600_000L;
+    int reclaimed =
+        statsRepository.deleteUnreferencedGenerations(
+            TABLE_ID, uri -> false, passStartBeforeTheWrites, 0L);
+
+    assertThat(reclaimed).as("negative-age generation is fenced even at min-age 0").isZero();
+    assertThat(blobStore.get(gen1)).as("the mid-sweep-published generation survives").isNotNull();
+  }
+
+  @Test
   void puttingStatsDoesNotAdvanceTablePointerVersion() {
     InMemoryPointerStore pointerStore = new InMemoryPointerStore();
     InMemoryBlobStore blobStore = new InMemoryBlobStore();

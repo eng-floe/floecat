@@ -79,6 +79,32 @@ class TransactionGcTest {
     assertCollected(TransactionState.TS_APPLIED);
     assertCollected(TransactionState.TS_APPLY_FAILED_RETRYABLE);
     assertCollected(TransactionState.TS_APPLY_FAILED_CONFLICT);
+    assertCollected(TransactionState.TS_ABORTED);
+  }
+
+  @Test
+  void abortedTransactionWithinGraceIsNotCollected() throws Exception {
+    // A just-aborted txn (expiry ~now, so exp + min-age is still in the future) must stay
+    // observable as ABORTED — the same read-after-write grace every other terminal state gets,
+    // rather than vanishing the same GC tick.
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    String accountId = "acct";
+    String txId = "tx-aborted-fresh";
+    putTransaction(
+        pointers,
+        blobs,
+        accountId,
+        txId,
+        TransactionState.TS_ABORTED,
+        Timestamps.fromMillis(System.currentTimeMillis()));
+
+    var gc = newGc(pointers, blobs);
+    gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
+
+    assertTrue(
+        pointers.get(Keys.transactionPointerById(accountId, txId)).isPresent(),
+        "a just-aborted txn stays observable within the read-after-write grace");
   }
 
   @Test

@@ -232,11 +232,19 @@ public class CasBlobGc {
             referenced,
             walkedPinRoots,
             walkFailures,
+            // Deliberately enumerated: only families whose superseded blobs the referenced-set
+            // computation above actually tracks may be delete candidates. Families NOT listed
+            // (index-artifact sidecars, compat, storage-authority) are LISTed but never deleted
+            // here — widening this filter without also teaching the referenced-set to root their
+            // live blobs would delete live data. Bringing those families under GC (with
+            // referenced-set support) is a separate follow-up; today they are out of scope for
+            // this sweep, not a data-loss risk.
             key ->
                 key.contains(Keys.SEG_TABLE)
                     || (key.contains(Keys.SEG_SNAPSHOTS) && key.contains(Keys.SEG_SNAPSHOT))
                     || key.contains(Keys.SEG_TARGET_STATS)
                     || key.contains(Keys.SEG_FILE_STATS)
+                    || key.contains(Keys.SEG_CONSTRAINTS)
                     || key.contains(Keys.SEG_TABLE_ROOT),
             pageSize,
             nowMs,
@@ -436,27 +444,25 @@ public class CasBlobGc {
           continue;
         }
         if (!referenced.contains(normalized)) {
-          if (minAgeMs > 0) {
-            var header = blobStore.head(key).orElse(null);
-            if (header == null) {
-              // No header (transient HEAD failure, or read-after-write metadata lag): we cannot
-              // prove the blob is old enough, so fail SAFE and skip it, matching the generation
-              // reclaim. The next pass retries once the metadata is readable.
-              continue;
-            }
-            {
-              long lastModified =
-                  com.google.protobuf.util.Timestamps.toMillis(header.getLastModifiedAt());
-              // nowMs is FROZEN at pass start, so this grace is anchored to pass-start, NOT to
-              // wall-clock-now. That is what protects a root (or any blob) committed AFTER its
-              // table's one-time reference mark: its lastModified is later than nowMs, so the
-              // difference is negative — below min-age — and it is skipped no matter how long the
-              // sweep runs. A blob is deletable only if it was already unreferenced-and-old when
-              // the pass began.
-              if (nowMs - lastModified < minAgeMs) {
-                continue;
-              }
-            }
+          var header = blobStore.head(key).orElse(null);
+          if (header == null) {
+            // No header (transient HEAD failure, or read-after-write metadata lag): we cannot
+            // prove the blob is old enough, so fail SAFE and skip it, matching the generation
+            // reclaim. The next pass retries once the metadata is readable.
+            continue;
+          }
+          long lastModified =
+              com.google.protobuf.util.Timestamps.toMillis(header.getLastModifiedAt());
+          // nowMs is FROZEN at pass start, so this grace is anchored to pass-start, NOT to
+          // wall-clock-now. That is what protects a root (or any blob) committed AFTER its table's
+          // one-time reference mark: its lastModified is later than nowMs, so the difference is
+          // negative — below min-age — and it is skipped no matter how long the sweep runs. This
+          // runs unconditionally, not only when min-age > 0: even min-age=0 must keep the
+          // negative-age protection, or a blob written mid-sweep with no live pin would be swept
+          // the same pass. A blob is deletable only if it was already unreferenced-and-old at pass
+          // start.
+          if (nowMs - lastModified < minAgeMs) {
+            continue;
           }
           if (blobStore.delete(key)) {
             deleted++;

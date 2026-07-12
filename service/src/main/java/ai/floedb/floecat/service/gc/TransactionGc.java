@@ -150,7 +150,14 @@ public class TransactionGc {
 
   private boolean shouldCollect(String accountId, Transaction txn, long nowMs, long minAgeMs) {
     if (txn.getState() == TransactionState.TS_ABORTED) {
-      return true;
+      // Terminal, but honor the same read-after-write grace as every other terminal state so a
+      // just-aborted txn stays observable as ABORTED rather than vanishing the same tick. A
+      // no-TTL abort has no expiry to anchor the window, so it collects immediately as before.
+      if (!txn.hasExpiresAt()) {
+        return true;
+      }
+      long exp = com.google.protobuf.util.Timestamps.toMillis(txn.getExpiresAt());
+      return exp + minAgeMs <= nowMs;
     }
     if (txn.getState() == TransactionState.TS_APPLYING) {
       // In-flight apply phase is not eligible for TTL-based collection.

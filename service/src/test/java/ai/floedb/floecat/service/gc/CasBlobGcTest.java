@@ -92,6 +92,18 @@ class CasBlobGcTest {
   }
 
   @Test
+  void sweepsSupersededConstraintsBlob() {
+    // Constraints blobs are root-referenced now, so a superseded (unreferenced) constraints bundle
+    // must be swept like the other table-subtree families, not leaked forever.
+    String constraintsBlob = Keys.snapshotConstraintsBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "sha-old");
+    blobs.put(constraintsBlob, "old".getBytes(StandardCharsets.UTF_8), "application/octet-stream");
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(blobs.head(constraintsBlob).isPresent(), "superseded constraints blob is swept");
+  }
+
+  @Test
   void statsBlobsGcHonorsPointers() {
     long snapshotId = 1L;
     String targetId = StatsTargetIdentity.storageId(StatsTargetIdentity.tableTarget());
