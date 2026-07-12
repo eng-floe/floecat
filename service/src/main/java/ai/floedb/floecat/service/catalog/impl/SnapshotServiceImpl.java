@@ -229,6 +229,10 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                         throw GrpcErrors.invalidArgument(
                             correlationId(), SNAPSHOT_SPECIAL_MISSING, Map.of());
                       }
+                      // Catalog GetSnapshot(SS_CURRENT) reports the committed logical current so
+                      // protocol gateways can materialize standards-compliant metadata. Query
+                      // planning must resolve through TablePin/SnapshotHelper, where the finalize
+                      // gate turns committed-but-unfinalized current into "not query-visible".
                       snap =
                           snapshotRepo
                               .getCommittedCurrentSnapshot(tableId)
