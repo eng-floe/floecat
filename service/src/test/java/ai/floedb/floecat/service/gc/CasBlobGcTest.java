@@ -443,6 +443,39 @@ class CasBlobGcTest {
   }
 
   @Test
+  void retryableChainReadIsRetriedBeforePoisoningTheSweep() {
+    seedCurrentTable();
+
+    String snapBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 1L, "sha-s");
+    blobs.put(snapBlob, "snap".getBytes(StandardCharsets.UTF_8), "text/plain");
+    commitRoot(1L, snapBlob, "v1", null);
+
+    String orphan = Keys.tableBlobUri(ACCOUNT_ID, "other-table", "sha-orphan");
+    blobs.put(orphan, "orphan".getBytes(StandardCharsets.UTF_8), "text/plain");
+
+    int[] attempts = {0};
+    gc.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs) {
+          @Override
+          public java.util.Optional<ai.floedb.floecat.catalog.rpc.SnapshotManifestPage>
+              getManifestPage(ai.floedb.floecat.catalog.rpc.BlobRef ref) {
+            attempts[0]++;
+            if (attempts[0] == 1) {
+              throw new ai.floedb.floecat.service.repo.util.BaseResourceRepository
+                  .AbortRetryableException("one transient page-read failure");
+            }
+            return super.getManifestPage(ref);
+          }
+        };
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(result.poisoned(), "a retryable one-off read failure should not poison the sweep");
+    assertFalse(blobs.head(orphan).isPresent(), "healthy sweep still collects unrelated garbage");
+    assertEquals(2, attempts[0], "the manifest page read was retried once");
+  }
+
+  @Test
   void aCyclicManifestChainPoisonsTheSweepInsteadOfHanging() {
     // Content-addressed pages are acyclic by construction, so a repeated prevPageRef means
     // corruption. The walk must fail safe (poison the sweep, delete nothing) rather than loop

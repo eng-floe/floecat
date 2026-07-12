@@ -23,6 +23,7 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -32,8 +33,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
@@ -53,6 +56,7 @@ import org.jboss.logging.Logger;
 public class CasBlobGc {
 
   private static final Logger LOG = Logger.getLogger(CasBlobGc.class);
+  private static final int CHAIN_READ_ATTEMPTS = 3;
 
   @Inject BlobStore blobStore;
   @Inject PointerStore pointerStore;
@@ -312,7 +316,10 @@ public class CasBlobGc {
   private boolean rootTableRootChain(String rootBlobUri, Set<String> referenced) {
     referenced.add(normalizeKey(rootBlobUri));
     try {
-      var root = tableRootRepo.getByBlobUri(rootBlobUri).orElse(null);
+      var root =
+          readChainObject(
+                  "root blob " + rootBlobUri, () -> tableRootRepo.getByBlobUri(rootBlobUri))
+              .orElse(null);
       if (root == null) {
         LOG.warnf("cas gc could not read root blob %s; sweep will be skipped", rootBlobUri);
         return false;
@@ -333,7 +340,12 @@ public class CasBlobGc {
           return false;
         }
         referenced.add(normalizeKey(pageRef.getUri()));
-        var page = tableRootRepo.getManifestPage(pageRef).orElse(null);
+        var pageRefForRead = pageRef;
+        var page =
+            readChainObject(
+                    "manifest page " + pageRef.getUri() + " of root " + rootBlobUri,
+                    () -> tableRootRepo.getManifestPage(pageRefForRead))
+                .orElse(null);
         if (page == null) {
           LOG.warnf(
               "cas gc could not read manifest page %s of root %s; sweep will be skipped",
@@ -358,6 +370,24 @@ public class CasBlobGc {
       LOG.warnf(e, "cas gc chain walk failed for root %s; sweep will be skipped", rootBlobUri);
       return false;
     }
+  }
+
+  private <T> Optional<T> readChainObject(String description, Supplier<Optional<T>> read) {
+    BaseResourceRepository.AbortRetryableException last = null;
+    for (int attempt = 1; attempt <= CHAIN_READ_ATTEMPTS; attempt++) {
+      try {
+        return read.get();
+      } catch (BaseResourceRepository.AbortRetryableException e) {
+        last = e;
+        if (attempt < CHAIN_READ_ATTEMPTS) {
+          LOG.debugf(e, "cas gc retrying %s read after retryable storage failure", description);
+        }
+      }
+    }
+    if (last == null) {
+      throw new IllegalStateException("cas gc chain read had no attempts: " + description);
+    }
+    throw last;
   }
 
   private int collectPointers(
