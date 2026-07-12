@@ -231,7 +231,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                       }
                       snap =
                           snapshotRepo
-                              .getCurrentSnapshot(tableId)
+                              .getCommittedCurrentSnapshot(tableId)
                               .orElseThrow(
                                   () ->
                                       GrpcErrors.notFound(
@@ -279,12 +279,11 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   var tableId = request.getTableId();
                   ensureTableVisible(tableId, correlationId());
 
-                  // Reports the QUERY-VISIBLE current snapshot: the repository's default
-                  // current-snapshot read is gate-aware, so the CLI and callers of this RPC
-                  // always agree with what queries see.
+                  // Catalog RPC current reports the committed current selection. Query planning
+                  // uses TablePin resolution, which separately enforces snapshot readiness.
                   var response = GetCurrentSnapshotPointerResponse.newBuilder();
                   snapshotRepo
-                      .getCurrentSnapshotPointer(tableId)
+                      .getCommittedCurrentSnapshotPointer(tableId)
                       .ifPresent(response::setCurrentSnapshotPointer);
                   return response.build();
                 }),

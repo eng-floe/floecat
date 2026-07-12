@@ -90,11 +90,10 @@ public class TableRootWriter {
     if (candidate.hasUpstreamCreatedAt()) {
       entry.setUpstreamCreatedAt(candidate.getUpstreamCreatedAt());
     }
-    // Visibility gate: with a generation-tracking store, registration does not advance currency —
-    // the snapshot becomes CURRENT when its generation (file list, indexes, stats) publishes via
-    // commitStatsGeneration. A store that tracks no generations cannot express readiness and keeps
-    // advance-at-registration.
-    boolean advanceAtRegistration = !StatsVisibilityGate.gateOnFinalize(statsStore);
+    // Root currency tracks the committed current-snapshot selection immediately. Query readers
+    // still require the selected manifest entry to carry a stats generation before pinning it, so
+    // logical Iceberg metadata can move current without exposing an unfinalized scan.
+    boolean advanceAtRegistration = true;
     committer.commit(
         tableId,
         TableRootMutations.upsertSnapshot(
@@ -202,7 +201,6 @@ public class TableRootWriter {
             // re-drive marker alive.
             return deleteRoot(tableId);
           }
-          boolean gateOnFinalize = StatsVisibilityGate.gateOnFinalize(statsStore);
           boolean[] converged = {true};
           committer.commit(
               tableId,
@@ -241,7 +239,6 @@ public class TableRootWriter {
                         tableId,
                         definitionRef,
                         entry,
-                        gateOnFinalize,
                         liveSnapshotIds,
                         id -> {
                           SnapshotManifestEntry loaded = snapshotEntry(tableId, id).orElse(null);

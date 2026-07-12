@@ -205,10 +205,8 @@ public class SnapshotHelper {
                             "snapshot_id", Long.toString(currentId))));
     if (gateOnFinalize() && !entry.hasStatsGenerationRef()) {
       // Defend the gate at the read, consistent with the explicit-id (reject) and AS_OF (skip)
-      // paths: currency is only supposed to point at a finalized snapshot, but a generation
-      // removal clears the ref without clearing currency, so an unfinalized current is possible.
-      // Treat it as "no queryable current snapshot" rather than pinning a snapshot with no
-      // generation (which would then scan empty).
+      // paths: committed currency can move before the generation publishes, but it is not
+      // query-visible until the selected manifest entry carries the generation ref.
       throw GrpcErrors.notFound(cid, SNAPSHOT, Map.of("table_id", tableId.getId()));
     }
     return pinFromEntry(cid, tableId, PinKind.PIN_KIND_CURRENT, entry, root, rootMeta, null);

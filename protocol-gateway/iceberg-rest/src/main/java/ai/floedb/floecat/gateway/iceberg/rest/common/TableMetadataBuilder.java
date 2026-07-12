@@ -679,6 +679,12 @@ public final class TableMetadataBuilder {
                   }
                 });
             Long refSnapshotId = asLong(ref.get("snapshot-id"));
+            if ("main".equals(name)
+                && (currentSnapshotId == null
+                    || currentSnapshotId < 0
+                    || !snapshotIds.contains(currentSnapshotId))) {
+              return;
+            }
             if (refSnapshotId == null
                 || refSnapshotId < 0
                 || !snapshotIds.contains(refSnapshotId)) {

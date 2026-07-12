@@ -194,11 +194,6 @@ public final class TableRootMutations {
    * {@code currentEntry == null} means the committed state has no current snapshot and clears
    * currency.
    *
-   * <p>{@code gateOnFinalize}: when the deployment gates visibility on finalize, currency is forced
-   * only onto a FINALIZED entry (one carrying its generation ref). A transaction that committed a
-   * brand-new snapshot registers its entry here, but the previous finalized snapshot keeps serving
-   * until the post-commit finalize publishes — the same gate every writer obeys.
-   *
    * <p>{@code liveSnapshotIds}: the ids still registered (a live by-id pointer). The manifest is
    * reconciled to exactly this membership — entries whose snapshot is absent are pruned (a
    * transactional expire/remove-snapshots clears snapshot pointers via raw CAS and never funnels
@@ -213,7 +208,6 @@ public final class TableRootMutations {
       ResourceId tableId,
       BlobRef definitionRef,
       SnapshotManifestEntry currentEntry,
-      boolean gateOnFinalize,
       Set<Long> liveSnapshotIds,
       java.util.function.LongFunction<SnapshotManifestEntry> entryLoader) {
     return current -> {
@@ -236,9 +230,7 @@ public final class TableRootMutations {
                 .orElse(currentEntry);
         head = chain.upsert(merged);
         committedCurrentId = merged.getSnapshotId();
-        if (!gateOnFinalize || merged.hasStatsGenerationRef()) {
-          next.setCurrentSnapshotId(merged.getSnapshotId());
-        }
+        next.setCurrentSnapshotId(merged.getSnapshotId());
       }
 
       if (liveSnapshotIds != null) {

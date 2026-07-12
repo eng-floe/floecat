@@ -21,6 +21,7 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.SnapshotKey;
@@ -29,6 +30,7 @@ import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.telemetry.StoreOperationSummary;
+import ai.floedb.floecat.stats.spi.StatsStore;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -56,6 +58,7 @@ public class SnapshotRepository {
   private final CurrentSnapshotPointerRepository currentPointerRepo;
   private final PointerStore pointerStore;
   private final TableRootRepository roots;
+  private final StatsStore statsStore;
   private final Clock clock;
 
   @Inject
@@ -64,8 +67,25 @@ public class SnapshotRepository {
       BlobStore blobStore,
       TableRepository tableRepo,
       CurrentSnapshotPointerRepository currentPointerRepo,
+      TableRootRepository roots,
+      StatsStore statsStore) {
+    this(
+        pointerStore,
+        blobStore,
+        tableRepo,
+        currentPointerRepo,
+        roots,
+        statsStore,
+        Clock.systemUTC());
+  }
+
+  public SnapshotRepository(
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      TableRepository tableRepo,
+      CurrentSnapshotPointerRepository currentPointerRepo,
       TableRootRepository roots) {
-    this(pointerStore, blobStore, tableRepo, currentPointerRepo, roots, Clock.systemUTC());
+    this(pointerStore, blobStore, tableRepo, currentPointerRepo, roots, null, Clock.systemUTC());
   }
 
   public SnapshotRepository(
@@ -78,7 +98,8 @@ public class SnapshotRepository {
         blobStore,
         tableRepo,
         currentPointerRepo,
-        new TableRootRepository(pointerStore, blobStore));
+        new TableRootRepository(pointerStore, blobStore),
+        null);
   }
 
   public SnapshotRepository(
@@ -102,6 +123,7 @@ public class SnapshotRepository {
         tableRepo,
         currentPointerRepo,
         new TableRootRepository(pointerStore, blobStore),
+        null,
         clock);
   }
 
@@ -112,6 +134,7 @@ public class SnapshotRepository {
       TableRepository tableRepo,
       CurrentSnapshotPointerRepository currentPointerRepo,
       TableRootRepository roots,
+      StatsStore statsStore,
       Clock clock) {
     this.repo =
         new GenericResourceRepository<>(
@@ -125,6 +148,7 @@ public class SnapshotRepository {
     this.currentPointerRepo = currentPointerRepo;
     this.pointerStore = pointerStore;
     this.roots = roots;
+    this.statsStore = statsStore;
     this.clock = clock;
   }
 
@@ -289,16 +313,20 @@ public class SnapshotRepository {
   }
 
   /**
-   * The QUERY-VISIBLE current snapshot — what every read surface (RPCs, CLI, system scans, metadata
-   * fallbacks) must report. When the table has a root, its currency is the single truth: under the
-   * visibility gate a snapshot becomes current only when finalized, and a root without currency
-   * means the table has no queryable snapshot (no fallback to the ingest pointer). A table with no
-   * root yet (un-migrated legacy) reads its legacy pointer until the first pin or write migrates
-   * it. Write-side plumbing that needs the raw ingest pointer — the reconciler's finalize target,
-   * credential vending, migration/staging inputs — must ask for {@link #latestRegisteredSnapshot}
-   * explicitly.
+   * The QUERY-VISIBLE current snapshot. The root's current id is the committed logical selection;
+   * this read additionally applies the finalize gate, so scans and query-adjacent reads do not see
+   * a snapshot until its manifest entry carries the active stats generation.
    */
   public Optional<Snapshot> getCurrentSnapshot(ResourceId tableId) {
+    return rootCurrentSnapshot(tableId, true);
+  }
+
+  /** The committed current snapshot selection, before query-readiness gating. */
+  public Optional<Snapshot> getCommittedCurrentSnapshot(ResourceId tableId) {
+    return rootCurrentSnapshot(tableId, false);
+  }
+
+  private Optional<Snapshot> rootCurrentSnapshot(ResourceId tableId, boolean requireQueryReady) {
     if (tableId == null) {
       return Optional.empty();
     }
@@ -314,7 +342,8 @@ public class SnapshotRepository {
       // before its root re-commit, so getById could serve a blob the current root never
       // referenced (and would keep serving it if the root commit then failed). The root is the
       // publication boundary for reads.
-      return snapshotFromRootEntry(tableId, lookup.root(), lookup.root().getCurrentSnapshotId());
+      return snapshotFromRootEntry(
+          tableId, lookup.root(), lookup.root().getCurrentSnapshotId(), requireQueryReady);
     }
     return latestRegisteredSnapshot(tableId);
   }
@@ -326,8 +355,18 @@ public class SnapshotRepository {
    */
   private Optional<Snapshot> snapshotFromRootEntry(
       ResourceId tableId, ai.floedb.floecat.catalog.rpc.TableRoot root, long snapshotId) {
+    return snapshotFromRootEntry(tableId, root, snapshotId, false);
+  }
+
+  private Optional<Snapshot> snapshotFromRootEntry(
+      ResourceId tableId,
+      ai.floedb.floecat.catalog.rpc.TableRoot root,
+      long snapshotId,
+      boolean requireQueryReady) {
     var head = root.hasSnapshotManifestRef() ? root.getSnapshotManifestRef() : null;
     return SnapshotManifests.findEntry(roots, head, snapshotId)
+        .filter(entry -> !requireQueryReady || !StatsVisibilityGate.gateOnFinalize(statsStore)
+            || entry.hasStatsGenerationRef())
         .filter(entry -> entry.hasSnapshotRef() && !entry.getSnapshotRef().getUri().isEmpty())
         .flatMap(entry -> getByBlobUri(entry.getSnapshotRef().getUri()));
   }
@@ -397,6 +436,16 @@ public class SnapshotRepository {
 
   /** Pointer-shaped view of {@link #getCurrentSnapshot} — the query-visible current snapshot. */
   public Optional<CurrentSnapshotPointer> getCurrentSnapshotPointer(ResourceId tableId) {
+    return rootCurrentSnapshotPointer(tableId, true);
+  }
+
+  /** Pointer-shaped view of the committed current snapshot, before query-readiness gating. */
+  public Optional<CurrentSnapshotPointer> getCommittedCurrentSnapshotPointer(ResourceId tableId) {
+    return rootCurrentSnapshotPointer(tableId, false);
+  }
+
+  private Optional<CurrentSnapshotPointer> rootCurrentSnapshotPointer(
+      ResourceId tableId, boolean requireQueryReady) {
     if (tableId == null) {
       return Optional.empty();
     }
@@ -409,7 +458,8 @@ public class SnapshotRepository {
     }
     // Resolve through the root's published snapshot_ref, not the live pointer (see
     // getCurrentSnapshot).
-    return snapshotFromRootEntry(tableId, lookup.root(), lookup.root().getCurrentSnapshotId())
+    return snapshotFromRootEntry(
+            tableId, lookup.root(), lookup.root().getCurrentSnapshotId(), requireQueryReady)
         .map(snap -> visibleCurrentPointer(tableId, snap));
   }
 

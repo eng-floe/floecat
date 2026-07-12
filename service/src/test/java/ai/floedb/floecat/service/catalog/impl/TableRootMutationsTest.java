@@ -260,8 +260,7 @@ class TableRootMutationsTest {
 
   @Test
   void registrationWithoutAdvanceLeavesCurrencyUntouched() {
-    // Visibility gate: a generation-tracking deployment registers the entry at ingest but the
-    // snapshot must not become CURRENT until its generation publishes.
+    // Some paths register manifest membership without changing the committed current selection.
     committer.commit(
         TABLE, TableRootMutations.upsertSnapshot(roots, TABLE, entry(7, 7_000), null, false));
 
@@ -381,7 +380,7 @@ class TableRootMutationsTest {
     committer.commit(
         TABLE,
         TableRootMutations.resync(
-            roots, TABLE, null, entry(7, 7_000), false, java.util.Set.of(7L), null));
+            roots, TABLE, null, entry(7, 7_000), java.util.Set.of(7L), null));
 
     var root = roots.get(TABLE).orElseThrow();
     assertFalse(
@@ -402,7 +401,7 @@ class TableRootMutationsTest {
     // No committed current, snapshot 5 no longer registered.
     committer.commit(
         TABLE,
-        TableRootMutations.resync(roots, TABLE, null, null, false, java.util.Set.of(), null));
+        TableRootMutations.resync(roots, TABLE, null, null, java.util.Set.of(), null));
 
     var root = roots.get(TABLE).orElseThrow();
     assertFalse(root.hasCurrentSnapshotId());
@@ -429,7 +428,6 @@ class TableRootMutationsTest {
             TABLE,
             null,
             entry(7, 7_000),
-            false,
             java.util.Set.of(3L, 7L),
             id -> id == 3L ? missing : null));
 
@@ -489,10 +487,10 @@ class TableRootMutationsTest {
   }
 
   @Test
-  void gatedResyncDoesNotForceCurrencyOntoAnUnfinalizedEntry() {
-    // The gated table already serves snapshot 3 (finalized); a transaction commits snapshot 7 and
-    // moves the legacy pointer. The resync registers 7 but the previous finalized snapshot keeps
-    // serving until 7's post-commit finalize publishes.
+  void gatedResyncRecordsCommittedCurrentEvenWhenTheEntryIsUnfinalized() {
+    // The gated table already has finalized snapshot 3; a transaction commits snapshot 7 and moves
+    // the committed pointer. Root currency mirrors that committed selection immediately. Query
+    // readers apply the finalize gate from the manifest entry, not by leaving root currency stale.
     committer.commit(
         TABLE, TableRootMutations.upsertSnapshot(roots, TABLE, entry(3, 3_000), null, false));
     var gen = ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri("s3://t/gen-3.pb").build();
@@ -501,10 +499,10 @@ class TableRootMutationsTest {
     committer.commit(
         TABLE,
         TableRootMutations.resync(
-            roots, TABLE, null, entry(7, 7_000), true, java.util.Set.of(3L, 7L), null));
+            roots, TABLE, null, entry(7, 7_000), java.util.Set.of(3L, 7L), null));
 
     var root = roots.get(TABLE).orElseThrow();
-    assertEquals(3, root.getCurrentSnapshotId());
+    assertEquals(7, root.getCurrentSnapshotId());
     assertTrue(
         ai.floedb.floecat.service.repo.impl.SnapshotManifests.findEntry(
                 roots, root.getSnapshotManifestRef(), 7)
@@ -514,8 +512,9 @@ class TableRootMutationsTest {
   @Test
   void theGateTreatsSnapshotIdZeroAsARealId() {
     // Snapshot id 0 is a valid id; presence semantics (hasCurrentSnapshotId) — not the proto
-    // default value — must carry the gate. Registration gated: no currency; the generation
-    // publish makes id 0 current, with currency PRESENT and equal to zero.
+    // default value — must carry currency. Membership-only registration leaves currency empty; the
+    // generation publish can still project committed current id 0, with currency PRESENT and equal
+    // to zero.
     committer.commit(
         TABLE,
         TableRootMutations.upsertSnapshot(

@@ -130,18 +130,14 @@ public class TableRootSynthesizer {
     }
     // Currency imports from the legacy pointer (the raw one — this IS the migration input) only
     // when its target actually made it into the manifest: a dangling pointer (snapshot blob gone)
-    // must not become currency nothing can resolve. Under the gate the target must additionally be
-    // FINALIZED (its stats generation exists): the visibility gate applies to migration too, and —
-    // decisively — the FIRST funnel commit on a brand-new table synthesizes its root right after
-    // the legacy pointer advanced, so importing unfinalized currency here would let registration
-    // bypass the gate. An unfinalized legacy current becomes visible when its generation publishes.
+    // must not become currency nothing can resolve. Query visibility is applied by readers from the
+    // manifest entry's stats_generation_ref, not by suppressing the committed current selection.
     boolean gate = StatsVisibilityGate.gateOnFinalize(stats);
     Optional<Long> pointerTarget =
         snapshots
             .latestRegisteredSnapshotPointer(tableId)
             .map(pointer -> pointer.getSnapshotId())
-            .filter(manifestSnapshotIds::contains)
-            .filter(id -> !gate || finalizedSnapshotIds.contains(id));
+            .filter(manifestSnapshotIds::contains);
     if (pointerTarget.isPresent()) {
       root.setCurrentSnapshotId(pointerTarget.get());
     } else if (!gate && manifestHead != null) {

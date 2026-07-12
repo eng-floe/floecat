@@ -201,16 +201,17 @@ class TableRootSynthesizerTest {
   }
 
   @Test
-  void anUnfinalizedLegacyCurrentIsGatedUntilItsGenerationPublishes() {
-    // The visibility gate applies to migration too — decisively, the FIRST funnel commit on a
-    // brand-new table synthesizes its root right after the legacy pointer advanced; importing
-    // unfinalized currency would let registration bypass the gate.
+  void anUnfinalizedLegacyCurrentIsImportedAsCommittedCurrent() {
+    // The root records the committed current selection during migration. Query visibility is
+    // enforced later from the manifest entry's stats_generation_ref, so importing currency here
+    // does not make the snapshot query-ready.
     legacySnapshot(1, 1_000);
     advanceCurrentTo(1);
 
     TableRoot synthesized = synthesizer.synthesize(tableId).orElseThrow();
 
-    assertFalse(synthesized.hasCurrentSnapshotId());
+    assertTrue(synthesized.hasCurrentSnapshotId());
+    assertEquals(1L, synthesized.getCurrentSnapshotId());
     assertTrue(
         SnapshotManifests.findEntry(roots, synthesized.getSnapshotManifestRef(), 1).isPresent());
   }
