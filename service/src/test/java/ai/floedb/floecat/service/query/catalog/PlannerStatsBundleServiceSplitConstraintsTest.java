@@ -151,6 +151,69 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
   }
 
   @Test
+  void streamConstraintsServesAnUnpinnedSystemRelationThroughTheProvider() {
+    // A system relation is provider-backed and carries no snapshot pin. It must resolve through the
+    // routed provider, not short-circuit to pin.missing on the empty snapshot (a USER table with no
+    // pin still fails pin.missing — see the provider returning empty for it).
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    QueryContext ctx = queryContextWithPin("query-constraints-system", 498L); // pins TABLE only
+    store.seed(ctx);
+
+    ResourceId systemTable =
+        ResourceId.newBuilder()
+            .setAccountId(TABLE.getAccountId())
+            .setId("information_schema.table_constraints")
+            .setKind(TABLE.getKind())
+            .build();
+    ConstraintDefinition pkSystem =
+        constraint("pk_system", ConstraintType.CT_PRIMARY_KEY, List.of(1L));
+    ConstraintProvider provider =
+        new ConstraintProvider() {
+          @Override
+          public Optional<ConstraintSetView> constraints(
+              ResourceId relationId, OptionalLong snapshotId) {
+            // System relation: served regardless of the absent pin/snapshot. A user table with no
+            // pin yields empty here, so it still resolves as pin.missing.
+            if (relationId.equals(systemTable)) {
+              return Optional.of(newConstraintSet(systemTable, List.of(pkSystem)));
+            }
+            return Optional.empty();
+          }
+        };
+    PlannerStatsBundleService service =
+        createService(
+            repository,
+            store,
+            provider,
+            /* chunkSize= */ 5,
+            /* maxTables= */ 5,
+            /* maxTargets= */ 10);
+
+    FetchTableConstraintsRequest request =
+        FetchTableConstraintsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTableIds(systemTable)
+            .build();
+
+    List<TableConstraintsResult> results =
+        flattenConstraintChunks(
+            service
+                .streamConstraints("corr", ctx, request)
+                .collect()
+                .asList()
+                .await()
+                .indefinitely());
+    assertEquals(1, results.size());
+    assertEquals(
+        BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND,
+        results.get(0).getStatus(),
+        "an unpinned system relation resolves through the provider, not pin.missing");
+    assertEquals("pk_system", results.get(0).getConstraints(0).getName());
+  }
+
+  @Test
   void streamConstraintsEchoesTheServedBundleVersion() {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();

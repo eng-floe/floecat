@@ -1183,12 +1183,11 @@ public class PlannerStatsBundleService {
       ConstraintRepository constraintRepository,
       ConstraintProvider constraintProvider,
       ConstraintPruner constraintPruner) {
-    if (snapshotId.isEmpty()) {
-      LOG.debugf("constraint pin missing for %s", tableId.getId());
-      return new ConstraintResolution(
-          constraintPinMissingResult(tableId), ConstraintResolutionStatus.ERROR);
-    }
-
+    // No early pin-missing return on an empty snapshot: SYSTEM relations are provider-backed and
+    // carry no snapshot pin, so they must reach the routed provider below. A USER table with no pin
+    // is the real pin-missing case, distinguished in the unpinned branch. -1 stands in for "no
+    // pinned snapshot" in the log lines.
+    long sidForLog = snapshotId.orElse(-1L);
     try {
       List<ConstraintDefinition> visible;
       String servedRefVersion;
@@ -1208,7 +1207,7 @@ public class PlannerStatsBundleService {
           // GC-rooted for the query's lifetime, so this is a broken invariant, never client state.
           LOG.warnf(
               "pinned constraints blob missing for %s snapshot %d: %s",
-              tableId.getId(), snapshotId.getAsLong(), pinnedRef.get().uri());
+              tableId.getId(), sidForLog, pinnedRef.get().uri());
           return new ConstraintResolution(
               constraintErrorResult(
                   tableId,
@@ -1220,12 +1219,19 @@ public class PlannerStatsBundleService {
         visible = bundle.get().getConstraintsList();
         servedRefVersion = pinnedRef.get().version();
       } else {
-        // No ref on the pin. System relations resolve through the routed provider; a user table
-        // deterministically has no constraints for this query (none existed at pin time).
+        // No ref on the pin. System relations resolve through the routed provider (which ignores
+        // the absent snapshot); a pinned user table deterministically has no constraints for this
+        // query (none existed at pin time); an UNPINNED user table is a real pin-missing.
         var systemView = constraintProvider.constraints(tableId, snapshotId);
         if (systemView.isEmpty()) {
-          LOG.tracef(
-              "no constraints pinned for %s snapshot %d", tableId.getId(), snapshotId.getAsLong());
+          if (snapshotId.isEmpty()) {
+            // Unpinned and the routed provider served nothing — a user table that was never pinned
+            // (a system relation would have been served above). This is the real pin-missing case.
+            LOG.debugf("constraint pin missing for %s", tableId.getId());
+            return new ConstraintResolution(
+                constraintPinMissingResult(tableId), ConstraintResolutionStatus.ERROR);
+          }
+          LOG.tracef("no constraints pinned for %s snapshot %d", tableId.getId(), sidForLog);
           return new ConstraintResolution(
               constraintNotFoundResult(tableId, snapshotId, "absent_at_pin"),
               ConstraintResolutionStatus.NOT_FOUND);
@@ -1241,8 +1247,7 @@ public class PlannerStatsBundleService {
       // - provider_empty: a pinned/system bundle with zero constraints
       // - pruned_empty: bundle exists but request-scope pruning hid all constraints
       if (visible.isEmpty()) {
-        LOG.debugf(
-            "constraints bundle empty for %s snapshot %d", tableId.getId(), snapshotId.getAsLong());
+        LOG.debugf("constraints bundle empty for %s snapshot %d", tableId.getId(), sidForLog);
         return new ConstraintResolution(
             constraintNotFoundResult(tableId, snapshotId, "provider_empty"),
             ConstraintResolutionStatus.NOT_FOUND);
@@ -1252,8 +1257,7 @@ public class PlannerStatsBundleService {
       // Semantics choice: provider FOUND + prune-to-empty is surfaced as NOT_FOUND to callers.
       // This keeps client handling simple: no visible constraints for the request scope.
       if (visible.isEmpty()) {
-        LOG.tracef(
-            "all constraints pruned for %s snapshot %d", tableId.getId(), snapshotId.getAsLong());
+        LOG.tracef("all constraints pruned for %s snapshot %d", tableId.getId(), sidForLog);
         return new ConstraintResolution(
             constraintNotFoundResult(tableId, snapshotId, "pruned_empty"),
             ConstraintResolutionStatus.NOT_FOUND);
@@ -1261,7 +1265,7 @@ public class PlannerStatsBundleService {
 
       LOG.tracef(
           "constraints resolved for %s snapshot %d: %d constraints",
-          tableId.getId(), snapshotId.getAsLong(), visible.size());
+          tableId.getId(), sidForLog, visible.size());
       if (LOG.isTraceEnabled()) {
         for (ConstraintDefinition c : visible) {
           LOG.tracef(
@@ -1279,11 +1283,7 @@ public class PlannerStatsBundleService {
               .build(),
           ConstraintResolutionStatus.FOUND);
     } catch (RuntimeException e) {
-      LOG.debugf(
-          e,
-          "constraint lookup failed for %s snapshot %d",
-          tableId.getId(),
-          snapshotId.getAsLong());
+      LOG.debugf(e, "constraint lookup failed for %s snapshot %d", tableId.getId(), sidForLog);
       return new ConstraintResolution(
           constraintErrorResult(tableId, snapshotId, e), ConstraintResolutionStatus.ERROR);
     }
