@@ -22,6 +22,7 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.function.LongConsumer;
 
 /**
  * The durable queue of tables whose post-transaction root resync failed and awaits re-drive by the
@@ -36,11 +37,20 @@ import jakarta.inject.Inject;
 @ApplicationScoped
 public class RootResyncQueue {
 
+  private static final int ENQUEUE_ATTEMPTS = 4;
+  private static final long[] RETRY_BACKOFF_MS = {10L, 25L, 50L};
+
   private final PointerStore pointerStore;
+  private final LongConsumer retrySleeper;
 
   @Inject
   public RootResyncQueue(PointerStore pointerStore) {
+    this(pointerStore, RootResyncQueue::sleepUnchecked);
+  }
+
+  RootResyncQueue(PointerStore pointerStore, LongConsumer retrySleeper) {
     this.pointerStore = pointerStore;
+    this.retrySleeper = retrySleeper;
   }
 
   /**
@@ -52,7 +62,7 @@ public class RootResyncQueue {
   public void enqueue(ResourceId tableId) {
     String key = Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId());
     RuntimeException lastFailure = null;
-    for (int attempt = 0; attempt < 4; attempt++) {
+    for (int attempt = 0; attempt < ENQUEUE_ATTEMPTS; attempt++) {
       try {
         if (pointerStore.compareAndSet(key, 0L, PointerReferences.blobPointer(key, "", 1L))) {
           return;
@@ -72,9 +82,21 @@ public class RootResyncQueue {
         // A transient store fault mid-attempt must not lose the marker any more than a lost CAS:
         // retry within the bound before surfacing the failure.
         lastFailure = e;
+        if (attempt + 1 < ENQUEUE_ATTEMPTS) {
+          retrySleeper.accept(RETRY_BACKOFF_MS[Math.min(attempt, RETRY_BACKOFF_MS.length - 1)]);
+        }
       }
     }
     throw new IllegalStateException(
         "root-resync marker for table " + tableId.getId() + " could not be recorded", lastFailure);
+  }
+
+  private static void sleepUnchecked(long millis) {
+    try {
+      Thread.sleep(millis);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException("interrupted while retrying root-resync marker enqueue", e);
+    }
   }
 }
