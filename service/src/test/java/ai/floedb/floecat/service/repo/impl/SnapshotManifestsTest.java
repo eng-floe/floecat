@@ -198,4 +198,46 @@ class SnapshotManifestsTest {
             .isPresent());
     assertTrue(SnapshotManifests.findEntry(countingRoots, head, n - 1).isPresent());
   }
+
+  private static SnapshotManifestEntry entry(long id, long createdMs, boolean finalized) {
+    var b =
+        SnapshotManifestEntry.newBuilder()
+            .setSnapshotId(id)
+            .setSnapshotRef(BlobRef.newBuilder().setUri("s3://t/snap-" + id + ".pb"))
+            .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(createdMs));
+    if (finalized) {
+      b.setStatsGenerationRef(BlobRef.newBuilder().setUri("s3://t/stats/" + id + "/gen.pb"));
+    }
+    return b.build();
+  }
+
+  @Test
+  void latestQueryableCurrentPicksNewestFinalizedAtOrBeforeTheCommittedCurrent() {
+    // S1, S2 finalized; S3 is the committed current but not yet finalized.
+    var s3 = entry(3, 3_000, false);
+    BlobRef head = SnapshotManifests.upsert(roots, TABLE, null, entry(1, 1_000, true));
+    head = SnapshotManifests.upsert(roots, TABLE, head, entry(2, 2_000, true));
+    head = SnapshotManifests.upsert(roots, TABLE, head, s3);
+
+    var q = SnapshotManifests.latestQueryableCurrent(roots, head, s3).orElseThrow();
+    assertEquals(2, q.getSnapshotId(), "newest finalized at or before the committed current");
+  }
+
+  @Test
+  void latestQueryableCurrentNeverServesNewerThanARolledBackCommittedCurrent() {
+    // Currency rolled back to S1 (older, still unfinalized); S2 is finalized but NEWER — a query
+    // must not jump forward to it.
+    var s1 = entry(1, 1_000, false);
+    BlobRef head = SnapshotManifests.upsert(roots, TABLE, null, s1);
+    head = SnapshotManifests.upsert(roots, TABLE, head, entry(2, 2_000, true));
+
+    assertTrue(SnapshotManifests.latestQueryableCurrent(roots, head, s1).isEmpty());
+  }
+
+  @Test
+  void latestQueryableCurrentEmptyWhenNothingIsFinalized() {
+    var s1 = entry(1, 1_000, false);
+    BlobRef head = SnapshotManifests.upsert(roots, TABLE, null, s1);
+    assertTrue(SnapshotManifests.latestQueryableCurrent(roots, head, s1).isEmpty());
+  }
 }

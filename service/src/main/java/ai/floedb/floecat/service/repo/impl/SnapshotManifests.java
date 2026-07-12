@@ -249,6 +249,34 @@ public final class SnapshotManifests {
   }
 
   /**
+   * The query-visible current entry when the committed current is not yet finalized: the newest
+   * FINALIZED entry (carrying a stats-generation ref) that is NOT newer than {@code
+   * committedCurrent}.
+   *
+   * <p>This is the snapshot-isolation fallback — a query reads the latest fully-queryable state
+   * rather than seeing "no current" during the append→finalize window. Bounding by "not newer than
+   * the committed current" keeps a rollback honest: currency rolled back to an older, still-
+   * finalizing snapshot never serves a newer one. Returns empty when nothing at or before the
+   * committed current is finalized yet (a brand-new table before its first finalize).
+   */
+  public static Optional<SnapshotManifestEntry> latestQueryableCurrent(
+      TableRootRepository roots, BlobRef head, SnapshotManifestEntry committedCurrent) {
+    SnapshotManifestEntry[] best = {null};
+    forEachEntry(
+        roots,
+        head,
+        e -> {
+          if (!e.hasStatsGenerationRef() || newer(e, committedCurrent)) {
+            return;
+          }
+          if (best[0] == null || newer(e, best[0])) {
+            best[0] = e;
+          }
+        });
+    return Optional.ofNullable(best[0]);
+  }
+
+  /**
    * The advance rule's ordering, shared by every consumer (currency advance, AS_OF resolution,
    * legacy-currency import): newest {@code upstream_created_at} wins, snapshot id breaks ties; an
    * entry without a timestamp sorts oldest.

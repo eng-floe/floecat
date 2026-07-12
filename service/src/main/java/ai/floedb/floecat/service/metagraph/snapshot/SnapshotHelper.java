@@ -204,10 +204,15 @@ public class SnapshotHelper {
                             "table_id", tableId.getId(),
                             "snapshot_id", Long.toString(currentId))));
     if (gateOnFinalize() && !entry.hasStatsGenerationRef()) {
-      // Defend the gate at the read, consistent with the explicit-id (reject) and AS_OF (skip)
-      // paths: committed currency can move before the generation publishes, but it is not
-      // query-visible until the selected manifest entry carries the generation ref.
-      throw GrpcErrors.notFound(cid, SNAPSHOT, Map.of("table_id", tableId.getId()));
+      // Committed currency can move before the generation publishes. Rather than reporting no
+      // current for the whole append->finalize window, pin the newest FINALIZED snapshot at or
+      // before the committed current — snapshot isolation on the latest fully-queryable state,
+      // consistent with metadata surfaces (getCommittedCurrent*) still exposing the committed id.
+      // NOT_FOUND only when nothing at or before it is finalized yet (pre-first-finalize).
+      entry =
+          SnapshotManifests.latestQueryableCurrent(roots, manifestHead(root), entry)
+              .orElseThrow(
+                  () -> GrpcErrors.notFound(cid, SNAPSHOT, Map.of("table_id", tableId.getId())));
     }
     return pinFromEntry(cid, tableId, PinKind.PIN_KIND_CURRENT, entry, root, rootMeta, null);
   }

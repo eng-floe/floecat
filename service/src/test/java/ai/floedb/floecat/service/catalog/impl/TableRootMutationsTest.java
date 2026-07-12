@@ -379,8 +379,7 @@ class TableRootMutationsTest {
     // Snapshot 3 was expired transactionally: only 7 remains registered.
     committer.commit(
         TABLE,
-        TableRootMutations.resync(
-            roots, TABLE, null, entry(7, 7_000), java.util.Set.of(7L), null));
+        TableRootMutations.resync(roots, TABLE, null, entry(7, 7_000), java.util.Set.of(7L), null));
 
     var root = roots.get(TABLE).orElseThrow();
     assertFalse(
@@ -400,8 +399,7 @@ class TableRootMutationsTest {
 
     // No committed current, snapshot 5 no longer registered.
     committer.commit(
-        TABLE,
-        TableRootMutations.resync(roots, TABLE, null, null, java.util.Set.of(), null));
+        TABLE, TableRootMutations.resync(roots, TABLE, null, null, java.util.Set.of(), null));
 
     var root = roots.get(TABLE).orElseThrow();
     assertFalse(root.hasCurrentSnapshotId());

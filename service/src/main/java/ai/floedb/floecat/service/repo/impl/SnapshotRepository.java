@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.impl;
 
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -27,10 +28,10 @@ import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.SnapshotKey;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.telemetry.StoreOperationSummary;
-import ai.floedb.floecat.stats.spi.StatsStore;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -364,11 +365,30 @@ public class SnapshotRepository {
       long snapshotId,
       boolean requireQueryReady) {
     var head = root.hasSnapshotManifestRef() ? root.getSnapshotManifestRef() : null;
-    return SnapshotManifests.findEntry(roots, head, snapshotId)
-        .filter(entry -> !requireQueryReady || !StatsVisibilityGate.gateOnFinalize(statsStore)
-            || entry.hasStatsGenerationRef())
-        .filter(entry -> entry.hasSnapshotRef() && !entry.getSnapshotRef().getUri().isEmpty())
-        .flatMap(entry -> getByBlobUri(entry.getSnapshotRef().getUri()));
+    Optional<SnapshotManifestEntry> committed =
+        SnapshotManifests.findEntry(roots, head, snapshotId);
+    if (committed.isEmpty()) {
+      return Optional.empty();
+    }
+    SnapshotManifestEntry entry = committed.get();
+    if (requireQueryReady
+        && StatsVisibilityGate.gateOnFinalize(statsStore)
+        && !entry.hasStatsGenerationRef()) {
+      // Query-visible current: the committed current is not yet finalized, so serve the newest
+      // finalized snapshot at or before it (snapshot isolation — the latest fully-queryable state)
+      // rather than reporting no current. Metadata surfaces use getCommittedCurrent* and keep the
+      // committed selection. Empty here means nothing is queryable yet (pre-first-finalize).
+      Optional<SnapshotManifestEntry> queryable =
+          SnapshotManifests.latestQueryableCurrent(roots, head, entry);
+      if (queryable.isEmpty()) {
+        return Optional.empty();
+      }
+      entry = queryable.get();
+    }
+    if (!entry.hasSnapshotRef() || entry.getSnapshotRef().getUri().isEmpty()) {
+      return Optional.empty();
+    }
+    return getByBlobUri(entry.getSnapshotRef().getUri());
   }
 
   /**

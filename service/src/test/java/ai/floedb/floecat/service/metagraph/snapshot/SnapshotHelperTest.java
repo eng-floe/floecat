@@ -544,6 +544,39 @@ class SnapshotHelperTest {
   }
 
   @Test
+  void gatedCurrentPinFallsBackToTheLatestFinalizedSnapshot() {
+    // Committed current advanced to an unfinalized snapshot (12) while the previous current (11) is
+    // finalized. A CURRENT query pins the latest fully-queryable snapshot (11) — snapshot isolation
+    // on the newest finalized state — rather than failing NOT_FOUND for the whole finalize window.
+    // Metadata surfaces (getCommittedCurrent*) still expose 12 as the committed selection.
+    var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
+    when(tracking.tracksStatsGenerations()).thenReturn(true);
+    helper = new SnapshotHelper(repository, roots, committer, tracking);
+    ResourceId tableId = tableId("tbl");
+    seedSnapshot(tableId, 11, "2024-02-01T00:00:00Z");
+    seedSnapshot(tableId, 12, "2024-03-01T00:00:00Z");
+    commitFinalizedEntry(tableId, 11, "2024-02-01T00:00:00Z", "s3://tbl/stats/11/gen.pb");
+    committer.commit(
+        tableId,
+        TableRootMutations.upsertSnapshot(
+            roots,
+            tableId,
+            SnapshotManifestEntry.newBuilder()
+                .setSnapshotId(12)
+                .setSnapshotRef(
+                    BlobRef.newBuilder().setUri("s3://tbl/snap-12.pb").setVersion("etag-s12"))
+                .setUpstreamCreatedAt(ts("2024-03-01T00:00:00Z"))
+                .build(),
+            null,
+            true)); // advance=true → committed current = 12, unfinalized
+
+    TablePin pin = helper.tablePinFor("corr", tableId, null, Optional.empty());
+
+    assertThat(pin.getPinKind()).isEqualTo(PinKind.PIN_KIND_CURRENT);
+    assertThat(pin.getSnapshotId()).isEqualTo(11L);
+  }
+
+  @Test
   void gatedPinsRejectUnfinalizedSnapshots() {
     // With a generation-tracking store, an entry without its generation ref is not query-ready:
     // registration happened, finalize has not. Explicit pins reject it loudly; AS_OF resolves
