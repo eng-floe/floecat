@@ -176,20 +176,28 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                   // The resolved pin blobs are already transient GC roots (the resolver registered
                   // them at construction, protected through resolution and until this commit), so
                   // storing the context — a durable GC root — needs no lease here.
+                  // Always branch on the insert result: putIfAbsent converts this context's pins
+                  // from transient resolving roots to durable ones (dropResolvingPinsRootedBy)
+                  // ONLY when it actually inserts. A silently-ignored no-op insert would serve a
+                  // context whose pins were never rooted — so surface it either way.
                   boolean clientProvidedId = request.hasQueryId();
-                  boolean inserted;
-                  if (clientProvidedId) {
-                    inserted = queryStore.putIfAbsent(ctx);
-                  } else {
-                    queryStore.put(ctx);
-                    inserted = true;
-                  }
-                  if (clientProvidedId && !inserted) {
-                    throw GrpcErrors.alreadyExists(
+                  boolean inserted = queryStore.putIfAbsent(ctx);
+                  if (!inserted) {
+                    if (clientProvidedId) {
+                      throw GrpcErrors.alreadyExists(
+                          correlationId,
+                          ALREADY_EXISTS,
+                          Map.of("resource", "query", "name", queryId),
+                          new IllegalStateException("query_id already exists: " + queryId));
+                    }
+                    // A server-generated query id collided — effectively impossible, but never
+                    // serve a context that was not the one that rooted its pins.
+                    throw GrpcErrors.internal(
                         correlationId,
-                        ALREADY_EXISTS,
-                        Map.of("resource", "query", "name", queryId),
-                        new IllegalStateException("query_id already exists: " + queryId));
+                        null,
+                        null,
+                        new IllegalStateException(
+                            "server-generated query id collided: " + queryId));
                   }
 
                   // Build descriptor
