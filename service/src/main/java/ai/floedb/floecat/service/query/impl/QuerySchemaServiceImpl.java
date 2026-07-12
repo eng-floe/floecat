@@ -131,29 +131,36 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                     // conflict rule inside mergeSets). Committing pins before any blob read also
                     // roots them before the schema read; the resolver already registered them as
                     // transient GC roots at resolution, covering the brief resolve→commit window.
-                    QueryContext committed =
-                        diagnostics.time(
-                            "query_context_pin_merge",
-                            () ->
-                                queryStore
-                                    .update(
-                                        queryId,
-                                        existing ->
-                                            existing.toBuilder()
-                                                .relationPins(
-                                                    QueryPins.mergeSets(
-                                                            existing.parseRelationPins(
-                                                                correlationId()),
-                                                            rr.relationPinSet(),
-                                                            correlationId())
-                                                        .toByteArray())
-                                                .build())
-                                    .orElseThrow(
-                                        () ->
-                                            GrpcErrors.notFound(
-                                                correlationId(),
-                                                QUERY_NOT_FOUND,
-                                                java.util.Map.of("query_id", queryId))));
+                    QueryContext committed;
+                    try {
+                      committed =
+                          diagnostics.time(
+                              "query_context_pin_merge",
+                              () ->
+                                  queryStore
+                                      .update(
+                                          queryId,
+                                          existing ->
+                                              existing.toBuilder()
+                                                  .relationPins(
+                                                      QueryPins.mergeSets(
+                                                              existing.parseRelationPins(
+                                                                  correlationId()),
+                                                              rr.relationPinSet(),
+                                                              correlationId())
+                                                          .toByteArray())
+                                                  .build())
+                                      .orElseThrow(
+                                          () ->
+                                              GrpcErrors.notFound(
+                                                  correlationId(),
+                                                  QUERY_NOT_FOUND,
+                                                  java.util.Map.of("query_id", queryId))));
+                    } catch (RuntimeException | Error e) {
+                      queryStore.releaseResolvingPinBlobs(
+                          queryId, QueryPins.gcRootUris(rr.relationPinSet()));
+                      throw e;
+                    }
 
                     RelationPinSet winnerPins = committed.parseRelationPins(correlationId());
                     diagnostics.put("snapshot_pins", winnerPins.getPinsCount());

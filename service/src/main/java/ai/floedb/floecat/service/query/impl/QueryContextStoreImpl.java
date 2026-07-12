@@ -18,7 +18,6 @@ package ai.floedb.floecat.service.query.impl;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
-import ai.floedb.floecat.query.rpc.RelationPin;
 import ai.floedb.floecat.query.rpc.ScanHandle;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
@@ -82,7 +81,11 @@ public class QueryContextStoreImpl implements QueryContextStore {
 
   private final Map<String, ResolvingPinBlobs> resolvingPinBlobs = new ConcurrentHashMap<>();
 
-  private record ResolvingPinBlobs(Set<String> uris, long expiresAtMs) {}
+  private record ResolvingPinBlobs(Map<String, Integer> uriCounts, long expiresAtMs) {
+    Set<String> uris() {
+      return uriCounts.keySet();
+    }
+  }
 
   /** Test-only visibility into the resolving-root map size (bounds are behavior, not structure). */
   int resolvingPinEntryCount() {
@@ -259,12 +262,7 @@ public class QueryContextStoreImpl implements QueryContextStore {
    * object all reads follow refs out of), plus the copied table/snapshot/constraints refs.
    */
   private static void addPinBlobUris(Set<String> uris, QueryContext ctx) {
-    for (RelationPin relationPin : ctx.parseRelationPins("gc").getPinsList()) {
-      if (relationPin.hasTablePin()) {
-        uris.addAll(
-            ai.floedb.floecat.service.query.QueryPins.gcRootUris(relationPin.getTablePin()));
-      }
-    }
+    uris.addAll(ai.floedb.floecat.service.query.QueryPins.gcRootUris(ctx.parseRelationPins("gc")));
   }
 
   @Override
@@ -291,11 +289,36 @@ public class QueryContextStoreImpl implements QueryContextStore {
     long expiresAt = now + resolvingPinGraceMs;
     resolvingPinBlobs.merge(
         queryId,
-        new ResolvingPinBlobs(Set.copyOf(clean), expiresAt),
+        new ResolvingPinBlobs(counts(clean), expiresAt),
         (existing, added) -> {
-          Set<String> merged = new HashSet<>(existing.uris());
-          merged.addAll(added.uris());
-          return new ResolvingPinBlobs(Set.copyOf(merged), added.expiresAtMs());
+          Map<String, Integer> merged = new java.util.HashMap<>(existing.uriCounts());
+          added.uriCounts().forEach((uri, count) -> merged.merge(uri, count, Integer::sum));
+          return new ResolvingPinBlobs(Map.copyOf(merged), added.expiresAtMs());
+        });
+  }
+
+  @Override
+  public void releaseResolvingPinBlobs(String queryId, Collection<String> blobUris) {
+    if (queryId == null || queryId.isEmpty() || blobUris == null) {
+      return;
+    }
+    Set<String> clean = new HashSet<>();
+    for (String uri : blobUris) {
+      addIfPresent(clean, uri);
+    }
+    if (clean.isEmpty()) {
+      return;
+    }
+    resolvingPinBlobs.computeIfPresent(
+        queryId,
+        (qid, entry) -> {
+          Map<String, Integer> remaining = new java.util.HashMap<>(entry.uriCounts());
+          for (String uri : clean) {
+            remaining.computeIfPresent(uri, (ignored, count) -> count <= 1 ? null : count - 1);
+          }
+          return remaining.isEmpty()
+              ? null
+              : new ResolvingPinBlobs(Map.copyOf(remaining), entry.expiresAtMs());
         });
   }
 
@@ -342,8 +365,16 @@ public class QueryContextStoreImpl implements QueryContextStore {
           remaining.removeAll(rooted);
           return remaining.isEmpty()
               ? null
-              : new ResolvingPinBlobs(Set.copyOf(remaining), entry.expiresAtMs());
+              : new ResolvingPinBlobs(counts(remaining), entry.expiresAtMs());
         });
+  }
+
+  private static Map<String, Integer> counts(Collection<String> uris) {
+    Map<String, Integer> counts = new java.util.HashMap<>();
+    for (String uri : uris) {
+      counts.merge(uri, 1, Integer::sum);
+    }
+    return Map.copyOf(counts);
   }
 
   private static void addIfPresent(Set<String> uris, String uri) {

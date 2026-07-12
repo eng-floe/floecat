@@ -75,6 +75,20 @@ public final class QueryPins {
     return uris;
   }
 
+  /** Every immutable blob URI referenced by every table pin in {@code pins}. */
+  public static List<String> gcRootUris(RelationPinSet pins) {
+    if (pins == null || pins.getPinsCount() == 0) {
+      return List.of();
+    }
+    List<String> uris = new ArrayList<>();
+    for (RelationPin pin : pins.getPinsList()) {
+      if (pin.hasTablePin()) {
+        uris.addAll(gcRootUris(pin.getTablePin()));
+      }
+    }
+    return uris;
+  }
+
   private static void addUriIfPresent(List<String> uris, String uri) {
     if (uri != null && !uri.isEmpty()) {
       uris.add(uri);

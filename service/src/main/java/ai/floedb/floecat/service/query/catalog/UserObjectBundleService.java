@@ -1901,7 +1901,12 @@ public class UserObjectBundleService {
       if (incomingPins == null || incomingPins.getPinsCount() == 0) {
         return;
       }
-      pendingChunkPins = QueryPins.mergeSets(pendingChunkPins, incomingPins, correlationId);
+      try {
+        pendingChunkPins = QueryPins.mergeSets(pendingChunkPins, incomingPins, correlationId);
+      } catch (RuntimeException | Error e) {
+        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(incomingPins));
+        throw e;
+      }
     }
 
     private void commitChunkPins() {
@@ -1916,11 +1921,18 @@ public class UserObjectBundleService {
       RelationPinSet toCommit = pendingChunkPins;
       // The resolver registered these pins' blobs as transient GC roots at resolution, so they are
       // protected across the collect→commit window; this update makes the context a durable root.
-      Optional<QueryContext> updated =
-          queryStore.update(
-              ctx.getQueryId(), existing -> mergeRelationPins(existing, toCommit, correlationId));
+      Optional<QueryContext> updated;
+      try {
+        updated =
+            queryStore.update(
+                ctx.getQueryId(), existing -> mergeRelationPins(existing, toCommit, correlationId));
+      } catch (RuntimeException | Error e) {
+        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
+        throw e;
+      }
       pendingChunkPins = RelationPinSet.getDefaultInstance();
       if (updated.isEmpty()) {
+        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
         LOG.warnf(
             "Failed to commit chunk pins query_id=%s query context missing", ctx.getQueryId());
         throw GrpcErrors.notFound(

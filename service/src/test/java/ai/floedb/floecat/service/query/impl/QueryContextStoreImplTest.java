@@ -171,6 +171,20 @@ class QueryContextStoreImplTest {
   }
 
   @Test
+  void releasingResolvingPinsOnlyDropsThisRegistration() {
+    store.registerResolvingPinBlobs("q1", List.of("s3://t1/a.pb", "s3://t1/shared.pb"));
+    store.registerResolvingPinBlobs("q1", List.of("s3://t1/shared.pb"));
+
+    store.releaseResolvingPinBlobs("q1", List.of("s3://t1/a.pb", "s3://t1/shared.pb"));
+
+    assertThat(store.referencedPinBlobUris()).containsExactly("s3://t1/shared.pb");
+
+    store.releaseResolvingPinBlobs("q1", List.of("s3://t1/shared.pb"));
+
+    assertThat(store.referencedPinBlobUris()).isEmpty();
+  }
+
+  @Test
   void committingAContextDropsItsResolvingPinRegistration() {
     // Resolve pins (register), then commit a context containing them: the transient registration is
     // released because the committed context now roots those blobs.
