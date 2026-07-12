@@ -123,9 +123,9 @@ public interface QueryContextStore extends AutoCloseable {
    *
    * <p>This is for resolution attempts that fail before their candidate pins are committed into the
    * query context (for example a temporal pin conflict). Successful commits are released
-   * automatically by {@code put}/{@code update}; callers must not use this for a failed
-   * {@code putIfAbsent} of a client-supplied query id because the losing registration shares the
-   * same query id as the incumbent and could unroot the incumbent's still-resolving blobs.
+   * automatically by {@code put}/{@code update}; callers must not use this for a failed {@code
+   * putIfAbsent} of a client-supplied query id because the losing registration shares the same
+   * query id as the incumbent and could unroot the incumbent's still-resolving blobs.
    */
   void releaseResolvingPinBlobs(String queryId, Collection<String> blobUris);
 

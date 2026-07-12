@@ -475,8 +475,7 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public void releaseResolvingPinBlobs(
-        String queryId, java.util.Collection<String> blobUris) {
+    public void releaseResolvingPinBlobs(String queryId, java.util.Collection<String> blobUris) {
       // no-op: this fake does not model GC roots
     }
 

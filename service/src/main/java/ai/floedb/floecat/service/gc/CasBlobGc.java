@@ -317,8 +317,7 @@ public class CasBlobGc {
     referenced.add(normalizeKey(rootBlobUri));
     try {
       var root =
-          readChainObject(
-                  "root blob " + rootBlobUri, () -> tableRootRepo.getByBlobUri(rootBlobUri))
+          readChainObject("root blob " + rootBlobUri, () -> tableRootRepo.getByBlobUri(rootBlobUri))
               .orElse(null);
       if (root == null) {
         LOG.warnf("cas gc could not read root blob %s; sweep will be skipped", rootBlobUri);
