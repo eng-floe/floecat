@@ -131,7 +131,8 @@ class QueryContextStoreIT {
 
     store.end(queryId, true).orElseThrow();
 
-    var after = store.extendLease(queryId, clock.millis() + 10_000).orElseThrow();
+    assertTrue(store.extendLease(queryId, clock.millis() + 10_000).isEmpty());
+    var after = store.get(queryId).orElseThrow();
     assertEquals(QueryContext.State.ENDED_COMMIT, after.getState(), "state should remain ended");
   }
 
