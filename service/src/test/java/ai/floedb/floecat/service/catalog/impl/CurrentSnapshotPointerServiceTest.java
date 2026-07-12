@@ -17,7 +17,10 @@ package ai.floedb.floecat.service.catalog.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -73,6 +76,24 @@ class CurrentSnapshotPointerServiceTest {
     service.maybeAdvance(tableId, candidate, "corr");
 
     verify(service.rootWriter).commitSnapshotEntry(tableId, candidate);
+    // The pointer id did not move, so there is no currency to reconcile.
+    verify(service.rootWriter, never()).commitStatsGeneration(any(), anyLong());
+  }
+
+  @Test
+  void advanceReconcilesRootCurrencyWhenThePointerMoves() {
+    // The committed pointer moved onto `candidate`. If it is an already-finalized snapshot (an
+    // in-place UpdateSnapshot that re-ordered currency), no later finalize runs, so root currency
+    // is reconciled here through the finalize path — otherwise CURRENT reads stay stale.
+    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
+    service.rootWriter = mock(TableRootWriter.class);
+    when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
+        .thenReturn(CurrentSnapshotPointerUpdateResult.UPDATED);
+
+    service.maybeAdvance(tableId, candidate, "corr");
+
+    verify(service.rootWriter).commitSnapshotEntry(tableId, candidate);
+    verify(service.rootWriter).commitStatsGeneration(tableId, 7L);
   }
 
   @Test

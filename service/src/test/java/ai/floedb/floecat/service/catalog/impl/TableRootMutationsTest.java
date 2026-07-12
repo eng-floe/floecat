@@ -381,7 +381,7 @@ class TableRootMutationsTest {
     committer.commit(
         TABLE,
         TableRootMutations.resync(
-            roots, TABLE, null, entry(7, 7_000), false, java.util.Set.of(7L)));
+            roots, TABLE, null, entry(7, 7_000), false, java.util.Set.of(7L), null));
 
     var root = roots.get(TABLE).orElseThrow();
     assertFalse(
@@ -401,11 +401,91 @@ class TableRootMutationsTest {
 
     // No committed current, snapshot 5 no longer registered.
     committer.commit(
-        TABLE, TableRootMutations.resync(roots, TABLE, null, null, false, java.util.Set.of()));
+        TABLE,
+        TableRootMutations.resync(roots, TABLE, null, null, false, java.util.Set.of(), null));
 
     var root = roots.get(TABLE).orElseThrow();
     assertFalse(root.hasCurrentSnapshotId());
     assertFalse(SnapshotManifests.findEntry(roots, root.getSnapshotManifestRef(), 5).isPresent());
+  }
+
+  @Test
+  void resyncRegistersLiveSnapshotsMissingFromTheManifest() {
+    // A transactional multi-snapshot commit added snapshot 3 as non-current (live by-id pointer)
+    // but no writer created its manifest entry. resync must register it from the loader, not only
+    // prune — otherwise it stays invisible to root-based enumeration.
+    committer.commit(
+        TABLE, TableRootMutations.upsertSnapshot(roots, TABLE, entry(7, 7_000), null, true));
+    assertFalse(
+        SnapshotManifests.findEntry(
+                roots, roots.get(TABLE).orElseThrow().getSnapshotManifestRef(), 3)
+            .isPresent());
+
+    SnapshotManifestEntry missing = entry(3, 3_000);
+    committer.commit(
+        TABLE,
+        TableRootMutations.resync(
+            roots,
+            TABLE,
+            null,
+            entry(7, 7_000),
+            false,
+            java.util.Set.of(3L, 7L),
+            id -> id == 3L ? missing : null));
+
+    var root = roots.get(TABLE).orElseThrow();
+    assertTrue(
+        SnapshotManifests.findEntry(roots, root.getSnapshotManifestRef(), 3).isPresent(),
+        "missing live snapshot registered");
+    assertTrue(SnapshotManifests.findEntry(roots, root.getSnapshotManifestRef(), 7).isPresent());
+    assertEquals(7L, root.getCurrentSnapshotId());
+  }
+
+  @Test
+  void inPlaceRewriteWithoutTimestampPreservesUpstreamCreatedAt() {
+    // An in-place rewrite whose candidate omits upstream_created_at must not re-sort the snapshot
+    // to "oldest" for the currency / AS_OF tie-break — the field is preserved like the aux refs.
+    commit(
+        TableRootMutations.upsertSnapshot(
+            roots, TABLE, entry(7, 7_000), ref("s3://t/def.pb"), true));
+
+    TableRoot updated =
+        commit(
+            TableRootMutations.upsertSnapshot(
+                roots,
+                TABLE,
+                SnapshotManifestEntry.newBuilder()
+                    .setSnapshotId(7)
+                    .setSnapshotRef(ref("s3://t/snap-7-v2.pb"))
+                    .build(),
+                null,
+                true));
+
+    var e = SnapshotManifests.findEntry(roots, updated.getSnapshotManifestRef(), 7).orElseThrow();
+    assertEquals("s3://t/snap-7-v2.pb", e.getSnapshotRef().getUri());
+    assertTrue(e.hasUpstreamCreatedAt(), "timestamp preserved");
+    assertEquals(7_000L, com.google.protobuf.util.Timestamps.toMillis(e.getUpstreamCreatedAt()));
+  }
+
+  @Test
+  void reFinalizeAdvancesCurrencyWhenTheCommittedCurrentMovedOntoAnAlreadyFinalEntry() {
+    // Snapshot 7 is finalized and current; snapshot 3 is finalized but not current.
+    var gen = ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri("s3://t/gen.pb").build();
+    commit(
+        TableRootMutations.upsertSnapshot(
+            roots, TABLE, entry(7, 7_000), ref("s3://t/def.pb"), true));
+    committer.commit(
+        TABLE, TableRootMutations.upsertSnapshot(roots, TABLE, entry(3, 3_000), null, false));
+    committer.commit(TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 3, gen, 7L));
+    assertEquals(7L, roots.get(TABLE).orElseThrow().getCurrentSnapshotId());
+
+    // /snapshots/current moved to 3 (rollback). A re-finalize carries the SAME ref (unchanged
+    // entry) but must still advance root currency onto 3 — the no-op must not skip currency.
+    committer.commit(TABLE, TableRootMutations.setStatsGeneration(roots, TABLE, 3, gen, 3L));
+    assertEquals(
+        3L,
+        roots.get(TABLE).orElseThrow().getCurrentSnapshotId(),
+        "unchanged-entry re-finalize still advances currency to the committed current");
   }
 
   @Test
@@ -421,7 +501,7 @@ class TableRootMutationsTest {
     committer.commit(
         TABLE,
         TableRootMutations.resync(
-            roots, TABLE, null, entry(7, 7_000), true, java.util.Set.of(3L, 7L)));
+            roots, TABLE, null, entry(7, 7_000), true, java.util.Set.of(3L, 7L), null));
 
     var root = roots.get(TABLE).orElseThrow();
     assertEquals(3, root.getCurrentSnapshotId());

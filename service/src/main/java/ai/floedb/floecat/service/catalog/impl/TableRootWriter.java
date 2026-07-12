@@ -221,33 +221,41 @@ public class TableRootWriter {
                 SnapshotManifestEntry entry = null;
                 var pointer = snapshots.latestRegisteredSnapshotPointer(tableId);
                 if (pointer.isPresent()) {
-                  long snapshotId = pointer.get().getSnapshotId();
-                  BlobRef snapshotRef =
-                      BlobRefs.refFrom(snapshots.metaForSafe(tableId, snapshotId));
-                  if (snapshotRef == null) {
+                  entry = snapshotEntry(tableId, pointer.get().getSnapshotId()).orElse(null);
+                  if (entry == null) {
                     // Committed current snapshot has no resolvable blob yet: nothing coherent to
                     // force. NOT converged — the marker stays and the re-drive retries later.
                     converged[0] = false;
                     return null;
                   }
-                  SnapshotManifestEntry.Builder builder =
-                      SnapshotManifestEntry.newBuilder()
-                          .setSnapshotId(snapshotId)
-                          .setSnapshotRef(snapshotRef);
-                  snapshots
-                      .getById(tableId, snapshotId)
-                      .filter(Snapshot::hasUpstreamCreatedAt)
-                      .ifPresent(s -> builder.setUpstreamCreatedAt(s.getUpstreamCreatedAt()));
-                  entry = builder.build();
                 }
                 // The registered-snapshot set, re-read per attempt: transactional
-                // expire/remove-snapshots clears snapshot pointers by raw CAS without funneling
-                // through removeSnapshot, so the resync is the only place a deleted snapshot's root
-                // entry gets pruned. A store fault listing them throws and aborts the attempt (the
-                // marker stays) rather than pruning against a partial set.
+                // expire/remove-snapshots clears snapshot pointers by raw CAS, and a multi-snapshot
+                // add registers non-current snapshots — neither funnels through removeSnapshot /
+                // commitSnapshotEntry, so the resync is the only place the root's membership
+                // converges. A store fault listing them throws and aborts the attempt (the marker
+                // stays) rather than reconciling against a partial set.
                 java.util.Set<Long> liveSnapshotIds = registeredSnapshotIds(tableId);
                 return TableRootMutations.resync(
-                        roots, tableId, definitionRef, entry, gateOnFinalize, liveSnapshotIds)
+                        roots,
+                        tableId,
+                        definitionRef,
+                        entry,
+                        gateOnFinalize,
+                        liveSnapshotIds,
+                        id -> {
+                          SnapshotManifestEntry loaded = snapshotEntry(tableId, id).orElse(null);
+                          if (loaded == null) {
+                            // A registered snapshot whose blob is not yet resolvable can't join the
+                            // manifest this pass. Membership is incomplete, so keep the re-drive
+                            // marker (converged=false): a transaction-only table has no other
+                            // writer
+                            // to converge its root, and a later pass registers it once the blob
+                            // lands.
+                            converged[0] = false;
+                          }
+                          return loaded;
+                        })
                     .apply(current);
               });
           // A drop can race the commit: the committer persists synthesized history even on a
@@ -258,6 +266,26 @@ public class TableRootWriter {
           }
           return converged[0];
         });
+  }
+
+  /**
+   * Builds the manifest entry for a snapshot from its committed blob identity — the snapshot ref
+   * and (when present) its upstream_created_at. Empty when the snapshot blob is not yet resolvable.
+   * Shared by the resync's current-entry force and its missing-snapshot registration.
+   */
+  private java.util.Optional<SnapshotManifestEntry> snapshotEntry(
+      ResourceId tableId, long snapshotId) {
+    BlobRef snapshotRef = BlobRefs.refFrom(snapshots.metaForSafe(tableId, snapshotId));
+    if (snapshotRef == null) {
+      return java.util.Optional.empty();
+    }
+    SnapshotManifestEntry.Builder builder =
+        SnapshotManifestEntry.newBuilder().setSnapshotId(snapshotId).setSnapshotRef(snapshotRef);
+    snapshots
+        .getById(tableId, snapshotId)
+        .filter(Snapshot::hasUpstreamCreatedAt)
+        .ifPresent(s -> builder.setUpstreamCreatedAt(s.getUpstreamCreatedAt()));
+    return java.util.Optional.of(builder.build());
   }
 
   /** Every currently-registered snapshot id (a live by-id pointer), paged in full. */

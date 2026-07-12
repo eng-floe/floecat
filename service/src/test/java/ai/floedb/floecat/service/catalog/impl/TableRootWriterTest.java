@@ -227,6 +227,33 @@ class TableRootWriterTest {
   }
 
   @Test
+  void resyncStaysUnconvergedWhenALiveSnapshotBlobIsUnresolvable() {
+    // 7 is the committed current (resolvable); 9 is a registered non-current snapshot whose blob is
+    // not yet resolvable. Membership is incomplete, so resync must NOT report convergence — the
+    // re-drive marker has to survive so a later pass registers 9 (a transaction-only table has no
+    // other writer to converge its root).
+    when(tableRepo.metaForSafe(tableId)).thenReturn(tableMeta());
+    when(snapshotRepo.latestRegisteredSnapshotPointer(tableId)).thenReturn(Optional.of(pointer(7)));
+    when(snapshotRepo.metaForSafe(tableId, 7L)).thenReturn(snapMeta(7));
+    when(snapshotRepo.metaForSafe(tableId, 9L)).thenReturn(MutationMeta.getDefaultInstance());
+    when(snapshotRepo.getById(eq(tableId), anyLong())).thenReturn(Optional.empty());
+    when(snapshotRepo.list(eq(tableId), anyInt(), any(), any()))
+        .thenReturn(
+            java.util.List.of(
+                Snapshot.newBuilder().setSnapshotId(7).build(),
+                Snapshot.newBuilder().setSnapshotId(9).build()));
+
+    boolean converged = writer.resyncFromCommittedState(tableId);
+
+    assertFalse(converged, "an unresolvable live snapshot leaves the resync unconverged");
+    // Progress still lands: the resolvable current (7) is registered even though 9 was skipped.
+    assertTrue(
+        SnapshotManifests.findEntry(
+                roots, roots.get(tableId).orElseThrow().getSnapshotManifestRef(), 7)
+            .isPresent());
+  }
+
+  @Test
   void resyncDeletesTheRootWhenTheTableIsGone() {
     when(tableRepo.metaForSafe(tableId)).thenReturn(MutationMeta.getDefaultInstance());
 

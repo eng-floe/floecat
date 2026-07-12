@@ -199,12 +199,14 @@ public final class TableRootMutations {
    * brand-new snapshot registers its entry here, but the previous finalized snapshot keeps serving
    * until the post-commit finalize publishes — the same gate every writer obeys.
    *
-   * <p>{@code liveSnapshotIds}: the ids still registered (a live by-id pointer). Entries for
-   * snapshots absent from this set are pruned — a transactional expire/remove-snapshots clears the
-   * snapshot pointers via raw CAS and never funnels through {@link #removeSnapshot}, so without
-   * this the root would retain deleted snapshots forever (GC-reachable blobs, phantom enumeration).
-   * The committed current is never pruned. {@code null} skips membership reconciliation
-   * (currency-only).
+   * <p>{@code liveSnapshotIds}: the ids still registered (a live by-id pointer). The manifest is
+   * reconciled to exactly this membership — entries whose snapshot is absent are pruned (a
+   * transactional expire/remove-snapshots clears snapshot pointers via raw CAS and never funnels
+   * through {@link #removeSnapshot}), and live snapshots missing from the manifest are registered
+   * via {@code entryLoader} (a transactional multi-snapshot commit can add a non-current snapshot
+   * whose entry no other writer would create). The committed current is never pruned. {@code null}
+   * skips membership reconciliation (currency-only); {@code entryLoader} may be {@code null} to
+   * prune without registering.
    */
   public static TableRootCommitter.RootMutator resync(
       TableRootRepository roots,
@@ -212,7 +214,8 @@ public final class TableRootMutations {
       BlobRef definitionRef,
       SnapshotManifestEntry currentEntry,
       boolean gateOnFinalize,
-      Set<Long> liveSnapshotIds) {
+      Set<Long> liveSnapshotIds,
+      java.util.function.LongFunction<SnapshotManifestEntry> entryLoader) {
     return current -> {
       TableRoot base = baseRoot(current, tableId, definitionRef);
       TableRoot.Builder next = base.toBuilder();
@@ -239,7 +242,9 @@ public final class TableRootMutations {
       }
 
       if (liveSnapshotIds != null) {
-        head = pruneUnregistered(chain, head, liveSnapshotIds, committedCurrentId, next);
+        head =
+            reconcileMembership(
+                chain, head, liveSnapshotIds, committedCurrentId, entryLoader, next);
       }
 
       if (head == null) {
@@ -252,23 +257,27 @@ public final class TableRootMutations {
   }
 
   /**
-   * Removes chain entries whose snapshot is no longer registered ({@code liveSnapshotIds}), never
-   * touching {@code protectedId} (the committed current, always live). Clears currency if it
-   * removes the snapshot currency happens to point at. Returns the new head (may be {@code null} if
-   * the chain empties).
+   * Reconciles the manifest to exactly {@code liveSnapshotIds} in a single walk: prunes entries for
+   * snapshots no longer registered (clearing currency if it pointed at one) and registers live
+   * snapshots missing from the manifest via {@code entryLoader} (skipped when the loader is {@code
+   * null} or returns {@code null} for an id). {@code protectedId} (the committed current, already
+   * upserted) is never pruned. Returns the new head ({@code null} if the chain empties).
    */
-  private static BlobRef pruneUnregistered(
+  private static BlobRef reconcileMembership(
       SnapshotManifests.Chain chain,
       BlobRef head,
       Set<Long> liveSnapshotIds,
       Long protectedId,
+      java.util.function.LongFunction<SnapshotManifestEntry> entryLoader,
       TableRoot.Builder next) {
     List<Long> toRemove = new ArrayList<>();
+    Set<Long> present = new java.util.HashSet<>();
     chain
         .withHead(head)
         .forEachEntry(
             e -> {
               long id = e.getSnapshotId();
+              present.add(id);
               if ((protectedId == null || id != protectedId) && !liveSnapshotIds.contains(id)) {
                 toRemove.add(id);
               }
@@ -280,13 +289,31 @@ public final class TableRootMutations {
         next.clearCurrentSnapshotId();
       }
     }
+    if (entryLoader != null) {
+      for (long id : liveSnapshotIds) {
+        if (present.contains(id)) {
+          continue;
+        }
+        SnapshotManifestEntry entry = entryLoader.apply(id);
+        if (entry != null) {
+          newHead = chain.withHead(newHead).upsert(entry);
+        }
+      }
+    }
     return newHead;
   }
 
   /**
    * The shared core for in-place entry updates: find the entry, apply the change, and — when the
    * change warrants it — run the advance rule, all over one chain walk. No-ops (missing root,
-   * unknown snapshot, unchanged entry) return {@code null} so the committer skips the CAS.
+   * unknown snapshot, or an unchanged entry whose currency also would not move) return {@code null}
+   * so the committer skips the CAS.
+   *
+   * <p>Currency is reconciled even when the entry itself is unchanged: a snapshot may have been
+   * finalized while it was not yet the committed current, and {@code /snapshots/current} later
+   * moved onto it. A re-finalize then carries the same ref (unchanged entry) but must still advance
+   * root currency, so the unchanged-entry short-circuit runs only when currency would not move
+   * either.
    */
   private static TableRootCommitter.RootMutator updateEntry(
       TableRootRepository roots,
@@ -306,13 +333,21 @@ public final class TableRootMutations {
         return null; // snapshot unknown to the manifest: no-op
       }
       SnapshotManifestEntry changed = change.apply(existing.get());
-      if (changed.equals(existing.get())) {
-        return null;
-      }
+      boolean entryChanged = !changed.equals(existing.get());
       boolean advanceNow =
           advanceOnChange
               && advancesToCommittedCurrent(chain, base, changed, committedCurrentSnapshotId);
-      TableRoot.Builder next = base.toBuilder().setSnapshotManifestRef(chain.upsert(changed));
+      boolean currencyMoves =
+          advanceNow
+              && !(base.hasCurrentSnapshotId()
+                  && base.getCurrentSnapshotId() == changed.getSnapshotId());
+      if (!entryChanged && !currencyMoves) {
+        return null; // nothing to write
+      }
+      TableRoot.Builder next = base.toBuilder();
+      if (entryChanged) {
+        next.setSnapshotManifestRef(chain.upsert(changed));
+      }
       if (advanceNow) {
         next.setCurrentSnapshotId(changed.getSnapshotId());
       }
@@ -367,6 +402,11 @@ public final class TableRootMutations {
     }
     if (!incoming.hasConstraintsRef() && existing.hasConstraintsRef()) {
       merged.setConstraintsRef(existing.getConstraintsRef());
+    }
+    // upstream_created_at is the currency/AS_OF sort key: an in-place rewrite whose candidate omits
+    // it must not silently re-sort the snapshot to "oldest". Preserve it like the other aux fields.
+    if (!incoming.hasUpstreamCreatedAt() && existing.hasUpstreamCreatedAt()) {
+      merged.setUpstreamCreatedAt(existing.getUpstreamCreatedAt());
     }
     return merged.build();
   }
