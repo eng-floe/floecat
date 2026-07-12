@@ -278,8 +278,17 @@ public class CasBlobGc {
     blobsScanned += connectors.scanned();
     blobsDeleted += connectors.deleted();
 
+    // Report the FINAL poison state, not a static false: the delete passes re-run rootLivePinChains
+    // per page, so a pin registered mid-sweep whose chain walk fails raises walkFailures[0] and
+    // aborts that pass (protecting data). That poison must reach the scheduler's gauges — reporting
+    // clean here would reset the clean-sweep clock and skip the poisoned-account count.
     return new Result(
-        pointersScanned, blobsScanned, blobsDeleted, referenced.size(), tablesScanned, false);
+        pointersScanned,
+        blobsScanned,
+        blobsDeleted,
+        referenced.size(),
+        tablesScanned,
+        walkFailures[0] > 0);
   }
 
   /**

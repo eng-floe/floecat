@@ -191,14 +191,16 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                     () -> GrpcErrors.invalidArgument(correlationId(), TARGET_STATS_EMPTY, Map.of()))
                 .invoke(
                     () -> {
-                      // Publication happens ONCE, after the whole stream persisted. The root
-                      // commit is the generation's publication point — and, under the visibility
-                      // gate, potentially the snapshot's visibility commit — so publishing on the
-                      // first chunk would let queries pin a generation whose later chunks were
-                      // still in flight (or never arrived). A stream that fails mid-way leaves
-                      // the half-written generation unpublished: the root keeps serving the
-                      // previous one, and the live-active pointer protects the partial write
-                      // from GC until a retry completes.
+                      // The root commit happens ONCE, after the whole stream persisted. Note the
+                      // active-generation pointer is written on the FIRST record (by
+                      // ensureActiveGeneration), so listTargetStats / planner stats / the stale
+                      // index can already read the in-progress generation. What the root commit
+                      // gates is PINNED-query visibility (and, under the gate, the snapshot's
+                      // finalization): only a committed generation resolves through a pin.
+                      // Committing per-chunk would therefore expose a half-written generation to
+                      // pinned reads. A stream that fails mid-way leaves the generation un-rooted:
+                      // pinned queries keep resolving the previous one, and the live-active pointer
+                      // protects the partial write from GC until a retry completes.
                       StreamState finalState = state.get();
                       if (rootWriter != null
                           && upserted.get() > 0

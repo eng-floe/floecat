@@ -166,13 +166,16 @@ public class QueryContextStoreImpl implements QueryContextStore {
   public Optional<QueryContext> extendLease(String queryId, long requestedExpiresAtMs) {
     final long now = clock.millis();
 
-    return Optional.ofNullable(
+    QueryContext updated =
         cache
             .asMap()
             .computeIfPresent(
                 queryId,
                 (k, ctx) -> {
                   if (ctx.getState() != QueryContext.State.ACTIVE) {
+                    // Leave a lazily-EXPIRED / ended context in place (removal is owned by the
+                    // GC/pin lifecycle, not this read-shaped renew); the method returns empty
+                    // below.
                     return ctx;
                   }
 
@@ -182,7 +185,13 @@ public class QueryContextStoreImpl implements QueryContextStore {
                   }
 
                   return ctx.extendLease(newExp, versionGen.incrementAndGet());
-                }));
+                });
+    // A renew against a non-ACTIVE (lazily-EXPIRED) context must surface as NOT_FOUND, not a false
+    // success carrying the stale lease — the caller treats empty as not-found.
+    if (updated == null || updated.getState() != QueryContext.State.ACTIVE) {
+      return Optional.empty();
+    }
+    return Optional.of(updated);
   }
 
   @Override

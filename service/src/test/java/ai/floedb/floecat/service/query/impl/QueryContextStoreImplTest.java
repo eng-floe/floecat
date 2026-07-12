@@ -441,4 +441,14 @@ class QueryContextStoreImplTest {
       store.close();
     }
   }
+
+  @Test
+  void renewingANonActiveContextSurfacesNotFound() {
+    // A renew against a context that has left ACTIVE (ended, or lazily expired) must NOT report a
+    // false success carrying the stale lease — the caller treats empty as not-found.
+    store.put(active("q-ended", null, pinBytes("s3://t1/table.pb", "s3://t1/snap-7.pb")));
+    store.end("q-ended", true); // ENDED_COMMIT — no longer ACTIVE
+
+    assertThat(store.extendLease("q-ended", Long.MAX_VALUE)).isEmpty();
+  }
 }

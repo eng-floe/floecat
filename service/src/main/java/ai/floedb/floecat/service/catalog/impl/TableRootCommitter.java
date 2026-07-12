@@ -103,6 +103,7 @@ public class TableRootCommitter {
    * commit.
    */
   public Optional<TableRoot> commit(ResourceId tableId, RootMutator mutator) {
+    BaseResourceRepository.AbortRetryableException lastRetryable = null;
     for (int attempt = 0; attempt < MAX_COMMIT_ATTEMPTS; attempt++) {
       boolean won;
       TableRoot desired;
@@ -132,6 +133,7 @@ public class TableRootCommitter {
         won = fromStore ? roots.update(desired, expectedVersion) : roots.createIfAbsent(desired);
       } catch (BaseResourceRepository.AbortRetryableException retryable) {
         // Transient store contention on a read or the CAS itself: retry with fresh reads.
+        lastRetryable = retryable;
         won = false;
         desired = null;
       } catch (BaseResourceRepository.RepoException terminal) {
@@ -147,10 +149,15 @@ public class TableRootCommitter {
       }
     }
     throw new CommitFailedException(
-        "table root commit lost "
+        "table root commit exhausted "
             + MAX_COMMIT_ATTEMPTS
-            + " CAS attempts under contention for table "
-            + tableId.getId());
+            + " attempts for table "
+            + tableId.getId()
+            + (lastRetryable != null
+                ? "; a retryable store fault occurred during retries (see cause), not only CAS"
+                    + " contention"
+                : " under CAS contention"),
+        lastRetryable);
   }
 
   private static boolean backoff(int attempt) {
