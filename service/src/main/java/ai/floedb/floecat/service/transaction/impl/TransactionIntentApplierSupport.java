@@ -16,12 +16,14 @@
 
 package ai.floedb.floecat.service.transaction.impl;
 
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
+import ai.floedb.floecat.service.repo.impl.SnapshotCreateCounterStore;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -87,6 +89,7 @@ public class TransactionIntentApplierSupport {
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject CatalogOverlay overlay;
+  @Inject SnapshotCreateCounterStore snapshotCreateCounterStore;
 
   public boolean isTableByIdPointer(String pointerKey) {
     return pointerKey != null && pointerKey.contains("/tables/by-id/");
@@ -106,6 +109,20 @@ public class TransactionIntentApplierSupport {
       return Table.parseFrom(bytes);
     } catch (Exception e) {
       LOG.debugf("table blob parse failed: %s", blobUri, e);
+      return null;
+    }
+  }
+
+  public Snapshot readSnapshot(String blobUri) {
+    try {
+      byte[] bytes = blobStore.get(blobUri);
+      if (bytes == null) {
+        LOG.debugf("snapshot blob missing: %s", blobUri);
+        return null;
+      }
+      return Snapshot.parseFrom(bytes);
+    } catch (Exception e) {
+      LOG.debugf("snapshot blob parse failed: %s", blobUri, e);
       return null;
     }
   }
@@ -264,6 +281,19 @@ public class TransactionIntentApplierSupport {
       }
     }
 
+    ApplyOutcome counterOutcome = appendSnapshotCreateCounterOps(intents, touchedKeys, ops);
+    if (counterOutcome.status != ApplyStatus.APPLIED) {
+      return counterOutcome;
+    }
+    if (ops.size() > MAX_POINTER_TXN_OPS) {
+      return ApplyOutcome.conflict(
+          "POINTER_TXN_TOO_LARGE",
+          "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations",
+          null,
+          null,
+          null);
+    }
+
     if (!ops.isEmpty() && !pointerStore.compareAndSetBatch(ops)) {
       ApplyOutcome conflictOutcome = findExpectedVersionConflict(intents);
       if (conflictOutcome != null) {
@@ -310,6 +340,19 @@ public class TransactionIntentApplierSupport {
             null,
             null);
       }
+    }
+
+    ApplyOutcome counterOutcome = appendSnapshotCreateCounterOps(intents, touchedKeys, ops);
+    if (counterOutcome.status != ApplyStatus.APPLIED) {
+      return counterOutcome;
+    }
+    if (ops.size() > MAX_POINTER_TXN_OPS - 1) {
+      return ApplyOutcome.conflict(
+          "POINTER_TXN_TOO_LARGE",
+          "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations",
+          null,
+          null,
+          null);
     }
 
     ApplyOutcome txOutcome =
@@ -976,6 +1019,84 @@ public class TransactionIntentApplierSupport {
       }
     }
     return null;
+  }
+
+  private ApplyOutcome appendSnapshotCreateCounterOps(
+      List<TransactionIntent> intents, Set<String> touchedKeys, List<PointerStore.CasOp> ops) {
+    List<SnapshotCreateCounterStore.CreateIncrement> increments = new ArrayList<>();
+    Set<String> seenSnapshotPointers = new HashSet<>();
+    for (TransactionIntent intent : intents) {
+      if (intent == null || !isSnapshotByIdPointer(intent.getTargetPointerKey())) {
+        continue;
+      }
+      if (isDeleteSentinel(intent)) {
+        continue;
+      }
+      Pointer current = pointerStore.get(intent.getTargetPointerKey()).orElse(null);
+      if (current != null) {
+        continue;
+      }
+      Snapshot snapshot = readSnapshot(intent.getBlobUri());
+      if (snapshot == null || !snapshot.hasTableId()) {
+        return ApplyOutcome.retryable(
+            "SNAPSHOT_BLOB_MISSING", "snapshot create payload is missing or unreadable");
+      }
+      String expectedPointerKey =
+          Keys.snapshotPointerById(
+              snapshot.getTableId().getAccountId(),
+              snapshot.getTableId().getId(),
+              snapshot.getSnapshotId());
+      if (!expectedPointerKey.equals(intent.getTargetPointerKey())) {
+        return ApplyOutcome.conflict(
+            "SNAPSHOT_INTENT_TARGET_MISMATCH",
+            "snapshot payload does not match target pointer",
+            null,
+            null,
+            null);
+      }
+      if (!seenSnapshotPointers.add(expectedPointerKey)) {
+        continue;
+      }
+      increments.add(
+          new SnapshotCreateCounterStore.CreateIncrement(snapshot.getTableId().getAccountId()));
+    }
+    if (increments.isEmpty()) {
+      return ApplyOutcome.applied();
+    }
+
+    for (PointerStore.CasOp op : snapshotCreateCounters().planIncrementOps(increments)) {
+      ApplyOutcome outcome = addOp(op, casOpKey(op), touchedKeys, ops);
+      if (outcome.status != ApplyStatus.APPLIED) {
+        return outcome;
+      }
+    }
+    return ApplyOutcome.applied();
+  }
+
+  private SnapshotCreateCounterStore snapshotCreateCounters() {
+    return snapshotCreateCounterStore != null
+        ? snapshotCreateCounterStore
+        : new SnapshotCreateCounterStore(pointerStore);
+  }
+
+  private boolean isSnapshotByIdPointer(String pointerKey) {
+    return pointerKey != null && pointerKey.contains("/snapshots/by-id/");
+  }
+
+  private static String casOpKey(PointerStore.CasOp op) {
+    if (op instanceof PointerStore.CasUpsert upsert) {
+      return upsert.key();
+    }
+    if (op instanceof PointerStore.CasDelete delete) {
+      return delete.key();
+    }
+    if (op instanceof PointerStore.CasCheck check) {
+      return check.key();
+    }
+    if (op instanceof PointerStore.CasCheckAbsent check) {
+      return check.key();
+    }
+    throw new IllegalArgumentException("unknown pointer CAS op: " + op);
   }
 
   private ApplyOutcome appendIntentCleanupOps(

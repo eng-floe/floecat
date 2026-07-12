@@ -19,9 +19,11 @@ package ai.floedb.floecat.service.transaction;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.impl.SnapshotCreateCounterStore;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -135,6 +137,64 @@ class TransactionIntentApplierSupportTest {
         intentRepo.getByTarget("acct", "/accounts/acct/custom/key-1").isPresent(),
         "intent entry should remain until transaction state is durably updated");
     assertEquals(1, intentRepo.listByTx("acct", "tx-1").size());
+  }
+
+  @Test
+  void applyTransactionBestEffortAdvancesSnapshotCreateCounterForNewSnapshot() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = new TransactionIntentApplierSupport();
+    inject(support, "pointerStore", pointers);
+    inject(support, "blobStore", blobs);
+    inject(support, "overlay", permissiveOverlay());
+
+    String accountId = "acct";
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId("table-1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    long upstreamCreatedMs = 1234L;
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(42L)
+            .setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreatedMs))
+            .build();
+    String blobUri =
+        Keys.snapshotBlobUri(
+            accountId,
+            tableId.getId(),
+            snapshot.getSnapshotId(),
+            ai.floedb.floecat.types.Hashing.sha256Hex(snapshot.toByteArray()));
+    blobs.put(blobUri, snapshot.toByteArray(), "application/x-protobuf");
+
+    TransactionIntent byId =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(Keys.snapshotPointerById(accountId, tableId.getId(), 42L))
+            .setBlobUri(blobUri)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+    TransactionIntent byTime =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(
+                Keys.snapshotPointerByTime(accountId, tableId.getId(), 42L, upstreamCreatedMs))
+            .setBlobUri(blobUri)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(byId, byTime), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    var createCounters = new SnapshotCreateCounterStore(pointers);
+    assertEquals(1L, createCounters.currentCounter(accountId));
   }
 
   @Test

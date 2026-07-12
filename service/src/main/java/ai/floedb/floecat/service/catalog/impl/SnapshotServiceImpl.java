@@ -24,6 +24,8 @@ import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetCurrentSnapshotPointerRequest;
 import ai.floedb.floecat.catalog.rpc.GetCurrentSnapshotPointerResponse;
+import ai.floedb.floecat.catalog.rpc.GetSnapshotCreateCounterRequest;
+import ai.floedb.floecat.catalog.rpc.GetSnapshotCreateCounterResponse;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
@@ -172,6 +174,30 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   return ListSnapshotsResponse.newBuilder()
                       .addAllSnapshots(snaps)
                       .setPage(page)
+                      .build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  @Override
+  public Uni<GetSnapshotCreateCounterResponse> getSnapshotCreateCounter(
+      GetSnapshotCreateCounterRequest request) {
+    var L = LogHelper.start(LOG, "GetSnapshotCreateCounter");
+
+    return mapFailures(
+            run(
+                () -> {
+                  var principalContext = principal.get();
+                  authz.require(principalContext, "table.read");
+
+                  String accountId = principalContext.getAccountId();
+                  return GetSnapshotCreateCounterResponse.newBuilder()
+                      .setCurrentAccountSnapshotCreateCounter(
+                          snapshotRepo.currentSnapshotCreateCounter(accountId))
                       .build();
                 }),
             correlationId())

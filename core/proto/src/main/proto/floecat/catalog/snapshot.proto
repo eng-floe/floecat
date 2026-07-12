@@ -64,6 +64,13 @@ message GetSnapshotResponse {
   Snapshot snapshot = 1;
 }
 
+message GetSnapshotCreateCounterRequest {}
+message GetSnapshotCreateCounterResponse {
+  // Account-scoped high-water counter for committed snapshot creates.
+  // This is not stored on snapshot blobs and is not a per-snapshot field.
+  int64 current_account_snapshot_create_counter = 1;
+}
+
 message GetCurrentSnapshotPointerRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
 }
@@ -119,6 +126,8 @@ message UpdateSnapshotResponse {
 service SnapshotService {
   rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
   rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
+  rpc GetSnapshotCreateCounter(GetSnapshotCreateCounterRequest)
+      returns (GetSnapshotCreateCounterResponse);
   rpc GetCurrentSnapshotPointer(GetCurrentSnapshotPointerRequest)
       returns (GetCurrentSnapshotPointerResponse);
   rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
