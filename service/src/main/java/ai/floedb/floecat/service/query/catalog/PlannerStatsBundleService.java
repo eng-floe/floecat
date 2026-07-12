@@ -891,6 +891,10 @@ public class PlannerStatsBundleService {
                 "pinned_snapshot", Long.toString(pinned.getAsLong()),
                 "requested_snapshot", Long.toString(work.snapshotOverride.getAsLong())));
       }
+      // Invariant (confirmed): the planner never issues a stats request carrying a snapshot_id
+      // override for a table it did not pin, so an override with an empty pin is unreachable. If
+      // that ever changes, an unpinned override would be silently dropped here (empty stats), which
+      // this branch would rather surface than serve — revisit before allowing unpinned overrides.
       return pinned;
     }
 

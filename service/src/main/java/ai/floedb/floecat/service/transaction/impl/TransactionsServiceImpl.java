@@ -2032,6 +2032,11 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         // intents generically, so this must match all of them.
         tableId = Keys.tableIdFromSnapshotPointerKey(intent.getTargetPointerKey());
       }
+      // Constraints pointers (/tables/{t}/constraints/...) are intentionally NOT matched: they are
+      // never staged as transaction intents — constraints flow through the DDL funnel, which
+      // updates the root entry's constraintsRef directly (a root commit, not a raw pointer CAS). If
+      // a future path ever stages a constraints pointer, add an arm here (with a test) so its table
+      // resyncs too.
       if (tableId == null || tableId.isBlank()) {
         continue;
       }

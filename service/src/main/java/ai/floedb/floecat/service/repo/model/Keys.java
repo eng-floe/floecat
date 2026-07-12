@@ -1384,10 +1384,6 @@ public final class Keys {
   }
 
   /**
-   * Recovers the table id from a current-snapshot pointer key produced by {@link
-   * #currentSnapshotPointerByTable}, or {@code null} when the key has another shape.
-   */
-  /**
    * Recovers the table id from ANY snapshot-scoped pointer key ({@code
    * /accounts/{a}/tables/{t}/snapshots/...} — by-id, by-time, current, stats), or {@code null} when
    * the key has another shape. Used so a transaction touching any snapshot pointer schedules a root

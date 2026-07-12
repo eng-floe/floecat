@@ -184,8 +184,11 @@ public final class QueryPins {
     // their base tables), and skipping non-table pins on both sides avoids collapsing several of
     // them onto the empty key relationPinKey returns for a non-table pin.
     Map<String, RelationPin> merged = new LinkedHashMap<>();
-    // Non-table pins (a reserved ViewPin arm, none constructed today) are carried through
-    // verbatim rather than dropped, so a future pin kind cannot be silently lost on merge.
+    // Non-table pins from the EXISTING set (a reserved ViewPin arm, none constructed today) are
+    // carried through verbatim so an already-stored pin is not lost on merge. Incoming non-table
+    // pins are dropped: merging them needs a per-kind identity/dedup key that only ViewPin will
+    // define (relationPinKey returns "" for them) — wire incoming carry-through here when that arm
+    // lands.
     List<RelationPin> carryThrough = new ArrayList<>();
     for (RelationPin pin : existing.getPinsList()) {
       if (pin.hasTablePin()) {

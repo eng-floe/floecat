@@ -147,6 +147,14 @@ public final class StatsProviderFactory {
       this.allowUnpinnedLatestSnapshotFallback = allowUnpinnedLatestSnapshotFallback;
     }
 
+    // Pinning note (intentional, deferred): these lookups scope stats to the pin's SNAPSHOT but not
+    // its stats GENERATION — StatsRepository resolves the live active generation for that snapshot,
+    // and pin_fingerprint carries no generation discriminator. So after a same-snapshot stats
+    // recompute, the planner may read a newer generation than the scan streams. This is deliberate
+    // best-effort: the active generation is root-protected (never GC'd), and the SCAN is
+    // authoritative for results (it freezes stats_generation_ref_uri), so this affects plan-quality
+    // estimation only, never correctness. Strict generation-pinning needs a generation-scoped stats
+    // lookup + a generation etag on RelationPinIdentity threaded into every stats cache key.
     @Override
     public Optional<StatsProvider.TableStatsView> tableStats(ResourceId tableId) {
       if (allowUnpinnedLatestSnapshotFallback) {
