@@ -80,6 +80,10 @@ public class SnapshotRepository {
         Clock.systemUTC());
   }
 
+  // Convenience constructors below pass statsStore = null: with no stats store the read-time
+  // finalize gate is disabled, so getCurrentSnapshot behaves like getCommittedCurrentSnapshot
+  // (query-visible == committed). Only the @Inject constructor wires the real StatsStore and thus
+  // actually gates; a test that needs gating must construct through it.
   public SnapshotRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
@@ -110,22 +114,6 @@ public class SnapshotRepository {
         blobStore,
         tableRepo,
         new CurrentSnapshotPointerRepository(pointerStore, blobStore));
-  }
-
-  public SnapshotRepository(
-      PointerStore pointerStore,
-      BlobStore blobStore,
-      TableRepository tableRepo,
-      CurrentSnapshotPointerRepository currentPointerRepo,
-      Clock clock) {
-    this(
-        pointerStore,
-        blobStore,
-        tableRepo,
-        currentPointerRepo,
-        new TableRootRepository(pointerStore, blobStore),
-        null,
-        clock);
   }
 
   /** The one constructor that assigns state; every other overload delegates here. */
@@ -315,8 +303,10 @@ public class SnapshotRepository {
 
   /**
    * The QUERY-VISIBLE current snapshot. The root's current id is the committed logical selection;
-   * this read additionally applies the finalize gate, so scans and query-adjacent reads do not see
-   * a snapshot until its manifest entry carries the active stats generation.
+   * when a StatsStore is wired (the @Inject constructor) this read applies the finalize gate — an
+   * unfinalized committed current resolves to the newest finalized snapshot at or before it, so
+   * scans and query-adjacent reads never see an unfinalized snapshot. Without a stats store the
+   * gate is off and this returns the committed current (see the constructors' note).
    */
   public Optional<Snapshot> getCurrentSnapshot(ResourceId tableId) {
     return rootCurrentSnapshot(tableId, true);

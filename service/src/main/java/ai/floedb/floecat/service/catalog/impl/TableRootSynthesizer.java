@@ -81,7 +81,6 @@ public class TableRootSynthesizer {
 
     boolean hasSnapshots = false;
     java.util.Set<Long> manifestSnapshotIds = new java.util.HashSet<>();
-    java.util.Set<Long> finalizedSnapshotIds = new java.util.HashSet<>();
     List<SnapshotManifestEntry> newestFirst = new java.util.ArrayList<>();
     String token = "";
     while (true) {
@@ -94,9 +93,6 @@ public class TableRootSynthesizer {
             continue; // prepend's contract: never insert an id the chain already carries
           }
           hasSnapshots = true;
-          if (entry.get().hasStatsGenerationRef()) {
-            finalizedSnapshotIds.add(entry.get().getSnapshotId());
-          }
           newestFirst.add(entry.get());
         }
       }
