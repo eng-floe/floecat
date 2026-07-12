@@ -686,7 +686,8 @@ public class PlannerStatsBundleService {
       /* Drain pre-omitted (count-cap) targets first with explicit per-target status. */
       if (work.hasPreOmitted()) {
         TargetStatsResult omitted =
-            omittedByBudgetResult(work.tableId, work.peekPreOmitted().target());
+            stampPinnedSnapshot(
+                work, omittedByBudgetResult(work.tableId, work.peekPreOmitted().target()));
         work.nextPreOmitted(); /* advance before omitAllRemainingByBudget for correct count */
         omittedByBudget++;
         if (!tryCharge(omitted)) {
@@ -758,7 +759,8 @@ public class PlannerStatsBundleService {
       }
       result = stampPinnedSnapshot(work, result);
       if (!tryCharge(result)) {
-        TargetStatsResult omitted = omittedByBudgetResult(tableId, target);
+        TargetStatsResult omitted =
+            stampPinnedSnapshot(work, omittedByBudgetResult(tableId, target));
         /* Advance first so omitAllRemainingByBudget's remainingTargetCount() excludes
          * the current target (which we're already accounting for with omittedByBudget++). */
         work.advanceTarget();

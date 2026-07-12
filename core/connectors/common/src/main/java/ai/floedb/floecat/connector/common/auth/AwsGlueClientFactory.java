@@ -30,10 +30,6 @@ import software.amazon.awssdk.services.glue.GlueClient;
 public final class AwsGlueClientFactory {
   private AwsGlueClientFactory() {}
 
-  public static GlueClient create(Map<String, String> options, Map<String, String> authProps) {
-    return createRefreshing(options, authProps).current();
-  }
-
   public static RefreshingAwsClient<GlueClient> createRefreshing(
       Map<String, String> options, Map<String, String> authProps) {
     String region = resolveRegion(options, "us-east-1");
