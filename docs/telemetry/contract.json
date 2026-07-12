@@ -460,6 +460,26 @@
     "allowedTags": ["component", "operation", "reason", "resource", "status"]
   },
   {
+    "name": "floecat.service.gc.cas.oldest_sweep_age",
+    "type": "GAUGE",
+    "unit": "ms",
+    "since": "v1",
+    "origin": "service",
+    "description": "Age in milliseconds of the least-recently cleanly-swept CAS GC account.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.gc.cas.poisoned_accounts",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Accounts whose CAS GC delete phase was poisoned in the last tick.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
     "name": "floecat.service.reconcile.cancel_job.total",
     "type": "COUNTER",
     "unit": "",
