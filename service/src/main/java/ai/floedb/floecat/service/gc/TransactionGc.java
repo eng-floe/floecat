@@ -64,7 +64,20 @@ public class TransactionGc {
     // transactions-only tables, and running it after the (potentially deadline-consuming)
     // transaction scan let a high-write account starve it indefinitely. Cleanup of old
     // transactions can wait for the next pass; a divergent root should not.
-    redrivePendingRootResyncs(accountId, pageSize, deadlineMs);
+    //
+    // Guarded: a transient marker-store fault (listPointersByPrefix / compareAndDelete over the
+    // resync-pending prefix) must not abort the tick before the transaction scan runs — that would
+    // let one account's marker-store blip block every account's transaction and intent cleanup.
+    // Individual resync failures are already absorbed inside the loop; this only catches a fault in
+    // the pagination itself. The divergent root simply waits for the next pass.
+    try {
+      redrivePendingRootResyncs(accountId, pageSize, deadlineMs);
+    } catch (RuntimeException e) {
+      LOG.warnf(
+          e,
+          "root resync re-drive failed for account %s; continuing with transaction scan",
+          accountId);
+    }
 
     String prefix = Keys.transactionPointerByIdPrefix(accountId);
     String token = "";

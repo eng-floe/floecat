@@ -35,9 +35,12 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import org.eclipse.microprofile.config.ConfigProvider;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TransactionGcScheduler {
+
+  private static final Logger LOG = Logger.getLogger(TransactionGcScheduler.class);
 
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<TransactionGc> transactionGc;
@@ -151,11 +154,20 @@ public class TransactionGcScheduler {
                 }
                 accountTimer.record(
                     () -> {
-                      var res = gc.runForAccount(account.getResourceId().getId(), deadline);
-                      accountCounter.increment();
-                      txScannedCounter.increment(res.scanned());
-                      txDeletedCounter.increment(res.deleted());
-                      intentsDeletedCounter.increment(res.intentsDeleted());
+                      try {
+                        var res = gc.runForAccount(account.getResourceId().getId(), deadline);
+                        accountCounter.increment();
+                        txScannedCounter.increment(res.scanned());
+                        txDeletedCounter.increment(res.deleted());
+                        intentsDeletedCounter.increment(res.intentsDeleted());
+                      } catch (RuntimeException e) {
+                        // Isolate each account: one account's fault must not cancel the rest of the
+                        // tick, or a single bad account would starve every other account's cleanup.
+                        LOG.warnf(
+                            e,
+                            "transaction GC failed for account %s; continuing with next account",
+                            account.getResourceId().getId());
+                      }
                     });
               }
               token = next.toString();

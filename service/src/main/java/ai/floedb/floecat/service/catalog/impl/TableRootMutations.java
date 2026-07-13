@@ -34,11 +34,13 @@ import java.util.Set;
  * walks the manifest through one {@link SnapshotManifests.Chain}, so find, currency check, and
  * rewrite read each page blob at most once per attempt.
  *
- * <p>Currency at finalize follows the committed {@code /snapshots/current} pointer: a snapshot
- * becomes current when it finalizes AND that pointer names it (see {@link #setStatsGeneration}).
- * The ordering rule — newer upstream_created_at wins, snapshot id breaks ties — is the fallback
- * when the committed pointer is unknown, and the rule registration ({@link #upsertSnapshot}) still
- * applies in non-gated deployments; both live in {@link #shouldAdvance}.
+ * <p>The root's {@code current_snapshot_id} advances at registration and on resync, tracking the
+ * committed {@code /snapshots/current} selection; read-time gating (see {@link
+ * StatsVisibilityGate}) decides whether a query may actually see it, resolving an unfinalized
+ * current to the newest finalized snapshot at or before it. The ordering rule (newer
+ * upstream_created_at wins, snapshot id breaks ties) is the fallback when the committed pointer is
+ * unknown, and the rule registration ({@link #upsertSnapshot}) still applies in non-gated
+ * deployments; both live in {@link #shouldAdvance}.
  */
 public final class TableRootMutations {
 
@@ -52,11 +54,14 @@ public final class TableRootMutations {
    * entry preserves its stats-generation and constraints refs unless the incoming entry carries its
    * own — an in-place snapshot update must not detach the snapshot's stats or constraints.
    *
-   * <p>{@code advance} applies the advance rule so the snapshot may become current at registration.
-   * Deployments whose stats store tracks generations pass {@code false}: a snapshot is not visible
-   * to queries until it is finalized — its generation (file list, indexes, stats) published — and
-   * {@link #setStatsGeneration} is the commit that advances currency. Stores that track no
-   * generations cannot express readiness and keep advance-at-registration.
+   * <p>{@code advance} applies the currency-advance rule so the snapshot may become the root's
+   * current at registration. The sole caller ({@code TableRootWriter.commitSnapshotEntry}) always
+   * passes {@code true}: the root's {@code current_snapshot_id} tracks the committed logical
+   * current immediately. QUERY visibility is gated separately at READ time — a read or pin will not
+   * resolve to a current whose entry has no stats-generation ref (see {@link StatsVisibilityGate}
+   * and the finalize gate in {@code SnapshotRepository}), so currency can advance here without
+   * exposing an unfinalized scan. {@link #setStatsGeneration} is the finalize commit that attaches
+   * that ref.
    */
   public static TableRootCommitter.RootMutator upsertSnapshot(
       TableRootRepository roots,

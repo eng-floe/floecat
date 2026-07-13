@@ -494,6 +494,45 @@ class TransactionGcTest {
         "the marker survives until a re-drive actually converges");
   }
 
+  @Test
+  void aRedrivePaginationFaultDoesNotAbortTheTransactionScan() throws Exception {
+    // A transient fault in the resync re-drive pagination itself (listPointersByPrefix over the
+    // marker prefix) — as opposed to an individual resync, which is absorbed — must NOT abort the
+    // run before the transaction scan. redrivePendingRootResyncs runs first, so an unguarded fault
+    // there would starve this account's transaction/intent cleanup entirely.
+    String accountId = "acct";
+    String resyncPrefix = Keys.rootResyncPendingPrefix(accountId);
+    var pointers =
+        new InMemoryPointerStore() {
+          @Override
+          public java.util.List<ai.floedb.floecat.common.rpc.Pointer> listPointersByPrefix(
+              String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+            if (prefix != null && prefix.startsWith(resyncPrefix)) {
+              throw new IllegalStateException("marker store down");
+            }
+            return super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+          }
+        };
+    var blobs = new InMemoryBlobStore();
+
+    // A terminal, past-grace transaction with no intents — collectable on this pass.
+    String txId = "tx-after-redrive-fault";
+    putTransaction(
+        pointers,
+        blobs,
+        accountId,
+        txId,
+        TransactionState.TS_APPLIED,
+        Timestamps.fromMillis(System.currentTimeMillis() - 300_000L));
+
+    var gc = newGc(pointers, blobs);
+    gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
+
+    assertTrue(
+        pointers.get(Keys.transactionPointerById(accountId, txId)).isEmpty(),
+        "the transaction scan runs and collects despite the redrive pagination fault");
+  }
+
   private static void inject(Object target, String field, Object value) throws Exception {
     Field f = target.getClass().getDeclaredField(field);
     f.setAccessible(true);
