@@ -39,6 +39,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.storage.AwsCredentialsUnavailableException;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 class RemotePlannerReconcileExecutorTest {
@@ -337,6 +338,38 @@ class RemotePlannerReconcileExecutorTest {
                         && "table-1".equals(strictScope.destinationTableId())
                         && strictScope.destinationCaptureRequests().equals(List.of(request))),
             eq("Bearer worker-token"));
+  }
+
+  @Test
+  void executeMarksCompletionStartedWhenConnectorSubmitLeasePreconditionFails() {
+    ReconcilerService reconcilerService = mock(ReconcilerService.class);
+    RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
+    ReconcileWorkerAuthProvider authProvider = ignored -> java.util.Optional.empty();
+    var executor =
+        new RemotePlannerReconcileExecutor(reconcilerService, workerClient, authProvider, true);
+
+    ReconcileScope scope = ReconcileScope.ofView(List.of(), "view-1");
+    ReconcileJobStore.LeasedJob lease = lease("job-precondition", "acct", scope);
+    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
+    ResourceId connectorId = connectorId("acct");
+    when(workerClient.getPlanConnectorInput(remoteLease))
+        .thenReturn(planConnectorPayload(lease, connectorId, scope));
+    when(reconcilerService.planViewTasks(any(), eq(connectorId), eq(scope), eq(null)))
+        .thenReturn(List.of(ReconcileViewTask.of("src", "view", "ns", "view-1")));
+    when(workerClient.submitPlanConnectorSuccess(any(), any(), any()))
+        .thenThrow(new RemoteLeasePreconditionFailedException("submitPlanConnectorSuccess", null));
+    AtomicBoolean completionStarted = new AtomicBoolean(false);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (a, b, c, d, e, f, g, h) -> {},
+                () -> completionStarted.set(true)));
+
+    assertTrue(result.cancelled);
+    assertTrue(completionStarted.get());
   }
 
   @Test

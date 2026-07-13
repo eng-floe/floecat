@@ -19,7 +19,9 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeaseRequest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
@@ -36,11 +38,54 @@ public interface ReconcileReadyQueueStore {
   final class LeaseScanStats {
     public int scanCount;
     public int candidateCount;
+    public int stalePointerSkipCount;
+    public int missingRecordSkipCount;
+    public int waitingSkipCount;
+    public int cancellationBlockedSkipCount;
+    public int pointerMismatchSkipCount;
+    public int requestMismatchSkipCount;
+    public int notDueSkipCount;
+    public int leaseRaceSkipCount;
+    public int leaseRaceRunningSkipCount;
+    public int leaseRaceNotQueuedSkipCount;
+    public int leaseRaceTerminalSkipCount;
+    public int leaseRaceMissingSkipCount;
+    public int leaseRacePointerMismatchSkipCount;
+    public int leaseRaceOtherSkipCount;
     public long deadlineAtMs;
     public BooleanSupplier cancelled = () -> false;
     public boolean abortedByDeadline;
     public boolean abortedByCaller;
-    public int prunedCount;
+    private final Map<String, Integer> skipCounts = new LinkedHashMap<>();
+
+    public void recordSkip(String reason) {
+      String normalized = reason == null ? "" : reason.trim();
+      if (normalized.isBlank()) {
+        return;
+      }
+      skipCounts.merge(normalized, 1, Integer::sum);
+      switch (normalized) {
+        case "stale_pointer" -> stalePointerSkipCount++;
+        case "missing_record" -> missingRecordSkipCount++;
+        case "waiting" -> waitingSkipCount++;
+        case "cancellation_blocked" -> cancellationBlockedSkipCount++;
+        case "pointer_mismatch" -> pointerMismatchSkipCount++;
+        case "request_mismatch" -> requestMismatchSkipCount++;
+        case "not_due" -> notDueSkipCount++;
+        case "lease_race" -> leaseRaceSkipCount++;
+        case "lease_race_running" -> leaseRaceRunningSkipCount++;
+        case "lease_race_not_queued" -> leaseRaceNotQueuedSkipCount++;
+        case "lease_race_terminal" -> leaseRaceTerminalSkipCount++;
+        case "lease_race_missing" -> leaseRaceMissingSkipCount++;
+        case "lease_race_pointer_mismatch" -> leaseRacePointerMismatchSkipCount++;
+        case "lease_race_other" -> leaseRaceOtherSkipCount++;
+        default -> {}
+      }
+    }
+
+    public Map<String, Integer> skipCounts() {
+      return Map.copyOf(skipCounts);
+    }
 
     public boolean shouldStop() {
       if (cancelled != null && cancelled.getAsBoolean()) {
@@ -82,6 +127,8 @@ public interface ReconcileReadyQueueStore {
   Optional<LeasedJob> leaseReadyDue(long nowMs, LeaseRequest request, LeaseScanStats scanStats);
 
   boolean matchesLeaseRequest(StoredReconcileJob record, LeaseRequest request);
+
+  boolean readyPointerMatchesRecord(ReadyQueueEntry candidate, StoredReconcileJob record);
 
   long readyPointerDueAt(StoredReconcileJob record);
 

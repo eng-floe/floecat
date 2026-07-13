@@ -435,7 +435,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   }
 
   @Test
-  void applyLeaseOutcomeRejectsDifferentDuplicateTerminalPayload() {
+  void applyLeaseOutcomeTreatsDuplicateSucceededCompletionAsIdempotentWhenStoredProgressMatches() {
     String jobId = enqueueRoot();
     ReconcileJobStore.LeasedJob lease = leaseJob(jobId);
 
@@ -454,7 +454,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             0L,
             0L));
 
-    assertFalse(
+    assertTrue(
         store.applyLeaseOutcome(
             jobId,
             lease.leaseEpoch,

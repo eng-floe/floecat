@@ -24,14 +24,14 @@ import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
-public class ReconcileJobProjectionMaintenanceScheduler {
+public class ReconcileJobReadyIndexMaintenanceScheduler {
   private static final Logger LOG =
-      Logger.getLogger(ReconcileJobProjectionMaintenanceScheduler.class);
+      Logger.getLogger(ReconcileJobReadyIndexMaintenanceScheduler.class);
 
   @Inject DurableReconcileJobStore jobs;
 
   @Scheduled(
-      every = "{floecat.reconciler.job-store.projection-maintenance.tick-every:5s}",
+      every = "{floecat.reconciler.job-store.ready-index-maintenance.tick-every:1s}",
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
       skipExecutionIf = ReconcileJobGcScheduler.DisabledOrStopping.class)
   void tick() {
@@ -39,7 +39,7 @@ public class ReconcileJobProjectionMaintenanceScheduler {
     boolean enabled =
         config
             .getOptionalValue(
-                "floecat.reconciler.job-store.projection-maintenance.enabled", Boolean.class)
+                "floecat.reconciler.job-store.ready-index-maintenance.enabled", Boolean.class)
             .orElse(true);
     if (!enabled) {
       return;
@@ -47,12 +47,12 @@ public class ReconcileJobProjectionMaintenanceScheduler {
     long maxTickMillis =
         config
             .getOptionalValue(
-                "floecat.reconciler.job-store.projection-maintenance.max-tick-millis", Long.class)
+                "floecat.reconciler.job-store.ready-index-maintenance.max-tick-millis", Long.class)
             .orElse(30_000L);
     try {
-      jobs.runProjectionMaintenanceOnce(maxTickMillis);
+      jobs.runReadyIndexMaintenanceOnce(maxTickMillis);
     } catch (RuntimeException e) {
-      LOG.warnf(e, "Reconcile job projection maintenance tick failed");
+      LOG.warnf(e, "Reconcile job ready-index maintenance tick failed");
     }
   }
 }

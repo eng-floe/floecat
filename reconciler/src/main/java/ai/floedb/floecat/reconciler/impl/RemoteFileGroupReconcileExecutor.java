@@ -194,6 +194,7 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
       return stopRequestedResult(payload);
     }
     try {
+      context.beforeHandledCompletion().run();
       if (!workerClient.submitSuccess(remoteLease, payload, result)) {
         throw terminalSubmissionUncertain(
             "standalone worker success result submission was rejected", null);
@@ -203,25 +204,9 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
           "standalone worker success result submission did not complete cleanly", e);
     }
     if (payload != null && !payload.requestsStats() && !payload.capturePageIndex()) {
-      return ExecutionResult.success(0, 0, 0, 0, 0, 0, 0, successMessage);
+      return ExecutionResult.successHandled(0, 0, 0, 0, 0, 0, 0, successMessage);
     }
-    context
-        .progressListener()
-        .onProgress(
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            statsProcessed,
-            "Executed file group "
-                + payload.groupId()
-                + " with "
-                + payload.plannedFilePaths().size()
-                + " planned handles"
-                + (statsProcessed > 0 ? " and " + statsProcessed + " captured stats" : ""));
-    return ExecutionResult.success(0, 0, 0, 0, 0, 0, statsProcessed, successMessage);
+    return ExecutionResult.successHandled(0, 0, 0, 0, 0, 0, statsProcessed, successMessage);
   }
 
   private boolean shouldSkipTerminalSubmission(

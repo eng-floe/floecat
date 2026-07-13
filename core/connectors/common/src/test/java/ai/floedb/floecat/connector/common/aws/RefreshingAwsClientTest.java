@@ -16,9 +16,7 @@
 
 package ai.floedb.floecat.connector.common.aws;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -29,32 +27,33 @@ import org.junit.jupiter.api.Test;
 class RefreshingAwsClientTest {
 
   @Test
-  void callRefreshesAndRetriesCheckedConnectionPoolShutdown() throws IOException {
-    AtomicInteger created = new AtomicInteger();
-    List<TestClient> clients = new ArrayList<>();
-    RefreshingAwsClient<TestClient> refreshing =
+  void callRefreshesAndRetriesCheckedClosedPoolIoException() throws Exception {
+    List<TestClient> created = new ArrayList<>();
+    AtomicInteger attempts = new AtomicInteger();
+
+    try (RefreshingAwsClient<TestClient> client =
         new RefreshingAwsClient<>(
             () -> {
-              TestClient client = new TestClient(created.incrementAndGet());
-              clients.add(client);
-              return client;
-            });
+              TestClient next = new TestClient(created.size() + 1);
+              created.add(next);
+              return next;
+            })) {
+      String result =
+          client.call(
+              current -> {
+                if (attempts.getAndIncrement() == 0) {
+                  throw new IOException("Connection pool shut down");
+                }
+                return "client-" + current.id;
+              });
 
-    AtomicInteger calls = new AtomicInteger();
-    String result =
-        refreshing.call(
-            client -> {
-              if (calls.incrementAndGet() == 1) {
-                throw new IOException("Connection pool shut down");
-              }
-              return "client-" + client.id;
-            });
+      assertThat(result).isEqualTo("client-2");
+    }
 
-    assertEquals("client-2", result);
-    assertEquals(2, calls.get());
-    assertEquals(2, created.get());
-    assertTrue(clients.get(0).closed);
-    assertFalse(clients.get(1).closed);
+    assertThat(attempts).hasValue(2);
+    assertThat(created).hasSize(2);
+    assertThat(created.get(0).closed).isTrue();
+    assertThat(created.get(1).closed).isTrue();
   }
 
   private static final class TestClient implements AutoCloseable {

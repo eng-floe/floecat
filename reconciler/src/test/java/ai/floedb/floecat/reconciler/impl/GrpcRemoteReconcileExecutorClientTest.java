@@ -45,6 +45,8 @@ import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequ
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultResponse;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultResponse;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -218,15 +220,21 @@ class GrpcRemoteReconcileExecutorClientTest {
   void submitPlanSnapshotSuccessOmitsDuplicateSnapshotFileGroupsWhenFileGroupJobsArePresent()
       throws Exception {
     ExplicitTransportClient client = new ExplicitTransportClient();
-    ManagedChannel channel = mock(ManagedChannel.class);
-    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+    ManagedChannel chunkChannel = mock(ManagedChannel.class);
+    ManagedChannel successChannel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub chunkStub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub successStub =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     client.snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
-    client.enqueueTransport(channel, stub);
-    when(stub.withInterceptors(any())).thenReturn(stub);
-    when(stub.submitLeasedPlanSnapshotResult(any()))
+    client.enqueueTransport(chunkChannel, chunkStub);
+    client.enqueueTransport(successChannel, successStub);
+    when(chunkStub.submitLeasedPlanSnapshotResult(any()))
         .thenReturn(SubmitLeasedPlanSnapshotResultResponse.newBuilder().setAccepted(true).build());
-    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
+    when(successStub.submitLeasedPlanSnapshotResult(any()))
+        .thenReturn(SubmitLeasedPlanSnapshotResultResponse.newBuilder().setAccepted(true).build());
+    when(chunkChannel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
+    when(successChannel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
 
     ReconcileFileGroupTask fileGroupTask =
         ReconcileFileGroupTask.of(
@@ -262,7 +270,15 @@ class GrpcRemoteReconcileExecutorClientTest {
 
     ArgumentCaptor<SubmitLeasedPlanSnapshotResultRequest> requestCaptor =
         ArgumentCaptor.forClass(SubmitLeasedPlanSnapshotResultRequest.class);
-    verify(stub).submitLeasedPlanSnapshotResult(requestCaptor.capture());
+    verify(chunkStub).submitLeasedPlanSnapshotResult(requestCaptor.capture());
+    SubmitLeasedPlanSnapshotResultRequest chunkRequest = requestCaptor.getValue();
+    assertThat(chunkRequest.hasChunk()).isTrue();
+    assertThat(chunkRequest.getChunk().getChunkIndex()).isZero();
+    assertThat(chunkRequest.getChunk().getFileGroupJobsCount()).isEqualTo(1);
+    assertThat(chunkRequest.getChunk().getFileGroupJobs(0).getFileGroupTask().getGroupId())
+        .isEqualTo("group-1");
+
+    verify(successStub).submitLeasedPlanSnapshotResult(requestCaptor.capture());
     SubmitLeasedPlanSnapshotResultRequest.Success success = requestCaptor.getValue().getSuccess();
     assertThat(success.getSnapshotTask().getTableId()).isEqualTo("table-1");
     assertThat(success.getSnapshotTask().getSnapshotId()).isEqualTo(55L);
@@ -275,6 +291,115 @@ class GrpcRemoteReconcileExecutorClientTest {
             SnapshotPlanManifestIds.manifestBlobUri("acct", "job-lease", List.of(fileGroupTask)));
     assertThat(success.getSnapshotTask().getFileGroupCount()).isEqualTo(1);
     assertThat(success.getSnapshotTask().getFileGroupsCount()).isZero();
+    assertThat(success.getChunkCount()).isEqualTo(1);
+  }
+
+  @Test
+  void submitPlanTableSuccessSplitsSnapshotJobsByChildCount() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel firstChunkChannel = mock(ManagedChannel.class);
+    ManagedChannel secondChunkChannel = mock(ManagedChannel.class);
+    ManagedChannel successChannel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub firstChunkStub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub secondChunkStub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub successStub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(firstChunkChannel, firstChunkStub);
+    client.enqueueTransport(secondChunkChannel, secondChunkStub);
+    client.enqueueTransport(successChannel, successStub);
+    when(firstChunkStub.submitLeasedPlanTableResult(any()))
+        .thenReturn(SubmitLeasedPlanTableResultResponse.newBuilder().setAccepted(true).build());
+    when(secondChunkStub.submitLeasedPlanTableResult(any()))
+        .thenReturn(SubmitLeasedPlanTableResultResponse.newBuilder().setAccepted(true).build());
+    when(successStub.submitLeasedPlanTableResult(any()))
+        .thenReturn(SubmitLeasedPlanTableResultResponse.newBuilder().setAccepted(true).build());
+    when(firstChunkChannel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
+    when(secondChunkChannel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
+    when(successChannel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
+
+    List<PlannedSnapshotJob> snapshotJobs = new ArrayList<>();
+    for (int i = 0; i < 9; i++) {
+      snapshotJobs.add(
+          new PlannedSnapshotJob(
+              ReconcileScope.empty(), ReconcileSnapshotTask.of("table-1", i, "db", "events")));
+    }
+
+    assertThat(client.submitPlanTableSuccess(remoteLease(), snapshotJobs, 1L, 1L, 0L, 9L, 0L))
+        .isTrue();
+
+    ArgumentCaptor<SubmitLeasedPlanTableResultRequest> firstChunkCaptor =
+        ArgumentCaptor.forClass(SubmitLeasedPlanTableResultRequest.class);
+    ArgumentCaptor<SubmitLeasedPlanTableResultRequest> secondChunkCaptor =
+        ArgumentCaptor.forClass(SubmitLeasedPlanTableResultRequest.class);
+    ArgumentCaptor<SubmitLeasedPlanTableResultRequest> successCaptor =
+        ArgumentCaptor.forClass(SubmitLeasedPlanTableResultRequest.class);
+    verify(firstChunkStub).submitLeasedPlanTableResult(firstChunkCaptor.capture());
+    verify(secondChunkStub).submitLeasedPlanTableResult(secondChunkCaptor.capture());
+    verify(successStub).submitLeasedPlanTableResult(successCaptor.capture());
+
+    assertThat(firstChunkCaptor.getValue().hasChunk()).isTrue();
+    assertThat(firstChunkCaptor.getValue().getChunk().getChunkIndex()).isZero();
+    assertThat(firstChunkCaptor.getValue().getChunk().getSnapshotJobsCount()).isEqualTo(8);
+    assertThat(secondChunkCaptor.getValue().hasChunk()).isTrue();
+    assertThat(secondChunkCaptor.getValue().getChunk().getChunkIndex()).isEqualTo(1);
+    assertThat(secondChunkCaptor.getValue().getChunk().getSnapshotJobsCount()).isEqualTo(1);
+    assertThat(successCaptor.getValue().hasSuccess()).isTrue();
+    assertThat(successCaptor.getValue().getSuccess().getChunkCount()).isEqualTo(2);
+  }
+
+  @Test
+  void submitPlanSnapshotFailureMapsLeaseFailedPreconditionToLeasePreconditionException()
+      throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.submitLeasedPlanSnapshotResult(any()))
+        .thenThrow(
+            ReconcileLeaseGrpcStatus.leasePreconditionFailed("reconcile lease is no longer valid"));
+    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
+
+    assertThrows(
+        RemoteLeasePreconditionFailedException.class,
+        () ->
+            client.submitPlanSnapshotFailure(
+                remotePlanSnapshotLease(),
+                ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
+                ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+                ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR,
+                "failed"));
+  }
+
+  @Test
+  void submitPlanSnapshotFailurePropagatesIntegrityFailedPrecondition() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.submitLeasedPlanSnapshotResult(any()))
+        .thenThrow(
+            Status.FAILED_PRECONDITION
+                .withDescription(
+                    "snapshot plan declared file_group_count=1 but staged 0 file group job(s)")
+                .asRuntimeException());
+    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                client.submitPlanSnapshotFailure(
+                    remotePlanSnapshotLease(),
+                    ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
+                    ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+                    ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR,
+                    "failed"));
+
+    assertThat(ex.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
   }
 
   @Test

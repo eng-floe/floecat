@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
@@ -111,6 +112,21 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                     () -> {
                       finalizeChunkedSuccess(
                           lease, snapshotTask, tableId, snapshotTask.snapshotId());
+                      boolean accepted =
+                          jobs.applyLeaseOutcome(
+                              lease.jobId,
+                              lease.leaseEpoch,
+                              ReconcileJobStore.CompletionKind.SUCCEEDED,
+                              System.currentTimeMillis(),
+                              "Finalized snapshot " + snapshotTask.snapshotId(),
+                              0L,
+                              0L,
+                              0L,
+                              0L,
+                              0L,
+                              1L,
+                              snapshotTask.directStatsPersistedRecordCount());
+                      requireAcceptedLeaseOutcome(accepted, lease.jobId);
                       return new IdempotencyGuard.CreateResult<>(
                           SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
                               .setAccepted(true)
@@ -185,6 +201,9 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         if (aggregateStats.isEmpty()) {
           return;
         }
+        if (lease.fullRescan) {
+          return;
+        }
         persistence.persistStats(aggregateStats);
         jobs.persistSnapshotFinalizeDirectStatsProgress(
             lease.jobId, lease.leaseEpoch, lease.fullRescan, chunkIndex, aggregateStats.size());
@@ -234,7 +253,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         if (!requestsStatsOutputs) {
           return;
         }
-        if (snapshotTask.directStatsPersistedRecordCount() > 0) {
+        if (!lease.fullRescan && snapshotTask.directStatsPersistedRecordCount() > 0) {
           return;
         }
         SnapshotFinalizeChildStateService.ChildState childState =
@@ -245,7 +264,10 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                 ? List.of()
                 : persistence.mergeCompletedGroupPartials(
                     tableId, snapshotId, aggregateKinds, childState.completedGroupTasks());
-        if (!mergedAggregates.isEmpty()) {
+        if (lease.fullRescan) {
+          persistence.replaceFileGroupStatsForSnapshot(
+              tableId, snapshotId, coverage.expectedFiles(), mergedAggregates);
+        } else if (!mergedAggregates.isEmpty()) {
           persistence.persistStats(mergedAggregates);
         }
       }
@@ -263,6 +285,13 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       }
       default ->
           throw Status.FAILED_PRECONDITION.withDescription(coverage.message()).asRuntimeException();
+    }
+  }
+
+  private static void requireAcceptedLeaseOutcome(boolean accepted, String jobId) {
+    if (!accepted) {
+      throw ReconcileLeaseGrpcStatus.leasePreconditionFailed(
+          "reconcile lease is no longer valid for job " + jobId);
     }
   }
 

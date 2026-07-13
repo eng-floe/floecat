@@ -472,7 +472,6 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                             principalContext.getAccountId(),
                             request.getJobId(),
                             request.getReason());
-                    boolean cancelledViaActiveChildren = false;
                     if (cancelled.isEmpty()) {
                       var existing =
                           jobs.get(principalContext.getAccountId(), request.getJobId())
@@ -489,7 +488,6 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                             GeneratedErrorMessages.MessageKey.JOB,
                             Map.of("id", request.getJobId()));
                       }
-                      cancelledViaActiveChildren = true;
                       cancelled =
                           jobs.get(principalContext.getAccountId(), request.getJobId())
                               .map(this::aggregateIfPlanJob)

@@ -16,8 +16,6 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -37,6 +35,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 class RemoteDefaultReconcileExecutorTest {
@@ -131,83 +130,91 @@ class RemoteDefaultReconcileExecutorTest {
   }
 
   @Test
-  void executeTableReturnsClassifiedSnapshotPlanningFailure() {
+  void executeTableMarksCompletionStartedWhenRemoteLeasePreconditionFails() {
     ReconcilerService reconcilerService = mock(ReconcilerService.class);
     QueuedReconcileWorkerSupport queuedWorkerSupport = mock(QueuedReconcileWorkerSupport.class);
     RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
-    ReconcileWorkerAuthProvider authProvider = accountId -> java.util.Optional.of("Bearer token");
+    ReconcileWorkerAuthProvider authProvider = accountId -> java.util.Optional.empty();
     var executor =
         new RemoteDefaultReconcileExecutor(
             reconcilerService, queuedWorkerSupport, workerClient, authProvider, true);
 
-    ReconcileJobStore.LeasedJob lease =
-        tableLease("job-1", "acct-a", ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
+    ReconcileJobStore.LeasedJob lease = tableLease("job-precondition", "acct-a");
     RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
-    ResourceId connectorId = connectorId("acct-a");
-    ReconcileFailureException failure =
-        new ReconcileFailureException(
-            ReconcileExecutor.ExecutionResult.FailureKind.TABLE_MISSING,
-            ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
-            ReconcileExecutor.ExecutionResult.RetryClass.NONE,
-            "missing table",
-            null);
-
     when(workerClient.getPlanTableInput(remoteLease))
-        .thenReturn(planTablePayload(lease, connectorId));
+        .thenReturn(planTablePayload(lease, connectorId("acct-a")));
     when(queuedWorkerSupport.executePlannedTable(
             any(),
-            eq(connectorId),
+            eq(connectorId("acct-a")),
             eq(false),
             any(),
             any(),
-            eq(ReconcilerService.CaptureMode.METADATA_AND_CAPTURE),
-            eq("Bearer token"),
+            eq(ReconcilerService.CaptureMode.METADATA_ONLY),
+            eq(null),
             any(),
             any()))
         .thenReturn(
             new QueuedReconcileWorkerSupport.TableExecutionResult(
-                ReconcileExecutor.ExecutionResult.success(1, 1, 0, 0, 0, 0, 0, "ok"), List.of()));
-    when(reconcilerService.planSnapshotTasks(
-            any(),
-            eq(connectorId),
-            eq(false),
-            any(),
-            any(),
-            eq(ReconcilerService.CaptureMode.METADATA_AND_CAPTURE),
-            eq("Bearer token")))
-        .thenThrow(failure);
+                ReconcileExecutor.ExecutionResult.success(1, 0, 0, 0, 0, "ok"), List.of()));
+    when(workerClient.submitPlanTableSuccess(
+            any(), any(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
+        .thenThrow(new RemoteLeasePreconditionFailedException("submitPlanTableSuccess", null));
+    AtomicBoolean completionStarted = new AtomicBoolean(false);
 
     ReconcileExecutor.ExecutionResult result =
         executor.execute(
             new ReconcileExecutor.ExecutionContext(
-                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+                lease,
+                () -> false,
+                (a, b, c, d, e, f, g, h) -> {},
+                () -> completionStarted.set(true)));
 
-    assertFalse(result.ok());
-    assertEquals(ReconcileExecutor.ExecutionResult.FailureKind.TABLE_MISSING, result.failureKind);
-    assertEquals(
-        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL, result.retryDisposition);
-    assertEquals(ReconcileExecutor.ExecutionResult.RetryClass.NONE, result.retryClass);
-    verify(workerClient)
-        .submitPlanTableFailure(
-            remoteLease,
-            ReconcileExecutor.ExecutionResult.FailureKind.TABLE_MISSING,
-            ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
-            ReconcileExecutor.ExecutionResult.RetryClass.NONE,
-            "missing table");
+    assertTrue(result.cancelled);
+    assertTrue(completionStarted.get());
+  }
+
+  @Test
+  void executeViewMarksCompletionStartedWhenRemoteLeasePreconditionFails() {
+    ReconcilerService reconcilerService = mock(ReconcilerService.class);
+    QueuedReconcileWorkerSupport queuedWorkerSupport = mock(QueuedReconcileWorkerSupport.class);
+    RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
+    ReconcileWorkerAuthProvider authProvider = accountId -> java.util.Optional.empty();
+    var executor =
+        new RemoteDefaultReconcileExecutor(
+            reconcilerService, queuedWorkerSupport, workerClient, authProvider, true);
+
+    ReconcileJobStore.LeasedJob lease = viewLease("job-view-precondition", "acct-a");
+    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
+    when(workerClient.getPlanViewInput(remoteLease))
+        .thenReturn(planViewPayload(lease, connectorId("acct-a")));
+    when(queuedWorkerSupport.prepareViewMutation(
+            any(), eq(connectorId("acct-a")), any(), any(), eq(null), any(), any()))
+        .thenReturn(
+            new QueuedReconcileWorkerSupport.PlannedViewMutationResult(
+                ReconcileExecutor.ExecutionResult.success(0, 0, 1, 0, 0, 0, 0, "ok"), null));
+    when(workerClient.submitPlanViewSuccess(any(), any()))
+        .thenThrow(new RemoteLeasePreconditionFailedException("submitPlanViewSuccess", null));
+    AtomicBoolean completionStarted = new AtomicBoolean(false);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (a, b, c, d, e, f, g, h) -> {},
+                () -> completionStarted.set(true)));
+
+    assertTrue(result.cancelled);
+    assertTrue(completionStarted.get());
   }
 
   private static ReconcileJobStore.LeasedJob tableLease(String jobId, String accountId) {
-    return tableLease(jobId, accountId, ReconcilerService.CaptureMode.METADATA_ONLY);
-  }
-
-  private static ReconcileJobStore.LeasedJob tableLease(
-      String jobId, String accountId, ReconcilerService.CaptureMode captureMode) {
     return new ReconcileJobStore.LeasedJob(
         jobId,
         accountId,
         "connector-1",
         false,
-        captureMode,
+        ReconcilerService.CaptureMode.METADATA_ONLY,
         ReconcileScope.empty(),
         ReconcileExecutionPolicy.defaults(),
         "lease-" + jobId,
@@ -221,6 +228,26 @@ class RemoteDefaultReconcileExecutorTest {
         "");
   }
 
+  private static ReconcileJobStore.LeasedJob viewLease(String jobId, String accountId) {
+    return new ReconcileJobStore.LeasedJob(
+        jobId,
+        accountId,
+        "connector-1",
+        false,
+        ReconcilerService.CaptureMode.METADATA_ONLY,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.defaults(),
+        "lease-" + jobId,
+        "",
+        "",
+        ReconcileJobKind.PLAN_VIEW,
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.of("src", "view", "ns", "view-1"),
+        ReconcileSnapshotTask.empty(),
+        ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask.empty(),
+        "parent-job");
+  }
+
   private static StandalonePlanTablePayload planTablePayload(
       ReconcileJobStore.LeasedJob lease, ResourceId connectorId) {
     return new StandalonePlanTablePayload(
@@ -232,6 +259,12 @@ class RemoteDefaultReconcileExecutorTest {
         false,
         ReconcileScope.empty(),
         lease.tableTask);
+  }
+
+  private static StandalonePlanViewPayload planViewPayload(
+      ReconcileJobStore.LeasedJob lease, ResourceId connectorId) {
+    return new StandalonePlanViewPayload(
+        lease.jobId, lease.leaseEpoch, lease.parentJobId, connectorId, lease.scope, lease.viewTask);
   }
 
   private static ResourceId connectorId(String accountId) {

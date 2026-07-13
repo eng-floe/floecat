@@ -52,7 +52,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private static final int DEFAULT_MAX_ATTEMPTS = 8;
   private static final long DEFAULT_BASE_BACKOFF_MS = 500L;
   private static final long DEFAULT_MAX_BACKOFF_MS = 30_000L;
-  private static final long DEFAULT_LEASE_MS = 30_000L;
+  private static final long DEFAULT_LEASE_MS = 120_000L;
   private static final long DEFAULT_RECLAIM_INTERVAL_MS = 5_000L;
   private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
 
@@ -184,7 +184,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     String activeJobId = activeJobIdByDedupeKey.get(dedupeKey);
     if (activeJobId != null) {
       ReconcileJob existing = jobs.get(activeJobId);
-      if (existing != null && !isTerminalState(existing.state)) {
+      if (existing != null && isDedupeActiveState(existing.state)) {
         return activeJobId;
       }
       activeJobIdByDedupeKey.remove(dedupeKey, activeJobId);
@@ -512,6 +512,10 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         || "JS_CANCELLED".equals(state);
   }
 
+  private static boolean isDedupeActiveState(String state) {
+    return !isTerminalState(state) && !"JS_CANCELLING".equals(state);
+  }
+
   private static String aggregateState(ReconcileJob planJob, List<ReconcileJob> children) {
     if ("JS_FAILED".equals(planJob.state) || "JS_CANCELLED".equals(planJob.state)) {
       return planJob.state;
@@ -824,13 +828,11 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         continue;
       }
 
-      if (!effective.matches(
-          job.executionPolicy, pinnedExecutors.getOrDefault(jobId, ""), job.jobKind)) {
+      String laneKey = laneKeysByJobId.getOrDefault(jobId, "");
+      if (!matchesLeaseRequest(effective, job, pinnedExecutors.getOrDefault(jobId, ""), laneKey)) {
         ready.add(jobId);
         continue;
       }
-
-      String laneKey = laneKeysByJobId.getOrDefault(jobId, "");
       if (!laneKey.isBlank()) {
         String laneOwner = activeJobIdByLaneKey.get(laneKey);
         if (laneOwner != null && !laneOwner.equals(jobId) && hasLiveLaneLease(laneOwner, now)) {
@@ -897,7 +899,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                 leasedJob.viewTask,
                 leasedJob.snapshotTask,
                 leasedJob.fileGroupTask,
-                leasedJob.parentJobId));
+                leasedJob.parentJobId,
+                laneKey));
       }
       releaseSnapshotLease(jobId);
     }
@@ -960,7 +963,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             job.viewTask,
             job.snapshotTask,
             job.fileGroupTask,
-            job.parentJobId));
+            job.parentJobId,
+            laneKeysByJobId.getOrDefault(jobId, "")));
   }
 
   @Override
@@ -2072,6 +2076,31 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       throw new IllegalArgumentException(
           "FINALIZE_SNAPSHOT_CAPTURE requires explicit snapshot coverage metadata");
     }
+  }
+
+  private static boolean matchesLeaseRequest(
+      LeaseRequest request, ReconcileJob job, String pinnedExecutorId, String laneKey) {
+    LeaseRequest effective = request == null ? LeaseRequest.all() : request;
+    if (job == null) {
+      return false;
+    }
+    String effectivePinnedExecutorId = blankToEmpty(pinnedExecutorId);
+    if (!effectivePinnedExecutorId.isBlank()
+        && !effective.executorIds.contains(effectivePinnedExecutorId)) {
+      return false;
+    }
+    ReconcileExecutionPolicy policy =
+        job.executionPolicy == null ? ReconcileExecutionPolicy.defaults() : job.executionPolicy;
+    boolean classMatches =
+        effective.executionClasses.isEmpty()
+            || effective.executionClasses.contains(policy.executionClass());
+    boolean laneMatches =
+        effective.lanes.isEmpty()
+            || effective.lanes.contains(LeaseRequest.anyLaneToken())
+            || effective.lanes.contains(policy.lane())
+            || effective.lanes.contains(blankToEmpty(laneKey));
+    boolean kindMatches = effective.jobKinds.isEmpty() || effective.jobKinds.contains(job.jobKind);
+    return classMatches && laneMatches && kindMatches;
   }
 
   private static String hashValue(String value) {

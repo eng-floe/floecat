@@ -39,8 +39,9 @@ public class ReconcileJobCompleter {
     this.mutateByJobIdReturningRecord = mutateByJobIdReturningRecord;
   }
 
-  public void markRunning(String jobId, String leaseEpoch, long startedAtMs, String executorId) {
-    mutateByJobIdReturningRecord.apply(
+  public Optional<CanonicalEnvelope> markRunning(
+      String jobId, String leaseEpoch, long startedAtMs, String executorId) {
+    return mutateByJobIdReturningRecord.apply(
         jobId,
         existing -> {
           if (!leaseManager.hasActiveLease(
@@ -61,7 +62,7 @@ public class ReconcileJobCompleter {
         });
   }
 
-  public void markProgress(
+  public Optional<CanonicalEnvelope> markProgress(
       String jobId,
       String leaseEpoch,
       long tablesScanned,
@@ -72,31 +73,28 @@ public class ReconcileJobCompleter {
       long snapshotsProcessed,
       long statsProcessed,
       String message) {
-    mutateByJobIdReturningRecord
-        .apply(
-            jobId,
-            existing -> {
-              if (!leaseManager.hasActiveLease(
-                  jobId, leaseEpoch, existing, "markProgress", false, true, false)) {
-                return null;
-              }
-              if (isTerminalState(existing.state)) {
-                return null;
-              }
-              existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
-              existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
-              existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
-              existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
-              existing.errors = errors;
-              existing.snapshotsProcessed =
-                  Math.max(existing.snapshotsProcessed, snapshotsProcessed);
-              existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
-              if (message != null && !message.isBlank()) {
-                existing.message = message;
-              }
-              return existing;
-            })
-        .ifPresent(env -> {});
+    return mutateByJobIdReturningRecord.apply(
+        jobId,
+        existing -> {
+          if (!leaseManager.hasActiveLease(
+              jobId, leaseEpoch, existing, "markProgress", false, true, false)) {
+            return null;
+          }
+          if (isTerminalState(existing.state)) {
+            return null;
+          }
+          existing.tablesScanned = Math.max(existing.tablesScanned, tablesScanned);
+          existing.tablesChanged = Math.max(existing.tablesChanged, tablesChanged);
+          existing.viewsScanned = Math.max(existing.viewsScanned, viewsScanned);
+          existing.viewsChanged = Math.max(existing.viewsChanged, viewsChanged);
+          existing.errors = errors;
+          existing.snapshotsProcessed = Math.max(existing.snapshotsProcessed, snapshotsProcessed);
+          existing.statsProcessed = Math.max(existing.statsProcessed, statsProcessed);
+          if (message != null && !message.isBlank()) {
+            existing.message = message;
+          }
+          return existing;
+        });
   }
 
   private static boolean isTerminalState(String state) {

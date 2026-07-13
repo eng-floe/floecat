@@ -573,14 +573,26 @@ message PlannedSnapshotPlanJob {
   ReconcileSnapshotTask snapshot_task = 2;
 }
 
+message PlannedFileGroupPlanJob {
+  CaptureScope scope = 1;
+  ReconcileFileGroupTask file_group_task = 2;
+}
+
 message SubmitLeasedPlanTableResultRequest {
+  message Chunk {
+    uint32 chunk_index = 1;
+    repeated PlannedSnapshotPlanJob snapshot_jobs = 2;
+  }
+
   message Success {
-    repeated PlannedSnapshotPlanJob snapshot_jobs = 1;
+    reserved 1;
+    reserved "snapshot_jobs";
     uint64 tables_scanned = 2;
     uint64 tables_changed = 3;
     uint64 errors = 4;
     uint64 snapshots_processed = 5;
     uint64 stats_processed = 6;
+    uint32 chunk_count = 7;
   }
 
   message Failure {
@@ -596,6 +608,7 @@ message SubmitLeasedPlanTableResultRequest {
   oneof outcome {
     Success success = 3;
     Failure failure = 4;
+    Chunk chunk = 5;
   }
 }
 
@@ -674,8 +687,15 @@ message GetLeasedPlanSnapshotInputResponse {
 }
 
 message SubmitLeasedPlanSnapshotResultRequest {
+  message Chunk {
+    ReconcileSnapshotTask snapshot_task = 1;
+    uint32 chunk_index = 2;
+    repeated PlannedFileGroupPlanJob file_group_jobs = 3;
+  }
+
   message Success {
     ReconcileSnapshotTask snapshot_task = 1;
+    uint32 chunk_count = 2;
   }
 
   message Failure {
@@ -691,6 +711,7 @@ message SubmitLeasedPlanSnapshotResultRequest {
   oneof outcome {
     Success success = 3;
     Failure failure = 4;
+    Chunk chunk = 5;
   }
 }
 

@@ -76,6 +76,16 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   }
 
   @Override
+  public Set<String> supportedLanes() {
+    return Set.of();
+  }
+
+  @Override
+  public boolean supportsLane(String lane) {
+    return true;
+  }
+
+  @Override
   public boolean supports(ReconcileJobStore.LeasedJob lease) {
     return lease != null && lease.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE;
   }
@@ -341,7 +351,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
                 snapshotTask.snapshotId(),
                 aggregateKinds,
                 childState.completedGroupTasks());
-    if (aggregateKinds.isEmpty()) {
+    if (aggregateKinds.isEmpty() && !lease.fullRescan) {
       RuntimeException pointerFailure = advanceCurrentSnapshot(tableId, snapshotTask, lease);
       if (pointerFailure != null) {
         return currentSnapshotAdvanceFailure(snapshotTask, pointerFailure);
@@ -356,7 +366,11 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           0,
           "Skipped snapshot finalization " + snapshotTask.snapshotId() + " (no aggregate outputs)");
     }
-    persistence.persistStats(aggregateStats);
+    long statsProcessed =
+        lease.fullRescan
+            ? persistence.replaceFileGroupStatsForSnapshot(
+                tableId, snapshotTask.snapshotId(), coverage.expectedFiles(), aggregateStats)
+            : persistence.persistStats(aggregateStats);
     RuntimeException pointerFailure = advanceCurrentSnapshot(tableId, snapshotTask, lease);
     if (pointerFailure != null) {
       return currentSnapshotAdvanceFailure(snapshotTask, pointerFailure);
@@ -368,7 +382,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         0,
         0,
         1,
-        aggregateStats.size(),
+        statsProcessed,
         "Finalized snapshot capture " + snapshotTask.snapshotId());
   }
 

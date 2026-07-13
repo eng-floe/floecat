@@ -51,6 +51,14 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.MODE, TagKey.REASON);
     Set<String> reconcileQueueRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> reconcileQueueAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    Set<String> reconcileLeaseResultRequired =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
+    Set<String> reconcileLeaseResultAllowed =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
+    Set<String> reconcileLeaseSkipRequired =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.REASON);
+    Set<String> reconcileLeaseSkipAllowed =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.REASON);
     Set<String> statsRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> statsAllowed =
         Set.of(
@@ -252,6 +260,48 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         reconcileExecutionRequired,
         reconcileExecutionAllowed,
         "Automatic reconcile planner enqueue decisions by mode.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.LEASE_NEXT_LATENCY,
+        reconcileLeaseResultRequired,
+        reconcileLeaseResultAllowed,
+        "Durable reconcile leaseNext latency by terminal outcome.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.LEASE_NEXT_CANDIDATES,
+        reconcileLeaseResultRequired,
+        reconcileLeaseResultAllowed,
+        "Number of ready-queue candidates examined by each durable reconcile leaseNext call.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.LEASE_NEXT_SCANS,
+        reconcileLeaseResultRequired,
+        reconcileLeaseResultAllowed,
+        "Number of ready-queue slice scans performed by each durable reconcile leaseNext call.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.LEASE_NEXT_OUTCOMES,
+        reconcileLeaseResultRequired,
+        reconcileLeaseResultAllowed,
+        "Durable reconcile leaseNext outcomes.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.LEASE_NEXT_SKIPS,
+        reconcileLeaseSkipRequired,
+        reconcileLeaseSkipAllowed,
+        "Ready-queue candidates skipped by durable reconcile leaseNext, grouped by reason.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.LEASE_SCAN_PERMITS_IN_USE,
+        reconcileQueueRequired,
+        reconcileQueueAllowed,
+        "Current number of durable reconcile lease scan permits in use.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.LEASE_SCAN_PERMITS_AVAILABLE,
+        reconcileQueueRequired,
+        reconcileQueueAllowed,
+        "Current number of durable reconcile lease scan permits available.");
     add(
         defs,
         ServiceMetrics.Stats.BATCH_ITEMS_TOTAL,

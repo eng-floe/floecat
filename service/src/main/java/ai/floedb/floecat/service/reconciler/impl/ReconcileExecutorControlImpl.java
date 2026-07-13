@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.reconciler.impl;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
@@ -121,17 +122,11 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               if (request == null) {
                 executorIds = Set.of();
               } else {
-                java.util.LinkedHashSet<String> mergedExecutorIds = new java.util.LinkedHashSet<>();
-                request.getExecutorIdsList().stream()
-                    .map(executorId -> executorId == null ? "" : executorId.trim())
-                    .filter(executorId -> !executorId.isEmpty())
-                    .forEach(mergedExecutorIds::add);
-                String executorId =
-                    request.getExecutorId() == null ? "" : request.getExecutorId().trim();
-                if (!executorId.isBlank()) {
-                  mergedExecutorIds.add(executorId);
-                }
-                executorIds = Set.copyOf(mergedExecutorIds);
+                executorIds =
+                    request.getExecutorIdsList().stream()
+                        .map(executorId -> executorId == null ? "" : executorId.trim())
+                        .filter(executorId -> !executorId.isEmpty())
+                        .collect(java.util.stream.Collectors.toUnmodifiableSet());
               }
               var leaseRequest =
                   ReconcileJobStore.LeaseRequest.of(
@@ -599,6 +594,24 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
+              if (request.hasChunk()) {
+                boolean accepted =
+                    leasedPlannerWorkerService.persistPlanTableSnapshotChunk(
+                        principalContext,
+                        jobId,
+                        leaseEpoch,
+                        request.getChunk(),
+                        request.getChunk().getSnapshotJobsList().stream()
+                            .map(
+                                job ->
+                                    new LeasedPlannerWorkerService.PlannedSnapshotJob(
+                                        fromProtoScope(job.getScope()),
+                                        fromProtoSnapshotTask(job.getSnapshotTask())))
+                            .toList());
+                return SubmitLeasedPlanTableResultResponse.newBuilder()
+                    .setAccepted(accepted)
+                    .build();
+              }
               if (request.hasSuccess()) {
                 boolean accepted =
                     leasedPlannerWorkerService.persistPlanTableSuccess(
@@ -610,13 +623,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         request.getSuccess().getErrors(),
                         request.getSuccess().getSnapshotsProcessed(),
                         request.getSuccess().getStatsProcessed(),
-                        request.getSuccess().getSnapshotJobsList().stream()
-                            .map(
-                                job ->
-                                    new LeasedPlannerWorkerService.PlannedSnapshotJob(
-                                        fromProtoScope(job.getScope()),
-                                        fromProtoSnapshotTask(job.getSnapshotTask())))
-                            .toList());
+                        request.getSuccess().getChunkCount());
                 return SubmitLeasedPlanTableResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();
@@ -761,13 +768,33 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
               String corr = principalContext.getCorrelationId();
               String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
               String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
+              if (request.hasChunk()) {
+                boolean accepted =
+                    leasedPlannerWorkerService.persistPlanSnapshotFileGroupChunk(
+                        principalContext,
+                        jobId,
+                        leaseEpoch,
+                        fromProtoSnapshotTask(request.getChunk().getSnapshotTask()),
+                        request.getChunk(),
+                        request.getChunk().getFileGroupJobsList().stream()
+                            .map(
+                                job ->
+                                    new PlannedFileGroupJob(
+                                        fromProtoScope(job.getScope()),
+                                        fromProtoFileGroupTask(job.getFileGroupTask())))
+                            .toList());
+                return SubmitLeasedPlanSnapshotResultResponse.newBuilder()
+                    .setAccepted(accepted)
+                    .build();
+              }
               if (request.hasSuccess()) {
                 boolean accepted =
                     leasedPlannerWorkerService.persistPlanSnapshotSuccess(
                         principalContext,
                         jobId,
                         leaseEpoch,
-                        fromProtoSnapshotTask(request.getSuccess().getSnapshotTask()));
+                        fromProtoSnapshotTask(request.getSuccess().getSnapshotTask()),
+                        request.getSuccess().getChunkCount());
                 return SubmitLeasedPlanSnapshotResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();

@@ -53,8 +53,14 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
 
   @Override
   public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
-    boolean committed =
-        pointerStore.compareAndSetBatch(
+    return compareAndSetBatch(batch, List.of());
+  }
+
+  @Override
+  public boolean compareAndSetBatch(
+      ReconcileJobIndexStore.JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
+    List<PointerStore.CasOp> ops =
+        new ArrayList<>(
             JobIndexWriteBatchSupport.toCasOps(
                 batch,
                 key ->
@@ -66,6 +72,10 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
                                     pointer.getKey(),
                                     pointer.getBlobUri(),
                                     pointer.getVersion()))));
+    if (extraPointerOps != null) {
+      ops.addAll(extraPointerOps);
+    }
+    boolean committed = pointerStore.compareAndSetBatch(ops);
     if (!committed) {
       return false;
     }

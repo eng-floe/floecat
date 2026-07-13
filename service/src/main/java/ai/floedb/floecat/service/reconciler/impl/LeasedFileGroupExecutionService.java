@@ -37,6 +37,7 @@ import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.reconciler.impl.FileGroupExecutionSupport;
+import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -385,12 +386,26 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                       List<TargetStatsRecord> mergedPartialAggregates =
                           mergedPartialAggregates(
                               tableId, latestTask.snapshotId(), latestTask, partialAggregates);
-                      jobs.persistFileGroupResult(
-                          lease.jobId,
-                          lease.leaseEpoch,
+                      ReconcileFileGroupTask persistedTask =
                           latestTask
                               .withFileResults(validatedFileResults)
-                              .withPartialAggregateRecords(mergedPartialAggregates));
+                              .withPartialAggregateRecords(mergedPartialAggregates);
+                      jobs.persistFileGroupResult(lease.jobId, lease.leaseEpoch, persistedTask);
+                      boolean accepted =
+                          jobs.applyLeaseOutcome(
+                              lease.jobId,
+                              lease.leaseEpoch,
+                              ReconcileJobStore.CompletionKind.SUCCEEDED,
+                              System.currentTimeMillis(),
+                              "Executed file group " + latestTask.groupId(),
+                              0L,
+                              0L,
+                              0L,
+                              0L,
+                              0L,
+                              0L,
+                              fileGroupStatsProcessed(persistedTask));
+                      requireAcceptedLeaseOutcome(accepted, lease.jobId);
                       return new IdempotencyGuard.CreateResult<>(
                           SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
                               .setAccepted(true)
@@ -405,6 +420,23 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                     SubmitLeasedFileGroupExecutionResultResponse::parseFrom))
         .body
         .getAccepted();
+  }
+
+  private static void requireAcceptedLeaseOutcome(boolean accepted, String jobId) {
+    if (!accepted) {
+      throw ReconcileLeaseGrpcStatus.leasePreconditionFailed(
+          "reconcile lease is no longer valid for job " + jobId);
+    }
+  }
+
+  private static long fileGroupStatsProcessed(ReconcileFileGroupTask fileGroupTask) {
+    if (fileGroupTask == null || fileGroupTask.fileResults() == null) {
+      return 0L;
+    }
+    return fileGroupTask.fileResults().stream()
+        .filter(java.util.Objects::nonNull)
+        .mapToLong(ReconcileFileResult::statsProcessed)
+        .sum();
   }
 
   public boolean persistFailure(

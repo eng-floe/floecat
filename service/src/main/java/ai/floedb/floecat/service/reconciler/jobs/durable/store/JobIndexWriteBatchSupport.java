@@ -35,6 +35,9 @@ public final class JobIndexWriteBatchSupport {
   public static List<CasOp> toCasOps(
       ReconcileJobIndexStore.JobIndexWriteBatch batch,
       Function<String, Optional<JobIndexEntrySnapshot>> loadStoredPointer) {
+    if (batch == null) {
+      return List.of();
+    }
     List<CasOp> ops = new ArrayList<>(batch.writes().size());
     for (ReconcileJobIndexStore.JobIndexWriteOp write : batch.writes()) {
       if (write instanceof ReconcileJobIndexStore.JobIndexUpsert upsert) {

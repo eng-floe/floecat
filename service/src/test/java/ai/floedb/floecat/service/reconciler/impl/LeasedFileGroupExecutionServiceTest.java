@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -70,6 +71,7 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
 import com.google.protobuf.ByteString;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.lang.reflect.Method;
 import java.util.List;
@@ -117,6 +119,20 @@ class LeasedFileGroupExecutionServiceTest {
     when(idempotencyStore.get(anyString())).thenReturn(Optional.empty());
     when(idempotencyStore.createPending(
             anyString(), anyString(), anyString(), anyString(), any(), any()))
+        .thenReturn(true);
+    when(jobs.applyLeaseOutcome(
+            anyString(),
+            anyString(),
+            any(),
+            anyLong(),
+            anyString(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong()))
         .thenReturn(true);
   }
 
@@ -305,10 +321,91 @@ class LeasedFileGroupExecutionServiceTest {
     ArgumentCaptor<ReconcileFileGroupTask> persisted =
         ArgumentCaptor.forClass(ReconcileFileGroupTask.class);
     verify(jobs).persistFileGroupResult(eq(CHILD_JOB_ID), eq(LEASE_EPOCH), persisted.capture());
+    verify(jobs)
+        .applyLeaseOutcome(
+            eq(CHILD_JOB_ID),
+            eq(LEASE_EPOCH),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
+            anyLong(),
+            eq("Executed file group group-1"),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(3L));
     assertEquals(
         List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 3L)),
         persisted.getValue().fileResults());
     assertEquals(List.of(partialAggregate), persisted.getValue().partialAggregateRecords());
+  }
+
+  @Test
+  void persistSuccessDoesNotFinalizeIdempotencyWhenLeaseOutcomeRejected() {
+    ReconcileFileGroupTask plannedGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileJobStore.ReconcileJob childLeaseView =
+        job(
+            CHILD_JOB_ID,
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileSnapshotTask.empty(),
+            plannedGroup.asReference(),
+            PARENT_JOB_ID);
+    ReconcileJobStore.ReconcileJob parent =
+        job(
+            PARENT_JOB_ID,
+            ReconcileJobKind.PLAN_SNAPSHOT,
+            ReconcileSnapshotTask.of(
+                TABLE_ID,
+                SNAPSHOT_ID,
+                "db",
+                "events",
+                List.of(plannedGroup),
+                true,
+                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                1),
+            ReconcileFileGroupTask.empty(),
+            "");
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
+    when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    when(idempotencyStore.get(chunkIdempotencyKey("result-1", 0)))
+        .thenReturn(Optional.of(stagedChunkRecord("result-1", 0, List.of())));
+    when(jobs.applyLeaseOutcome(
+            anyString(),
+            anyString(),
+            any(),
+            anyLong(),
+            anyString(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong()))
+        .thenReturn(false);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service.persistSuccess(
+                    principal,
+                    CHILD_JOB_ID,
+                    LEASE_EPOCH,
+                    "result-1",
+                    1,
+                    List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 3L))));
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    verify(idempotencyStore, never())
+        .finalizeSuccess(
+            anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
   }
 
   @Test

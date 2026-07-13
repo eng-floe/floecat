@@ -48,6 +48,26 @@ public class SnapshotFinalizePersistenceService {
     return canonical.size();
   }
 
+  public long replaceFileGroupStatsForSnapshot(
+      ResourceId tableId,
+      long snapshotId,
+      List<String> expectedFilePaths,
+      List<TargetStatsRecord> aggregateRecords) {
+    List<TargetStatsRecord> replacement = new ArrayList<>();
+    for (String filePath : expectedFilePaths == null ? List.<String>of() : expectedFilePaths) {
+      if (filePath == null || filePath.isBlank()) {
+        continue;
+      }
+      statsStore
+          .getTargetStats(tableId, snapshotId, StatsTargetIdentity.fileTarget(filePath))
+          .ifPresent(replacement::add);
+    }
+    if (aggregateRecords != null && !aggregateRecords.isEmpty()) {
+      replacement.addAll(aggregateRecords);
+    }
+    return replaceAllStatsForSnapshot(tableId, snapshotId, replacement);
+  }
+
   public boolean deleteAllStatsForSnapshot(ResourceId tableId, long snapshotId) {
     boolean deleted = statsStore.deleteAllStatsForSnapshot(tableId, snapshotId);
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);

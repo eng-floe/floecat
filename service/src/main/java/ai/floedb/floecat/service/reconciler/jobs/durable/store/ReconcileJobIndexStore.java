@@ -21,6 +21,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueItemResult
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -130,6 +131,8 @@ public interface ReconcileJobIndexStore {
   StoredJobPage listStoredJobs(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states);
 
+  StoredJobPage listStoredJobsInState(String state, int pageSize, String pageToken);
+
   StoredJobPage listStoredChildJobs(
       String accountId, String parentJobId, int pageSize, String pageToken);
 
@@ -148,7 +151,18 @@ public interface ReconcileJobIndexStore {
 
   JobIndexWriteBatch combineWriteBatches(List<JobIndexWriteBatch> batches);
 
+  boolean commitReadyQueueRepairBatch(
+      List<CanonicalRecordMutation> mutations, List<ReadyQueueWrite> readyWrites);
+
   boolean compareAndSetCanonicalMutations(List<CanonicalRecordMutation> mutations);
+
+  default boolean compareAndSetBatchWithPointerOps(
+      JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
+    if (extraPointerOps != null && !extraPointerOps.isEmpty()) {
+      return false;
+    }
+    return compareAndSetCanonicalMutations(List.of());
+  }
 
   StoredReconcileJob cloneStoredRecord(StoredReconcileJob source);
 

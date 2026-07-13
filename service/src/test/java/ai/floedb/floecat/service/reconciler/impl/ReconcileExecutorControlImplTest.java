@@ -230,6 +230,7 @@ class ReconcileExecutorControlImplTest {
             .leaseReconcileJob(
                 LeaseReconcileJobRequest.newBuilder()
                     .setExecutorId("remote-executor")
+                    .addExecutorIds("remote-executor")
                     .addExecutionClasses(ai.floedb.floecat.reconciler.rpc.ExecutionClass.EC_HEAVY)
                     .addLanes("remote")
                     .build())
@@ -249,6 +250,20 @@ class ReconcileExecutorControlImplTest {
                         && request.executionClasses.contains(ReconcileExecutionClass.HEAVY)
                         && request.lanes.contains("remote")
                         && request.executorIds.contains("remote-executor")));
+  }
+
+  @Test
+  void leaseReconcileJobDoesNotUseExecutorIdAsPinnedRoutingFallback() {
+    when(service.jobs.leaseNext(any())).thenReturn(Optional.empty());
+
+    service
+        .leaseReconcileJob(
+            LeaseReconcileJobRequest.newBuilder().setExecutorId("legacy-executor").build())
+        .await()
+        .indefinitely();
+
+    verify(service.jobs)
+        .leaseNext(argThat(request -> request != null && request.executorIds.isEmpty()));
   }
 
   @Test
