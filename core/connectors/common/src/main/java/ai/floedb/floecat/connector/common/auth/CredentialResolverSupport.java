@@ -390,14 +390,18 @@ public final class CredentialResolverSupport {
             option(properties, "client.region"),
             firstNonBlank(option(properties, "s3.region"), option(properties, "aws.region")));
 
-    var builder = StsClient.builder().credentialsProvider(DefaultCredentialsProvider.create());
+    try (var sts = new RefreshingAwsClient<>(() -> buildAmbientCredentialsStsClient(region))) {
+      return assumeRole(req, sts);
+    }
+  }
+
+  private static StsClient buildAmbientCredentialsStsClient(String region) {
+    var builder =
+        StsClient.builder().credentialsProvider(DefaultCredentialsProvider.builder().build());
     if (region != null) {
       builder.region(Region.of(region));
     }
-
-    try (var sts = new RefreshingAwsClient<>(builder::build)) {
-      return assumeRole(req, sts);
-    }
+    return builder.build();
   }
 
   static AssumeRoleRequest buildAssumeRoleRequest(AuthCredentials.AwsAssumeRole ar) {
