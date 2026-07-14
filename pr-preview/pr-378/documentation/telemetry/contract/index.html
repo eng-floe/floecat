@@ -2286,6 +2286,69 @@
 <td>component, mode, operation, reason, result</td>
 </tr>
 <tr>
+<td>floecat.service.reconcile.lease_next.candidates</td>
+<td>SUMMARY</td>
+<td>count</td>
+<td>v1</td>
+<td>Number of ready-queue candidates examined by each durable reconcile leaseNext call.</td>
+<td>component, operation, result</td>
+<td>component, operation, result</td>
+</tr>
+<tr>
+<td>floecat.service.reconcile.lease_next.latency</td>
+<td>TIMER</td>
+<td>ms</td>
+<td>v1</td>
+<td>Durable reconcile leaseNext latency by terminal outcome.</td>
+<td>component, operation, result</td>
+<td>component, operation, result</td>
+</tr>
+<tr>
+<td>floecat.service.reconcile.lease_next.outcomes.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Durable reconcile leaseNext outcomes.</td>
+<td>component, operation, result</td>
+<td>component, operation, result</td>
+</tr>
+<tr>
+<td>floecat.service.reconcile.lease_next.scans</td>
+<td>SUMMARY</td>
+<td>count</td>
+<td>v1</td>
+<td>Number of ready-queue slice scans performed by each durable reconcile leaseNext call.</td>
+<td>component, operation, result</td>
+<td>component, operation, result</td>
+</tr>
+<tr>
+<td>floecat.service.reconcile.lease_next.skips.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Ready-queue candidates skipped by durable reconcile leaseNext, grouped by reason. Lease race reasons distinguish active running races from stale ready entries that are missing, terminal, not queued, pointer-mismatched, or otherwise changed after the lease attempt. Lease conflict reasons expose the write-side reason returned by the canonical lease attempt, including owner-claim conflict scope and job kind.</td>
+<td>component, operation, reason</td>
+<td>component, operation, reason</td>
+</tr>
+<tr>
+<td>floecat.service.reconcile.lease_scan.permits.available</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Current number of durable reconcile lease scan permits available.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.reconcile.lease_scan.permits.in_use</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Current number of durable reconcile lease scan permits in use.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
 <td>floecat.service.reconcile.list_jobs.total</td>
 <td>COUNTER</td>
 <td></td>
