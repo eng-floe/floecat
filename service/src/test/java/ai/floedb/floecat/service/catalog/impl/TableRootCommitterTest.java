@@ -159,9 +159,10 @@ class TableRootCommitterTest {
   @Test
   void terminalRepositoryErrorFailsTheCommit() {
     var failing = mock(TableRootRepository.class);
-    when(failing.metaForSafe(TABLE))
-        .thenReturn(MutationMeta.newBuilder().setPointerVersion(3L).build());
-    when(failing.get(TABLE))
+    when(failing.metaForSafeLive(TABLE))
+        .thenReturn(
+            MutationMeta.newBuilder().setPointerVersion(3L).setBlobUri("s3://t/root.pb").build());
+    when(failing.getByBlobUriLive("s3://t/root.pb"))
         .thenReturn(Optional.of(TableRoot.newBuilder().setTableId(TABLE).build()));
     when(failing.update(any(), anyLong()))
         .thenThrow(new BaseResourceRepository.NotFoundException("pointer gone"));
@@ -178,9 +179,10 @@ class TableRootCommitterTest {
   @Test
   void exhaustedCasAttemptsFailTheCommit() {
     var contended = mock(TableRootRepository.class);
-    when(contended.metaForSafe(TABLE))
-        .thenReturn(MutationMeta.newBuilder().setPointerVersion(3L).build());
-    when(contended.get(TABLE))
+    when(contended.metaForSafeLive(TABLE))
+        .thenReturn(
+            MutationMeta.newBuilder().setPointerVersion(3L).setBlobUri("s3://t/root.pb").build());
+    when(contended.getByBlobUriLive("s3://t/root.pb"))
         .thenReturn(Optional.of(TableRoot.newBuilder().setTableId(TABLE).build()));
     when(contended.update(any(), anyLong())).thenReturn(false); // never wins
     var contendedCommitter = new TableRootCommitter(contended);

@@ -52,6 +52,7 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
@@ -82,6 +83,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject MarkerStore markerStore;
   @Inject PointerStore pointerStore;
   @Inject TableRootWriter rootWriter;
+  @Inject TableRootRepository tableRoots;
   @Inject EngineHintSchemaCleaner hintCleaner;
   @Inject CatalogOverlay overlay;
 
@@ -805,8 +807,9 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
     pointerStore.deleteByPrefix(prefix);
     // The table-root pointer lives outside the snapshot prefix; left behind it would shadow the
     // initial state of a table later recreated with the same id. Its blobs are reclaimed by
-    // CasBlobGc once the table drops out of the live set.
-    pointerStore.delete(Keys.tableRootByTable(tableId.getAccountId(), tableId.getId()));
+    // CasBlobGc once the table drops out of the live set. Routed through the repository so the
+    // root-pointer cache drops its entry with the pointer (same-process read-your-writes).
+    tableRoots.purgeRoot(tableId);
   }
 
   /** Record the table's (possibly new) immutable definition blob on its root. */

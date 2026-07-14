@@ -93,6 +93,11 @@ public class PinValidator {
       throw GrpcErrors.internal(
           correlationId, QUERY_PINNED_ROOT_MISSING, Map.of("table_id", pin.getTableId().getId()));
     }
+    // Always a LIVE HEAD, never a cached etag: the CAS GC min-age fence measures age since the
+    // blob was WRITTEN, so an old root passes it the moment it is superseded — a recently observed
+    // etag proves nothing about the blob still existing. This probe is the pin's integrity
+    // detector; weakening it to a memo would blind it for the memo's TTL exactly when the
+    // pin-registration invariant it guards has broken.
     String etag = roots.blobEtag(pin.getRootUri());
     if (etag == null) {
       throw GrpcErrors.internal(

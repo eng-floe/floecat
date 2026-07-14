@@ -1201,7 +1201,10 @@ public class PlannerStatsBundleService {
                   + pinnedRef.get().uri());
         }
         Optional<SnapshotConstraints> bundle =
-            constraintRepository.getByBlobUri(pinnedRef.get().uri());
+            // LIVE: emptiness here is the broken-retention detector (pinned blobs are GC-rooted
+            // for the query's lifetime); a resident decode must not suppress the warning exactly
+            // where traffic — and cache warmth — is highest.
+            constraintRepository.getByBlobUriLive(pinnedRef.get().uri());
         if (bundle.isEmpty()) {
           // The pin froze a bundle ref whose blob is no longer retrievable: pinned blobs are
           // GC-rooted for the query's lifetime, so this is a broken invariant, never client state.

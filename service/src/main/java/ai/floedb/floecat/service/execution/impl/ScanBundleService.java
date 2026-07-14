@@ -100,15 +100,21 @@ public class ScanBundleService {
     long snapshotId = pin.getSnapshotId();
     long initStartedNanos = System.nanoTime();
     long tableStartedNanos = initStartedNanos;
+    // LIVE reads, not the decoded cache: requirePinned*'s contract is that a missing pinned blob
+    // fails as catalog-integrity corruption — a still-resident decode must not mask a swept blob,
+    // so these reads' emptiness has to reflect the store. Once per scan session, not per page.
     Table table =
         PinValidator.requirePinnedTableBlob(
-            tables.getByBlobUri(pin.getTableBlobUri()), correlationId, tableId);
+            tables.getByBlobUriLive(pin.getTableBlobUri()), correlationId, tableId);
     StoreOperationSummary.nanos("table_load", System.nanoTime() - tableStartedNanos);
 
     long snapshotStartedNanos = System.nanoTime();
     Snapshot snapshot =
         PinValidator.requirePinnedSnapshotBlob(
-            snapshots.getByBlobUri(pin.getSnapshotBlobUri()), correlationId, tableId, snapshotId);
+            snapshots.getByBlobUriLive(pin.getSnapshotBlobUri()),
+            correlationId,
+            tableId,
+            snapshotId);
     StoreOperationSummary.nanos("snapshot_load", System.nanoTime() - snapshotStartedNanos);
 
     TableInfo info = buildTableInfo(table, snapshot, snapshotId);

@@ -109,8 +109,32 @@ public class TableRootCommitter {
       boolean won;
       TableRoot desired;
       try {
-        long expectedVersion = roots.metaForSafe(tableId).getPointerVersion();
-        Optional<TableRoot> stored = roots.get(tableId);
+        // THE COMMIT FUNNEL READS LIVE, PERIOD — pointer AND blob. The live pointer read yields
+        // the CAS expected-version and names the base root coherently (a cached pointer was a
+        // lost-update hazard: a straggling reader could repopulate an older pointer and let this
+        // attempt erase an intervening commit). The base BLOB read is live too: its emptiness is
+        // the dangling-pointer corruption detector below, which must fire deterministically — a
+        // warm decoded root would mask a swept blob, and a CAS retry could flip behavior as the
+        // entry evicts. Once per commit, the extra GET is noise on a write path.
+        var liveMeta = roots.metaForSafeLive(tableId);
+        long expectedVersion = liveMeta.getPointerVersion();
+        Optional<TableRoot> stored =
+            liveMeta.getBlobUri().isBlank()
+                ? Optional.empty()
+                : roots.getByBlobUriLive(liveMeta.getBlobUri());
+        if (stored.isEmpty() && !liveMeta.getBlobUri().isBlank()) {
+          // A pointer exists but its blob is gone. Distinguish the benign supersede+sweep race
+          // (the pointer has already moved on — retry re-reads it) from true corruption (pointer
+          // unchanged — fail CLOSED). Falling through to synthesis here would fabricate a fresh
+          // base over whatever the pointer referenced and mask the data loss behind a misleading
+          // CAS-contention exhaustion.
+          if (roots.metaForSafeLive(tableId).getPointerVersion() == expectedVersion) {
+            throw new BaseResourceRepository.CorruptionException(
+                "dangling root pointer, missing blob: " + liveMeta.getBlobUri());
+          }
+          throw new BaseResourceRepository.AbortRetryableException(
+              "root pointer moved mid-read for table " + tableId.getId());
+        }
         boolean fromStore = stored.isPresent();
         Optional<TableRoot> current =
             (fromStore || synthesizer == null) ? stored : synthesizer.synthesize(tableId);

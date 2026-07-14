@@ -135,9 +135,11 @@ public class SnapshotHelper {
     if (root == null && rootMeta != null && !rootMeta.getBlobUri().isEmpty()) {
       // The root was superseded and its blob swept between the pointer read and the blob read —
       // the pointer has necessarily moved on, so follow it once instead of failing a live table.
+      // The retry MUST bypass the TTL pointer cache (which would hand back the same dead URI for
+      // the rest of the TTL); metaForSafeLive also invalidates the stale entry as a side effect.
       // Still null after the retry means the re-read pointer is also unreadable (corruption, or a
       // pathological second race): fall through to the per-pin-kind not-found handling below.
-      rootMeta = roots.metaForSafe(tableId);
+      rootMeta = roots.metaForSafeLive(tableId);
       root = loadRoot(rootMeta);
     }
 
@@ -351,7 +353,9 @@ public class SnapshotHelper {
     if (snapshotBlobUri != null && !snapshotBlobUri.isEmpty()) {
       Snapshot snap =
           PinValidator.requirePinnedSnapshotBlob(
-              snapshots.getByBlobUri(snapshotBlobUri), cid, tbl.id());
+              // LIVE: this read's emptiness is the pin-integrity detector (requirePinned*); a
+              // still-resident decode must not mask a swept pinned blob.
+              snapshots.getByBlobUriLive(snapshotBlobUri), cid, tbl.id());
       return snap.getSchemaJson().isBlank() ? supplier.get() : snap.getSchemaJson();
     }
 
