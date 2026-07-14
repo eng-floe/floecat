@@ -73,6 +73,18 @@ message GetUserObjectsRequest {
 
   /** Planner references expressed as ordered candidates; responses include `input_index`. */
   repeated TableReferenceCandidate tables = 2;
+
+  /**
+   * Content-hash relation versions the caller already holds (the values of
+   * RelationPinIdentity.table_blob_version from earlier responses). When a
+   * resolved relation's identity is in this list, the server MAY omit the
+   * relation payload (schema, columns, view definition) and return only the
+   * identity plus the lightweight stats — the omitted bytes are provably
+   * identical to what the caller holds. A generic conditional-request
+   * feature: servers are free to ignore the hint, and callers must treat a
+   * full payload as equally correct.
+   */
+  repeated string known_table_blob_versions = 3;
 }
 
 /**
@@ -424,11 +436,16 @@ message ColumnResult {
  * Optional relation statistics returned from a cached snapshot.
  */
 message RelationStats {
-  /** Estimated row count for the relation. */
-  int64 row_count = 1;
+  /**
+   * Estimated row count for the relation. Presence-tracked: a caching client refreshes its warm
+   * row count from an identity-only reply, so it MUST distinguish "count unknown this reply"
+   * (field absent — leave the cached estimate) from a genuine zero. A bare int64 would report both
+   * as 0 and let a size-only reply clobber a valid cached cardinality with 0.
+   */
+  optional int64 row_count = 1;
 
-  /** Estimated total size in bytes for the relation. */
-  int64 total_size_bytes = 2;
+  /** Estimated total size in bytes for the relation. Presence-tracked for the same reason. */
+  optional int64 total_size_bytes = 2;
 }
 
 /**

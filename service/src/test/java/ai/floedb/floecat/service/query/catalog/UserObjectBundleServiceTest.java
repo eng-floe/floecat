@@ -270,6 +270,119 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void knownVersionGetsIdentityOnlyResponse() {
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    // First resolution: full payload, and the identity to prove possession of.
+    RelationInfo full =
+        service.stream("cid", ctx, List.of(candidate))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely()
+            .get(1)
+            .getResolutions()
+            .getItems(0)
+            .getRelation();
+    assertThat(full.getColumnsCount()).isPositive();
+    String version = full.getPinIdentity().getTableBlobVersion();
+    assertThat(version).isNotEmpty();
+
+    // Proving possession omits the payload: identity returns, columns do not.
+    RelationInfo slim =
+        service.stream("cid", ctx, List.of(candidate), Set.of(version))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely()
+            .get(1)
+            .getResolutions()
+            .getItems(0)
+            .getRelation();
+    assertThat(slim.hasPinIdentity()).isTrue();
+    assertThat(slim.getPinIdentity().getTableBlobVersion()).isEqualTo(version);
+    assertThat(slim.getColumnsCount()).isZero();
+    assertThat(slim.getName().getName()).isEqualTo(full.getName().getName());
+  }
+
+  @Test
+  void projectedResponseCarriesNoPinIdentitySoItIsNotCacheable() {
+    // A two-column table so a single-column projection is a genuine strict subset.
+    overlay.registerTable(
+        TABLE_A,
+        List.of(
+            SchemaColumn.newBuilder().setName("id_a").setNullable(true).build(),
+            SchemaColumn.newBuilder().setName("payload_a").setNullable(true).build()),
+        NameRef.newBuilder().setCatalog("cat").setName("a").build());
+
+    // A full request first: it carries the version token and the complete column set.
+    TableReferenceCandidate full =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+    RelationInfo fullRel =
+        service.stream("cid", ctx, List.of(full))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely()
+            .get(1)
+            .getResolutions()
+            .getItems(0)
+            .getRelation();
+    assertThat(fullRel.hasPinIdentity()).isTrue();
+    assertThat(fullRel.getColumnsCount()).isGreaterThan(1);
+    String oneColumn = fullRel.getColumns(0).getColumnName();
+
+    // A projected request for a single column: the payload is a subset, so it must NOT carry a
+    // version token — caching it under the version would let a later request be starved of the
+    // columns this response omitted.
+    TableReferenceCandidate projected =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .addInitialColumns(oneColumn)
+            .build();
+    RelationInfo projRel =
+        service.stream("cid", ctx, List.of(projected))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely()
+            .get(1)
+            .getResolutions()
+            .getItems(0)
+            .getRelation();
+    assertThat(projRel.getColumnsCount()).isLessThan(fullRel.getColumnsCount());
+    assertThat(projRel.hasPinIdentity())
+        .as("a projected (partial) payload must not be cacheable as the full-schema version")
+        .isFalse();
+  }
+
+  @Test
+  void unknownVersionStillGetsTheFullPayload() {
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    // A stale hint (DDL happened since) must never suppress the payload.
+    RelationInfo relation =
+        service.stream("cid", ctx, List.of(candidate), Set.of("some-superseded-version"))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely()
+            .get(1)
+            .getResolutions()
+            .getItems(0)
+            .getRelation();
+    assertThat(relation.getColumnsCount()).isPositive();
+  }
+
+  @Test
   void statsAvailableWhenPinAddedDuringBundle() {
     QueryContext noPinCtx =
         QueryContext.builder()
@@ -765,6 +878,58 @@ class UserObjectBundleServiceTest {
     } finally {
       restoreProperties(previousValues);
     }
+  }
+
+  @Test
+  void systemTablesSharingACatalogVersionGetDistinctPinIdentities() {
+    // SystemNodeRegistry hands every system table in a catalog the same
+    // fingerprint-derived version, and SystemTableNode does not override
+    // GraphNode.cacheIdentity() — so two system tables share their cacheIdentity
+    // ("1" here, from the fixture's version=1L). The derived pin-identity token
+    // must still be unique per relation, or a client that cached one would be
+    // served the other's schema identity-only under the shared version.
+    ResourceId sysA =
+        ResourceId.newBuilder().setAccountId("sys").setId("SYS_A").setKind(ResourceKind.RK_TABLE).build();
+    ResourceId sysB =
+        ResourceId.newBuilder().setAccountId("sys").setId("SYS_B").setKind(ResourceKind.RK_TABLE).build();
+    overlay.registerRelation(
+        sysA,
+        storageSystemTableNode(sysA, "sys://a", "k"),
+        UserObjectBundleTestSupport.schemaFor("a"),
+        NameRef.newBuilder().setCatalog("sys").setName("sys_a").build());
+    overlay.registerRelation(
+        sysB,
+        storageSystemTableNode(sysB, "sys://b", "k"),
+        UserObjectBundleTestSupport.schemaFor("b"),
+        NameRef.newBuilder().setCatalog("sys").setName("sys_b").build());
+
+    List<UserObjectsBundleChunk> chunks =
+        service
+            .stream(
+                "cid",
+                ctx,
+                List.of(
+                    TableReferenceCandidate.newBuilder()
+                        .addCandidates(QueryInput.newBuilder().setTableId(sysA))
+                        .build(),
+                    TableReferenceCandidate.newBuilder()
+                        .addCandidates(QueryInput.newBuilder().setTableId(sysB))
+                        .build()))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely();
+
+    Map<ResourceId, String> tokenById = new java.util.HashMap<>();
+    chunks.get(1).getResolutions().getItemsList().stream()
+        .map(RelationResolution::getRelation)
+        .forEach(r -> tokenById.put(r.getRelationId(), r.getPinIdentity().getTableBlobVersion()));
+
+    assertThat(tokenById.get(sysA)).isNotBlank();
+    assertThat(tokenById.get(sysB)).isNotBlank();
+    assertThat(tokenById.get(sysA))
+        .as("two system tables sharing a catalog version must not collide on table_blob_version")
+        .isNotEqualTo(tokenById.get(sysB));
   }
 
   @Test

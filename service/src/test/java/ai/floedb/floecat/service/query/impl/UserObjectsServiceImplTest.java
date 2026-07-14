@@ -62,7 +62,10 @@ class UserObjectsServiceImplTest {
     UserObjectBundleService mockBundles = Mockito.mock(UserObjectBundleService.class);
     Mockito.when(
             mockBundles.stream(
-                Mockito.anyString(), Mockito.any(QueryContext.class), Mockito.anyList()))
+                Mockito.anyString(),
+                Mockito.any(QueryContext.class),
+                Mockito.anyList(),
+                Mockito.anySet()))
         .thenAnswer(
             _ -> {
               // This runs inside grpcCtx.call/run — context should be set.
@@ -159,7 +162,10 @@ class UserObjectsServiceImplTest {
     UserObjectBundleService mockBundles = Mockito.mock(UserObjectBundleService.class);
     Mockito.when(
             mockBundles.stream(
-                Mockito.anyString(), Mockito.any(QueryContext.class), Mockito.anyList()))
+                Mockito.anyString(),
+                Mockito.any(QueryContext.class),
+                Mockito.anyList(),
+                Mockito.anySet()))
         .thenReturn(
             Multi.createFrom()
                 .<UserObjectsBundleChunk>emitter(

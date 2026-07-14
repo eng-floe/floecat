@@ -21,7 +21,6 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
@@ -41,6 +40,7 @@ import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationKind;
+import ai.floedb.floecat.query.rpc.RelationPinIdentity;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.RelationResolutions;
@@ -75,12 +75,14 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
+import ai.floedb.floecat.types.Hashing;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
 import io.opentelemetry.api.trace.Span;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -228,8 +230,17 @@ public class UserObjectBundleService {
         250L);
   }
 
+  /** {@link #stream(String, QueryContext, List, Set)} with no possession hint. */
   public Multi<UserObjectsBundleChunk> stream(
       String correlationId, QueryContext ctx, List<TableReferenceCandidate> tables) {
+    return stream(correlationId, ctx, tables, Set.of());
+  }
+
+  public Multi<UserObjectsBundleChunk> stream(
+      String correlationId,
+      QueryContext ctx,
+      List<TableReferenceCandidate> tables,
+      Set<String> knownBlobVersions) {
     List<TableReferenceCandidate> candidates = List.copyOf(tables);
     if (LOG.isDebugEnabled()) {
       LOG.debugf(
@@ -244,7 +255,7 @@ public class UserObjectBundleService {
         .<UserObjectsBundleChunk>deferred(
             () -> {
               UserObjectBundleIterator iterator =
-                  new UserObjectBundleIterator(correlationId, ctx, candidates);
+                  new UserObjectBundleIterator(correlationId, ctx, candidates, knownBlobVersions);
               return Multi.createFrom()
                   .iterable(() -> iterator)
                   .onFailure()
@@ -490,6 +501,123 @@ public class UserObjectBundleService {
     }
   }
 
+  /**
+   * True when the payload built for this candidate carries the relation's complete column set (no
+   * projection). Mirrors {@link UserObjectBundleUtils#pruneSchema} exactly: a candidate that wants
+   * all columns, or names none, is served the full schema. The pin-identity token is only stamped
+   * for such responses (see buildRelation), so a cached version always denotes the full schema.
+   */
+  private static boolean servesFullSchema(TableReferenceCandidate candidate) {
+    return candidate.getWantsAllColumns() || candidate.getInitialColumnsCount() == 0;
+  }
+
+  /*
+   * The opaque pin identity for a resolved relation. Tables carry the query
+   * pin's identity, frozen at first touch. Views and system relations have no
+   * query pin in V1; they carry a derived content token — the SHA-256 of the
+   * relation id and the node's cache identity (see below for why the id is
+   * required) — which is immutable per content version, leaks no URI or
+   * storage authority, and (with an empty constraints ref) states the
+   * deterministic truth that no constraints bundle exists for them.
+   */
+  private Optional<RelationPinIdentity> pinIdentityFor(
+      String correlationId, ResolvedRelation relation, QueryContext queryContext) {
+    // Only a USER table carries a per-query snapshot pin; route it through the pin's identity.
+    // Views AND system tables have no query pin, so they take the derived content token below —
+    // previously system tables fell into the pin branch and emitted no identity at all, so
+    // clients could never cache them despite that being the whole point of the content token.
+    // Discriminate on kind+origin (a system table is also a TABLE node, and a view may be USER
+    // origin) rather than the concrete node class, so the routing holds for every node backing.
+    if (relation.node().kind() == GraphNodeKind.TABLE
+        && relation.node().origin() == GraphNodeOrigin.USER) {
+      return queryContext
+          .findTablePin(relation.relationId(), correlationId)
+          .map(QueryPins::identity);
+    }
+    String cacheIdentity = relation.node().cacheIdentity();
+    if (cacheIdentity == null || cacheIdentity.isBlank()) {
+      return Optional.empty();
+    }
+    // Derived content token for views and system relations: a hash of the relation id plus the
+    // node's registry cacheIdentity. The relation id is ESSENTIAL, not decoration: SystemTableNode
+    // does not override GraphNode.cacheIdentity(), which returns the bare catalog-fingerprint
+    // version (SystemNodeRegistry hands every system table in a catalog the same value), so hashing
+    // cacheIdentity alone would collide across all system tables — a client that cached one would
+    // be served another identity-only under the shared token and reuse the wrong schema. Mixing the
+    // id in makes the token unique per relation while still moving with engine content (the version
+    // changes on catalog upgrade). Note it does NOT cover a system table's service-resolved
+    // Flight/storage endpoint (configuredEndpointForKey), which is static Quarkus deployment config
+    // — a change to it requires a redeploy, which resets client caches, so a caller cannot route to
+    // a stale endpoint across the change. If endpoint config ever becomes hot-reloadable, fold it in.
+    ResourceId relId = relation.relationId();
+    String keyMaterial =
+        relId.getAccountId() + '\0' + relId.getId() + '\0' + relId.getKindValue() + '\0' + cacheIdentity;
+    return Optional.of(
+        RelationPinIdentity.newBuilder()
+            .setTableBlobVersion(Hashing.sha256Hex(keyMaterial.getBytes(StandardCharsets.UTF_8)))
+            .build());
+  }
+
+  /*
+   * Identity-only response when the request proved possession of the exact
+   * content version this resolution serves: the payload (schema, columns,
+   * view definition, decoration) is omitted — the identity plus the
+   * lightweight stats are all a caching client needs, and the omitted bytes
+   * are provably identical to what it holds. A generic conditional-request
+   * feature, never client-special-casing: servers MAY ignore the hint and
+   * clients MUST treat a full payload as equally correct. Returns null when
+   * the relation must be built in full.
+   */
+  private RelationInfo identityOnlyOrNull(
+      String correlationId,
+      ResolvedRelation relation,
+      QueryContext queryContext,
+      StatsProvider statsProvider,
+      Set<String> knownBlobVersions) {
+    if (knownBlobVersions.isEmpty()) {
+      return null;
+    }
+    Optional<RelationPinIdentity> identity = pinIdentityFor(correlationId, relation, queryContext);
+    // A blank version can never prove possession: a user table whose definition blob had no etag
+    // resolves to table_blob_version="" (the repository defaults a missing etag to empty), and
+    // every such table would otherwise share that key — one cached, the rest served the wrong
+    // schema identity-only. Force the full payload rather than match on the empty string.
+    if (identity.isEmpty()
+        || identity.get().getTableBlobVersion().isBlank()
+        || !knownBlobVersions.contains(identity.get().getTableBlobVersion())) {
+      return null;
+    }
+    RelationInfo.Builder slim = baseRelationInfo(relation).setPinIdentity(identity.get());
+    attachTableStats(slim, relation.relationId(), statsProvider);
+    return slim.build();
+  }
+
+  /**
+   * A {@link RelationInfo} builder carrying the identity fields every response sets — id, canonical
+   * name, kind, and origin. Both the slim identity-only reply and the full payload start here, so
+   * the two can never disagree on a relation's identity.
+   */
+  private RelationInfo.Builder baseRelationInfo(ResolvedRelation relation) {
+    return RelationInfo.newBuilder()
+        .setRelationId(relation.relationId())
+        .setName(canonicalName(relation.relationId(), relation.node()))
+        .setKind(mapKind(relation.node().kind(), relation.node().origin()))
+        .setOrigin(mapOrigin(relation.node().origin()));
+  }
+
+  /**
+   * Attach the relation's live snapshot-scoped estimates (row count, size) when the stats provider
+   * has them. Both response paths keep these on the wire: they move with every ingest, so a caching
+   * client relies on the reply to refresh them even when the schema payload is omitted.
+   */
+  private static void attachTableStats(
+      RelationInfo.Builder builder, ResourceId relationId, StatsProvider statsProvider) {
+    statsProvider
+        .tableStats(relationId)
+        .map(StatsProviderFactory::toRelationStats)
+        .ifPresent(builder::setStats);
+  }
+
   private RelationInfo buildRelation(
       String correlationId,
       ResolvedRelation relation,
@@ -506,9 +634,8 @@ public class UserObjectBundleService {
           relation.node().origin());
     }
 
-    RelationKind kind = mapKind(relation.node().kind(), relation.node().origin());
+    // origin is needed below for columnsFor; kind and name are set via baseRelationInfo.
     Origin origin = mapOrigin(relation.node().origin());
-    NameRef name = canonicalName(relation.relationId(), relation.node());
 
     List<SchemaColumn> schemaColumns =
         relation.node() instanceof ViewNode view
@@ -526,12 +653,7 @@ public class UserObjectBundleService {
     List<ColumnInfo> columns =
         UserObjectBundleUtils.columnsFor(schemaColumns, pruned, origin, correlationId);
 
-    RelationInfo.Builder builder =
-        RelationInfo.newBuilder()
-            .setRelationId(relation.relationId())
-            .setName(name)
-            .setKind(kind)
-            .setOrigin(origin);
+    RelationInfo.Builder builder = baseRelationInfo(relation);
 
     /*
      * Populate the bundled endpoint metadata so workers know how to reach the table. FLOECAT
@@ -559,20 +681,21 @@ public class UserObjectBundleService {
     }
 
     long statsLookupStartNs = System.nanoTime();
-    statsProvider
-        .tableStats(relation.relationId())
-        .map(StatsProviderFactory::toRelationStats)
-        .ifPresent(builder::setStats);
+    attachTableStats(builder, relation.relationId(), statsProvider);
     timings.addStatsLookupNanos(System.nanoTime() - statsLookupStartNs);
 
-    // Attach the opaque pin identity so the planner's catalog cache can distinguish the same table
-    // across different query pins. Only tables are pinned (views pin their base tables); relations
-    // that have not been pinned leave the field unset.
-    if (relation.relationId().getKind() == ResourceKind.RK_TABLE) {
-      queryContext
-          .findTablePin(relation.relationId(), correlationId)
-          .map(QueryPins::identity)
-          .ifPresent(builder::setPinIdentity);
+    // Attach the opaque pin identity so a caching client can key this relation by its immutable
+    // content version. Tables use the query pin's identity (frozen at first touch); views and
+    // system relations carry a derived content token (see pinIdentityFor).
+    //
+    // ONLY on a full-schema response: the version token means "I hold this relation's complete
+    // column set." A projected payload is a subset, so stamping it would let a client cache a
+    // partial schema under the version, advertise it, and then be starved of columns it never
+    // received. Withholding the token on projected responses keeps the contract "advertising a
+    // version ⟹ holding its full schema", so the server may serve any later request for that
+    // version identity-only and the client projects locally from its cached full schema.
+    if (servesFullSchema(relation.candidate())) {
+      pinIdentityFor(correlationId, relation, queryContext).ifPresent(builder::setPinIdentity);
     }
 
     // If this is a view, keep a mutable builder around for decoration.
@@ -1251,6 +1374,9 @@ public class UserObjectBundleService {
     private final MetadataResolutionContext resolutionContext;
     private final String engineKind;
     private final String engineVersion;
+    /* Content versions the request proved it holds; relations resolving to
+     * one of these get an identity-only response (see identityOnlyOrNull). */
+    private final Set<String> knownBlobVersions;
 
     // Maintains the order inputs were resolved so the emitted chunk mirrors the request order.
     private final List<PendingItem> pending = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
@@ -1295,10 +1421,14 @@ public class UserObjectBundleService {
     private long nodeResolutionCacheMisses = 0L;
 
     UserObjectBundleIterator(
-        String correlationId, QueryContext ctx, List<TableReferenceCandidate> tables) {
+        String correlationId,
+        QueryContext ctx,
+        List<TableReferenceCandidate> tables,
+        Set<String> knownBlobVersions) {
       this.correlationId = correlationId;
       this.ctx = ctx;
       this.tables = tables;
+      this.knownBlobVersions = knownBlobVersions;
       this.resolutionCount = tables.size();
       this.defaultCatalogId = ctx.getQueryDefaultCatalogId();
       this.statsProvider = statsFactory.forQuery(ctx, correlationId);
@@ -1561,6 +1691,21 @@ public class UserObjectBundleService {
         long buildStartNs = System.nanoTime();
         if (liveCtx == null) {
           liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
+        }
+        /* Identity-only fast path: never cached — the info cache must only
+         * ever hold full payloads, or a later request that did NOT prove
+         * possession would be served a payload-less relation. */
+        RelationInfo slim =
+            identityOnlyOrNull(
+                correlationId, found.relation(), liveCtx, statsProvider, knownBlobVersions);
+        if (slim != null) {
+          resolutions.add(
+              RelationResolution.newBuilder()
+                  .setInputIndex(found.inputIndex())
+                  .setStatus(ResolutionStatus.RESOLUTION_STATUS_FOUND)
+                  .setRelation(slim)
+                  .build());
+          continue;
         }
         RelationInfo info =
             buildRelation(

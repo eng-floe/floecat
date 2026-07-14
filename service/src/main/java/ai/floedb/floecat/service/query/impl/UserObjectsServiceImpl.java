@@ -33,6 +33,7 @@ import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.control.ActivateRequestContext;
 import jakarta.inject.Inject;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -93,7 +94,11 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
               }
 
               var subscription =
-                  bundles.stream(correlationId, ctx, request.getTablesList())
+                  bundles.stream(
+                          correlationId,
+                          ctx,
+                          request.getTablesList(),
+                          Set.copyOf(request.getKnownTableBlobVersionsList()))
                       .subscribe()
                       .with(emitter::emit, emitter::fail, emitter::complete);
 

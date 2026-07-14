@@ -178,7 +178,21 @@ message RelationPinIdentity {
   /** Kind of the pin this identity describes. */
   PinKind pin_kind = 2;
 
-  /** Immutable version of the pinned table metadata blob. */
+  /**
+   * Immutable version of the pinned table DEFINITION blob (root.definition_ref). A caching client
+   * keys a resolved relation's SCHEMA by this value and serves it warm across queries; the slim
+   * identity-only reply is gated on it (GetUserObjectsRequest.known_table_blob_versions).
+   *
+   * Soundness rests on two contracts:
+   *   1. Any change to the served column schema moves this version. Columns are read from the
+   *      snapshot blob (schema-on-read), so schema-affecting changes (DDL, connector resync) bump
+   *      the definition ref; a benign change that leaves the read schema untouched need not, and
+   *      deliberately does not (see pin_fingerprint) — that is what lets the schema stay warm
+   *      across ingests, stats publishes, and constraint writes.
+   *   2. A version denotes the FULL column set. The server stamps pin_identity only on
+   *      full-schema (wants_all_columns) responses, so "I hold version V" means "I hold V's
+   *      complete schema"; projection is a client-local operation over that cached full schema.
+   */
   string table_blob_version = 3;
 
   /** The resolved concrete snapshot id. */
