@@ -21,6 +21,7 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
@@ -29,6 +30,7 @@ import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.types.Hashing;
@@ -47,6 +49,7 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
@@ -70,11 +73,60 @@ public class StatsRepository implements StatsStore {
   private final BlobStore blobStore;
   private final TargetStatsStorage targetStatsStorage;
 
-  @Inject
+  // Nullable (tests): decoded-content cache, used here for the immutable generation-manifest
+  // blobs only. Target-stats RECORD blobs are deliberately not cached: they are written to
+  // deterministic (not content-addressed) URIs and a re-capture may overwrite one in place, so
+  // URI-keyed caching would be unsound for them.
+  private final ImmutableBlobCache blobCache;
+
   public StatsRepository(PointerStore pointerStore, BlobStore blobStore) {
+    this(pointerStore, blobStore, null);
+  }
+
+  @Inject
+  public StatsRepository(
+      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
     this.pointerStore = pointerStore;
     this.blobStore = blobStore;
+    this.blobCache = blobCache;
     this.targetStatsStorage = new TargetStatsStorage(pointerStore, blobStore);
+  }
+
+  /**
+   * The generation id inside a generation-manifest blob, decoded once and cached. Sound because a
+   * manifest is written once per generation and never rewritten at its URI. ONLY for reads whose
+   * freshness is governed elsewhere (the active-generation read follows a LIVE pointer); the
+   * frozen-scan path must use {@link #loadGenerationId} directly — its per-page read doubles as the
+   * retention guard and a cached value would blind it.
+   */
+  private Optional<String> readGenerationId(String uri) {
+    if (blobCache != null && blobCache.enabled()) {
+      return blobCache.get(uri, this::loadGenerationId);
+    }
+    return loadGenerationId(uri);
+  }
+
+  private Optional<String> loadGenerationId(String uri) {
+    byte[] bytes;
+    try {
+      bytes = blobStore.get(uri);
+    } catch (StorageNotFoundException e) {
+      return Optional.empty();
+    } catch (ai.floedb.floecat.storage.errors.StorageAbortRetryableException e) {
+      // Map to the repository retryable family like every sibling loader — a throttled read must
+      // stay retryable to callers, not surface as an unmapped storage exception.
+      throw new BaseResourceRepository.AbortRetryableException(
+          "stats generation manifest read retryable: " + uri);
+    }
+    if (bytes == null) {
+      return Optional.empty();
+    }
+    try {
+      return Optional.of(StringValue.parseFrom(bytes).getValue());
+    } catch (InvalidProtocolBufferException e) {
+      throw new BaseResourceRepository.CorruptionException(
+          "unreadable stats generation manifest: " + uri, e);
+    }
   }
 
   @Override
@@ -210,7 +262,7 @@ public class StatsRepository implements StatsStore {
                         exec);
                   })
               .toList();
-      CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
+      awaitAll(futures);
     }
 
     // Re-order results to match request order for deterministic output.
@@ -289,7 +341,7 @@ public class StatsRepository implements StatsStore {
                           },
                           exec))
               .toList();
-      CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
+      awaitAll(futures);
     }
 
     // Group by resolved snapshot (per-target pointer first, else table-level), preserving order.
@@ -538,29 +590,21 @@ public class StatsRepository implements StatsStore {
       Optional<StatsTargetType> targetType,
       int limit,
       String pageToken) {
-    // A missing frozen manifest is the broken-retention invariant this wants to surface loudly.
-    // InMemoryBlobStore returns null on a miss; S3BlobStore throws StorageNotFoundException and
-    // never returns null — so catch both, or the descriptive error is dead code in production.
-    byte[] bytes;
-    try {
-      bytes = blobStore.get(generationToken);
-    } catch (ai.floedb.floecat.storage.errors.StorageNotFoundException e) {
-      bytes = null;
-    }
-    if (bytes == null) {
-      throw new BaseResourceRepository.NotFoundException(
-          "frozen stats generation manifest missing for snapshot "
-              + snapshotId
-              + ": "
-              + generationToken);
-    }
-    String generationId;
-    try {
-      generationId = StringValue.parseFrom(bytes).getValue();
-    } catch (InvalidProtocolBufferException e) {
-      throw new BaseResourceRepository.CorruptionException(
-          "unreadable stats generation manifest: " + generationToken, e);
-    }
+    // A missing frozen manifest is the broken-retention invariant this wants to surface loudly —
+    // this per-page read IS the scan's retention guard, so it deliberately BYPASSES the decoded
+    // cache: a cached generation id would keep a scan paging "successfully" over a reclaimed
+    // generation (empty pages = silently truncated results) for the cache's lifetime, exactly when
+    // the guard must fire. The write-through/cached path serves the active-generation read below,
+    // whose freshness is governed by its live pointer instead.
+    String generationId =
+        loadGenerationId(generationToken)
+            .orElseThrow(
+                () ->
+                    new BaseResourceRepository.NotFoundException(
+                        "frozen stats generation manifest missing for snapshot "
+                            + snapshotId
+                            + ": "
+                            + generationToken));
     return listInGeneration(tableId, snapshotId, generationId, targetType, limit, pageToken);
   }
 
@@ -594,7 +638,7 @@ public class StatsRepository implements StatsStore {
 
   @Override
   public boolean deleteAllStatsForSnapshot(ResourceId tableId, long snapshotId) {
-    Optional<ActiveSnapshotStats> active = activeGeneration(tableId, snapshotId);
+    Optional<ActiveSnapshotStats> active = activeGenerationLive(tableId, snapshotId);
     active.ifPresent(
         gen -> {
           deleteGeneration(gen.accountId(), gen.tableId(), snapshotId, gen.generationId());
@@ -629,7 +673,7 @@ public class StatsRepository implements StatsStore {
                 .map(this::canonicalRecord)
                 .peek(record -> requireRecordForSnapshot(tableId, snapshotId, record))
                 .toList();
-    Optional<ActiveSnapshotStats> current = activeGeneration(tableId, snapshotId);
+    Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
     String generationId = newGenerationId();
 
     try {
@@ -694,6 +738,11 @@ public class StatsRepository implements StatsStore {
             tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
     StringValue manifest = StringValue.of(generationId);
     targetStatsStorage.putManifestBlob(manifestBlobUri, manifest);
+    if (blobCache != null) {
+      // Write-through the DECODED form readGenerationId caches: the first scan/planner read after
+      // this publish pays neither a cold fetch nor a parse (URI is per-generation, immutable).
+      blobCache.put(manifestBlobUri, generationId);
+    }
 
     long expectedVersion = current.map(ActiveSnapshotStats::manifestVersion).orElse(0L);
     Pointer next =
@@ -725,16 +774,30 @@ public class StatsRepository implements StatsStore {
   }
 
   private Optional<ActiveSnapshotStats> activeGeneration(ResourceId tableId, long snapshotId) {
+    return activeGeneration(tableId, snapshotId, false);
+  }
+
+  /**
+   * WRITE-funnel variant: the manifest decode is read LIVE, so the funnel's view of the active
+   * generation cannot be a resident decode of a deleted manifest — mutations must observe (and fail
+   * on) the store's true state, per the commit-funnel-reads-live rule.
+   */
+  private Optional<ActiveSnapshotStats> activeGenerationLive(ResourceId tableId, long snapshotId) {
+    return activeGeneration(tableId, snapshotId, true);
+  }
+
+  private Optional<ActiveSnapshotStats> activeGeneration(
+      ResourceId tableId, long snapshotId, boolean live) {
     String manifestPointer =
         Keys.snapshotTargetStatsManifestPointer(
             tableId.getAccountId(), tableId.getId(), snapshotId);
     return pointerStore
         .get(manifestPointer)
-        .map(pointer -> readActiveGeneration(tableId, snapshotId, manifestPointer, pointer));
+        .map(pointer -> readActiveGeneration(tableId, snapshotId, manifestPointer, pointer, live));
   }
 
   private ActiveSnapshotStats ensureActiveGeneration(ResourceId tableId, long snapshotId) {
-    Optional<ActiveSnapshotStats> existing = activeGeneration(tableId, snapshotId);
+    Optional<ActiveSnapshotStats> existing = activeGenerationLive(tableId, snapshotId);
     if (existing.isPresent()) {
       // Generation already exists — advance the latest-snapshot index in case this snapshot
       // is newer than what the index currently records (covers first write after a CAS race).
@@ -773,25 +836,28 @@ public class StatsRepository implements StatsStore {
   }
 
   private ActiveSnapshotStats readActiveGeneration(
-      ResourceId tableId, long snapshotId, String manifestPointerKey, Pointer manifestPointer) {
-    byte[] bytes = blobStore.get(manifestPointer.getBlobUri());
-    try {
-      String generationId = StringValue.parseFrom(bytes).getValue();
-      if (generationId == null || generationId.isBlank()) {
-        throw new BaseResourceRepository.CorruptionException(
-            "empty target stats generation manifest for snapshot " + snapshotId, null);
-      }
-      return new ActiveSnapshotStats(
-          tableId.getAccountId(),
-          tableId.getId(),
-          generationId,
-          manifestPointerKey,
-          manifestPointer.getVersion(),
-          manifestPointer.getBlobUri());
-    } catch (Exception e) {
+      ResourceId tableId,
+      long snapshotId,
+      String manifestPointerKey,
+      Pointer manifestPointer,
+      boolean live) {
+    String generationId =
+        (live
+                ? loadGenerationId(manifestPointer.getBlobUri())
+                : readGenerationId(manifestPointer.getBlobUri()))
+            .orElse(null);
+    if (generationId == null || generationId.isBlank()) {
+      // A manifest missing or empty UNDER A LIVE POINTER is a broken invariant, not client state.
       throw new BaseResourceRepository.CorruptionException(
-          "parse failed: " + manifestPointer.getBlobUri(), e);
+          "empty target stats generation manifest for snapshot " + snapshotId, null);
     }
+    return new ActiveSnapshotStats(
+        tableId.getAccountId(),
+        tableId.getId(),
+        generationId,
+        manifestPointerKey,
+        manifestPointer.getVersion(),
+        manifestPointer.getBlobUri());
   }
 
   private static void requireRecordForSnapshot(
@@ -1109,6 +1175,27 @@ public class StatsRepository implements StatsStore {
       } catch (Throwable ignore) {
         // ignore
       }
+    }
+  }
+
+  /**
+   * Waits for every parallel read, rethrowing the first failure with its ORIGINAL type: {@code
+   * allOf(...).join()} wraps causes in {@link CompletionException}, which would defeat the
+   * instanceof-keyed gRPC error mapping the sequential paths feed — retryable faults, not-found and
+   * corruption would all collapse into a generic INTERNAL on the batch paths only.
+   */
+  private static void awaitAll(List<? extends CompletableFuture<?>> futures) {
+    try {
+      CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
+    } catch (CompletionException e) {
+      Throwable cause = e.getCause();
+      if (cause instanceof RuntimeException runtime) {
+        throw runtime;
+      }
+      if (cause instanceof Error error) {
+        throw error;
+      }
+      throw e;
     }
   }
 }

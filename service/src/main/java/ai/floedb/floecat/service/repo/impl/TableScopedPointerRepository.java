@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.impl;
 
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.ResourceSchema;
 import ai.floedb.floecat.service.repo.model.TableScopedPointerKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
@@ -50,9 +51,19 @@ public abstract class TableScopedPointerRepository<T> {
       ResourceSchema<T, TableScopedPointerKey> schema,
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes) {
+    this(pointerStore, blobStore, schema, parser, toBytes, null);
+  }
+
+  protected TableScopedPointerRepository(
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      ResourceSchema<T, TableScopedPointerKey> schema,
+      ProtoParser<T> parser,
+      Function<T, byte[]> toBytes,
+      ImmutableBlobCache blobCache) {
     this.repo =
         new GenericResourceRepository<>(
-            pointerStore, blobStore, schema, parser, toBytes, CONTENT_TYPE);
+            pointerStore, blobStore, schema, parser, toBytes, CONTENT_TYPE, blobCache);
   }
 
   public Optional<T> get(ResourceId tableId) {

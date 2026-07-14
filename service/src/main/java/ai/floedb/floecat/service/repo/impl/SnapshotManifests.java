@@ -74,10 +74,9 @@ public final class SnapshotManifests {
       BlobRef cursor = head;
       while (isPresent(cursor)) {
         SnapshotManifestPage page = page(cursor);
-        for (SnapshotManifestEntry e : page.getEntriesList()) {
-          if (e.getSnapshotId() == snapshotId) {
-            return Optional.of(e);
-          }
+        Optional<SnapshotManifestEntry> match = entryIn(page, snapshotId);
+        if (match.isPresent()) {
+          return match;
         }
         cursor = page.hasPrevPageRef() ? page.getPrevPageRef() : null;
       }
@@ -207,8 +206,9 @@ public final class SnapshotManifests {
         return cached;
       }
       SnapshotManifestPage loaded =
-          roots
-              .getManifestPage(ref)
+          // Mutation chains (tableId set) run inside the commit funnel and read pages LIVE; the
+          // read one-shots (tableId null) serve content and stay on the decoded cache.
+          (tableId != null ? roots.getManifestPageLive(ref) : roots.getManifestPage(ref))
               .orElseThrow(
                   () ->
                       new BaseResourceRepository.CorruptionException(
@@ -236,10 +236,46 @@ public final class SnapshotManifests {
     return chain(roots, tableId, head).remove(snapshotId);
   }
 
-  /** One-shot {@link Chain#findEntry}; reads need no table identity. */
+  /**
+   * One-shot {@link Chain#findEntry}; reads need no table identity. The head page is probed first:
+   * the hottest lookups (CURRENT, a recent AS_OF) match there, and serving them from one (cached)
+   * page read means a cold decoded cache never pays a full-chain build for them — a long-history
+   * table is hundreds of pages whose refs resolve serially, and that walk would land exactly on the
+   * latency-sensitive pin/planning path. Only a lookup that has to go deeper builds (and caches)
+   * the per-head {@code snapshotId → entry} index; when caching is off it falls back to the
+   * fail-closed page walk.
+   */
   public static Optional<SnapshotManifestEntry> findEntry(
       TableRootRepository roots, BlobRef head, long snapshotId) {
+    if (isPresent(head)) {
+      Optional<SnapshotManifestPage> headPage = roots.getManifestPage(head);
+      if (headPage.isPresent()) {
+        Optional<SnapshotManifestEntry> match = entryIn(headPage.get(), snapshotId);
+        if (match.isPresent()) {
+          return match;
+        }
+        if (!headPage.get().hasPrevPageRef()) {
+          return Optional.empty(); // single-page chain fully scanned
+        }
+      }
+      // A missing head page falls through: the index build / page walk below fails closed on it.
+    }
+    var index = roots.manifestEntryIndex(head);
+    if (index != null) {
+      return Optional.ofNullable(index.get(snapshotId));
+    }
     return chain(roots, null, head).findEntry(snapshotId);
+  }
+
+  /** Newest-first scan of one page for {@code snapshotId}. */
+  private static Optional<SnapshotManifestEntry> entryIn(
+      SnapshotManifestPage page, long snapshotId) {
+    for (SnapshotManifestEntry e : page.getEntriesList()) {
+      if (e.getSnapshotId() == snapshotId) {
+        return Optional.of(e);
+      }
+    }
+    return Optional.empty();
   }
 
   /** One-shot {@link Chain#forEachEntry}; reads need no table identity. */

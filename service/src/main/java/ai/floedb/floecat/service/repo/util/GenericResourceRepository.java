@@ -20,18 +20,16 @@ import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.ResourceKey;
 import ai.floedb.floecat.service.repo.model.ResourceSchema;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
-import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
-import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
-import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import java.util.ArrayList;
@@ -58,8 +56,27 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType) {
-    super(pointerStore, blobStore, parser, toBytes, contentType);
+    this(pointerStore, blobStore, schema, parser, toBytes, contentType, null);
+  }
+
+  public GenericResourceRepository(
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      ResourceSchema<T, K> schema,
+      ProtoParser<T> parser,
+      Function<T, byte[]> toBytes,
+      String contentType,
+      ImmutableBlobCache blobCache) {
+    super(pointerStore, blobStore, parser, toBytes, contentType, blobCache);
     this.schema = Objects.requireNonNull(schema, "schema");
+  }
+
+  @Override
+  protected boolean blobsImmutable() {
+    // CAS schemas write a NEW content-addressed URI per content; the bytes at a URI never change,
+    // so decoded values are safe to serve from the process-wide immutable cache. Non-CAS schemas
+    // overwrite a stable URI in place and must never be cached by URI.
+    return schema.casBlobs;
   }
 
   public Optional<T> getByKey(K key) {
@@ -82,21 +99,25 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     if (blobUri == null || blobUri.isBlank()) {
       return Optional.empty();
     }
-    try {
-      byte[] bytes = blobStore.get(blobUri);
-      if (bytes == null) {
-        return Optional.empty();
-      }
-      return Optional.of(parser.parse(bytes));
-    } catch (StorageNotFoundException snf) {
-      return Optional.empty();
-    } catch (InvalidProtocolBufferException ipbe) {
-      throw new CorruptionException("parse failed: " + blobUri, ipbe);
-    } catch (StorageAbortRetryableException sar) {
-      throw new AbortRetryableException("blob read retryable: " + blobUri);
-    } catch (Exception e) {
-      throw new CorruptionException("parse failed: " + blobUri, e);
+    if (blobCacheable()) {
+      // CONTENT-only read: a resident decode may outlive the durable blob, so an empty result
+      // means absent but a present result does NOT prove the blob still exists. Callers whose
+      // emptiness doubles as a liveness/integrity check must use getByBlobUriLive.
+      return blobCache.get(blobUri, this::loadAndParseBlob);
     }
+    return loadAndParseBlob(blobUri);
+  }
+
+  /**
+   * Cache-bypassing variant of {@link #getByBlobUri} for reads whose EMPTINESS is load-bearing —
+   * integrity detectors like {@code PinValidator.requirePinned*}, where a missing pinned blob must
+   * fail loudly rather than be masked by a still-resident decode.
+   */
+  public Optional<T> getByBlobUriLive(String blobUri) {
+    if (blobUri == null || blobUri.isBlank()) {
+      return Optional.empty();
+    }
+    return loadAndParseBlob(blobUri);
   }
 
   public boolean existsByKey(K key) {

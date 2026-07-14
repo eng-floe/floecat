@@ -90,6 +90,12 @@ public final class FakeViewRepository extends ViewRepository {
   }
 
   @Override
+  public Optional<View> getByBlobUriLive(String blobUri) {
+    // The fake's in-memory map IS the live store; same lookup as the cached variant.
+    return getByBlobUri(blobUri);
+  }
+
+  @Override
   public Optional<View> getByName(
       String accountId, String catalogId, String namespaceId, String displayName) {
     return entries.values().stream()

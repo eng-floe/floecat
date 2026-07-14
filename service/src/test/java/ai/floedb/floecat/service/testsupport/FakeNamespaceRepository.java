@@ -68,6 +68,12 @@ public final class FakeNamespaceRepository extends NamespaceRepository {
   }
 
   @Override
+  public Optional<Namespace> getByBlobUriLive(String blobUri) {
+    // The fake's in-memory map IS the live store; same lookup as the cached variant.
+    return getByBlobUri(blobUri);
+  }
+
+  @Override
   public Optional<Namespace> getByPath(String accountId, String catalogId, List<String> path) {
     return entries.values().stream()
         .filter(

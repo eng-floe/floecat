@@ -31,12 +31,15 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.ByteString;
@@ -1150,5 +1153,46 @@ class StatsRepositoryTargetStorageTest {
     org.junit.jupiter.api.Assertions.assertTrue(
         ex.getMessage().contains("frozen stats generation manifest missing"),
         "the descriptive retention-invariant error must survive an S3-style throwing miss");
+  }
+
+  @Test
+  void batchReadFaultsKeepTheirOriginalExceptionType() {
+    var pointers = new FailingTargetPointerStore();
+    StatsRepository repository = new StatsRepository(pointers, new InMemoryBlobStore());
+    long snapshotId = 101L;
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            snapshotId,
+            7L,
+            ScalarStats.newBuilder()
+                .setDisplayName("c7")
+                .setLogicalType("BIGINT")
+                .setRowCount(5L)
+                .build(),
+            null));
+    pointers.failTargetReads = true;
+
+    // The parallel batch path must rethrow the storage fault with its ORIGINAL type — the
+    // instanceof-keyed gRPC error mapping never unwraps a CompletionException, so a wrapped
+    // retryable fault would collapse into a generic INTERNAL on the batch path only.
+    assertThatThrownBy(
+            () ->
+                repository.getTargetStatsBatch(
+                    TABLE_ID, snapshotId, List.of(StatsTargetIdentity.columnTarget(7L))))
+        .isInstanceOf(StorageAbortRetryableException.class);
+  }
+
+  /** Pointer store that fails reads of per-target stats pointers once armed (writes unaffected). */
+  private static final class FailingTargetPointerStore extends InMemoryPointerStore {
+    volatile boolean failTargetReads;
+
+    @Override
+    public Optional<Pointer> get(String key) {
+      if (failTargetReads && Keys.generationFromTargetPointerKey(key) != null) {
+        throw new StorageAbortRetryableException("injected fault: " + key);
+      }
+      return super.get(key);
+    }
   }
 }

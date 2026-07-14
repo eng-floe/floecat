@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
@@ -36,8 +37,13 @@ public class CatalogRepository {
 
   private final GenericResourceRepository<Catalog, CatalogKey> repo;
 
-  @Inject
   public CatalogRepository(PointerStore pointerStore, BlobStore blobStore) {
+    this(pointerStore, blobStore, null);
+  }
+
+  @Inject
+  public CatalogRepository(
+      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -45,7 +51,8 @@ public class CatalogRepository {
             Schemas.CATALOG,
             Catalog::parseFrom,
             Catalog::toByteArray,
-            "application/x-protobuf");
+            "application/x-protobuf",
+            blobCache);
   }
 
   public void create(Catalog catalog) {
@@ -107,6 +114,11 @@ public class CatalogRepository {
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
   public Optional<Catalog> getByBlobUri(String blobUri) {
     return repo.getByBlobUri(blobUri);
+  }
+
+  /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
+  public Optional<Catalog> getByBlobUriLive(String blobUri) {
+    return repo.getByBlobUriLive(blobUri);
   }
 
   public List<ResourceId> listIds(String accountId) {
