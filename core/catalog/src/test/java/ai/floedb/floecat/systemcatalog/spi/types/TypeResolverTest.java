@@ -33,7 +33,6 @@ import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import ai.floedb.floecat.systemcatalog.utils.BuiltinTestSupport;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -208,7 +207,6 @@ final class TypeResolverTest {
         new TypeNode(
             firstType.id(),
             1,
-            Instant.EPOCH,
             "1.0",
             first.id(),
             BuiltinTestSupport.leafName("pg_catalog.int4"),
@@ -246,7 +244,6 @@ final class TypeResolverTest {
     return new TypeNode(
         typeId(displayName),
         1,
-        Instant.EPOCH,
         "1.0",
         BuiltinTestSupport.namespaceIdForQualifiedName("floedb", displayName),
         BuiltinTestSupport.leafName(displayName),
@@ -269,7 +266,6 @@ final class TypeResolverTest {
             .setId(id)
             .build(),
         1,
-        Instant.EPOCH,
         "1.0",
         namespaceId,
         BuiltinTestSupport.leafName(displayName),
@@ -282,8 +278,7 @@ final class TypeResolverTest {
   private static NamespaceNode namespace(String name) {
     return new NamespaceNode(
         SystemNodeRegistry.resourceId("floedb", ResourceKind.RK_NAMESPACE, asNameRef(name)),
-        1,
-        Instant.EPOCH,
+        "blob://test/v1",
         catalogId(),
         List.of(),
         name,
@@ -304,8 +299,7 @@ final class TypeResolverTest {
             .setKind(ResourceKind.RK_NAMESPACE)
             .setId(namespaceId)
             .build(),
-        1,
-        Instant.EPOCH,
+        "blob://test/v1",
         catalogId,
         List.of(),
         name,
@@ -341,8 +335,7 @@ final class TypeResolverTest {
             .setKind(ResourceKind.RK_NAMESPACE)
             .setId(id)
             .build(),
-        1,
-        Instant.EPOCH,
+        "blob://test/v1",
         catalogId(),
         List.of(),
         name,
@@ -359,7 +352,6 @@ final class TypeResolverTest {
             .setId(id)
             .build(),
         1,
-        Instant.EPOCH,
         "1.0",
         namespaceId,
         BuiltinTestSupport.leafName(qualifiedTypeName),

@@ -41,7 +41,6 @@ import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -305,8 +304,7 @@ class CatalogSurfaceNamespacesTest {
   private NamespaceNode namespaceNode(ResourceId namespaceId, String name, List<String> path) {
     return new NamespaceNode(
         namespaceId,
-        1L,
-        Instant.EPOCH,
+        "blob://test/v1",
         catalogId,
         path,
         name,
@@ -318,8 +316,7 @@ class CatalogSurfaceNamespacesTest {
   private static CatalogNode catalogNode(ResourceId catalogId, String displayName) {
     return new CatalogNode(
         catalogId,
-        0L,
-        Instant.EPOCH,
+        "blob://test/v0",
         displayName,
         Map.of(),
         Optional.empty(),

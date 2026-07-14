@@ -41,6 +41,7 @@ import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
 import ai.floedb.floecat.service.catalog.impl.TableRootMutations;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.testsupport.FakeCatalogRepository;
 import ai.floedb.floecat.service.testsupport.FakeNamespaceRepository;
 import ai.floedb.floecat.service.testsupport.FakeTableRepository;
@@ -178,7 +179,7 @@ class UserGraphTest {
     ResourceId namespaceId = rid("account", "ns", ResourceKind.RK_NAMESPACE);
     ResourceId tableId = rid("account", "tbl", ResourceKind.RK_TABLE);
 
-    MutationMeta meta = mutationMeta(7L, Instant.parse("2024-01-01T00:00:00Z"));
+    MutationMeta meta = blobMeta(7L, "s3://bucket/sales/v7.pb");
     Table table =
         Table.newBuilder()
             .setResourceId(tableId)
@@ -201,13 +202,17 @@ class UserGraphTest {
 
     assertThat(first).isPresent();
     assertThat(second).containsSame(first.get());
-    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(1);
+    // Hot path: cached meta names the content key, so the second resolve does neither a pointer
+    // read nor a blob hydration.
+    assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(1);
     assertThat(tableRepository.metaForSafeCount(tableId)).isEqualTo(1);
 
     graph.invalidate(tableId);
     Optional<UserTableNode> third = graph.table(tableId);
     assertThat(third).isPresent();
-    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(2);
+    // Invalidate drops only the meta pointer: hydration re-reads the pointer once, but the node
+    // is content-keyed by blob URI, so the unchanged blob is not re-hydrated.
+    assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(1);
     assertThat(tableRepository.metaForSafeCount(tableId)).isEqualTo(2);
   }
 
@@ -222,32 +227,46 @@ class UserGraphTest {
     graph.table(accountOne.tableId());
     graph.table(accountTwo.tableId());
 
-    assertThat(tableRepository.getByIdCount(accountOne.tableId())).isEqualTo(1);
-    assertThat(tableRepository.getByIdCount(accountTwo.tableId())).isEqualTo(1);
+    // Content keys are full blob URIs, so accounts can never collide; each table hydrates once.
+    assertThat(tableRepository.getByBlobUriCount(accountOne.tableId())).isEqualTo(1);
+    assertThat(tableRepository.getByBlobUriCount(accountTwo.tableId())).isEqualTo(1);
+    assertThat(graph.table(accountOne.tableId()).orElseThrow().displayName())
+        .isEqualTo("cached-one");
+    assertThat(graph.table(accountTwo.tableId()).orElseThrow().displayName())
+        .isEqualTo("cached-two");
   }
 
   @Test
-  void invalidateRemovesAllCachedPointerVersions() {
+  void invalidateDropsMetaWhileNodesStayContentKeyed() {
     var ids = seedTable("multi-version", "{}");
     ResourceId tableId = ids.tableId();
+    String uriA = seedBlobUri("account", "multi-version");
 
     graph.table(tableId);
-    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(1);
+    assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(1);
+    assertThat(tableRepository.metaForSafeCount(tableId)).isEqualTo(1);
 
-    tableRepository.putMeta(tableId, mutationMeta(2L, Instant.parse("2024-06-01T00:00:00Z")));
+    // Pointer moves to a blob the fake does not index: the loader must NOT drift to a by-id read
+    // — the old rescue built a node from fresh content stamped with the stale URI, permanently
+    // poisoning the content-keyed cache. A live pointer naming a missing blob is a dangling
+    // pointer: corruption, surfaced loud — never absence.
+    tableRepository.putMeta(tableId, blobMeta(2L, uriA + ".moved"));
+    graph.invalidate(tableId);
+    assertThatThrownBy(() -> graph.table(tableId))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class);
+    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(0);
+
+    // Pointer returns to the original blob: the content-keyed node entry is still valid, so no
+    // rehydration happens — only the fresh pointer read.
+    tableRepository.putMeta(tableId, blobMeta(3L, uriA));
     graph.invalidate(tableId);
     graph.table(tableId);
-    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(2);
-
-    tableRepository.putMeta(tableId, mutationMeta(1L, Instant.parse("2024-06-02T00:00:00Z")));
-    graph.invalidate(tableId);
-    graph.table(tableId);
-    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(3);
-
-    tableRepository.putMeta(tableId, mutationMeta(2L, Instant.parse("2024-06-03T00:00:00Z")));
-    graph.invalidate(tableId);
-    graph.table(tableId);
-    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(4);
+    assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(1);
+    // Never a by-id read: the loader only ever builds from the blob a meta names. The counts are
+    // one hydration live read, one failed-resolve read + its coherent-fallback re-read, and one
+    // return-to-original read.
+    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(0);
+    assertThat(tableRepository.metaForSafeCount(tableId)).isEqualTo(4);
   }
 
   @Test
@@ -533,13 +552,15 @@ class UserGraphTest {
   }
 
   @Test
-  void resolveReturnsEmptyWhenRepoHasNoResource() {
+  void resolveFailsLoudWhenThePointerDanglesOnAMissingBlob() {
     ResourceId viewId = rid("account", "view", ResourceKind.RK_VIEW);
     MutationMeta meta = mutationMeta(1L, Instant.parse("2024-02-01T00:00:00Z"));
     viewRepository.putMeta(viewId, meta);
 
-    Optional<ViewNode> node = graph.view(viewId);
-    assertThat(node).isEmpty();
+    // A pointer exists but nobody can load the blob it names: corruption, not "does not exist" —
+    // reporting absence would mask data loss and invite re-creating over the corrupt resource.
+    assertThatThrownBy(() -> graph.view(viewId))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class);
   }
 
   @Test
@@ -929,8 +950,19 @@ class UserGraphTest {
             .setSeconds(updatedAt.getEpochSecond())
             .setNanos(updatedAt.getNano())
             .build();
-    return MutationMeta.newBuilder().setPointerVersion(version).setUpdatedAt(ts).build();
+    // Prod pointer metas always name a blob; the loader builds nodes ONLY from the blob the meta
+    // names (no by-id rescue), so a blank blobUri would be an unrealistic fixture. URIs are
+    // content-addressed in prod — distinct entities never share one — so the fixture must mint a
+    // unique URI per meta or the content-keyed node cache would (correctly!) collide them.
+    return MutationMeta.newBuilder()
+        .setPointerVersion(version)
+        .setUpdatedAt(ts)
+        .setBlobUri("blob://test/v" + version + "-" + META_URIS.incrementAndGet())
+        .build();
   }
+
+  private static final java.util.concurrent.atomic.AtomicInteger META_URIS =
+      new java.util.concurrent.atomic.AtomicInteger();
 
   private static MutationMeta blobMeta(long version, String blobUri) {
     return MutationMeta.newBuilder()
@@ -1015,8 +1047,13 @@ class UserGraphTest {
                     .setUri("s3://x")
                     .build())
             .build(),
-        mutationMeta(1L, Instant.now()));
+        blobMeta(1L, seedBlobUri(accountId, tableName)));
     return new TableIds(catalogId, namespaceId, tableId);
+  }
+
+  /** Deterministic per-table blob URI so seeded tables have unique content identities. */
+  private static String seedBlobUri(String accountId, String tableName) {
+    return "s3://" + accountId + "/" + tableName + "/v1.pb";
   }
 
   private ResourceId seedView(String name) {

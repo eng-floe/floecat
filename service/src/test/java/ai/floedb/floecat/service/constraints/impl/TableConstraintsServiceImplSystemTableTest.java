@@ -49,7 +49,6 @@ import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -282,7 +281,7 @@ class TableConstraintsServiceImplSystemTableTest {
             .setId("sys_ns_constraints")
             .build();
     return new SystemTableNode.EngineSystemTableNode(
-        tableId, 1L, Instant.now(), "engine-v", displayName, namespaceId, List.of(), null, null);
+        tableId, 1L, "engine-v", displayName, namespaceId, List.of(), null, null);
   }
 
   private static ResourceId systemTableId(String id) {

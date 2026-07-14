@@ -35,7 +35,6 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -1059,8 +1058,7 @@ public class QueryInputResolverTest {
       return Optional.of(
           new ai.floedb.floecat.metagraph.model.CatalogNode(
               id,
-              1L,
-              java.time.Instant.EPOCH,
+              "blob://test/v1",
               name,
               Map.of(),
               Optional.empty(),
@@ -1170,8 +1168,7 @@ public class QueryInputResolverTest {
         ResourceId.newBuilder().setId("namespace").setKind(ResourceKind.RK_NAMESPACE).build();
     return new ViewNode(
         id,
-        1L,
-        Instant.EPOCH,
+        "blob://test/v1",
         catalog,
         namespace,
         "view",

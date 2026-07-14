@@ -40,11 +40,10 @@ import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
-import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -109,7 +108,9 @@ public class NodeLoader {
       return Optional.empty();
     }
     MutationMeta meta = MutationMeta.newBuilder().setBlobUri(blobUri).build();
-    return tableRepository.getByBlobUri(blobUri).map(table -> toTableNode(table, meta));
+    // LIVE: this read's emptiness is the pin-integrity detector (the caller wraps it in
+    // requirePinnedTableBlob); a still-resident decode must not mask a swept pinned blob.
+    return tableRepository.getByBlobUriLive(blobUri).map(table -> toTableNode(table, meta));
   }
 
   /**
@@ -138,27 +139,57 @@ public class NodeLoader {
    * pointer-based read when the blob has moved (e.g. updated and garbage-collected in between).
    */
   public Optional<GraphNode> load(ResourceId id, MutationMeta meta) {
+    return loadAt(id, meta, false)
+        .or(() -> mutationMeta(id).flatMap(live -> reload(id, meta, live)));
+  }
+
+  /**
+   * The blob {@code stale} named is gone; the LIVE pointer decides what that means. Moved → benign
+   * supersede race: build from the blob the live pointer names (never {@code getById} with the
+   * stale meta — stamping fresh content with a superseded URI poisons the content-keyed node
+   * cache). Blank → the resource was dropped: genuine absence. Unchanged → the pointer dangles; one
+   * live re-probe absorbs a content-addressed revert legitimately reusing the URI, then this fails
+   * LOUD: a current pointer whose blob is lost is corruption, and reporting it as absence would
+   * mask data loss and invite re-creating over the corrupt resource.
+   */
+  private Optional<GraphNode> reload(ResourceId id, MutationMeta stale, MutationMeta live) {
+    if (live.getBlobUri().isBlank()) {
+      return Optional.empty();
+    }
+    if (!live.getBlobUri().equals(stale.getBlobUri())) {
+      return loadAt(id, live, false);
+    }
+    Optional<GraphNode> reread = loadAt(id, live, true);
+    if (reread.isEmpty()) {
+      throw new BaseResourceRepository.CorruptionException(
+          "dangling pointer, missing blob: " + live.getBlobUri(), null);
+    }
+    return reread;
+  }
+
+  /**
+   * One coherent (content, identity) load: the node is built from the blob {@code meta} names.
+   * {@code live} bypasses the blob cache for the read whose emptiness is load-bearing — the
+   * dangling-pointer verdict in {@link #reload}.
+   */
+  private Optional<GraphNode> loadAt(ResourceId id, MutationMeta meta, boolean live) {
     String blobUri = meta.getBlobUri();
     return switch (id.getKind()) {
       case RK_CATALOG ->
-          catalogRepository
-              .getByBlobUri(blobUri)
-              .or(() -> catalogRepository.getById(id))
+          (live
+                  ? catalogRepository.getByBlobUriLive(blobUri)
+                  : catalogRepository.getByBlobUri(blobUri))
               .map(catalog -> toCatalogNode(catalog, meta));
       case RK_NAMESPACE ->
-          namespaceRepository
-              .getByBlobUri(blobUri)
-              .or(() -> namespaceRepository.getById(id))
+          (live
+                  ? namespaceRepository.getByBlobUriLive(blobUri)
+                  : namespaceRepository.getByBlobUri(blobUri))
               .map(namespace -> toNamespaceNode(namespace, meta));
       case RK_TABLE ->
-          tableRepository
-              .getByBlobUri(blobUri)
-              .or(() -> tableRepository.getById(id))
+          (live ? tableRepository.getByBlobUriLive(blobUri) : tableRepository.getByBlobUri(blobUri))
               .map(table -> toTableNode(table, meta));
       case RK_VIEW ->
-          viewRepository
-              .getByBlobUri(blobUri)
-              .or(() -> viewRepository.getById(id))
+          (live ? viewRepository.getByBlobUriLive(blobUri) : viewRepository.getByBlobUri(blobUri))
               .map(view -> toViewNode(view, meta));
       default -> Optional.empty();
     };
@@ -167,8 +198,7 @@ public class NodeLoader {
   private CatalogNode toCatalogNode(Catalog catalog, MutationMeta meta) {
     return new CatalogNode(
         catalog.getResourceId(),
-        meta.getPointerVersion(),
-        toInstant(meta.getUpdatedAt()),
+        meta.getBlobUri(),
         catalog.getDisplayName(),
         catalog.getPropertiesMap(),
         catalog.hasConnectorRef() ? Optional.of(catalog.getConnectorRef()) : Optional.empty(),
@@ -180,8 +210,7 @@ public class NodeLoader {
   private NamespaceNode toNamespaceNode(Namespace namespace, MutationMeta meta) {
     return new NamespaceNode(
         namespace.getResourceId(),
-        meta.getPointerVersion(),
-        toInstant(meta.getUpdatedAt()),
+        meta.getBlobUri(),
         namespace.getCatalogId(),
         namespace.getParentsList(),
         namespace.getDisplayName(),
@@ -197,8 +226,7 @@ public class NodeLoader {
     RelationHints hints = relationHints(table.getPropertiesMap());
     return new UserTableNode(
         table.getResourceId(),
-        meta.getPointerVersion(),
-        toInstant(meta.getUpdatedAt()),
+        meta.getBlobUri(),
         table.getCatalogId(),
         table.getNamespaceId(),
         table.getDisplayName(),
@@ -219,8 +247,7 @@ public class NodeLoader {
     RelationHints hints = relationHints(view.getPropertiesMap());
     return new ViewNode(
         view.getResourceId(),
-        meta.getPointerVersion(),
-        toInstant(meta.getUpdatedAt()),
+        meta.getBlobUri(),
         view.getCatalogId(),
         view.getNamespaceId(),
         view.getDisplayName(),
@@ -289,12 +316,5 @@ public class NodeLoader {
       }
     }
     return false;
-  }
-
-  private static Instant toInstant(Timestamp ts) {
-    if (ts == null) {
-      return Instant.EPOCH;
-    }
-    return Instant.ofEpochSecond(ts.getSeconds(), ts.getNanos());
   }
 }

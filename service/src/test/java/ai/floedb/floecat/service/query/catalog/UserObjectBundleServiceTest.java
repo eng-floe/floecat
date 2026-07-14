@@ -72,7 +72,6 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProv
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
 import io.grpc.Context;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -1549,7 +1548,6 @@ class UserObjectBundleServiceTest {
     return new SystemTableNode.StorageSystemTableNode(
         id,
         1L,
-        Instant.EPOCH,
         "",
         id.getId(),
         ResourceId.getDefaultInstance(),
@@ -1601,8 +1599,7 @@ class UserObjectBundleServiceTest {
     ViewNode viewNode =
         new ViewNode(
             viewId,
-            1L,
-            Instant.EPOCH,
+            "blob://test/v1",
             DEFAULT_CATALOG,
             ResourceId.getDefaultInstance(),
             "my_view",
@@ -1677,8 +1674,7 @@ class UserObjectBundleServiceTest {
     ViewNode viewNode =
         new ViewNode(
             viewId,
-            1L,
-            Instant.EPOCH,
+            "blob://test/v1",
             DEFAULT_CATALOG,
             ResourceId.getDefaultInstance(),
             "view_as_of",
@@ -1766,8 +1762,7 @@ class UserObjectBundleServiceTest {
     ViewNode viewNode =
         new ViewNode(
             viewId,
-            1L,
-            Instant.EPOCH,
+            "blob://test/v1",
             DEFAULT_CATALOG,
             ResourceId.getDefaultInstance(),
             "view_unresolved_base",
@@ -1831,8 +1826,7 @@ class UserObjectBundleServiceTest {
     ViewNode view1 =
         new ViewNode(
             view1Id,
-            1L,
-            Instant.EPOCH,
+            "blob://test/v1",
             DEFAULT_CATALOG,
             ResourceId.getDefaultInstance(),
             "view_shared_1",
@@ -1849,8 +1843,7 @@ class UserObjectBundleServiceTest {
     ViewNode view2 =
         new ViewNode(
             view2Id,
-            1L,
-            Instant.EPOCH,
+            "blob://test/v1",
             DEFAULT_CATALOG,
             ResourceId.getDefaultInstance(),
             "view_shared_2",
@@ -1925,8 +1918,7 @@ class UserObjectBundleServiceTest {
     ViewNode viewNode =
         new ViewNode(
             viewId,
-            1L,
-            Instant.EPOCH,
+            "blob://test/v1",
             DEFAULT_CATALOG,
             ResourceId.getDefaultInstance(),
             "view_bounded_bases",

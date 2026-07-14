@@ -38,7 +38,6 @@ import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
@@ -211,8 +210,7 @@ class CatalogSurfaceCatalogsTest {
   private static CatalogNode systemCatalogNode(ResourceId canonicalSystemId) {
     return new CatalogNode(
         canonicalSystemId,
-        0L,
-        Instant.EPOCH,
+        "blob://test/v0",
         "floecat_internal",
         Map.of(),
         Optional.empty(),

@@ -17,14 +17,12 @@
 package ai.floedb.floecat.metagraph.model;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import java.time.Instant;
 import java.util.Map;
 
 /** Relation node describing a builtin operator definition. */
 public record OperatorNode(
     ResourceId id,
     long version,
-    Instant metadataUpdatedAt,
     String engineVersion,
     String displayName,
     ResourceId leftType,

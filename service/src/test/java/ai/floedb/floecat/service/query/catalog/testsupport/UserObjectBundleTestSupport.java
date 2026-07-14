@@ -43,7 +43,6 @@ import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -117,8 +116,7 @@ public final class UserObjectBundleTestSupport {
       CatalogNode node =
           new CatalogNode(
               id,
-              0,
-              Instant.EPOCH,
+              "blob://test/v0",
               displayName,
               Map.of(),
               Optional.empty(),
@@ -342,11 +340,6 @@ public final class UserObjectBundleTestSupport {
     @Override
     public String displayName() {
       return id.getId();
-    }
-
-    @Override
-    public Instant metadataUpdatedAt() {
-      return Instant.EPOCH;
     }
 
     @Override

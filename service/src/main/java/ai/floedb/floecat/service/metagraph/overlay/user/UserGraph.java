@@ -21,7 +21,6 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
@@ -34,6 +33,7 @@ import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
 import ai.floedb.floecat.service.query.PinValidator;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -68,6 +68,7 @@ public final class UserGraph {
   // ----------------------------------------------------------------------
 
   private final GraphCacheManager cache;
+  private final ImmutableBlobCache blobCache;
   private final NodeLoader nodes;
   private final NameResolver names;
   private final FullyQualifiedResolver fq;
@@ -92,6 +93,8 @@ public final class UserGraph {
    * @param principal provider for current principal context
    * @param cacheMaxSize maximum size of the graph cache
    * @param engineHints manager for engine-specific hints
+   * @param blobCache process-wide decoded-blob cache holding derived nodes (null disables node
+   *     caching; resolution then always loads)
    */
   @Inject
   public UserGraph(
@@ -109,10 +112,14 @@ public final class UserGraph {
       @ConfigProperty(name = "floecat.metadata.graph.meta-cache-ttl-seconds", defaultValue = "2")
           long metaCacheTtlSeconds,
       EngineHintManager engineHints,
-      ai.floedb.floecat.stats.spi.StatsStore statsStore) {
+      ai.floedb.floecat.stats.spi.StatsStore statsStore,
+      ImmutableBlobCache blobCache) {
     this.cache =
         new GraphCacheManager(
             cacheMaxSize > 0, cacheMaxSize, Math.max(0L, metaCacheTtlSeconds), observability);
+    // cache-max-size=0 keeps its historical meaning — node caching OFF — independent of the
+    // process-wide blob cache (whose kill switch would also drop blob decodes and indexes).
+    this.blobCache = cacheMaxSize > 0 ? blobCache : null;
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
@@ -146,7 +153,11 @@ public final class UserGraph {
         cacheMaxSize,
         2L,
         engineHints,
-        null);
+        null,
+        // Mirror the pre-fold node-cache knob: a positive max size enables node caching.
+        cacheMaxSize > 0
+            ? new ImmutableBlobCache(true, 64L * 1024 * 1024, Duration.ofMinutes(15))
+            : null);
   }
 
   /** TEST-ONLY constructor; no legacy-root synthesis. */
@@ -176,9 +187,19 @@ public final class UserGraph {
         1024L,
         2L,
         null,
-        null);
+        null,
+        new ImmutableBlobCache(true, 64L * 1024 * 1024, Duration.ofMinutes(15)));
   }
 
+  // No writer-refresh here, deliberately (unlike the root-pointer cache): resolve() always
+  // re-reads a LIVE pointer before hydrating, so a stale reinserted meta can only short-circuit
+  // to an already-cached node at that blob — the TTL-bounded staleness this class documents,
+  // never stale content served as current. The version-guarded putMeta removes the pathological
+  // arbitrarily-late overwrite; a refresh read per DDL would buy nothing on top.
+  //
+  // Only the meta pointer needs invalidation. Node entries are content-keyed by blob URI in the
+  // process-wide ImmutableBlobCache: a blob's derived node is right forever, so DDL simply makes
+  // the fresh pointer name a different blob (and thus a different node entry).
   public void invalidate(ResourceId id) {
     cache.invalidate(id);
   }
@@ -269,10 +290,10 @@ public final class UserGraph {
    */
   public Optional<GraphNode> resolve(ResourceId id) {
 
-    // ----- Hot path: cached meta names the version key for an already-hydrated node --------------
+    // ----- Hot path: cached meta names the content key for an already-derived node --------------
     MutationMeta cachedMeta = cache.getMeta(id);
     if (cachedMeta != null) {
-      GraphNode hit = cache.get(id, new GraphCacheKey(id, cachedMeta.getPointerVersion()));
+      GraphNode hit = cachedNode(cachedMeta.getBlobUri());
       if (hit != null) {
         return Optional.of(hit);
       }
@@ -290,15 +311,18 @@ public final class UserGraph {
     }
     MutationMeta fresh = freshOpt.get();
     cache.putMeta(id, fresh);
-    GraphCacheKey key = new GraphCacheKey(id, fresh.getPointerVersion());
 
-    GraphNode cached = cache.get(id, key);
+    GraphNode cached = cachedNode(fresh.getBlobUri());
     if (cached != null) return Optional.of(cached);
 
     long loadStart = System.nanoTime();
     try {
       Optional<GraphNode> loaded = nodes.load(id, fresh);
-      loaded.ifPresent(node -> cache.put(id, key, node));
+      // Key by the identity the node ACTUALLY carries, not the meta we passed in: load()'s
+      // swept-blob fallback may have built the node from a NEWER live meta, and storing that node
+      // under the stale URI would poison the never-invalidated content-keyed cache — the same
+      // mismatch the loader itself was fixed for, one seam up.
+      loaded.ifPresent(node -> putNode(node.cacheIdentity(), node));
       cache.recordLoad(Duration.ofNanos(System.nanoTime() - loadStart));
       return loaded;
     } catch (Throwable t) {
@@ -306,6 +330,38 @@ public final class UserGraph {
       cache.recordLoadFailure(duration, t);
       throw t;
     }
+  }
+
+  /**
+   * The cached derived node for the blob at {@code blobUri}, or {@code null} when node caching is
+   * off, the URI is blank (a meta that names no blob has no content identity), or the entry is
+   * absent.
+   *
+   * <p>Probe-then-build-then-put, deliberately NOT a loading get: nodes.load() decodes the source
+   * blob through this SAME cache (the repository getByBlobUri seam), and a nested compute inside a
+   * Caffeine compute is prohibited — a same-bin hash collision between the "#node" key and the blob
+   * key would throw "Recursive update" or livelock, nondeterministically. A duplicate concurrent
+   * build is harmless (the node is a pure function of the blob); the blob decode itself stays
+   * single-flight.
+   */
+  private GraphNode cachedNode(String blobUri) {
+    if (blobCache == null || !blobCache.enabled() || blobUri == null || blobUri.isBlank()) {
+      return null;
+    }
+    String key = nodeKey(blobUri);
+    return blobCache.probe(key);
+  }
+
+  private void putNode(String blobUri, GraphNode node) {
+    if (blobCache == null || !blobCache.enabled() || blobUri == null || blobUri.isBlank()) {
+      return;
+    }
+    blobCache.put(nodeKey(blobUri), node);
+  }
+
+  /** Derived-form key: the node built from the blob at {@code blobUri} (cf. "#index" entries). */
+  private static String nodeKey(String blobUri) {
+    return blobUri + "#node";
   }
 
   /**

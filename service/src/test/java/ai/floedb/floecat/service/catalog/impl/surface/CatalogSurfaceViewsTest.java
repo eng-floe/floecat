@@ -44,7 +44,6 @@ import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -72,8 +71,7 @@ class CatalogSurfaceViewsTest {
     overlay.addNode(
         new NamespaceNode(
             namespaceId,
-            1L,
-            Instant.now(),
+            "blob://test/v1",
             catalogId,
             List.of(),
             "public",
@@ -156,8 +154,7 @@ class CatalogSurfaceViewsTest {
     ViewNode systemView =
         new ViewNode(
             id(ResourceKind.RK_VIEW, "sys_engine_views"),
-            1L,
-            Instant.now(),
+            "blob://test/v1",
             systemCatalogId,
             namespaceId,
             "engine_views",
@@ -236,8 +233,7 @@ class CatalogSurfaceViewsTest {
   private ViewNode viewNode(String displayName, GraphNodeOrigin origin) {
     return new ViewNode(
         id(ResourceKind.RK_VIEW, "sys_" + displayName),
-        1L,
-        Instant.now(),
+        "blob://test/v1",
         catalogId,
         namespaceId,
         displayName,

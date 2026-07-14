@@ -18,20 +18,21 @@ package ai.floedb.floecat.metagraph.model;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
 /**
  * Immutable namespace node tracking hierarchy and optional children.
  *
+ * <p>The node is a pure derivation of the namespace blob at {@code blobUri}: identical blob content
+ * always produces an identical node, so {@code blobUri} is its content-stable cache identity.
+ *
  * <p>Child relations are only populated for listing RPCs; query-resolution paths can leave the
  * field empty to avoid unnecessary cache churn.
  */
 public record NamespaceNode(
     ResourceId id,
-    long version,
-    Instant metadataUpdatedAt,
+    String blobUri,
     ResourceId catalogId,
     List<String> pathSegments,
     String displayName,
@@ -44,6 +45,17 @@ public record NamespaceNode(
     pathSegments = List.copyOf(pathSegments);
     properties = Map.copyOf(properties);
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
+  }
+
+  /** User nodes are content-keyed by {@link #blobUri()}; the pointer version is not retained. */
+  @Override
+  public long version() {
+    return 0L;
+  }
+
+  @Override
+  public String cacheIdentity() {
+    return blobUri;
   }
 
   /** Returns a {@link NameRef} representing this namespace's qualified name. */

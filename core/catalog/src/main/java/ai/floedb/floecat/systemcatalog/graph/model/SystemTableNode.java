@@ -26,7 +26,6 @@ import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -48,7 +47,6 @@ public sealed interface SystemTableNode extends TableNode
   record FloeCatSystemTableNode(
       ResourceId id,
       long version,
-      Instant metadataUpdatedAt,
       String engineVersion,
       String displayName,
       ResourceId namespaceId,
@@ -80,7 +78,6 @@ public sealed interface SystemTableNode extends TableNode
   record StorageSystemTableNode(
       ResourceId id,
       long version,
-      Instant metadataUpdatedAt,
       String engineVersion,
       String displayName,
       ResourceId namespaceId,
@@ -115,7 +112,6 @@ public sealed interface SystemTableNode extends TableNode
   record EngineSystemTableNode(
       ResourceId id,
       long version,
-      Instant metadataUpdatedAt,
       String engineVersion,
       String displayName,
       ResourceId namespaceId,
@@ -145,7 +141,6 @@ public sealed interface SystemTableNode extends TableNode
   record GenericSystemTableNode(
       ResourceId id,
       long version,
-      Instant metadataUpdatedAt,
       String engineVersion,
       String displayName,
       ResourceId namespaceId,
