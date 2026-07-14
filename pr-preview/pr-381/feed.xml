@@ -1,0 +1,430 @@
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="3.10.0">Jekyll</generator><link href="https://eng-floe.github.io/floecat/pr-preview/pr-381/feed.xml" rel="self" type="application/atom+xml" /><link href="https://eng-floe.github.io/floecat/pr-preview/pr-381/" rel="alternate" type="text/html" /><updated>2026-07-14T14:12:27+00:00</updated><id>https://eng-floe.github.io/floecat/pr-preview/pr-381/feed.xml</id><title type="html">Floecat</title><subtitle>Floecat notes, architecture, and blog</subtitle><entry><title type="html">Sampling-Based NDV Estimation in Iceberg Tables</title><link href="https://eng-floe.github.io/floecat/pr-preview/pr-381/2026/04/20/estimating-ndv.html" rel="alternate" type="text/html" title="Sampling-Based NDV Estimation in Iceberg Tables" /><published>2026-04-20T00:00:00+00:00</published><updated>2026-04-20T00:00:00+00:00</updated><id>https://eng-floe.github.io/floecat/pr-preview/pr-381/2026/04/20/estimating-ndv</id><content type="html" xml:base="https://eng-floe.github.io/floecat/pr-preview/pr-381/2026/04/20/estimating-ndv.html"><![CDATA[<p>NDV (number of distinct values) is one of the most important statistics in cost-based query optimization. It affects selectivity estimates, join ordering, and intermediate cardinality predictions, so bad NDV estimates can quickly cascade into poor plans.</p>
+
+<p>The problem is that NDV is hard to estimate under strict latency constraints. In Floecat, synchronous statistics capture has roughly one second to inspect an Iceberg table, sample a subset of Parquet row groups, and return something useful to the planner. That means the system must make decisions from partial and sometimes unrepresentative data.</p>
+
+<p>This post looks at how NDV behaves under that kind of sampling pressure. Rather than trusting a single estimator, Floecat evaluates multiple estimators over the same sampled data, compares their behavior, and selects the most plausible result while tracking confidence. The goal is not perfect accuracy on the first pass, but a fast estimate that is useful immediately and can be refined asynchronously as more evidence becomes available.</p>
+
+<p>I presented an earlier version of this work to Andy Pavlo’s CMU Database Group; if you want additional context, <a href="https://www.youtube.com/watch?v=Kq3csHJqgJQ">a recording of that session</a> is available.</p>
+
+<h2 id="constraints-of-ndv-estimation-under-sampling">Constraints of NDV Estimation Under Sampling</h2>
+
+<p>NDV estimation is fundamentally constrained by incomplete information. The system rarely scans an entire table during synchronous capture, and instead operates over a subset of Parquet row groups selected through a sampling policy. The reliability of any estimate depends on how representative that sample is, how values are distributed within it, and how quickly new distinct values are discovered as sampling progresses.</p>
+
+<p>Within the synchronous capture window, the system must:</p>
+<ul>
+  <li>select row groups</li>
+  <li>perform remote reads</li>
+  <li>decode Parquet data</li>
+  <li>update estimator state</li>
+  <li>compare candidate estimates</li>
+  <li>return a result</li>
+</ul>
+
+<p>This forces a trade-off between coverage and latency. Rather than attempting to converge fully, the system aims to produce a directionally useful estimate and explicitly communicate uncertainty.</p>
+
+<h2 id="multi-estimator-ndv-framework">Multi-Estimator NDV Framework</h2>
+
+<p>For each synchronous request, multiple NDV estimates are generated from the same sampled data. These estimates are treated as candidates rather than final answers. The system evaluates them collectively, discards those that are inconsistent with the sampled evidence or with other estimators, and returns a selected NDV derived from the remaining plausible estimates.</p>
+
+<p>Estimator selection is driven by consistency and confidence scoring. Estimates that diverge significantly from others or violate observed sampling behavior are rejected. The remaining candidates are compared to produce a recommended NDV value. The returned NDV is therefore not tied to a single estimator. It represents a synthesis of multiple approaches applied to the same evidence.</p>
+
+<p>Each estimate is annotated with confidence. High confidence indicates agreement between estimators and sufficient sampling coverage. Medium confidence reflects partial agreement. Low confidence indicates either insufficient sampling or estimator disagreement. If the evidence is too weak, the system may decline to return an NDV rather than provide a misleading value.</p>
+
+<h2 id="estimator-family">Estimator Family</h2>
+
+<p>The estimator family consists of three approaches, each suited to a different regime:</p>
+<ul>
+  <li>Linear extrapolation is used for high-cardinality columns where discovery remains unsaturated. It scales observed distinct values according to sampling fraction. This performs well when duplicates are rare but can overestimate under clustering.</li>
+  <li>Frequency-of-frequencies is used for medium-cardinality columns. It analyzes repetition patterns within the sample to estimate unseen values. It performs well when duplicates are present but becomes unstable when most sampled values are unique.</li>
+  <li>Discovery-curve analysis is used for low-cardinality columns. It tracks the rate at which new values are discovered and detects convergence when that rate slows.</li>
+</ul>
+
+<p>Estimator selection is therefore driven by observed behavior rather than pre-declared assumptions about the column.</p>
+
+<h2 id="sampling-strategies">Sampling Strategies</h2>
+
+<p>NDV estimation is driven by Parquet row-group sampling. This is embarrassingly parallel and maps naturally to distributed execution. Two sampling strategies are used:</p>
+<ul>
+  <li>Random sampling selects row groups uniformly and provides unbiased estimates. This works well for statistical estimators but may require larger samples to stabilize.</li>
+  <li>Metadata-guided sampling selects row groups based on min/max metadata to increase domain coverage. This improves early discovery for high-cardinality columns but can introduce bias when data is clustered or sorted.</li>
+</ul>
+
+<p>The system records sampling diagnostics, including coverage and discovery behavior, and uses these signals when evaluating estimator stability.</p>
+
+<h2 id="discovery-curve-interpretation">Discovery Curve Interpretation</h2>
+
+<p>The discovery curve is a primary signal for estimator selection. It tracks how many new distinct values are observed as sampling increases. Three regimes emerge:</p>
+
+<ul>
+  <li><strong>Plateau regime</strong>: discovery stabilizes quickly. This indicates low cardinality, and the observed value is effectively exact.</li>
+  <li><strong>Decelerating regime</strong>: discovery slows over time. This indicates moderate cardinality, and frequency-of-frequencies estimation is preferred.</li>
+  <li><strong>Linear regime</strong>: discovery continues at a constant rate. This indicates high cardinality or insufficient sampling. Linear extrapolation is used, but with reduced confidence.</li>
+</ul>
+
+<p>The estimator is effectively answering a simple question: are we finished discovering values, slowing down, or still discovering them at a constant rate.</p>
+
+<h2 id="empirical-behavior">Empirical Behavior</h2>
+
+<h3 id="datasets">Datasets</h3>
+
+<p>The evaluation uses two datasets with different characteristics:</p>
+
+<ul>
+  <li>TPC-DS SF1000 (2.8B rows, retail benchmark workload)</li>
+  <li>NYC Taxi (~1.3B rows, real-world transactional + geographic data)</li>
+</ul>
+
+<p>These datasets were chosen to expose different NDV regimes: low-cardinality identifiers, medium-cardinality dimensions, and high-cardinality keys.</p>
+
+<p>The core experiments were run on an AWS <code class="language-plaintext highlighter-rouge">i8g.4xlarge</code> node (16 vCPUs, 128 GB DRAM) with the Iceberg tables stored in Amazon S3. These single-node measurements are used to characterize estimator behavior and execution cost; meeting the planner’s tighter latency budget depends on distributing row-group sampling across the execution layer.</p>
+
+<h3 id="tpc-ds-sf1000">TPC-DS SF1000</h3>
+
+<p>On the <code class="language-plaintext highlighter-rouge">store_sales</code> table (2.8B rows), the estimator exhibits three distinct behaviors. Low-cardinality columns such as <code class="language-plaintext highlighter-rouge">ss_sold_date_sk</code> converge almost immediately. Medium-cardinality columns such as <code class="language-plaintext highlighter-rouge">ss_customer_sk</code> stabilize within approximately 10-15 percent error under frequency-of-frequencies. High-cardinality columns such as <code class="language-plaintext highlighter-rouge">ss_ticket_number</code> remain unsaturated much longer and eventually transition into a linear extrapolation regime.</p>
+
+<p>The behavior for <code class="language-plaintext highlighter-rouge">ss_ticket_number</code> is shown below. The discovery curve remains effectively linear through early sampling, which drives the estimator toward linear extrapolation.</p>
+
+<p><img src="/floecat/pr-preview/pr-381/images/2026-04-tpcds-ss_ticket_number.png" alt="NDV discovery curve for ss_ticket_number" class="post-chart" /></p>
+
+<p>At low sampling fractions, the frequency-of-frequencies estimator underestimates NDV due to limited duplication evidence, before the system transitions to linear extrapolation once the discovery curve remains unsaturated.</p>
+
+<p>For comparison, the behavior of a low-cardinality column such as <code class="language-plaintext highlighter-rouge">ss_sold_date_sk</code> is shown below.</p>
+
+<p><img src="/floecat/pr-preview/pr-381/images/2026-04-tpcds-ss_sold_date_sk.png" alt="NDV discovery curve for ss_sold_date_sk" class="post-chart" /></p>
+
+<p>In contrast to <code class="language-plaintext highlighter-rouge">ss_ticket_number</code>, the discovery curve for <code class="language-plaintext highlighter-rouge">ss_sold_date_sk</code> saturates almost immediately. The number of distinct values stabilizes after scanning a small fraction of the table, and additional sampling does not materially increase the observed NDV.</p>
+
+<p>This is the plateau regime. Once the system observes that discovery has effectively stopped, the observed NDV can be treated as complete with high confidence. There is no need for extrapolation or frequency-based estimation because the sample has already covered the domain of the column.</p>
+
+<p>This behavior is typical for low-cardinality dimensions, particularly those with bounded domains such as dates, enumerations, or status codes. It also highlights an important property of the estimator framework: the system is not attempting to apply a single method universally, but instead switches behavior based on the observed shape of the discovery curve.</p>
+
+<p>The contrast with <code class="language-plaintext highlighter-rouge">ss_ticket_number</code> is deliberate. In that case, discovery remains effectively linear and forces the system into an extrapolation regime with lower confidence. Here, discovery terminates early, allowing the system to return an exact result with minimal sampling effort.</p>
+
+<h3 id="nyc-taxi-dataset">NYC Taxi Dataset</h3>
+
+<p>The previous examples show idealized behavior under sampling. In practice, sampling can produce misleading signals when data is clustered or when row-group coverage is poor. The behavior of <code class="language-plaintext highlighter-rouge">pickup_location_id</code> from the NYC Taxi dataset illustrates this.</p>
+
+<p><img src="/floecat/pr-preview/pr-381/images/2026-04-nyc-pickup_location_id.png" alt="NDV discovery curve for pickup_location_id" class="post-chart" /></p>
+
+<p>At low sampling fractions, the estimator incorrectly concludes that the column has a single distinct value. This is not a statistical failure of the estimator itself, but a consequence of the sampled row groups lacking diversity. The discovery curve appears to plateau immediately, even though the true NDV is 265.</p>
+
+<p>As additional row groups are sampled, the estimate corrects abruptly, jumping from 1 to approximately the true value once sufficient domain coverage is achieved. This transition reflects the underlying data layout rather than a smooth convergence process.</p>
+
+<p>This is a failure mode of sampling rather than estimation. In particular, metadata-guided or locality-biased sampling can amplify this effect when data is clustered. Early samples can appear stable while being fundamentally unrepresentative of the data. The estimator framework relies on diagnostics and confidence scoring to identify these cases, and asynchronous reconciliation ensures that incorrect early estimates are corrected over time.</p>
+
+<p>This example highlights why NDV estimation cannot rely on a single method or a single sample. The system must be able to detect when the observed discovery curve is misleading and treat early results with appropriate caution.</p>
+
+<h2 id="the-one-second-problem">The One-Second Problem</h2>
+
+<p>The defining constraint for this system is that statistics must be available within the planning window. On the AWS <code class="language-plaintext highlighter-rouge">i8g.4xlarge</code> baseline, 5 percent sampling produces approximately 9 percent error in roughly 4 seconds. Those single-node results establish that the estimator pipeline is efficient enough to be viable; production fits within the stricter planner budget by distributing row-group sampling horizontally across workers.</p>
+
+<p>This is what makes the approach viable. The system is not trying to compute perfect statistics. It is trying to compute good enough statistics fast enough to influence planning.</p>
+
+<h2 id="whats-still-hard">What’s Still Hard</h2>
+
+<p>Several challenges remain, and they are structural rather than implementation details.</p>
+
+<p>Statistical correctness under bounded latency is not solved. Sampling introduces bias when data is clustered, sorted, or unevenly distributed across row groups. Estimators can disagree significantly under skewed distributions, and while confidence scoring helps identify these cases, it does not provide guarantees. Without full scans, unbiased NDV estimation cannot be assumed.</p>
+
+<p>Error bounds under sampling are also unresolved. In practice, the system produces estimates that are directionally useful, but there is no strict guarantee on worst-case error. Providing meaningful, data-dependent error bounds without increasing latency remains an open problem.</p>
+
+<p>The interaction between sampling strategy and data layout is another source of instability. As shown in the NYC Taxi example, early samples can appear stable while being completely unrepresentative of the underlying data. Detecting these cases reliably, and adapting sampling strategy in response, is still an active area of work.</p>
+
+<p>Extending the approach beyond single-column NDV is significantly harder. Multivariate statistics such as joint distributions, correlations, and functional dependencies do not decompose cleanly under sampling. These are often more important for planning than NDV itself, but are also more sensitive to incomplete data.</p>
+
+<p>Finally, consistency across datasets depends on factors outside the control of the system. Without controlling how data is written, including ordering, partitioning, and clustering, the estimator must operate under arbitrary layouts. Designing statistics that are robust to these variations without requiring changes to the write path remains an open challenge.</p>
+
+<h2 id="next-steps-and-closing-observations">Next Steps and Closing Observations</h2>
+
+<p>There are a few clear directions for improving this system.</p>
+
+<p>Adaptive sampling is one area of focus. Rather than selecting row groups uniformly or based solely on metadata, the system can adjust sampling dynamically based on observed discovery behavior, increasing coverage in regions where estimates appear unstable.</p>
+
+<p>Another direction is estimator refinement. Combining estimators is effective, but the selection logic can be improved by incorporating more explicit models of sampling bias and convergence behavior.</p>
+
+<p>Finally, asynchronous refinement can be used more aggressively. Synchronous estimates provide a starting point for planning, but deeper scans can incrementally improve statistics over time, allowing the system to converge toward higher accuracy without impacting query latency.</p>
+
+<p>The goal is not to eliminate uncertainty, but to manage it explicitly and reduce it where it matters most for planning.</p>
+
+<p>NDV estimation under sampling is fundamentally about interpreting incomplete evidence under time constraints. Different estimators perform well under different regimes, and the system must adapt dynamically based on observed behavior.</p>
+
+<p>The combination of sampling, multi-estimator evaluation, and confidence scoring allows the system to produce useful planner statistics within strict latency budgets. Asynchronous reconciliation then improves those estimates over time, allowing the system to balance responsiveness and accuracy without blocking query execution.</p>
+
+<h2 id="engineering-appendix-rust-vs-java">Engineering Appendix: Rust vs Java</h2>
+
+<p>The NDV estimation pipeline was implemented in both Rust and Java to evaluate which execution model is better suited to sampling-based statistics capture under strict latency constraints. The goal was to make a language and runtime choice for the production system based on measured performance.</p>
+
+<p>These experiments were run on an AWS <code class="language-plaintext highlighter-rouge">i8g.4xlarge</code> node (16 vCPUs, 128 GB DRAM) with the Iceberg tables stored in Amazon S3.</p>
+
+<p>Both implementations follow the same logical pipeline: snapshot resolution, file enumeration, row-group sampling, and NDV sketch computation.</p>
+
+<p>The Java implementation uses a Parquet-native scan path with column readers and record iteration. It relies on Apache DataSketches for sketch merging and achieves parallelism primarily across files. Rust is more deeply asynchronous within each file, while Java is parallel across files.</p>
+
+<p>On TPC-DS SF1000 at 5 percent sampling, the single-node Rust implementation completes in ~3.6 seconds versus ~3.9 seconds for Java, while using significantly less CPU (7.3s vs 41.7s total CPU time) and memory (~0.8 GB vs ~9.5 GB), along with improved effective I/O throughput.</p>
+
+<p>The difference is not marginal. While wall-clock time is similar, the Rust implementation achieves this with significantly lower CPU usage and memory consumption, along with more efficient I/O behavior. Under sustained load or concurrent query execution, these differences become decisive.</p>
+
+<p>Based on these results, the Rust implementation was selected for the production path, as it provides significantly better resource efficiency under the same latency constraints.</p>]]></content><author><name>Mark Cusack</name></author><summary type="html"><![CDATA[NDV (number of distinct values) is one of the most important statistics in cost-based query optimization. It affects selectivity estimates, join ordering, and intermediate cardinality predictions, so bad NDV estimates can quickly cascade into poor plans.]]></summary></entry><entry><title type="html">Getting Started with Iceberg REST Catalog and Floecat</title><link href="https://eng-floe.github.io/floecat/pr-preview/pr-381/2026/04/16/getting-started-with-iceberg-rest-and-floecat.html" rel="alternate" type="text/html" title="Getting Started with Iceberg REST Catalog and Floecat" /><published>2026-04-16T00:00:00+00:00</published><updated>2026-04-16T00:00:00+00:00</updated><id>https://eng-floe.github.io/floecat/pr-preview/pr-381/2026/04/16/getting-started-with-iceberg-rest-and-floecat</id><content type="html" xml:base="https://eng-floe.github.io/floecat/pr-preview/pr-381/2026/04/16/getting-started-with-iceberg-rest-and-floecat.html"><![CDATA[<p>The Iceberg REST catalog gives query engines a standard way to read and update table metadata.
+Instead of every engine needing its own catalog-specific integration, anything that speaks the REST spec can work with the same catalog. That removes a lot of integration friction. It doesn’t solve every cross-engine compatibility issue, but it eliminates the need for engine-specific catalog integrations.</p>
+
+<p>Floecat implements the <a href="https://github.com/apache/iceberg/blob/main/open-api/rest-catalog-open-api.yaml">Apache Iceberg REST catalog specification</a> and uses it as the foundation of a control plane that can enrich metadata across Iceberg and Delta catalogs.</p>
+
+<h2 id="what-youll-do">What You’ll Do</h2>
+
+<p>In this guide, you’ll start a local Floecat environment backed by LocalStack, attach DuckDB to the Floecat Iceberg REST catalog, and verify that query engines can access the same table metadata through the REST interface.</p>
+
+<h2 id="prerequisites">Prerequisites</h2>
+
+<p>Before starting, make sure you have:</p>
+
+<ul>
+  <li>Docker and Docker Compose installed</li>
+  <li>DuckDB installed locally</li>
+  <li>network access to pull the required container images from GHCR</li>
+</ul>
+
+<p>By the end, you should be able to query the same Iceberg catalog through Floecat and confirm that the REST catalog is working end to end.</p>
+
+<h2 id="what-the-iceberg-rest-catalog-buys-you">What the Iceberg REST Catalog Buys You</h2>
+
+<p>At a practical level, the Iceberg REST catalog is about simplifying engine integration without weakening guarantees.
+Instead of embedding catalog logic into engine-specific connectors,
+the REST catalog becomes the control plane for table metadata:</p>
+
+<ul>
+  <li>Engines talk HTTP/JSON</li>
+  <li>Commits are transactional</li>
+  <li>Metadata is immutable and versioned</li>
+  <li>Storage credentials can be vended through the catalog</li>
+</ul>
+
+<p>A fair question to ask is: “why another Iceberg REST catalog implementation?”
+Other implementations like Gravitino, Polaris, and Nessie already exist.
+Floecat exists to augment metadata from Iceberg and Delta catalogs with planning-grade statistics.</p>
+
+<p>Most query engines leave a lot on the table when planning against open table formats.
+We want to provide richer metadata and statistics for our SQL compute service,
+<a href="https://floedb.ai/">Floe</a>, so it can generate better query plans.</p>
+
+<h2 id="the-spec-isnt-as-intimidating-as-it-looks">The Spec Isn’t as Intimidating as it Looks</h2>
+
+<p>The Iceberg REST spec looks large, but most of it collapses into a few concerns:</p>
+
+<ul>
+  <li>Bootstrap and config: how clients discover prefixes, defaults, and catalog capabilities</li>
+  <li>Namespaces and tables: lifecycle operations and metadata loading</li>
+  <li>Commits &amp; staging: atomic updates expressed as requirements + updates</li>
+  <li>Planning &amp; tasks: optional server-side scan planning</li>
+  <li>Credentials: optional storage credential vending for object storage</li>
+</ul>
+
+<p>Once you treat the spec as a control-plane contract rather than a giant API surface,
+it becomes much more approachable.</p>
+
+<h2 id="how-the-service-is-structured">How the Service Is Structured</h2>
+
+<p>The Floecat REST catalog implementation lives as a Quarkus RESTEasy service.
+Each Iceberg endpoint is implemented as a JAX-RS resource. Behind that sits a gRPC-based catalog service that owns the durable catalog state:</p>
+
+<ul>
+  <li>table lifecycle</li>
+  <li>commit evaluation</li>
+  <li>metadata persistence</li>
+  <li>snapshot handling</li>
+</ul>
+
+<p>The REST layer is primarily a translation boundary.
+It also handles protocol-specific behavior like metadata hydration, credential vending, and plan/task orchestration.</p>
+
+<h2 id="starting-a-localstack-based-floecat-setup">Starting a LocalStack-Based Floecat Setup</h2>
+
+<p>For the examples below, start the published GHCR images with LocalStack and Trino enabled in Docker Compose:</p>
+
+<p>If the stack fails to start, the most common causes are missing GHCR access, Docker not running, or port conflicts on your machine.</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">FLOECAT_SERVICE_IMAGE</span><span class="o">=</span>ghcr.io/eng-floe/floecat-service:main <span class="se">\</span>
+<span class="nv">FLOECAT_ICEBERG_REST_IMAGE</span><span class="o">=</span>ghcr.io/eng-floe/floecat-iceberg-rest:main <span class="se">\</span>
+<span class="nv">FLOECAT_CLI_IMAGE</span><span class="o">=</span>ghcr.io/eng-floe/floecat-cli:main <span class="se">\</span>
+<span class="nv">FLOECAT_PULL_POLICY</span><span class="o">=</span>always <span class="se">\</span>
+<span class="nv">FLOECAT_ENV_FILE</span><span class="o">=</span>./env.localstack <span class="se">\</span>
+<span class="nv">COMPOSE_PROFILES</span><span class="o">=</span>localstack,trino <span class="se">\</span>
+docker compose <span class="nt">-f</span> docker/docker-compose.yml up <span class="nt">-d</span> <span class="nt">--wait</span>
+</code></pre></div></div>
+
+<p>That setup gives us:</p>
+
+<ul>
+  <li>Floecat Iceberg REST at <code class="language-plaintext highlighter-rouge">http://localhost:9200</code></li>
+  <li>LocalStack at <code class="language-plaintext highlighter-rouge">http://localhost:4566</code></li>
+  <li>Trino at <code class="language-plaintext highlighter-rouge">http://localhost:8081</code></li>
+</ul>
+
+<p>LocalStack is configured with simple local development credentials:</p>
+
+<ul>
+  <li>access key: <code class="language-plaintext highlighter-rouge">test</code></li>
+  <li>secret key: <code class="language-plaintext highlighter-rouge">test</code></li>
+  <li>region: <code class="language-plaintext highlighter-rouge">us-east-1</code></li>
+</ul>
+
+<p>When you’re done, stop the stack with the same image settings:</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="nv">FLOECAT_SERVICE_IMAGE</span><span class="o">=</span>ghcr.io/eng-floe/floecat-service:main <span class="se">\</span>
+<span class="nv">FLOECAT_ICEBERG_REST_IMAGE</span><span class="o">=</span>ghcr.io/eng-floe/floecat-iceberg-rest:main <span class="se">\</span>
+<span class="nv">FLOECAT_CLI_IMAGE</span><span class="o">=</span>ghcr.io/eng-floe/floecat-cli:main <span class="se">\</span>
+<span class="nv">FLOECAT_PULL_POLICY</span><span class="o">=</span>always <span class="se">\</span>
+<span class="nv">FLOECAT_ENV_FILE</span><span class="o">=</span>./env.localstack <span class="se">\</span>
+<span class="nv">COMPOSE_PROFILES</span><span class="o">=</span>localstack,trino <span class="se">\</span>
+docker compose <span class="nt">-f</span> docker/docker-compose.yml down <span class="nt">--remove-orphans</span>
+</code></pre></div></div>
+
+<h2 id="pointing-duckdb-at-the-catalog">Pointing DuckDB at the Catalog</h2>
+
+<p>For DuckDB, the easiest path is to use the bootstrap SQL we keep in the repo for the LocalStack quickstart:</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code>duckdb <span class="nt">-init</span> tools/duckdb-localstack-init.sql
+</code></pre></div></div>
+
+<p>That script installs the required DuckDB extensions, configures S3 to talk to LocalStack with path-style access, and attaches the Floecat REST catalog as <code class="language-plaintext highlighter-rouge">iceberg_floecat</code>.</p>
+
+<div class="language-sql highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">SHOW</span> <span class="n">DATABASES</span><span class="p">;</span>
+</code></pre></div></div>
+
+<p>At that point, <code class="language-plaintext highlighter-rouge">iceberg_floecat</code> is already attached, so you can start querying it immediately. The LocalStack stack seeds the <code class="language-plaintext highlighter-rouge">examples.iceberg</code> namespace for us, so there is no extra schema creation step here.</p>
+
+<p>If you want to see the equivalent manual setup in a fresh DuckDB session without <code class="language-plaintext highlighter-rouge">-init</code>, it looks like this:</p>
+
+<div class="language-sql highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">CREATE</span> <span class="k">OR</span> <span class="k">REPLACE</span> <span class="n">SECRET</span> <span class="n">floecat_localstack_s3</span> <span class="p">(</span>
+  <span class="k">TYPE</span> <span class="n">S3</span><span class="p">,</span>
+  <span class="n">PROVIDER</span> <span class="n">config</span><span class="p">,</span>
+  <span class="n">KEY_ID</span> <span class="s1">'test'</span><span class="p">,</span>
+  <span class="n">SECRET</span> <span class="s1">'test'</span><span class="p">,</span>
+  <span class="n">REGION</span> <span class="s1">'us-east-1'</span><span class="p">,</span>
+  <span class="n">ENDPOINT</span> <span class="s1">'localhost:4566'</span><span class="p">,</span>
+  <span class="n">URL_STYLE</span> <span class="s1">'path'</span><span class="p">,</span>
+  <span class="n">USE_SSL</span> <span class="k">false</span>
+<span class="p">);</span>
+
+<span class="n">ATTACH</span> <span class="s1">'examples'</span> <span class="k">AS</span> <span class="n">iceberg_floecat</span> <span class="p">(</span>
+  <span class="k">TYPE</span> <span class="n">iceberg</span><span class="p">,</span>
+  <span class="n">ENDPOINT</span> <span class="s1">'http://localhost:9200/'</span><span class="p">,</span>
+  <span class="n">AUTHORIZATION_TYPE</span> <span class="k">none</span><span class="p">,</span>
+  <span class="n">ACCESS_DELEGATION_MODE</span> <span class="s1">'none'</span><span class="p">,</span>
+  <span class="n">PURGE_REQUESTED</span> <span class="k">true</span>
+<span class="p">);</span>
+</code></pre></div></div>
+
+<p>Once attached, DuckDB immediately calls <code class="language-plaintext highlighter-rouge">/v1/config</code>.
+From there, it discovers the catalog prefix and uses that for all subsequent calls.</p>
+
+<p>Creating and inserting into a table looks ordinary from the SQL side,
+but behind the scenes DuckDB exercises a large chunk of the REST spec:</p>
+
+<ul>
+  <li>stage-create for tables</li>
+  <li>direct writes of parquet and manifest files to object storage</li>
+  <li>commit requests containing Iceberg “requirements and updates”</li>
+</ul>
+
+<div class="language-sql highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">drop</span> <span class="k">table</span> <span class="n">if</span> <span class="k">exists</span> <span class="n">iceberg_floecat</span><span class="p">.</span><span class="n">iceberg</span><span class="p">.</span><span class="n">orders</span><span class="p">;</span>
+<span class="k">create</span> <span class="k">table</span> <span class="n">iceberg_floecat</span><span class="p">.</span><span class="n">iceberg</span><span class="p">.</span><span class="n">orders</span> <span class="p">(</span><span class="n">order_id</span> <span class="nb">int</span><span class="p">,</span> <span class="n">item</span> <span class="nb">varchar</span><span class="p">);</span>
+<span class="k">insert</span> <span class="k">into</span> <span class="n">iceberg_floecat</span><span class="p">.</span><span class="n">iceberg</span><span class="p">.</span><span class="n">orders</span> <span class="k">values</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="s1">'phone'</span><span class="p">);</span>
+
+<span class="k">drop</span> <span class="k">table</span> <span class="n">iceberg_floecat</span><span class="p">.</span><span class="n">iceberg</span><span class="p">.</span><span class="n">orders</span><span class="p">;</span>
+<span class="k">create</span> <span class="k">table</span> <span class="n">iceberg_floecat</span><span class="p">.</span><span class="n">iceberg</span><span class="p">.</span><span class="n">orders</span> <span class="p">(</span><span class="n">order_id</span> <span class="nb">int</span><span class="p">,</span> <span class="n">item</span> <span class="nb">varchar</span><span class="p">);</span>
+<span class="k">insert</span> <span class="k">into</span> <span class="n">iceberg_floecat</span><span class="p">.</span><span class="n">iceberg</span><span class="p">.</span><span class="n">orders</span> <span class="k">values</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="s1">'tv'</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>The catalog coordinates the commit, validates the requested table changes,
+and only makes the new snapshot visible once everything succeeds.
+Even single-row inserts go through this staged commit path,
+which reinforces the idea that the catalog is the control plane for publishing table state,
+even though the engines still participate in the write path.</p>
+
+<p>Reading from the table follows the standard REST flow:</p>
+
+<ul>
+  <li>verify namespace existence</li>
+  <li>check table existence</li>
+  <li>load table metadata and, if requested, storage credentials</li>
+  <li>scan object storage directly</li>
+</ul>
+
+<div class="language-sql highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">select</span> <span class="o">*</span> <span class="k">from</span> <span class="n">iceberg_floecat</span><span class="p">.</span><span class="n">iceberg</span><span class="p">.</span><span class="n">orders</span><span class="p">;</span>
+<span class="err">┌──────────┬─────────┐</span>
+<span class="err">│</span> <span class="n">order_id</span> <span class="err">│</span>  <span class="n">item</span>   <span class="err">│</span>
+<span class="err">│</span>  <span class="n">int32</span>   <span class="err">│</span> <span class="nb">varchar</span> <span class="err">│</span>
+<span class="err">├──────────┼─────────┤</span>
+<span class="err">│</span>        <span class="mi">1</span> <span class="err">│</span> <span class="n">tv</span>      <span class="err">│</span>
+<span class="err">└──────────┴─────────┘</span>
+</code></pre></div></div>
+
+<p>That SQL sequence is deliberate, proving that DuckDB can drop and recreate the same Iceberg table cleanly through Floecat, and it leaves the recreated table in place for Trino to query next.
+The <code class="language-plaintext highlighter-rouge">PURGE_REQUESTED true</code> line in the DuckDB <code class="language-plaintext highlighter-rouge">ATTACH</code> expression tells Floecat to delete the Iceberg artifacts in S3 as well as the catalog metadata.</p>
+
+<h2 id="querying-the-same-table-with-trino">Querying the Same Table with Trino</h2>
+
+<p>For Trino, use the catalog properties mounted into the container at <code class="language-plaintext highlighter-rouge">docker/trino/catalog/floecat.properties</code>:</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code>connector.name<span class="o">=</span>iceberg
+iceberg.catalog.type<span class="o">=</span>rest
+iceberg.rest-catalog.uri<span class="o">=</span>http://iceberg-rest:9200
+iceberg.rest-catalog.warehouse<span class="o">=</span>examples
+iceberg.file-format<span class="o">=</span>parquet
+fs.native-s3.enabled<span class="o">=</span><span class="nb">true
+</span>s3.aws-access-key<span class="o">=</span><span class="nb">test
+</span>s3.aws-secret-key<span class="o">=</span><span class="nb">test
+</span>s3.region<span class="o">=</span>us-east-1
+s3.endpoint<span class="o">=</span>http://localstack:4566
+s3.path-style-access<span class="o">=</span><span class="nb">true</span>
+</code></pre></div></div>
+
+<p>What’s really interesting here is that we can query the same table
+we created earlier with DuckDB but via Trino. Since the compose stack already includes Trino, you can open the CLI directly from the container:</p>
+
+<div class="language-bash highlighter-rouge"><div class="highlight"><pre class="highlight"><code>docker compose <span class="nt">-f</span> docker/docker-compose.yml <span class="nb">exec </span>trino trino <span class="nt">--catalog</span> floecat <span class="nt">--schema</span> iceberg
+</code></pre></div></div>
+
+<p>Then query the same table:</p>
+
+<div class="language-sql highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">select</span> <span class="o">*</span> <span class="k">from</span> <span class="n">orders</span><span class="p">;</span>
+ <span class="n">order_id</span> <span class="o">|</span> <span class="n">item</span>
+<span class="c1">----------+------</span>
+        <span class="mi">1</span> <span class="o">|</span> <span class="n">tv</span>
+<span class="p">(</span><span class="mi">1</span> <span class="k">row</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>We can also mutate that table:</p>
+
+<div class="language-sql highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">insert</span> <span class="k">into</span> <span class="n">orders</span> <span class="k">values</span> <span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="s1">'radio'</span><span class="p">);</span>
+<span class="k">INSERT</span><span class="p">:</span> <span class="mi">1</span> <span class="k">row</span>
+
+<span class="k">select</span> <span class="o">*</span> <span class="k">from</span> <span class="n">orders</span><span class="p">;</span>
+ <span class="n">order_id</span> <span class="o">|</span> <span class="n">item</span>
+<span class="c1">----------+-------</span>
+        <span class="mi">1</span> <span class="o">|</span> <span class="n">tv</span>
+        <span class="mi">2</span> <span class="o">|</span> <span class="n">radio</span>
+<span class="p">(</span><span class="mi">2</span> <span class="k">rows</span><span class="p">)</span>
+</code></pre></div></div>
+
+<p>The key point is that Trino can query and write to the same table DuckDB created, without any engine-specific glue code.</p>
+
+<h2 id="where-things-stand-with-floecat">Where Things Stand with Floecat</h2>
+
+<p>At this point, the core Iceberg REST catalog surface is implemented in Floecat.
+The catalog has been exercised with both Trino and DuckDB and is used in
+automated CI smoke tests.</p>
+
+<p>One caveat that is worth mentioning is that Trino and DuckDB do not currently make use of the plan/task
+endpoint, which means they can’t offload parquet file pruning to the catalog. It’s not a big issue,
+as Trino and DuckDB perform the pruning themselves.</p>
+
+<h2 id="closing-thoughts">Closing Thoughts</h2>
+
+<p>Building an Iceberg REST catalog implementation makes multi-engine support much easier,
+and avoids having to build a custom connector to Floecat for every query engine out there.
+If you’re evaluating Iceberg beyond “it’s a table format,”
+implementing or integrating with the REST catalog is where the control plane
+for a lakehouse actually takes shape.</p>
+
+<p><a href="https://github.com/eng-floe/floecat">Floecat</a> is open-sourced under the Apache 2.0 license.</p>]]></content><author><name>Mark Cusack</name></author><summary type="html"><![CDATA[The Iceberg REST catalog gives query engines a standard way to read and update table metadata. Instead of every engine needing its own catalog-specific integration, anything that speaks the REST spec can work with the same catalog. That removes a lot of integration friction. It doesn’t solve every cross-engine compatibility issue, but it eliminates the need for engine-specific catalog integrations.]]></summary></entry></feed>
