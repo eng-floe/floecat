@@ -17,58 +17,24 @@
 package ai.floedb.floecat.service.repo.impl;
 
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
-import ai.floedb.floecat.common.rpc.MutationMeta;
-import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.service.repo.model.CurrentSnapshotPointerKey;
 import ai.floedb.floecat.service.repo.model.Schemas;
-import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.Optional;
 
+/** One current-snapshot pointer per table. See {@link TableScopedPointerRepository}. */
 @ApplicationScoped
-public class CurrentSnapshotPointerRepository {
-  private final GenericResourceRepository<CurrentSnapshotPointer, CurrentSnapshotPointerKey> repo;
+public class CurrentSnapshotPointerRepository
+    extends TableScopedPointerRepository<CurrentSnapshotPointer> {
 
   @Inject
   public CurrentSnapshotPointerRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this.repo =
-        new GenericResourceRepository<>(
-            pointerStore,
-            blobStore,
-            Schemas.CURRENT_SNAPSHOT_POINTER,
-            CurrentSnapshotPointer::parseFrom,
-            CurrentSnapshotPointer::toByteArray,
-            "application/x-protobuf");
-  }
-
-  public Optional<CurrentSnapshotPointer> get(ResourceId tableId) {
-    return repo.getByKey(key(tableId));
-  }
-
-  public boolean createIfAbsent(CurrentSnapshotPointer pointer) {
-    return repo.createIfAbsent(pointer);
-  }
-
-  public boolean update(CurrentSnapshotPointer pointer, long expectedPointerVersion) {
-    return repo.update(pointer, expectedPointerVersion);
-  }
-
-  public boolean delete(ResourceId tableId) {
-    return repo.delete(key(tableId));
-  }
-
-  public boolean deleteWithPrecondition(ResourceId tableId, long expectedPointerVersion) {
-    return repo.deleteWithPrecondition(key(tableId), expectedPointerVersion);
-  }
-
-  public MutationMeta metaFor(ResourceId tableId) {
-    return repo.metaFor(key(tableId));
-  }
-
-  private static CurrentSnapshotPointerKey key(ResourceId tableId) {
-    return new CurrentSnapshotPointerKey(tableId.getAccountId(), tableId.getId());
+    super(
+        pointerStore,
+        blobStore,
+        Schemas.CURRENT_SNAPSHOT_POINTER,
+        CurrentSnapshotPointer::parseFrom,
+        CurrentSnapshotPointer::toByteArray);
   }
 }

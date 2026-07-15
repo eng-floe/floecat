@@ -33,19 +33,22 @@ import ai.floedb.floecat.query.rpc.ColumnResult;
 import ai.floedb.floecat.query.rpc.ColumnStatus;
 import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.Origin;
+import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.RelationInfo;
+import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.RelationResolutions;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
+import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
+import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.CancellingSubscriber;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogOverlay;
@@ -57,6 +60,7 @@ import ai.floedb.floecat.service.query.resolver.QueryInputResolver.ResolutionRes
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
+import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -118,10 +122,9 @@ class UserObjectBundleServiceTest {
           .build();
 
   private static final long TABLE_A_SNAPSHOT_ID = 123L;
-  private static final SnapshotPin TABLE_A_PIN =
-      SnapshotPin.newBuilder().setTableId(TABLE_A).setSnapshotId(TABLE_A_SNAPSHOT_ID).build();
-  private static final SnapshotSet INITIAL_SNAPSHOT =
-      SnapshotSet.newBuilder().addPins(TABLE_A_PIN).build();
+  private static final RelationPinSet INITIAL_PINS =
+      SnapshotTestSupport.relationPins(
+          SnapshotTestSupport.blobBackedPin(TABLE_A, TABLE_A_SNAPSHOT_ID));
 
   private final FakeCatalogOverlay overlay = new FakeCatalogOverlay();
   private final EngineMetadataDecoratorProvider decoratorProvider = ctx -> Optional.empty();
@@ -141,7 +144,7 @@ class UserObjectBundleServiceTest {
                   .setSubject("tester")
                   .setCorrelationId("cid")
                   .build())
-          .snapshotSet(INITIAL_SNAPSHOT.toByteArray())
+          .relationPins(INITIAL_PINS.toByteArray())
           .createdAtMs(1)
           .expiresAtMs(1000)
           .state(QueryContext.State.ACTIVE)
@@ -250,12 +253,30 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void resolvedTableCarriesOpaquePinIdentity() {
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
+
+    RelationInfo relation = chunks.get(1).getResolutions().getItems(0).getRelation();
+    assertThat(relation.hasPinIdentity()).isTrue();
+    assertThat(relation.getPinIdentity().getPinFingerprint()).isNotEmpty();
+    // First-touch pin (seeded at TABLE_A_SNAPSHOT_ID) is reused by the current-snapshot resolution.
+    assertThat(relation.getPinIdentity().getSnapshotId()).isEqualTo(TABLE_A_SNAPSHOT_ID);
+    assertThat(relation.getPinIdentity().getPinKind()).isEqualTo(PinKind.PIN_KIND_CURRENT);
+  }
+
+  @Test
   void statsAvailableWhenPinAddedDuringBundle() {
     QueryContext noPinCtx =
         QueryContext.builder()
             .queryId("q-no-pin")
             .principal(ctx.getPrincipal())
-            .snapshotSet(SnapshotSet.getDefaultInstance().toByteArray())
+            .relationPins(RelationPinSet.getDefaultInstance().toByteArray())
             .createdAtMs(ctx.getCreatedAtMs())
             .expiresAtMs(ctx.getExpiresAtMs())
             .state(QueryContext.State.ACTIVE)
@@ -332,7 +353,7 @@ class UserObjectBundleServiceTest {
         QueryContext.builder()
             .queryId("q-chunk")
             .principal(ctx.getPrincipal())
-            .snapshotSet(SnapshotSet.getDefaultInstance().toByteArray())
+            .relationPins(RelationPinSet.getDefaultInstance().toByteArray())
             .createdAtMs(ctx.getCreatedAtMs())
             .expiresAtMs(ctx.getExpiresAtMs())
             .state(QueryContext.State.ACTIVE)
@@ -414,28 +435,18 @@ class UserObjectBundleServiceTest {
   @Test
   void commitSkippedWhenPinsEmpty() {
     QueryInputResolver emptyResolver =
-        new QueryInputResolver() {
+        new QueryInputResolver(null) {
           @Override
           public ResolutionResult resolveInputs(
+              String queryId,
               String correlationId,
               List<QueryInput> inputs,
               Optional<Timestamp> asOfDefault,
               Optional<ResourceId> defaultCatalogId,
-              Map<ResourceId, SnapshotPin> currentSnapshotPinCache) {
-            return new ResolutionResult(
-                List.of(inputs.get(0).getTableId()), SnapshotSet.getDefaultInstance(), null);
-          }
-
-          @Override
-          public ResolutionResult resolveInputs(
-              String correlationId,
-              List<QueryInput> inputs,
-              Optional<Timestamp> asOfDefault,
-              Optional<ResourceId> defaultCatalogId,
-              Map<ResourceId, SnapshotPin> currentSnapshotPinCache,
+              Map<ResourceId, TablePin> currentSnapshotPinCache,
               PhaseDiagnostics diagnostics) {
-            return resolveInputs(
-                correlationId, inputs, asOfDefault, defaultCatalogId, currentSnapshotPinCache);
+            return new ResolutionResult(
+                List.of(inputs.get(0).getTableId()), RelationPinSet.getDefaultInstance(), null);
           }
         };
     service =
@@ -661,7 +672,8 @@ class UserObjectBundleServiceTest {
     assertThat(relation.hasStats()).isFalse();
     assertThat(queryStore.updateCount()).isEqualTo(0);
     QueryContext updatedCtx = queryStore.get(ctx.getQueryId()).orElseThrow();
-    SnapshotSet snapshotSet = SnapshotSet.parseFrom(updatedCtx.getSnapshotSet());
+    SnapshotSet snapshotSet =
+        QueryPins.toSnapshotSet(RelationPinSet.parseFrom(updatedCtx.getRelationPins()));
     assertThat(snapshotSet.getPinsList())
         .noneMatch(pin -> pin.hasTableId() && pin.getTableId().equals(SYSTEM_TABLE));
   }
@@ -795,7 +807,7 @@ class UserObjectBundleServiceTest {
 
     assertThat(queryStore.updateCount()).isEqualTo(1);
     QueryContext updated = queryStore.get(ctx.getQueryId()).orElseThrow();
-    SnapshotSet pins = SnapshotSet.parseFrom(updated.getSnapshotSet());
+    SnapshotSet pins = QueryPins.toSnapshotSet(RelationPinSet.parseFrom(updated.getRelationPins()));
     assertThat(pins.getPinsCount()).isEqualTo(2);
   }
 
@@ -1690,7 +1702,7 @@ class UserObjectBundleServiceTest {
         QueryContext.builder()
             .queryId("q-view-asof")
             .principal(ctx.getPrincipal())
-            .snapshotSet(SnapshotSet.getDefaultInstance().toByteArray())
+            .relationPins(RelationPinSet.getDefaultInstance().toByteArray())
             .createdAtMs(ctx.getCreatedAtMs())
             .expiresAtMs(ctx.getExpiresAtMs())
             .state(QueryContext.State.ACTIVE)
@@ -1732,15 +1744,14 @@ class UserObjectBundleServiceTest {
 
     assertThat(chunks.get(1).getResolutions().getItemsCount()).isEqualTo(2);
     QueryContext updatedCtx = queryStore.get(asOfCtx.getQueryId()).orElseThrow();
-    SnapshotSet snapshotSet = SnapshotSet.parseFrom(updatedCtx.getSnapshotSet());
-    SnapshotPin basePin =
-        snapshotSet.getPinsList().stream()
-            .filter(pin -> pin.getTableId().equals(baseId))
-            .findFirst()
+    // The AS_OF view override propagates to the eager base-table pin: the pin resolves to a
+    // concrete snapshot (as every pin does) but records the AS_OF temporal intent as provenance.
+    TablePin basePin =
+        QueryPins.findTablePin(RelationPinSet.parseFrom(updatedCtx.getRelationPins()), baseId)
             .orElseThrow();
-    assertThat(basePin.hasAsOf()).isTrue();
-    assertThat(basePin.getAsOf()).isEqualTo(asOf);
-    assertThat(basePin.hasSnapshotId()).isFalse();
+    assertThat(basePin.getPinKind()).isEqualTo(PinKind.PIN_KIND_AS_OF);
+    assertThat(basePin.getOriginalAsOf()).isEqualTo(asOf);
+    assertThat(basePin.getSnapshotBlobUri()).isNotEmpty();
   }
 
   @Test

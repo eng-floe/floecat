@@ -29,34 +29,54 @@ import java.util.Map;
 
 @ApplicationScoped
 public class CurrentSnapshotPointerService {
+
   @Inject SnapshotRepository snapshotRepo;
+  @Inject TableRootWriter rootWriter;
 
   public void maybeAdvance(ResourceId tableId, long snapshotId, String corr) {
-    Snapshot candidate =
-        snapshotRepo
-            .getById(tableId, snapshotId)
-            .orElseThrow(
-                () ->
-                    GrpcErrors.notFound(
-                        corr,
-                        SNAPSHOT,
-                        Map.of(
-                            "table_id", tableId.getId(),
-                            "id", Long.toString(snapshotId))));
-    maybeAdvance(tableId, candidate, corr);
+    maybeAdvance(tableId, loadCandidate(tableId, snapshotId, corr), corr);
   }
 
+  private Snapshot loadCandidate(ResourceId tableId, long snapshotId, String corr) {
+    return snapshotRepo
+        .getById(tableId, snapshotId)
+        .orElseThrow(
+            () ->
+                GrpcErrors.notFound(
+                    corr,
+                    SNAPSHOT,
+                    Map.of(
+                        "table_id", tableId.getId(),
+                        "id", Long.toString(snapshotId))));
+  }
+
+  /**
+   * Advance the current-snapshot pointer to {@code candidate} if it should become current, and
+   * record the snapshot's entry on the table root. Every snapshot write funnels through here —
+   * create, finalize, in-place update, reconcile — and the root entry upsert re-captures the
+   * snapshot's immutable blob identity each time, so an in-place rewrite of the current snapshot
+   * refreshes the pinned identity with no separate republish step.
+   */
   public void maybeAdvance(ResourceId tableId, Snapshot candidate, String corr) {
     var result = snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate);
     if (result == null) {
       return;
     }
     switch (result) {
-      case UPDATED, UNCHANGED -> {
-        return;
-      }
       case TABLE_MISSING -> throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
       case CONFLICT -> throw GrpcErrors.aborted(corr, Map.of("id", tableId.getId()));
+      default -> {}
+    }
+    rootWriter.commitSnapshotEntry(tableId, candidate);
+    if (result == SnapshotRepository.CurrentSnapshotPointerUpdateResult.UPDATED) {
+      // The committed current pointer just moved onto `candidate`. commitSnapshotEntry advances the
+      // root's current_snapshot_id at registration; what the finalize gate defers is query-time
+      // VISIBILITY (an entry without a stats_generation_ref is not pinnable). An in-place update of
+      // an ALREADY-finalized snapshot (e.g. UpdateSnapshot bumping upstream_created_at) triggers no
+      // later finalize to attach that generation ref, so reconcile it now through the finalize
+      // path: a no-op when the gate is off, when the candidate is not yet finalized (its own
+      // finalize will publish it), or when the root entry already carries the ref.
+      rootWriter.commitStatsGeneration(tableId, candidate.getSnapshotId());
     }
   }
 }

@@ -17,7 +17,12 @@
 package ai.floedb.floecat.service.testsupport;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.query.rpc.PinKind;
+import ai.floedb.floecat.query.rpc.RelationPinSet;
+import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -32,6 +37,34 @@ import java.util.Optional;
 public final class SnapshotTestSupport {
 
   private SnapshotTestSupport() {}
+
+  /**
+   * A blob-backed CURRENT table pin for {@code (tableId, snapshotId)} — the only pin shape
+   * production ever stores (every pin captures immutable blob identity at construction). The
+   * synthesized URIs and etags match {@link FakeSnapshotRepository}'s scheme so seeded pins and the
+   * fake repositories agree when used together. {@code constraints_version} is UNKNOWN: nothing was
+   * authoritatively captured.
+   */
+  public static TablePin blobBackedPin(ResourceId tableId, long snapshotId) {
+    return TablePin.newBuilder()
+        .setTableId(tableId)
+        .setPinKind(PinKind.PIN_KIND_CURRENT)
+        .setSnapshotId(snapshotId)
+        .setTableBlobUri("s3://" + tableId.getId() + "/table.pb")
+        .setTableBlobVersion("etag-t")
+        .setSnapshotBlobUri("s3://" + tableId.getId() + "/snap-" + snapshotId + ".pb")
+        .setSnapshotBlobVersion("etag-s" + snapshotId)
+        .build();
+  }
+
+  /** The relation-pin set resolution stores on a query context, from blob-backed pins. */
+  public static RelationPinSet relationPins(TablePin... pins) {
+    RelationPinSet.Builder set = RelationPinSet.newBuilder();
+    for (TablePin pin : pins) {
+      set.addPins(QueryPins.ofTable(pin));
+    }
+    return set.build();
+  }
 
   public static final class FakeSnapshotRepository extends SnapshotRepository {
 
@@ -61,21 +94,99 @@ public final class SnapshotTestSupport {
       return Optional.ofNullable(snapshots.getOrDefault(tableId, Map.of()).get(snapshotId));
     }
 
+    /**
+     * Resolve a stored snapshot by the synthesized immutable blob URI ({@code
+     * s3://<table>/snap-<id> .pb}), mirroring {@link #metaForSafe}. Lets the pinned-snapshot-blob
+     * read paths (schema) hit the fake by URI instead of the live pointer.
+     */
+    @Override
+    public Optional<Snapshot> getByBlobUri(String blobUri) {
+      if (blobUri == null || !blobUri.startsWith("s3://") || !blobUri.endsWith(".pb")) {
+        return Optional.empty();
+      }
+      int snapIdx = blobUri.indexOf("/snap-");
+      if (snapIdx < 0) {
+        return Optional.empty();
+      }
+      String tableId = blobUri.substring("s3://".length(), snapIdx);
+      String snapPart =
+          blobUri.substring(snapIdx + "/snap-".length(), blobUri.length() - ".pb".length());
+      long snapshotId;
+      try {
+        snapshotId = Long.parseLong(snapPart);
+      } catch (NumberFormatException e) {
+        return Optional.empty();
+      }
+      return snapshots.entrySet().stream()
+          .filter(e -> e.getKey().getId().equals(tableId))
+          .map(e -> e.getValue().get(snapshotId))
+          .filter(java.util.Objects::nonNull)
+          .findFirst();
+    }
+
+    // Mirror the real repository's newest-first, id-descending-on-tie ordering (at millisecond
+    // granularity) so tests observe the same snapshot selection the production by-time index gives.
+    private static final Comparator<Snapshot> NEWEST_FIRST =
+        Comparator.comparingLong(FakeSnapshotRepository::createdMillisOf)
+            .thenComparingLong(Snapshot::getSnapshotId);
+
     @Override
     public Optional<Snapshot> getCurrentSnapshot(ResourceId tableId) {
-      return snapshots.getOrDefault(tableId, Map.of()).values().stream()
-          .max(Comparator.comparingLong(this::createdMillis));
+      return snapshots.getOrDefault(tableId, Map.of()).values().stream().max(NEWEST_FIRST);
     }
 
     @Override
     public Optional<Snapshot> getAsOf(ResourceId tableId, Timestamp asOf) {
-      long target = asOf.getSeconds();
+      long targetMillis = com.google.protobuf.util.Timestamps.toMillis(asOf);
       return snapshots.getOrDefault(tableId, Map.of()).values().stream()
-          .filter(s -> s.getUpstreamCreatedAt().getSeconds() <= target)
-          .max(Comparator.comparingLong(this::createdMillis));
+          .filter(s -> createdMillisOf(s) <= targetMillis)
+          .max(NEWEST_FIRST);
     }
 
-    private long createdMillis(Snapshot snapshot) {
+    /** Synthesize immutable blob identity for a stored snapshot so pin resolution can complete. */
+    @Override
+    public MutationMeta metaForSafe(ResourceId tableId, long snapshotId) {
+      if (!snapshots.getOrDefault(tableId, Map.of()).containsKey(snapshotId)) {
+        return null;
+      }
+      return MutationMeta.newBuilder()
+          .setBlobUri("s3://" + tableId.getId() + "/snap-" + snapshotId + ".pb")
+          .setEtag("etag-s" + snapshotId)
+          .build();
+    }
+
+    /**
+     * Report the etag of a synthesized snapshot blob by its URI, mirroring {@link #metaForSafe} so
+     * pin validation (which now probes the immutable blob URI rather than the live pointer) sees
+     * the same identity. Returns {@code null} for an unknown/unstored blob, exactly like the real
+     * HEAD.
+     */
+    @Override
+    public String blobEtag(String blobUri) {
+      if (blobUri == null || !blobUri.startsWith("s3://") || !blobUri.endsWith(".pb")) {
+        return null;
+      }
+      int snapIdx = blobUri.indexOf("/snap-");
+      if (snapIdx < 0) {
+        return null;
+      }
+      String tableId = blobUri.substring("s3://".length(), snapIdx);
+      String snapPart =
+          blobUri.substring(snapIdx + "/snap-".length(), blobUri.length() - ".pb".length());
+      long snapshotId;
+      try {
+        snapshotId = Long.parseLong(snapPart);
+      } catch (NumberFormatException e) {
+        return null;
+      }
+      boolean present =
+          snapshots.entrySet().stream()
+              .anyMatch(
+                  e -> e.getKey().getId().equals(tableId) && e.getValue().containsKey(snapshotId));
+      return present ? "etag-s" + snapshotId : null;
+    }
+
+    private static long createdMillisOf(Snapshot snapshot) {
       Timestamp ts = snapshot.getUpstreamCreatedAt();
       return ts.getSeconds() * 1000L + ts.getNanos() / 1_000_000L;
     }

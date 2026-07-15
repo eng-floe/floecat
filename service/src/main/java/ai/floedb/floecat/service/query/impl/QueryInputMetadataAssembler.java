@@ -19,8 +19,10 @@ package ai.floedb.floecat.service.query.impl;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.ExpansionMap;
+import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableObligations;
+import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.resolver.ObligationsResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.query.resolver.ViewExpansionResolver;
@@ -47,6 +49,7 @@ public class QueryInputMetadataAssembler {
    * when inputs are supplied up front.
    */
   public QueryInputMetadata assemble(
+      String queryId,
       String correlationId,
       List<QueryInput> inputs,
       Optional<Timestamp> asOfDefault,
@@ -73,6 +76,7 @@ public class QueryInputMetadataAssembler {
               "resolve_inputs",
               () ->
                   inputResolver.resolveInputs(
+                      queryId,
                       correlationId,
                       inputs,
                       asOfDefault,
@@ -80,8 +84,12 @@ public class QueryInputMetadataAssembler {
                       new LinkedHashMap<>(),
                       diagnostics));
       diagnostics.put("resolved_inputs", resolution.resolved().size());
+      RelationPinSet relationPinSet = resolution.relationPinSet();
       SnapshotSet snapshotSet = resolution.snapshotSet();
-      diagnostics.put("snapshot_pins", snapshotSet.getPinsCount());
+      diagnostics.put("snapshot_pins", relationPinSet.getPinsCount());
+      // The resolver already registered each resolved pin's blobs as a transient GC root at
+      // construction (QueryContextStore.registerResolvingPinBlobs), so the blobs are protected
+      // through expansion/obligations and until BeginQuery commits the context — no lease here.
       ExpansionMap expansionMap =
           diagnostics.time(
               "compute_expansion",
@@ -98,7 +106,7 @@ public class QueryInputMetadataAssembler {
       diagnostics.put("obligation_bytes", obligationsResult.bytes().length);
 
       return new QueryInputMetadata(
-          snapshotSet, expansionMap, obligationsResult.bytes(), obligationsResult.obligations());
+          relationPinSet, expansionMap, obligationsResult.bytes(), obligationsResult.obligations());
     } catch (RuntimeException | Error e) {
       outcome = "failed";
       diagnostics.put("error", e.getClass().getSimpleName());
@@ -117,14 +125,19 @@ public class QueryInputMetadataAssembler {
    * inputs are supplied.
    */
   public record QueryInputMetadata(
-      SnapshotSet snapshotSet,
+      RelationPinSet relationPinSet,
       ExpansionMap expansionMap,
       byte[] obligationsBytes,
       List<TableObligations> obligations) {
 
+    /** Projection for consumers (e.g. the query descriptor) that still speak SnapshotSet. */
+    public SnapshotSet snapshotSet() {
+      return QueryPins.toSnapshotSet(relationPinSet);
+    }
+
     public static QueryInputMetadata empty() {
       return new QueryInputMetadata(
-          SnapshotSet.getDefaultInstance(),
+          RelationPinSet.getDefaultInstance(),
           ExpansionMap.getDefaultInstance(),
           new byte[0],
           Collections.emptyList());

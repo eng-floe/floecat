@@ -30,10 +30,10 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.query.rpc.SnapshotSet;
+import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
 import ai.floedb.floecat.query.rpc.TableConstraintsResult;
+import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.TableStatsRequest;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleChunk;
 import ai.floedb.floecat.query.rpc.TargetStatsNeed;
@@ -45,6 +45,7 @@ import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
+import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -113,6 +114,32 @@ abstract class PlannerStatsBundleServiceTestSupport {
         factory, constraintProvider, repository, maxTables, maxTargets, chunkSize);
   }
 
+  protected static PlannerStatsBundleService createService(
+      StatsRepository repository,
+      UserObjectBundleTestSupport.TestQueryContextStore store,
+      ConstraintProvider constraintProvider,
+      ai.floedb.floecat.service.repo.impl.ConstraintRepository constraintRepository,
+      int chunkSize,
+      int maxTables,
+      int maxTargets) {
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(
+            repository,
+            Mockito.mock(ReconcileJobStore.class),
+            tableRepository,
+            Mockito.mock(ai.floedb.floecat.service.repo.impl.ConnectorRepository.class));
+    StatsProviderFactory factory = new StatsProviderFactory(orchestrator, tableRepository, store);
+    return PlannerStatsBundleService.forTesting(
+        factory,
+        constraintProvider,
+        constraintRepository,
+        repository,
+        maxTables,
+        maxTargets,
+        chunkSize);
+  }
+
   protected static PlannerStatsBundleService createServiceWithRealLookup(
       StatsRepository repository,
       UserObjectBundleTestSupport.TestQueryContextStore store,
@@ -173,23 +200,18 @@ abstract class PlannerStatsBundleServiceTestSupport {
   }
 
   protected static QueryContext queryContextWithPin(String queryId, long snapshotId) {
-    SnapshotPin pin = SnapshotPin.newBuilder().setTableId(TABLE).setSnapshotId(snapshotId).build();
-    SnapshotSet set = SnapshotSet.newBuilder().addPins(pin).build();
-    PrincipalContext principal =
-        PrincipalContext.newBuilder()
-            .setAccountId(TABLE.getAccountId())
-            .setSubject("tester")
+    return queryContextWithPins(queryId, List.of(pin(TABLE, snapshotId)));
+  }
+
+  /** A context whose pin froze a specific constraints bundle ref (for pinned-serving tests). */
+  protected static QueryContext queryContextWithConstraintRef(
+      String queryId, long snapshotId, String refUri, String refVersion) {
+    TablePin pin =
+        SnapshotTestSupport.blobBackedPin(TABLE, snapshotId).toBuilder()
+            .setConstraintsRefUri(refUri)
+            .setConstraintsRefVersion(refVersion)
             .build();
-    return QueryContext.builder()
-        .queryId(queryId)
-        .principal(principal)
-        .snapshotSet(set.toByteArray())
-        .createdAtMs(1)
-        .expiresAtMs(1_000)
-        .state(QueryContext.State.ACTIVE)
-        .version(1)
-        .queryDefaultCatalogId(CATALOG)
-        .build();
+    return queryContextWithPins(queryId, List.of(pin));
   }
 
   protected static QueryContext queryContextWithoutPin(String queryId) {
@@ -209,8 +231,8 @@ abstract class PlannerStatsBundleServiceTestSupport {
         .build();
   }
 
-  protected static QueryContext queryContextWithPins(String queryId, List<SnapshotPin> pins) {
-    SnapshotSet set = SnapshotSet.newBuilder().addAllPins(pins).build();
+  protected static QueryContext queryContextWithPins(String queryId, List<TablePin> pins) {
+    RelationPinSet set = SnapshotTestSupport.relationPins(pins.toArray(new TablePin[0]));
     PrincipalContext principal =
         PrincipalContext.newBuilder()
             .setAccountId(TABLE.getAccountId())
@@ -219,7 +241,7 @@ abstract class PlannerStatsBundleServiceTestSupport {
     return QueryContext.builder()
         .queryId(queryId)
         .principal(principal)
-        .snapshotSet(set.toByteArray())
+        .relationPins(set.toByteArray())
         .createdAtMs(1)
         .expiresAtMs(1_000)
         .state(QueryContext.State.ACTIVE)
@@ -228,8 +250,9 @@ abstract class PlannerStatsBundleServiceTestSupport {
         .build();
   }
 
-  protected static SnapshotPin pin(ResourceId tableId, long snapshotId) {
-    return SnapshotPin.newBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();
+  /** A blob-backed pin, the only shape production stores on a context. */
+  protected static TablePin pin(ResourceId tableId, long snapshotId) {
+    return SnapshotTestSupport.blobBackedPin(tableId, snapshotId);
   }
 
   protected static List<TargetStatsResult> flatten(List<TargetStatsBundleChunk> chunks) {
@@ -285,6 +308,11 @@ abstract class PlannerStatsBundleServiceTestSupport {
 
   protected static ConstraintProvider.ConstraintSetView newConstraintSet(
       ResourceId tableId, List<ConstraintDefinition> constraints) {
+    return newConstraintSet(tableId, constraints, 0L);
+  }
+
+  protected static ConstraintProvider.ConstraintSetView newConstraintSet(
+      ResourceId tableId, List<ConstraintDefinition> constraints, long version) {
     return new ConstraintProvider.ConstraintSetView() {
       @Override
       public ResourceId relationId() {
@@ -294,6 +322,11 @@ abstract class PlannerStatsBundleServiceTestSupport {
       @Override
       public List<ConstraintDefinition> constraints() {
         return constraints;
+      }
+
+      @Override
+      public long version() {
+        return version;
       }
     };
   }

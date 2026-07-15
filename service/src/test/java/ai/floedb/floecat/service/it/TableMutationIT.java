@@ -372,6 +372,9 @@ class TableMutationIT {
         0,
         ptr.countByPrefix(Keys.snapshotStatsPrefix(accountId, tableId, snapshotId)),
         "stats pointers should be removed");
+    assertTrue(
+        ptr.get(Keys.tableRootByTable(accountId, tableId)).isEmpty(),
+        "table-root pointer should be removed so a recreated table cannot inherit it");
   }
 
   @Test

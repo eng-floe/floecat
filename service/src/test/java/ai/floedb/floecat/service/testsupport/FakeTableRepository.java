@@ -96,6 +96,20 @@ public final class FakeTableRepository extends TableRepository {
   }
 
   @Override
+  public String blobEtag(String blobUri) {
+    if (blobUri == null || blobUri.isBlank()) {
+      return null;
+    }
+    // A blob is "present" if any seeded meta names it; return that meta's etag so version checks
+    // resolve against the same value put() / putMeta() recorded.
+    return metas.values().stream()
+        .filter(m -> blobUri.equals(m.getBlobUri()))
+        .map(MutationMeta::getEtag)
+        .findFirst()
+        .orElse(null);
+  }
+
+  @Override
   public Optional<ResourceId> relationNameClaim(
       String accountId, String catalogId, String namespaceId, String name) {
     return getByName(accountId, catalogId, namespaceId, name).map(Table::getResourceId);

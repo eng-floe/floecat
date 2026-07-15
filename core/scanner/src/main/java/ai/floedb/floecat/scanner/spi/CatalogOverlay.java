@@ -29,7 +29,7 @@ import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import com.google.protobuf.Timestamp;
 import java.util.List;
@@ -214,7 +214,13 @@ public interface CatalogOverlay {
   /** Resolves a system type by namespace + type name without involving the user graph. */
   Optional<TypeNode> resolveSystemType(String namespace, String typeName);
 
-  SnapshotPin snapshotPinFor(
+  /**
+   * Build the coherent {@link TablePin} the query context stores and downstream reads reuse. The
+   * user graph resolves every pin kind through the table's immutable root; other overlays resolve
+   * the snapshot directly. Pin kind follows the request intent (explicit snapshot / as-of /
+   * current) so dedupe can rank pins for the same table.
+   */
+  TablePin tablePinFor(
       String correlationId,
       ResourceId tableId,
       SnapshotRef override,
@@ -238,7 +244,27 @@ public interface CatalogOverlay {
 
   Optional<CatalogNode> catalog(ResourceId id);
 
-  SchemaResolution schemaFor(String correlationId, ResourceId tableId, SnapshotRef snapshot);
+  /**
+   * Resolve the schema for a pinned query. {@code tableBlobUri} names the pinned table blob and
+   * {@code snapshotBlobUri} the pinned snapshot blob, so both the table metadata and the
+   * snapshot-sourced schema are read from those immutable blobs rather than the live pointers. A
+   * concurrent {@code ALTER} advances the current table pointer, and an in-place {@code
+   * UpdateSnapshot} can repoint the {@code (table, snapshot id)} pointer to a new snapshot blob
+   * after the pin was validated; reading the pinned uris cannot drift to either. Empty uris read
+   * the current pointers.
+   */
+  SchemaResolution schemaFor(
+      String correlationId,
+      ResourceId tableId,
+      SnapshotRef snapshot,
+      String tableBlobUri,
+      String snapshotBlobUri);
+
+  /** Resolve the schema from the current table pointer (no pin). */
+  default SchemaResolution schemaFor(
+      String correlationId, ResourceId tableId, SnapshotRef snapshot) {
+    return schemaFor(correlationId, tableId, snapshot, "", "");
+  }
 
   List<SchemaColumn> tableSchema(ResourceId tableId);
 

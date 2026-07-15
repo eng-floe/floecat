@@ -647,6 +647,142 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void replaceAllRetainsTheSupersededGenerationForPinnedReaders() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository statsRepository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 4242L;
+    statsRepository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.tableRecord(
+                TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(1L).build(), null)));
+    String pinnedManifestUri =
+        statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+
+    statsRepository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.tableRecord(
+                TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(2L).build(), null)));
+
+    // The pointer moved to the new generation...
+    String liveManifestUri =
+        statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    assertThat(liveManifestUri).isNotEqualTo(pinnedManifestUri);
+    // ...but the superseded generation's manifest is retained: a query that froze it keeps
+    // reading its immutable keyspace to completion (GC collects it once unreferenced).
+    assertThat(blobStore.get(pinnedManifestUri)).isNotNull();
+  }
+
+  @Test
+  void gcReclaimsSupersededUnprotectedGenerationsOnly() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository statsRepository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 777L;
+    var record =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(1L).build(), null);
+
+    // gen-1 published, then superseded by gen-2, then gen-3 (live active).
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+    String gen1 = statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+    String gen2 = statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+    String gen3 = statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+
+    // gen-1 is protected (a retained root or a frozen scan references it); gen-2 is not.
+    // minAge 0: the age guard is exercised separately; here the reclaim rules are under test.
+    int reclaimed =
+        statsRepository.deleteUnreferencedGenerations(
+            TABLE_ID, gen1::equals, System.currentTimeMillis(), 0L);
+
+    assertThat(reclaimed).isEqualTo(1);
+    assertThat(blobStore.get(gen1)).isNotNull();
+    assertThat(blobStore.get(gen2)).isNull();
+    assertThat(blobStore.get(gen3)).as("live active survives regardless of roots").isNotNull();
+    // The protected and live generations' records still serve; the reclaimed one is gone.
+    assertThat(
+            statsRepository
+                .listTargetStatsInGeneration(
+                    TABLE_ID, snapshotId, gen1, java.util.Optional.empty(), 10, "")
+                .records())
+        .hasSize(1);
+    assertThat(
+            statsRepository
+                .listTargetStats(TABLE_ID, snapshotId, java.util.Optional.empty(), 10, "")
+                .records())
+        .hasSize(1);
+  }
+
+  @Test
+  void reclaimFindsCandidatesForTableIdsThatNeedEncoding() {
+    // The scan prefix is built with Keys.snapshotRootPrefix (percent-encoded); a hand-built
+    // unencoded prefix silently scanned nothing for ids with reserved characters and the table's
+    // superseded generations leaked forever.
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository statsRepository = new StatsRepository(pointerStore, blobStore);
+    var encodedTable =
+        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+            .setAccountId(TABLE_ID.getAccountId())
+            .setId("tbl with spaces/and/slashes")
+            .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
+            .build();
+    long snapshotId = 3L;
+    var record =
+        ai.floedb.floecat.stats.identity.TargetStatsRecords.tableRecord(
+            encodedTable,
+            snapshotId,
+            ai.floedb.floecat.catalog.rpc.TableValueStats.newBuilder().setRowCount(1L).build(),
+            null);
+    statsRepository.replaceAllStatsForSnapshot(encodedTable, snapshotId, java.util.List.of(record));
+    String gen1 = statsRepository.activeStatsGeneration(encodedTable, snapshotId).orElseThrow();
+    statsRepository.replaceAllStatsForSnapshot(encodedTable, snapshotId, java.util.List.of(record));
+
+    int reclaimed =
+        statsRepository.deleteUnreferencedGenerations(
+            encodedTable, uri -> false, System.currentTimeMillis(), 0L);
+
+    assertThat(reclaimed)
+        .as("the encoded prefix must surface the superseded generation")
+        .isEqualTo(1);
+    assertThat(blobStore.get(gen1)).isNull();
+  }
+
+  @Test
+  void negativeAgeGenerationSurvivesReclaimEvenAtMinAgeZero() {
+    // A generation whose manifest was published AFTER the pass began (lastModified later than the
+    // frozen pass-start nowMs) must be fenced even at min-age 0 — GC must not reclaim an in-flight
+    // publish mid-sweep. Simulate by passing a pass-start an hour before the (just-written) blobs.
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository statsRepository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 3L;
+    var record =
+        ai.floedb.floecat.stats.identity.TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            ai.floedb.floecat.catalog.rpc.TableValueStats.newBuilder().setRowCount(1L).build(),
+            null);
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+    String gen1 = statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+
+    long passStartBeforeTheWrites = System.currentTimeMillis() - 3_600_000L;
+    int reclaimed =
+        statsRepository.deleteUnreferencedGenerations(
+            TABLE_ID, uri -> false, passStartBeforeTheWrites, 0L);
+
+    assertThat(reclaimed).as("negative-age generation is fenced even at min-age 0").isZero();
+    assertThat(blobStore.get(gen1)).as("the mid-sweep-published generation survives").isNotNull();
+  }
+
+  @Test
   void puttingStatsDoesNotAdvanceTablePointerVersion() {
     InMemoryPointerStore pointerStore = new InMemoryPointerStore();
     InMemoryBlobStore blobStore = new InMemoryBlobStore();
@@ -983,5 +1119,36 @@ class StatsRepositoryTargetStorageTest {
     var target = StatsTargetIdentity.columnTarget(1L);
     assertThat(repository.getStaleTargetStatsBatch(TABLE_ID, 999L, List.of(target)))
         .containsEntry(StatsTargetIdentity.storageId(target), Optional.empty());
+  }
+
+  @Test
+  void aMissingFrozenGenerationManifestSurfacesTheDescriptiveError() {
+    // S3BlobStore THROWS StorageNotFoundException on a miss (never returns null), so the
+    // descriptive broken-retention error was dead code in production. A throwing store must still
+    // reach it.
+    var throwingBlobs =
+        new InMemoryBlobStore() {
+          @Override
+          public byte[] get(String uri) {
+            throw new ai.floedb.floecat.storage.errors.StorageNotFoundException(
+                "no such blob: " + uri);
+          }
+        };
+    var repo = new StatsRepository(new InMemoryPointerStore(), throwingBlobs);
+
+    var ex =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            ai.floedb.floecat.service.repo.util.BaseResourceRepository.NotFoundException.class,
+            () ->
+                repo.listTargetStatsInGeneration(
+                    TABLE_ID,
+                    5L,
+                    "s3://t/stats/5/manifest/gen.pb",
+                    java.util.Optional.empty(),
+                    10,
+                    ""));
+    org.junit.jupiter.api.Assertions.assertTrue(
+        ex.getMessage().contains("frozen stats generation manifest missing"),
+        "the descriptive retention-invariant error must survive an S3-style throwing miss");
   }
 }

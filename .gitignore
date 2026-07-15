@@ -107,3 +107,6 @@ dynamodb-local/
 # Jekyll build output
 site-src/_site/
 site-src/.jekyll-cache/
+
+# review-tool scratch output
+.claudette/

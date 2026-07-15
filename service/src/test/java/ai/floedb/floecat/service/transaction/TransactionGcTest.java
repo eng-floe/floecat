@@ -16,7 +16,11 @@
 
 package ai.floedb.floecat.service.transaction;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.service.gc.TransactionGc;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -30,6 +34,7 @@ import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import java.lang.reflect.Field;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class TransactionGcTest {
@@ -57,30 +62,14 @@ class TransactionGcTest {
     String txPtr = Keys.transactionPointerById(accountId, txId);
     pointers.compareAndSet(txPtr, 0L, PointerReferences.blobPointer(txPtr, txBlob, 1L));
 
-    var intent =
-        TransactionIntent.newBuilder()
-            .setTxId(txId)
-            .setAccountId(accountId)
-            .setTargetPointerKey(targetKey)
-            .setBlobUri("s3://example/blob")
-            .setExpectedVersion(1L)
-            .setCreatedAt(now())
-            .build();
-    var intentSha = Hashing.sha256Hex(intent.toByteArray());
-    var intentBlob = Keys.transactionIntentBlobUri(accountId, txId, intentSha);
-    blobs.put(intentBlob, intent.toByteArray(), "application/x-protobuf");
+    putIntent(pointers, blobs, accountId, txId, targetKey);
 
-    String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
-    pointers.compareAndSet(byTarget, 0L, PointerReferences.blobPointer(byTarget, intentBlob, 1L));
-    String byTx = Keys.transactionIntentPointerByTx(accountId, txId, targetKey);
-    pointers.compareAndSet(byTx, 0L, PointerReferences.blobPointer(byTx, intentBlob, 1L));
-
-    var gc = new TransactionGc();
-    inject(gc, "pointerStore", pointers);
-    inject(gc, "blobStore", blobs);
+    var gc = newGc(pointers, blobs);
 
     gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
 
+    String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
+    String byTx = Keys.transactionIntentPointerByTx(accountId, txId, targetKey);
     assertTrue(pointers.get(byTarget).isEmpty(), "by-target intent pointer should be deleted");
     assertTrue(pointers.get(byTx).isEmpty(), "by-tx intent pointer should be deleted");
   }
@@ -90,6 +79,32 @@ class TransactionGcTest {
     assertCollected(TransactionState.TS_APPLIED);
     assertCollected(TransactionState.TS_APPLY_FAILED_RETRYABLE);
     assertCollected(TransactionState.TS_APPLY_FAILED_CONFLICT);
+    assertCollected(TransactionState.TS_ABORTED);
+  }
+
+  @Test
+  void abortedTransactionWithinGraceIsNotCollected() throws Exception {
+    // A just-aborted txn (expiry ~now, so exp + min-age is still in the future) must stay
+    // observable as ABORTED — the same read-after-write grace every other terminal state gets,
+    // rather than vanishing the same GC tick.
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    String accountId = "acct";
+    String txId = "tx-aborted-fresh";
+    putTransaction(
+        pointers,
+        blobs,
+        accountId,
+        txId,
+        TransactionState.TS_ABORTED,
+        Timestamps.fromMillis(System.currentTimeMillis()));
+
+    var gc = newGc(pointers, blobs);
+    gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
+
+    assertTrue(
+        pointers.get(Keys.transactionPointerById(accountId, txId)).isPresent(),
+        "a just-aborted txn stays observable within the read-after-write grace");
   }
 
   @Test
@@ -110,9 +125,7 @@ class TransactionGcTest {
         Timestamps.fromMillis(System.currentTimeMillis() - 300_000L));
     putIntent(pointers, blobs, accountId, txId, targetKey);
 
-    var gc = new TransactionGc();
-    inject(gc, "pointerStore", pointers);
-    inject(gc, "blobStore", blobs);
+    var gc = newGc(pointers, blobs);
 
     gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
 
@@ -145,9 +158,7 @@ class TransactionGcTest {
     String byTx = Keys.transactionIntentPointerByTx(accountId, txId, targetKey);
     pointers.get(byTx).ifPresent(ptr -> pointers.compareAndDelete(ptr.getKey(), ptr.getVersion()));
 
-    var gc = new TransactionGc();
-    inject(gc, "pointerStore", pointers);
-    inject(gc, "blobStore", blobs);
+    var gc = newGc(pointers, blobs);
     gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
 
     String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
@@ -173,9 +184,7 @@ class TransactionGcTest {
     String byTx = Keys.transactionIntentPointerByTx(accountId, txId, targetKey);
     pointers.get(byTx).ifPresent(ptr -> pointers.compareAndDelete(ptr.getKey(), ptr.getVersion()));
 
-    var gc = new TransactionGc();
-    inject(gc, "pointerStore", pointers);
-    inject(gc, "blobStore", blobs);
+    var gc = newGc(pointers, blobs);
     gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
 
     String byTarget = Keys.transactionIntentPointerByTarget(accountId, targetKey);
@@ -218,9 +227,7 @@ class TransactionGcTest {
     pointers.compareAndSet(
         staleByTx, 0L, PointerReferences.blobPointer(staleByTx, activeIntentBlob, 1L));
 
-    var gc = new TransactionGc();
-    inject(gc, "pointerStore", pointers);
-    inject(gc, "blobStore", blobs);
+    var gc = newGc(pointers, blobs);
     gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
 
     assertTrue(
@@ -244,9 +251,7 @@ class TransactionGcTest {
         state,
         Timestamps.fromMillis(System.currentTimeMillis() - 300_000L));
 
-    var gc = new TransactionGc();
-    inject(gc, "pointerStore", pointers);
-    inject(gc, "blobStore", blobs);
+    var gc = newGc(pointers, blobs);
 
     gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
 
@@ -311,9 +316,234 @@ class TransactionGcTest {
     return Timestamps.fromMillis(System.currentTimeMillis());
   }
 
+  @Test
+  void enqueueTouchingAnExistingMarkerDefeatsAStaleVersionedDelete() {
+    // GC lists the marker at v1, resyncs, and clears with a versioned delete. A NEW failure
+    // recorded in between must bump the marker's version so the stale delete loses and the new
+    // failure stays recorded — otherwise a transactions-only table never converges.
+    var pointers = new InMemoryPointerStore();
+    var queue = new ai.floedb.floecat.service.catalog.impl.RootResyncQueue(pointers);
+    var rid =
+        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("tbl-race")
+            .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
+            .build();
+    String marker = Keys.rootResyncPendingPointer("acct", "tbl-race");
+
+    queue.enqueue(rid);
+    long observedByGc = pointers.get(marker).orElseThrow().getVersion();
+
+    queue.enqueue(rid); // the racing failure: must touch, not no-op
+
+    assertTrue(
+        pointers.get(marker).orElseThrow().getVersion() > observedByGc,
+        "a second enqueue must bump the marker version");
+    org.junit.jupiter.api.Assertions.assertFalse(
+        pointers.compareAndDelete(marker, observedByGc),
+        "the GC pass's stale versioned delete must lose");
+    assertTrue(pointers.get(marker).isPresent(), "the new failure stays recorded");
+  }
+
+  @Test
+  void aMarkerDeletedBetweenTheFailedCreateAndTheTouchIsRecreated() {
+    // The one-shot touch had a hole one level deeper than the no-op enqueue: create fails (marker
+    // exists) -> GC's versioned delete lands -> the touch finds nothing and silently skips ->
+    // the failure is unrecorded. The enqueue must loop back to a fresh create.
+    boolean[] intercepted = {false};
+    var rid =
+        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("tbl-vanish")
+            .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
+            .build();
+    String marker = Keys.rootResyncPendingPointer("acct", "tbl-vanish");
+    var store =
+        new InMemoryPointerStore() {
+          @Override
+          public java.util.Optional<ai.floedb.floecat.common.rpc.Pointer> get(String key) {
+            if (!intercepted[0] && marker.equals(key)) {
+              intercepted[0] = true;
+              delete(key); // the GC pass's delete racing in
+              return java.util.Optional.empty();
+            }
+            return super.get(key);
+          }
+        };
+    // A marker already exists, so the first create-CAS fails and the enqueue reads it back —
+    // which is exactly when the interceptor makes it vanish.
+    store.compareAndSet(marker, 0L, PointerReferences.blobPointer(marker, "", 1L));
+    var queue = new ai.floedb.floecat.service.catalog.impl.RootResyncQueue(store);
+
+    queue.enqueue(rid);
+
+    assertTrue(
+        store.get(marker).isPresent(),
+        "the enqueue must re-create a marker deleted out from under its touch");
+  }
+
+  @Test
+  void aFailingMarkerStoreIsAbsorbedWithoutFailingTheTransactionPath() {
+    // The enqueue is the last resort after a failed resync; if the pointer store is down for the
+    // marker write too, the failure is absorbed (WARN) — the transaction is already durable and
+    // must not fail. Convergence is then only re-attempted by later traffic; this is the accepted
+    // limitation of a fully-down store.
+    var failingStore =
+        new InMemoryPointerStore() {
+          @Override
+          public boolean compareAndSet(
+              String key, long expectedVersion, ai.floedb.floecat.common.rpc.Pointer pointer) {
+            throw new IllegalStateException("store down");
+          }
+        };
+    var queue = new ai.floedb.floecat.service.catalog.impl.RootResyncQueue(failingStore);
+    var rid =
+        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("tbl-down")
+            .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
+            .build();
+
+    org.junit.jupiter.api.Assertions.assertThrows(
+        IllegalStateException.class, () -> queue.enqueue(rid));
+    // The CALLER (resyncRootOrLeaveMarker) absorbs this; asserting the throw here documents that
+    // the queue itself stays honest and the absorption lives at the transaction boundary.
+  }
+
+  @Test
+  void pendingRootResyncMarkersAreReDrivenAndClearedOnSuccess() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    String accountId = "acct";
+    String tableId = "tbl-resync";
+
+    // The durable marker a transaction leaves when its post-apply root resync was absorbed.
+    String marker = Keys.rootResyncPendingPointer(accountId, tableId);
+    pointers.compareAndSet(marker, 0L, PointerReferences.blobPointer(marker, "", 1L));
+
+    var roots = new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
+    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(roots);
+    var tables = mock(ai.floedb.floecat.service.repo.impl.TableRepository.class);
+    when(tables.metaForSafe(any()))
+        .thenReturn(
+            ai.floedb.floecat.common.rpc.MutationMeta.newBuilder()
+                .setBlobUri("s3://t/table.pb")
+                .setEtag("e1")
+                .build());
+    var snapshots = mock(ai.floedb.floecat.service.repo.impl.SnapshotRepository.class);
+    when(snapshots.latestRegisteredSnapshotPointer(any())).thenReturn(Optional.empty());
+    var statsStore = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
+    when(statsStore.tracksStatsGenerations()).thenReturn(true);
+    var writer =
+        new ai.floedb.floecat.service.catalog.impl.TableRootWriter(
+            roots,
+            committer,
+            tables,
+            snapshots,
+            mock(ai.floedb.floecat.service.repo.impl.ConstraintRepository.class),
+            statsStore);
+
+    var gc = newGc(pointers, blobs);
+    inject(gc, "rootWriter", writer);
+
+    gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
+
+    assertTrue(pointers.get(marker).isEmpty(), "marker clears after a successful re-drive");
+    var rid =
+        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId(tableId)
+            .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
+            .build();
+    assertEquals(
+        "s3://t/table.pb",
+        roots.get(rid).orElseThrow().getDefinitionRef().getUri(),
+        "the re-driven resync converged the root with committed state");
+  }
+
+  @Test
+  void aStillFailingResyncKeepsItsMarkerForTheNextPass() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    String accountId = "acct";
+    String tableId = "tbl-stuck";
+
+    String marker = Keys.rootResyncPendingPointer(accountId, tableId);
+    pointers.compareAndSet(marker, 0L, PointerReferences.blobPointer(marker, "", 1L));
+
+    var roots = new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
+    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(roots);
+    var tables = mock(ai.floedb.floecat.service.repo.impl.TableRepository.class);
+    when(tables.metaForSafe(any())).thenThrow(new IllegalStateException("store down"));
+    var writer =
+        new ai.floedb.floecat.service.catalog.impl.TableRootWriter(
+            roots,
+            committer,
+            tables,
+            mock(ai.floedb.floecat.service.repo.impl.SnapshotRepository.class),
+            mock(ai.floedb.floecat.service.repo.impl.ConstraintRepository.class),
+            mock(ai.floedb.floecat.stats.spi.StatsStore.class));
+
+    var gc = newGc(pointers, blobs);
+    inject(gc, "rootWriter", writer);
+
+    gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
+
+    assertTrue(
+        pointers.get(marker).isPresent(),
+        "the marker survives until a re-drive actually converges");
+  }
+
+  @Test
+  void aRedrivePaginationFaultDoesNotAbortTheTransactionScan() throws Exception {
+    // A transient fault in the resync re-drive pagination itself (listPointersByPrefix over the
+    // marker prefix) — as opposed to an individual resync, which is absorbed — must NOT abort the
+    // run before the transaction scan. redrivePendingRootResyncs runs first, so an unguarded fault
+    // there would starve this account's transaction/intent cleanup entirely.
+    String accountId = "acct";
+    String resyncPrefix = Keys.rootResyncPendingPrefix(accountId);
+    var pointers =
+        new InMemoryPointerStore() {
+          @Override
+          public java.util.List<ai.floedb.floecat.common.rpc.Pointer> listPointersByPrefix(
+              String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+            if (prefix != null && prefix.startsWith(resyncPrefix)) {
+              throw new IllegalStateException("marker store down");
+            }
+            return super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+          }
+        };
+    var blobs = new InMemoryBlobStore();
+
+    // A terminal, past-grace transaction with no intents — collectable on this pass.
+    String txId = "tx-after-redrive-fault";
+    putTransaction(
+        pointers,
+        blobs,
+        accountId,
+        txId,
+        TransactionState.TS_APPLIED,
+        Timestamps.fromMillis(System.currentTimeMillis() - 300_000L));
+
+    var gc = newGc(pointers, blobs);
+    gc.runForAccount(accountId, System.currentTimeMillis() + 5000);
+
+    assertTrue(
+        pointers.get(Keys.transactionPointerById(accountId, txId)).isEmpty(),
+        "the transaction scan runs and collects despite the redrive pagination fault");
+  }
+
   private static void inject(Object target, String field, Object value) throws Exception {
     Field f = target.getClass().getDeclaredField(field);
     f.setAccessible(true);
     f.set(target, value);
+  }
+
+  private static TransactionGc newGc(InMemoryPointerStore pointers, InMemoryBlobStore blobs)
+      throws Exception {
+    var gc = new TransactionGc();
+    inject(gc, "pointerStore", pointers);
+    inject(gc, "blobStore", blobs);
+    return gc;
   }
 }

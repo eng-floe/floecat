@@ -33,8 +33,6 @@ import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -42,6 +40,7 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
+import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
@@ -531,8 +530,6 @@ class StatsProviderFactoryTest {
   }
 
   private static QueryContext queryContextWithPin(String queryId, long snapshotId) {
-    SnapshotPin pin = SnapshotPin.newBuilder().setTableId(TABLE).setSnapshotId(snapshotId).build();
-    SnapshotSet set = SnapshotSet.newBuilder().addPins(pin).build();
     PrincipalContext principal =
         PrincipalContext.newBuilder()
             .setAccountId(TABLE.getAccountId())
@@ -542,7 +539,9 @@ class StatsProviderFactoryTest {
     return QueryContext.builder()
         .queryId(queryId)
         .principal(principal)
-        .snapshotSet(set.toByteArray())
+        .relationPins(
+            SnapshotTestSupport.relationPins(SnapshotTestSupport.blobBackedPin(TABLE, snapshotId))
+                .toByteArray())
         .createdAtMs(1)
         .expiresAtMs(1_000)
         .state(QueryContext.State.ACTIVE)

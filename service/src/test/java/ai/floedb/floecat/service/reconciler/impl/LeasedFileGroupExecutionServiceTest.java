@@ -751,7 +751,7 @@ class LeasedFileGroupExecutionServiceTest {
     when(tableRepo.getById(tableId())).thenReturn(Optional.of(table()));
     when(connectorRepo.getById(connectorId()))
         .thenReturn(Optional.of(connector().toBuilder().setKind(ConnectorKind.CK_ICEBERG).build()));
-    when(snapshotRepo.getCurrentSnapshot(tableId()))
+    when(snapshotRepo.latestRegisteredSnapshot(tableId()))
         .thenReturn(
             Optional.of(
                 Snapshot.newBuilder()

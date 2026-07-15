@@ -39,8 +39,10 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.service.testsupport.TestPrincipals;
 import ai.floedb.floecat.stats.spi.StatsStore;
@@ -542,6 +544,8 @@ class SnapshotServiceImplTest {
 
     svc.updateSnapshot(req).await().indefinitely();
 
+    // This update is a no-op (schema_json unchanged), so it takes the no-op branch and advances via
+    // plain maybeAdvance — nothing was rewritten, so there is no coherent pair to refresh.
     ArgumentCaptor<Snapshot> cap = ArgumentCaptor.forClass(Snapshot.class);
     verify(svc.currentSnapshotPointerService).maybeAdvance(eq(tableId), cap.capture(), eq("corr"));
     assertEquals(123L, cap.getValue().getSnapshotId());
@@ -667,6 +671,50 @@ class SnapshotServiceImplTest {
     svc.updateSnapshot(req).await().indefinitely();
 
     verify(svc.tableRepo, never()).update(any(Table.class), anyLong());
+  }
+
+  @Test
+  void deleteSnapshotOnAnAlreadyGoneSnapshotStillRemovesItFromTheRoot() {
+    // A retry after a prior attempt deleted the by-id pointer but failed its root commit: metaFor
+    // now throws NotFound. The root must STILL drop the entry — a stale root serves the deleted
+    // snapshot to CURRENT reads and new pins, and anchors its blob in root-chain GC.
+    var tableId = tableId("del-snap-converge");
+    var svc = serviceWithVisibleTable(tableId, TestNodes.tableNode(tableId, "{}"));
+    svc.statsOrchestrator = mock(StatsOrchestrator.class);
+    svc.rootWriter = mock(TableRootWriter.class);
+    when(svc.snapshotRepo.metaFor(tableId, 123L))
+        .thenThrow(new BaseResourceRepository.NotFoundException("gone"));
+
+    svc.deleteSnapshot(
+            DeleteSnapshotRequest.newBuilder().setTableId(tableId).setSnapshotId(123L).build())
+        .await()
+        .indefinitely();
+
+    verify(svc.rootWriter).removeSnapshot(tableId, 123L);
+    // The stats generations must NOT be torn down here — a query that pinned this snapshot still
+    // reads them through its frozen stats_generation_ref; reference-aware CasBlobGc reclaims them.
+    verify(svc.statsStore, never()).deleteAllStatsForSnapshot(tableId, 123L);
+  }
+
+  @Test
+  void deleteSnapshotRemovesItFromTheRootWithoutTearingDownPinnedStats() {
+    var tableId = tableId("del-snap-pinned-stats");
+    var svc = serviceWithVisibleTable(tableId, TestNodes.tableNode(tableId, "{}"));
+    svc.statsOrchestrator = mock(StatsOrchestrator.class);
+    svc.rootWriter = mock(TableRootWriter.class);
+    when(svc.snapshotRepo.metaFor(tableId, 123L))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(4L).build());
+    when(svc.snapshotRepo.deleteWithPrecondition(tableId, 123L, 4L)).thenReturn(true);
+
+    svc.deleteSnapshot(
+            DeleteSnapshotRequest.newBuilder().setTableId(tableId).setSnapshotId(123L).build())
+        .await()
+        .indefinitely();
+
+    verify(svc.rootWriter).removeSnapshot(tableId, 123L);
+    // The success path must defer stats reclamation to reference-aware CasBlobGc, never eagerly
+    // delete the generation blobs an active pinned scan still reads (it would fail loudly).
+    verify(svc.statsStore, never()).deleteAllStatsForSnapshot(tableId, 123L);
   }
 
   private static SnapshotServiceImpl serviceWithVisibleTable(ResourceId tableId, TableNode node) {

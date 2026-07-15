@@ -21,6 +21,7 @@ option java_package = "ai.floedb.floecat.query.rpc";
 option java_outer_classname = "QuerySchemaProto";
 
 import "floecat/common/common.proto";
+import "floecat/query/pinning.proto";
 
 /**
  * LOGICAL SCHEMA MODEL
@@ -81,6 +82,12 @@ message DescribeInputsRequest {
  */
 message DescribeInputsResponse {
   repeated SchemaDescriptor schemas = 1; // One schema per input, preserving order.
+
+  // Opaque, planner-facing identity of the pin each input resolved to, positional with `schemas`
+  // (same length and order). A table input carries its pin's fingerprint/physical identity for
+  // cache identity and diagnostics, taken from the pin that actually won under first-touch; a
+  // non-table input (e.g. a view) carries a default (empty) entry to keep positions aligned.
+  repeated RelationPinIdentity relation_pins = 2;
 }
 
 /**

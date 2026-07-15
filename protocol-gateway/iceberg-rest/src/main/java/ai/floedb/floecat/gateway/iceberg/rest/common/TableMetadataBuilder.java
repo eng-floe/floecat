@@ -679,6 +679,14 @@ public final class TableMetadataBuilder {
                   }
                 });
             Long refSnapshotId = asLong(ref.get("snapshot-id"));
+            // Iceberg metadata cannot expose refs.main unless current-snapshot-id is also valid.
+            // Other refs may stand on their own, but main is the same logical pointer as current.
+            if ("main".equals(name)
+                && (currentSnapshotId == null
+                    || currentSnapshotId < 0
+                    || !snapshotIds.contains(currentSnapshotId))) {
+              return;
+            }
             if (refSnapshotId == null
                 || refSnapshotId < 0
                 || !snapshotIds.contains(refSnapshotId)) {

@@ -47,6 +47,7 @@ message CurrentSnapshotPointer {
   google.protobuf.Timestamp updated_at = 4;
 }
 
+
 message ListSnapshotsRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   ai.floedb.floecat.common.PageRequest page = 2;
@@ -64,6 +65,12 @@ message GetSnapshotResponse {
   Snapshot snapshot = 1;
 }
 
+/**
+ * The table's QUERY-VISIBLE current snapshot. Under the visibility gate a snapshot becomes
+ * current only when it is finalized (its file list, indexes, and statistics published), so this
+ * reports what queries actually see; a registered-but-unfinalized snapshot is never returned.
+ * Absent when the table has no queryable snapshot yet.
+ */
 message GetCurrentSnapshotPointerRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
 }

@@ -47,10 +47,7 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
-    inject(support, "overlay", permissiveOverlay());
+    var support = newSupport(pointers, blobs);
 
     List<TransactionIntent> intents = new ArrayList<>();
     for (int i = 0; i < 101; i++) {
@@ -75,10 +72,7 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
-    inject(support, "overlay", permissiveOverlay());
+    var support = newSupport(pointers, blobs);
 
     String targetKey = "/accounts/acct/custom/key-dup";
     TransactionIntent intentA =
@@ -113,10 +107,7 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
-    inject(support, "overlay", permissiveOverlay());
+    var support = newSupport(pointers, blobs);
 
     TransactionIntent intent =
         TransactionIntent.newBuilder()
@@ -143,10 +134,7 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
-    inject(support, "overlay", permissiveOverlay());
+    var support = newSupport(pointers, blobs);
 
     String blobUri = "s3://bucket/table-a";
     Table tablePayload =
@@ -188,10 +176,7 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
-    inject(support, "overlay", permissiveOverlay());
+    var support = newSupport(pointers, blobs);
 
     ResourceId systemTableId =
         SystemNodeRegistry.resourceId("engine", ResourceKind.RK_TABLE, "information_schema.tables");
@@ -236,10 +221,7 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
-    inject(support, "overlay", permissiveOverlay());
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String targetKey = Keys.snapshotPointerById(accountId, "table-1", 7L);
@@ -269,10 +251,7 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
-    inject(support, "overlay", permissiveOverlay());
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String catalogId = "cat-1";
@@ -328,10 +307,7 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
-    inject(support, "overlay", permissiveOverlay());
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String catalogId = "cat-1";
@@ -422,10 +398,7 @@ class TransactionIntentApplierSupportTest {
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
     var txRepo = new TransactionRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
-    inject(support, "overlay", permissiveOverlay());
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -492,10 +465,7 @@ class TransactionIntentApplierSupportTest {
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
     var txRepo = new TransactionRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
-    inject(support, "overlay", permissiveOverlay());
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -559,10 +529,7 @@ class TransactionIntentApplierSupportTest {
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
     var txRepo = new TransactionRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
-    inject(support, "overlay", permissiveOverlay());
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -621,10 +588,7 @@ class TransactionIntentApplierSupportTest {
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
     var txRepo = new TransactionRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
-    inject(support, "overlay", permissiveOverlay());
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -679,10 +643,7 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
-    inject(support, "overlay", permissiveOverlay());
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String catalogId = "cat-1";
@@ -735,10 +696,7 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
-    inject(support, "overlay", permissiveOverlay());
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String catalogId = "cat-1";
@@ -805,10 +763,7 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
-    inject(support, "overlay", permissiveOverlay());
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String catalogId = "cat-1";
@@ -872,6 +827,15 @@ class TransactionIntentApplierSupportTest {
     assertTrue(pointers.get(newClaimKey).isPresent(), "new name's claim must be reserved");
     assertEquals(tableRid.getId(), pointers.get(newClaimKey).orElseThrow().getResourceId().getId());
     assertTrue(pointers.get(newNameKey).isPresent(), "new by-name pointer must be reserved");
+  }
+
+  private TransactionIntentApplierSupport newSupport(
+      InMemoryPointerStore pointerStore, InMemoryBlobStore blobStore) throws Exception {
+    var support = new TransactionIntentApplierSupport();
+    inject(support, "pointerStore", pointerStore);
+    inject(support, "blobStore", blobStore);
+    inject(support, "overlay", permissiveOverlay());
+    return support;
   }
 
   private static Transaction readTransaction(InMemoryBlobStore blobs, String blobUri)

@@ -182,4 +182,12 @@ public class TableRepository {
   public Optional<Table> getByBlobUri(String blobUri) {
     return repo.getByBlobUri(blobUri);
   }
+
+  /**
+   * HEAD-only version (etag) of a table blob by URI (no body fetch, no parse), or {@code null} if
+   * no blob is there. Used to validate a pinned table blob is both present and the pinned version.
+   */
+  public String blobEtag(String blobUri) {
+    return repo.blobEtag(blobUri);
+  }
 }

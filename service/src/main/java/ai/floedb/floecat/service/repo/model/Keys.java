@@ -28,6 +28,7 @@ public final class Keys {
   public static final String SEG_TABLE = "/table/";
   public static final String SEG_SNAPSHOTS = "/snapshots/";
   public static final String SEG_SNAPSHOT = "/snapshot/";
+  public static final String SEG_TABLE_ROOT = "/root/";
   public static final String SEG_COMPAT = "/compat/";
   public static final String SEG_VIEW = "/view/";
   public static final String SEG_CONNECTOR = "/connector/";
@@ -466,6 +467,31 @@ public final class Keys {
         "/accounts/%s/tables/%s/snapshots/current/%s.pb", encode(tid), encode(tbid), encode(sha));
   }
 
+  /** The single CAS'd pointer to a table's current immutable {@code TableRoot}. */
+  public static String tableRootByTable(String accountId, String tableId) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    return String.format("/accounts/%s/tables/%s/root/current", encode(tid), encode(tbid));
+  }
+
+  /** Content-addressed {@code TableRoot} blob (one per table commit). */
+  public static String tableRootBlobUri(String accountId, String tableId, String sha256) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/tables/%s/root/%s.pb", encode(tid), encode(tbid), encode(sha));
+  }
+
+  /** Content-addressed snapshot-manifest page blob referenced from a {@code TableRoot}. */
+  public static String snapshotManifestBlobUri(String accountId, String tableId, String sha256) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/tables/%s/root/manifest/%s.pb", encode(tid), encode(tbid), encode(sha));
+  }
+
   public static String snapshotPointerByTime(
       String accountId, String tableId, long snapshotId, long upstreamCreatedAtMs) {
     String tid = req("account_id", accountId);
@@ -483,6 +509,21 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
     return String.format("/accounts/%s/tables/%s/snapshots/by-time/", encode(tid), encode(tbid));
+  }
+
+  /**
+   * Recover the snapshot id from a by-time pointer key produced by {@link #snapshotPointerByTime}.
+   * The trailing segment is the inverted snapshot id ({@code MAX_VALUE - snapshot_id}); this lets
+   * an indexed by-time seek resolve the predecessor's id without fetching or parsing its blob.
+   */
+  public static long snapshotIdFromByTimeKey(String byTimeKey) {
+    String key = req("by_time_key", byTimeKey);
+    int dash = key.lastIndexOf('-');
+    if (dash < 0 || dash + 1 >= key.length()) {
+      throw new IllegalArgumentException("not a by-time snapshot key: " + byTimeKey);
+    }
+    long invertedSnapshotId = Long.parseLong(key.substring(dash + 1));
+    return Long.MAX_VALUE - invertedSnapshotId;
   }
 
   public static String snapshotBlobUri(
@@ -1340,6 +1381,72 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
     return "/accounts/" + encode(tid) + "/reconcile/jobs/" + encode(jid) + "/";
+  }
+
+  /**
+   * Recovers the table id from ANY snapshot-scoped pointer key ({@code
+   * /accounts/{a}/tables/{t}/snapshots/...} — by-id, by-time, current, stats), or {@code null} when
+   * the key has another shape. Used so a transaction touching any snapshot pointer schedules a root
+   * resync, not only the current-snapshot pointer.
+   */
+  public static String tableIdFromSnapshotPointerKey(String pointerKey) {
+    if (pointerKey == null) {
+      return null;
+    }
+    int start = pointerKey.indexOf("/tables/");
+    int end = pointerKey.indexOf("/snapshots/");
+    if (start < 0 || end <= start + "/tables/".length()) {
+      return null;
+    }
+    String encoded = pointerKey.substring(start + "/tables/".length(), end);
+    return encoded.isBlank() ? null : percentDecode(encoded);
+  }
+
+  /**
+   * Parses a per-target stats-generation pointer key produced by {@link
+   * #snapshotTargetStatsGenerationPointer} into its (snapshot id, generation id), or {@code null}
+   * when the key has another shape.
+   */
+  public static GenerationKey generationFromTargetPointerKey(String pointerKey) {
+    if (pointerKey == null) {
+      return null;
+    }
+    String marker = "/stats/target-generations/";
+    int at = pointerKey.indexOf(marker);
+    if (at < 0) {
+      return null;
+    }
+    int sidStart = pointerKey.lastIndexOf('/', at - 1) + 1;
+    long snapshotId;
+    try {
+      snapshotId = Long.parseLong(pointerKey.substring(sidStart, at));
+    } catch (RuntimeException e) {
+      return null;
+    }
+    int genStart = at + marker.length();
+    int genEnd = pointerKey.indexOf('/', genStart);
+    if (genEnd < 0) {
+      return null;
+    }
+    return new GenerationKey(snapshotId, pointerKey.substring(genStart, genEnd));
+  }
+
+  /** One stats generation's identity within a table, as encoded in its pointer keys. */
+  public record GenerationKey(long snapshotId, String generationId) {}
+
+  // ===== Root resync re-drive =====
+
+  /**
+   * Durable marker: this table's post-transaction root resync failed and awaits re-drive by the
+   * periodic transaction GC. A table only ever touched by REST transactions has no other writer to
+   * converge its root, so the failure must leave a durable trace.
+   */
+  public static String rootResyncPendingPointer(String accountId, String tableId) {
+    return rootResyncPendingPrefix(accountId) + encode(req("table_id", tableId));
+  }
+
+  public static String rootResyncPendingPrefix(String accountId) {
+    return "/accounts/" + encode(req("account_id", accountId)) + "/root-resyncs/by-table/";
   }
 
   // ===== Markers =====

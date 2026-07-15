@@ -49,8 +49,6 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.MODE);
     Set<String> reconcileExecutionAllowed =
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.MODE, TagKey.REASON);
-    Set<String> reconcileQueueRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
-    Set<String> reconcileQueueAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> reconcileLeaseResultRequired =
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
     Set<String> reconcileLeaseResultAllowed =
@@ -59,6 +57,10 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.REASON);
     Set<String> reconcileLeaseSkipAllowed =
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.REASON);
+    Set<String> reconcileQueueRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    Set<String> reconcileQueueAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    Set<String> gcRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    Set<String> gcAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> statsRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> statsAllowed =
         Set.of(
@@ -302,6 +304,18 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         reconcileQueueRequired,
         reconcileQueueAllowed,
         "Current number of durable reconcile lease scan permits available.");
+    add(
+        defs,
+        ServiceMetrics.Gc.CAS_POISONED_ACCOUNTS,
+        gcRequired,
+        gcAllowed,
+        "Accounts whose CAS GC delete phase was poisoned in the last tick.");
+    add(
+        defs,
+        ServiceMetrics.Gc.CAS_OLDEST_SWEEP_AGE,
+        gcRequired,
+        gcAllowed,
+        "Age in milliseconds of the least-recently cleanly-swept CAS GC account.");
     add(
         defs,
         ServiceMetrics.Stats.BATCH_ITEMS_TOTAL,

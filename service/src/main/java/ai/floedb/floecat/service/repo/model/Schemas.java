@@ -26,6 +26,7 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -169,9 +170,9 @@ public final class Schemas {
               })
           .withCasBlobs();
 
-  public static final ResourceSchema<CurrentSnapshotPointer, CurrentSnapshotPointerKey>
+  public static final ResourceSchema<CurrentSnapshotPointer, TableScopedPointerKey>
       CURRENT_SNAPSHOT_POINTER =
-          ResourceSchema.<CurrentSnapshotPointer, CurrentSnapshotPointerKey>of(
+          ResourceSchema.<CurrentSnapshotPointer, TableScopedPointerKey>of(
                   "current-snapshot-pointer",
                   key -> Keys.currentSnapshotPointerByTable(key.accountId(), key.tableId()),
                   key ->
@@ -180,10 +181,23 @@ public final class Schemas {
                   v -> Map.of(),
                   v -> {
                     var sha = Hashing.sha256Hex(v.toByteArray());
-                    return new CurrentSnapshotPointerKey(
+                    return new TableScopedPointerKey(
                         v.getTableId().getAccountId(), v.getTableId().getId(), sha);
                   })
               .withCasBlobs();
+
+  public static final ResourceSchema<TableRoot, TableScopedPointerKey> TABLE_ROOT =
+      ResourceSchema.<TableRoot, TableScopedPointerKey>of(
+              "table-root",
+              key -> Keys.tableRootByTable(key.accountId(), key.tableId()),
+              key -> Keys.tableRootBlobUri(key.accountId(), key.tableId(), key.sha256()),
+              v -> Map.of(),
+              v -> {
+                var sha = Hashing.sha256Hex(v.toByteArray());
+                return new TableScopedPointerKey(
+                    v.getTableId().getAccountId(), v.getTableId().getId(), sha);
+              })
+          .withCasBlobs();
 
   public static final ResourceSchema<TargetStatsRecord, TargetStatsKey> TARGET_STATS =
       ResourceSchema.<TargetStatsRecord, TargetStatsKey>of(

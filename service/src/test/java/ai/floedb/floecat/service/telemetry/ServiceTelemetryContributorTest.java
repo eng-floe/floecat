@@ -53,6 +53,8 @@ class ServiceTelemetryContributorTest {
     MetricDef plannerLatency =
         registry.metric(ServiceMetrics.Reconcile.PLANNER_TICK_LATENCY.name());
     MetricDef plannerEnqueue = registry.metric(ServiceMetrics.Reconcile.PLANNER_ENQUEUE.name());
+    MetricDef casPoisonedAccounts = registry.metric(ServiceMetrics.Gc.CAS_POISONED_ACCOUNTS.name());
+    MetricDef casOldestSweepAge = registry.metric(ServiceMetrics.Gc.CAS_OLDEST_SWEEP_AGE.name());
 
     assertThat(requests).isNotNull();
     assertThat(requests.requiredTags())
@@ -128,6 +130,15 @@ class ServiceTelemetryContributorTest {
     assertThat(plannerLatency.requiredTags()).isEqualTo(getJob.requiredTags());
     assertThat(plannerEnqueue.requiredTags()).isEqualTo(reconcileJobs.requiredTags());
 
+    assertThat(casPoisonedAccounts).isNotNull();
+    assertThat(casPoisonedAccounts.requiredTags())
+        .containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION);
+    assertThat(casPoisonedAccounts.allowedTags())
+        .containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION);
+    assertThat(casOldestSweepAge).isNotNull();
+    assertThat(casOldestSweepAge.requiredTags()).isEqualTo(casPoisonedAccounts.requiredTags());
+    assertThat(casOldestSweepAge.allowedTags()).isEqualTo(casPoisonedAccounts.allowedTags());
+
     // Ensure the new Flight metric IDs are all present in the registry.
     assertThat(registry.metrics().keySet())
         .containsAll(
@@ -159,7 +170,9 @@ class ServiceTelemetryContributorTest {
                 ServiceMetrics.Reconcile.QUEUE_OLDEST_AGE.name(),
                 ServiceMetrics.Reconcile.PLANNER_TICKS.name(),
                 ServiceMetrics.Reconcile.PLANNER_TICK_LATENCY.name(),
-                ServiceMetrics.Reconcile.PLANNER_ENQUEUE.name()));
+                ServiceMetrics.Reconcile.PLANNER_ENQUEUE.name(),
+                ServiceMetrics.Gc.CAS_POISONED_ACCOUNTS.name(),
+                ServiceMetrics.Gc.CAS_OLDEST_SWEEP_AGE.name()));
   }
 
   @Test
