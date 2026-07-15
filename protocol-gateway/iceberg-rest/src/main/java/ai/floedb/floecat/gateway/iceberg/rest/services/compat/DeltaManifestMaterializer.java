@@ -62,6 +62,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
+import java.util.function.Supplier;
 import java.util.stream.StreamSupport;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.DataFile;
@@ -1029,7 +1030,7 @@ public class DeltaManifestMaterializer {
     Region region = Region.of(resolveOption(sourceProps, "s3.region", "aws.region", "us-east-1"));
     boolean pathStyle =
         Boolean.parseBoolean(resolveOption(sourceProps, "s3.path-style-access", "false"));
-    AwsCredentialsProvider credentials = resolveCredentials(sourceProps);
+    Supplier<AwsCredentialsProvider> credentials = () -> resolveCredentials(sourceProps);
     String endpoint = resolveOption(sourceProps, "s3.endpoint", null);
     return new RefreshingAwsClient<>(
         () -> {
@@ -1038,7 +1039,7 @@ public class DeltaManifestMaterializer {
                   .region(region)
                   .serviceConfiguration(
                       S3Configuration.builder().pathStyleAccessEnabled(pathStyle).build())
-                  .credentialsProvider(credentials);
+                  .credentialsProvider(credentials.get());
           if (endpoint != null && !endpoint.isBlank()) {
             builder.endpointOverride(URI.create(endpoint));
           }

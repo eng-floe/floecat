@@ -18,6 +18,7 @@ package ai.floedb.floecat.connector.delta.uc.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -75,5 +76,29 @@ class DeltaConnectorFactoryTest {
                     "secret"));
 
     assertInstanceOf(RegistryBackedAwsCredentialsProvider.class, provider);
+  }
+
+  @Test
+  void credentialsProviderFactoryBuildsFreshProviderForEachClientRefresh() {
+    var factory = DeltaConnectorFactory.credentialsProviderFactory(Map.of());
+
+    AwsCredentialsProvider first = factory.get();
+    AwsCredentialsProvider second = factory.get();
+
+    assertNotSame(first, second);
+  }
+
+  @Test
+  void credentialsProviderFactoryBuildsFreshRegistryProviderForEachClientRefresh() {
+    var factory =
+        DeltaConnectorFactory.credentialsProviderFactory(
+            Map.of(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID, "provider-1"));
+
+    AwsCredentialsProvider first = factory.get();
+    AwsCredentialsProvider second = factory.get();
+
+    assertNotSame(first, second);
+    assertInstanceOf(RegistryBackedAwsCredentialsProvider.class, first);
+    assertInstanceOf(RegistryBackedAwsCredentialsProvider.class, second);
   }
 }

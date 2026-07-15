@@ -17,9 +17,11 @@
 package ai.floedb.floecat.connector.common.auth;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 
 class AwsGlueClientFactoryTest {
 
@@ -49,5 +51,28 @@ class AwsGlueClientFactoryTest {
   void resolveRegionUsesDefaultWhenMissing() {
     String region = AwsGlueClientFactory.resolveRegion(Map.of(), "us-east-1");
     assertEquals("us-east-1", region);
+  }
+
+  @Test
+  void credentialsProviderFactoryBuildsFreshProviderForEachClientRefresh() {
+    var factory = AwsGlueClientFactory.credentialsProviderFactory(Map.of(), Map.of());
+
+    AwsCredentialsProvider first = factory.get();
+    AwsCredentialsProvider second = factory.get();
+
+    assertNotSame(first, second);
+  }
+
+  @Test
+  void credentialsProviderFactoryBuildsFreshRegistryProviderForEachClientRefresh() {
+    var factory =
+        AwsGlueClientFactory.credentialsProviderFactory(
+            Map.of(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID, "provider-1"),
+            Map.of());
+
+    AwsCredentialsProvider first = factory.get();
+    AwsCredentialsProvider second = factory.get();
+
+    assertNotSame(first, second);
   }
 }

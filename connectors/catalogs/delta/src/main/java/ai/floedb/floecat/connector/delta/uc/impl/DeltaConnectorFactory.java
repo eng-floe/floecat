@@ -31,6 +31,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import org.apache.parquet.io.InputFile;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
@@ -180,7 +181,7 @@ final class DeltaConnectorFactory {
     boolean pathStyle =
         Boolean.parseBoolean(resolveOption(options, "s3.path-style-access", "false"));
 
-    var credentials = resolveCredentials(options);
+    var credentials = credentialsProviderFactory(options);
 
     String endpoint = resolveOption(options, "s3.endpoint", null);
     var s3Client =
@@ -191,7 +192,7 @@ final class DeltaConnectorFactory {
                       .region(region)
                       .serviceConfiguration(
                           S3Configuration.builder().pathStyleAccessEnabled(pathStyle).build())
-                      .credentialsProvider(credentials);
+                      .credentialsProvider(credentials.get());
               if (endpoint != null && !endpoint.isBlank()) {
                 s3Builder.endpointOverride(URI.create(endpoint));
               }
@@ -220,6 +221,10 @@ final class DeltaConnectorFactory {
       return StaticCredentialsProvider.create(creds);
     }
     return DefaultCredentialsProvider.builder().build();
+  }
+
+  static Supplier<AwsCredentialsProvider> credentialsProviderFactory(Map<String, String> options) {
+    return () -> resolveCredentials(options);
   }
 
   private static String resolveOption(

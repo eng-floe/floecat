@@ -18,6 +18,7 @@ package ai.floedb.floecat.connector.common.auth;
 
 import ai.floedb.floecat.connector.common.aws.RefreshingAwsClient;
 import java.util.Map;
+import java.util.function.Supplier;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
@@ -33,12 +34,12 @@ public final class AwsGlueClientFactory {
   public static RefreshingAwsClient<GlueClient> createRefreshing(
       Map<String, String> options, Map<String, String> authProps) {
     String region = resolveRegion(options, "us-east-1");
-    AwsCredentialsProvider credentials = resolveCredentials(options, authProps);
+    Supplier<AwsCredentialsProvider> credentials = credentialsProviderFactory(options, authProps);
     return new RefreshingAwsClient<>(
         () ->
             GlueClient.builder()
                 .region(Region.of(region))
-                .credentialsProvider(credentials)
+                .credentialsProvider(credentials.get())
                 .build());
   }
 
@@ -64,6 +65,11 @@ public final class AwsGlueClientFactory {
     return value;
   }
 
+  static Supplier<AwsCredentialsProvider> credentialsProviderFactory(
+      Map<String, String> options, Map<String, String> authProps) {
+    return () -> resolveCredentials(options, authProps);
+  }
+
   private static AwsCredentialsProvider resolveCredentials(
       Map<String, String> options, Map<String, String> authProps) {
     String providerId =
@@ -83,6 +89,6 @@ public final class AwsGlueClientFactory {
     }
     return AwsProfileSupport.resolveProfileProvider(authProps)
         .<AwsCredentialsProvider>map(provider -> provider)
-        .orElseGet(DefaultCredentialsProvider::create);
+        .orElseGet(() -> DefaultCredentialsProvider.builder().build());
   }
 }
