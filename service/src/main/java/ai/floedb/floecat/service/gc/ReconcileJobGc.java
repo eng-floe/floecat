@@ -22,10 +22,12 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJo
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.JobIndexEntrySnapshot;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReadyQueueKeys;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -69,7 +71,8 @@ public class ReconcileJobGc {
       int rootSummaryQuarantined,
       String nextJobToken,
       String nextDedupeToken,
-      String nextRootSummaryToken) {}
+      String nextRootSummaryToken,
+      String nextConnectorRootSummaryToken) {}
 
   public record GlobalResult(int scanned, int deleted, int quarantined, String nextToken) {}
 
@@ -89,6 +92,15 @@ public class ReconcileJobGc {
 
   public AccountResult runAccountSlice(
       String accountId, String jobTokenIn, String dedupeTokenIn, String rootSummaryTokenIn) {
+    return runAccountSlice(accountId, jobTokenIn, dedupeTokenIn, rootSummaryTokenIn, "");
+  }
+
+  public AccountResult runAccountSlice(
+      String accountId,
+      String jobTokenIn,
+      String dedupeTokenIn,
+      String rootSummaryTokenIn,
+      String connectorRootSummaryTokenIn) {
     var cfg = ConfigProvider.getConfig();
     final int pageSize =
         cfg.getOptionalValue("floecat.gc.reconcile-jobs.page-size", Integer.class).orElse(200);
@@ -103,6 +115,12 @@ public class ReconcileJobGc {
                 ? settings.finishedJobRetentionMs()
                 : cfg.getOptionalValue("floecat.gc.reconcile-jobs.retention-ms", Long.class)
                     .orElse(24L * 60L * 60L * 1000L));
+    final long canonicalQuarantineRetentionMs =
+        Math.max(
+            0L,
+            cfg.getOptionalValue(
+                    "floecat.gc.reconcile-jobs.canonical-quarantine-retention-ms", Long.class)
+                .orElse(24L * 60L * 60L * 1000L));
 
     final long nowMs = System.currentTimeMillis();
     final long deadline = nowMs + sliceMillis;
@@ -110,6 +128,8 @@ public class ReconcileJobGc {
     String jobToken = jobTokenIn == null ? "" : jobTokenIn;
     String dedupeToken = dedupeTokenIn == null ? "" : dedupeTokenIn;
     String rootSummaryToken = rootSummaryTokenIn == null ? "" : rootSummaryTokenIn;
+    String connectorRootSummaryToken =
+        connectorRootSummaryTokenIn == null ? "" : connectorRootSummaryTokenIn;
 
     int scanned = 0;
     int expired = 0;
@@ -123,7 +143,8 @@ public class ReconcileJobGc {
 
     String jobPrefix = Keys.reconcileJobPointerByIdPrefix(accountId);
     while (scanned < batchLimit && System.currentTimeMillis() < deadline) {
-      var page = jobIndexBackend.listCanonicalEntries(accountId, pageSize, jobToken);
+      int limit = Math.min(pageSize, batchLimit - scanned);
+      var page = jobIndexBackend.listCanonicalEntries(accountId, limit, jobToken);
       var pointers = page.entries();
       jobToken = page.nextPageToken();
       if (pointers.isEmpty()) {
@@ -131,7 +152,7 @@ public class ReconcileJobGc {
       }
 
       for (var canonical : pointers) {
-        if (scanned >= batchLimit || System.currentTimeMillis() >= deadline) {
+        if (scanned >= batchLimit) {
           break;
         }
         scanned++;
@@ -139,9 +160,19 @@ public class ReconcileJobGc {
         JsonNode record = readRecordByReference(canonical.blobUri());
         String jobId = decodeJobId(jobPrefix, canonical.pointerKey());
         if (record == null) {
-          canonicalQuarantined++;
+          if (deleteCanonicalIfQuarantined(
+              accountId, jobId, canonical, nowMs, canonicalQuarantineRetentionMs)) {
+            expired++;
+            ptrDeleted++;
+            if (jobId != null) {
+              blobDeleted += deleteJobBlobs(accountId, jobId);
+            }
+          } else {
+            canonicalQuarantined++;
+          }
           continue;
         }
+        clearCanonicalQuarantineMarker(accountId, canonical);
 
         String state = text(record, "state");
         long updatedAt =
@@ -183,7 +214,8 @@ public class ReconcileJobGc {
 
     String dedupePrefix = Keys.reconcileDedupePointerPrefix(accountId);
     while (scanned < batchLimit && System.currentTimeMillis() < deadline) {
-      var dedupePage = jobIndexBackend.listDedupeEntries(accountId, pageSize, dedupeToken);
+      int limit = Math.min(pageSize, batchLimit - scanned);
+      var dedupePage = jobIndexBackend.listDedupeEntries(accountId, limit, dedupeToken);
       var dedupePointers = dedupePage.entries();
       dedupeToken = dedupePage.nextPageToken();
       if (dedupePointers.isEmpty()) {
@@ -191,7 +223,7 @@ public class ReconcileJobGc {
       }
 
       for (var dedupe : dedupePointers) {
-        if (scanned >= batchLimit || System.currentTimeMillis() >= deadline) {
+        if (scanned >= batchLimit) {
           break;
         }
         scanned++;
@@ -223,16 +255,17 @@ public class ReconcileJobGc {
 
     String rootSummaryPrefix = Keys.reconcileRootJobSummaryByAccountPointerPrefix(accountId);
     while (scanned < batchLimit && System.currentTimeMillis() < deadline && pointerStore != null) {
+      int limit = Math.min(pageSize, batchLimit - scanned);
       StringBuilder next = new StringBuilder();
       var summaries =
-          pointerStore.listPointersByPrefix(rootSummaryPrefix, pageSize, rootSummaryToken, next);
+          pointerStore.listPointersByPrefix(rootSummaryPrefix, limit, rootSummaryToken, next);
       rootSummaryToken = next.toString();
       if (summaries.isEmpty()) {
         break;
       }
 
       for (Pointer summaryPointer : summaries) {
-        if (scanned >= batchLimit || System.currentTimeMillis() >= deadline) {
+        if (scanned >= batchLimit) {
           break;
         }
         scanned++;
@@ -242,6 +275,34 @@ public class ReconcileJobGc {
       }
 
       if (rootSummaryToken.isBlank()) {
+        break;
+      }
+    }
+
+    String connectorRootSummaryPrefix =
+        Keys.reconcileRootJobSummaryByConnectorAccountPrefix(accountId);
+    while (scanned < batchLimit && System.currentTimeMillis() < deadline && pointerStore != null) {
+      int limit = Math.min(pageSize, batchLimit - scanned);
+      StringBuilder next = new StringBuilder();
+      var summaries =
+          pointerStore.listPointersByPrefix(
+              connectorRootSummaryPrefix, limit, connectorRootSummaryToken, next);
+      connectorRootSummaryToken = next.toString();
+      if (summaries.isEmpty()) {
+        break;
+      }
+
+      for (Pointer summaryPointer : summaries) {
+        if (scanned >= batchLimit) {
+          break;
+        }
+        scanned++;
+        RootSummaryDeleteResult result = deleteRootSummaryIfOrphan(accountId, summaryPointer);
+        ptrDeleted += result.deleted();
+        rootSummaryQuarantined += result.quarantined();
+      }
+
+      if (connectorRootSummaryToken.isBlank()) {
         break;
       }
     }
@@ -258,7 +319,8 @@ public class ReconcileJobGc {
         rootSummaryQuarantined,
         jobToken,
         dedupeToken,
-        rootSummaryToken);
+        rootSummaryToken,
+        connectorRootSummaryToken);
   }
 
   public GlobalResult runReadySlice(String pageTokenIn) {
@@ -279,7 +341,8 @@ public class ReconcileJobGc {
     String token = pageTokenIn == null ? "" : pageTokenIn;
 
     while (scanned < batchLimit) {
-      var readyPage = readyQueueBackend.scanAllReadyEntries(pageSize, token);
+      int limit = Math.min(pageSize, batchLimit - scanned);
+      var readyPage = readyQueueBackend.scanAllReadyEntries(limit, token);
       token = readyPage.nextPageToken();
       if (readyPage.entries().isEmpty()) {
         break;
@@ -306,10 +369,16 @@ public class ReconcileJobGc {
         }
 
         String state = text(record, "state");
-        if (!"JS_QUEUED".equals(state)
-            && ready.dueAtMs() <= nowMs - staleReadyGraceMs
-            && readyQueueBackend.deleteReadyEntry(ready.readyPointerKey())) {
-          deleted++;
+        if (ready.dueAtMs() <= nowMs - staleReadyGraceMs) {
+          boolean deleteReady = !"JS_QUEUED".equals(state);
+          if (!deleteReady) {
+            java.util.LinkedHashSet<String> validReadyKeys =
+                new java.util.LinkedHashSet<>(currentReadyPointerKeys(record));
+            deleteReady = !validReadyKeys.contains(ready.readyPointerKey());
+          }
+          if (deleteReady && readyQueueBackend.deleteReadyEntry(ready.readyPointerKey())) {
+            deleted++;
+          }
         }
       }
 
@@ -343,6 +412,79 @@ public class ReconcileJobGc {
       }
     }
     return null;
+  }
+
+  private boolean deleteCanonicalIfQuarantined(
+      String accountId,
+      String jobId,
+      JobIndexEntrySnapshot canonical,
+      long nowMs,
+      long quarantineRetentionMs) {
+    if (canonical == null || accountId == null || accountId.isBlank()) {
+      return false;
+    }
+    String markerKey =
+        Keys.reconcileCanonicalQuarantinePointer(accountId, hashValue(canonical.pointerKey()));
+    long firstSeenMs = nowMs;
+    Pointer marker = pointerStore == null ? null : pointerStore.get(markerKey).orElse(null);
+    String markerPayload = quarantineMarkerPayload(canonical);
+    if (marker == null || !markerPayloadMatches(marker.getBlobUri(), canonical)) {
+      if (pointerStore != null) {
+        long expectedVersion = marker == null ? 0L : marker.getVersion();
+        pointerStore.compareAndSet(
+            markerKey,
+            expectedVersion,
+            PointerReferences.opaqueMarkerPointer(markerKey, markerPayload, expectedVersion + 1L));
+      }
+      return false;
+    } else {
+      firstSeenMs = quarantineMarkerFirstSeenMs(marker.getBlobUri(), nowMs);
+    }
+    if (firstSeenMs > nowMs - quarantineRetentionMs) {
+      return false;
+    }
+    boolean purged =
+        jobIndexBackend.purgeEntriesByCanonicalReference(
+            canonical.pointerKey(), canonical.version(), canonical.blobUri());
+    if (purged && pointerStore != null) {
+      pointerStore.compareAndDelete(marker.getKey(), marker.getVersion());
+    }
+    return purged;
+  }
+
+  private void clearCanonicalQuarantineMarker(String accountId, JobIndexEntrySnapshot canonical) {
+    if (accountId == null || accountId.isBlank() || canonical == null || pointerStore == null) {
+      return;
+    }
+    String markerKey =
+        Keys.reconcileCanonicalQuarantinePointer(accountId, hashValue(canonical.pointerKey()));
+    Pointer marker = pointerStore.get(markerKey).orElse(null);
+    if (marker != null) {
+      pointerStore.compareAndDelete(marker.getKey(), marker.getVersion());
+    }
+  }
+
+  private static String quarantineMarkerPayload(JobIndexEntrySnapshot canonical) {
+    return canonical.version() + "\n" + canonical.blobUri() + "\n" + System.currentTimeMillis();
+  }
+
+  private static boolean markerPayloadMatches(
+      String markerPayload, JobIndexEntrySnapshot canonical) {
+    if (markerPayload == null || canonical == null) {
+      return false;
+    }
+    String[] parts = markerPayload.split("\n", 3);
+    return parts.length == 3
+        && parseLong(parts[0], -1L) == canonical.version()
+        && java.util.Objects.equals(parts[1], canonical.blobUri());
+  }
+
+  private static long quarantineMarkerFirstSeenMs(String markerPayload, long defaultValue) {
+    if (markerPayload == null) {
+      return defaultValue;
+    }
+    String[] parts = markerPayload.split("\n", 3);
+    return parts.length == 3 ? parseLong(parts[2], defaultValue) : defaultValue;
   }
 
   private static String text(JsonNode node, String field) {
@@ -384,13 +526,14 @@ public class ReconcileJobGc {
     if (summary == null || summary.jobId() == null || summary.jobId().isBlank()) {
       return new RootSummaryDeleteResult(0, 1);
     }
-    if (jobIndexBackend
-        .loadIndexEntry(Keys.reconcileJobPointerById(accountId, summary.jobId()))
-        .isPresent()) {
+    String canonicalKey = Keys.reconcileJobPointerById(accountId, summary.jobId());
+    if (jobIndexBackend.loadIndexEntry(canonicalKey).isPresent()) {
       return new RootSummaryDeleteResult(0, 0);
     }
-    var deletes = new java.util.ArrayList<PointerStore.CasOp>();
-    deletes.add(new PointerStore.CasDelete(summaryPointer.getKey(), summaryPointer.getVersion()));
+    var deletes = new java.util.LinkedHashMap<String, PointerStore.CasDelete>();
+    deletes.put(
+        summaryPointer.getKey(),
+        new PointerStore.CasDelete(summaryPointer.getKey(), summaryPointer.getVersion()));
     appendPointerDeleteIfPresent(
         deletes, Keys.reconcileJobProjectionPointer(accountId, summary.jobId()));
     if (summary.connectorId() != null && !summary.connectorId().isBlank()) {
@@ -401,8 +544,14 @@ public class ReconcileJobGc {
               rootSummarySortableJobToken(summary.createdAtMs(), summary.jobId()));
       appendPointerDeleteIfPresent(deletes, connectorSummaryKey);
     }
+    java.util.ArrayList<PointerStore.CasOp> ops = new java.util.ArrayList<>();
+    ops.add(new PointerStore.CasCheckAbsent(canonicalKey));
+    ops.addAll(deletes.values());
     return new RootSummaryDeleteResult(
-        pointerStore.compareAndSetBatch(deletes) ? deletes.size() : 0, 0);
+        jobIndexBackend.compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch.empty(), ops)
+            ? deletes.size()
+            : 0,
+        0);
   }
 
   private RootSummaryReadResult readRootSummary(String reference) {
@@ -542,6 +691,18 @@ public class ReconcileJobGc {
     }
   }
 
+  private void appendPointerDeleteIfPresent(
+      java.util.LinkedHashMap<String, PointerStore.CasDelete> deletes, String pointerKey) {
+    if (pointerKey == null || pointerKey.isBlank() || pointerStore == null) {
+      return;
+    }
+    var existing = pointerStore.get(pointerKey).orElse(null);
+    if (existing != null) {
+      deletes.putIfAbsent(
+          existing.getKey(), new PointerStore.CasDelete(existing.getKey(), existing.getVersion()));
+    }
+  }
+
   private void appendOwnedDeleteIfPresent(
       java.util.List<ReconcileJobIndexStore.JobIndexWriteOp> deletes,
       String pointerKey,
@@ -642,31 +803,7 @@ public class ReconcileJobGc {
     if (dueAt == INVALID_ORDERED_POINTER_MS || dueAt <= 0L) {
       dueAt = System.currentTimeMillis();
     }
-    java.util.ArrayList<String> keys = new java.util.ArrayList<>();
-    keys.add(
-        Keys.reconcileReadyPointerByDue(dueAt, stored.accountId, stored.laneKey, stored.jobId));
-    if (stored.executionClass != null && !stored.executionClass.isBlank()) {
-      keys.add(
-          Keys.reconcileReadyByExecutionClassPointerByDue(
-              dueAt, stored.executionClass, stored.accountId, stored.jobId));
-    }
-    String executionLane = stored.executionPolicy().lane();
-    if (executionLane != null && !executionLane.isBlank()) {
-      keys.add(
-          Keys.reconcileReadyByExecutionLanePointerByDue(
-              dueAt, executionLane, stored.accountId, stored.jobId));
-    }
-    if (stored.pinnedExecutorId != null && !stored.pinnedExecutorId.isBlank()) {
-      keys.add(
-          Keys.reconcileReadyByPinnedExecutorPointerByDue(
-              dueAt, stored.pinnedExecutorId, stored.accountId, stored.jobId));
-    }
-    if (stored.jobKind != null && !stored.jobKind.isBlank()) {
-      keys.add(
-          Keys.reconcileReadyByJobKindPointerByDue(
-              dueAt, stored.jobKind, stored.accountId, stored.jobId));
-    }
-    return keys;
+    return ReadyQueueKeys.readyPointerKeys(stored, dueAt, job -> "JS_QUEUED".equals(job.state));
   }
 
   private List<String> readyPointerKeysForCleanup(JsonNode record) {
@@ -738,6 +875,14 @@ public class ReconcileJobGc {
 
   private long parseDueMillis(String readyPointerKey) {
     return parseTimestampFromOrderedPointer(readyPointerKey, Keys.reconcileReadyPointerPrefix());
+  }
+
+  private static long parseLong(String value, long defaultValue) {
+    try {
+      return Long.parseLong(value);
+    } catch (RuntimeException ignored) {
+      return defaultValue;
+    }
   }
 
   private long parseTimestampFromOrderedPointer(String pointerKey, String prefix) {

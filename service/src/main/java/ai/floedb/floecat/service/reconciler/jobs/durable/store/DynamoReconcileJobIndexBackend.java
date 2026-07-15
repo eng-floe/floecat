@@ -276,6 +276,78 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     return deleted;
   }
 
+  @Override
+  public boolean purgeEntriesByCanonicalReference(
+      String canonicalPointerKey, long expectedVersion, String expectedBlobUri) {
+    if (blank(canonicalPointerKey)) {
+      return false;
+    }
+    Map<String, Map<String, AttributeValue>> matches =
+        matchingCanonicalReferenceItems(canonicalPointerKey);
+    Map<String, AttributeValue> canonical = matches.get(canonicalPointerKey);
+    if (canonical == null
+        || longAttr(canonical, ATTR_VERSION) != expectedVersion
+        || !java.util.Objects.equals(
+            stringAttr(canonical, JobIndexBackendSupport.ATTR_BLOB_URI), expectedBlobUri)) {
+      return false;
+    }
+    if (matches.isEmpty() || matches.size() > 100) {
+      return false;
+    }
+    List<TransactWriteItem> tx = new ArrayList<>();
+    for (var item : matches.values()) {
+      tx.add(
+          buildDelete(
+              stringAttr(item, ATTR_PARTITION_KEY),
+              stringAttr(item, ATTR_SORT_KEY),
+              longAttr(item, ATTR_VERSION)));
+    }
+    try {
+      dynamoCaller.callVoid(
+          dynamoDbClientManager,
+          client ->
+              client.transactWriteItems(
+                  TransactWriteItemsRequest.builder().transactItems(tx).build()));
+      return true;
+    } catch (TransactionCanceledException e) {
+      return false;
+    }
+  }
+
+  private Map<String, Map<String, AttributeValue>> matchingCanonicalReferenceItems(
+      String canonicalPointerKey) {
+    Map<String, Map<String, AttributeValue>> matches = new java.util.LinkedHashMap<>();
+    Map<String, AttributeValue> exclusiveStartKey = null;
+    do {
+      ScanRequest.Builder request =
+          ScanRequest.builder()
+              .tableName(table)
+              .consistentRead(true)
+              .expressionAttributeNames(
+                  Map.of(
+                      "#pointer", JobIndexBackendSupport.ATTR_POINTER_KEY,
+                      "#canonical", JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY,
+                      "#blob", JobIndexBackendSupport.ATTR_BLOB_URI))
+              .filterExpression(
+                  "#pointer = :canonical OR #canonical = :canonical OR #blob = :canonical")
+              .expressionAttributeValues(
+                  Map.of(":canonical", AttributeValue.fromS(canonicalPointerKey)));
+      if (exclusiveStartKey != null && !exclusiveStartKey.isEmpty()) {
+        request.exclusiveStartKey(exclusiveStartKey);
+      }
+      var response =
+          dynamoCaller.call(dynamoDbClientManager, client -> client.scan(request.build()));
+      for (var item : response.items()) {
+        String pointerKey = stringAttr(item, JobIndexBackendSupport.ATTR_POINTER_KEY);
+        if (!pointerKey.isBlank()) {
+          matches.putIfAbsent(pointerKey, item);
+        }
+      }
+      exclusiveStartKey = response.lastEvaluatedKey();
+    } while (exclusiveStartKey != null && !exclusiveStartKey.isEmpty());
+    return matches;
+  }
+
   private boolean compareAndSetDynamo(
       ReconcileJobIndexStore.JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
     List<TransactWriteItem> tx = new ArrayList<>();

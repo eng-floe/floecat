@@ -63,6 +63,7 @@ public class ReconcileJobGcScheduler {
   private final Map<String, String> jobTokenByAccount = new ConcurrentHashMap<>();
   private final Map<String, String> dedupeTokenByAccount = new ConcurrentHashMap<>();
   private final Map<String, String> rootSummaryTokenByAccount = new ConcurrentHashMap<>();
+  private final Map<String, String> connectorRootSummaryTokenByAccount = new ConcurrentHashMap<>();
   private volatile String readyToken = "";
   private volatile String accountToken = "";
   private volatile List<Account> accountPage = List.of();
@@ -109,7 +110,8 @@ public class ReconcileJobGcScheduler {
             (double)
                 (jobTokenByAccount.size()
                     + dedupeTokenByAccount.size()
-                    + rootSummaryTokenByAccount.size()),
+                    + rootSummaryTokenByAccount.size()
+                    + connectorRootSummaryTokenByAccount.size()),
         "Accounts with active reconcile job GC continuation tokens",
         Tag.of(TagKey.COMPONENT, "service"),
         Tag.of(TagKey.OPERATION, "gc_reconcile_jobs"));
@@ -216,9 +218,13 @@ public class ReconcileJobGcScheduler {
         String jobToken = jobTokenByAccount.getOrDefault(accountId, "");
         String dedupeToken = dedupeTokenByAccount.getOrDefault(accountId, "");
         String rootSummaryToken = rootSummaryTokenByAccount.getOrDefault(accountId, "");
+        String connectorRootSummaryToken =
+            connectorRootSummaryTokenByAccount.getOrDefault(accountId, "");
 
         long sliceStart = System.nanoTime();
-        var result = gc.runAccountSlice(accountId, jobToken, dedupeToken, rootSummaryToken);
+        var result =
+            gc.runAccountSlice(
+                accountId, jobToken, dedupeToken, rootSummaryToken, connectorRootSummaryToken);
         accountsProcessed++;
         totalAccountScanned += result.scanned();
         totalExpired += result.expired();
@@ -260,6 +266,12 @@ public class ReconcileJobGcScheduler {
           rootSummaryTokenByAccount.remove(accountId);
         } else {
           rootSummaryTokenByAccount.put(accountId, result.nextRootSummaryToken());
+        }
+        if (result.nextConnectorRootSummaryToken() == null
+            || result.nextConnectorRootSummaryToken().isBlank()) {
+          connectorRootSummaryTokenByAccount.remove(accountId);
+        } else {
+          connectorRootSummaryTokenByAccount.put(accountId, result.nextConnectorRootSummaryToken());
         }
 
         accountPageIndex++;
@@ -310,7 +322,10 @@ public class ReconcileJobGcScheduler {
           accountPageIndex,
           accountPage.size(),
           accountToken != null && !accountToken.isBlank(),
-          jobTokenByAccount.size() + dedupeTokenByAccount.size() + rootSummaryTokenByAccount.size(),
+          jobTokenByAccount.size()
+              + dedupeTokenByAccount.size()
+              + rootSummaryTokenByAccount.size()
+              + connectorRootSummaryTokenByAccount.size(),
           Duration.ofNanos(System.nanoTime() - tickStart).toMillis());
     }
   }
