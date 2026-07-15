@@ -28,12 +28,17 @@ public class ReconcilerSettingsStore {
   private volatile long defaultIntervalMs = Duration.ofMinutes(10).toMillis();
   private volatile ReconcileMode defaultMode = ReconcileMode.RM_INCREMENTAL;
   private volatile long finishedJobRetentionMs = Duration.ofDays(7).toMillis();
+  private volatile AccountTagFilter accountTagFilter = new AccountTagFilter.PassAll();
 
   @PostConstruct
   void init() {
     var cfg = ConfigProvider.getConfig();
     autoEnabled =
         cfg.getOptionalValue("floecat.reconciler.auto.enabled", Boolean.class).orElse(true);
+    accountTagFilter =
+        AccountTagFilter.parse(
+            cfg.getOptionalValue("floecat.reconciler.auto.account-tag-filter", String.class)
+                .orElse(""));
     defaultIntervalMs =
         cfg.getOptionalValue("floecat.reconciler.default-interval", Duration.class)
             .map(Duration::toMillis)
@@ -70,6 +75,10 @@ public class ReconcilerSettingsStore {
 
   public ReconcileMode defaultMode() {
     return defaultMode;
+  }
+
+  public AccountTagFilter accountTagFilter() {
+    return accountTagFilter;
   }
 
   public long finishedJobRetentionMs() {

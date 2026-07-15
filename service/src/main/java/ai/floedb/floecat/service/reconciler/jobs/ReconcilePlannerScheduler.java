@@ -124,6 +124,7 @@ public class ReconcilePlannerScheduler {
       int connectorsPageSize,
       long defaultIntervalMs,
       ReconcileMode defaultMode) {
+    AccountTagFilter tagFilter = accountTagFilter();
     String accountToken = plannerCursor.accountToken();
     while (nowMs() < deadlineMs) {
       StringBuilder accountNext = new StringBuilder();
@@ -146,6 +147,9 @@ public class ReconcilePlannerScheduler {
         if (nowMs() >= deadlineMs) {
           plannerCursor = new PlannerCursor(accountToken);
           return;
+        }
+        if (!tagFilter.accountPasses(account.getTagsMap())) {
+          continue;
         }
         String accountId = account.getResourceId().getId();
         processAccount(accountId, deadlineMs, connectorsPageSize, defaultIntervalMs, defaultMode);
@@ -209,6 +213,10 @@ public class ReconcilePlannerScheduler {
 
   PlannerCursor plannerCursor() {
     return plannerCursor;
+  }
+
+  AccountTagFilter accountTagFilter() {
+    return settings.accountTagFilter();
   }
 
   ReconcileExecutionPolicy autoExecutionPolicy() {

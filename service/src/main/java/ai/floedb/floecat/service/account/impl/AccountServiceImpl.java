@@ -87,7 +87,8 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   @Inject PointerStore pointerStore;
   @Inject DefaultCredentialResolver credentialResolver;
 
-  private static final Set<String> ACCOUNT_MUTABLE_PATHS = Set.of("display_name", "description");
+  private static final Set<String> ACCOUNT_MUTABLE_PATHS =
+      Set.of("display_name", "description", "tags");
 
   private static final Logger LOG = Logger.getLogger(AccountService.class);
   private static final Logger CLEANUP_LOG = Logger.getLogger(AccountServiceImpl.class);
@@ -192,6 +193,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                           .setDisplayName(normName)
                           .setDescription(spec.getDescription())
                           .setCreatedAt(tsNow)
+                          .putAllTags(spec.getTagsMap())
                           .build();
 
                   if (idempotencyKey == null) {
@@ -657,6 +659,10 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
       }
     }
 
+    if (maskTargets(mask, "tags")) {
+      b.clearTags().putAllTags(spec.getTagsMap());
+    }
+
     return b.build();
   }
 
@@ -681,6 +687,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     return new Canonicalizer()
         .scalar("name", normalizeName(s.getDisplayName()))
         .scalar("description", s.getDescription())
+        .map("tags", s.getTagsMap())
         .bytes();
   }
 
@@ -688,6 +695,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     return AccountSpec.newBuilder()
         .setDisplayName(normalizeName(account.getDisplayName()))
         .setDescription(account.getDescription())
+        .putAllTags(account.getTagsMap())
         .build();
   }
 }
