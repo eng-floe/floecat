@@ -323,10 +323,11 @@ class SnapshotFinalizeReconcileExecutorTest {
         executor.execute(
             new ExecutionContext(finalizerLease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
 
-    assertEquals(ExecutionResult.JobOutcome.OBSOLETE, result.outcome);
+    assertEquals(ExecutionResult.JobOutcome.SUCCESS, result.outcome);
     assertEquals(0, result.errors);
     assertEquals(ExecutionResult.FailureKind.NONE, result.failureKind);
     assertNull(result.error);
+    assertEquals(1, result.snapshotsProcessed);
     assertTrue(result.message.contains("already finalized by job winning-finalizer"));
   }
 
