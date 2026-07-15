@@ -16,55 +16,37 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
-import ai.floedb.floecat.storage.aws.ClosedAwsClientDetector;
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import jakarta.enterprise.inject.Instance;
-import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
-import org.jboss.logging.Logger;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
 final class RefreshingDynamoCaller {
-  private static final Logger LOG = Logger.getLogger(RefreshingDynamoCaller.class);
-
   private volatile Binding binding;
 
-  void bind(
-      Supplier<DynamoDbClient> dynamoDbSupplier,
-      BiConsumer<DynamoDbClient, Throwable> clientFailureHandler) {
+  void bind(Supplier<DynamoDbClient> dynamoDbSupplier) {
     if (dynamoDbSupplier == null) {
       throw new IllegalArgumentException("dynamoDbSupplier must not be null");
     }
-    binding =
-        new Binding(
-            dynamoDbSupplier,
-            clientFailureHandler == null ? (client, failure) -> {} : clientFailureHandler,
-            clientFailureHandler != null);
+    binding = new Binding(null, dynamoDbSupplier);
+  }
+
+  void bind(DynamoDbClientManager manager) {
+    if (manager == null) {
+      throw new IllegalArgumentException("manager must not be null");
+    }
+    binding = new Binding(manager, null);
   }
 
   <T> T call(
       Instance<DynamoDbClientManager> dynamoDbClientManager,
       Function<DynamoDbClient, T> operation) {
     Binding currentBinding = binding(dynamoDbClientManager);
-    for (int attempt = 0; ; attempt++) {
-      DynamoDbClient client = currentBinding.dynamoDbSupplier().get();
-      try {
-        return operation.apply(client);
-      } catch (RuntimeException e) {
-        if (currentBinding.supportsRefresh()
-            && ClosedAwsClientDetector.isConnectionPoolShutdown(e)) {
-          LOG.warnf(
-              e, "DynamoDB connection pool shutdown in %s; refreshing client", callerContext());
-          currentBinding.clientFailureHandler().accept(client, e);
-          if (attempt == 0) {
-            currentBinding = binding(dynamoDbClientManager);
-            continue;
-          }
-        }
-        throw e;
-      }
+    if (currentBinding.manager() != null) {
+      return currentBinding.manager().call(operation);
     }
+    return operation.apply(currentBinding.dynamoDbSupplier().get());
   }
 
   void callVoid(
@@ -87,28 +69,11 @@ final class RefreshingDynamoCaller {
       throw new IllegalStateException("No DynamoDB client manager available");
     }
     DynamoDbClientManager manager = dynamoDbClientManager.get();
-    Binding nextBinding = new Binding(manager::current, manager::refreshAfterFailure, true);
+    Binding nextBinding = new Binding(manager, null);
     binding = nextBinding;
     return nextBinding;
   }
 
   private record Binding(
-      Supplier<DynamoDbClient> dynamoDbSupplier,
-      BiConsumer<DynamoDbClient, Throwable> clientFailureHandler,
-      boolean supportsRefresh) {}
-
-  private static String callerContext() {
-    String wrapperClassName = RefreshingDynamoCaller.class.getName();
-    for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
-      String className = frame.getClassName();
-      if (className.equals(Thread.class.getName()) || className.equals(wrapperClassName)) {
-        continue;
-      }
-      if (className.startsWith(wrapperClassName + "$")) {
-        continue;
-      }
-      return className + "." + frame.getMethodName();
-    }
-    return "unknown";
-  }
+      DynamoDbClientManager manager, Supplier<DynamoDbClient> dynamoDbSupplier) {}
 }

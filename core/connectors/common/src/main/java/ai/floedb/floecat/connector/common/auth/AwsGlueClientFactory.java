@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.connector.common.auth;
 
-import ai.floedb.floecat.connector.common.aws.RefreshingAwsClient;
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import java.util.Map;
 import java.util.function.Supplier;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
@@ -35,12 +35,22 @@ public final class AwsGlueClientFactory {
       Map<String, String> options, Map<String, String> authProps) {
     String region = resolveRegion(options, "us-east-1");
     Supplier<AwsCredentialsProvider> credentials = credentialsProviderFactory(options, authProps);
-    return new RefreshingAwsClient<>(
-        () ->
-            GlueClient.builder()
-                .region(Region.of(region))
-                .credentialsProvider(credentials.get())
-                .build());
+    return RefreshingAwsClient.withResourceFactory(
+        () -> {
+          AwsCredentialsProvider provider = credentials.get();
+          try {
+            GlueClient client =
+                GlueClient.builder()
+                    .region(Region.of(region))
+                    .credentialsProvider(provider)
+                    .build();
+            return RefreshingAwsClient.clientResource(
+                client, RefreshingAwsClient.closeableResource(provider));
+          } catch (RuntimeException | Error e) {
+            RefreshingAwsClient.closeQuietly(RefreshingAwsClient.closeableResource(provider));
+            throw e;
+          }
+        });
   }
 
   public static String resolveRegion(Map<String, String> options, String defaultRegion) {

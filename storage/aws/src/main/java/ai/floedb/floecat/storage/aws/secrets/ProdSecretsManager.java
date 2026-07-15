@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.storage.aws.secrets;
 
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import ai.floedb.floecat.storage.aws.AwsClients;
-import ai.floedb.floecat.storage.aws.ClosedAwsClientDetector;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
 import io.quarkus.arc.profile.IfBuildProfile;
 import jakarta.annotation.PreDestroy;
@@ -26,12 +26,12 @@ import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicReference;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.jboss.logging.Logger;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 import software.amazon.awssdk.services.secretsmanager.model.CreateSecretRequest;
@@ -48,7 +48,6 @@ import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider
 @ApplicationScoped
 @IfBuildProfile("prod")
 public class ProdSecretsManager implements SecretsManager {
-  private static final Logger LOG = Logger.getLogger(ProdSecretsManager.class);
   private static final String ACCOUNT_ID_TAG = "AccountId";
   private static final int MAX_ROLE_SESSION_LENGTH = 64;
   private static final String ROLE_SESSION_PREFIX = "floecat-";
@@ -56,11 +55,12 @@ public class ProdSecretsManager implements SecretsManager {
   @ConfigProperty(name = "floecat.secrets.aws.role-arn")
   Optional<String> roleArn = Optional.empty();
 
-  private final AtomicReference<SecretsManagerClient> secretsClient;
-  private final AtomicReference<StsClient> stsClient;
-  private final ConcurrentMap<String, SecretsManagerClient> perAccountClients =
+  private final RefreshingAwsClient<SecretsManagerClient> secretsClient;
+  private final RefreshingAwsClient<StsClient> stsClient;
+  private final ConcurrentMap<String, RefreshingAwsClient<SecretsManagerClient>> perAccountClients =
       new ConcurrentHashMap<>();
   private final Object perAccountClientLock = new Object();
+  private final Object stsRefreshLock = new Object();
 
   @Inject
   public ProdSecretsManager(AwsClients awsClients) {
@@ -74,8 +74,21 @@ public class ProdSecretsManager implements SecretsManager {
   ProdSecretsManager(
       AwsClients awsClients, SecretsManagerClient secretsClient, StsClient stsClient) {
     this.awsClients = awsClients;
-    this.secretsClient = new AtomicReference<>(secretsClient);
-    this.stsClient = new AtomicReference<>(stsClient);
+    AtomicReference<SecretsManagerClient> initialSecretsClient =
+        new AtomicReference<>(secretsClient);
+    AtomicReference<StsClient> initialStsClient = new AtomicReference<>(stsClient);
+    this.secretsClient =
+        RefreshingAwsClient.withResourceFactory(
+            "Secrets Manager",
+            () ->
+                RefreshingAwsClient.clientResource(
+                    takeInitialOrBuild(initialSecretsClient, this::newSecretsClient)));
+    this.stsClient =
+        RefreshingAwsClient.withResourceFactory(
+            "STS",
+            () ->
+                RefreshingAwsClient.clientResource(
+                    takeInitialOrBuild(initialStsClient, this::newStsClient)));
   }
 
   private final AwsClients awsClients;
@@ -84,14 +97,14 @@ public class ProdSecretsManager implements SecretsManager {
   void shutdown() {
     synchronized (perAccountClientLock) {
       closePerAccountClients();
-      closeQuietly(stsClient.getAndSet(null));
+      stsClient.close();
     }
-    closeQuietly(secretsClient.getAndSet(null));
+    secretsClient.close();
   }
 
   @Override
   public void put(String accountId, String secretType, String secretId, byte[] payload) {
-    withClientRefresh(
+    withClient(
         accountId,
         client -> {
           putOnce(client, accountId, secretType, secretId, payload);
@@ -101,12 +114,12 @@ public class ProdSecretsManager implements SecretsManager {
 
   @Override
   public Optional<byte[]> get(String accountId, String secretType, String secretId) {
-    return withClientRefresh(accountId, client -> getOnce(client, accountId, secretType, secretId));
+    return withClient(accountId, client -> getOnce(client, accountId, secretType, secretId));
   }
 
   @Override
   public void update(String accountId, String secretType, String secretId, byte[] payload) {
-    withClientRefresh(
+    withClient(
         accountId,
         client -> {
           updateOnce(client, accountId, secretType, secretId, payload);
@@ -116,7 +129,7 @@ public class ProdSecretsManager implements SecretsManager {
 
   @Override
   public void delete(String accountId, String secretType, String secretId) {
-    withClientRefresh(
+    withClient(
         accountId,
         client -> {
           deleteOnce(client, accountId, secretType, secretId);
@@ -204,110 +217,106 @@ public class ProdSecretsManager implements SecretsManager {
     client.tagResource(TagResourceRequest.builder().secretId(secretName).tags(tags).build());
   }
 
-  private SecretsManagerClient clientForAccount(String accountId) {
+  private RefreshingAwsClient<SecretsManagerClient> clientForAccount(String accountId) {
     String role = roleArn.map(String::trim).filter(value -> !value.isBlank()).orElse("");
     if (role.isEmpty()) {
-      return requireOpen(secretsClient.get());
+      return secretsClient;
     }
     synchronized (perAccountClientLock) {
-      SecretsManagerClient existing = perAccountClients.get(accountId);
+      RefreshingAwsClient<SecretsManagerClient> existing = perAccountClients.get(accountId);
       if (existing != null) {
         return existing;
       }
-      StsClient currentSts = requireOpen(stsClient.get());
-      StsAssumeRoleCredentialsProvider creds =
-          StsAssumeRoleCredentialsProvider.builder()
-              .stsClient(currentSts)
-              .refreshRequest(
-                  builder ->
-                      builder
-                          .roleArn(role)
-                          .roleSessionName(buildRoleSessionName(accountId))
-                          .tags(
-                              software.amazon.awssdk.services.sts.model.Tag.builder()
-                                  .key(ACCOUNT_ID_TAG)
-                                  .value(accountId)
-                                  .build()))
-              .build();
-      SecretsManagerClient client =
-          awsClients != null
-              ? awsClients.secretsManagerClient(creds)
-              : SecretsManagerClient.builder().credentialsProvider(creds).build();
+      RefreshingAwsClient<SecretsManagerClient> client =
+          RefreshingAwsClient.withResourceFactory(
+              "Secrets Manager account " + accountId,
+              () -> newPerAccountSecretsClientResource(accountId, role),
+              failure -> {
+                if (isStsCredentialPoolFailure(failure)) {
+                  invalidateStsAndDependentClients(accountId);
+                }
+              },
+              stsRefreshLock);
       perAccountClients.put(accountId, client);
       return client;
     }
   }
 
-  private <T> T withClientRefresh(String accountId, ClientOperation<T> operation) {
-    SecretsManagerClient client = clientForAccount(accountId);
+  private <T> T withClient(String accountId, ClientOperation<T> operation) {
+    return clientForAccount(accountId).callUnchecked(operation::run);
+  }
+
+  private RefreshingAwsClient.ClientResource<SecretsManagerClient>
+      newPerAccountSecretsClientResource(String accountId, String role) {
+    StsAssumeRoleCredentialsProvider creds =
+        StsAssumeRoleCredentialsProvider.builder()
+            .stsClient(stsClient.current())
+            .refreshRequest(
+                builder ->
+                    builder
+                        .roleArn(role)
+                        .roleSessionName(buildRoleSessionName(accountId))
+                        .tags(
+                            software.amazon.awssdk.services.sts.model.Tag.builder()
+                                .key(ACCOUNT_ID_TAG)
+                                .value(accountId)
+                                .build()))
+            .build();
     try {
-      return operation.run(client);
-    } catch (RuntimeException e) {
-      if (awsClients == null || !ClosedAwsClientDetector.isConnectionPoolShutdown(e)) {
-        throw e;
-      }
-      LOG.warnf(
-          e,
-          "Secrets Manager connection pool shutdown in %s accountId=%s; refreshing client",
-          callerContext(),
-          accountId);
-      refreshAfterClosedPool(accountId, client, e);
-      return operation.run(clientForAccount(accountId));
+      SecretsManagerClient client =
+          awsClients != null
+              ? awsClients.secretsManagerClient(creds)
+              : SecretsManagerClient.builder().credentialsProvider(creds).build();
+      return RefreshingAwsClient.clientResource(
+          client, RefreshingAwsClient.closeableResource(creds));
+    } catch (RuntimeException | Error e) {
+      RefreshingAwsClient.closeQuietly(RefreshingAwsClient.closeableResource(creds));
+      throw e;
     }
   }
 
-  private void refreshAfterClosedPool(
-      String accountId, SecretsManagerClient failedClient, Throwable failure) {
-    String role = roleArn.map(String::trim).filter(value -> !value.isBlank()).orElse("");
-    if (role.isEmpty()) {
-      if (failedClient == null) {
-        return;
-      }
-      SecretsManagerClient next = awsClients.secretsManagerClient();
-      if (secretsClient.compareAndSet(failedClient, next)) {
-        closeQuietly(failedClient);
-      } else {
-        closeQuietly(next);
-      }
-      return;
-    }
-
+  private void invalidateStsAndDependentClients(String currentAccountId) {
     synchronized (perAccountClientLock) {
-      if (accountId == null || accountId.isBlank() || failedClient == null) {
-        return;
-      }
-      if (!perAccountClients.remove(accountId, failedClient)) {
-        return;
-      }
-      closeQuietly(failedClient);
-      if (isStsCredentialPoolFailure(failure)) {
-        StsClient previousSts = stsClient.get();
-        if (previousSts == null) {
-          return;
-        }
-        StsClient nextSts = awsClients.stsClient();
-        if (stsClient.compareAndSet(previousSts, nextSts)) {
-          closeQuietly(previousSts);
-          closePerAccountClients();
-        } else {
-          closeQuietly(nextSts);
-        }
-      }
+      stsClient.invalidate();
+      perAccountClients
+          .entrySet()
+          .forEach(
+              entry -> {
+                if (!Objects.equals(entry.getKey(), currentAccountId)) {
+                  entry.getValue().invalidate();
+                }
+              });
     }
+  }
+
+  private SecretsManagerClient newSecretsClient() {
+    if (awsClients == null) {
+      throw new IllegalStateException("Secrets Manager client cannot be refreshed");
+    }
+    return awsClients.secretsManagerClient();
+  }
+
+  private StsClient newStsClient() {
+    if (awsClients == null) {
+      throw new IllegalStateException("STS client cannot be refreshed");
+    }
+    return awsClients.stsClient();
+  }
+
+  private static <T> T takeInitialOrBuild(
+      AtomicReference<T> initial, java.util.function.Supplier<T> factory) {
+    T value = initial.getAndSet(null);
+    if (value != null) {
+      return value;
+    }
+    return factory.get();
   }
 
   private void closePerAccountClients() {
-    for (SecretsManagerClient client : perAccountClients.values()) {
-      closeQuietly(client);
+    for (RefreshingAwsClient<SecretsManagerClient> client : perAccountClients.values()) {
+      client.close();
     }
     perAccountClients.clear();
-  }
-
-  private static <T> T requireOpen(T client) {
-    if (client == null) {
-      throw new IllegalStateException("secrets manager is shut down");
-    }
-    return client;
   }
 
   private static boolean isStsCredentialPoolFailure(Throwable failure) {
@@ -332,21 +341,6 @@ public class ProdSecretsManager implements SecretsManager {
     return raw.substring(0, MAX_ROLE_SESSION_LENGTH);
   }
 
-  private static String callerContext() {
-    String wrapperClassName = ProdSecretsManager.class.getName();
-    for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
-      String className = frame.getClassName();
-      if (className.equals(Thread.class.getName()) || className.equals(wrapperClassName)) {
-        continue;
-      }
-      if (className.startsWith(wrapperClassName + "$")) {
-        continue;
-      }
-      return className + "." + frame.getMethodName();
-    }
-    return "unknown";
-  }
-
   private void ensureAwsCredentialsAvailable() {
     if (awsClients == null) {
       return;
@@ -363,16 +357,6 @@ public class ProdSecretsManager implements SecretsManager {
       return Base64.getDecoder().decode(encoded);
     } catch (IllegalArgumentException ignored) {
       return encoded.getBytes(StandardCharsets.UTF_8);
-    }
-  }
-
-  private static void closeQuietly(AutoCloseable client) {
-    if (client == null) {
-      return;
-    }
-    try {
-      client.close();
-    } catch (Exception ignored) {
     }
   }
 

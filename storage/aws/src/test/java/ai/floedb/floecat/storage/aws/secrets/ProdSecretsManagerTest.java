@@ -23,15 +23,18 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.storage.aws.AwsClients;
-import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.ArrayDeque;
 import java.util.Base64;
 import java.util.Deque;
-import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.core.exception.SdkClientException;
@@ -159,34 +162,147 @@ class ProdSecretsManagerTest {
   }
 
   @Test
-  void stale_failed_per_account_client_does_not_evict_newer_client() throws Exception {
+  void
+      concurrent_credential_pool_failures_invalidate_sts_once_and_keep_surviving_client_bound_to_open_sts()
+          throws Exception {
     ClientHandle bootstrapClient = ClientHandle.secretsValue("unused");
     ClientHandle staleStsClient = ClientHandle.sts();
+    ClientHandle refreshedStsClient = ClientHandle.sts();
+    ClientHandle otherAccountClient =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("other".getBytes()));
+    RuntimeException credentialFailure =
+        SdkClientException.create(
+            "Unable to load credentials from STS",
+            new RuntimeException("Connection pool shut down"));
+    CountDownLatch staleAttemptsReady = new CountDownLatch(2);
+    CountDownLatch releaseStaleAttempts = new CountDownLatch(1);
     ClientHandle stalePerAccountClient =
-        ClientHandle.secretsFailure(new RuntimeException("Connection pool shut down"));
-    ClientHandle newerPerAccountClient =
-        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("gamma".getBytes()));
+        ClientHandle.secretsFailure(
+            credentialFailure,
+            () -> {
+              staleAttemptsReady.countDown();
+              try {
+                releaseStaleAttempts.await();
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(e);
+              }
+            });
+    ClientHandle refreshedPerAccountClient =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("beta".getBytes()));
 
     FakeAwsClients awsClients = new FakeAwsClients();
+    awsClients.activeStsClient = staleStsClient;
+    awsClients.refreshedStsClients.addLast(refreshedStsClient);
+    awsClients.perAccountSecretsClients.addLast(otherAccountClient);
     awsClients.perAccountSecretsClients.addLast(stalePerAccountClient);
-    awsClients.perAccountSecretsClients.addLast(newerPerAccountClient);
+    awsClients.perAccountSecretsClients.addLast(refreshedPerAccountClient);
 
     ProdSecretsManager manager =
         new ProdSecretsManager(awsClients, bootstrapClient.secretsClient, staleStsClient.stsClient);
     manager.roleArn = Optional.of("arn:aws:iam::123456789012:role/test");
+    manager.get("acct-other", "connectors", "secret");
 
-    manager.get("acct", "connectors", "secret");
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      Future<Optional<byte[]>> first =
+          executor.submit(() -> manager.get("acct", "connectors", "secret"));
+      Future<Optional<byte[]>> second =
+          executor.submit(() -> manager.get("acct", "connectors", "secret"));
+      assertTrue(staleAttemptsReady.await(5, TimeUnit.SECONDS));
+      releaseStaleAttempts.countDown();
 
-    invokeRefresh(
-        manager,
-        "acct",
-        stalePerAccountClient.secretsClient,
-        new RuntimeException("Connection pool shut down"));
+      assertArrayEquals("beta".getBytes(), first.get(5, TimeUnit.SECONDS).orElseThrow());
+      assertArrayEquals("beta".getBytes(), second.get(5, TimeUnit.SECONDS).orElseThrow());
+    } finally {
+      executor.shutdownNow();
+    }
 
     assertTrue(stalePerAccountClient.closed);
-    assertFalse(newerPerAccountClient.closed);
-    assertEquals(0, awsClients.stsRefreshes);
-    assertSameMappedClient(manager, "acct", newerPerAccountClient.secretsClient);
+    assertEquals(1, stalePerAccountClient.closeCount);
+    assertTrue(otherAccountClient.closed);
+    assertEquals(1, otherAccountClient.closeCount);
+    assertTrue(staleStsClient.closed);
+    assertEquals(1, staleStsClient.closeCount);
+    assertFalse(refreshedStsClient.closed);
+    assertTrue(refreshedPerAccountClient.boundStsClient == refreshedStsClient);
+    assertEquals(1, awsClients.stsRefreshes);
+    assertEquals(3, awsClients.perAccountClientBuilds);
+  }
+
+  @Test
+  void concurrent_credential_pool_failures_for_different_accounts_retry_through_one_refreshed_sts()
+      throws Exception {
+    ClientHandle bootstrapClient = ClientHandle.secretsValue("unused");
+    ClientHandle staleStsClient = ClientHandle.sts();
+    ClientHandle refreshedStsClient = ClientHandle.sts();
+    ClientHandle otherAccountClient =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("other".getBytes()));
+    RuntimeException credentialFailure =
+        SdkClientException.create(
+            "Unable to load credentials from STS",
+            new RuntimeException("Connection pool shut down"));
+    CountDownLatch staleAttemptsReady = new CountDownLatch(2);
+    CountDownLatch releaseStaleAttempts = new CountDownLatch(1);
+    Runnable beforeFailure =
+        () -> {
+          staleAttemptsReady.countDown();
+          try {
+            releaseStaleAttempts.await();
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(e);
+          }
+        };
+    ClientHandle staleAccountA = ClientHandle.secretsFailure(credentialFailure, beforeFailure);
+    ClientHandle staleAccountB = ClientHandle.secretsFailure(credentialFailure, beforeFailure);
+    ClientHandle refreshedAccountA =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("alpha".getBytes()));
+    ClientHandle refreshedAccountB =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("bravo".getBytes()));
+
+    FakeAwsClients awsClients = new FakeAwsClients();
+    awsClients.activeStsClient = staleStsClient;
+    awsClients.refreshedStsClients.addLast(refreshedStsClient);
+    awsClients.perAccountSecretsClients.addLast(otherAccountClient);
+    awsClients.perAccountSecretsClients.addLast(staleAccountA);
+    awsClients.perAccountSecretsClients.addLast(staleAccountB);
+    awsClients.perAccountSecretsClients.addLast(refreshedAccountA);
+    awsClients.perAccountSecretsClients.addLast(refreshedAccountB);
+
+    ProdSecretsManager manager =
+        new ProdSecretsManager(awsClients, bootstrapClient.secretsClient, staleStsClient.stsClient);
+    manager.roleArn = Optional.of("arn:aws:iam::123456789012:role/test");
+    manager.get("acct-other", "connectors", "secret");
+
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      Future<Optional<byte[]>> first =
+          executor.submit(() -> manager.get("acct-a", "connectors", "secret"));
+      Future<Optional<byte[]>> second =
+          executor.submit(() -> manager.get("acct-b", "connectors", "secret"));
+      assertTrue(staleAttemptsReady.await(5, TimeUnit.SECONDS));
+      releaseStaleAttempts.countDown();
+
+      assertTrue(first.get(5, TimeUnit.SECONDS).isPresent());
+      assertTrue(second.get(5, TimeUnit.SECONDS).isPresent());
+    } finally {
+      executor.shutdownNow();
+    }
+
+    assertTrue(staleAccountA.closed);
+    assertEquals(1, staleAccountA.closeCount);
+    assertTrue(staleAccountB.closed);
+    assertEquals(1, staleAccountB.closeCount);
+    assertTrue(otherAccountClient.closed);
+    assertEquals(1, otherAccountClient.closeCount);
+    assertTrue(staleStsClient.closed);
+    assertEquals(1, staleStsClient.closeCount);
+    assertFalse(refreshedStsClient.closed);
+    assertTrue(refreshedAccountA.boundStsClient == refreshedStsClient);
+    assertTrue(refreshedAccountB.boundStsClient == refreshedStsClient);
+    assertEquals(1, awsClients.stsRefreshes);
+    assertEquals(5, awsClients.perAccountClientBuilds);
   }
 
   @Test
@@ -204,7 +320,7 @@ class ProdSecretsManagerTest {
         assertThrows(
             IllegalStateException.class, () -> manager.get("acct", "connectors", "secret"));
 
-    assertEquals("secrets manager is shut down", thrown.getMessage());
+    assertEquals("Secrets Manager client is shut down", thrown.getMessage());
   }
 
   @Test
@@ -223,13 +339,14 @@ class ProdSecretsManagerTest {
         assertThrows(
             IllegalStateException.class, () -> manager.get("acct", "connectors", "secret"));
 
-    assertEquals("secrets manager is shut down", thrown.getMessage());
+    assertEquals("STS client is shut down", thrown.getMessage());
   }
 
   private static final class FakeAwsClients extends AwsClients {
     private final Deque<ClientHandle> refreshedSecretsClients = new ArrayDeque<>();
     private final Deque<ClientHandle> refreshedStsClients = new ArrayDeque<>();
     private final Deque<ClientHandle> perAccountSecretsClients = new ArrayDeque<>();
+    private ClientHandle activeStsClient;
     private int secretsRefreshes;
     private int stsRefreshes;
     private int perAccountClientBuilds;
@@ -243,52 +360,35 @@ class ProdSecretsManagerTest {
     @Override
     public StsClient stsClient() {
       stsRefreshes++;
-      return refreshedStsClients.removeFirst().stsClient;
+      activeStsClient = refreshedStsClients.removeFirst();
+      return activeStsClient.stsClient;
     }
 
     @Override
     public SecretsManagerClient secretsManagerClient(AwsCredentialsProvider credentialsProvider) {
       perAccountClientBuilds++;
-      return perAccountSecretsClients.removeFirst().secretsClient;
+      ClientHandle handle = perAccountSecretsClients.removeFirst();
+      handle.boundStsClient = activeStsClient;
+      return handle.secretsClient;
     }
 
     @Override
     public void ensureCredentialsAvailable() {}
   }
 
-  @SuppressWarnings("unchecked")
-  private static void assertSameMappedClient(
-      ProdSecretsManager manager, String accountId, SecretsManagerClient expected)
-      throws Exception {
-    Field field = ProdSecretsManager.class.getDeclaredField("perAccountClients");
-    field.setAccessible(true);
-    Map<String, SecretsManagerClient> clients =
-        (Map<String, SecretsManagerClient>) field.get(manager);
-    assertTrue(clients.get(accountId) == expected);
-  }
-
-  private static void invokeRefresh(
-      ProdSecretsManager manager,
-      String accountId,
-      SecretsManagerClient failedClient,
-      Throwable failure)
-      throws Exception {
-    Method refresh =
-        ProdSecretsManager.class.getDeclaredMethod(
-            "refreshAfterClosedPool", String.class, SecretsManagerClient.class, Throwable.class);
-    refresh.setAccessible(true);
-    refresh.invoke(manager, accountId, failedClient, failure);
-  }
-
   private static final class ClientHandle implements InvocationHandler {
     private final RuntimeException failure;
+    private final Runnable beforeFailure;
     private final String secretString;
     private boolean closed;
+    private int closeCount;
+    private ClientHandle boundStsClient;
     private final SecretsManagerClient secretsClient;
     private final StsClient stsClient;
 
-    private ClientHandle(RuntimeException failure, String secretString) {
+    private ClientHandle(RuntimeException failure, Runnable beforeFailure, String secretString) {
       this.failure = failure;
+      this.beforeFailure = beforeFailure;
       this.secretString = secretString;
       this.secretsClient =
           (SecretsManagerClient)
@@ -303,15 +403,19 @@ class ProdSecretsManagerTest {
     }
 
     static ClientHandle secretsFailure(RuntimeException failure) {
-      return new ClientHandle(failure, null);
+      return secretsFailure(failure, null);
+    }
+
+    static ClientHandle secretsFailure(RuntimeException failure, Runnable beforeFailure) {
+      return new ClientHandle(failure, beforeFailure, null);
     }
 
     static ClientHandle secretsValue(String secretString) {
-      return new ClientHandle(null, secretString);
+      return new ClientHandle(null, null, secretString);
     }
 
     static ClientHandle sts() {
-      return new ClientHandle(null, null);
+      return new ClientHandle(null, null, null);
     }
 
     @Override
@@ -319,12 +423,16 @@ class ProdSecretsManagerTest {
       return switch (method.getName()) {
         case "getSecretValue" -> {
           if (failure != null) {
+            if (beforeFailure != null) {
+              beforeFailure.run();
+            }
             throw failure;
           }
           yield GetSecretValueResponse.builder().secretString(secretString).build();
         }
         case "close" -> {
           closed = true;
+          closeCount++;
           yield null;
         }
         case "serviceName" -> "test";

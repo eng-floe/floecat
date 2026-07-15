@@ -70,7 +70,12 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
       Supplier<DynamoDbClient> dynamoDbSupplier,
       String table,
       BiConsumer<DynamoDbClient, Throwable> clientFailureHandler) {
-    dynamoCaller.bind(dynamoDbSupplier, clientFailureHandler);
+    dynamoCaller.bind(dynamoDbSupplier);
+    this.table = table;
+  }
+
+  public void bind(DynamoDbClientManager manager, String table) {
+    dynamoCaller.bind(manager);
     this.table = table;
   }
 

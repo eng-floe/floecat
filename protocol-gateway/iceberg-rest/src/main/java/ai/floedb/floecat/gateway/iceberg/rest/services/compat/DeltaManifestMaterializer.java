@@ -16,10 +16,10 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.compat;
 
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.connector.common.aws.RefreshingAwsClient;
 import ai.floedb.floecat.connector.common.resolver.DeltaSchemaNormalizer;
 import ai.floedb.floecat.gateway.iceberg.config.IcebergGatewayConfig;
 import ai.floedb.floecat.gateway.iceberg.rest.config.ConnectorIntegrationConfig;
@@ -1032,18 +1032,25 @@ public class DeltaManifestMaterializer {
         Boolean.parseBoolean(resolveOption(sourceProps, "s3.path-style-access", "false"));
     Supplier<AwsCredentialsProvider> credentials = () -> resolveCredentials(sourceProps);
     String endpoint = resolveOption(sourceProps, "s3.endpoint", null);
-    return new RefreshingAwsClient<>(
+    return RefreshingAwsClient.withResourceFactory(
         () -> {
+          AwsCredentialsProvider provider = credentials.get();
           software.amazon.awssdk.services.s3.S3ClientBuilder builder =
               S3Client.builder()
                   .region(region)
                   .serviceConfiguration(
                       S3Configuration.builder().pathStyleAccessEnabled(pathStyle).build())
-                  .credentialsProvider(credentials.get());
-          if (endpoint != null && !endpoint.isBlank()) {
-            builder.endpointOverride(URI.create(endpoint));
+                  .credentialsProvider(provider);
+          try {
+            if (endpoint != null && !endpoint.isBlank()) {
+              builder.endpointOverride(URI.create(endpoint));
+            }
+            return RefreshingAwsClient.clientResource(
+                builder.build(), RefreshingAwsClient.closeableResource(provider));
+          } catch (RuntimeException | Error e) {
+            RefreshingAwsClient.closeQuietly(RefreshingAwsClient.closeableResource(provider));
+            throw e;
           }
-          return builder.build();
         });
   }
 

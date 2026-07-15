@@ -19,12 +19,14 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import jakarta.enterprise.inject.Instance;
+import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 
@@ -33,12 +35,16 @@ class RefreshingDynamoCallerTest {
   @Test
   void call_refreshes_manager_client_and_retries_once() {
     RefreshingDynamoCaller caller = new RefreshingDynamoCaller();
-    DynamoDbClient staleClient = mock(DynamoDbClient.class);
     DynamoDbClient refreshedClient = mock(DynamoDbClient.class);
-    RuntimeException closedPool = new RuntimeException("Connection pool shut down");
 
     DynamoDbClientManager manager = mock(DynamoDbClientManager.class);
-    when(manager.current()).thenReturn(staleClient, refreshedClient);
+    when(manager.call(any()))
+        .thenAnswer(
+            invocation -> {
+              @SuppressWarnings("unchecked")
+              Function<DynamoDbClient, Integer> operation = invocation.getArgument(0);
+              return operation.apply(refreshedClient);
+            });
     @SuppressWarnings("unchecked")
     Instance<DynamoDbClientManager> managerInstance = mock(Instance.class);
     when(managerInstance.isResolvable()).thenReturn(true);
@@ -48,14 +54,11 @@ class RefreshingDynamoCallerTest {
         caller.call(
             managerInstance,
             client -> {
-              if (client == staleClient) {
-                throw closedPool;
-              }
               return 7;
             });
 
     assertEquals(7, result);
-    verify(manager).refreshAfterFailure(staleClient, closedPool);
+    verify(manager).call(any());
   }
 
   @Test
@@ -63,7 +66,7 @@ class RefreshingDynamoCallerTest {
     RefreshingDynamoCaller caller = new RefreshingDynamoCaller();
     DynamoDbClient staleClient = mock(DynamoDbClient.class);
     RuntimeException closedPool = new RuntimeException("Connection pool shut down");
-    caller.bind(() -> staleClient, null);
+    caller.bind(() -> staleClient);
 
     RuntimeException thrown =
         assertThrows(

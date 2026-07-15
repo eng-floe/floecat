@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
-import ai.floedb.floecat.connector.common.aws.RefreshingAwsClient;
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import java.io.IOException;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;

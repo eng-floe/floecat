@@ -242,22 +242,17 @@ public class DynamoDbKvStoreTest {
             KvAttributes.ATTR_VERSION, AttributeValue.builder().n("3").build()));
     DynamoDbAsyncClient refreshedClient = clientFor(refreshedHandler);
 
-    AtomicReference<DynamoDbAsyncClient> current = new AtomicReference<>(staleClient);
-    AtomicInteger refreshes = new AtomicInteger();
+    AtomicInteger created = new AtomicInteger();
+    ai.floedb.floecat.aws.RefreshingAwsClient<DynamoDbAsyncClient> refreshingClient =
+        new ai.floedb.floecat.aws.RefreshingAwsClient<>(
+            "DynamoDB async", () -> created.getAndIncrement() == 0 ? staleClient : refreshedClient);
     DynamoDbKvStore store =
         new DynamoDbKvStore(
-            current::get,
-            staleHandler.tableName,
-            (client, failure) -> {
-              assertSame(staleClient, client);
-              assertSame(closedPool, failure);
-              refreshes.incrementAndGet();
-              current.set(refreshedClient);
-            });
+            refreshingClient::callAsync, refreshingClient::callUnchecked, staleHandler.tableName);
 
     KvStore.Record got = store.get(key("pk", "sk")).await().indefinitely().orElseThrow();
 
-    assertEquals(1, refreshes.get());
+    assertEquals(2, created.get());
     assertEquals(3L, got.version());
     assertEquals("pk", got.key().partitionKey());
     assertEquals("sk", got.key().sortKey());
