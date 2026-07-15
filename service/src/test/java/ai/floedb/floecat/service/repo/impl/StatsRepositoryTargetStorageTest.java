@@ -242,6 +242,48 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void draftGenerationIsInvisibleUntilPublished() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 709L;
+    String filePath = "s3://bucket/path/file-overwrite.parquet";
+    TargetStatsRecord original =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(12L).build());
+    TargetStatsRecord replacement =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(34L).build());
+
+    repository.putTargetStatsBatch(TABLE_ID, snapshotId, List.of(original));
+    String originalGeneration =
+        repository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        "draft-job-1",
+        List.of(StatsTargetIdentity.fileTarget(filePath)),
+        List.of(replacement));
+
+    Optional<TargetStatsRecord> stored =
+        repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(filePath));
+    assertThat(stored).isPresent();
+    assertThat(stored.get().getFile().getRowCount()).isEqualTo(12L);
+    assertThat(repository.activeStatsGeneration(TABLE_ID, snapshotId)).contains(originalGeneration);
+
+    repository.publishStatsGeneration(TABLE_ID, snapshotId, "draft-job-1", List.of());
+
+    stored =
+        repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(filePath));
+    assertThat(stored).isPresent();
+    assertThat(stored.get().getFile().getRowCount()).isEqualTo(34L);
+    assertThat(repository.countTargetStats(TABLE_ID, snapshotId, Optional.empty())).isEqualTo(1);
+  }
+
+  @Test
   void listAndCountCanFilterByTargetKind() {
     StatsRepository repository =
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());

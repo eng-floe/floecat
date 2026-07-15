@@ -43,6 +43,8 @@ public class TestOverrideStatsStore implements StatsStore {
   private static final AtomicInteger LIST_COUNT = new AtomicInteger();
 
   private final ConcurrentHashMap<StoreKey, TargetStatsRecord> records = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<GenerationStoreKey, TargetStatsRecord> generationRecords =
+      new ConcurrentHashMap<>();
 
   public static void resetCounters() {
     PUT_COUNT.set(0);
@@ -125,7 +127,50 @@ public class TestOverrideStatsStore implements StatsStore {
   @Override
   public boolean deleteAllStatsForSnapshot(ResourceId tableId, long snapshotId) {
     records.keySet().removeIf(k -> k.tableId().equals(tableId) && k.snapshotId() == snapshotId);
+    generationRecords
+        .keySet()
+        .removeIf(k -> k.tableId().equals(tableId) && k.snapshotId() == snapshotId);
     return true;
+  }
+
+  @Override
+  public void replaceTargetStatsInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<StatsTarget> targetsToReplace,
+      List<TargetStatsRecord> replacementRecords) {
+    targetsToReplace.forEach(
+        target ->
+            generationRecords.remove(
+                GenerationStoreKey.of(tableId, snapshotId, generationId, target)));
+    replacementRecords.forEach(
+        record -> {
+          PUT_COUNT.incrementAndGet();
+          generationRecords.put(
+              GenerationStoreKey.of(tableId, snapshotId, generationId, record.getTarget()), record);
+        });
+  }
+
+  @Override
+  public void publishStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<TargetStatsRecord> finalRecords) {
+    records.keySet().removeIf(k -> k.tableId().equals(tableId) && k.snapshotId() == snapshotId);
+    generationRecords.entrySet().stream()
+        .filter(e -> e.getKey().tableId().equals(tableId) && e.getKey().snapshotId() == snapshotId)
+        .filter(e -> generationId.equals(e.getKey().generationId()))
+        .map(e -> e.getValue())
+        .forEach(r -> records.put(StoreKey.of(tableId, snapshotId, r.getTarget()), r));
+    finalRecords.forEach(
+        record -> {
+          PUT_COUNT.incrementAndGet();
+          records.put(StoreKey.of(tableId, snapshotId, record.getTarget()), record);
+          generationRecords.put(
+              GenerationStoreKey.of(tableId, snapshotId, generationId, record.getTarget()), record);
+        });
   }
 
   @Override
@@ -158,6 +203,15 @@ public class TestOverrideStatsStore implements StatsStore {
   private record StoreKey(ResourceId tableId, long snapshotId, String storageId) {
     private static StoreKey of(ResourceId tableId, long snapshotId, StatsTarget target) {
       return new StoreKey(tableId, snapshotId, StatsTargetIdentity.storageId(target));
+    }
+  }
+
+  private record GenerationStoreKey(
+      ResourceId tableId, long snapshotId, String generationId, String storageId) {
+    private static GenerationStoreKey of(
+        ResourceId tableId, long snapshotId, String generationId, StatsTarget target) {
+      return new GenerationStoreKey(
+          tableId, snapshotId, generationId, StatsTargetIdentity.storageId(target));
     }
   }
 }

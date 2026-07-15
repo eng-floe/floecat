@@ -172,6 +172,74 @@ public class StatsRepository implements StatsStore {
   }
 
   @Override
+  public void replaceTargetStatsInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<StatsTarget> targetsToReplace,
+      List<TargetStatsRecord> records) {
+    String effectiveGenerationId = requireGenerationId(generationId);
+    List<TargetStatsRecord> canonicalRecords =
+        (records == null ? List.<TargetStatsRecord>of() : records)
+            .stream()
+                .filter(java.util.Objects::nonNull)
+                .map(this::canonicalRecord)
+                .peek(record -> requireRecordForSnapshot(tableId, snapshotId, record))
+                .toList();
+    for (StatsTarget target :
+        targetsToReplace == null ? List.<StatsTarget>of() : targetsToReplace) {
+      if (target != null) {
+        pointerStore.delete(targetPointerKey(tableId, snapshotId, effectiveGenerationId, target));
+      }
+    }
+    List<TargetStatsWrite> writes = new ArrayList<>(canonicalRecords.size());
+    for (TargetStatsRecord record : canonicalRecords) {
+      writes.add(
+          new TargetStatsWrite(
+              pointerKey(record, effectiveGenerationId),
+              blobUri(record, effectiveGenerationId),
+              record));
+    }
+    targetStatsStorage.overwriteBatch(writes);
+    for (TargetStatsRecord record : canonicalRecords) {
+      updateTargetLatestSnapshotIfNewer(
+          record.getTableId(), record.getSnapshotId(), record.getTarget());
+    }
+  }
+
+  @Override
+  public void publishStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<TargetStatsRecord> finalRecords) {
+    String effectiveGenerationId = requireGenerationId(generationId);
+    List<TargetStatsRecord> canonicalRecords =
+        (finalRecords == null ? List.<TargetStatsRecord>of() : finalRecords)
+            .stream()
+                .filter(java.util.Objects::nonNull)
+                .map(this::canonicalRecord)
+                .peek(record -> requireRecordForSnapshot(tableId, snapshotId, record))
+                .toList();
+    List<TargetStatsWrite> writes = new ArrayList<>(canonicalRecords.size());
+    for (TargetStatsRecord record : canonicalRecords) {
+      writes.add(
+          new TargetStatsWrite(
+              pointerKey(record, effectiveGenerationId),
+              blobUri(record, effectiveGenerationId),
+              record));
+    }
+    targetStatsStorage.overwriteBatch(writes);
+    for (TargetStatsRecord record : canonicalRecords) {
+      updateTargetLatestSnapshotIfNewer(
+          record.getTableId(), record.getSnapshotId(), record.getTarget());
+    }
+    Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
+    publishActiveGeneration(tableId, snapshotId, effectiveGenerationId, current);
+    updateLatestStatsSnapshotIfNewer(tableId, snapshotId);
+  }
+
+  @Override
   public boolean putTargetStatsIfAbsent(TargetStatsRecord value) {
     TargetStatsRecord canonicalRecord = canonicalRecord(value);
     ActiveSnapshotStats active =
@@ -1032,6 +1100,14 @@ public class StatsRepository implements StatsStore {
     return UUID.randomUUID().toString();
   }
 
+  private static String requireGenerationId(String generationId) {
+    String effective = generationId == null ? "" : generationId.trim();
+    if (effective.isBlank()) {
+      throw new IllegalArgumentException("stats generation id is required");
+    }
+    return effective;
+  }
+
   private static String storagePrefixFor(StatsTargetType type) {
     return switch (type) {
       case TABLE -> StatsTargetIdentity.tableStorageIdPrefix();
@@ -1099,6 +1175,36 @@ public class StatsRepository implements StatsStore {
         reserveBatchOrClassify(
             pending.subList(from, Math.min(from + MAX_POINTER_BATCH_SIZE, pending.size())));
       }
+    }
+
+    private void overwriteBatch(List<TargetStatsWrite> writes) {
+      if (writes == null || writes.isEmpty()) {
+        return;
+      }
+      Map<String, TargetStatsWrite> uniqueWrites = new LinkedHashMap<>();
+      for (TargetStatsWrite write : writes) {
+        uniqueWrites.put(write.pointerKey(), write);
+      }
+      for (TargetStatsWrite write : uniqueWrites.values()) {
+        overwrite(write.pointerKey(), write.blobUri(), write.value());
+      }
+    }
+
+    private void overwrite(String pointerKey, String blobUri, TargetStatsRecord value) {
+      putBlob(blobUri, value);
+      for (int attempt = 0; attempt < CAS_MAX; attempt++) {
+        Pointer existing = pointerStore.get(pointerKey).orElse(null);
+        long expectedVersion = existing == null ? 0L : existing.getVersion();
+        if (existing != null && blobUri.equals(existing.getBlobUri())) {
+          return;
+        }
+        Pointer next =
+            PointerReferences.blobPointer(pointerKey, blobUri, Math.max(1L, expectedVersion + 1L));
+        if (pointerStore.compareAndSet(pointerKey, expectedVersion, next)) {
+          return;
+        }
+      }
+      throw new AbortRetryableException("overwrite conflict: " + pointerKey);
     }
 
     private boolean createIfAbsent(String pointerKey, String blobUri, TargetStatsRecord value) {

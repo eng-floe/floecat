@@ -179,6 +179,37 @@ public interface StatsStore {
   }
 
   /**
+   * Replaces target-scoped records inside an unpublished generation.
+   *
+   * <p>{@code targetsToReplace} defines the target keys owned by the writer. Implementations delete
+   * those target keys from {@code generationId}, then write {@code records} into that same
+   * generation. The generation must not become visible to normal readers until {@link
+   * #publishStatsGeneration(ResourceId, long, String, List)} succeeds.
+   */
+  default void replaceTargetStatsInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<StatsTarget> targetsToReplace,
+      List<TargetStatsRecord> records) {
+    throw new UnsupportedOperationException("unpublished stats generations are not supported");
+  }
+
+  /**
+   * Publishes an unpublished generation as the active stats generation for a table snapshot.
+   *
+   * <p>{@code finalRecords} are written into the generation immediately before publication; callers
+   * use this for records produced during finalization, such as aggregate stats.
+   */
+  default void publishStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<TargetStatsRecord> finalRecords) {
+    throw new UnsupportedOperationException("unpublished stats generations are not supported");
+  }
+
+  /**
    * Counts target stats records for a table snapshot with optional target-type filtering.
    *
    * <p>{@code targetType=Optional.empty()} means "all target types".

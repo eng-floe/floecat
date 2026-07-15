@@ -368,8 +368,11 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     }
     long statsProcessed =
         lease.fullRescan
-            ? persistence.replaceFileGroupStatsForSnapshot(
-                tableId, snapshotTask.snapshotId(), coverage.expectedFiles(), aggregateStats)
+            ? persistence.publishFileGroupStatsGeneration(
+                tableId,
+                snapshotTask.snapshotId(),
+                LeasedFileGroupExecutionService.statsGenerationId(lease),
+                aggregateStats)
             : persistence.persistStats(aggregateStats);
     RuntimeException pointerFailure = advanceCurrentSnapshot(tableId, snapshotTask, lease);
     if (pointerFailure != null) {
