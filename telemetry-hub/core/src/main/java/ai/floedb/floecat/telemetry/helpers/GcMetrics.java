@@ -40,6 +40,13 @@ public final class GcMetrics extends BaseMetrics {
     observability.counter(Telemetry.Metrics.GC_COLLECTIONS, count, metricTags(dynamic));
   }
 
+  public void recordError(double count, Tag... extraTags) {
+    List<Tag> dynamic = new ArrayList<>();
+    dynamic.add(Tag.of(TagKey.RESULT, "error"));
+    addExtra(dynamic, extraTags);
+    observability.counter(Telemetry.Metrics.GC_ERRORS, count, metricTags(dynamic));
+  }
+
   public void recordPause(Duration duration, Tag... extraTags) {
     List<Tag> dynamic = new ArrayList<>();
     dynamic.add(Tag.of(TagKey.RESULT, "success"));

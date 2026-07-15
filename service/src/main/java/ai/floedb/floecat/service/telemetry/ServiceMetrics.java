@@ -306,5 +306,48 @@ public final class ServiceMetrics {
     public static final MetricId CAS_OLDEST_SWEEP_AGE =
         new MetricId(
             "floecat.service.gc.cas.oldest_sweep_age", MetricType.GAUGE, "ms", CONTRACT, "service");
+
+    public static final MetricId RECONCILE_JOB_ACCOUNTS_LAST_TICK =
+        new MetricId(
+            "floecat.service.gc.reconcile_jobs.accounts.last_tick",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId RECONCILE_JOB_ACCOUNT_PAGE_INDEX =
+        new MetricId(
+            "floecat.service.gc.reconcile_jobs.account_page.index",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId RECONCILE_JOB_ACCOUNT_PAGE_SIZE =
+        new MetricId(
+            "floecat.service.gc.reconcile_jobs.account_page.size",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId RECONCILE_JOB_ACTIVE_ACCOUNT_TOKENS =
+        new MetricId(
+            "floecat.service.gc.reconcile_jobs.account_tokens.active",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId RECONCILE_JOB_QUARANTINED_LAST_TICK =
+        new MetricId(
+            "floecat.service.gc.reconcile_jobs.quarantined.last_tick",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId RECONCILE_JOB_DELETED_LAST_TICK =
+        new MetricId(
+            "floecat.service.gc.reconcile_jobs.deleted.last_tick",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
   }
 }

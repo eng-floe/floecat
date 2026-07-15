@@ -318,6 +318,42 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         "Age in milliseconds of the least-recently cleanly-swept CAS GC account.");
     add(
         defs,
+        ServiceMetrics.Gc.RECONCILE_JOB_ACCOUNTS_LAST_TICK,
+        gcRequired,
+        gcAllowed,
+        "Reconcile job GC accounts processed in the last completed tick.");
+    add(
+        defs,
+        ServiceMetrics.Gc.RECONCILE_JOB_ACCOUNT_PAGE_INDEX,
+        gcRequired,
+        gcAllowed,
+        "Current reconcile job GC index within the cached account page.");
+    add(
+        defs,
+        ServiceMetrics.Gc.RECONCILE_JOB_ACCOUNT_PAGE_SIZE,
+        gcRequired,
+        gcAllowed,
+        "Current reconcile job GC cached account page size.");
+    add(
+        defs,
+        ServiceMetrics.Gc.RECONCILE_JOB_ACTIVE_ACCOUNT_TOKENS,
+        gcRequired,
+        gcAllowed,
+        "Accounts with active reconcile job GC continuation tokens.");
+    add(
+        defs,
+        ServiceMetrics.Gc.RECONCILE_JOB_QUARANTINED_LAST_TICK,
+        gcRequired,
+        gcAllowed,
+        "Unreadable reconcile job GC payloads retained in the last completed tick.");
+    add(
+        defs,
+        ServiceMetrics.Gc.RECONCILE_JOB_DELETED_LAST_TICK,
+        gcRequired,
+        gcAllowed,
+        "Reconcile job GC pointer/blob deletes completed in the last completed tick.");
+    add(
+        defs,
         ServiceMetrics.Stats.BATCH_ITEMS_TOTAL,
         statsRequired,
         statsAllowed,
