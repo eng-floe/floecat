@@ -20,6 +20,7 @@ import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.ResourceRepository;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
@@ -39,6 +40,7 @@ import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
@@ -53,6 +55,8 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   protected ProtoParser<T> parser;
   protected Function<T, byte[]> toBytes;
   protected String contentType;
+  // Optional decoded-content cache for immutable (content-addressed) blobs; null = no caching.
+  protected ImmutableBlobCache blobCache;
 
   public static final int CAS_MAX = 10;
 
@@ -124,11 +128,35 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType) {
+    this(pointerStore, blobStore, parser, toBytes, contentType, null);
+  }
+
+  protected BaseResourceRepository(
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      ProtoParser<T> parser,
+      Function<T, byte[]> toBytes,
+      String contentType,
+      ImmutableBlobCache blobCache) {
     this.pointerStore = Objects.requireNonNull(pointerStore, "pointerStore");
     this.blobStore = Objects.requireNonNull(blobStore, "blobs");
     this.parser = Objects.requireNonNull(parser, "parser");
     this.toBytes = Objects.requireNonNull(toBytes, "toBytes");
     this.contentType = Objects.requireNonNull(contentType, "contentType");
+    this.blobCache = blobCache;
+  }
+
+  /**
+   * Whether this repository's blobs are immutable once written (content-addressed) and may be
+   * served from {@link ImmutableBlobCache}. Subclasses that know their schema override (see {@code
+   * ResourceSchema.casBlobs}); the default is the safe "never cache".
+   */
+  protected boolean blobsImmutable() {
+    return false;
+  }
+
+  protected final boolean blobCacheable() {
+    return blobCache != null && blobCache.enabled() && blobsImmutable();
   }
 
   @Override
@@ -144,22 +172,35 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
     var pointer = pointerStoreOpt.get();
     String blobUri = requireBlobReference(pointer, key);
-    byte[] bytes;
+    Optional<T> loaded =
+        blobCacheable()
+            ? blobCache.get(blobUri, this::loadAndParseBlob)
+            : loadAndParseBlob(blobUri);
+    if (loaded.isPresent()) {
+      return loaded;
+    }
+    // The pointed-at blob is absent: either the pointer moved/vanished under us (benign race) or
+    // it genuinely dangles (corruption). Absence is never cached, so this re-check stays live.
+    if (pointerChangedOrDeleted(key, pointer)) {
+      return Optional.empty();
+    }
+    throw new CorruptionException("dangling pointer, missing blob: " + blobUri, null);
+  }
 
+  /**
+   * Fetch-and-decode one blob: empty ONLY for a genuinely absent blob; parse failures and retryable
+   * store faults throw. This is the loader {@link ImmutableBlobCache} single-flights — decode
+   * semantics live here, once, for both pointer-resolved and blob-direct reads.
+   */
+  protected final Optional<T> loadAndParseBlob(String blobUri) {
     try {
-      bytes = blobStore.get(blobUri);
+      byte[] bytes = blobStore.get(blobUri);
       if (bytes == null) {
-        if (pointerChangedOrDeleted(key, pointer)) {
-          return Optional.empty();
-        }
-        throw new CorruptionException("dangling pointer, missing blob: " + blobUri, null);
+        return Optional.empty();
       }
       return Optional.of(parser.parse(bytes));
     } catch (StorageNotFoundException snf) {
-      if (pointerChangedOrDeleted(key, pointer)) {
-        return Optional.empty();
-      }
-      throw new CorruptionException("dangling pointer, missing blob: " + blobUri, snf);
+      return Optional.empty();
     } catch (InvalidProtocolBufferException ipbe) {
       throw new CorruptionException("parse failed: " + blobUri, ipbe);
     } catch (StorageAbortRetryableException sar) {
@@ -355,10 +396,26 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
             uris.add(requireBlobReference(row, row.getKey()));
           }
 
-          var blobsMap = blobStore.getBatch(uris);
+          // Serve immutable blobs from the decoded cache and batch-fetch only the misses; fetched
+          // misses are decoded once and populated back for the next page/scan of this data.
+          Map<String, T> cached =
+              blobCacheable() ? blobCache.getAllPresent(uris) : Map.<String, T>of();
+          var missUris = new ArrayList<String>(uris.size() - cached.size());
+          for (var uri : uris) {
+            if (!cached.containsKey(uri)) {
+              missUris.add(uri);
+            }
+          }
+          var blobsMap =
+              missUris.isEmpty() ? Map.<String, byte[]>of() : blobStore.getBatch(missUris);
           var blobs = new ArrayList<T>(rows.size());
           for (var row : rows) {
             String blobUri = requireBlobReference(row, row.getKey());
+            T hit = cached.get(blobUri);
+            if (hit != null) {
+              blobs.add(hit);
+              continue;
+            }
             byte[] bytes = blobsMap.get(blobUri);
             if (bytes == null) {
               var after = pointerStore.get(row.getKey()).orElse(null);
@@ -369,7 +426,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
             }
 
             try {
-              blobs.add(parser.parse(bytes));
+              T parsed = parser.parse(bytes);
+              if (blobCacheable()) {
+                blobCache.put(blobUri, parsed);
+              }
+              blobs.add(parsed);
             } catch (Exception e) {
               throw new CorruptionException("parse failed: " + blobUri, e);
             }

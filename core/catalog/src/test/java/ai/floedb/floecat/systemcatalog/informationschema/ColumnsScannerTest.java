@@ -32,7 +32,6 @@ import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.utilities.TestTableScanContextBuilder;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -105,8 +104,7 @@ class ColumnsScannerTest {
     overlay.addNode(
         new CatalogNode(
             catalogId,
-            1,
-            Instant.EPOCH,
+            "blob://test/v1",
             "marketing",
             Map.of(),
             Optional.empty(),
@@ -117,8 +115,7 @@ class ColumnsScannerTest {
         namespaceId,
         new UserTableNode(
             tableId,
-            1,
-            Instant.EPOCH,
+            "blob://test/v1",
             catalogId,
             namespaceId,
             "orders",

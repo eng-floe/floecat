@@ -23,6 +23,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.SnapshotKey;
@@ -69,6 +70,25 @@ public class SnapshotRepository {
       TableRepository tableRepo,
       CurrentSnapshotPointerRepository currentPointerRepo,
       TableRootRepository roots,
+      StatsStore statsStore,
+      ImmutableBlobCache blobCache) {
+    this(
+        pointerStore,
+        blobStore,
+        tableRepo,
+        currentPointerRepo,
+        roots,
+        statsStore,
+        Clock.systemUTC(),
+        blobCache);
+  }
+
+  public SnapshotRepository(
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      TableRepository tableRepo,
+      CurrentSnapshotPointerRepository currentPointerRepo,
+      TableRootRepository roots,
       StatsStore statsStore) {
     this(
         pointerStore,
@@ -77,7 +97,8 @@ public class SnapshotRepository {
         currentPointerRepo,
         roots,
         statsStore,
-        Clock.systemUTC());
+        Clock.systemUTC(),
+        null);
   }
 
   // Convenience constructors below pass statsStore = null: with no stats store the read-time
@@ -90,7 +111,15 @@ public class SnapshotRepository {
       TableRepository tableRepo,
       CurrentSnapshotPointerRepository currentPointerRepo,
       TableRootRepository roots) {
-    this(pointerStore, blobStore, tableRepo, currentPointerRepo, roots, null, Clock.systemUTC());
+    this(
+        pointerStore,
+        blobStore,
+        tableRepo,
+        currentPointerRepo,
+        roots,
+        null,
+        Clock.systemUTC(),
+        null);
   }
 
   public SnapshotRepository(
@@ -124,7 +153,8 @@ public class SnapshotRepository {
       CurrentSnapshotPointerRepository currentPointerRepo,
       TableRootRepository roots,
       StatsStore statsStore,
-      Clock clock) {
+      Clock clock,
+      ImmutableBlobCache blobCache) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -132,7 +162,8 @@ public class SnapshotRepository {
             Schemas.SNAPSHOT,
             Snapshot::parseFrom,
             Snapshot::toByteArray,
-            "application/x-protobuf");
+            "application/x-protobuf",
+            blobCache);
     this.tableRepo = tableRepo;
     this.currentPointerRepo = currentPointerRepo;
     this.pointerStore = pointerStore;
@@ -188,6 +219,11 @@ public class SnapshotRepository {
    */
   public Optional<Snapshot> getByBlobUri(String blobUri) {
     return repo.getByBlobUri(blobUri);
+  }
+
+  /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
+  public Optional<Snapshot> getByBlobUriLive(String blobUri) {
+    return repo.getByBlobUriLive(blobUri);
   }
 
   /**
@@ -385,7 +421,11 @@ public class SnapshotRepository {
    */
   private RootLookup lookupRoot(ResourceId tableId) {
     for (int attempt = 0; attempt < 2; attempt++) {
-      MutationMeta meta = roots.metaForSafe(tableId);
+      // The retry exists to observe a FRESH pointer after a supersede+sweep race; through the TTL
+      // pointer cache it would just re-read the same dead URI, so the second attempt goes live
+      // (which also evicts the stale entry for every other consumer).
+      MutationMeta meta =
+          attempt == 0 ? roots.metaForSafe(tableId) : roots.metaForSafeLive(tableId);
       if (meta == null || meta.getBlobUri().isEmpty()) {
         return new RootLookup(false, null);
       }

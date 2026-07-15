@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.ViewKey;
@@ -40,8 +41,13 @@ public class ViewRepository {
 
   private final GenericResourceRepository<View, ViewKey> repo;
 
-  @Inject
   public ViewRepository(PointerStore pointerStore, BlobStore blobStore) {
+    this(pointerStore, blobStore, null);
+  }
+
+  @Inject
+  public ViewRepository(
+      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -49,7 +55,8 @@ public class ViewRepository {
             Schemas.VIEW,
             View::parseFrom,
             View::toByteArray,
-            "application/x-protobuf");
+            "application/x-protobuf",
+            blobCache);
   }
 
   public void create(View view) {
@@ -146,5 +153,10 @@ public class ViewRepository {
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
   public Optional<View> getByBlobUri(String blobUri) {
     return repo.getByBlobUri(blobUri);
+  }
+
+  /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
+  public Optional<View> getByBlobUriLive(String blobUri) {
+    return repo.getByBlobUriLive(blobUri);
   }
 }

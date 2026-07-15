@@ -883,8 +883,7 @@ class TransactionIntentApplierSupportTest {
               java.util.Optional.of(
                   new ai.floedb.floecat.metagraph.model.CatalogNode(
                       id,
-                      1L,
-                      java.time.Instant.EPOCH,
+                      "blob://test/v1",
                       id.getId(),
                       java.util.Map.of(),
                       java.util.Optional.empty(),
@@ -895,8 +894,7 @@ class TransactionIntentApplierSupportTest {
               java.util.Optional.of(
                   new ai.floedb.floecat.metagraph.model.NamespaceNode(
                       id,
-                      1L,
-                      java.time.Instant.EPOCH,
+                      "blob://test/v1",
                       ResourceId.newBuilder()
                           .setAccountId(id.getAccountId())
                           .setId("cat-1")

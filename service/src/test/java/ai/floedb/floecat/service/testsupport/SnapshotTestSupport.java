@@ -124,6 +124,15 @@ public final class SnapshotTestSupport {
           .findFirst();
     }
 
+    /**
+     * The fake keeps no resident-decode layer, so the cache-bypassing "live" read resolves through
+     * the same synthesized-URI lookup: a seeded snapshot's blob is live, everything else is gone.
+     */
+    @Override
+    public Optional<Snapshot> getByBlobUriLive(String blobUri) {
+      return getByBlobUri(blobUri);
+    }
+
     // Mirror the real repository's newest-first, id-descending-on-tie ordering (at millisecond
     // granularity) so tests observe the same snapshot selection the production by-time index gives.
     private static final Comparator<Snapshot> NEWEST_FIRST =

@@ -41,7 +41,6 @@ import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -200,8 +199,7 @@ class CatalogSurfaceWritePolicyTest {
   private CatalogNode catalogNode(ResourceId id, String displayName) {
     return new CatalogNode(
         id,
-        1L,
-        Instant.EPOCH,
+        "blob://test/v1",
         displayName,
         Map.of(),
         Optional.empty(),
@@ -212,14 +210,13 @@ class CatalogSurfaceWritePolicyTest {
 
   private NamespaceNode namespaceNode(ResourceId id, String displayName, GraphNodeOrigin origin) {
     return new NamespaceNode(
-        id, 1L, Instant.EPOCH, catalogId, List.of(), displayName, origin, Map.of(), Map.of());
+        id, "blob://test/v1", catalogId, List.of(), displayName, origin, Map.of(), Map.of());
   }
 
   private UserTableNode userTableNode(ResourceId id) {
     return new UserTableNode(
         id,
-        1L,
-        Instant.EPOCH,
+        "blob://test/v1",
         catalogId,
         namespaceId,
         "orders",
@@ -240,7 +237,6 @@ class CatalogSurfaceWritePolicyTest {
     return new SystemTableNode.GenericSystemTableNode(
         id,
         1L,
-        Instant.EPOCH,
         "engine",
         "system_table",
         namespaceId,
@@ -257,8 +253,7 @@ class CatalogSurfaceWritePolicyTest {
   private ViewNode viewNode(ResourceId id, GraphNodeOrigin origin, String displayName) {
     return new ViewNode(
         id,
-        1L,
-        Instant.EPOCH,
+        "blob://test/v1",
         catalogId,
         namespaceId,
         displayName,

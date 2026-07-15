@@ -85,9 +85,9 @@ class ScanBundleServiceTest {
   }
 
   private void stubPinnedBlobsPresent() {
-    when(tableRepo.getByBlobUri(TABLE_BLOB_URI))
+    when(tableRepo.getByBlobUriLive(TABLE_BLOB_URI))
         .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE_ID).build()));
-    when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI))
+    when(snapshotRepo.getByBlobUriLive(SNAPSHOT_BLOB_URI))
         .thenReturn(
             Optional.of(Snapshot.newBuilder().setTableId(TABLE_ID).setSnapshotId(42L).build()));
     when(resolver.applyToTableProperties(any(), any(), any())).thenReturn(Map.of());
@@ -108,17 +108,17 @@ class ScanBundleServiceTest {
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
             .setMetadataLocation("s3://bucket/table/metadata/00001.metadata.json")
             .build();
-    when(tableRepo.getByBlobUri(TABLE_BLOB_URI)).thenReturn(Optional.of(table));
-    when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI)).thenReturn(Optional.of(snapshot));
+    when(tableRepo.getByBlobUriLive(TABLE_BLOB_URI)).thenReturn(Optional.of(table));
+    when(snapshotRepo.getByBlobUriLive(SNAPSHOT_BLOB_URI)).thenReturn(Optional.of(snapshot));
     when(resolver.applyToTableProperties(table, null, table.getPropertiesMap()))
         .thenReturn(Map.of("s3.region", "us-east-1"));
 
     var init = service.initScan("corr", PIN);
 
     // Both reads come from the pinned immutable blobs, never the live pointers.
-    verify(tableRepo).getByBlobUri(TABLE_BLOB_URI);
+    verify(tableRepo).getByBlobUriLive(TABLE_BLOB_URI);
     verify(tableRepo, never()).getById(any());
-    verify(snapshotRepo).getByBlobUri(SNAPSHOT_BLOB_URI);
+    verify(snapshotRepo).getByBlobUriLive(SNAPSHOT_BLOB_URI);
     verify(snapshotRepo, never()).getById(any(), anyLong());
     assertEquals(42L, init.snapshotId());
     assertEquals(
@@ -129,7 +129,7 @@ class ScanBundleServiceTest {
 
   @Test
   void initScanFailsWhenPinnedTableBlobMissing() {
-    when(tableRepo.getByBlobUri(TABLE_BLOB_URI)).thenReturn(Optional.empty());
+    when(tableRepo.getByBlobUriLive(TABLE_BLOB_URI)).thenReturn(Optional.empty());
 
     assertThrows(io.grpc.StatusRuntimeException.class, () -> service.initScan("corr", PIN));
   }
@@ -241,9 +241,9 @@ class ScanBundleServiceTest {
 
   @Test
   void initScanFailsWhenPinnedSnapshotBlobMissing() {
-    when(tableRepo.getByBlobUri(TABLE_BLOB_URI))
+    when(tableRepo.getByBlobUriLive(TABLE_BLOB_URI))
         .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE_ID).build()));
-    when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI)).thenReturn(Optional.empty());
+    when(snapshotRepo.getByBlobUriLive(SNAPSHOT_BLOB_URI)).thenReturn(Optional.empty());
 
     assertThrows(io.grpc.StatusRuntimeException.class, () -> service.initScan("corr", PIN));
   }

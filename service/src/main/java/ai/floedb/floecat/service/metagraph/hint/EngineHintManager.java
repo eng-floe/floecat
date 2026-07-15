@@ -146,7 +146,8 @@ public class EngineHintManager {
     }
 
     String fingerprint = provider.get().fingerprint(node, engineKey, payloadType);
-    HintCacheKey key = new HintCacheKey(node.id(), node.version(), engineHintKey, fingerprint);
+    HintCacheKey key =
+        new HintCacheKey(node.id(), node.cacheIdentity(), engineHintKey, fingerprint);
     EngineHint cached = cache.getIfPresent(key);
     if (cached != null) {
       recordHit();
@@ -196,10 +197,14 @@ public class EngineHintManager {
   }
 
   static final record HintCacheKey(
-      ResourceId resourceId, long pointerVersion, EngineHintKey engineHintKey, String fingerprint) {
+      ResourceId resourceId,
+      String cacheIdentity,
+      EngineHintKey engineHintKey,
+      String fingerprint) {
 
     HintCacheKey {
       Objects.requireNonNull(resourceId, "resourceId");
+      Objects.requireNonNull(cacheIdentity, "cacheIdentity");
       Objects.requireNonNull(engineHintKey, "engineHintKey");
       Objects.requireNonNull(fingerprint, "fingerprint");
     }

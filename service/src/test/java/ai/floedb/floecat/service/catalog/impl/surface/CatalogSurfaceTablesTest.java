@@ -40,7 +40,6 @@ import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
@@ -67,8 +66,7 @@ class CatalogSurfaceTablesTest {
     overlay.addNode(
         new NamespaceNode(
             namespaceId,
-            1L,
-            Instant.now(),
+            "blob://test/v1",
             catalogId,
             List.of(),
             "public",
@@ -193,7 +191,6 @@ class CatalogSurfaceTablesTest {
     return new SystemTableNode.GenericSystemTableNode(
         id(ResourceKind.RK_TABLE, "sys_" + displayName),
         1L,
-        Instant.now(),
         "engine",
         displayName,
         namespaceId,

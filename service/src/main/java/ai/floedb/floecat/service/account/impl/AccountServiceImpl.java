@@ -50,6 +50,7 @@ import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -77,6 +78,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   @Inject CatalogRepository catalogRepo;
   @Inject NamespaceRepository namespaceRepo;
   @Inject TableRepository tableRepo;
+  @Inject TableRootRepository tableRootRepo;
   @Inject ConnectorRepository connectorRepo;
   @Inject ViewRepository viewRepo;
   @Inject PrincipalProvider principal;
@@ -592,7 +594,9 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
         "account_delete_cleanup_snapshot_prefix account_id=%s table_id=%s",
         tableId.getAccountId(), tableId.getId());
     pointerStore.deleteByPrefix(Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId()));
-    pointerStore.delete(Keys.tableRootByTable(tableId.getAccountId(), tableId.getId()));
+    // Through the repository, not a bare pointer-store delete: the root-pointer cache must drop
+    // its entry with the pointer (same-process read-your-writes).
+    tableRootRepo.purgeRoot(tableId);
     // The root-resync re-drive marker lives under /accounts/{a}/root-resyncs/by-table/, outside the
     // per-table /tables/{t}/ subtree the prefixes above cover. Delete it here so a failed
     // post-commit

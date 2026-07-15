@@ -65,6 +65,12 @@ public final class FakeCatalogRepository extends CatalogRepository {
   }
 
   @Override
+  public Optional<Catalog> getByBlobUriLive(String blobUri) {
+    // The fake's in-memory map IS the live store; same lookup as the cached variant.
+    return getByBlobUri(blobUri);
+  }
+
+  @Override
   public Optional<Catalog> getByName(String accountId, String displayName) {
     return entries.values().stream()
         .filter(

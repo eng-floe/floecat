@@ -26,7 +26,6 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -53,8 +52,7 @@ public final class TestFunctionScanContextBuilder extends AbstractTestScanContex
     NamespaceNode ns =
         new NamespaceNode(
             id,
-            1,
-            Instant.EPOCH,
+            "blob://test/v1",
             catalogId,
             List.of(),
             name,
@@ -79,7 +77,6 @@ public final class TestFunctionScanContextBuilder extends AbstractTestScanContex
             SystemNodeRegistry.resourceId(
                 engineKind, ResourceKind.RK_FUNCTION, NameRefUtil.name(name)),
             1,
-            Instant.EPOCH,
             "15",
             ns.id(),
             name,

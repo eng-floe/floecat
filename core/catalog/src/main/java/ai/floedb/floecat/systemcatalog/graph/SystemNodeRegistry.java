@@ -58,7 +58,6 @@ import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.util.SignatureUtil;
 import ai.floedb.floecat.systemcatalog.util.SystemSchemaMapper;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -279,7 +278,6 @@ public class SystemNodeRegistry {
                 new SystemTableNode.FloeCatSystemTableNode(
                     tableId,
                     version,
-                    Instant.EPOCH,
                     normalizedVersion,
                     table.displayName(),
                     namespaceId.get(),
@@ -292,7 +290,6 @@ public class SystemNodeRegistry {
                 new SystemTableNode.StorageSystemTableNode(
                     tableId,
                     version,
-                    Instant.EPOCH,
                     normalizedVersion,
                     table.displayName(),
                     namespaceId.get(),
@@ -307,7 +304,6 @@ public class SystemNodeRegistry {
                 new SystemTableNode.EngineSystemTableNode(
                     tableId,
                     version,
-                    Instant.EPOCH,
                     normalizedVersion,
                     table.displayName(),
                     namespaceId.get(),
@@ -319,7 +315,6 @@ public class SystemNodeRegistry {
                 new SystemTableNode.GenericSystemTableNode(
                     tableId,
                     version,
-                    Instant.EPOCH,
                     normalizedVersion,
                     table.displayName(),
                     namespaceId.get(),
@@ -346,8 +341,7 @@ public class SystemNodeRegistry {
       ViewNode node =
           new ViewNode(
               viewId,
-              version,
-              Instant.EPOCH,
+              systemBlobUri(normalizedKind, version, viewId.getId()),
               catalogId,
               namespaceId.get(),
               view.displayName(),
@@ -373,8 +367,7 @@ public class SystemNodeRegistry {
       NamespaceNode node =
           new NamespaceNode(
               namespaceId,
-              version,
-              Instant.EPOCH,
+              systemBlobUri(normalizedKind, version, namespaceId.getId()),
               catalogId,
               List.copyOf(ns.name().getPathList()),
               ns.displayName(),
@@ -651,7 +644,6 @@ public class SystemNodeRegistry {
     return new FunctionNode(
         resourceId(engineKind, def),
         version,
-        Instant.EPOCH,
         engineKind,
         nsId,
         localName(def.name()),
@@ -672,7 +664,6 @@ public class SystemNodeRegistry {
     return new OperatorNode(
         resourceId(engineKind, def),
         version,
-        Instant.EPOCH,
         engineKind,
         localName(def.name()),
         resourceId(engineKind, ResourceKind.RK_TYPE, def.leftType()),
@@ -691,7 +682,6 @@ public class SystemNodeRegistry {
     return new TypeNode(
         resourceId(engineKind, def),
         version,
-        Instant.EPOCH,
         engineKind,
         namespaceId,
         localName(def.name()),
@@ -710,7 +700,6 @@ public class SystemNodeRegistry {
     return new CastNode(
         resourceId(engineKind, def),
         version,
-        Instant.EPOCH,
         engineKind,
         resourceId(engineKind, ResourceKind.RK_TYPE, def.sourceType()),
         resourceId(engineKind, ResourceKind.RK_TYPE, def.targetType()),
@@ -726,7 +715,6 @@ public class SystemNodeRegistry {
     return new CollationNode(
         resourceId(engineKind, def),
         version,
-        Instant.EPOCH,
         engineKind,
         localName(def.name()),
         def.locale(),
@@ -741,7 +729,6 @@ public class SystemNodeRegistry {
     return new AggregateNode(
         resourceId(engineKind, def),
         version,
-        Instant.EPOCH,
         engineKind,
         localName(def.name()),
         def.argumentTypes().stream()
@@ -909,6 +896,15 @@ public class SystemNodeRegistry {
   private static boolean matches(
       List<EngineSpecificRule> rules, String engineKind, String engineVersion) {
     return EngineSpecificMatcher.matches(rules, engineKind, engineVersion);
+  }
+
+  /**
+   * Synthetic content identity for a synthesized node: moves with the registry fingerprint (so hint
+   * caches refresh on registry reloads) AND carries a per-node discriminator — {@code
+   * cacheIdentity()} is documented as a cache key, so two distinct nodes must never share one.
+   */
+  static String systemBlobUri(String engineKind, long version, String discriminator) {
+    return "system://" + engineKind + "/" + version + "/" + discriminator;
   }
 
   private static long versionFromFingerprint(String fingerprint) {

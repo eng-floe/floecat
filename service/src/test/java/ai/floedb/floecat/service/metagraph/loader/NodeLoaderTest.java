@@ -24,6 +24,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.testsupport.FakeCatalogRepository;
 import ai.floedb.floecat.service.testsupport.FakeNamespaceRepository;
 import ai.floedb.floecat.service.testsupport.FakeTableRepository;
@@ -114,6 +115,75 @@ class NodeLoaderTest {
     // No fallback to the current pointer: a missing pinned blob is empty, so the caller fails hard.
     assertThat(loader.tableFromBlob(tableId, "blob/absent")).isEmpty();
     assertThat(tableRepo.getByIdCount(tableId)).isEqualTo(0);
+  }
+
+  @Test
+  void loadRebuildsFromTheLivePointerWhenTheBlobMoved() {
+    FakeTableRepository tableRepo = new FakeTableRepository();
+    NodeLoader loader = loaderWith(tableRepo);
+    ResourceId tableId = tableId();
+    // The live pointer already moved on: the blob the caller's meta names was superseded + swept.
+    tableRepo.put(orders(tableId), meta(2L, "blob/live"));
+
+    var node = loader.load(tableId, meta(1L, "blob/swept"));
+
+    // Rebuilt from the blob the LIVE pointer names — identity matches the content it carries.
+    assertThat(node).isPresent();
+    assertThat(node.get().cacheIdentity()).isEqualTo("blob/live");
+    assertThat(tableRepo.getByIdCount(tableId)).isEqualTo(0);
+  }
+
+  @Test
+  void loadFailsLoudWhenTheLivePointerStillNamesTheMissingBlob() {
+    FakeTableRepository tableRepo = new FakeTableRepository();
+    NodeLoader loader = loaderWith(tableRepo);
+    ResourceId tableId = tableId();
+    // Pointer exists and names a blob nobody can load: the dangling-pointer corruption shape.
+    tableRepo.putMeta(tableId, meta(1L, "blob/dangling"));
+
+    assertThrows(
+        BaseResourceRepository.CorruptionException.class,
+        () -> loader.load(tableId, meta(1L, "blob/dangling")),
+        "a current pointer whose blob is lost must surface as corruption, never as absence");
+  }
+
+  @Test
+  void loadIsEmptyWhenTheResourceWasDropped() {
+    FakeTableRepository tableRepo = new FakeTableRepository();
+    NodeLoader loader = loaderWith(tableRepo);
+    ResourceId tableId = tableId();
+    // The pointer was deleted under the reader: the live meta names no blob — genuine absence.
+    tableRepo.putMeta(tableId, MutationMeta.newBuilder().setPointerVersion(0L).build());
+
+    assertThat(loader.load(tableId, meta(1L, "blob/swept"))).isEmpty();
+  }
+
+  private static NodeLoader loaderWith(FakeTableRepository tableRepo) {
+    return new NodeLoader(
+        new FakeCatalogRepository(),
+        new FakeNamespaceRepository(),
+        tableRepo,
+        new FakeViewRepository());
+  }
+
+  private static ResourceId tableId() {
+    return ResourceId.newBuilder()
+        .setAccountId("account")
+        .setId("t1")
+        .setKind(ResourceKind.RK_TABLE)
+        .build();
+  }
+
+  private static MutationMeta meta(long version, String blobUri) {
+    return MutationMeta.newBuilder().setPointerVersion(version).setBlobUri(blobUri).build();
+  }
+
+  private static Table orders(ResourceId tableId) {
+    return Table.newBuilder()
+        .setResourceId(tableId)
+        .setDisplayName("orders")
+        .setSchemaJson("{}")
+        .build();
   }
 
   @Test

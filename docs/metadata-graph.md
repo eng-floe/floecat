@@ -5,13 +5,17 @@ Floecat’s query-facing services share a common metadata cache called the **Met
 between the pointer/blob repositories and any RPC that needs to inspect catalogs, namespaces, tables,
 or views. The graph provides:
 
-- Immutable node models that can be safely reused across requests.
-- A per-account Caffeine-backed cache keyed by resource ID + pointer version so invalidation is
-  deterministic (can be disabled by setting `floecat.metadata.graph.cache-max-size` to 0; the limit
-  applies to each account independently).
+- Immutable node models that can be safely reused across requests. Nodes are pure derivations of
+  their source blob and are cached content-addressed (keyed by `blobUri + "#node"`) in the
+  process-wide `ImmutableBlobCache`, so they need no invalidation.
+- A short-TTL pointer-meta cache (`GraphCacheManager`) that bounds how stale a resource-ID →
+  current-blob resolution can be (`floecat.metadata.graph.meta-cache-ttl-seconds`, default 2).
 - Helper APIs for name resolution (Directory RPC parity) and snapshot pinning (Snapshot RPC parity).
 - Extension points (`EngineHint`) so planners/executors can attach engine-specific payloads without
   mutating the base metadata structures.
+
+The graph's caches are two of the service-wide caching disciplines described in
+[`docs/caching.md`](caching.md).
 
 ```
 ┌────────────┐      ┌────────────────────┐      ┌───────────────────────┐
@@ -29,8 +33,10 @@ facade sit inside `service/metagraph`. The split looks like this:
 - `core/metagraph/model/` – Immutable node records (`CatalogNode`, `NamespaceNode`, `TableNode`,
   `ViewNode`, `SystemViewNode`) plus shared enums (`GraphNodeKind`, `EngineKey`, `EngineHint`,
   `GraphNodeOrigin`, etc.).
-- `service/metagraph/cache/` – `GraphCacheManager` + `GraphCacheKey` implement the per-account
-  cache-of-caches and expose meters for hit/miss counts, account count, and total entries.
+- `service/metagraph/cache/` – `GraphCacheManager` wraps the shared `PointerTtlCache`
+  (`service/repo/cache/`) for pointer metadata and exposes hit/miss counters and size gauges;
+  `CatalogTopologyCache` caches namespace/relation ref listings. Derived nodes themselves live in
+  the process-wide `ImmutableBlobCache` (`service/repo/cache/`), not here.
 - `service/metagraph/loader/` – `NodeLoader` wraps the catalog/namespace/table/view repositories to
   hydrate immutable nodes from protobuf metadata (`metaForSafe` + pointer fetches).
 - `service/metagraph/resolver/` – `NameResolver` handles catalog/namespace/table/view lookups, while
@@ -64,8 +70,8 @@ Common fields:
 | Field                  | Description                                                                 |
 |------------------------|-----------------------------------------------------------------------------|
 | `id()`                 | Stable `ResourceId` carrying account/kind/UUID.                              |
-| `version()`            | Pointer version used to compose cache keys.                                 |
-| `metadataUpdatedAt()`  | Repository mutation timestamp; informative only (not tied to snapshots).    |
+| `blobUri()`            | Source blob the node was derived from (user nodes). Identical blob content always produces an identical node, so the URI is the node's content-stable identity. |
+| `cacheIdentity()`      | Content-stable cache identity: `blobUri` for blob-backed user nodes; defaults to `String.valueOf(version())` for synthesized system nodes (user nodes do not retain the pointer version and return `0` from `version()`). |
 | `engineHints()`        | Map keyed by `EngineHintKey(engineKind, engineVersion, payloadType)` → opaque `EngineHint`.  |
 
 ### Engine Hints
@@ -123,13 +129,14 @@ keeps them entirely in memory until FloeCAT restarts.
 
 ### Deterministic Hint Caching
 The hint system used by builtin catalog providers and other planners is backed by a weight-bounded
-Caffeine cache keyed on `(resourceId, pointerVersion, engineKey, payloadType, fingerprint)`. The
-fingerprint is provider‑defined and ensures that changes in provider logic (e.g., version of a
-builtin definition, rule filtering logic, or planner‑specific metadata) produce new cached entries.
-Cache eviction is weight‑aware: inserts that exceed the configured maximum immediately trigger
-synchronous eviction when running in test mode, and asynchronous eviction in production. Eviction
-can invalidate old hints even when pointer versions are unchanged, ensuring stale engine‑specific
-metadata is not reused beyond its boundary conditions.
+Caffeine cache in `EngineHintManager`, keyed on `(resourceId, cacheIdentity, engineHintKey,
+fingerprint)`. `cacheIdentity` is the node's content-stable identity (blob URI for user nodes), so
+a DDL that writes a new blob naturally keys new hint entries without invalidation. The fingerprint
+is provider‑defined and ensures that changes in provider logic (e.g., version of a builtin
+definition, rule filtering logic, or planner‑specific metadata) produce new cached entries. Cache
+eviction is weight‑aware (`floecat.metadata.hint.cache-max-weight`, default 64 MB, 30‑minute
+access TTL): inserts that exceed the configured maximum immediately trigger synchronous eviction
+when running in test mode, and asynchronous eviction in production.
 
 ## Graph APIs
 The `UserGraph` façade (CDI `@ApplicationScoped`, see `service/metagraph/overlay/user/UserGraph.java`)
@@ -145,7 +152,7 @@ exposes the Metadata Graph APIs that higher layers call. Key methods:
 | `ResolveResult resolveViews(String cid, List<NameRef> list, int limit, String token)` | Resolves explicit view names, returning canonical `NameRef`s and resource IDs. |
 | `ResolveResult resolveViews(String cid, NameRef prefix, int limit, String token)` | Lists views below a prefix with next-page tokens and total counts. |
 | `SnapshotPin snapshotPinFor(String cid, ResourceId tableId, SnapshotRef override, Optional<Timestamp> asOfDefault)` | Normalises snapshot selection (override → as-of → current). |
-| `void invalidate(ResourceId id)` | Evicts every cached version of an ID (call after successful mutations). |
+| `void invalidate(ResourceId id)` | Evicts the cached pointer meta for an ID (call after successful mutations). Derived nodes are content-keyed and need no invalidation. |
 
 ### Engine Hint Retrieval
 All tables and views participating in planning may embed engine‑specific hints. The Metadata Graph
@@ -153,12 +160,18 @@ delegates hint evaluation to the EngineHintManager, which selects providers base
 hint type, and engine availability. Hints are cached per fingerprint and engine key so that
 planners requesting different engine versions or planner modes never interfere with one another.
 
-Internally the graph:
+Internally `resolve(ResourceId)`:
 
-1. Calls the matching repository’s `metaForSafe` to fetch pointer version and mutation metadata.
-2. Composes a cache key `(ResourceId, pointerVersion)`.
-3. Rehydrates the protobuf record (`Catalog`, `Namespace`, `Table`, `View`) into the immutable node.
-4. Returns cached nodes for future lookups until the pointer version changes.
+1. Probes the pointer-meta cache; a hit names the current blob URI, and the derived node at
+   `blobUri + "#node"` is returned from the `ImmutableBlobCache` when present.
+2. Otherwise re-reads a fresh pointer (`metaForSafe`) before hydrating. The meta cache is trusted
+   only to short-circuit to an already-cached node: hydrating from a cached (possibly superseded)
+   blob URI could serve stale content as current, so `load()` only ever receives a freshly read
+   pointer.
+3. Rehydrates the protobuf record (`Catalog`, `Namespace`, `Table`, `View`) into the immutable node
+   and stores it content-keyed under `blobUri + "#node"`.
+4. Serves the node from cache for as long as the blob stays hot; a DDL writes a new blob, so the
+   fresh pointer simply names a different node entry — no eviction required.
 
 ### Snapshot Pinning Semantics
 - Explicit snapshot ID overrides always win.
@@ -181,9 +194,10 @@ the graph defines the single source of truth for list/prefix resolution.
 ## Usage Guidelines
 - **Always go through the graph** for read paths instead of hitting repositories directly. This keeps
   cache hit rate predictable and ensures planner/executor code sees immutable snapshots.
-- **Call `invalidate`** whenever a catalog/namespace/table/view mutation succeeds. Pointer version
-  bumps will naturally invalidate cache entries, but eviction shortens the window before readers see
-  the new data.
+- **Call `invalidate`** whenever a catalog/namespace/table/view mutation succeeds. It evicts the
+  pointer meta so same-process readers see the new pointer immediately instead of waiting out the
+  meta TTL; cross-instance staleness stays bounded by the TTL. Node entries never need eviction —
+  they are content-keyed by blob URI.
 - **Treat node instances as read-only**. They are immutable records but they may still be shared
   across requests via the cache, so do not mutate maps or lists after retrieval.
 - **Attach engine hints sparingly**. Hints should be small (think JSON blobs or compact protobufs)
@@ -205,17 +219,14 @@ Column decorations are surfaced per column via `RelationInfo.columns[*]` (`Colum
 still resolve as `FOUND` while individual columns report `COLUMN_STATUS_FAILED` with structured failure reasons.
 
 ## Metrics
-The graph surfaces a couple of Micrometer gauges so operators can verify cache state at runtime:
+Graph cache metrics are emitted through the shared `CacheMetrics` helper under the
+`floecat.core.cache.*` metric family, distinguished by cache-name tag:
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `floecat.metadata.graph.cache.enabled` | Gauge | 1.0 when caching is enabled, 0.0 when `cache-max-size=0`. |
-| `floecat.metadata.graph.cache.max_size` | Gauge | Per-account configured max size (0 when caching is disabled). |
-| `floecat.metadata.graph.cache.accounts` | Gauge | Number of account cache partitions that currently exist. |
-| `floecat.metadata.graph.cache.entries` | Gauge | Total estimated entries across all account caches. |
-
-These gauges complement the per-account `floecat.metadata.graph.cache{result=hit|miss,account=<id>}`
-counters and the `floecat.metadata.graph.load` timer that track cache effectiveness.
+| Cache name | What is tracked |
+|------------|-----------------|
+| `graph-meta-cache` | Pointer-meta cache: enabled gauge, configured max entries, estimated entries, and per-account hit/miss counters. |
+| `graph-cache` | Node-load latency timer (`GraphCacheManager.recordLoad`) and load-failure counter. |
+| `blob-cache` | Node/blob caching itself: the `ImmutableBlobCache` registers enabled, max weight, entries, weighted size, and hit/miss under this name. |
 
 ## Testing
 `MetadataGraphTest` uses in-memory repository/snapshot/directory fakes to exercise cache behavior and
@@ -227,5 +238,3 @@ own logic while still mirroring real graph responses.
 - Add traversal helpers that expand view dependency trees into stable `RelationInfo` products.
 - Surface resolved snapshot sets on `TableNode` for multi-table AS OF operations.
 - Provide SPI hooks so connectors can contribute engine hints lazily.
-- Harden per-account cache lifecycle (limit live account shards, auto-evict idle shards, and release
-  account-specific metrics) so multi-account churn cannot exhaust heap or Micrometer registries.

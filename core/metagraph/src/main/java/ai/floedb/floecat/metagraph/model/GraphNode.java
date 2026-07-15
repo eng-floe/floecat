@@ -17,7 +17,6 @@
 package ai.floedb.floecat.metagraph.model;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -43,12 +42,12 @@ public interface GraphNode {
   String displayName();
 
   /**
-   * Timestamp of the last metadata mutation for this node.
-   *
-   * <p>The timestamp reflects repository-level changes (schema updates, view edits) but is not tied
-   * to snapshot pointer updates, which are tracked separately.
+   * Content-stable cache identity: pointer version for synthesized nodes, blob URI for blob-backed
+   * ones.
    */
-  Instant metadataUpdatedAt();
+  default String cacheIdentity() {
+    return String.valueOf(version());
+  }
 
   /** Logical kind returned to planners. */
   GraphNodeKind kind();

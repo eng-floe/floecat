@@ -20,7 +20,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -55,7 +54,6 @@ final class FunctionNodeTest {
         new FunctionNode(
             ResourceId.newBuilder().setId("fn-id").build(),
             1,
-            Instant.EPOCH,
             "1.0",
             namespaceId,
             null,
@@ -71,7 +69,6 @@ final class FunctionNodeTest {
     return new FunctionNode(
         ResourceId.newBuilder().setId("fn-id").build(),
         1,
-        Instant.EPOCH,
         "1.0",
         namespaceId,
         "abs",

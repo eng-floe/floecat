@@ -53,7 +53,6 @@ import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -163,8 +162,7 @@ class ViewServiceImplSystemViewTest {
     overlay.addNode(
         new CatalogNode(
             systemCatalogId,
-            1L,
-            Instant.now(),
+            "blob://test/v1",
             "engine",
             Map.of(),
             Optional.empty(),
@@ -174,8 +172,7 @@ class ViewServiceImplSystemViewTest {
     overlay.addNode(
         new NamespaceNode(
             namespaceId,
-            1L,
-            Instant.now(),
+            "blob://test/v1",
             userCatalogId,
             List.of(),
             "public",
@@ -279,8 +276,7 @@ class ViewServiceImplSystemViewTest {
     overlay.addNode(
         new CatalogNode(
             userCatalogId,
-            1L,
-            Instant.now(),
+            "blob://test/v1",
             "user_catalog",
             Map.of(),
             Optional.empty(),
@@ -290,8 +286,7 @@ class ViewServiceImplSystemViewTest {
     overlay.addNode(
         new NamespaceNode(
             namespaceId,
-            1L,
-            Instant.now(),
+            "blob://test/v1",
             userCatalogId,
             List.of(),
             "public",
@@ -327,8 +322,7 @@ class ViewServiceImplSystemViewTest {
 
     return new ViewNode(
         id,
-        1L,
-        Instant.now(),
+        "blob://test/v1",
         catalogId,
         namespaceId,
         "sys_view_" + id.getId(),
@@ -347,8 +341,7 @@ class ViewServiceImplSystemViewTest {
   private ViewNode userViewNode(ResourceId id, ResourceId catalogId, ResourceId namespaceId) {
     return new ViewNode(
         id,
-        1L,
-        Instant.now(),
+        "blob://test/v1",
         catalogId,
         namespaceId,
         "user_view_" + id.getId(),

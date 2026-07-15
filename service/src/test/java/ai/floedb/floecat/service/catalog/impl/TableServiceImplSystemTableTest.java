@@ -52,7 +52,6 @@ import ai.floedb.floecat.types.ManagedTableProperties;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -119,7 +118,7 @@ class TableServiceImplSystemTableTest {
 
     SystemTableNode node =
         new SystemTableNode.EngineSystemTableNode(
-            sysTableId, 1L, Instant.now(), "engine-v", "engine_sys", nsId, List.of(), null, null);
+            sysTableId, 1L, "engine-v", "engine_sys", nsId, List.of(), null, null);
 
     overlay.addNode(node);
 
@@ -155,15 +154,7 @@ class TableServiceImplSystemTableTest {
     // Any SystemTableNode will do; origin() is SYSTEM.
     SystemTableNode node =
         new SystemTableNode.EngineSystemTableNode(
-            sysTableId,
-            1L,
-            Instant.now(),
-            "engine-v",
-            "engine_sys_pc",
-            nsId,
-            List.of(),
-            null,
-            null);
+            sysTableId, 1L, "engine-v", "engine_sys_pc", nsId, List.of(), null, null);
 
     overlay.addNode(node);
 
@@ -205,7 +196,7 @@ class TableServiceImplSystemTableTest {
 
     SystemTableNode node =
         new SystemTableNode.EngineSystemTableNode(
-            sysTableId, 1L, Instant.now(), "engine-v", "engine_sys", nsId, List.of(), null, null);
+            sysTableId, 1L, "engine-v", "engine_sys", nsId, List.of(), null, null);
 
     overlay.addNode(node);
 
@@ -247,8 +238,7 @@ class TableServiceImplSystemTableTest {
     overlay.addNode(
         new CatalogNode(
             systemCatalogId,
-            1L,
-            Instant.now(),
+            "blob://test/v1",
             "engine",
             Map.of(),
             Optional.empty(),
@@ -258,8 +248,7 @@ class TableServiceImplSystemTableTest {
     overlay.addNode(
         new NamespaceNode(
             namespaceId,
-            1L,
-            Instant.now(),
+            "blob://test/v1",
             userCatalogId,
             List.of(),
             "public",
@@ -319,8 +308,7 @@ class TableServiceImplSystemTableTest {
     overlay.addNode(
         new NamespaceNode(
             namespaceId,
-            1L,
-            Instant.now(),
+            "blob://test/v1",
             userCatalogId,
             List.of(),
             "public",
@@ -370,8 +358,7 @@ class TableServiceImplSystemTableTest {
       ResourceId tableId, ResourceId catalogId, ResourceId namespaceId) {
     return new UserTableNode(
         tableId,
-        1L,
-        Instant.now(),
+        "blob://test/v1",
         catalogId,
         namespaceId,
         "orders",

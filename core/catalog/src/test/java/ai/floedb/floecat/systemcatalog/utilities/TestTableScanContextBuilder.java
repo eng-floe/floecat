@@ -22,7 +22,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import java.time.Instant;
 import java.util.*;
 
 /** Test builder for table- and namespace-based scanners (information_schema.*). */
@@ -33,8 +32,7 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
     CatalogNode catalog =
         new CatalogNode(
             catalogId,
-            1,
-            Instant.EPOCH,
+            "blob://test/v1",
             catalogId.getId(),
             Map.of(),
             Optional.empty(),
@@ -73,8 +71,7 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
     NamespaceNode ns =
         new NamespaceNode(
             id,
-            1,
-            Instant.EPOCH,
+            "blob://test/v1",
             catalogId,
             List.copyOf(pathSegments),
             displayName == null ? "" : displayName,
@@ -98,8 +95,7 @@ public final class TestTableScanContextBuilder extends AbstractTestScanContextBu
     UserTableNode table =
         new UserTableNode(
             tableId,
-            1,
-            Instant.EPOCH,
+            "blob://test/v1",
             catalogId,
             ns.id(),
             name,

@@ -33,7 +33,6 @@ import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -52,7 +51,6 @@ public final class SystemGraph {
   private static final int DEFAULT_SNAPSHOT_CACHE_SIZE = 16;
 
   private final SystemNodeRegistry registry;
-  private final Instant createdAt = Instant.now();
   private final Map<VersionKey, GraphSnapshot> snapshots;
   private final int snapshotCacheSize;
 
@@ -432,8 +430,9 @@ public final class SystemGraph {
     CatalogNode catalogNode =
         new CatalogNode(
             catalogId,
-            version,
-            createdAt,
+            // Synthetic content identity: no storage blob backs the system catalog node; the
+            // fingerprint-derived version keeps cache identity moving with registry content.
+            "system://" + normalizedKind + "/" + version + "/catalog",
             normalizedKind,
             Map.of(),
             Optional.empty(),

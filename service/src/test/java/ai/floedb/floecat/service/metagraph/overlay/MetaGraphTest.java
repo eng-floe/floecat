@@ -48,7 +48,6 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
 import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -162,11 +161,6 @@ class MetaGraphTest {
           @Override
           public String displayName() {
             return "sys";
-          }
-
-          @Override
-          public Instant metadataUpdatedAt() {
-            return Instant.now();
           }
 
           @Override
@@ -631,8 +625,7 @@ class MetaGraphTest {
       ResourceId id, ResourceId namespaceId, String name) {
     return new ai.floedb.floecat.metagraph.model.ViewNode(
         id,
-        1L,
-        Instant.EPOCH,
+        "blob://test/v1",
         ResourceId.getDefaultInstance(),
         namespaceId,
         name,
@@ -668,11 +661,6 @@ class MetaGraphTest {
       @Override
       public long version() {
         return 1;
-      }
-
-      @Override
-      public Instant metadataUpdatedAt() {
-        return Instant.EPOCH;
       }
 
       @Override
@@ -764,8 +752,7 @@ class MetaGraphTest {
     NamespaceNode systemNamespace =
         new NamespaceNode(
             systemNamespaceId,
-            1,
-            Instant.EPOCH,
+            "blob://test/v1",
             catalogId,
             List.of("information_schema"),
             "tables",

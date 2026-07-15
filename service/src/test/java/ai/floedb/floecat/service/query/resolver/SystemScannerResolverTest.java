@@ -37,7 +37,6 @@ import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import io.grpc.Context;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -119,16 +118,7 @@ class SystemScannerResolverTest {
 
   private static SystemTableNode.FloeCatSystemTableNode tableNode(ResourceId id, String scannerId) {
     return new SystemTableNode.FloeCatSystemTableNode(
-        id,
-        1,
-        Instant.EPOCH,
-        "1.0",
-        id.getId(),
-        NAMESPACE_ID,
-        List.of(),
-        Map.of(),
-        Map.of(),
-        scannerId);
+        id, 1, "1.0", id.getId(), NAMESPACE_ID, List.of(), Map.of(), Map.of(), scannerId);
   }
 
   private static final class TestScannerProvider implements SystemObjectScannerProvider {
