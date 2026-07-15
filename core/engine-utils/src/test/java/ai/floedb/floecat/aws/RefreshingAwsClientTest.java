@@ -24,6 +24,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
@@ -215,6 +220,45 @@ class RefreshingAwsClientTest {
     }
 
     assertThat(retry).isCancelled();
+  }
+
+  @Test
+  void currentResourceCreationIsSingleFlight() throws Exception {
+    AtomicInteger builds = new AtomicInteger();
+    CountDownLatch firstBuildStarted = new CountDownLatch(1);
+    CountDownLatch releaseFirstBuild = new CountDownLatch(1);
+
+    try (RefreshingAwsClient<TestClient> client =
+        RefreshingAwsClient.withResourceFactory(
+            () -> {
+              int id = builds.incrementAndGet();
+              if (id == 1) {
+                firstBuildStarted.countDown();
+                try {
+                  releaseFirstBuild.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                  Thread.currentThread().interrupt();
+                  throw new RuntimeException(e);
+                }
+              }
+              return RefreshingAwsClient.clientResource(new TestClient(id));
+            })) {
+      ExecutorService executor = Executors.newFixedThreadPool(2);
+      try {
+        Future<TestClient> first = executor.submit(client::current);
+        assertThat(firstBuildStarted.await(5, TimeUnit.SECONDS)).isTrue();
+        Future<TestClient> second = executor.submit(client::current);
+
+        releaseFirstBuild.countDown();
+
+        TestClient firstClient = first.get(5, TimeUnit.SECONDS);
+        TestClient secondClient = second.get(5, TimeUnit.SECONDS);
+        assertThat(secondClient).isSameAs(firstClient);
+        assertThat(builds).hasValue(1);
+      } finally {
+        executor.shutdownNow();
+      }
+    }
   }
 
   @Test

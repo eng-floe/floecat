@@ -216,27 +216,20 @@ public final class RefreshingAwsClient<T extends AutoCloseable> implements AutoC
     if (existing != null) {
       return existing;
     }
-    ClientResource<T> next = factory.get();
-    if (closed.get()) {
-      closeQuietly(next);
+    synchronized (refreshLock) {
       requireOpen();
-    }
-    if (current.compareAndSet(null, next)) {
+      existing = current.get();
+      if (existing != null) {
+        return existing;
+      }
+      ClientResource<T> next = factory.get();
       if (closed.get()) {
-        if (current.compareAndSet(next, null)) {
-          closeQuietly(next);
-        }
+        closeQuietly(next);
         requireOpen();
       }
+      current.set(next);
       return next;
     }
-    closeQuietly(next);
-    ClientResource<T> winner = current.get();
-    if (winner == null) {
-      requireOpen();
-      throw new IllegalStateException(name + " client was not initialized");
-    }
-    return winner;
   }
 
   private void refreshAfterFailure(ClientResource<T> failedResource, Throwable failure) {
