@@ -17,6 +17,8 @@
 package ai.floedb.floecat.service.reconciler.jobs;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.SnapshotPlanBlob;
@@ -74,6 +76,8 @@ import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
+import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.stats.spi.StatsStore.UnpublishedGenerationDeleteResult;
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -128,6 +132,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private static final Logger LOG = Logger.getLogger(DurableReconcileJobStore.class);
+  private static final String STATS_CLEANUP_PENDING = "PENDING";
+  private static final String STATS_CLEANUP_COMPLETED = "COMPLETED";
 
   private static final int DEFAULT_MAX_ATTEMPTS = 8;
   private static final long DEFAULT_BASE_BACKOFF_MS = 500L;
@@ -185,6 +191,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Inject ReconcileReadyQueueBackend readyQueueBackend;
   @Inject ConnectorRepository connectorRepo;
   @Inject Observability observability;
+  @Inject StatsStore statsStore;
   private int maxAttempts = DEFAULT_MAX_ATTEMPTS;
   private long baseBackoffMs = DEFAULT_BASE_BACKOFF_MS;
   private long maxBackoffMs = DEFAULT_MAX_BACKOFF_MS;
@@ -1112,10 +1119,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   public void runProjectionMaintenanceOnce(long maxMillis) {
     projectionMaintenance().runProjectionMaintenanceOnce(maxMillis);
+    runAbandonedFullRescanStatsCleanupMaintenanceOnce(maxMillis);
   }
 
   public void runCancellationMaintenanceOnce(long maxMillis) {
     cancellationMaintenance().runCancellationMaintenanceOnce(maxMillis);
+    runAbandonedFullRescanStatsCleanupMaintenanceOnce(maxMillis);
   }
 
   public void runReadyIndexMaintenanceOnce(long maxMillis) {
@@ -2304,6 +2313,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     terminalChildrenToClear.forEach(this::clearCancellationLeaseIfTerminal);
     for (StoredReconcileJob child : changedChildren) {
       markDirtyParentForRecord(child);
+      cleanupAbandonedFullRescanStatsGenerationIfTerminal(child);
     }
     if (!nextChildPageToken.isBlank()) {
       LOG.infof(
@@ -2433,6 +2443,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       next.finishedAtMs = now;
       next.childrenFinalized = true;
     }
+    markStatsCleanupPendingIfRequired(next, now);
     next.nextAttemptAtMs = 0L;
     next.readyPointerKey = null;
     next.updatedAtMs = now;
@@ -2470,8 +2481,23 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return false;
     }
     if ("JS_CANCELLED".equals(state) && root.finishedAtMs > 0L) {
-      requestParentCancellationCleanupIfNeeded(root);
-      return true;
+      StoredReconcileJob effectiveRoot = root;
+      if (!root.childrenFinalized) {
+        StoredReconcileJob next = jobIndexStore().cloneStoredRecord(root);
+        next.childrenFinalized = true;
+        markStatsCleanupPendingIfRequired(next, now);
+        next.nextAttemptAtMs = 0L;
+        next.readyPointerKey = null;
+        next.updatedAtMs = now;
+        if (!commitSingleCancellationMutation(root, next)) {
+          return false;
+        }
+        markDirtyParentForRecord(next);
+        upsertRootSummaryForRecord(next);
+        effectiveRoot = next;
+      }
+      requestParentCancellationCleanupIfNeeded(effectiveRoot);
+      return cleanupAbandonedFullRescanStatsGenerationIfTerminal(effectiveRoot);
     }
     StoredReconcileJob next = jobIndexStore().cloneStoredRecord(root);
     next.state = "JS_CANCELLED";
@@ -2481,6 +2507,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     next.finishedAtMs = now;
     next.childrenFinalized = true;
+    markStatsCleanupPendingIfRequired(next, now);
     next.nextAttemptAtMs = 0L;
     next.readyPointerKey = null;
     next.updatedAtMs = now;
@@ -2491,7 +2518,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     markDirtyParentForRecord(next);
     upsertRootSummaryForRecord(next);
     requestParentCancellationCleanupIfNeeded(next);
-    return true;
+    return cleanupAbandonedFullRescanStatsGenerationIfTerminal(next);
   }
 
   private void requestParentCancellationCleanupIfNeeded(StoredReconcileJob child) {
@@ -2814,7 +2841,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
               updated.set(jobIndexStore().cloneStoredRecord(next));
               return next;
             });
-    return updated.get();
+    StoredReconcileJob advanced = updated.get();
+    cleanupAbandonedFullRescanStatsGenerationIfTerminal(advanced);
+    return advanced;
   }
 
   private boolean shouldDeferPlanSnapshotSuccessUntilFinalizer(
@@ -2878,6 +2907,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         existing.startedAtMs = projectedStartedAtMs(existing, rollup);
         existing.finishedAtMs = projectedFinishedAtMs(existing, rollup);
         existing.executorId = rollup.executorId();
+        markStatsCleanupPendingIfRequired(existing, System.currentTimeMillis());
         return existing;
       }
       if (blank(existing.message)) {
@@ -2894,6 +2924,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     existing.nextAttemptAtMs = 0L;
     existing.childrenFinalized =
         "JS_WAITING".equals(blankToEmpty(rollup.state())) || isTerminalState(rollup.state());
+    markStatsCleanupPendingIfRequired(existing, System.currentTimeMillis());
     return existing;
   }
 
@@ -4715,6 +4746,191 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return SnapshotPlanBlob.of(plannedJobs);
   }
 
+  private boolean cleanupAbandonedFullRescanStatsGenerationIfTerminal(StoredReconcileJob job) {
+    if (statsStore == null
+        || job == null
+        || job.jobKind() != ReconcileJobKind.PLAN_SNAPSHOT
+        || !job.fullRescan
+        || !job.childrenFinalized
+        || !failedOrCancelled(job.state)
+        || STATS_CLEANUP_COMPLETED.equals(blankToEmpty(job.statsCleanupState))
+        || blankToEmpty(job.snapshotTaskTableId).isBlank()
+        || job.snapshotTaskSnapshotId < 0L
+        || blankToEmpty(job.accountId).isBlank()
+        || blankToEmpty(job.jobId).isBlank()) {
+      return true;
+    }
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(blankToEmpty(job.accountId))
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(blankToEmpty(job.snapshotTaskTableId))
+            .build();
+    String generationId = "full-rescan-" + blankToEmpty(job.jobId);
+    try {
+      UnpublishedGenerationDeleteResult deleteResult =
+          statsStore.deleteUnpublishedStatsGeneration(
+              tableId, job.snapshotTaskSnapshotId, generationId);
+      if (deleteResult == UnpublishedGenerationDeleteResult.RETRYABLE_IN_PROGRESS) {
+        LOG.infof(
+            "Deferred abandoned full-rescan stats generation cleanup accountId=%s jobId=%s"
+                + " tableId=%s snapshotId=%d generationId=%s state=%s result=%s",
+            job.accountId,
+            job.jobId,
+            tableId.getId(),
+            Long.valueOf(job.snapshotTaskSnapshotId),
+            generationId,
+            blankToEmpty(job.state),
+            deleteResult);
+        return false;
+      }
+      markStatsCleanupCompleted(job.accountId, job.jobId);
+      if (deleteResult == UnpublishedGenerationDeleteResult.DELETED) {
+        LOG.infof(
+            "Deleted abandoned full-rescan stats generation accountId=%s jobId=%s tableId=%s"
+                + " snapshotId=%d generationId=%s state=%s",
+            job.accountId,
+            job.jobId,
+            tableId.getId(),
+            Long.valueOf(job.snapshotTaskSnapshotId),
+            generationId,
+            blankToEmpty(job.state));
+      }
+      return true;
+    } catch (RuntimeException e) {
+      LOG.warnf(
+          e,
+          "Failed to delete abandoned full-rescan stats generation accountId=%s jobId=%s tableId=%s"
+              + " snapshotId=%d generationId=%s state=%s",
+          job.accountId,
+          job.jobId,
+          tableId.getId(),
+          Long.valueOf(job.snapshotTaskSnapshotId),
+          generationId,
+          blankToEmpty(job.state));
+      return false;
+    }
+  }
+
+  private void runAbandonedFullRescanStatsCleanupMaintenanceOnce(long maxMillis) {
+    if (statsStore == null) {
+      return;
+    }
+    long startedAtMs = System.currentTimeMillis();
+    long deadlineMs = maxMillis <= 0L ? startedAtMs : startedAtMs + Math.max(1L, maxMillis);
+    int scanned = 0;
+    int attempted = 0;
+    int completed = 0;
+    for (String state : List.of("JS_FAILED", "JS_CANCELLED")) {
+      String token = "";
+      while (true) {
+        if (System.currentTimeMillis() > deadlineMs) {
+          logStatsCleanupMaintenance(startedAtMs, scanned, attempted, completed, false);
+          return;
+        }
+        ReconcileJobIndexStore.StoredJobPage page =
+            jobIndexStore().listStoredJobsInState(state, readyScanLimit, token);
+        for (StoredReconcileJob job : page.records()) {
+          scanned++;
+          if (!needsAbandonedFullRescanStatsCleanup(job)) {
+            continue;
+          }
+          attempted++;
+          if (cleanupAbandonedFullRescanStatsGenerationIfTerminal(job)) {
+            completed++;
+          }
+        }
+        String nextToken = blankToEmpty(page.nextPageToken());
+        if (nextToken.isBlank() || nextToken.equals(token)) {
+          break;
+        }
+        token = nextToken;
+      }
+    }
+    logStatsCleanupMaintenance(startedAtMs, scanned, attempted, completed, true);
+  }
+
+  private void logStatsCleanupMaintenance(
+      long startedAtMs, int scanned, int attempted, int completed, boolean finished) {
+    long elapsedMs = System.currentTimeMillis() - startedAtMs;
+    if (attempted <= 0 && elapsedMs <= 500L) {
+      LOG.debugf(
+          "runAbandonedFullRescanStatsCleanupMaintenanceOnce total_ms=%d completed=%s",
+          Long.valueOf(elapsedMs), Boolean.valueOf(finished));
+      return;
+    }
+    LOG.infof(
+        "runAbandonedFullRescanStatsCleanupMaintenanceOnce total_ms=%d completed=%s"
+            + " scanned=%d attempted=%d cleaned=%d",
+        Long.valueOf(elapsedMs),
+        Boolean.valueOf(finished),
+        Integer.valueOf(scanned),
+        Integer.valueOf(attempted),
+        Integer.valueOf(completed));
+  }
+
+  private boolean needsAbandonedFullRescanStatsCleanup(StoredReconcileJob job) {
+    return job != null
+        && job.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
+        && job.fullRescan
+        && job.childrenFinalized
+        && failedOrCancelled(job.state)
+        && !STATS_CLEANUP_COMPLETED.equals(blankToEmpty(job.statsCleanupState))
+        && !blankToEmpty(job.snapshotTaskTableId).isBlank()
+        && job.snapshotTaskSnapshotId >= 0L
+        && !blankToEmpty(job.accountId).isBlank()
+        && !blankToEmpty(job.jobId).isBlank();
+  }
+
+  private void markStatsCleanupPendingIfRequired(StoredReconcileJob job, long now) {
+    if (job == null || !needsStatsCleanupMarker(job)) {
+      return;
+    }
+    if (!STATS_CLEANUP_COMPLETED.equals(blankToEmpty(job.statsCleanupState))) {
+      job.statsCleanupState = STATS_CLEANUP_PENDING;
+      job.statsCleanupUpdatedAtMs = now;
+    }
+  }
+
+  private boolean needsStatsCleanupMarker(StoredReconcileJob job) {
+    return job != null
+        && job.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
+        && job.fullRescan
+        && job.childrenFinalized
+        && failedOrCancelled(job.state)
+        && !blankToEmpty(job.snapshotTaskTableId).isBlank()
+        && job.snapshotTaskSnapshotId >= 0L
+        && !blankToEmpty(job.accountId).isBlank()
+        && !blankToEmpty(job.jobId).isBlank();
+  }
+
+  private void markStatsCleanupCompleted(String accountId, String jobId) {
+    String effectiveAccountId = blankToEmpty(accountId);
+    String effectiveJobId = blankToEmpty(jobId);
+    if (effectiveAccountId.isBlank() || effectiveJobId.isBlank()) {
+      return;
+    }
+    jobIndexStore()
+        .mutateByJobIdReturningRecord(
+            effectiveJobId,
+            existing -> {
+              if (existing == null
+                  || !effectiveAccountId.equals(blankToEmpty(existing.accountId))
+                  || !effectiveJobId.equals(blankToEmpty(existing.jobId))
+                  || !needsStatsCleanupMarker(existing)) {
+                return null;
+              }
+              if (STATS_CLEANUP_COMPLETED.equals(blankToEmpty(existing.statsCleanupState))) {
+                return null;
+              }
+              StoredReconcileJob next = jobIndexStore().cloneStoredRecord(existing);
+              next.statsCleanupState = STATS_CLEANUP_COMPLETED;
+              next.statsCleanupUpdatedAtMs = System.currentTimeMillis();
+              next.updatedAtMs = next.statsCleanupUpdatedAtMs;
+              return next;
+            });
+  }
+
   private boolean isParentCapable(ReconcileJobKind jobKind) {
     return jobKind == ReconcileJobKind.PLAN_CONNECTOR
         || jobKind == ReconcileJobKind.PLAN_TABLE
@@ -4779,6 +4995,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private static boolean isCancellationState(String state) {
     return "JS_CANCELLING".equals(blankToEmpty(state))
         || "JS_CANCELLED".equals(blankToEmpty(state));
+  }
+
+  private static boolean failedOrCancelled(String state) {
+    return "JS_FAILED".equals(blankToEmpty(state)) || "JS_CANCELLED".equals(blankToEmpty(state));
   }
 
   private static boolean isRetryableCompletion(CompletionKind completionKind) {

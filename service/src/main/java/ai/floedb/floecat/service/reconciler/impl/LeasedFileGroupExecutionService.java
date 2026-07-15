@@ -71,8 +71,10 @@ import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -518,12 +520,8 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       return;
     }
     long batchStartNanos = System.nanoTime();
-    List<TargetStatsRecord> created = new java.util.ArrayList<>(nonNullStats.size());
-    for (TargetStatsRecord record : nonNullStats) {
-      if (statsStore.putTargetStatsIfAbsent(record)) {
-        created.add(record);
-      }
-    }
+    List<TargetStatsRecord> created =
+        statsStore.putTargetStatsBatchIfAbsent(tableId, snapshotId, nonNullStats);
     if (!created.isEmpty()) {
       statsOrchestrator.invalidateStatsCache(tableId, snapshotId, created);
     }
@@ -540,6 +538,12 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       List<TargetStatsRecord> fileStats) {
     long snapshotId = plannedTask.snapshotId();
     List<TargetStatsRecord> nonNullStats = validateFileStats(tableId, snapshotId, fileStats);
+    Set<String> plannedPaths = new LinkedHashSet<>(plannedTask.filePaths());
+    for (TargetStatsRecord record : nonNullStats) {
+      if (!plannedPaths.contains(record.getFile().getFilePath())) {
+        throw new IllegalArgumentException("file-group stats include an unplanned file");
+      }
+    }
     List<StatsTarget> targetsToReplace =
         plannedTask.filePaths().stream().map(path -> StatsTargetIdentity.fileTarget(path)).toList();
     statsStore.replaceTargetStatsInGeneration(
@@ -562,12 +566,11 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
 
   static String statsGenerationId(ReconcileJobStore.LeasedJob lease) {
     String parentJobId = lease == null || lease.parentJobId == null ? "" : lease.parentJobId.trim();
-    String jobId = lease == null || lease.jobId == null ? "" : lease.jobId.trim();
-    String source = parentJobId.isBlank() ? jobId : parentJobId;
-    if (source.isBlank()) {
-      throw new IllegalArgumentException("reconcile job id is required for stats generation");
+    if (parentJobId.isBlank()) {
+      throw new IllegalArgumentException(
+          "parent reconcile job id is required for stats generation");
     }
-    return "full-rescan-" + source;
+    return "full-rescan-" + parentJobId;
   }
 
   private void persistIndexArtifacts(

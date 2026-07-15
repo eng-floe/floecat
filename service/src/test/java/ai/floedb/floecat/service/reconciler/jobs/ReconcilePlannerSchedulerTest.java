@@ -376,12 +376,8 @@ class ReconcilePlannerSchedulerTest {
         java.util.Set.of(
             ReconcileCapturePolicy.Output.TABLE_STATS,
             ReconcileCapturePolicy.Output.FILE_STATS,
-            ReconcileCapturePolicy.Output.COLUMN_STATS,
-            ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.Output.COLUMN_STATS),
         enqueuedScopes.getFirst().capturePolicy().outputs());
-    assertEquals(
-        ReconcileCapturePolicy.DefaultColumnScope.ALL,
-        enqueuedScopes.getFirst().capturePolicy().defaultColumnScope());
   }
 
   @Test

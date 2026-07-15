@@ -57,10 +57,7 @@ public class ReconcilePlannerScheduler {
           java.util.Set.of(
               ReconcileCapturePolicy.Output.TABLE_STATS,
               ReconcileCapturePolicy.Output.FILE_STATS,
-              ReconcileCapturePolicy.Output.COLUMN_STATS,
-              ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
-          ReconcileCapturePolicy.DefaultColumnScope.ALL,
-          ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS);
+              ReconcileCapturePolicy.Output.COLUMN_STATS));
   private static final Set<String> ACTIVE_ROOT_STATES =
       Set.of("JS_QUEUED", "JS_WAITING", "JS_RUNNING", "JS_CANCELLING");
 
