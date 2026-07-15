@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import ai.floedb.floecat.storage.aws.AwsClients;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -36,6 +37,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
@@ -62,7 +64,65 @@ class ProdSecretsManagerTest {
 
     assertArrayEquals("alpha".getBytes(), result.orElseThrow());
     assertTrue(staleClient.closed);
+    assertFalse(refreshedClient.provider.closed);
+    manager.shutdown();
+    assertTrue(refreshedClient.provider.closed);
     assertEquals(1, awsClients.secretsRefreshes);
+    assertEquals(0, awsClients.stsRefreshes);
+  }
+
+  @Test
+  void shared_secrets_provider_closes_when_refreshed_client_is_replaced() {
+    ClientHandle staleClient =
+        ClientHandle.secretsFailure(new RuntimeException("Connection pool shut down"));
+    ClientHandle firstRefreshedClient =
+        ClientHandle.secretsFailure(new RuntimeException("Connection pool shut down"));
+    ClientHandle secondRefreshedClient =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("alpha".getBytes()));
+    ClientHandle stsClient = ClientHandle.sts();
+
+    FakeAwsClients awsClients = new FakeAwsClients();
+    awsClients.refreshedSecretsClients.addLast(firstRefreshedClient);
+    awsClients.refreshedSecretsClients.addLast(secondRefreshedClient);
+
+    ProdSecretsManager manager =
+        new ProdSecretsManager(awsClients, staleClient.secretsClient, stsClient.stsClient);
+
+    assertThrows(RuntimeException.class, () -> manager.get("acct", "connectors", "secret"));
+    assertFalse(firstRefreshedClient.provider.closed);
+
+    Optional<byte[]> result = manager.get("acct", "connectors", "secret");
+
+    assertArrayEquals("alpha".getBytes(), result.orElseThrow());
+    assertTrue(firstRefreshedClient.provider.closed);
+    assertFalse(secondRefreshedClient.provider.closed);
+    manager.shutdown();
+    assertTrue(secondRefreshedClient.provider.closed);
+    assertEquals(2, awsClients.secretsRefreshes);
+  }
+
+  @Test
+  void injected_shared_secrets_provider_closes_when_initial_client_is_replaced() {
+    ClientHandle initialClient =
+        ClientHandle.secretsFailure(new RuntimeException("Connection pool shut down"));
+    ClientHandle refreshedClient =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("alpha".getBytes()));
+
+    FakeAwsClients awsClients = new FakeAwsClients();
+    awsClients.refreshedSecretsClients.addLast(initialClient);
+    awsClients.refreshedSecretsClients.addLast(refreshedClient);
+
+    ProdSecretsManager manager = new ProdSecretsManager(awsClients);
+
+    Optional<byte[]> result = manager.get("acct", "connectors", "secret");
+
+    assertArrayEquals("alpha".getBytes(), result.orElseThrow());
+    assertTrue(initialClient.closed);
+    assertTrue(initialClient.provider.closed);
+    assertFalse(refreshedClient.provider.closed);
+    manager.shutdown();
+    assertTrue(refreshedClient.provider.closed);
+    assertEquals(2, awsClients.secretsRefreshes);
     assertEquals(0, awsClients.stsRefreshes);
   }
 
@@ -299,6 +359,7 @@ class ProdSecretsManagerTest {
     assertTrue(staleStsClient.closed);
     assertEquals(1, staleStsClient.closeCount);
     assertFalse(refreshedStsClient.closed);
+    assertFalse(refreshedStsClient.provider.closed);
     assertTrue(refreshedAccountA.boundStsClient == refreshedStsClient);
     assertTrue(refreshedAccountB.boundStsClient == refreshedStsClient);
     assertEquals(1, awsClients.stsRefreshes);
@@ -352,16 +413,19 @@ class ProdSecretsManagerTest {
     private int perAccountClientBuilds;
 
     @Override
-    public SecretsManagerClient secretsManagerClient() {
+    public RefreshingAwsClient.ClientResource<SecretsManagerClient>
+        newSecretsManagerClientResource() {
       secretsRefreshes++;
-      return refreshedSecretsClients.removeFirst().secretsClient;
+      ClientHandle handle = refreshedSecretsClients.removeFirst();
+      return RefreshingAwsClient.clientResource(handle.secretsClient, handle.provider);
     }
 
     @Override
-    public StsClient stsClient() {
+    public RefreshingAwsClient.ClientResource<StsClient> newStsClientResource() {
       stsRefreshes++;
       activeStsClient = refreshedStsClients.removeFirst();
-      return activeStsClient.stsClient;
+      return RefreshingAwsClient.clientResource(
+          activeStsClient.stsClient, activeStsClient.provider);
     }
 
     @Override
@@ -383,6 +447,7 @@ class ProdSecretsManagerTest {
     private boolean closed;
     private int closeCount;
     private ClientHandle boundStsClient;
+    private final ProviderHandle provider = new ProviderHandle();
     private final SecretsManagerClient secretsClient;
     private final StsClient stsClient;
 
@@ -441,6 +506,20 @@ class ProdSecretsManagerTest {
         case "equals" -> proxy == args[0];
         default -> null;
       };
+    }
+  }
+
+  private static final class ProviderHandle implements AwsCredentialsProvider, AutoCloseable {
+    private boolean closed;
+
+    @Override
+    public AwsCredentials resolveCredentials() {
+      return null;
+    }
+
+    @Override
+    public void close() {
+      closed = true;
     }
   }
 }

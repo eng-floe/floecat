@@ -160,13 +160,35 @@ public class AwsClients {
   @Produces
   @Singleton
   public SecretsManagerClient secretsManagerClient() {
-    return secretsManagerClient(resolveCredentials());
+    return newSecretsManagerClientResource().client();
   }
 
   @Produces
   @Singleton
   public StsClient stsClient() {
-    return stsClient(resolveCredentials());
+    return newStsClientResource().client();
+  }
+
+  public ClientResource<SecretsManagerClient> newSecretsManagerClientResource() {
+    AwsCredentialsProvider credentials = resolveCredentials();
+    try {
+      return RefreshingAwsClient.clientResource(
+          secretsManagerClient(credentials), RefreshingAwsClient.closeableResource(credentials));
+    } catch (RuntimeException | Error e) {
+      RefreshingAwsClient.closeQuietly(RefreshingAwsClient.closeableResource(credentials));
+      throw e;
+    }
+  }
+
+  public ClientResource<StsClient> newStsClientResource() {
+    AwsCredentialsProvider credentials = resolveCredentials();
+    try {
+      return RefreshingAwsClient.clientResource(
+          stsClient(credentials), RefreshingAwsClient.closeableResource(credentials));
+    } catch (RuntimeException | Error e) {
+      RefreshingAwsClient.closeQuietly(RefreshingAwsClient.closeableResource(credentials));
+      throw e;
+    }
   }
 
   public SecretsManagerClient secretsManagerClient(AwsCredentialsProvider credentialsProvider) {

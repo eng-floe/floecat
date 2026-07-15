@@ -290,6 +290,26 @@ public class DynamoDbKvStoreTest {
   }
 
   @Test
+  void get_subscription_cancel_cancels_manager_wrapped_future() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    CompletableFuture<GetItemResponse> pending = new CompletableFuture<>();
+    handler.setPendingGetFuture(pending);
+
+    try (ai.floedb.floecat.aws.RefreshingAwsClient<DynamoDbAsyncClient> refreshingClient =
+        new ai.floedb.floecat.aws.RefreshingAwsClient<>(
+            "DynamoDB async", () -> clientFor(handler))) {
+      DynamoDbKvStore store =
+          new DynamoDbKvStore(
+              refreshingClient::callAsync, refreshingClient::callUnchecked, handler.tableName);
+
+      var subscription = store.get(key("pk", "sk")).subscribe().with(_ -> {}, _ -> {});
+      subscription.cancel();
+    }
+
+    assertTrue(pending.isCancelled());
+  }
+
+  @Test
   void recordToAv_skips_empty_value() {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     DynamoDbKvStore store = newStore(handler);

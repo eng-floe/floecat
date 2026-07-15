@@ -181,6 +181,43 @@ class RefreshingAwsClientTest {
   }
 
   @Test
+  void callAsyncCancellationCancelsActiveStage() {
+    CompletableFuture<String> pending = new CompletableFuture<>();
+
+    try (RefreshingAwsClient<TestClient> client =
+        new RefreshingAwsClient<>(() -> new TestClient(1))) {
+      CompletableFuture<String> result = client.callAsync(_ -> pending);
+
+      result.cancel(true);
+    }
+
+    assertThat(pending).isCancelled();
+  }
+
+  @Test
+  void callAsyncCancellationCancelsRetryStage() {
+    CompletableFuture<String> retry = new CompletableFuture<>();
+    AtomicInteger attempts = new AtomicInteger();
+
+    try (RefreshingAwsClient<TestClient> client =
+        new RefreshingAwsClient<>(() -> new TestClient(1))) {
+      CompletableFuture<String> result =
+          client.callAsync(
+              _ -> {
+                if (attempts.getAndIncrement() == 0) {
+                  return CompletableFuture.failedFuture(
+                      new IllegalStateException("Connection pool shut down"));
+                }
+                return retry;
+              });
+
+      result.cancel(true);
+    }
+
+    assertThat(retry).isCancelled();
+  }
+
+  @Test
   void closePreventsReopen() {
     RefreshingAwsClient<TestClient> client = new RefreshingAwsClient<>(() -> new TestClient(1));
     client.current();

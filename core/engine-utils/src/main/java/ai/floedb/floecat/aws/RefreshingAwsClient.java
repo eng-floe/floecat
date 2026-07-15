@@ -136,20 +136,25 @@ public final class RefreshingAwsClient<T extends AutoCloseable> implements AutoC
   public <R> CompletableFuture<R> callAsync(Function<T, ? extends CompletionStage<R>> operation) {
     ClientResource<T> resource = currentResource();
     CompletionStage<R> first;
+    CancellableCompletableFuture<R> result = new CancellableCompletableFuture<>();
     try {
       first = operation.apply(resource.client());
+      result.setActive(first);
     } catch (RuntimeException e) {
       if (!ClosedAwsClientDetector.isConnectionPoolShutdown(e)) {
         throw e;
       }
       warn(e);
       refreshAfterFailure(resource, e);
-      return applyAsync(operation, currentResource());
+      applyAsync(operation, currentResource(), result);
+      return result;
     }
 
-    CompletableFuture<R> result = new CompletableFuture<>();
     first.whenComplete(
         (value, failure) -> {
+          if (result.isCancelled()) {
+            return;
+          }
           if (failure == null) {
             result.complete(value);
             return;
@@ -162,7 +167,7 @@ public final class RefreshingAwsClient<T extends AutoCloseable> implements AutoC
           warn(unwrapped);
           try {
             refreshAfterFailure(resource, unwrapped);
-            applyAsync(operation, currentResource()).whenComplete(copyTo(result));
+            applyAsync(operation, currentResource(), result);
           } catch (Throwable retryFailure) {
             result.completeExceptionally(ClosedAwsClientDetector.unwrapStageFailure(retryFailure));
           }
@@ -182,15 +187,17 @@ public final class RefreshingAwsClient<T extends AutoCloseable> implements AutoC
     return ClosedAwsClientDetector.isConnectionPoolShutdown(failure);
   }
 
-  private <R> CompletableFuture<R> applyAsync(
-      Function<T, ? extends CompletionStage<R>> operation, ClientResource<T> resource) {
-    CompletableFuture<R> result = new CompletableFuture<>();
+  private <R> void applyAsync(
+      Function<T, ? extends CompletionStage<R>> operation,
+      ClientResource<T> resource,
+      CancellableCompletableFuture<R> result) {
     try {
-      operation.apply(resource.client()).whenComplete(copyTo(result));
+      CompletionStage<R> stage = operation.apply(resource.client());
+      result.setActive(stage);
+      stage.whenComplete(copyTo(result));
     } catch (RuntimeException e) {
       result.completeExceptionally(e);
     }
-    return result;
   }
 
   private static <R> java.util.function.BiConsumer<R, Throwable> copyTo(CompletableFuture<R> dest) {
@@ -338,5 +345,27 @@ public final class RefreshingAwsClient<T extends AutoCloseable> implements AutoC
   @FunctionalInterface
   public interface CheckedOperation<T, R, E extends Exception> {
     R call(T client) throws E;
+  }
+
+  private static final class CancellableCompletableFuture<R> extends CompletableFuture<R> {
+    private final AtomicReference<CompletableFuture<?>> active = new AtomicReference<>();
+
+    private void setActive(CompletionStage<?> stage) {
+      if (stage instanceof CompletableFuture<?> future) {
+        active.set(future);
+        if (isCancelled()) {
+          future.cancel(true);
+        }
+      }
+    }
+
+    @Override
+    public boolean cancel(boolean mayInterruptIfRunning) {
+      CompletableFuture<?> future = active.get();
+      if (future != null) {
+        future.cancel(mayInterruptIfRunning);
+      }
+      return super.cancel(mayInterruptIfRunning);
+    }
   }
 }

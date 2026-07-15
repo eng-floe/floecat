@@ -64,31 +64,52 @@ public class ProdSecretsManager implements SecretsManager {
 
   @Inject
   public ProdSecretsManager(AwsClients awsClients) {
-    this(awsClients, awsClients.secretsManagerClient(), awsClients.stsClient());
+    this.awsClients = awsClients;
+    this.secretsClient =
+        RefreshingAwsClient.withResourceFactory(
+            "Secrets Manager", () -> awsClients.newSecretsManagerClientResource());
+    this.stsClient =
+        RefreshingAwsClient.withResourceFactory("STS", () -> awsClients.newStsClientResource());
   }
 
   ProdSecretsManager(SecretsManagerClient secretsClient, StsClient stsClient) {
-    this(null, secretsClient, stsClient);
+    this(
+        null,
+        RefreshingAwsClient.clientResource(secretsClient),
+        RefreshingAwsClient.clientResource(stsClient));
   }
 
   ProdSecretsManager(
       AwsClients awsClients, SecretsManagerClient secretsClient, StsClient stsClient) {
+    this(
+        awsClients,
+        RefreshingAwsClient.clientResource(secretsClient),
+        RefreshingAwsClient.clientResource(stsClient));
+  }
+
+  private ProdSecretsManager(
+      AwsClients awsClients,
+      RefreshingAwsClient.ClientResource<SecretsManagerClient> secretsClient,
+      RefreshingAwsClient.ClientResource<StsClient> stsClient) {
     this.awsClients = awsClients;
-    AtomicReference<SecretsManagerClient> initialSecretsClient =
+    AtomicReference<RefreshingAwsClient.ClientResource<SecretsManagerClient>> initialSecretsClient =
         new AtomicReference<>(secretsClient);
-    AtomicReference<StsClient> initialStsClient = new AtomicReference<>(stsClient);
+    AtomicReference<RefreshingAwsClient.ClientResource<StsClient>> initialStsClient =
+        new AtomicReference<>(stsClient);
     this.secretsClient =
         RefreshingAwsClient.withResourceFactory(
             "Secrets Manager",
             () ->
-                RefreshingAwsClient.clientResource(
-                    takeInitialOrBuild(initialSecretsClient, this::newSecretsClient)));
+                initialOrBuildResource(
+                    "Secrets Manager",
+                    initialSecretsClient,
+                    () -> awsClients.newSecretsManagerClientResource()));
     this.stsClient =
         RefreshingAwsClient.withResourceFactory(
             "STS",
             () ->
-                RefreshingAwsClient.clientResource(
-                    takeInitialOrBuild(initialStsClient, this::newStsClient)));
+                initialOrBuildResource(
+                    "STS", initialStsClient, () -> awsClients.newStsClientResource()));
   }
 
   private final AwsClients awsClients;
@@ -289,25 +310,16 @@ public class ProdSecretsManager implements SecretsManager {
     }
   }
 
-  private SecretsManagerClient newSecretsClient() {
-    if (awsClients == null) {
-      throw new IllegalStateException("Secrets Manager client cannot be refreshed");
-    }
-    return awsClients.secretsManagerClient();
-  }
-
-  private StsClient newStsClient() {
-    if (awsClients == null) {
-      throw new IllegalStateException("STS client cannot be refreshed");
-    }
-    return awsClients.stsClient();
-  }
-
-  private static <T> T takeInitialOrBuild(
-      AtomicReference<T> initial, java.util.function.Supplier<T> factory) {
-    T value = initial.getAndSet(null);
+  private <T extends AutoCloseable> RefreshingAwsClient.ClientResource<T> initialOrBuildResource(
+      String name,
+      AtomicReference<RefreshingAwsClient.ClientResource<T>> initial,
+      java.util.function.Supplier<RefreshingAwsClient.ClientResource<T>> factory) {
+    RefreshingAwsClient.ClientResource<T> value = initial.getAndSet(null);
     if (value != null) {
       return value;
+    }
+    if (awsClients == null) {
+      throw new IllegalStateException(name + " client cannot be refreshed");
     }
     return factory.get();
   }
