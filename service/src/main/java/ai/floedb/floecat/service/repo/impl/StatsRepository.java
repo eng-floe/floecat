@@ -228,6 +228,8 @@ public class StatsRepository implements StatsStore {
                 .map(this::canonicalRecord)
                 .peek(record -> requireRecordForSnapshot(tableId, snapshotId, record))
                 .toList();
+    Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
+    canonicalRecords = carrySketchesFromSuperseded(tableId, snapshotId, canonicalRecords, current);
     markGenerationPublishing(tableId, snapshotId, effectiveGenerationId);
     List<TargetStatsWrite> writes = new ArrayList<>(canonicalRecords.size());
     for (TargetStatsRecord record : canonicalRecords) {
@@ -238,7 +240,6 @@ public class StatsRepository implements StatsStore {
               record));
     }
     targetStatsStorage.overwriteBatch(writes);
-    Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
     publishActiveGeneration(tableId, snapshotId, effectiveGenerationId, current);
     for (TargetStatsRecord record :
         listAllInGeneration(tableId, snapshotId, effectiveGenerationId)) {
