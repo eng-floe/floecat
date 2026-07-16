@@ -267,7 +267,7 @@ class SnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
-  void executeReturnsObsoleteWhenDifferentFinalizerAlreadyFinalizedSnapshot() {
+  void executeReturnsSuccessWhenDifferentFinalizerAlreadyFinalizedSnapshot() {
     var store =
         new InMemoryReconcileJobStore() {
           @Override
@@ -323,7 +323,8 @@ class SnapshotFinalizeReconcileExecutorTest {
         executor.execute(
             new ExecutionContext(finalizerLease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
 
-    assertEquals(ExecutionResult.JobOutcome.OBSOLETE, result.outcome);
+    assertTrue(result.success());
+    assertEquals(ExecutionResult.JobOutcome.SUCCESS, result.outcome);
     assertEquals(0, result.errors);
     assertEquals(ExecutionResult.FailureKind.NONE, result.failureKind);
     assertNull(result.error);

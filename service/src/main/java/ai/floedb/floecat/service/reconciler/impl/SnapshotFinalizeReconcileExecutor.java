@@ -155,8 +155,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       LOG.infof(
           "Skipping stale snapshot finalizer jobId=%s tableId=%s snapshotId=%d finalizedBy=%s",
           lease.jobId, snapshotTask.tableId(), snapshotTask.snapshotId(), finalized.finalizerJobId);
-      return ExecutionResult.obsolete(
-          0, 0, 0, 0, 0, 0, 0, ExecutionResult.FailureKind.NONE, message, null);
+      return ExecutionResult.success(0, 0, 0, 0, 0, 0, 0, message);
     }
     if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.DIRECT_STATS) {
       try {

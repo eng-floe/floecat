@@ -75,6 +75,7 @@ class ReconcileJobGcSchedulerTest {
     public AccountResult runAccountSlice(
         String accountId,
         String pageToken,
+        String canonicalQuarantinePageToken,
         String dedupePageToken,
         String rootSummaryPageToken,
         String connectorRootSummaryPageToken) {
@@ -82,7 +83,7 @@ class ReconcileJobGcSchedulerTest {
       if (accountId.equals(failAccountId)) {
         throw new RuntimeException("failed account");
       }
-      return new AccountResult(0, 0, 0, 0, 0, 0, 0, 0, 0, "", "", "", "");
+      return new AccountResult(0, 0, 0, 0, 0, 0, 0, 0, 0, "", "", "", "", "");
     }
   }
 }

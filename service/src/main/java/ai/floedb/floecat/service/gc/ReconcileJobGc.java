@@ -70,6 +70,7 @@ public class ReconcileJobGc {
       int dedupeQuarantined,
       int rootSummaryQuarantined,
       String nextJobToken,
+      String nextCanonicalQuarantineToken,
       String nextDedupeToken,
       String nextRootSummaryToken,
       String nextConnectorRootSummaryToken) {}
@@ -101,6 +102,17 @@ public class ReconcileJobGc {
       String dedupeTokenIn,
       String rootSummaryTokenIn,
       String connectorRootSummaryTokenIn) {
+    return runAccountSlice(
+        accountId, jobTokenIn, "", dedupeTokenIn, rootSummaryTokenIn, connectorRootSummaryTokenIn);
+  }
+
+  public AccountResult runAccountSlice(
+      String accountId,
+      String jobTokenIn,
+      String canonicalQuarantineTokenIn,
+      String dedupeTokenIn,
+      String rootSummaryTokenIn,
+      String connectorRootSummaryTokenIn) {
     var cfg = ConfigProvider.getConfig();
     final int pageSize =
         cfg.getOptionalValue("floecat.gc.reconcile-jobs.page-size", Integer.class).orElse(200);
@@ -126,6 +138,8 @@ public class ReconcileJobGc {
     final long deadline = nowMs + sliceMillis;
 
     String jobToken = jobTokenIn == null ? "" : jobTokenIn;
+    String canonicalQuarantineToken =
+        canonicalQuarantineTokenIn == null ? "" : canonicalQuarantineTokenIn;
     String dedupeToken = dedupeTokenIn == null ? "" : dedupeTokenIn;
     String rootSummaryToken = rootSummaryTokenIn == null ? "" : rootSummaryTokenIn;
     String connectorRootSummaryToken =
@@ -215,7 +229,11 @@ public class ReconcileJobGc {
       StringBuilder next = new StringBuilder();
       var markers =
           pointerStore.listPointersByPrefix(
-              Keys.reconcileCanonicalQuarantinePointerPrefix(accountId), limit, "", next);
+              Keys.reconcileCanonicalQuarantinePointerPrefix(accountId),
+              limit,
+              canonicalQuarantineToken,
+              next);
+      canonicalQuarantineToken = next.toString();
       if (markers.isEmpty()) {
         break;
       }
@@ -226,7 +244,9 @@ public class ReconcileJobGc {
         scanned++;
         clearCanonicalQuarantineMarkerIfReadable(marker);
       }
-      break;
+      if (canonicalQuarantineToken.isBlank()) {
+        break;
+      }
     }
 
     String dedupePrefix = Keys.reconcileDedupePointerPrefix(accountId);
@@ -335,6 +355,7 @@ public class ReconcileJobGc {
         dedupeQuarantined,
         rootSummaryQuarantined,
         jobToken,
+        canonicalQuarantineToken,
         dedupeToken,
         rootSummaryToken,
         connectorRootSummaryToken);
