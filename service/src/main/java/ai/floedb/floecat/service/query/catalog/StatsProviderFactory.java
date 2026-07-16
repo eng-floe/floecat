@@ -289,6 +289,10 @@ public final class StatsProviderFactory {
 
     private static StatsProvider.ColumnStatsView toColumnStatsView(TargetStatsRecord record) {
       ScalarStats scalar = record.getScalar();
+      Ndv estimatedNdv =
+          scalar.hasNdv() && (scalar.getNdv().hasExact() || scalar.getNdv().hasApprox())
+              ? scalar.getNdv()
+              : null;
       return new ColumnStatsViewImpl(
           record.getTableId(),
           record.getTarget().getColumn().getColumnId(),
@@ -299,7 +303,7 @@ public final class StatsProviderFactory {
           scalar.getLogicalType(),
           scalar.hasMin() ? Optional.of(scalar.getMin()) : Optional.empty(),
           scalar.hasMax() ? Optional.of(scalar.getMax()) : Optional.empty(),
-          scalar.hasNdv() ? scalar.getNdv() : null,
+          estimatedNdv,
           scalar.hasAvgWidthBytes()
               ? OptionalLong.of(scalar.getAvgWidthBytes())
               : OptionalLong.empty());
