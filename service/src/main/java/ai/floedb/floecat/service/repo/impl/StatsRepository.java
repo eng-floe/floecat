@@ -448,15 +448,19 @@ public class StatsRepository implements StatsStore {
     if (generationToken == null || generationToken.isBlank()) {
       return Optional.empty();
     }
-    return Optional.of(
-        loadGenerationId(generationToken)
-            .orElseThrow(
-                () ->
-                    new BaseResourceRepository.NotFoundException(
-                        "frozen stats generation manifest missing for snapshot "
-                            + snapshotId
-                            + ": "
-                            + generationToken)));
+    String unavailableMessage =
+        "frozen stats generation manifest unavailable for snapshot "
+            + snapshotId
+            + ": "
+            + generationToken;
+    try {
+      return Optional.of(
+          loadGenerationId(generationToken)
+              .orElseThrow(
+                  () -> new StatsStore.GenerationUnavailableException(unavailableMessage)));
+    } catch (BaseResourceRepository.CorruptionException e) {
+      throw new StatsStore.GenerationUnavailableException(unavailableMessage, e);
+    }
   }
 
   @Override

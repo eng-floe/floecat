@@ -1366,6 +1366,49 @@ class StatsOrchestratorTest {
   }
 
   @Test
+  void resolvePlannerBatch_generationFailureFallsThroughOnceWithoutTargetIsolation() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    List<StatsCaptureRequest> requests =
+        List.of(columnRequest(42L, 1L), columnRequest(42L, 2L), columnRequest(42L, 3L));
+    List<StatsTarget> targets = requests.stream().map(StatsCaptureRequest::target).toList();
+    Map<String, Optional<TargetStatsRecord>> newest =
+        Map.of(
+            StatsTargetIdentity.storageId(requests.get(0).target()),
+            Optional.of(columnRecord(requests.get(0))),
+            StatsTargetIdentity.storageId(requests.get(1).target()),
+            Optional.of(columnRecord(requests.get(1))),
+            StatsTargetIdentity.storageId(requests.get(2).target()),
+            Optional.of(columnRecord(requests.get(2))));
+    StatsStore.GenerationUnavailableException unavailable =
+        new StatsStore.GenerationUnavailableException("frozen manifest missing");
+    when(store.getTargetStatsBatchInGeneration(
+            requests.get(0).tableId(), requests.get(0).snapshotId(), "gen-pinned", targets))
+        .thenThrow(unavailable);
+    when(store.getTargetStatsBatch(
+            requests.get(0).tableId(), requests.get(0).snapshotId(), targets))
+        .thenReturn(newest);
+
+    Map<String, StatsResolutionResult> result =
+        o.resolvePlannerBatchInGeneration(
+            requests, Optional.of("gen-pinned"), false, Long.MAX_VALUE);
+
+    assertThat(result.values()).allMatch(StatsResolutionResult::hasStats);
+    verify(store, Mockito.times(1))
+        .getTargetStatsBatchInGeneration(
+            requests.get(0).tableId(), requests.get(0).snapshotId(), "gen-pinned", targets);
+    verify(store, never()).getTargetStatsInGeneration(any(), anyLong(), anyString(), any());
+    verify(store, Mockito.times(1))
+        .getTargetStatsBatch(requests.get(0).tableId(), requests.get(0).snapshotId(), targets);
+  }
+
+  @Test
   void resolvePlannerBatch_countsTheLadderRungThatServedEachTarget() {
     StatsStore store = Mockito.mock(StatsStore.class);
     ai.floedb.floecat.telemetry.Observability obs =

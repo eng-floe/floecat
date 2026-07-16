@@ -30,7 +30,6 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.PlannerStatsResolver.PlannerLookupDiagnostics;
 import ai.floedb.floecat.service.statistics.PlannerStatsResolver.PlannerLookupOutcome;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
-import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
@@ -112,7 +111,8 @@ public class StatsOrchestrator {
     this.observability =
         observability == null || observability.isUnsatisfied() ? null : observability.get();
     this.plannerResolver =
-        new PlannerStatsResolver(statsStore, this.observability, this::observePlannerHit);
+        new PlannerStatsResolver(
+            statsStore, this::readStore, this::incrementCounter, this::observePlannerHit);
   }
 
   public StatsOrchestrator(
@@ -336,7 +336,7 @@ public class StatsOrchestrator {
     // 5. Sync capture for still-missing targets (per-target within deadline).
     java.util.List<StatsCaptureRequest> asyncQueue = new java.util.ArrayList<>();
     for (StatsCaptureRequest req : resolution.stillMissing()) {
-      String key = storageId(req);
+      String key = PlannerStatsResolver.storageId(req);
       if (!syncEnabled || req.executionMode() != StatsExecutionMode.SYNC) {
         asyncQueue.add(req);
         diagnostics.record(PlannerLookupOutcome.CAPTURE_PENDING);
@@ -397,10 +397,6 @@ public class StatsOrchestrator {
     diagnostics.emit(
         first.tableId(), first.snapshotId(), resolution.pinnedGeneration(), requests.size());
     return java.util.Collections.unmodifiableMap(out);
-  }
-
-  private static String storageId(StatsCaptureRequest request) {
-    return StatsTargetIdentity.storageId(request.target());
   }
 
   /**

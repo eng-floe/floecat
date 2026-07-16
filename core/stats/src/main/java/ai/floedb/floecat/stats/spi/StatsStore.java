@@ -43,6 +43,21 @@ public interface StatsStore {
     RETRYABLE_IN_PROGRESS
   }
 
+  /**
+   * Signals that a frozen generation token cannot be resolved before any target-specific read.
+   * Callers may handle this once for the whole generation-scoped batch rather than isolating
+   * individual targets. Retryable storage failures must retain their retryable exception type.
+   */
+  final class GenerationUnavailableException extends RuntimeException {
+    public GenerationUnavailableException(String message) {
+      super(message);
+    }
+
+    public GenerationUnavailableException(String message, Throwable cause) {
+      super(message, cause);
+    }
+  }
+
   /** Upserts a target stats record. */
   void putTargetStats(TargetStatsRecord value);
 

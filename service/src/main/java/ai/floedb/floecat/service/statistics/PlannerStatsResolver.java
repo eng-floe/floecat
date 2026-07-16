@@ -28,7 +28,6 @@ import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsSyncOutcome;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.telemetry.MetricId;
-import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import com.github.benmanes.caffeine.cache.Cache;
@@ -69,9 +68,6 @@ import org.jboss.logging.Logger;
 final class PlannerStatsResolver {
 
   private static final Logger LOG = Logger.getLogger(PlannerStatsResolver.class);
-  // Same tags as StatsOrchestrator so the extraction does not move any dashboard series.
-  private static final String COMPONENT = "service";
-  private static final String OPERATION = "stats_orchestrator";
 
   /**
    * Fully-qualified cache key for a single column-stats record.
@@ -155,19 +151,36 @@ final class PlannerStatsResolver {
           .build();
 
   private final StatsStore statsStore;
-  private final Observability observability;
+  private final Function<StatsCaptureRequest, Optional<TargetStatsRecord>> storeReader;
+  private final MetricCounter counter;
   private final Consumer<StatsSyncOutcome> hitObserver;
 
   /**
+   * Counter seam into the orchestrator's telemetry: the orchestrator stays the single owner of the
+   * component/operation tags and the null-observability no-op, so the extraction defines every
+   * dashboard series exactly once.
+   */
+  @FunctionalInterface
+  interface MetricCounter {
+    void increment(MetricId metric, double amount, Tag... tags);
+  }
+
+  /**
    * @param statsStore the persisted stats store all rungs read from
-   * @param observability metric sink; may be null (tests), in which case counters no-op
+   * @param storeReader the orchestrator's counted live-generation read (STORE_HITS/MISSES stay
+   *     defined once, there), used by the single-target rungs
+   * @param counter counter seam; the orchestrator merges in its component/operation tags
    * @param hitObserver invoked once per store/cache hit so the orchestrator's sync-outcome
    *     telemetry stays the single owner of that counter
    */
   PlannerStatsResolver(
-      StatsStore statsStore, Observability observability, Consumer<StatsSyncOutcome> hitObserver) {
+      StatsStore statsStore,
+      Function<StatsCaptureRequest, Optional<TargetStatsRecord>> storeReader,
+      MetricCounter counter,
+      Consumer<StatsSyncOutcome> hitObserver) {
     this.statsStore = statsStore;
-    this.observability = observability;
+    this.storeReader = storeReader;
+    this.counter = counter;
     this.hitObserver = hitObserver;
   }
 
@@ -406,7 +419,7 @@ final class PlannerStatsResolver {
     // Primary: the pinned generation (query-consistent), or live/newest when the pin froze none.
     Optional<TargetStatsRecord> primary;
     if (pinnedGeneration.isBlank()) {
-      primary = readStore(request);
+      primary = storeReader.apply(request);
     } else {
       try {
         primary =
@@ -433,7 +446,7 @@ final class PlannerStatsResolver {
     // Newest gap-fill — only when a specific generation was pinned; the pinned generation lacks
     // this target, so the newest generation backstops it before capture.
     if (!pinnedGeneration.isBlank()) {
-      return readStore(request);
+      return storeReader.apply(request);
     }
     return Optional.empty();
   }
@@ -443,14 +456,7 @@ final class PlannerStatsResolver {
     if (tableId == null) {
       return;
     }
-    statsCache
-        .asMap()
-        .keySet()
-        .removeIf(
-            key ->
-                key.accountId().equals(tableId.getAccountId())
-                    && key.tableId().equals(tableId.getId())
-                    && key.snapshotId() == snapshotId);
+    statsCache.asMap().keySet().removeIf(key -> matchesSnapshot(key, tableId, snapshotId));
   }
 
   /** Invalidates one cached target for one table snapshot. */
@@ -463,11 +469,7 @@ final class PlannerStatsResolver {
         .asMap()
         .keySet()
         .removeIf(
-            key ->
-                key.accountId().equals(tableId.getAccountId())
-                    && key.tableId().equals(tableId.getId())
-                    && key.snapshotId() == snapshotId
-                    && key.storageId().equals(storageId));
+            key -> matchesSnapshot(key, tableId, snapshotId) && key.storageId().equals(storageId));
   }
 
   /** Invalidates cached targets represented by successfully persisted records. */
@@ -491,10 +493,17 @@ final class PlannerStatsResolver {
         .keySet()
         .removeIf(
             key ->
-                key.accountId().equals(tableId.getAccountId())
-                    && key.tableId().equals(tableId.getId())
-                    && key.snapshotId() == snapshotId
-                    && storageIds.contains(key.storageId()));
+                matchesSnapshot(key, tableId, snapshotId) && storageIds.contains(key.storageId()));
+  }
+
+  /**
+   * The (account, table, snapshot) scope shared by every invalidation variant; keep the key-shape
+   * match here so a cache-key change cannot silently under-invalidate one variant.
+   */
+  private static boolean matchesSnapshot(StatsCacheKey key, ResourceId tableId, long snapshotId) {
+    return key.accountId().equals(tableId.getAccountId())
+        && key.tableId().equals(tableId.getId())
+        && key.snapshotId() == snapshotId;
   }
 
   /** Cache key for one request under a specific served-generation token ("" = live/newest). */
@@ -556,6 +565,21 @@ final class PlannerStatsResolver {
       return java.util.Collections.unmodifiableMap(out);
     } catch (BaseResourceRepository.AbortRetryableException | StorageAbortRetryableException e) {
       throw e;
+    } catch (StatsStore.GenerationUnavailableException generationError) {
+      LOG.debugf(
+          generationError,
+          "planner stats generation unavailable table=%s snapshot=%s; skipping target isolation",
+          tableId,
+          snapshotId);
+      Map<String, StatsResolutionResult> out = new LinkedHashMap<>();
+      String message =
+          generationError.getMessage() == null
+              ? "stats generation unavailable"
+              : generationError.getMessage();
+      for (StatsCaptureRequest request : requests) {
+        out.put(storageId(request), StatsResolutionResult.failed(message));
+      }
+      return java.util.Collections.unmodifiableMap(out);
     } catch (RuntimeException batchError) {
       if (requests.size() == 1) {
         return readPlannerTargetIsolated(
@@ -609,21 +633,8 @@ final class PlannerStatsResolver {
     return requests.stream().map(StatsCaptureRequest::target).toList();
   }
 
-  private static String storageId(StatsCaptureRequest request) {
+  static String storageId(StatsCaptureRequest request) {
     return StatsTargetIdentity.storageId(request.target());
-  }
-
-  private Optional<TargetStatsRecord> readStore(StatsCaptureRequest request) {
-    // Fast path: authoritative persisted read.
-    Optional<TargetStatsRecord> out =
-        statsStore.getTargetStats(request.tableId(), request.snapshotId(), request.target());
-    incrementCounter(
-        out.isPresent()
-            ? ServiceMetrics.Stats.STORE_HITS_TOTAL
-            : ServiceMetrics.Stats.STORE_MISSES_TOTAL,
-        1,
-        Tag.of(TagKey.SCOPE, "orchestrator"));
-    return out;
   }
 
   @FunctionalInterface
@@ -678,7 +689,7 @@ final class PlannerStatsResolver {
 
     void emit(ResourceId tableId, long snapshotId, String pinnedGeneration, int requested) {
       for (Map.Entry<PlannerLookupOutcome, Integer> entry : counts.entrySet()) {
-        incrementCounter(
+        counter.increment(
             ServiceMetrics.Stats.PLANNER_LOOKUP_OUTCOMES_TOTAL,
             entry.getValue(),
             Tag.of(TagKey.RESULT, entry.getKey().name().toLowerCase(java.util.Locale.ROOT)));
@@ -693,20 +704,5 @@ final class PlannerStatsResolver {
           requested,
           counts);
     }
-  }
-
-  /**
-   * Counter with the orchestrator's component/operation tags; no-ops when observability is absent
-   * (tests).
-   */
-  private void incrementCounter(MetricId metric, double amount, Tag... tags) {
-    if (observability == null) {
-      return;
-    }
-    Tag[] baseTags = {Tag.of(TagKey.COMPONENT, COMPONENT), Tag.of(TagKey.OPERATION, OPERATION)};
-    Tag[] merged = new Tag[baseTags.length + tags.length];
-    System.arraycopy(baseTags, 0, merged, 0, baseTags.length);
-    System.arraycopy(tags, 0, merged, baseTags.length, tags.length);
-    observability.counter(metric, amount, merged);
   }
 }

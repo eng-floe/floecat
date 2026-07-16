@@ -43,6 +43,7 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
+import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsStore.UnpublishedGenerationDeleteResult;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
@@ -1821,6 +1822,22 @@ class StatsRepositoryTargetStorageTest {
     org.junit.jupiter.api.Assertions.assertTrue(
         ex.getMessage().contains("frozen stats generation manifest missing"),
         "the descriptive retention-invariant error must survive an S3-style throwing miss");
+  }
+
+  @Test
+  void targetBatchClassifiesAMissingFrozenGenerationBeforeReadingTargets() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var target = StatsTargetIdentity.columnTarget(7L);
+
+    var ex =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            StatsStore.GenerationUnavailableException.class,
+            () ->
+                repository.getTargetStatsBatchInGeneration(
+                    TABLE_ID, 5L, "s3://t/stats/5/manifest/missing.pb", java.util.List.of(target)));
+
+    assertThat(ex.getMessage()).contains("frozen stats generation manifest unavailable");
   }
 
   @Test
