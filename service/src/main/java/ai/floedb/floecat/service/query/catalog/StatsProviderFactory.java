@@ -289,8 +289,10 @@ public final class StatsProviderFactory {
 
     private static StatsProvider.ColumnStatsView toColumnStatsView(TargetStatsRecord record) {
       ScalarStats scalar = record.getScalar();
+      // Estimate-less envelopes are sketch carriers only (see the shared
+      // PlannerStatsResultMaterializer.hasEstimate mode gate) — never a zero-NDV estimate.
       Ndv estimatedNdv =
-          scalar.hasNdv() && (scalar.getNdv().hasExact() || scalar.getNdv().hasApprox())
+          scalar.hasNdv() && PlannerStatsResultMaterializer.hasEstimate(scalar.getNdv())
               ? scalar.getNdv()
               : null;
       return new ColumnStatsViewImpl(

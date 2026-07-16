@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.query.catalog;
 
 import ai.floedb.floecat.catalog.rpc.Ndv;
+import ai.floedb.floecat.catalog.rpc.NdvOrBuilder;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.SketchPayload;
 import ai.floedb.floecat.catalog.rpc.SketchRole;
@@ -105,8 +106,13 @@ final class PlannerStatsResultMaterializer {
           ndvBuilder.addSketches(sketch);
         }
       }
-      if (returnScalar || ndvBuilder.getSketchesCount() > 0) {
+      if (hasEstimate(ndvBuilder) || ndvBuilder.getSketchesCount() > 0) {
         scalarBuilder.setNdv(ndvBuilder.build());
+      } else {
+        // An enrichment-fabricated envelope (sketch carrier with no estimate) whose sketches were
+        // all filtered out carries nothing servable — drop it rather than emit hasNdv() with
+        // neither mode nor payloads (hasEstimate is the shared mode gate).
+        scalarBuilder.clearNdv();
       }
     }
     if (!returnScalar
@@ -204,6 +210,19 @@ final class PlannerStatsResultMaterializer {
     return out.setStatus(StatsResultStatus.STATS_RESULT_HIT_COMPLETE)
         .setBytes(returnedSketch.getSerializedSize())
         .build();
+  }
+
+  /**
+   * True when the NDV envelope carries an actual estimate — its exact/approx mode oneof is set.
+   *
+   * <p>The single mode gate for NDV envelopes, per the CONTRACT note on {@code Ndv} in stats.proto:
+   * the mode oneof MAY be unset while sketches are present (e.g. an envelope fabricated by
+   * stats-generation enrichment purely to carry a superseded generation's sketch forward), so
+   * {@code hasNdv()} alone must never be read as "has an estimate" — that turns "NDV absent" into a
+   * bogus zero estimate.
+   */
+  static boolean hasEstimate(NdvOrBuilder ndv) {
+    return ndv.hasExact() || ndv.hasApprox();
   }
 
   /**
