@@ -1150,6 +1150,63 @@ class StatsOrchestratorTest {
   }
 
   @Test
+  void resolvePlannerBatch_cachedPartialServesWhenPinnedRereadFailsAndNewestEmpty() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+
+    // The pinned-generation batch read succeeds the first time (priming the cache with a
+    // scalar-only record) then throws — the frozen manifest becomes unreadable between queries.
+    RuntimeException manifestGone =
+        new RuntimeException("frozen stats generation manifest missing for snapshot 42");
+    java.util.concurrent.atomic.AtomicInteger pinnedReads =
+        new java.util.concurrent.atomic.AtomicInteger();
+    when(store.getTargetStatsBatchInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
+        .thenAnswer(
+            inv -> {
+              if (pinnedReads.getAndIncrement() == 0) {
+                return Map.of(storageId, Optional.of(columnRecord(req, 1L)));
+              }
+              throw manifestGone;
+            });
+    when(store.getTargetStatsInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", req.target()))
+        .thenThrow(manifestGone);
+    // The newest generation of the same snapshot has nothing to gap-fill with.
+    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.empty()));
+
+    // 1. Prime: a need with no completeness predicate caches the scalar-only pinned record.
+    o.resolvePlannerBatchInGeneration(
+        List.of(req), Optional.of("gen-pinned"), false, Long.MAX_VALUE);
+
+    // 2. A richer need the cached record cannot satisfy, staleOk=false so a fall-through would
+    // reach sync capture. The pinned re-read fails and the newest generation is empty — the only
+    // thing standing between the planner and a needless capture is the incomplete cached record,
+    // which is still a valid (degraded) hit and must be served.
+    Map<String, StatsResolutionResult> result =
+        o.resolvePlannerBatchInGeneration(
+            List.of(req),
+            Optional.of("gen-pinned"),
+            completeAtRowCount(storageId, 10L),
+            false,
+            Long.MAX_VALUE);
+
+    assertThat(result.get(storageId).hasStats()).isTrue();
+    assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(1L);
+    // The partial hit means no stale read and no capture were triggered.
+    verify(store, Mockito.never()).getStaleTargetStatsBatch(any(), anyLong(), any());
+  }
+
+  @Test
   void resolvePlannerBatch_cachedPartialDoesNotShortCircuitRicherNeed() {
     StatsStore store = Mockito.mock(StatsStore.class);
     StatsOrchestrator o =
