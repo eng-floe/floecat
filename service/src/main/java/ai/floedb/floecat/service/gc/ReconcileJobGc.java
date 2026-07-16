@@ -230,7 +230,7 @@ public class ReconcileJobGc {
 
         var canonical = jobIndexBackend.loadIndexEntry(dedupe.blobUri()).orElse(null);
         if (canonical == null) {
-          if (deleteJobIndexPointerIfPresent(dedupe.pointerKey())) {
+          if (deleteJobIndexPointerIfOwned(dedupe.pointerKey(), dedupe.blobUri())) {
             dedupeDeleted++;
           }
           continue;
@@ -242,7 +242,7 @@ public class ReconcileJobGc {
         }
 
         if (TERMINAL_STATES.contains(text(record, "state"))) {
-          if (deleteJobIndexPointerIfPresent(dedupe.pointerKey())) {
+          if (deleteJobIndexPointerIfOwned(dedupe.pointerKey(), dedupe.blobUri())) {
             dedupeDeleted++;
           }
         }
@@ -545,10 +545,13 @@ public class ReconcileJobGc {
       appendPointerDeleteIfPresent(deletes, connectorSummaryKey);
     }
     java.util.ArrayList<PointerStore.CasOp> ops = new java.util.ArrayList<>();
-    ops.add(new PointerStore.CasCheckAbsent(canonicalKey));
     ops.addAll(deletes.values());
     return new RootSummaryDeleteResult(
-        jobIndexBackend.compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch.empty(), ops)
+        jobIndexBackend.compareAndSetBatch(
+                new ReconcileJobIndexStore.JobIndexWriteBatch(
+                    List.of(new ReconcileJobIndexStore.JobIndexCheckAbsent(canonicalKey)),
+                    ReconcileJobIndexStore.ReadyQueueMutation.empty()),
+                ops)
             ? deletes.size()
             : 0,
         0);
@@ -715,22 +718,6 @@ public class ReconcileJobGc {
       deletes.add(
           new ReconcileJobIndexStore.JobIndexDelete(existing.pointerKey(), existing.version()));
     }
-  }
-
-  private boolean deleteJobIndexPointerIfPresent(String pointerKey) {
-    if (pointerKey == null || pointerKey.isBlank()) {
-      return false;
-    }
-    var existing = jobIndexBackend.loadIndexEntry(pointerKey).orElse(null);
-    if (existing == null) {
-      return false;
-    }
-    return jobIndexBackend.compareAndSetBatch(
-        new ReconcileJobIndexStore.JobIndexWriteBatch(
-            List.of(
-                new ReconcileJobIndexStore.JobIndexDelete(
-                    existing.pointerKey(), existing.version())),
-            ReconcileJobIndexStore.ReadyQueueMutation.empty()));
   }
 
   private boolean deleteJobIndexPointerIfOwned(String pointerKey, String expectedReference) {

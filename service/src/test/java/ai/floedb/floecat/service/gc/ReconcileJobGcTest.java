@@ -291,6 +291,25 @@ class ReconcileJobGcTest {
   }
 
   @Test
+  void accountSliceDoesNotDeleteDedupePointerRepointedDuringDedupeScan() {
+    String dedupeHash = hashValue(ACCOUNT_ID + "|" + CONNECTOR_ID + "|dedupe-race|*|*|");
+    String dedupeKey = Keys.reconcileDedupePointer(ACCOUNT_ID, dedupeHash);
+    String missingCanonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, "missing-old-job");
+    String newCanonicalKey =
+        putInlineReconcileJob(
+            "job-dedupe-race-new", "JS_QUEUED", System.currentTimeMillis(), dedupeHash, "");
+    putPointer(dedupeKey, missingCanonicalKey);
+    gc.jobIndexBackend =
+        new RepointingDedupeDuringListBackend(
+            jobIndexBackend, pointers, dedupeKey, missingCanonicalKey, newCanonicalKey);
+
+    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(0, result.dedupeDeleted());
+    assertEquals(newCanonicalKey, pointers.get(dedupeKey).orElseThrow().getBlobUri());
+  }
+
+  @Test
   void readySliceDeletesStaleReadyPointers() {
     String jobId = "job-running";
     String canonicalKey =
@@ -1260,6 +1279,109 @@ class ReconcileJobGcTest {
     public java.util.Optional<CanonicalPointerSnapshot> loadCanonicalSnapshot(
         String canonicalPointerKey, ReconcileReadyQueueStore.LeaseScanStats scanStats) {
       return java.util.Optional.empty();
+    }
+  }
+
+  private static final class RepointingDedupeDuringListBackend implements ReconcileJobIndexBackend {
+    private final ReconcileJobIndexBackend delegate;
+    private final PointerStore pointers;
+    private final String dedupeKey;
+    private final String expectedOldCanonicalKey;
+    private final String newCanonicalKey;
+    private boolean repointed;
+
+    private RepointingDedupeDuringListBackend(
+        ReconcileJobIndexBackend delegate,
+        PointerStore pointers,
+        String dedupeKey,
+        String expectedOldCanonicalKey,
+        String newCanonicalKey) {
+      this.delegate = delegate;
+      this.pointers = pointers;
+      this.dedupeKey = dedupeKey;
+      this.expectedOldCanonicalKey = expectedOldCanonicalKey;
+      this.newCanonicalKey = newCanonicalKey;
+    }
+
+    @Override
+    public java.util.Optional<JobIndexEntrySnapshot> loadIndexEntry(String pointerKey) {
+      return delegate.loadIndexEntry(pointerKey);
+    }
+
+    @Override
+    public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
+      return delegate.compareAndSetBatch(batch);
+    }
+
+    @Override
+    public boolean compareAndSetBatch(
+        ReconcileJobIndexStore.JobIndexWriteBatch batch,
+        java.util.List<PointerStore.CasOp> extraPointerOps) {
+      return delegate.compareAndSetBatch(batch, extraPointerOps);
+    }
+
+    @Override
+    public boolean purgeEntriesByCanonicalReference(String canonicalPointerKey) {
+      return delegate.purgeEntriesByCanonicalReference(canonicalPointerKey);
+    }
+
+    @Override
+    public boolean purgeEntriesByCanonicalReference(
+        String canonicalPointerKey, long expectedVersion, String expectedBlobUri) {
+      return delegate.purgeEntriesByCanonicalReference(
+          canonicalPointerKey, expectedVersion, expectedBlobUri);
+    }
+
+    @Override
+    public JobIndexQueryPage listCanonicalEntries(String accountId, int limit, String pageToken) {
+      return delegate.listCanonicalEntries(accountId, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listDedupeEntries(String accountId, int limit, String pageToken) {
+      JobIndexQueryPage page = delegate.listDedupeEntries(accountId, limit, pageToken);
+      if (!repointed
+          && page.entries().stream().anyMatch(entry -> dedupeKey.equals(entry.pointerKey()))) {
+        repointed = true;
+        Pointer current = pointers.get(dedupeKey).orElseThrow();
+        assertEquals(expectedOldCanonicalKey, current.getBlobUri());
+        assertTrue(
+            pointers.compareAndSet(
+                dedupeKey,
+                current.getVersion(),
+                PointerReferences.pointerKeyPointer(
+                    dedupeKey, newCanonicalKey, current.getVersion() + 1L)));
+      }
+      return page;
+    }
+
+    @Override
+    public JobIndexQueryPage listParentEntries(
+        String accountId, String parentJobId, int limit, String pageToken) {
+      return delegate.listParentEntries(accountId, parentJobId, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listConnectorEntries(
+        String accountId, String connectorId, int limit, String pageToken) {
+      return delegate.listConnectorEntries(accountId, connectorId, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listGlobalStateEntries(String state, int limit, String pageToken) {
+      return delegate.listGlobalStateEntries(state, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listAccountStateEntries(
+        String accountId, String state, int limit, String pageToken) {
+      return delegate.listAccountStateEntries(accountId, state, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listConnectorStateEntries(
+        String accountId, String connectorId, String state, int limit, String pageToken) {
+      return delegate.listConnectorStateEntries(accountId, connectorId, state, limit, pageToken);
     }
   }
 

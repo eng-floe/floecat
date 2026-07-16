@@ -222,67 +222,47 @@ public class ReconcileJobGcScheduler {
             connectorRootSummaryTokenByAccount.getOrDefault(accountId, "");
 
         long sliceStart = System.nanoTime();
-        var result =
-            gc.runAccountSlice(
-                accountId, jobToken, dedupeToken, rootSummaryToken, connectorRootSummaryToken);
-        accountsProcessed++;
-        totalAccountScanned += result.scanned();
-        totalExpired += result.expired();
-        totalPtrDeleted += result.ptrDeleted();
-        totalBlobDeleted += result.blobDeleted();
-        totalDedupeDeleted += result.dedupeDeleted();
-        totalReadyDeleted += result.readyDeleted();
-        totalQuarantined +=
-            result.canonicalQuarantined()
-                + result.dedupeQuarantined()
-                + result.rootSummaryQuarantined();
-        gcMetrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "account-scanned"));
-        gcMetrics.recordCollection(result.expired(), Tag.of(TagKey.RESULT, "expired"));
-        gcMetrics.recordCollection(result.ptrDeleted(), Tag.of(TagKey.RESULT, "ptr-deleted"));
-        gcMetrics.recordCollection(result.blobDeleted(), Tag.of(TagKey.RESULT, "blob-deleted"));
-        gcMetrics.recordCollection(result.dedupeDeleted(), Tag.of(TagKey.RESULT, "dedupe-deleted"));
-        gcMetrics.recordCollection(result.readyDeleted(), Tag.of(TagKey.RESULT, "ready-deleted"));
-        gcMetrics.recordCollection(
-            result.canonicalQuarantined(), Tag.of(TagKey.RESULT, "canonical-quarantined"));
-        gcMetrics.recordCollection(
-            result.dedupeQuarantined(), Tag.of(TagKey.RESULT, "dedupe-quarantined"));
-        gcMetrics.recordCollection(
-            result.rootSummaryQuarantined(), Tag.of(TagKey.RESULT, "root-summary-quarantined"));
-        gcMetrics.recordPause(
-            Duration.ofNanos(System.nanoTime() - sliceStart),
-            Tag.of(TagKey.RESULT, "account-slice"));
+        try {
+          var result =
+              gc.runAccountSlice(
+                  accountId, jobToken, dedupeToken, rootSummaryToken, connectorRootSummaryToken);
+          accountsProcessed++;
+          totalAccountScanned += result.scanned();
+          totalExpired += result.expired();
+          totalPtrDeleted += result.ptrDeleted();
+          totalBlobDeleted += result.blobDeleted();
+          totalDedupeDeleted += result.dedupeDeleted();
+          totalReadyDeleted += result.readyDeleted();
+          totalQuarantined +=
+              result.canonicalQuarantined()
+                  + result.dedupeQuarantined()
+                  + result.rootSummaryQuarantined();
+          gcMetrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "account-scanned"));
+          gcMetrics.recordCollection(result.expired(), Tag.of(TagKey.RESULT, "expired"));
+          gcMetrics.recordCollection(result.ptrDeleted(), Tag.of(TagKey.RESULT, "ptr-deleted"));
+          gcMetrics.recordCollection(result.blobDeleted(), Tag.of(TagKey.RESULT, "blob-deleted"));
+          gcMetrics.recordCollection(
+              result.dedupeDeleted(), Tag.of(TagKey.RESULT, "dedupe-deleted"));
+          gcMetrics.recordCollection(result.readyDeleted(), Tag.of(TagKey.RESULT, "ready-deleted"));
+          gcMetrics.recordCollection(
+              result.canonicalQuarantined(), Tag.of(TagKey.RESULT, "canonical-quarantined"));
+          gcMetrics.recordCollection(
+              result.dedupeQuarantined(), Tag.of(TagKey.RESULT, "dedupe-quarantined"));
+          gcMetrics.recordCollection(
+              result.rootSummaryQuarantined(), Tag.of(TagKey.RESULT, "root-summary-quarantined"));
 
-        if (result.nextJobToken() == null || result.nextJobToken().isBlank()) {
-          jobTokenByAccount.remove(accountId);
-        } else {
-          jobTokenByAccount.put(accountId, result.nextJobToken());
-        }
-        if (result.nextDedupeToken() == null || result.nextDedupeToken().isBlank()) {
-          dedupeTokenByAccount.remove(accountId);
-        } else {
-          dedupeTokenByAccount.put(accountId, result.nextDedupeToken());
-        }
-        if (result.nextRootSummaryToken() == null || result.nextRootSummaryToken().isBlank()) {
-          rootSummaryTokenByAccount.remove(accountId);
-        } else {
-          rootSummaryTokenByAccount.put(accountId, result.nextRootSummaryToken());
-        }
-        if (result.nextConnectorRootSummaryToken() == null
-            || result.nextConnectorRootSummaryToken().isBlank()) {
-          connectorRootSummaryTokenByAccount.remove(accountId);
-        } else {
-          connectorRootSummaryTokenByAccount.put(accountId, result.nextConnectorRootSummaryToken());
+          updateAccountTokens(accountId, result);
+        } catch (Throwable t) {
+          gcMetrics.recordError(1, Tag.of(TagKey.RESULT, "account-failed"));
+          LOG.warnf(t, "reconcile job gc account slice failed accountId=%s", accountId);
+        } finally {
+          gcMetrics.recordPause(
+              Duration.ofNanos(System.nanoTime() - sliceStart),
+              Tag.of(TagKey.RESULT, "account-slice"));
         }
 
-        accountPageIndex++;
-        if (accountPageIndex >= accountPage.size()) {
-          accountToken = accountPageNextToken == null ? "" : accountPageNextToken;
-          accountPage = List.of();
-          accountPageIndex = 0;
-          accountPageNextToken = "";
-          if (accountToken.isBlank()) {
-            break;
-          }
+        if (advanceAccountCursor()) {
+          break;
         }
       }
     } catch (Throwable t) {
@@ -328,6 +308,42 @@ public class ReconcileJobGcScheduler {
               + connectorRootSummaryTokenByAccount.size(),
           Duration.ofNanos(System.nanoTime() - tickStart).toMillis());
     }
+  }
+
+  private void updateAccountTokens(String accountId, ReconcileJobGc.AccountResult result) {
+    if (result.nextJobToken() == null || result.nextJobToken().isBlank()) {
+      jobTokenByAccount.remove(accountId);
+    } else {
+      jobTokenByAccount.put(accountId, result.nextJobToken());
+    }
+    if (result.nextDedupeToken() == null || result.nextDedupeToken().isBlank()) {
+      dedupeTokenByAccount.remove(accountId);
+    } else {
+      dedupeTokenByAccount.put(accountId, result.nextDedupeToken());
+    }
+    if (result.nextRootSummaryToken() == null || result.nextRootSummaryToken().isBlank()) {
+      rootSummaryTokenByAccount.remove(accountId);
+    } else {
+      rootSummaryTokenByAccount.put(accountId, result.nextRootSummaryToken());
+    }
+    if (result.nextConnectorRootSummaryToken() == null
+        || result.nextConnectorRootSummaryToken().isBlank()) {
+      connectorRootSummaryTokenByAccount.remove(accountId);
+    } else {
+      connectorRootSummaryTokenByAccount.put(accountId, result.nextConnectorRootSummaryToken());
+    }
+  }
+
+  private boolean advanceAccountCursor() {
+    accountPageIndex++;
+    if (accountPageIndex < accountPage.size()) {
+      return false;
+    }
+    accountToken = accountPageNextToken == null ? "" : accountPageNextToken;
+    accountPage = List.of();
+    accountPageIndex = 0;
+    accountPageNextToken = "";
+    return accountToken.isBlank();
   }
 
   public static final class DisabledOrStopping implements Scheduled.SkipPredicate {

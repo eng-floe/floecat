@@ -357,6 +357,8 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
           tx.add(buildPointerUpsert(upsert));
         } else if (op instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
           tx.add(buildPointerDelete(delete));
+        } else if (op instanceof ReconcileJobIndexStore.JobIndexCheckAbsent check) {
+          tx.add(buildPointerCheckAbsent(check.pointerKey()));
         }
       }
       for (var upsert : batch.readyMutation().upserts()) {
@@ -708,6 +710,59 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         "Unsupported reconcile job index delete key: " + delete.pointerKey());
   }
 
+  private TransactWriteItem buildPointerCheckAbsent(String pointerKey) {
+    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(pointerKey);
+    if (canonicalKey != null) {
+      return buildCheckAbsent(
+          JobIndexBackendSupport.canonicalPartitionKey(canonicalKey),
+          JobIndexBackendSupport.canonicalSortKey(canonicalKey));
+    }
+    var lookupKey = JobIndexBackendSupport.parseLookupKey(pointerKey);
+    if (lookupKey != null) {
+      return buildCheckAbsent(
+          JobIndexBackendSupport.lookupPartitionKey(),
+          JobIndexBackendSupport.lookupSortKey(lookupKey));
+    }
+    var parentKey = JobIndexBackendSupport.parseParentKey(pointerKey);
+    if (parentKey != null) {
+      return buildCheckAbsent(
+          JobIndexBackendSupport.parentPartitionKey(parentKey),
+          JobIndexBackendSupport.parentSortKey(parentKey));
+    }
+    var connectorKey = JobIndexBackendSupport.parseConnectorKey(pointerKey);
+    if (connectorKey != null) {
+      return buildCheckAbsent(
+          JobIndexBackendSupport.connectorPartitionKey(connectorKey),
+          JobIndexBackendSupport.connectorSortKey(connectorKey));
+    }
+    var globalStateKey = JobIndexBackendSupport.parseGlobalStateKey(pointerKey);
+    if (globalStateKey != null) {
+      return buildCheckAbsent(
+          JobIndexBackendSupport.globalStatePartitionKey(globalStateKey),
+          JobIndexBackendSupport.globalStateSortKey(globalStateKey));
+    }
+    var accountStateKey = JobIndexBackendSupport.parseAccountStateKey(pointerKey);
+    if (accountStateKey != null) {
+      return buildCheckAbsent(
+          JobIndexBackendSupport.accountStatePartitionKey(accountStateKey),
+          JobIndexBackendSupport.accountStateSortKey(accountStateKey));
+    }
+    var connectorStateKey = JobIndexBackendSupport.parseConnectorStateKey(pointerKey);
+    if (connectorStateKey != null) {
+      return buildCheckAbsent(
+          JobIndexBackendSupport.connectorStatePartitionKey(connectorStateKey),
+          JobIndexBackendSupport.connectorStateSortKey(connectorStateKey));
+    }
+    var dedupeKey = JobIndexBackendSupport.parseDedupeKey(pointerKey);
+    if (dedupeKey != null) {
+      return buildCheckAbsent(
+          JobIndexBackendSupport.dedupePartitionKey(dedupeKey),
+          JobIndexBackendSupport.dedupeSortKey(dedupeKey));
+    }
+    throw new IllegalArgumentException(
+        "Unsupported reconcile job index check-absent key: " + pointerKey);
+  }
+
   private TransactWriteItem buildCanonicalUpsert(
       JobIndexBackendSupport.CanonicalJobKey key, ReconcileJobIndexStore.JobIndexUpsert upsert) {
     Map<String, AttributeValue> item = new HashMap<>();
@@ -796,14 +851,18 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
 
   private TransactWriteItem buildGenericPointerCheckAbsent(String pointerKey) {
     GenericPointerKey key = genericPointerKey(pointerKey);
+    return buildCheckAbsent(key.partitionKey(), key.sortKey());
+  }
+
+  private TransactWriteItem buildCheckAbsent(String partitionKey, String sortKey) {
     return TransactWriteItem.builder()
         .conditionCheck(
             software.amazon.awssdk.services.dynamodb.model.ConditionCheck.builder()
                 .tableName(table)
                 .key(
                     Map.of(
-                        ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()),
-                        ATTR_SORT_KEY, AttributeValue.fromS(key.sortKey())))
+                        ATTR_PARTITION_KEY, AttributeValue.fromS(partitionKey),
+                        ATTR_SORT_KEY, AttributeValue.fromS(sortKey)))
                 .conditionExpression("attribute_not_exists(#pk)")
                 .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
                 .build())
