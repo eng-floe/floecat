@@ -33,6 +33,13 @@ docker run --rm \
   "${JEKYLL_PAGES_IMAGE}" \
   jekyll build
 
+echo "==> [SITE] normalizing Jekyll output ownership"
+docker run --rm \
+  --entrypoint chown \
+  -v "${SITE_OUT_DIR}:/site-out" \
+  "${JEKYLL_PAGES_IMAGE}" \
+  -R "$(id -u):$(id -g)" /site-out
+
 echo "==> [SITE] checking expected Jekyll output files"
 test -f "${SITE_OUT_DIR}/index.html" || { echo "missing ${SITE_OUT_DIR}/index.html"; exit 1; }
 test -f "${SITE_OUT_DIR}/blog/index.html" || { echo "missing ${SITE_OUT_DIR}/blog/index.html"; exit 1; }
