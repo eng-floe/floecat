@@ -43,6 +43,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
@@ -51,6 +52,7 @@ import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsResolutionResult;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsSyncOutcome;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -1311,6 +1313,56 @@ class StatsOrchestratorTest {
     // the newest generation still serves the target.
     assertThat(r.hasStats()).isTrue();
     assertThat(r.stats().get().getTable().getRowCount()).isEqualTo(10L);
+  }
+
+  @Test
+  void resolveInGeneration_propagatesRetryablePinnedReadFailure() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    BaseResourceRepository.AbortRetryableException retryable =
+        new BaseResourceRepository.AbortRetryableException("manifest read throttled");
+    when(store.getTargetStatsInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", req.target()))
+        .thenThrow(retryable);
+
+    assertThatThrownBy(() -> o.resolveInGeneration(req, Optional.of("gen-pinned")))
+        .isSameAs(retryable);
+    verify(store, never()).getTargetStats(req.tableId(), req.snapshotId(), req.target());
+  }
+
+  @Test
+  void resolvePlannerBatch_propagatesRetryablePinnedReadFailureWithoutIsolation() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    StorageAbortRetryableException retryable =
+        new StorageAbortRetryableException("manifest read throttled");
+    when(store.getTargetStatsBatchInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
+        .thenThrow(retryable);
+
+    assertThatThrownBy(
+            () ->
+                o.resolvePlannerBatchInGeneration(
+                    List.of(req), Optional.of("gen-pinned"), false, Long.MAX_VALUE))
+        .isSameAs(retryable);
+    verify(store, never())
+        .getTargetStatsInGeneration(req.tableId(), req.snapshotId(), "gen-pinned", req.target());
+    verify(store, never())
+        .getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target()));
   }
 
   @Test

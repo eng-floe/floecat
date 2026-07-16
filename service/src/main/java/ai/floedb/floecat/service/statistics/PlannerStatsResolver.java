@@ -19,12 +19,14 @@ package ai.floedb.floecat.service.statistics;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsResolutionResult;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsSyncOutcome;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
@@ -410,6 +412,8 @@ final class PlannerStatsResolver {
         primary =
             statsStore.getTargetStatsInGeneration(
                 request.tableId(), request.snapshotId(), pinnedGeneration, request.target());
+      } catch (BaseResourceRepository.AbortRetryableException | StorageAbortRetryableException e) {
+        throw e;
       } catch (RuntimeException e) {
         // A pinned-generation read failure (e.g. an unreadable frozen manifest) must not fail the
         // lookup outright: the newest generation of the same snapshot is an independent read path
@@ -550,6 +554,8 @@ final class PlannerStatsResolver {
                 : StatsResolutionResult.skipped("batch_store_miss"));
       }
       return java.util.Collections.unmodifiableMap(out);
+    } catch (BaseResourceRepository.AbortRetryableException | StorageAbortRetryableException e) {
+      throw e;
     } catch (RuntimeException batchError) {
       if (requests.size() == 1) {
         return readPlannerTargetIsolated(
@@ -585,6 +591,8 @@ final class PlannerStatsResolver {
       return Map.of(
           key,
           record.map(hitMapper).orElseGet(() -> StatsResolutionResult.skipped("batch_store_miss")));
+    } catch (BaseResourceRepository.AbortRetryableException | StorageAbortRetryableException e) {
+      throw e;
     } catch (RuntimeException targetError) {
       LOG.debugf(
           targetError,
