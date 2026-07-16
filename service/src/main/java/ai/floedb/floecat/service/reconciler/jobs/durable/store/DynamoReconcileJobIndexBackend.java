@@ -283,7 +283,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       return false;
     }
     Map<String, Map<String, AttributeValue>> matches =
-        matchingCanonicalReferenceItems(canonicalPointerKey);
+        matchingCanonicalReferenceItems(canonicalPointerKey, 101);
     Map<String, AttributeValue> canonical = matches.get(canonicalPointerKey);
     if (canonical == null
         || longAttr(canonical, ATTR_VERSION) != expectedVersion
@@ -291,10 +291,39 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
             stringAttr(canonical, JobIndexBackendSupport.ATTR_BLOB_URI), expectedBlobUri)) {
       return false;
     }
-    if (matches.isEmpty() || matches.size() > 100) {
+    if (matches.isEmpty()) {
       return false;
     }
     List<TransactWriteItem> tx = new ArrayList<>();
+    if (matches.size() > 100) {
+      tx.add(buildCanonicalReferenceCheck(canonicalPointerKey, expectedVersion, expectedBlobUri));
+      for (var entry : matches.entrySet()) {
+        if (canonicalPointerKey.equals(entry.getKey())) {
+          continue;
+        }
+        tx.add(
+            buildDelete(
+                stringAttr(entry.getValue(), ATTR_PARTITION_KEY),
+                stringAttr(entry.getValue(), ATTR_SORT_KEY),
+                longAttr(entry.getValue(), ATTR_VERSION)));
+        if (tx.size() >= 100) {
+          break;
+        }
+      }
+      if (tx.size() <= 1) {
+        return false;
+      }
+      try {
+        dynamoCaller.callVoid(
+            dynamoDbClientManager,
+            client ->
+                client.transactWriteItems(
+                    TransactWriteItemsRequest.builder().transactItems(tx).build()));
+        return false;
+      } catch (TransactionCanceledException e) {
+        return false;
+      }
+    }
     for (var item : matches.values()) {
       tx.add(
           buildDelete(
@@ -315,7 +344,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   }
 
   private Map<String, Map<String, AttributeValue>> matchingCanonicalReferenceItems(
-      String canonicalPointerKey) {
+      String canonicalPointerKey, int maxMatches) {
     Map<String, Map<String, AttributeValue>> matches = new java.util.LinkedHashMap<>();
     Map<String, AttributeValue> exclusiveStartKey = null;
     do {
@@ -341,6 +370,9 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         String pointerKey = stringAttr(item, JobIndexBackendSupport.ATTR_POINTER_KEY);
         if (!pointerKey.isBlank()) {
           matches.putIfAbsent(pointerKey, item);
+          if (matches.size() >= maxMatches) {
+            return matches;
+          }
         }
       }
       exclusiveStartKey = response.lastEvaluatedKey();
@@ -845,6 +877,36 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
                 .expressionAttributeNames(Map.of("#v", ATTR_VERSION))
                 .expressionAttributeValues(
                     Map.of(":expected", AttributeValue.fromN(Long.toString(expectedVersion))))
+                .build())
+        .build();
+  }
+
+  private TransactWriteItem buildCanonicalReferenceCheck(
+      String canonicalPointerKey, long expectedVersion, String expectedBlobUri) {
+    var key = JobIndexBackendSupport.parseCanonicalJobKey(canonicalPointerKey);
+    if (key == null) {
+      throw new IllegalArgumentException(
+          "not a canonical reconcile job key: " + canonicalPointerKey);
+    }
+    return TransactWriteItem.builder()
+        .conditionCheck(
+            software.amazon.awssdk.services.dynamodb.model.ConditionCheck.builder()
+                .tableName(table)
+                .key(
+                    Map.of(
+                        ATTR_PARTITION_KEY,
+                        AttributeValue.fromS(JobIndexBackendSupport.canonicalPartitionKey(key)),
+                        ATTR_SORT_KEY,
+                        AttributeValue.fromS(JobIndexBackendSupport.canonicalSortKey(key))))
+                .conditionExpression("#v = :expectedVersion AND #blob = :expectedBlob")
+                .expressionAttributeNames(
+                    Map.of("#v", ATTR_VERSION, "#blob", JobIndexBackendSupport.ATTR_BLOB_URI))
+                .expressionAttributeValues(
+                    Map.of(
+                        ":expectedVersion",
+                        AttributeValue.fromN(Long.toString(expectedVersion)),
+                        ":expectedBlob",
+                        AttributeValue.fromS(expectedBlobUri)))
                 .build())
         .build();
   }

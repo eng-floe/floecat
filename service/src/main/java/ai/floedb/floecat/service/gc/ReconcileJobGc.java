@@ -172,8 +172,6 @@ public class ReconcileJobGc {
           }
           continue;
         }
-        clearCanonicalQuarantineMarker(accountId, canonical);
-
         String state = text(record, "state");
         long updatedAt =
             longValue(
@@ -210,6 +208,25 @@ public class ReconcileJobGc {
       if (jobToken.isBlank()) {
         break;
       }
+    }
+
+    while (scanned < batchLimit && System.currentTimeMillis() < deadline && pointerStore != null) {
+      int limit = Math.min(pageSize, batchLimit - scanned);
+      StringBuilder next = new StringBuilder();
+      var markers =
+          pointerStore.listPointersByPrefix(
+              Keys.reconcileCanonicalQuarantinePointerPrefix(accountId), limit, "", next);
+      if (markers.isEmpty()) {
+        break;
+      }
+      for (Pointer marker : markers) {
+        if (scanned >= batchLimit) {
+          break;
+        }
+        scanned++;
+        clearCanonicalQuarantineMarkerIfReadable(marker);
+      }
+      break;
     }
 
     String dedupePrefix = Keys.reconcileDedupePointerPrefix(accountId);
@@ -427,7 +444,7 @@ public class ReconcileJobGc {
         Keys.reconcileCanonicalQuarantinePointer(accountId, hashValue(canonical.pointerKey()));
     long firstSeenMs = nowMs;
     Pointer marker = pointerStore == null ? null : pointerStore.get(markerKey).orElse(null);
-    String markerPayload = quarantineMarkerPayload(canonical);
+    String markerPayload = quarantineMarkerPayload(canonical, nowMs);
     if (marker == null || !markerPayloadMatches(marker.getBlobUri(), canonical)) {
       if (pointerStore != null) {
         long expectedVersion = marker == null ? 0L : marker.getVersion();
@@ -439,6 +456,19 @@ public class ReconcileJobGc {
       return false;
     } else {
       firstSeenMs = quarantineMarkerFirstSeenMs(marker.getBlobUri(), nowMs);
+      if (quarantineMarkerCanonicalKey(marker.getBlobUri()).isBlank() && pointerStore != null) {
+        boolean migrated =
+            pointerStore.compareAndSet(
+                markerKey,
+                marker.getVersion(),
+                PointerReferences.opaqueMarkerPointer(
+                    markerKey,
+                    quarantineMarkerPayload(canonical, firstSeenMs),
+                    marker.getVersion() + 1L));
+        if (migrated) {
+          return false;
+        }
+      }
     }
     if (firstSeenMs > nowMs - quarantineRetentionMs) {
       return false;
@@ -452,20 +482,24 @@ public class ReconcileJobGc {
     return purged;
   }
 
-  private void clearCanonicalQuarantineMarker(String accountId, JobIndexEntrySnapshot canonical) {
-    if (accountId == null || accountId.isBlank() || canonical == null || pointerStore == null) {
+  private void clearCanonicalQuarantineMarkerIfReadable(Pointer marker) {
+    if (marker == null || marker.getKey() == null || marker.getKey().isBlank()) {
       return;
     }
-    String markerKey =
-        Keys.reconcileCanonicalQuarantinePointer(accountId, hashValue(canonical.pointerKey()));
-    Pointer marker = pointerStore.get(markerKey).orElse(null);
-    if (marker != null) {
+    String canonicalKey = quarantineMarkerCanonicalKey(marker.getBlobUri());
+    if (!canonicalKey.isBlank() && readRecordByCanonicalKey(canonicalKey) != null) {
       pointerStore.compareAndDelete(marker.getKey(), marker.getVersion());
     }
   }
 
-  private static String quarantineMarkerPayload(JobIndexEntrySnapshot canonical) {
-    return canonical.version() + "\n" + canonical.blobUri() + "\n" + System.currentTimeMillis();
+  private static String quarantineMarkerPayload(JobIndexEntrySnapshot canonical, long firstSeenMs) {
+    return canonical.version()
+        + "\n"
+        + canonical.blobUri()
+        + "\n"
+        + firstSeenMs
+        + "\n"
+        + canonical.pointerKey();
   }
 
   private static boolean markerPayloadMatches(
@@ -473,8 +507,8 @@ public class ReconcileJobGc {
     if (markerPayload == null || canonical == null) {
       return false;
     }
-    String[] parts = markerPayload.split("\n", 3);
-    return parts.length == 3
+    String[] parts = markerPayload.split("\n", 4);
+    return parts.length >= 3
         && parseLong(parts[0], -1L) == canonical.version()
         && java.util.Objects.equals(parts[1], canonical.blobUri());
   }
@@ -483,8 +517,16 @@ public class ReconcileJobGc {
     if (markerPayload == null) {
       return defaultValue;
     }
-    String[] parts = markerPayload.split("\n", 3);
-    return parts.length == 3 ? parseLong(parts[2], defaultValue) : defaultValue;
+    String[] parts = markerPayload.split("\n", 4);
+    return parts.length >= 3 ? parseLong(parts[2], defaultValue) : defaultValue;
+  }
+
+  private static String quarantineMarkerCanonicalKey(String markerPayload) {
+    if (markerPayload == null) {
+      return "";
+    }
+    String[] parts = markerPayload.split("\n", 4);
+    return parts.length == 4 ? parts[3] : "";
   }
 
   private static String text(JsonNode node, String field) {

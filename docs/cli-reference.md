@@ -210,6 +210,11 @@ help
 quit
 ```
 
+Connector settings note:
+- Finished reconcile jobs default to 24 h retention. Use
+  `connector settings update --finished-job-retention-sec <n>` to keep terminal job history longer
+  for operator dashboards, support workflows, or API consumers that need a wider lookback window.
+
 Constraints payload example (`--file`):
 
 ```json

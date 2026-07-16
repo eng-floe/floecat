@@ -1131,6 +1131,11 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-quarantine/canonical/" + encode(hash);
   }
 
+  public static String reconcileCanonicalQuarantinePointerPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-quarantine/canonical/";
+  }
+
   public static String reconcileJobByParentPointer(
       String accountId, String parentJobId, String jobId) {
     String tid = req("account_id", accountId);
