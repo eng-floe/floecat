@@ -460,6 +460,26 @@
     "allowedTags": ["component", "operation", "reason", "resource", "status"]
   },
   {
+    "name": "floecat.service.gc.cas.oldest_sweep_age",
+    "type": "GAUGE",
+    "unit": "ms",
+    "since": "v1",
+    "origin": "service",
+    "description": "Age in milliseconds of the least-recently cleanly-swept CAS GC account.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.gc.cas.poisoned_accounts",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Accounts whose CAS GC delete phase was poisoned in the last tick.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
     "name": "floecat.service.reconcile.cancel_job.total",
     "type": "COUNTER",
     "unit": "",
@@ -558,6 +578,76 @@
     "description": "Reconcile job terminal outcomes by execution mode.",
     "requiredTags": ["component", "mode", "operation", "result"],
     "allowedTags": ["component", "mode", "operation", "reason", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.lease_next.candidates",
+    "type": "SUMMARY",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Number of ready-queue candidates examined by each durable reconcile leaseNext call.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.lease_next.latency",
+    "type": "TIMER",
+    "unit": "ms",
+    "since": "v1",
+    "origin": "service",
+    "description": "Durable reconcile leaseNext latency by terminal outcome.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.lease_next.outcomes.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Durable reconcile leaseNext outcomes.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.lease_next.scans",
+    "type": "SUMMARY",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Number of ready-queue slice scans performed by each durable reconcile leaseNext call.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "result"]
+  },
+  {
+    "name": "floecat.service.reconcile.lease_next.skips.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Ready-queue candidates skipped by durable reconcile leaseNext, grouped by reason. Lease race reasons distinguish active running races from stale ready entries that are missing, terminal, not queued, pointer-mismatched, or otherwise changed after the lease attempt. Lease conflict reasons expose the write-side reason returned by the canonical lease attempt, including owner-claim conflict scope and job kind.",
+    "requiredTags": ["component", "operation", "reason"],
+    "allowedTags": ["component", "operation", "reason"]
+  },
+  {
+    "name": "floecat.service.reconcile.lease_scan.permits.available",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Current number of durable reconcile lease scan permits available.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.reconcile.lease_scan.permits.in_use",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Current number of durable reconcile lease scan permits in use.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
   },
   {
     "name": "floecat.service.reconcile.list_jobs.total",
