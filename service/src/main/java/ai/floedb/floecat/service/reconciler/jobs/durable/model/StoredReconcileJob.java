@@ -73,6 +73,8 @@ public class StoredReconcileJob {
   public long failedFiles;
   public long expectedDirectChildren;
   public boolean childrenFinalized;
+  public String statsCleanupState;
+  public long statsCleanupUpdatedAtMs;
   public long projectionRequestedGeneration;
   public long projectionAppliedGeneration;
   public int attempt;

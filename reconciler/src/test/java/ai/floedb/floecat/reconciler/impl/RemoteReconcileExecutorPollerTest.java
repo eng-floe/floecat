@@ -128,8 +128,11 @@ class RemoteReconcileExecutorPollerTest {
   }
 
   @Test
-  void pollOnceReleasesWorkerSlotWhenLeaseRpcThrows() {
+  void pollOnceReleasesWorkerSlotWhenLeaseRpcThrows() throws Exception {
     RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    CountDownLatch firstLeaseAttempted = new CountDownLatch(1);
+    CountDownLatch secondLeaseAttempted = new CountDownLatch(1);
+    AtomicInteger leaseAttempts = new AtomicInteger(0);
     ReconcileExecutor executor =
         new ReconcileExecutor() {
           @Override
@@ -158,14 +161,27 @@ class RemoteReconcileExecutorPollerTest {
     poller.init();
 
     when(client.lease(any(), eq("local-poller")))
-        .thenThrow(new RuntimeException("lease failed"))
-        .thenReturn(java.util.Optional.empty());
+        .thenAnswer(
+            ignored -> {
+              if (leaseAttempts.incrementAndGet() == 1) {
+                firstLeaseAttempted.countDown();
+                throw new RuntimeException("lease failed");
+              }
+              secondLeaseAttempted.countDown();
+              return java.util.Optional.empty();
+            });
 
     poller.pollOnce();
-    verify(client, org.mockito.Mockito.timeout(5_000L)).lease(any(), eq("local-poller"));
-    poller.pollOnce();
+    assertTrue(firstLeaseAttempted.await(5, TimeUnit.SECONDS));
 
-    verify(client, org.mockito.Mockito.timeout(5_000L).times(2)).lease(any(), eq("local-poller"));
+    long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    do {
+      poller.pollOnce();
+      if (secondLeaseAttempted.await(25L, TimeUnit.MILLISECONDS)) {
+        return;
+      }
+    } while (System.nanoTime() < deadlineNanos);
+    assertTrue(secondLeaseAttempted.await(1, TimeUnit.SECONDS));
   }
 
   @Test

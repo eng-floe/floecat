@@ -155,8 +155,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       LOG.infof(
           "Skipping stale snapshot finalizer jobId=%s tableId=%s snapshotId=%d finalizedBy=%s",
           lease.jobId, snapshotTask.tableId(), snapshotTask.snapshotId(), finalized.finalizerJobId);
-      return ExecutionResult.obsolete(
-          0, 0, 0, 0, 0, 0, 0, ExecutionResult.FailureKind.NONE, message, null);
+      return ExecutionResult.success(0, 0, 0, 0, 0, 1, 0, message);
     }
     if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.DIRECT_STATS) {
       try {
@@ -368,8 +367,11 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     }
     long statsProcessed =
         lease.fullRescan
-            ? persistence.replaceFileGroupStatsForSnapshot(
-                tableId, snapshotTask.snapshotId(), coverage.expectedFiles(), aggregateStats)
+            ? persistence.publishFileGroupStatsGeneration(
+                tableId,
+                snapshotTask.snapshotId(),
+                LeasedFileGroupExecutionService.statsGenerationId(lease),
+                aggregateStats)
             : persistence.persistStats(aggregateStats);
     RuntimeException pointerFailure = advanceCurrentSnapshot(tableId, snapshotTask, lease);
     if (pointerFailure != null) {

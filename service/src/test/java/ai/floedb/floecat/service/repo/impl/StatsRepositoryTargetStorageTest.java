@@ -31,21 +31,30 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
+import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
+import ai.floedb.floecat.stats.spi.StatsStore.UnpublishedGenerationDeleteResult;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.StringValue;
 import com.google.protobuf.Timestamp;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 class StatsRepositoryTargetStorageTest {
@@ -239,6 +248,303 @@ class StatsRepositoryTargetStorageTest {
     assertThat(
             repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.columnTarget(1L)))
         .isPresent();
+  }
+
+  @Test
+  void draftGenerationIsInvisibleUntilPublished() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 709L;
+    String filePath = "s3://bucket/path/file-overwrite.parquet";
+    TargetStatsRecord original =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(12L).build());
+    TargetStatsRecord replacement =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(34L).build());
+
+    repository.putTargetStatsBatch(TABLE_ID, snapshotId, List.of(original));
+    String originalGeneration =
+        repository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        "draft-job-1",
+        List.of(StatsTargetIdentity.fileTarget(filePath)),
+        List.of(replacement));
+
+    Optional<TargetStatsRecord> stored =
+        repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(filePath));
+    assertThat(stored).isPresent();
+    assertThat(stored.get().getFile().getRowCount()).isEqualTo(12L);
+    assertThat(repository.activeStatsGeneration(TABLE_ID, snapshotId)).contains(originalGeneration);
+
+    repository.publishStatsGeneration(TABLE_ID, snapshotId, "draft-job-1", List.of());
+
+    stored =
+        repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(filePath));
+    assertThat(stored).isPresent();
+    assertThat(stored.get().getFile().getRowCount()).isEqualTo(34L);
+    assertThat(repository.countTargetStats(TABLE_ID, snapshotId, Optional.empty())).isEqualTo(1);
+  }
+
+  @Test
+  void draftGenerationDoesNotAdvanceStaleIndexUntilPublished() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    String filePath = "s3://bucket/path/file-staged.parquet";
+    var target = StatsTargetIdentity.fileTarget(filePath);
+    TargetStatsRecord original =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            100L,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(12L).build());
+    TargetStatsRecord replacement =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            200L,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(34L).build());
+
+    repository.putTargetStats(original);
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID, 200L, "draft-job-2", List.of(target), List.of(replacement));
+
+    Optional<TargetStatsRecord> stale = repository.getStaleTargetStats(TABLE_ID, 999L, target);
+    assertThat(stale).isPresent();
+    assertThat(stale.get().getSnapshotId()).isEqualTo(100L);
+    assertThat(stale.get().getFile().getRowCount()).isEqualTo(12L);
+
+    repository.publishStatsGeneration(TABLE_ID, 200L, "draft-job-2", List.of());
+
+    stale = repository.getStaleTargetStats(TABLE_ID, 999L, target);
+    assertThat(stale).isPresent();
+    assertThat(stale.get().getSnapshotId()).isEqualTo(200L);
+    assertThat(stale.get().getFile().getRowCount()).isEqualTo(34L);
+  }
+
+  @Test
+  void deleteUnpublishedStatsGenerationRemovesOnlyDraftGeneration() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 710L;
+    String filePath = "s3://bucket/path/file-draft.parquet";
+    TargetStatsRecord draft =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(34L).build());
+
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        "draft-job-3",
+        List.of(StatsTargetIdentity.fileTarget(filePath)),
+        List.of(draft));
+    String pointerPrefix =
+        Keys.snapshotTargetStatsGenerationPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, "draft-job-3");
+    String blobPrefix =
+        Keys.snapshotTargetStatsBlobPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId)
+            + "generations/"
+            + Keys.encodeSegment("draft-job-3")
+            + "/";
+
+    assertThat(pointerStore.listPointersByPrefix(pointerPrefix, 10, "", new StringBuilder()))
+        .isNotEmpty();
+    assertThat(blobStore.list(blobPrefix, 10, "").keys()).isNotEmpty();
+
+    assertThat(repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, "draft-job-3"))
+        .isEqualTo(UnpublishedGenerationDeleteResult.DELETED);
+
+    assertThat(pointerStore.listPointersByPrefix(pointerPrefix, 10, "", new StringBuilder()))
+        .isEmpty();
+    assertThat(blobStore.list(blobPrefix, 10, "").keys()).isEmpty();
+  }
+
+  @Test
+  void deleteUnpublishedStatsGenerationDoesNotDeletePublishedGeneration() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 711L;
+    String filePath = "s3://bucket/path/file-published.parquet";
+    TargetStatsRecord draft =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(34L).build());
+
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        "draft-job-4",
+        List.of(StatsTargetIdentity.fileTarget(filePath)),
+        List.of(draft));
+    repository.publishStatsGeneration(TABLE_ID, snapshotId, "draft-job-4", List.of());
+
+    assertThat(repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, "draft-job-4"))
+        .isEqualTo(UnpublishedGenerationDeleteResult.NOT_DELETABLE_PUBLISHED);
+    assertThat(
+            repository.getTargetStats(
+                TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(filePath)))
+        .contains(draft);
+  }
+
+  @Test
+  void deleteUnpublishedStatsGenerationBacksOutWhenManifestAppearsBeforeDelete() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore delegateBlobStore = new InMemoryBlobStore();
+    long snapshotId = 712L;
+    String generationId = "draft-job-race";
+    String manifestUri =
+        Keys.snapshotTargetStatsManifestBlobUri(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    AtomicBoolean publishManifestDuringFirstHead = new AtomicBoolean(true);
+    BlobStore racingBlobStore =
+        new DelegatingBlobStore(delegateBlobStore) {
+          @Override
+          public Optional<BlobHeader> head(String uri) {
+            if (manifestUri.equals(uri)
+                && publishManifestDuringFirstHead.compareAndSet(true, false)) {
+              delegateBlobStore.put(
+                  uri, StringValue.of(generationId).toByteArray(), "application/x-protobuf");
+              return Optional.empty();
+            }
+            return super.head(uri);
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointerStore, racingBlobStore);
+    String filePath = "s3://bucket/path/file-race.parquet";
+    TargetStatsRecord draft =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(34L).build());
+    String pointerPrefix =
+        Keys.snapshotTargetStatsGenerationPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        List.of(StatsTargetIdentity.fileTarget(filePath)),
+        List.of(draft));
+
+    assertThat(repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, generationId))
+        .isEqualTo(UnpublishedGenerationDeleteResult.NOT_DELETABLE_PUBLISHED);
+    assertThat(pointerStore.listPointersByPrefix(pointerPrefix, 10, "", new StringBuilder()))
+        .isNotEmpty();
+
+    assertThatThrownBy(
+            () -> repository.publishStatsGeneration(TABLE_ID, snapshotId, generationId, List.of()))
+        .isInstanceOf(BaseResourceRepository.AbortRetryableException.class)
+        .hasMessageContaining("state=DELETING");
+    assertThat(repository.activeStatsGeneration(TABLE_ID, snapshotId)).isEmpty();
+    assertThat(pointerStore.listPointersByPrefix(pointerPrefix, 10, "", new StringBuilder()))
+        .isNotEmpty();
+  }
+
+  @Test
+  void deleteUnpublishedStatsGenerationRejectsPublishAfterFinalPreDeleteManifestCheck() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore delegateBlobStore = new InMemoryBlobStore();
+    long snapshotId = 713L;
+    String generationId = "draft-job-post-head-race";
+    String manifestUri =
+        Keys.snapshotTargetStatsManifestBlobUri(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    AtomicInteger manifestHeadCount = new AtomicInteger();
+    AtomicReference<StatsRepository> repositoryRef = new AtomicReference<>();
+    AtomicReference<RuntimeException> publishFailure = new AtomicReference<>();
+    BlobStore racingBlobStore =
+        new DelegatingBlobStore(delegateBlobStore) {
+          @Override
+          public Optional<BlobHeader> head(String uri) {
+            Optional<BlobHeader> header = super.head(uri);
+            if (manifestUri.equals(uri) && manifestHeadCount.incrementAndGet() == 2) {
+              try {
+                repositoryRef
+                    .get()
+                    .publishStatsGeneration(TABLE_ID, snapshotId, generationId, List.of());
+              } catch (RuntimeException e) {
+                publishFailure.set(e);
+              }
+            }
+            return header;
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointerStore, racingBlobStore);
+    repositoryRef.set(repository);
+    String filePath = "s3://bucket/path/file-post-head-race.parquet";
+    TargetStatsRecord draft =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(34L).build());
+    String pointerPrefix =
+        Keys.snapshotTargetStatsGenerationPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        List.of(StatsTargetIdentity.fileTarget(filePath)),
+        List.of(draft));
+
+    assertThat(repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, generationId))
+        .isEqualTo(UnpublishedGenerationDeleteResult.DELETED);
+
+    assertThat(publishFailure.get())
+        .isInstanceOf(BaseResourceRepository.AbortRetryableException.class);
+    assertThat(repository.activeStatsGeneration(TABLE_ID, snapshotId)).isEmpty();
+    assertThat(pointerStore.listPointersByPrefix(pointerPrefix, 10, "", new StringBuilder()))
+        .isEmpty();
+  }
+
+  @Test
+  void deleteUnpublishedStatsGenerationReturnsRetryForPublishingGeneration() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 714L;
+    String generationId = "draft-job-publishing";
+    String filePath = "s3://bucket/path/file-publishing.parquet";
+    TargetStatsRecord draft =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(34L).build());
+    String lifecyclePointer =
+        Keys.snapshotTargetStatsGenerationLifecyclePointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    String pointerPrefix =
+        Keys.snapshotTargetStatsGenerationPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        List.of(StatsTargetIdentity.fileTarget(filePath)),
+        List.of(draft));
+    Pointer lifecycle = pointerStore.get(lifecyclePointer).orElseThrow();
+    pointerStore.compareAndSet(
+        lifecyclePointer,
+        lifecycle.getVersion(),
+        PointerReferences.opaqueMarkerPointer(
+            lifecyclePointer, "PUBLISHING", lifecycle.getVersion() + 1L));
+
+    assertThat(repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, generationId))
+        .isEqualTo(UnpublishedGenerationDeleteResult.RETRYABLE_IN_PROGRESS);
+    assertThat(pointerStore.listPointersByPrefix(pointerPrefix, 10, "", new StringBuilder()))
+        .isNotEmpty();
   }
 
   @Test
@@ -567,6 +873,63 @@ class StatsRepositoryTargetStorageTest {
     assertThat(repository.putTargetStatsIfAbsent(zeroMarker)).isFalse();
     assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
         .contains(existing);
+  }
+
+  @Test
+  void putTargetStatsBatchIfAbsentCreatesOnlyMissingRecords() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 9193L;
+    TargetStatsRecord existing =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            TableValueStats.newBuilder().setRowCount(11L).setDataFileCount(2L).build(),
+            null);
+    TargetStatsRecord conflicting =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            TableValueStats.newBuilder().setRowCount(0L).setDataFileCount(0L).build(),
+            null);
+    TargetStatsRecord missing =
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            snapshotId,
+            7L,
+            ScalarStats.newBuilder().setDisplayName("c7").setRowCount(11L).build(),
+            null);
+
+    repository.putTargetStats(existing);
+
+    assertThat(
+            repository.putTargetStatsBatchIfAbsent(
+                TABLE_ID, snapshotId, List.of(conflicting, missing)))
+        .containsExactly(missing);
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .contains(existing);
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, missing.getTarget()))
+        .contains(missing);
+  }
+
+  @Test
+  void putTargetStatsBatchIfAbsentRejectsRecordsOutsideSnapshot() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 9194L;
+    TargetStatsRecord wrongSnapshot =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId + 1,
+            TableValueStats.newBuilder().setRowCount(11L).setDataFileCount(2L).build(),
+            null);
+
+    assertThatThrownBy(
+            () ->
+                repository.putTargetStatsBatchIfAbsent(
+                    TABLE_ID, snapshotId, List.of(wrongSnapshot)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("different table snapshot");
   }
 
   @Test
@@ -1193,6 +1556,49 @@ class StatsRepositoryTargetStorageTest {
         throw new StorageAbortRetryableException("injected fault: " + key);
       }
       return super.get(key);
+    }
+  }
+
+  private static class DelegatingBlobStore implements BlobStore {
+    private final BlobStore delegate;
+
+    DelegatingBlobStore(BlobStore delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public byte[] get(String uri) {
+      return delegate.get(uri);
+    }
+
+    @Override
+    public void put(String uri, byte[] bytes, String contentType) {
+      delegate.put(uri, bytes, contentType);
+    }
+
+    @Override
+    public Optional<BlobHeader> head(String uri) {
+      return delegate.head(uri);
+    }
+
+    @Override
+    public boolean delete(String uri) {
+      return delegate.delete(uri);
+    }
+
+    @Override
+    public void deletePrefix(String prefix) {
+      delegate.deletePrefix(prefix);
+    }
+
+    @Override
+    public Map<String, byte[]> getBatch(List<String> uris) {
+      return delegate.getBatch(uris);
+    }
+
+    @Override
+    public Page list(String prefix, int limit, String pageToken) {
+      return delegate.list(prefix, limit, pageToken);
     }
   }
 }

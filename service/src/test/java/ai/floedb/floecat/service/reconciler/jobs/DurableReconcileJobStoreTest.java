@@ -60,6 +60,8 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseSto
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.stats.spi.StatsStore.UnpublishedGenerationDeleteResult;
 import ai.floedb.floecat.storage.aws.dynamodb.DynamoPointerStore;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbKvStore;
 import ai.floedb.floecat.storage.kv.dynamodb.ps.PointerStoreEntity;
@@ -3209,6 +3211,226 @@ class DurableReconcileJobStoreTest {
     assertTrue(store.isCancellationRequested(childJobId));
     assertTrue(store.isCancellationRequested(grandchildJobId));
     assertTrue(store.leaseNext(ReconcileJobStore.LeaseRequest.all()).isEmpty());
+  }
+
+  @Test
+  void fullRescanSnapshotCancellationCleansDraftStatsAfterDescendantsTerminal() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    store.statsStore = statsStore;
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet"));
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            true,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(group), true),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    store.enqueue(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        true,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "table-1"),
+        ReconcileJobKind.EXEC_FILE_GROUP,
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        group,
+        ReconcileExecutionPolicy.defaults(),
+        snapshotJobId,
+        "");
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table-1")
+            .build();
+    Mockito.doReturn(UnpublishedGenerationDeleteResult.DELETED)
+        .when(statsStore)
+        .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
+
+    store.cancel(ACCOUNT_ID, snapshotJobId, "stop");
+
+    Mockito.verify(statsStore, Mockito.never())
+        .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
+
+    runCancellationMaintenance();
+    runCancellationMaintenance();
+    runCancellationMaintenance();
+
+    assertEquals("JS_CANCELLED", store.getLeaseView(snapshotJobId).orElseThrow().state);
+    Mockito.verify(statsStore, Mockito.times(1))
+        .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
+  }
+
+  @Test
+  void fullRescanSnapshotCancellationRetriesDraftStatsCleanupAfterTransientFailure() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    store.statsStore = statsStore;
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet"));
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            true,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(group), true),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    store.enqueue(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        true,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "table-1"),
+        ReconcileJobKind.EXEC_FILE_GROUP,
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        group,
+        ReconcileExecutionPolicy.defaults(),
+        snapshotJobId,
+        "");
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table-1")
+            .build();
+    Mockito.doThrow(new RuntimeException("temporary stats store outage"))
+        .doReturn(UnpublishedGenerationDeleteResult.DELETED)
+        .when(statsStore)
+        .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
+
+    store.cancel(ACCOUNT_ID, snapshotJobId, "stop");
+    runCancellationMaintenance();
+    runCancellationMaintenance();
+    assertEquals("JS_CANCELLED", store.getLeaseView(snapshotJobId).orElseThrow().state);
+    Mockito.verify(statsStore, Mockito.times(2))
+        .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
+
+    runCancellationMaintenance();
+
+    Mockito.verifyNoMoreInteractions(statsStore);
+  }
+
+  @Test
+  void fullRescanSnapshotCancellationKeepsStatsCleanupPendingWhenGenerationPublishing() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    store.statsStore = statsStore;
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet"));
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            true,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(group), true),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    store.enqueue(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        true,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.of(List.of(), "table-1"),
+        ReconcileJobKind.EXEC_FILE_GROUP,
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        group,
+        ReconcileExecutionPolicy.defaults(),
+        snapshotJobId,
+        "");
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table-1")
+            .build();
+    Mockito.doReturn(UnpublishedGenerationDeleteResult.RETRYABLE_IN_PROGRESS)
+        .doReturn(UnpublishedGenerationDeleteResult.DELETED)
+        .when(statsStore)
+        .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
+
+    store.cancel(ACCOUNT_ID, snapshotJobId, "stop");
+    runCancellationMaintenance();
+    assertEquals("JS_CANCELLED", store.getLeaseView(snapshotJobId).orElseThrow().state);
+    Mockito.verify(statsStore, Mockito.times(1))
+        .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
+
+    runCancellationMaintenance();
+    Mockito.verify(statsStore, Mockito.times(2))
+        .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
+
+    runCancellationMaintenance();
+    Mockito.verifyNoMoreInteractions(statsStore);
+  }
+
+  @Test
+  void fullRescanSnapshotCancellationDoesNotCleanDraftStatsWithLiveDescendant() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    store.statsStore = statsStore;
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet"));
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            true,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(group), true),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String execJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            true,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileTableTask.empty(),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            group,
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+    var execLease = leaseJob(execJobId);
+    store.markRunning(execJobId, execLease.leaseEpoch, 100L, "executor-file-group");
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table-1")
+            .build();
+
+    store.cancel(ACCOUNT_ID, snapshotJobId, "stop");
+    runCancellationMaintenance();
+    runCancellationMaintenance();
+
+    assertEquals("JS_CANCELLING", store.getLeaseView(snapshotJobId).orElseThrow().state);
+    assertEquals("JS_RUNNING", store.getLeaseView(execJobId).orElseThrow().state);
+    Mockito.verify(statsStore, Mockito.never())
+        .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
   }
 
   @Test

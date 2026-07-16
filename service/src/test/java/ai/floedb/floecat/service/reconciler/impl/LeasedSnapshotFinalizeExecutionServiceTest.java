@@ -262,8 +262,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     service.finalizeChunkedSuccess(lease, snapshotTask, tableId, SNAPSHOT_ID);
 
     verify(persistence)
-        .replaceFileGroupStatsForSnapshot(
-            tableId, SNAPSHOT_ID, List.of("s3://bucket/file-1.parquet"), List.of());
+        .publishFileGroupStatsGeneration(tableId, SNAPSHOT_ID, "full-rescan-parent-job", List.of());
     verify(persistence, never()).persistStats(anyList());
   }
 
@@ -328,8 +327,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     service.finalizeChunkedSuccess(lease, snapshotTask, tableId, SNAPSHOT_ID);
 
     verify(persistence)
-        .replaceFileGroupStatsForSnapshot(
-            tableId, SNAPSHOT_ID, List.of("s3://bucket/file-1.parquet"), List.of(aggregateRecord));
+        .publishFileGroupStatsGeneration(
+            tableId, SNAPSHOT_ID, "full-rescan-parent-job", List.of(aggregateRecord));
     verify(persistence)
         .mergeCompletedGroupPartials(
             eq(tableId),

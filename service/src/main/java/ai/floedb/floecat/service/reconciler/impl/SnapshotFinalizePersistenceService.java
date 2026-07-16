@@ -33,7 +33,6 @@ import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 
 @ApplicationScoped
@@ -51,24 +50,16 @@ public class SnapshotFinalizePersistenceService {
     return canonical.size();
   }
 
-  public long replaceFileGroupStatsForSnapshot(
+  public long publishFileGroupStatsGeneration(
       ResourceId tableId,
       long snapshotId,
-      List<String> expectedFilePaths,
+      String generationId,
       List<TargetStatsRecord> aggregateRecords) {
-    List<TargetStatsRecord> replacement = new ArrayList<>();
-    for (String filePath : expectedFilePaths == null ? List.<String>of() : expectedFilePaths) {
-      if (filePath == null || filePath.isBlank()) {
-        continue;
-      }
-      statsStore
-          .getTargetStats(tableId, snapshotId, StatsTargetIdentity.fileTarget(filePath))
-          .ifPresent(replacement::add);
-    }
-    if (aggregateRecords != null && !aggregateRecords.isEmpty()) {
-      replacement.addAll(aggregateRecords);
-    }
-    return replaceAllStatsForSnapshot(tableId, snapshotId, replacement);
+    List<TargetStatsRecord> canonicalAggregates = canonicalize(aggregateRecords);
+    statsStore.publishStatsGeneration(tableId, snapshotId, generationId, canonicalAggregates);
+    statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+    commitGenerationToRoot(tableId, snapshotId);
+    return canonicalAggregates.size();
   }
 
   public boolean deleteAllStatsForSnapshot(ResourceId tableId, long snapshotId) {
@@ -155,31 +146,6 @@ public class SnapshotFinalizePersistenceService {
             + tableId.getId()
             + " snapshot "
             + snapshotId);
-  }
-
-  public List<TargetStatsRecord> listFileStats(ResourceId tableId, long snapshotId) {
-    List<TargetStatsRecord> out = new ArrayList<>();
-    String pageToken = "";
-    do {
-      StatsStore.StatsStorePage page =
-          statsStore.listTargetStats(
-              tableId, snapshotId, Optional.of(StatsTargetType.FILE), 256, pageToken);
-      out.addAll(page.records());
-      pageToken = page.nextPageToken();
-    } while (pageToken != null && !pageToken.isBlank());
-    return List.copyOf(out);
-  }
-
-  public List<TargetStatsRecord> listSnapshotStats(ResourceId tableId, long snapshotId) {
-    List<TargetStatsRecord> out = new ArrayList<>();
-    String pageToken = "";
-    do {
-      StatsStore.StatsStorePage page =
-          statsStore.listTargetStats(tableId, snapshotId, Optional.empty(), 256, pageToken);
-      out.addAll(page.records());
-      pageToken = page.nextPageToken();
-    } while (pageToken != null && !pageToken.isBlank());
-    return List.copyOf(out);
   }
 
   public List<TargetStatsRecord> buildAggregateStats(

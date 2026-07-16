@@ -323,10 +323,11 @@ class SnapshotFinalizeReconcileExecutorTest {
         executor.execute(
             new ExecutionContext(finalizerLease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
 
-    assertEquals(ExecutionResult.JobOutcome.OBSOLETE, result.outcome);
+    assertEquals(ExecutionResult.JobOutcome.SUCCESS, result.outcome);
     assertEquals(0, result.errors);
     assertEquals(ExecutionResult.FailureKind.NONE, result.failureKind);
     assertNull(result.error);
+    assertEquals(1, result.snapshotsProcessed);
     assertTrue(result.message.contains("already finalized by job winning-finalizer"));
   }
 
@@ -1183,7 +1184,17 @@ class SnapshotFinalizeReconcileExecutorTest {
             .setKind(ResourceKind.RK_TABLE)
             .setId(TABLE_ID)
             .build();
-    statsStore.putTargetStats(
+    TargetStatsRecord existingRecord =
+        TargetStatsRecords.fileRecord(
+            tableId,
+            SNAPSHOT_ID,
+            FileTargetStats.newBuilder()
+                .setFilePath(filePath)
+                .setRowCount(5L)
+                .setSizeBytes(64L)
+                .build(),
+            null);
+    TargetStatsRecord replacementRecord =
         TargetStatsRecords.fileRecord(
             tableId,
             SNAPSHOT_ID,
@@ -1192,7 +1203,14 @@ class SnapshotFinalizeReconcileExecutorTest {
                 .setRowCount(10L)
                 .setSizeBytes(128L)
                 .build(),
-            null));
+            null);
+    statsStore.putTargetStats(existingRecord);
+    statsStore.replaceTargetStatsInGeneration(
+        tableId,
+        SNAPSHOT_ID,
+        "full-rescan-" + parentJobId,
+        List.of(StatsTargetIdentity.fileTarget(filePath)),
+        List.of(replacementRecord));
     ReconcileJobStore.LeasedJob childLease =
         store
             .leaseNext(
@@ -1316,13 +1334,10 @@ class SnapshotFinalizeReconcileExecutorTest {
     ExecutionResult result = executor.execute(context(finalizerLease));
 
     assertTrue(result.ok());
-    assertEquals(
-        10L,
+    assertTrue(
         statsStore
             .getTargetStats(tableId, SNAPSHOT_ID, StatsTargetIdentity.fileTarget(existingFilePath))
-            .orElseThrow()
-            .getFile()
-            .getRowCount());
+            .isEmpty());
     assertTrue(
         statsStore
             .getTargetStats(
@@ -2516,6 +2531,13 @@ class SnapshotFinalizeReconcileExecutorTest {
     public boolean deleteAllStatsForSnapshot(ResourceId tableId, long snapshotId) {
       return false;
     }
+
+    @Override
+    public void publishStatsGeneration(
+        ResourceId tableId,
+        long snapshotId,
+        String generationId,
+        List<TargetStatsRecord> finalRecords) {}
 
     @Override
     public MutationMeta metaForTargetStats(
