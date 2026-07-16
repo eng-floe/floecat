@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.storage.aws.s3;
 
+import ai.floedb.floecat.aws.ClosedAwsClientDetector;
 import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.storage.aws.S3ClientManager;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
@@ -133,7 +134,7 @@ public class S3BlobStore implements BlobStore {
     } catch (SdkClientException e) {
       throw new StorageAbortRetryableException(msg("HEAD", k, e.getMessage()));
     } catch (RuntimeException e) {
-      throw e;
+      throw mapClosedPoolOrRethrow("HEAD", k, e);
     }
   }
 
@@ -155,7 +156,7 @@ public class S3BlobStore implements BlobStore {
     } catch (SdkClientException e) {
       throw new StorageAbortRetryableException(msg("GET", k, e.getMessage()));
     } catch (RuntimeException e) {
-      throw e;
+      throw mapClosedPoolOrRethrow("GET", k, e);
     }
   }
 
@@ -198,7 +199,7 @@ public class S3BlobStore implements BlobStore {
     } catch (SdkClientException e) {
       throw new StorageAbortRetryableException(msg("PUT", k, e.getMessage()));
     } catch (RuntimeException e) {
-      throw e;
+      throw mapClosedPoolOrRethrow("PUT", k, e);
     }
   }
 
@@ -252,7 +253,7 @@ public class S3BlobStore implements BlobStore {
     } catch (SdkClientException e) {
       throw new StorageAbortRetryableException(msg("LIST", p, e.getMessage()));
     } catch (RuntimeException e) {
-      throw e;
+      throw mapClosedPoolOrRethrow("LIST", p, e);
     }
   }
 
@@ -270,7 +271,7 @@ public class S3BlobStore implements BlobStore {
     } catch (SdkClientException e) {
       throw new StorageAbortRetryableException(msg("DELETE", k, e.getMessage()));
     } catch (RuntimeException e) {
-      throw e;
+      throw mapClosedPoolOrRethrow("DELETE", k, e);
     }
   }
 
@@ -317,7 +318,7 @@ public class S3BlobStore implements BlobStore {
     } catch (SdkClientException e) {
       throw new StorageAbortRetryableException(msg("DELETE_PREFIX", p, e.getMessage()));
     } catch (RuntimeException e) {
-      throw e;
+      throw mapClosedPoolOrRethrow("DELETE_PREFIX", p, e);
     }
   }
 
@@ -365,5 +366,13 @@ public class S3BlobStore implements BlobStore {
     }
 
     return new StorageException(msg(op, key, detail), e);
+  }
+
+  private static RuntimeException mapClosedPoolOrRethrow(
+      String op, String key, RuntimeException e) {
+    if (ClosedAwsClientDetector.isConnectionPoolShutdown(e)) {
+      return new StorageAbortRetryableException(msg(op, key, e.getMessage()), e);
+    }
+    return e;
   }
 }

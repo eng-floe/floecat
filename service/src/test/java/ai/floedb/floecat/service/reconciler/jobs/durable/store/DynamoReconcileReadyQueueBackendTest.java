@@ -44,7 +44,7 @@ class DynamoReconcileReadyQueueBackendTest {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
     when(dynamoDb.query(any(QueryRequest.class))).thenThrow(ApiCallTimeoutException.create(25L));
     DynamoReconcileReadyQueueBackend backend = new DynamoReconcileReadyQueueBackend();
-    backend.bind(() -> dynamoDb, "floecat_pointers", null);
+    backend.bind(() -> dynamoDb, "floecat_pointers");
     LeaseScanStats stats = new LeaseScanStats();
     stats.deadlineAtMs = System.currentTimeMillis() + 5_000L;
 
@@ -101,7 +101,7 @@ class DynamoReconcileReadyQueueBackendTest {
     when(dynamoDb.getItem(any(GetItemRequest.class)))
         .thenThrow(ApiCallAttemptTimeoutException.create(25L));
     DynamoReconcileReadyQueueBackend backend = new DynamoReconcileReadyQueueBackend();
-    backend.bind(() -> dynamoDb, "floecat_pointers", null);
+    backend.bind(() -> dynamoDb, "floecat_pointers");
     LeaseScanStats stats = new LeaseScanStats();
     stats.deadlineAtMs = System.currentTimeMillis() + 5_000L;
 

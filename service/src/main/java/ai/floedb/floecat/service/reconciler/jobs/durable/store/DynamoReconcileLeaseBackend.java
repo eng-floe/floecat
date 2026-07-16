@@ -36,7 +36,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -63,10 +62,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
 
   public DynamoReconcileLeaseBackend() {}
 
-  public void bind(
-      Supplier<DynamoDbClient> dynamoDbSupplier,
-      String table,
-      BiConsumer<DynamoDbClient, Throwable> clientFailureHandler) {
+  public void bind(Supplier<DynamoDbClient> dynamoDbSupplier, String table) {
     dynamoCaller.bind(dynamoDbSupplier);
     this.table = table;
   }

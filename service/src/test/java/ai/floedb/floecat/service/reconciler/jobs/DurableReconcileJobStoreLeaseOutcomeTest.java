@@ -116,18 +116,18 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
               .DynamoReconcileJobIndexBackend();
       ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileJobIndexBackend)
               store.jobIndexBackend)
-          .bind(() -> sharedDynamoDbClient, store.kvTable, null);
+          .bind(() -> sharedDynamoDbClient, store.kvTable);
       store.leaseBackend =
           new ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend();
       ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend)
               store.leaseBackend)
-          .bind(() -> sharedDynamoDbClient, store.kvTable, null);
+          .bind(() -> sharedDynamoDbClient, store.kvTable);
       store.readyQueueBackend =
           new ai.floedb.floecat.service.reconciler.jobs.durable.store
               .DynamoReconcileReadyQueueBackend();
       ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileReadyQueueBackend)
               store.readyQueueBackend)
-          .bind(() -> sharedDynamoDbClient, store.kvTable, null);
+          .bind(() -> sharedDynamoDbClient, store.kvTable);
     } else {
       store.jobIndexStore = new InMemoryReconcileJobIndexStore();
       store.leaseStore = new InMemoryReconcileLeaseStore();
