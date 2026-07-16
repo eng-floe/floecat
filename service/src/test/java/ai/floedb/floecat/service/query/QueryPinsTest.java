@@ -285,6 +285,7 @@ class QueryPinsTest {
             .setTableBlobUri("/accounts/a/tables/t/table/d.pb")
             .setSnapshotBlobUri("/accounts/a/tables/t/snapshots/1/snapshot/s.pb")
             .setConstraintsRefUri("/accounts/a/tables/t/constraints/1/c.pb")
+            .setStatsGenerationRefUri("/accounts/a/tables/t/snapshots/1/stats/gen-1/manifest.pb")
             .build();
 
     org.junit.jupiter.api.Assertions.assertEquals(
@@ -292,7 +293,10 @@ class QueryPinsTest {
             "/accounts/a/tables/t/root/r.pb",
             "/accounts/a/tables/t/table/d.pb",
             "/accounts/a/tables/t/snapshots/1/snapshot/s.pb",
-            "/accounts/a/tables/t/constraints/1/c.pb"),
+            "/accounts/a/tables/t/constraints/1/c.pb",
+            // The frozen stats generation manifest is a direct pin root: the planner reads it for
+            // the query's lifetime, so it must not rely on the GC's chain walk alone.
+            "/accounts/a/tables/t/snapshots/1/stats/gen-1/manifest.pb"),
         QueryPins.gcRootUris(pin));
 
     // Absent legs (no constraints, no root on a hand-built pin) are skipped, never empty strings.

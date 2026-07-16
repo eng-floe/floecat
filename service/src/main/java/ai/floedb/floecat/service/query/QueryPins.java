@@ -67,11 +67,17 @@ public final class QueryPins {
    * commit.
    */
   public static List<String> gcRootUris(TablePin pin) {
-    List<String> uris = new ArrayList<>(4);
+    List<String> uris = new ArrayList<>(5);
     addUriIfPresent(uris, pin.getRootUri());
     addUriIfPresent(uris, pin.getTableBlobUri());
     addUriIfPresent(uris, pin.getSnapshotBlobUri());
     addUriIfPresent(uris, pin.getConstraintsRefUri());
+    // The stats generation frozen on the pin is a DIRECT root, like every other pin ref: the
+    // planner reads the generation manifest through this URI for the query's lifetime, so it must
+    // not depend on the GC's table-root chain walk (which also references it, but is a sweep-time
+    // traversal that can be skipped on read failures) — symmetric with how live scan sessions
+    // root their frozen generation.
+    addUriIfPresent(uris, pin.getStatsGenerationRefUri());
     return uris;
   }
 
