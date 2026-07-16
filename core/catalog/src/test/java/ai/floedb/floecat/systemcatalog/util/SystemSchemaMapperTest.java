@@ -16,13 +16,65 @@
 
 package ai.floedb.floecat.systemcatalog.util;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class SystemSchemaMapperTest {
+
+  @Test
+  void toSchemaColumn_defaultsMissingIdToOrdinal() {
+    SystemColumnDef column =
+        new SystemColumnDef("table_name", name("VARCHAR"), false, 3, null, List.of());
+
+    SchemaColumn schemaColumn = SystemSchemaMapper.toSchemaColumn(column);
+
+    assertThat(schemaColumn.getId()).isEqualTo(3);
+    assertThat(schemaColumn.getOrdinal()).isEqualTo(3);
+  }
+
+  @Test
+  void toSchemaColumn_preservesExplicitId() {
+    SystemColumnDef column =
+        new SystemColumnDef("table_name", name("VARCHAR"), false, 3, 42L, List.of());
+
+    SchemaColumn schemaColumn = SystemSchemaMapper.toSchemaColumn(column);
+
+    assertThat(schemaColumn.getId()).isEqualTo(42);
+    assertThat(schemaColumn.getOrdinal()).isEqualTo(3);
+  }
+
+  @Test
+  void toSchemaColumns_rejectsExplicitIdCollidingWithAFallbackOrdinalId() {
+    // Explicit ids and ordinal-derived fallback ids share one positive integer space: column 1
+    // has no id (falls back to ordinal 1) while column 2 explicitly claims id 1. Serving would
+    // key both columns' stats on the same target id, so the mix must fail at build time.
+    List<SystemColumnDef> mixed =
+        List.of(
+            new SystemColumnDef("a", name("VARCHAR"), false, 1, null, List.of()),
+            new SystemColumnDef("b", name("VARCHAR"), false, 2, 1L, List.of()));
+
+    assertThatThrownBy(() -> SystemSchemaMapper.toSchemaColumns(mixed))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("duplicate column id 1");
+  }
+
+  @Test
+  void toSchemaColumns_acceptsDisjointExplicitAndFallbackIds() {
+    List<SystemColumnDef> mixed =
+        List.of(
+            new SystemColumnDef("a", name("VARCHAR"), false, 1, null, List.of()),
+            new SystemColumnDef("b", name("VARCHAR"), false, 2, 42L, List.of()));
+
+    assertThat(SystemSchemaMapper.toSchemaColumns(mixed))
+        .extracting(SchemaColumn::getId)
+        .containsExactly(1L, 42L);
+  }
 
   @Test
   void fromSchemaColumns_rejectsBlankLogicalType() {
@@ -37,5 +89,9 @@ class SystemSchemaMapperTest {
     assertThatThrownBy(() -> SystemSchemaMapper.fromSchemaColumns(List.of(column)))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("logicalType");
+  }
+
+  private static NameRef name(String name) {
+    return NameRef.newBuilder().setName(name).build();
   }
 }
