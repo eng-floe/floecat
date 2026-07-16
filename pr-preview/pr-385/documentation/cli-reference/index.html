@@ -1781,6 +1781,10 @@ Storage authority notes:
 help
 quit
 </code></pre></div>
+<p>Connector settings note:
+- Finished reconcile jobs default to 24 h retention. Use
+  <code>connector settings update --finished-job-retention-sec &lt;n&gt;</code> to keep terminal job history longer
+  for operator dashboards, support workflows, or API consumers that need a wider lookback window.</p>
 <p>Constraints payload example (<code>--file</code>):</p>
 <div class="highlight"><pre><span></span><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">&quot;constraints&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
