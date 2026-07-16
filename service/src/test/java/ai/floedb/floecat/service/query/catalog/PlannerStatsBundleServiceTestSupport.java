@@ -203,6 +203,15 @@ abstract class PlannerStatsBundleServiceTestSupport {
     return queryContextWithPins(queryId, List.of(pin(TABLE, snapshotId)));
   }
 
+  protected static QueryContext queryContextWithStatsGenerationRef(
+      String queryId, long snapshotId, String statsGenerationRefUri) {
+    TablePin pin =
+        SnapshotTestSupport.blobBackedPin(TABLE, snapshotId).toBuilder()
+            .setStatsGenerationRefUri(statsGenerationRefUri)
+            .build();
+    return queryContextWithPins(queryId, List.of(pin));
+  }
+
   /** A context whose pin froze a specific constraints bundle ref (for pinned-serving tests). */
   protected static QueryContext queryContextWithConstraintRef(
       String queryId, long snapshotId, String refUri, String refVersion) {

@@ -363,13 +363,41 @@ public class StatsRepository implements StatsStore {
   @Override
   public Map<String, Optional<TargetStatsRecord>> getTargetStatsBatch(
       ResourceId tableId, long snapshotId, List<StatsTarget> targets) {
+    return getTargetStatsBatchInResolvedGeneration(
+        tableId,
+        snapshotId,
+        targets,
+        activeGeneration(tableId, snapshotId).map(ActiveSnapshotStats::generationId));
+  }
+
+  @Override
+  public Optional<TargetStatsRecord> getTargetStatsInGeneration(
+      ResourceId tableId, long snapshotId, String generationToken, StatsTarget target) {
+    return readGenerationIdForFrozenToken(snapshotId, generationToken)
+        .flatMap(
+            generationId ->
+                targetStatsStorage.getByPointer(
+                    targetPointerKey(tableId, snapshotId, generationId, target)));
+  }
+
+  @Override
+  public Map<String, Optional<TargetStatsRecord>> getTargetStatsBatchInGeneration(
+      ResourceId tableId, long snapshotId, String generationToken, List<StatsTarget> targets) {
+    return getTargetStatsBatchInResolvedGeneration(
+        tableId, snapshotId, targets, readGenerationIdForFrozenToken(snapshotId, generationToken));
+  }
+
+  private Map<String, Optional<TargetStatsRecord>> getTargetStatsBatchInResolvedGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      List<StatsTarget> targets,
+      Optional<String> generationIdOpt) {
     if (targets == null || targets.isEmpty()) {
       return Map.of();
     }
 
-    // Resolve active generation ONCE — shared manifest for all targets in this snapshot.
-    Optional<ActiveSnapshotStats> activeOpt = activeGeneration(tableId, snapshotId);
-    if (activeOpt.isEmpty()) {
+    // Resolve generation ONCE — shared manifest for all targets in this snapshot.
+    if (generationIdOpt.isEmpty()) {
       // No stats captured for this snapshot yet — all misses.
       Map<String, Optional<TargetStatsRecord>> out = new LinkedHashMap<>(targets.size());
       for (StatsTarget t : targets) {
@@ -377,7 +405,7 @@ public class StatsRepository implements StatsStore {
       }
       return Collections.unmodifiableMap(out);
     }
-    ActiveSnapshotStats active = activeOpt.get();
+    String generationId = generationIdOpt.get();
 
     // Parallel fetch: one virtual thread per target, bounded by MAX_PARALLEL_READS.
     // The semaphore is a sliding window: as any read completes its slot is immediately
@@ -391,8 +419,7 @@ public class StatsRepository implements StatsStore {
               .map(
                   target -> {
                     String key = StatsTargetIdentity.storageId(target);
-                    String pKey =
-                        targetPointerKey(tableId, snapshotId, active.generationId(), target);
+                    String pKey = targetPointerKey(tableId, snapshotId, generationId, target);
                     return CompletableFuture.runAsync(
                         () -> {
                           semaphore.acquireUninterruptibly();
@@ -415,6 +442,21 @@ public class StatsRepository implements StatsStore {
       out.put(k, parallel.getOrDefault(k, Optional.empty()));
     }
     return Collections.unmodifiableMap(out);
+  }
+
+  private Optional<String> readGenerationIdForFrozenToken(long snapshotId, String generationToken) {
+    if (generationToken == null || generationToken.isBlank()) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        loadGenerationId(generationToken)
+            .orElseThrow(
+                () ->
+                    new BaseResourceRepository.NotFoundException(
+                        "frozen stats generation manifest missing for snapshot "
+                            + snapshotId
+                            + ": "
+                            + generationToken)));
   }
 
   @Override

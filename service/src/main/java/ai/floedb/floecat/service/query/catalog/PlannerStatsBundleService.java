@@ -213,7 +213,7 @@ public class PlannerStatsBundleService {
         constraintRepository,
         RequestScopeConstraintPruner::new,
         RequestScopeConstraintPruner::forRequestedTablesOnly,
-        (tableId, snapshotId, targets, policy, deadlineNanos) -> {
+        (tableId, snapshotId, statsGenerationRef, targets, policy, deadlineNanos) -> {
           Map<String, PlannerTargetStatsLookupResult> byTarget = new LinkedHashMap<>();
           for (PlannerStatsTargetNeed target : targets) {
             PlannerTargetStatsLookupResult result =
@@ -303,6 +303,7 @@ public class PlannerStatsBundleService {
     Map<String, PlannerTargetStatsLookupResult> get(
         ResourceId tableId,
         long snapshotId,
+        Optional<String> statsGenerationRef,
         List<PlannerStatsTargetNeed> targets,
         PlannerStatsServingPolicy policy,
         long deadlineNanos);
@@ -312,7 +313,7 @@ public class PlannerStatsBundleService {
       StatsOrchestrator statsOrchestrator, TableRepository tableRepository) {
     Objects.requireNonNull(statsOrchestrator, "statsOrchestrator");
     Objects.requireNonNull(tableRepository, "tableRepository");
-    return (tableId, snapshotId, targets, policy, deadlineNanos) -> {
+    return (tableId, snapshotId, statsGenerationRef, targets, policy, deadlineNanos) -> {
       if (targets == null || targets.isEmpty()) {
         return Map.of();
       }
@@ -337,7 +338,8 @@ public class PlannerStatsBundleService {
       }
 
       java.util.Map<String, StatsResolutionResult> resolved =
-          statsOrchestrator.resolvePlannerBatch(requests, policy.staleOk(), deadlineNanos);
+          statsOrchestrator.resolvePlannerBatchInGeneration(
+              requests, statsGenerationRef, policy.staleOk(), deadlineNanos);
 
       Map<String, PlannerTargetStatsLookupResult> byTarget = new LinkedHashMap<>(targets.size());
       for (PlannerStatsTargetNeed target : targets) {
@@ -849,7 +851,11 @@ public class PlannerStatsBundleService {
           "target_batch_lookup",
           () ->
               work.ensureTargetBatchLoaded(
-                  targetStatsLookup, snapshotId, servingPolicy, requestDeadlineNanos));
+                  targetStatsLookup,
+                  snapshotId,
+                  pinLookup.pinnedStatsGenerationRef(work.tableId),
+                  servingPolicy,
+                  requestDeadlineNanos));
     }
 
     private ConstraintResolution resolveConstraintsTimed(TableWork work) {
@@ -1404,6 +1410,7 @@ public class PlannerStatsBundleService {
 
     private boolean constraintsEmitted = false;
     private OptionalLong loadedSnapshot = OptionalLong.empty();
+    private Optional<String> loadedStatsGenerationRef = Optional.empty();
     private Map<String, PlannerTargetStatsLookupResult> loadedTargetsById = Map.of();
     private RuntimeException loadFailure;
 
@@ -1459,17 +1466,32 @@ public class PlannerStatsBundleService {
     private void ensureTargetBatchLoaded(
         TargetStatsLookup lookup,
         long snapshotId,
+        Optional<String> statsGenerationRef,
         PlannerStatsServingPolicy servingPolicy,
         long deadlineNanos) {
-      if (loadedSnapshot.isPresent() && loadedSnapshot.getAsLong() == snapshotId) {
+      Optional<String> normalizedStatsGenerationRef =
+          statsGenerationRef == null
+              ? Optional.empty()
+              : statsGenerationRef.filter(token -> !token.isBlank());
+      if (loadedSnapshot.isPresent()
+          && loadedSnapshot.getAsLong() == snapshotId
+          && loadedStatsGenerationRef.equals(normalizedStatsGenerationRef)) {
         if (loadFailure != null) {
           throw loadFailure;
         }
         return;
       }
       loadedSnapshot = OptionalLong.of(snapshotId);
+      loadedStatsGenerationRef = normalizedStatsGenerationRef;
       try {
-        loadedTargetsById = lookup.get(tableId, snapshotId, targets, servingPolicy, deadlineNanos);
+        loadedTargetsById =
+            lookup.get(
+                tableId,
+                snapshotId,
+                normalizedStatsGenerationRef,
+                targets,
+                servingPolicy,
+                deadlineNanos);
         loadFailure = null;
       } catch (RuntimeException e) {
         loadedTargetsById = Map.of();

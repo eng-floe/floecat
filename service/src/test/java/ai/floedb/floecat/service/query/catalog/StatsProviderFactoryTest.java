@@ -265,7 +265,7 @@ class StatsProviderFactoryTest {
                             .setFormat(TableFormat.TF_ICEBERG)
                             .build())
                     .build()));
-    when(orchestrator.resolve(any()))
+    when(orchestrator.resolveInGeneration(any(), any()))
         .thenReturn(
             StatsResolutionResult.hit(
                 TargetStatsRecords.tableRecord(
@@ -279,7 +279,7 @@ class StatsProviderFactoryTest {
 
     ArgumentCaptor<StatsCaptureRequest> requestCaptor =
         ArgumentCaptor.forClass(StatsCaptureRequest.class);
-    Mockito.verify(orchestrator).resolve(requestCaptor.capture());
+    Mockito.verify(orchestrator).resolveInGeneration(requestCaptor.capture(), any());
     assertEquals("iceberg", requestCaptor.getValue().connectorType());
     assertEquals(Duration.ofSeconds(1), requestCaptor.getValue().latencyBudget().orElseThrow());
     assertEquals(StatsExecutionMode.SYNC, requestCaptor.getValue().executionMode());
@@ -327,14 +327,15 @@ class StatsProviderFactoryTest {
                             .setFormat(TableFormat.TF_ICEBERG)
                             .build())
                     .build()));
-    when(orchestrator.resolve(any())).thenReturn(StatsResolutionResult.skipped("sync_disabled"));
+    when(orchestrator.resolveInGeneration(any(), any()))
+        .thenReturn(StatsResolutionResult.skipped("sync_disabled"));
 
     var provider = factory.forQuery(ctx, "corr");
     provider.tableStats(TABLE);
 
     ArgumentCaptor<StatsCaptureRequest> requestCaptor =
         ArgumentCaptor.forClass(StatsCaptureRequest.class);
-    Mockito.verify(orchestrator).resolve(requestCaptor.capture());
+    Mockito.verify(orchestrator).resolveInGeneration(requestCaptor.capture(), any());
     assertEquals(StatsExecutionMode.ASYNC, requestCaptor.getValue().executionMode());
     assertTrue(requestCaptor.getValue().latencyBudget().isEmpty());
   }
@@ -381,14 +382,15 @@ class StatsProviderFactoryTest {
                             .setFormat(TableFormat.TF_ICEBERG)
                             .build())
                     .build()));
-    when(orchestrator.resolve(any())).thenReturn(StatsResolutionResult.skipped("sync_disabled"));
+    when(orchestrator.resolveInGeneration(any(), any()))
+        .thenReturn(StatsResolutionResult.skipped("sync_disabled"));
 
     var provider = factory.forQuery(ctx, "corr");
     provider.tableStats(TABLE);
 
     ArgumentCaptor<StatsCaptureRequest> requestCaptor =
         ArgumentCaptor.forClass(StatsCaptureRequest.class);
-    Mockito.verify(orchestrator).resolve(requestCaptor.capture());
+    Mockito.verify(orchestrator).resolveInGeneration(requestCaptor.capture(), any());
     assertEquals(Duration.ofSeconds(10), requestCaptor.getValue().latencyBudget().orElseThrow());
   }
 

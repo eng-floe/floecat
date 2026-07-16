@@ -99,7 +99,11 @@ public class StatsOrchestrator {
    * </ul>
    */
   private record StatsCacheKey(
-      String accountId, String tableId, long snapshotId, String storageId) {}
+      String accountId, String tableId, long snapshotId, String generationToken, String storageId) {
+    private StatsCacheKey {
+      generationToken = generationToken == null ? "" : generationToken;
+    }
+  }
 
   /**
    * Maximum total byte weight of the stats cache.
@@ -224,25 +228,44 @@ public class StatsOrchestrator {
     if (tableId == null || target == null) {
       return;
     }
-    statsCache.invalidate(
-        new StatsCacheKey(
-            tableId.getAccountId(),
-            tableId.getId(),
-            snapshotId,
-            StatsTargetIdentity.storageId(target)));
+    String storageId = StatsTargetIdentity.storageId(target);
+    statsCache
+        .asMap()
+        .keySet()
+        .removeIf(
+            key ->
+                key.accountId().equals(tableId.getAccountId())
+                    && key.tableId().equals(tableId.getId())
+                    && key.snapshotId() == snapshotId
+                    && key.storageId().equals(storageId));
   }
 
   /** Invalidates cached targets represented by successfully persisted records. */
   public void invalidateStatsCache(
       ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {
-    if (records == null || records.isEmpty()) {
+    if (tableId == null || records == null || records.isEmpty()) {
       return;
     }
+    java.util.Set<String> storageIds = new java.util.HashSet<>();
     for (TargetStatsRecord record : records) {
       if (record != null && record.hasTarget()) {
-        invalidateStatsCache(tableId, snapshotId, record.getTarget());
+        storageIds.add(StatsTargetIdentity.storageId(record.getTarget()));
       }
     }
+    if (storageIds.isEmpty()) {
+      return;
+    }
+    // One O(cacheSize) pass matching any of the records' targets, not one full scan per record —
+    // a wide-table recompute (hundreds of columns) would otherwise scan the cache once per column.
+    statsCache
+        .asMap()
+        .keySet()
+        .removeIf(
+            key ->
+                key.accountId().equals(tableId.getAccountId())
+                    && key.tableId().equals(tableId.getId())
+                    && key.snapshotId() == snapshotId
+                    && storageIds.contains(key.storageId()));
   }
 
   /**
@@ -259,7 +282,47 @@ public class StatsOrchestrator {
       observeSyncOutcome(StatsSyncOutcome.HIT, startNanos);
       return StatsResolutionResult.hit(stored.get());
     }
+    return captureAndResolve(request, startNanos);
+  }
 
+  /**
+   * Single-target resolution that honors the pinned stats generation, mirroring {@link
+   * #resolvePlannerBatchInGeneration}: the pinned generation for the pinned snapshot (query
+   * consistent), then the newest (live active) generation only to fill a target the pinned
+   * generation lacks (so an incomplete pinned generation never yields NOT_FOUND), then bounded
+   * capture. When the pin froze no generation the live/newest generation is the primary source.
+   * Used by the planner's per-relation stats reads.
+   */
+  public StatsResolutionResult resolveInGeneration(
+      StatsCaptureRequest request, Optional<String> pinnedGenerationToken) {
+    long startNanos = System.nanoTime();
+    String pinnedGeneration = pinnedGenerationToken.filter(token -> !token.isBlank()).orElse("");
+
+    // Primary: the pinned generation (query-consistent), or live/newest when the pin froze none.
+    Optional<TargetStatsRecord> primary =
+        pinnedGeneration.isBlank()
+            ? readStore(request)
+            : statsStore.getTargetStatsInGeneration(
+                request.tableId(), request.snapshotId(), pinnedGeneration, request.target());
+    if (primary.isPresent()) {
+      observeSyncOutcome(StatsSyncOutcome.HIT, startNanos);
+      return StatsResolutionResult.hit(primary.get());
+    }
+
+    // Newest gap-fill — only when a specific generation was pinned; the pinned generation lacks
+    // this target, so the newest generation backstops it before capture.
+    if (!pinnedGeneration.isBlank()) {
+      Optional<TargetStatsRecord> newest = readStore(request);
+      if (newest.isPresent()) {
+        observeSyncOutcome(StatsSyncOutcome.HIT, startNanos);
+        return StatsResolutionResult.hit(newest.get());
+      }
+    }
+    return captureAndResolve(request, startNanos);
+  }
+
+  /** Bounded sync capture, then async-enqueue fallback, for a store miss. */
+  private StatsResolutionResult captureAndResolve(StatsCaptureRequest request, long startNanos) {
     if (syncEnabled
         && request.executionMode() == StatsExecutionMode.SYNC
         && request.latencyBudget().isPresent()) {
@@ -328,24 +391,78 @@ public class StatsOrchestrator {
    */
   public java.util.Map<String, StatsResolutionResult> resolvePlannerBatch(
       java.util.List<StatsCaptureRequest> requests, boolean staleOk, long deadlineNanos) {
+    return resolvePlannerBatchInGeneration(requests, Optional.empty(), staleOk, deadlineNanos);
+  }
+
+  /** Cache key for one request under a specific served-generation token ("" = live/newest). */
+  private StatsCacheKey cacheKeyFor(StatsCaptureRequest req, String generationToken) {
+    return new StatsCacheKey(
+        req.tableId().getAccountId(),
+        req.tableId().getId(),
+        req.snapshotId(),
+        generationToken,
+        storageId(req));
+  }
+
+  /**
+   * Planner batch resolution that honors the query's pinned stats generation.
+   *
+   * <p>The pin freezes a stats generation for the query's lifetime (as the scan path does), so
+   * plans are stable and reproducible for a given pin. For each target the lookup order is:
+   *
+   * <ol>
+   *   <li>cache hit in the pinned generation's keyspace (the live/newest keyspace when the pin
+   *       froze no generation);
+   *   <li>the pinned generation for the pinned snapshot — the primary source;
+   *   <li>the newest (live active) generation, consulted only to fill targets the pinned generation
+   *       lacks, so an incomplete pinned generation never yields NOT_FOUND;
+   *   <li>stale stats from a snapshot &le; the pinned snapshot (when {@code staleOk});
+   *   <li>sync/async capture.
+   * </ol>
+   *
+   * <p>Hits are cached under the generation actually served — the pinned generation under its own
+   * token, newest-fill under the empty token — so the two never contaminate each other. When the
+   * pin froze no generation the primary source is the live/newest generation (empty token) and the
+   * fill step is skipped.
+   *
+   * @param pinnedGenerationToken the generation frozen on the query pin, read as the primary
+   *     source; empty when the pin froze no generation (then the live/newest generation is primary)
+   */
+  public java.util.Map<String, StatsResolutionResult> resolvePlannerBatchInGeneration(
+      java.util.List<StatsCaptureRequest> requests,
+      Optional<String> pinnedGenerationToken,
+      boolean staleOk,
+      long deadlineNanos) {
     if (requests == null || requests.isEmpty()) {
       return java.util.Map.of();
     }
     // All requests must share the same tableId and snapshotId (grouped upstream by TableWork).
     StatsCaptureRequest first = requests.get(0);
+    String pinnedGeneration = pinnedGenerationToken.filter(token -> !token.isBlank()).orElse("");
+    // Primary keyspace/reader: the pinned generation when the pin froze one, else the live/newest
+    // generation (empty token). A new snapshotId is always a cache miss, so stats from a different
+    // snapshot are never returned for the current query.
+    String primaryToken = pinnedGeneration;
+    TargetBatchReader primaryBatch =
+        pinnedGeneration.isBlank()
+            ? statsStore::getTargetStatsBatch
+            : (tableId, snapshotId, targets) ->
+                statsStore.getTargetStatsBatchInGeneration(
+                    tableId, snapshotId, pinnedGeneration, targets);
+    TargetReader primaryTarget =
+        pinnedGeneration.isBlank()
+            ? statsStore::getTargetStats
+            : (tableId, snapshotId, target) ->
+                statsStore.getTargetStatsInGeneration(
+                    tableId, snapshotId, pinnedGeneration, target);
 
-    // 1. Cache check — serve hits without touching DynamoDB.
-    // Cache key includes (accountId, tableId, snapshotId, storageId): a new snapshotId is always
-    // a cache miss, so stats from a different snapshot are never returned for the current query.
+    // 1. Cache check in the primary keyspace.
     java.util.Map<String, StatsResolutionResult> out =
         new java.util.LinkedHashMap<>(requests.size());
     java.util.List<StatsCaptureRequest> cacheMisses = new java.util.ArrayList<>();
     for (StatsCaptureRequest req : requests) {
       String key = storageId(req);
-      StatsCacheKey cacheKey =
-          new StatsCacheKey(
-              req.tableId().getAccountId(), req.tableId().getId(), req.snapshotId(), key);
-      TargetStatsRecord cached = statsCache.getIfPresent(cacheKey);
+      TargetStatsRecord cached = statsCache.getIfPresent(cacheKeyFor(req, primaryToken));
       if (cached != null) {
         observeSyncOutcome(StatsSyncOutcome.HIT);
         out.put(key, StatsResolutionResult.hit(cached));
@@ -358,26 +475,23 @@ public class StatsOrchestrator {
       return java.util.Collections.unmodifiableMap(out);
     }
 
-    // 2. Batch store read for cache misses only.
-    java.util.Map<String, StatsResolutionResult> batchHits =
+    // 2. Primary store read: the pinned generation (query-consistent), or live/newest if no pin.
+    java.util.Map<String, StatsResolutionResult> primaryHits =
         readPlannerBatchIsolated(
             first.tableId(),
             first.snapshotId(),
             cacheMisses,
-            statsStore::getTargetStatsBatch,
-            statsStore::getTargetStats,
+            primaryBatch,
+            primaryTarget,
             StatsResolutionResult::hit);
 
     java.util.List<StatsCaptureRequest> misses = new java.util.ArrayList<>();
     for (StatsCaptureRequest req : cacheMisses) {
       String key = storageId(req);
-      StatsResolutionResult hit = batchHits.get(key);
+      StatsResolutionResult hit = primaryHits.get(key);
       if (hit != null && hit.hasStats()) {
-        // Write-through: only cache positive hits; absent results may appear soon via sync capture.
-        StatsCacheKey cacheKey =
-            new StatsCacheKey(
-                req.tableId().getAccountId(), req.tableId().getId(), req.snapshotId(), key);
-        statsCache.put(cacheKey, hit.stats().get());
+        // Write-through under the primary (pinned, or live when unpinned) keyspace.
+        statsCache.put(cacheKeyFor(req, primaryToken), hit.stats().get());
         observeSyncOutcome(StatsSyncOutcome.HIT);
         out.put(key, StatsResolutionResult.hit(hit.stats().get()));
       } else if (hit != null && hit.outcome() == StatsSyncOutcome.FAILED) {
@@ -387,20 +501,50 @@ public class StatsOrchestrator {
       }
     }
 
-    // 3. Stale fallback for misses — BEFORE sync capture.
-    // Single batch call: finds the latest snapshot with stats once (O(1) pointer read),
-    // then fetches all missing targets from that snapshot in parallel. Replaces N×O(prefix scan).
-    java.util.List<StatsCaptureRequest> stillMissing = new java.util.ArrayList<>();
-    if (staleOk && !misses.isEmpty()) {
-      java.util.Map<String, StatsResolutionResult> staleBatch =
+    // 3. Newest gap-fill — only when a specific generation was pinned. Fills targets the pinned
+    // generation lacks (prevents NOT_FOUND) without disturbing the pinned reads above; served from
+    // the live/newest generation and cached under the empty token.
+    java.util.List<StatsCaptureRequest> afterFill = new java.util.ArrayList<>();
+    if (!pinnedGeneration.isBlank() && !misses.isEmpty()) {
+      java.util.Map<String, StatsResolutionResult> fillHits =
           readPlannerBatchIsolated(
               first.tableId(),
               first.snapshotId(),
               misses,
+              statsStore::getTargetStatsBatch,
+              statsStore::getTargetStats,
+              StatsResolutionResult::hit);
+      for (StatsCaptureRequest req : misses) {
+        String key = storageId(req);
+        StatsResolutionResult hit = fillHits.get(key);
+        if (hit != null && hit.hasStats()) {
+          statsCache.put(cacheKeyFor(req, ""), hit.stats().get());
+          observeSyncOutcome(StatsSyncOutcome.HIT);
+          out.put(key, StatsResolutionResult.hit(hit.stats().get()));
+        } else if (hit != null && hit.outcome() == StatsSyncOutcome.FAILED) {
+          out.put(key, hit);
+        } else {
+          afterFill.add(req);
+        }
+      }
+    } else {
+      afterFill.addAll(misses);
+    }
+
+    // 4. Stale fallback — BEFORE sync capture.
+    // Single batch call: finds the latest snapshot with stats once (O(1) pointer read),
+    // then fetches all missing targets from that snapshot in parallel. Replaces N×O(prefix scan).
+    java.util.List<StatsCaptureRequest> stillMissing = new java.util.ArrayList<>();
+    if (staleOk && !afterFill.isEmpty()) {
+      java.util.Map<String, StatsResolutionResult> staleBatch =
+          readPlannerBatchIsolated(
+              first.tableId(),
+              first.snapshotId(),
+              afterFill,
               statsStore::getStaleTargetStatsBatch,
               statsStore::getStaleTargetStats,
               record -> StatsResolutionResult.staleHit(record, "stale_before_sync"));
-      for (StatsCaptureRequest req : misses) {
+      for (StatsCaptureRequest req : afterFill) {
         String key = storageId(req);
         StatsResolutionResult stale = staleBatch.get(key);
         if (stale != null && stale.hasStats()) {
@@ -412,10 +556,10 @@ public class StatsOrchestrator {
         }
       }
     } else {
-      stillMissing.addAll(misses);
+      stillMissing.addAll(afterFill);
     }
 
-    // 4. Sync capture for still-missing targets (per-target within deadline).
+    // 5. Sync capture for still-missing targets (per-target within deadline).
     java.util.List<StatsCaptureRequest> asyncQueue = new java.util.ArrayList<>();
     for (StatsCaptureRequest req : stillMissing) {
       String key = storageId(req);
@@ -463,7 +607,7 @@ public class StatsOrchestrator {
       }
     }
 
-    // 5. Enqueue async captures for all misses that didn't sync.
+    // 6. Enqueue async captures for all misses that didn't sync.
     if (!asyncQueue.isEmpty()) {
       enqueueAsyncCaptureBatch(asyncQueue);
     }

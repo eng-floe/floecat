@@ -148,6 +148,34 @@ public interface StatsStore {
     return Collections.unmodifiableMap(out);
   }
 
+  /**
+   * Returns the target stats record for the exact table/snapshot/target key within the frozen stats
+   * generation named by {@code generationToken}. Stores that do not track generations serve the
+   * live exact-snapshot record.
+   */
+  default Optional<TargetStatsRecord> getTargetStatsInGeneration(
+      ResourceId tableId, long snapshotId, String generationToken, StatsTarget target) {
+    return getTargetStats(tableId, snapshotId, target);
+  }
+
+  /**
+   * Batch variant of {@link #getTargetStatsInGeneration}. Tracking stores must read the immutable
+   * keyspace named by {@code generationToken}, not the live active generation for the snapshot.
+   */
+  default Map<String, Optional<TargetStatsRecord>> getTargetStatsBatchInGeneration(
+      ResourceId tableId, long snapshotId, String generationToken, List<StatsTarget> targets) {
+    if (targets == null || targets.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, Optional<TargetStatsRecord>> out = new LinkedHashMap<>(targets.size());
+    for (StatsTarget target : targets) {
+      out.put(
+          StatsTargetIdentity.storageId(target),
+          getTargetStatsInGeneration(tableId, snapshotId, generationToken, target));
+    }
+    return Collections.unmodifiableMap(out);
+  }
+
   /** Deletes the exact table/snapshot/target record and returns true iff a record was deleted. */
   boolean deleteTargetStats(ResourceId tableId, long snapshotId, StatsTarget target);
 

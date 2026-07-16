@@ -1044,6 +1044,58 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void generationScopedBatchReadServesThePinnedGenerationAfterLiveGenerationMoves() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 4243L;
+    var target = StatsTargetIdentity.columnTarget(7L);
+    String storageId = StatsTargetIdentity.storageId(target);
+
+    repository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                7L,
+                ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(1L).build(),
+                null)));
+    String pinnedManifestUri = repository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+
+    repository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                7L,
+                ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(2L).build(),
+                null)));
+
+    assertThat(
+            repository
+                .getTargetStatsBatchInGeneration(
+                    TABLE_ID, snapshotId, pinnedManifestUri, java.util.List.of(target))
+                .get(storageId))
+        .isPresent()
+        .get()
+        .extracting(record -> record.getScalar().getRowCount())
+        .isEqualTo(1L);
+    assertThat(repository.getTargetStatsBatch(TABLE_ID, snapshotId, java.util.List.of(target)))
+        .containsKey(storageId);
+    assertThat(
+            repository
+                .getTargetStatsBatch(TABLE_ID, snapshotId, java.util.List.of(target))
+                .get(storageId))
+        .isPresent()
+        .get()
+        .extracting(record -> record.getScalar().getRowCount())
+        .isEqualTo(2L);
+  }
+
+  @Test
   void gcReclaimsSupersededUnprotectedGenerationsOnly() {
     InMemoryPointerStore pointerStore = new InMemoryPointerStore();
     InMemoryBlobStore blobStore = new InMemoryBlobStore();

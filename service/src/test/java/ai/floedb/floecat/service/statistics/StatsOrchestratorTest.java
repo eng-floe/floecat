@@ -703,6 +703,37 @@ class StatsOrchestratorTest {
   }
 
   @Test
+  void resolvePlannerBatch_differentStatsGeneration_isCacheMiss() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+    TargetStatsRecord gen1Record = columnRecord(req, 1L);
+    TargetStatsRecord gen2Record = columnRecord(req, 2L);
+
+    when(store.getTargetStatsBatchInGeneration(
+            req.tableId(), req.snapshotId(), "gen-1", List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(gen1Record)));
+    when(store.getTargetStatsBatchInGeneration(
+            req.tableId(), req.snapshotId(), "gen-2", List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(gen2Record)));
+
+    o.resolvePlannerBatchInGeneration(List.of(req), Optional.of("gen-1"), false, Long.MAX_VALUE);
+    Map<String, StatsResolutionResult> result =
+        o.resolvePlannerBatchInGeneration(
+            List.of(req), Optional.of("gen-2"), false, Long.MAX_VALUE);
+
+    assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(2L);
+    verify(store, Mockito.times(2)).getTargetStatsBatchInGeneration(any(), anyLong(), any(), any());
+  }
+
+  @Test
   void resolvePlannerBatch_differentTableId_isCacheMiss() {
     StatsStore store = Mockito.mock(StatsStore.class);
     StatsOrchestrator o =
@@ -811,6 +842,208 @@ class StatsOrchestratorTest {
     assertThat(o.resolvePlannerBatch(List.of(req), false, Long.MAX_VALUE).get(storageId).stats())
         .contains(replacement);
     verify(store, Mockito.times(2)).getTargetStatsBatch(any(), anyLong(), any());
+  }
+
+  @Test
+  void invalidateStatsCacheForTargetClearsGenerationScopedEntries() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+    TargetStatsRecord first = columnRecord(req, 1L);
+    TargetStatsRecord replacement = columnRecord(req, 2L);
+    when(store.getTargetStatsBatchInGeneration(
+            req.tableId(), req.snapshotId(), "gen-1", List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(first)))
+        .thenReturn(Map.of(storageId, Optional.of(replacement)));
+
+    assertThat(
+            o.resolvePlannerBatchInGeneration(
+                    List.of(req), Optional.of("gen-1"), false, Long.MAX_VALUE)
+                .get(storageId)
+                .stats())
+        .contains(first);
+
+    o.invalidateStatsCache(req.tableId(), req.snapshotId(), req.target());
+
+    assertThat(
+            o.resolvePlannerBatchInGeneration(
+                    List.of(req), Optional.of("gen-1"), false, Long.MAX_VALUE)
+                .get(storageId)
+                .stats())
+        .contains(replacement);
+    verify(store, Mockito.times(2)).getTargetStatsBatchInGeneration(any(), anyLong(), any(), any());
+  }
+
+  @Test
+  void resolvePlannerBatch_pinnedGenerationWinsWhenPresent() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+    // The pinned generation has the target (3); a newer generation exists with a different value.
+    when(store.getTargetStatsBatchInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 3L))));
+    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 9L))));
+
+    Map<String, StatsResolutionResult> result =
+        o.resolvePlannerBatchInGeneration(
+            List.of(req), Optional.of("gen-pinned"), false, Long.MAX_VALUE);
+
+    // The pinned generation is authoritative; newest is never consulted when the pin has the
+    // target.
+    assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(3L);
+    verify(store, Mockito.never()).getTargetStatsBatch(any(), anyLong(), any());
+  }
+
+  @Test
+  void resolvePlannerBatch_newestFillsWhenPinnedLacksTarget() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+    // Pinned generation lacks this target...
+    when(store.getTargetStatsBatchInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.empty()));
+    // ...so the newest generation fills it instead of yielding NOT_FOUND.
+    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 20L))));
+
+    Map<String, StatsResolutionResult> result =
+        o.resolvePlannerBatchInGeneration(
+            List.of(req), Optional.of("gen-pinned"), false, Long.MAX_VALUE);
+
+    assertThat(result.get(storageId).hasStats()).isTrue();
+    assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(20L);
+  }
+
+  @Test
+  void resolvePlannerBatch_staleAfterPinnedAndNewestMiss() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+    when(store.getTargetStatsBatchInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.empty()));
+    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.empty()));
+    when(store.getStaleTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 5L))));
+
+    Map<String, StatsResolutionResult> result =
+        o.resolvePlannerBatchInGeneration(
+            List.of(req), Optional.of("gen-pinned"), true, Long.MAX_VALUE);
+
+    assertThat(result.get(storageId).hasStats()).isTrue();
+    assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(5L);
+  }
+
+  @Test
+  void resolvePlannerBatch_pinnedGenerationServedFromCacheOnReplay() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+    when(store.getTargetStatsBatchInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 1L))));
+
+    // Two resolutions on the same pin: the second is served from the pinned-generation cache, so
+    // the
+    // plan is reproducible and the store is read only once.
+    for (int i = 0; i < 2; i++) {
+      assertThat(
+              o.resolvePlannerBatchInGeneration(
+                      List.of(req), Optional.of("gen-pinned"), false, Long.MAX_VALUE)
+                  .get(storageId)
+                  .stats()
+                  .get()
+                  .getTable()
+                  .getRowCount())
+          .isEqualTo(1L);
+    }
+    verify(store, Mockito.times(1)).getTargetStatsBatchInGeneration(any(), anyLong(), any(), any());
+  }
+
+  @Test
+  void resolveInGeneration_pinnedGenerationWinsWhenPresent() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    when(store.getTargetStatsInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", req.target()))
+        .thenReturn(Optional.of(columnRecord(req, 9L)));
+
+    StatsResolutionResult r = o.resolveInGeneration(req, Optional.of("gen-pinned"));
+
+    // The pinned generation is authoritative; the newest generation is never consulted.
+    assertThat(r.hasStats()).isTrue();
+    assertThat(r.stats().get().getTable().getRowCount()).isEqualTo(9L);
+    verify(store, Mockito.never()).getTargetStats(any(), anyLong(), any());
+  }
+
+  @Test
+  void resolveInGeneration_fillsFromNewestWhenPinnedMissing() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    when(store.getTargetStatsInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", req.target()))
+        .thenReturn(Optional.empty());
+    when(store.getTargetStats(req.tableId(), req.snapshotId(), req.target()))
+        .thenReturn(Optional.of(columnRecord(req, 3L)));
+
+    StatsResolutionResult r = o.resolveInGeneration(req, Optional.of("gen-pinned"));
+
+    // Pinned generation lacks the target, so the newest generation backstops before capture.
+    assertThat(r.hasStats()).isTrue();
+    assertThat(r.stats().get().getTable().getRowCount()).isEqualTo(3L);
   }
 
   @Test

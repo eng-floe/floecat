@@ -1076,6 +1076,116 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
   }
 
   @Test
+  void realPlannerLookupReadsTheStatsGenerationFrozenOnThePin() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createServiceWithRealLookup(
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 5, /* maxTargets= */ 10);
+
+    long snapshotId = 482L;
+    // Pinned generation: col1 = 10.
+    repository.replaceAllStatsForSnapshot(
+        TABLE,
+        snapshotId,
+        List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE,
+                snapshotId,
+                1L,
+                ScalarStats.newBuilder().setDisplayName("col1").setRowCount(10L).build(),
+                null)));
+    String pinnedGeneration = repository.activeStatsGeneration(TABLE, snapshotId).orElseThrow();
+
+    // A newer generation for the same snapshot: col1 = 20.
+    repository.replaceAllStatsForSnapshot(
+        TABLE,
+        snapshotId,
+        List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE,
+                snapshotId,
+                1L,
+                ScalarStats.newBuilder().setDisplayName("col1").setRowCount(20L).build(),
+                null)));
+
+    QueryContext ctx =
+        queryContextWithStatsGenerationRef(
+            "real-orchestrator-pinned-generation", snapshotId, pinnedGeneration);
+    store.seed(ctx);
+
+    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(1L));
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+
+    // The plan reads the generation frozen on the pin (10), not the newer live one (20) — stable
+    // and
+    // reproducible for a given pin.
+    List<TargetStatsResult> results = flatten(chunks);
+    assertEquals(1, results.size(), "one column must produce a result");
+    assertEquals(StatsResultStatus.STATS_RESULT_HIT_COMPLETE, results.get(0).getStatus());
+    assertEquals(10L, results.get(0).getStats().getScalar().getRowCount());
+    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(1L, end.getReturnedTargets());
+    assertEquals(0L, end.getNotFoundTargets());
+  }
+
+  @Test
+  void realPlannerLookupFillsFromNewestWhenPinnedLacksTarget() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createServiceWithRealLookup(
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 5, /* maxTargets= */ 10);
+
+    long snapshotId = 482L;
+    // Pinned generation carries only col2 — it never had col1.
+    repository.replaceAllStatsForSnapshot(
+        TABLE,
+        snapshotId,
+        List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE,
+                snapshotId,
+                2L,
+                ScalarStats.newBuilder().setDisplayName("col2").setRowCount(99L).build(),
+                null)));
+    String pinnedGeneration = repository.activeStatsGeneration(TABLE, snapshotId).orElseThrow();
+
+    // The newest generation carries col1 = 20.
+    repository.replaceAllStatsForSnapshot(
+        TABLE,
+        snapshotId,
+        List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE,
+                snapshotId,
+                1L,
+                ScalarStats.newBuilder().setDisplayName("col1").setRowCount(20L).build(),
+                null)));
+
+    QueryContext ctx =
+        queryContextWithStatsGenerationRef(
+            "real-orchestrator-newest-fill", snapshotId, pinnedGeneration);
+    store.seed(ctx);
+
+    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(1L));
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+
+    // The pinned generation lacks col1, so the newest generation fills it instead of NOT_FOUND.
+    List<TargetStatsResult> results = flatten(chunks);
+    assertEquals(1, results.size(), "one column must produce a result");
+    assertEquals(StatsResultStatus.STATS_RESULT_HIT_COMPLETE, results.get(0).getStatus());
+    assertEquals(20L, results.get(0).getStats().getScalar().getRowCount());
+    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(1L, end.getReturnedTargets());
+    assertEquals(0L, end.getNotFoundTargets());
+  }
+
+  @Test
   void staleStatsAreReturnedByDefault() {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();

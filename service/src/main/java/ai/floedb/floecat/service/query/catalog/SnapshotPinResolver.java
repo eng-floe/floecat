@@ -76,6 +76,17 @@ final class SnapshotPinResolver implements SnapshotPinLookup {
                     pin.getConstraintsRefUri(), pin.getConstraintsRefVersion()));
   }
 
+  @Override
+  public Optional<String> pinnedStatsGenerationRef(ResourceId tableId) {
+    QueryContext ctx = liveContext();
+    if (ctx == null) {
+      return Optional.empty();
+    }
+    return ctx.findTablePin(tableId, correlationId)
+        .map(pin -> pin.getStatsGenerationRefUri())
+        .filter(uri -> !uri.isBlank());
+  }
+
   <T> Optional<T> withPinnedSnapshot(
       ResourceId tableId, LongFunction<Optional<T>> snapshotScopedLookup) {
     QueryContext ctx = liveContext();
