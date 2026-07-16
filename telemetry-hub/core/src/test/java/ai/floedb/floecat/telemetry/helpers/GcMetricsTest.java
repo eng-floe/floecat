@@ -32,9 +32,11 @@ class GcMetricsTest {
     GcMetrics metrics = new GcMetrics(observability, "svc", "op", "gc1");
 
     metrics.recordCollection(1);
+    metrics.recordError(1, Tag.of(TagKey.RESULT, "failed"));
     metrics.recordPause(Duration.ofMillis(10));
 
     assertThat(observability.counterValue(Telemetry.Metrics.GC_COLLECTIONS)).isEqualTo(1d);
+    assertThat(observability.counterValue(Telemetry.Metrics.GC_ERRORS)).isEqualTo(1d);
     assertThat(observability.timerValues(Telemetry.Metrics.GC_PAUSE)).isNotEmpty();
     assertThat(observability.timerTagHistory(Telemetry.Metrics.GC_PAUSE))
         .anySatisfy(

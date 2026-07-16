@@ -156,8 +156,12 @@ root-chain walk poisons the account's delete phase — the referenced set is unt
 nothing is deleted that pass (fail closed). `PointerGc` removes
 orphan/stale pointers. `TransactionGc` reaps expired/aborted transaction artifacts and dangling
 intent indices. `ReconcileJobGc` enforces durable reconcile retention and queue/dedupe cleanup for
-terminal jobs. It is retention-oriented GC, not a queue repair or index rebuild loop. `SeedRunner`
-populates demo data when `floecat.seed.enabled=true`.
+terminal jobs. The default finished reconcile-job retention window is 24 h
+(`floecat.gc.reconcile-jobs.retention-ms=86400000`); older terminal jobs are removed from job-list
+and job-detail views after that window unless operators configure a longer retention period or update
+connector settings with `connector settings update --finished-job-retention-sec`. It is
+retention-oriented GC, not a queue repair or index rebuild loop. `SeedRunner` populates demo data
+when `floecat.seed.enabled=true`.
 
 For connector-backed fixture tables, seeding runs a combined reconcile pass per fixture scope
 using `METADATA_AND_CAPTURE`.
@@ -202,7 +206,7 @@ Notable `application.properties` keys:
 | `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for idempotency GC. |
 | `floecat.gc.cas.*` | Cadence, page size, min-age, tick slice settings for CAS blob GC. |
 | `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |
-| `floecat.gc.reconcile-jobs.*` | Cadence, retention, and slice settings for durable reconcile-job GC. |
+| `floecat.gc.reconcile-jobs.*` | Cadence, retention, and slice settings for durable reconcile-job GC. Finished terminal jobs default to 24 h retention. |
 | `floecat.reconciler.job-store.*` | Durable reconcile queue selection and retry/lease tuning. |
 | `quarkus.log.*` | JSON logging, file rotation, audit handlers per RPC package. |
 | `quarkus.otel.*` / `quarkus.micrometer.*` | Observability exporters (see [`docs/operations.md`](operations.md)). |

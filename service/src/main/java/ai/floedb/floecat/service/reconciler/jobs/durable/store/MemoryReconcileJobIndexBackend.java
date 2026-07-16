@@ -132,10 +132,7 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     if (pointerStore == null || blank(canonicalPointerKey)) {
       return false;
     }
-    List<JobIndexEntrySnapshot> matches = new ArrayList<>();
-    collectMatches(matches, Keys.reconcileJobLookupPointerByIdPrefix(), canonicalPointerKey);
-    collectMatches(matches, "/accounts/by-id/reconcile/jobs/by-state/", canonicalPointerKey);
-    collectMatches(matches, "/accounts/", canonicalPointerKey);
+    List<JobIndexEntrySnapshot> matches = matchingCanonicalReferences(canonicalPointerKey);
     boolean deleted = false;
     for (JobIndexEntrySnapshot entry : matches) {
       deleted |=
@@ -143,6 +140,37 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
               List.of(new PointerStore.CasDelete(entry.pointerKey(), entry.version())));
     }
     return deleted;
+  }
+
+  @Override
+  public boolean purgeEntriesByCanonicalReference(
+      String canonicalPointerKey, long expectedVersion, String expectedBlobUri) {
+    if (pointerStore == null || blank(canonicalPointerKey)) {
+      return false;
+    }
+    var canonical = loadIndexEntry(canonicalPointerKey).orElse(null);
+    if (canonical == null
+        || canonical.version() != expectedVersion
+        || !java.util.Objects.equals(canonical.blobUri(), expectedBlobUri)) {
+      return false;
+    }
+    java.util.LinkedHashMap<String, PointerStore.CasDelete> deletes =
+        new java.util.LinkedHashMap<>();
+    for (JobIndexEntrySnapshot entry : matchingCanonicalReferences(canonicalPointerKey)) {
+      deletes.putIfAbsent(
+          entry.pointerKey(), new PointerStore.CasDelete(entry.pointerKey(), entry.version()));
+    }
+    List<PointerStore.CasOp> ops = new ArrayList<>();
+    ops.addAll(deletes.values());
+    return !ops.isEmpty() && pointerStore.compareAndSetBatch(ops);
+  }
+
+  private List<JobIndexEntrySnapshot> matchingCanonicalReferences(String canonicalPointerKey) {
+    List<JobIndexEntrySnapshot> matches = new ArrayList<>();
+    collectMatches(matches, Keys.reconcileJobLookupPointerByIdPrefix(), canonicalPointerKey);
+    collectMatches(matches, "/accounts/by-id/reconcile/jobs/by-state/", canonicalPointerKey);
+    collectMatches(matches, "/accounts/", canonicalPointerKey);
+    return matches;
   }
 
   private JobIndexQueryPage listPointers(String prefix, int limit, String pageToken) {

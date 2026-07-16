@@ -48,13 +48,15 @@ public interface ReconcileJobIndexStore {
     }
   }
 
-  sealed interface JobIndexWriteOp permits JobIndexUpsert, JobIndexDelete {}
+  sealed interface JobIndexWriteOp permits JobIndexUpsert, JobIndexDelete, JobIndexCheckAbsent {}
 
   record JobIndexUpsert(
       String pointerKey, long expectedVersion, String blobUri, PointerReferenceKind referenceKind)
       implements JobIndexWriteOp {}
 
   record JobIndexDelete(String pointerKey, long expectedVersion) implements JobIndexWriteOp {}
+
+  record JobIndexCheckAbsent(String pointerKey) implements JobIndexWriteOp {}
 
   record JobIndexWriteBatch(List<JobIndexWriteOp> writes, ReadyQueueMutation readyMutation) {
     public static JobIndexWriteBatch empty() {

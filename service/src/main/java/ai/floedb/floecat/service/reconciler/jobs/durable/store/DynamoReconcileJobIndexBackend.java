@@ -277,6 +277,110 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     return deleted;
   }
 
+  @Override
+  public boolean purgeEntriesByCanonicalReference(
+      String canonicalPointerKey, long expectedVersion, String expectedBlobUri) {
+    if (blank(canonicalPointerKey)) {
+      return false;
+    }
+    Map<String, Map<String, AttributeValue>> matches =
+        matchingCanonicalReferenceItems(canonicalPointerKey, 101);
+    Map<String, AttributeValue> canonical = matches.get(canonicalPointerKey);
+    if (canonical == null
+        || longAttr(canonical, ATTR_VERSION) != expectedVersion
+        || !java.util.Objects.equals(
+            stringAttr(canonical, JobIndexBackendSupport.ATTR_BLOB_URI), expectedBlobUri)) {
+      return false;
+    }
+    if (matches.isEmpty()) {
+      return false;
+    }
+    List<TransactWriteItem> tx = new ArrayList<>();
+    if (matches.size() > 100) {
+      tx.add(buildCanonicalReferenceCheck(canonicalPointerKey, expectedVersion, expectedBlobUri));
+      for (var entry : matches.entrySet()) {
+        if (canonicalPointerKey.equals(entry.getKey())) {
+          continue;
+        }
+        tx.add(
+            buildDelete(
+                stringAttr(entry.getValue(), ATTR_PARTITION_KEY),
+                stringAttr(entry.getValue(), ATTR_SORT_KEY),
+                longAttr(entry.getValue(), ATTR_VERSION)));
+        if (tx.size() >= 100) {
+          break;
+        }
+      }
+      if (tx.size() <= 1) {
+        return false;
+      }
+      try {
+        dynamoCaller.callVoid(
+            dynamoDbClientManager,
+            client ->
+                client.transactWriteItems(
+                    TransactWriteItemsRequest.builder().transactItems(tx).build()));
+        return false;
+      } catch (TransactionCanceledException e) {
+        return false;
+      }
+    }
+    for (var item : matches.values()) {
+      tx.add(
+          buildDelete(
+              stringAttr(item, ATTR_PARTITION_KEY),
+              stringAttr(item, ATTR_SORT_KEY),
+              longAttr(item, ATTR_VERSION)));
+    }
+    try {
+      dynamoCaller.callVoid(
+          dynamoDbClientManager,
+          client ->
+              client.transactWriteItems(
+                  TransactWriteItemsRequest.builder().transactItems(tx).build()));
+      return true;
+    } catch (TransactionCanceledException e) {
+      return false;
+    }
+  }
+
+  private Map<String, Map<String, AttributeValue>> matchingCanonicalReferenceItems(
+      String canonicalPointerKey, int maxMatches) {
+    Map<String, Map<String, AttributeValue>> matches = new java.util.LinkedHashMap<>();
+    Map<String, AttributeValue> exclusiveStartKey = null;
+    do {
+      ScanRequest.Builder request =
+          ScanRequest.builder()
+              .tableName(table)
+              .consistentRead(true)
+              .expressionAttributeNames(
+                  Map.of(
+                      "#pointer", JobIndexBackendSupport.ATTR_POINTER_KEY,
+                      "#canonical", JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY,
+                      "#blob", JobIndexBackendSupport.ATTR_BLOB_URI))
+              .filterExpression(
+                  "#pointer = :canonical OR #canonical = :canonical OR #blob = :canonical")
+              .expressionAttributeValues(
+                  Map.of(":canonical", AttributeValue.fromS(canonicalPointerKey)));
+      if (exclusiveStartKey != null && !exclusiveStartKey.isEmpty()) {
+        request.exclusiveStartKey(exclusiveStartKey);
+      }
+      var response =
+          dynamoCaller.call(dynamoDbClientManager, client -> client.scan(request.build()));
+      for (var item : response.items()) {
+        String pointerKey = stringAttr(item, JobIndexBackendSupport.ATTR_POINTER_KEY);
+        if (!pointerKey.isBlank()) {
+          matches.putIfAbsent(pointerKey, item);
+          if (matches.size() >= maxMatches) {
+            return matches;
+          }
+        }
+      }
+      exclusiveStartKey = response.lastEvaluatedKey();
+    } while (exclusiveStartKey != null && !exclusiveStartKey.isEmpty());
+    return matches;
+  }
+
   private boolean compareAndSetDynamo(
       ReconcileJobIndexStore.JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
     List<TransactWriteItem> tx = new ArrayList<>();
@@ -286,6 +390,8 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
           tx.add(buildPointerUpsert(upsert));
         } else if (op instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
           tx.add(buildPointerDelete(delete));
+        } else if (op instanceof ReconcileJobIndexStore.JobIndexCheckAbsent check) {
+          tx.add(buildPointerCheckAbsent(check.pointerKey()));
         }
       }
       for (var upsert : batch.readyMutation().upserts()) {
@@ -637,6 +743,59 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         "Unsupported reconcile job index delete key: " + delete.pointerKey());
   }
 
+  private TransactWriteItem buildPointerCheckAbsent(String pointerKey) {
+    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(pointerKey);
+    if (canonicalKey != null) {
+      return buildCheckAbsent(
+          JobIndexBackendSupport.canonicalPartitionKey(canonicalKey),
+          JobIndexBackendSupport.canonicalSortKey(canonicalKey));
+    }
+    var lookupKey = JobIndexBackendSupport.parseLookupKey(pointerKey);
+    if (lookupKey != null) {
+      return buildCheckAbsent(
+          JobIndexBackendSupport.lookupPartitionKey(),
+          JobIndexBackendSupport.lookupSortKey(lookupKey));
+    }
+    var parentKey = JobIndexBackendSupport.parseParentKey(pointerKey);
+    if (parentKey != null) {
+      return buildCheckAbsent(
+          JobIndexBackendSupport.parentPartitionKey(parentKey),
+          JobIndexBackendSupport.parentSortKey(parentKey));
+    }
+    var connectorKey = JobIndexBackendSupport.parseConnectorKey(pointerKey);
+    if (connectorKey != null) {
+      return buildCheckAbsent(
+          JobIndexBackendSupport.connectorPartitionKey(connectorKey),
+          JobIndexBackendSupport.connectorSortKey(connectorKey));
+    }
+    var globalStateKey = JobIndexBackendSupport.parseGlobalStateKey(pointerKey);
+    if (globalStateKey != null) {
+      return buildCheckAbsent(
+          JobIndexBackendSupport.globalStatePartitionKey(globalStateKey),
+          JobIndexBackendSupport.globalStateSortKey(globalStateKey));
+    }
+    var accountStateKey = JobIndexBackendSupport.parseAccountStateKey(pointerKey);
+    if (accountStateKey != null) {
+      return buildCheckAbsent(
+          JobIndexBackendSupport.accountStatePartitionKey(accountStateKey),
+          JobIndexBackendSupport.accountStateSortKey(accountStateKey));
+    }
+    var connectorStateKey = JobIndexBackendSupport.parseConnectorStateKey(pointerKey);
+    if (connectorStateKey != null) {
+      return buildCheckAbsent(
+          JobIndexBackendSupport.connectorStatePartitionKey(connectorStateKey),
+          JobIndexBackendSupport.connectorStateSortKey(connectorStateKey));
+    }
+    var dedupeKey = JobIndexBackendSupport.parseDedupeKey(pointerKey);
+    if (dedupeKey != null) {
+      return buildCheckAbsent(
+          JobIndexBackendSupport.dedupePartitionKey(dedupeKey),
+          JobIndexBackendSupport.dedupeSortKey(dedupeKey));
+    }
+    throw new IllegalArgumentException(
+        "Unsupported reconcile job index check-absent key: " + pointerKey);
+  }
+
   private TransactWriteItem buildCanonicalUpsert(
       JobIndexBackendSupport.CanonicalJobKey key, ReconcileJobIndexStore.JobIndexUpsert upsert) {
     Map<String, AttributeValue> item = new HashMap<>();
@@ -723,16 +882,50 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         .build();
   }
 
-  private TransactWriteItem buildGenericPointerCheckAbsent(String pointerKey) {
-    GenericPointerKey key = genericPointerKey(pointerKey);
+  private TransactWriteItem buildCanonicalReferenceCheck(
+      String canonicalPointerKey, long expectedVersion, String expectedBlobUri) {
+    var key = JobIndexBackendSupport.parseCanonicalJobKey(canonicalPointerKey);
+    if (key == null) {
+      throw new IllegalArgumentException(
+          "not a canonical reconcile job key: " + canonicalPointerKey);
+    }
     return TransactWriteItem.builder()
         .conditionCheck(
             software.amazon.awssdk.services.dynamodb.model.ConditionCheck.builder()
                 .tableName(table)
                 .key(
                     Map.of(
-                        ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()),
-                        ATTR_SORT_KEY, AttributeValue.fromS(key.sortKey())))
+                        ATTR_PARTITION_KEY,
+                        AttributeValue.fromS(JobIndexBackendSupport.canonicalPartitionKey(key)),
+                        ATTR_SORT_KEY,
+                        AttributeValue.fromS(JobIndexBackendSupport.canonicalSortKey(key))))
+                .conditionExpression("#v = :expectedVersion AND #blob = :expectedBlob")
+                .expressionAttributeNames(
+                    Map.of("#v", ATTR_VERSION, "#blob", JobIndexBackendSupport.ATTR_BLOB_URI))
+                .expressionAttributeValues(
+                    Map.of(
+                        ":expectedVersion",
+                        AttributeValue.fromN(Long.toString(expectedVersion)),
+                        ":expectedBlob",
+                        AttributeValue.fromS(expectedBlobUri)))
+                .build())
+        .build();
+  }
+
+  private TransactWriteItem buildGenericPointerCheckAbsent(String pointerKey) {
+    GenericPointerKey key = genericPointerKey(pointerKey);
+    return buildCheckAbsent(key.partitionKey(), key.sortKey());
+  }
+
+  private TransactWriteItem buildCheckAbsent(String partitionKey, String sortKey) {
+    return TransactWriteItem.builder()
+        .conditionCheck(
+            software.amazon.awssdk.services.dynamodb.model.ConditionCheck.builder()
+                .tableName(table)
+                .key(
+                    Map.of(
+                        ATTR_PARTITION_KEY, AttributeValue.fromS(partitionKey),
+                        ATTR_SORT_KEY, AttributeValue.fromS(sortKey)))
                 .conditionExpression("attribute_not_exists(#pk)")
                 .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
                 .build())

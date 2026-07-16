@@ -1127,6 +1127,23 @@ public final class Keys {
         + "/";
   }
 
+  public static String reconcileRootJobSummaryByConnectorAccountPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/root-summaries/by-connector/";
+  }
+
+  public static String reconcileCanonicalQuarantinePointer(
+      String accountId, String canonicalKeyHash) {
+    String tid = req("account_id", accountId);
+    String hash = req("canonical_key_hash", canonicalKeyHash);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-quarantine/canonical/" + encode(hash);
+  }
+
+  public static String reconcileCanonicalQuarantinePointerPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-quarantine/canonical/";
+  }
+
   public static String reconcileJobByParentPointer(
       String accountId, String parentJobId, String jobId) {
     String tid = req("account_id", accountId);
