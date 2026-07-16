@@ -16,100 +16,31 @@
 
 package ai.floedb.floecat.storage.aws;
 
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
-import org.jboss.logging.Logger;
+import java.util.function.Function;
 import software.amazon.awssdk.services.s3.S3Client;
 
 @ApplicationScoped
 public class S3ClientManager {
 
-  private static final Logger LOG = Logger.getLogger(S3ClientManager.class);
-
   @Inject AwsClients awsClients;
 
-  private final AtomicBoolean closed = new AtomicBoolean();
-  private final AtomicReference<S3Client> current = new AtomicReference<>();
+  private final RefreshingAwsClient<S3Client> client =
+      RefreshingAwsClient.withResourceFactory("S3", () -> awsClients.newS3ClientResource());
 
   public S3Client current() {
-    requireOpen();
-    S3Client existing = current.get();
-    if (existing != null) {
-      return existing;
-    }
-
-    S3Client next = awsClients.newS3Client();
-    if (closed.get()) {
-      next.close();
-      requireOpen();
-    }
-    if (current.compareAndSet(null, next)) {
-      if (closed.get() && current.compareAndSet(next, null)) {
-        next.close();
-        requireOpen();
-      }
-      return next;
-    }
-
-    next.close();
-    return requireOpen(current.get());
+    return client.current();
   }
 
-  public void refreshAfterFailure(S3Client failedClient, Throwable failure) {
-    if (!ClosedAwsClientDetector.isConnectionPoolShutdown(failure)) {
-      return;
-    }
-    if (closed.get()) {
-      return;
-    }
-    if (failedClient == null || current.get() != failedClient) {
-      return;
-    }
-
-    S3Client next = awsClients.newS3Client();
-    if (closed.get()) {
-      next.close();
-      return;
-    }
-    if (current.compareAndSet(failedClient, next)) {
-      closeQuietly(failedClient);
-      LOG.warn("Refreshed S3 client after closed connection pool");
-    } else {
-      next.close();
-    }
+  public <R> R call(Function<S3Client, R> operation) {
+    return client.callUnchecked(operation);
   }
 
   @PreDestroy
   void close() {
-    if (closed.compareAndSet(false, true)) {
-      closeQuietly(current.getAndSet(null));
-    }
-  }
-
-  private void requireOpen() {
-    if (closed.get()) {
-      throw new IllegalStateException("s3 client manager is shut down");
-    }
-  }
-
-  private S3Client requireOpen(S3Client client) {
-    requireOpen();
-    if (client == null) {
-      throw new IllegalStateException("s3 client manager is shut down");
-    }
-    return client;
-  }
-
-  private static void closeQuietly(S3Client client) {
-    if (client == null) {
-      return;
-    }
-    try {
-      client.close();
-    } catch (RuntimeException ignored) {
-    }
+    client.close();
   }
 }

@@ -14,16 +14,18 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.storage.aws;
+package ai.floedb.floecat.aws;
+
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
 
 public final class ClosedAwsClientDetector {
-
   static final String CONNECTION_POOL_SHUT_DOWN = "Connection pool shut down";
 
   private ClosedAwsClientDetector() {}
 
   public static boolean isConnectionPoolShutdown(Throwable failure) {
-    Throwable current = failure;
+    Throwable current = unwrapStageFailure(failure);
     while (current != null) {
       String message = current.getMessage();
       if (message != null && message.contains(CONNECTION_POOL_SHUT_DOWN)) {
@@ -32,5 +34,14 @@ public final class ClosedAwsClientDetector {
       current = current.getCause();
     }
     return false;
+  }
+
+  public static Throwable unwrapStageFailure(Throwable failure) {
+    Throwable current = failure;
+    while ((current instanceof CompletionException || current instanceof ExecutionException)
+        && current.getCause() != null) {
+      current = current.getCause();
+    }
+    return current;
   }
 }

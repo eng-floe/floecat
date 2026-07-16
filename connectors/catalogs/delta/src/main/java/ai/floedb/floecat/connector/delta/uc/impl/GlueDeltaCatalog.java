@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
-import ai.floedb.floecat.connector.common.aws.RefreshingAwsClient;
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;

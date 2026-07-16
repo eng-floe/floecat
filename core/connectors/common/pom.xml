@@ -35,6 +35,12 @@
     <!-- Typesystem dependency (LogicalType, LogicalComparators, ValueEncoders, etc) -->
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-core-engine-utils</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-types</artifactId>
       <version>${project.version}</version>
     </dependency>

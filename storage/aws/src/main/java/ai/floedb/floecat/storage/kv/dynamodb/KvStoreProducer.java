@@ -67,7 +67,22 @@ public class KvStoreProducer {
       if (manager.isResolvable()) {
         DynamoDbAsyncClientManager clientManager = manager.get();
         return new DynamoDbKvStore(
-            clientManager::current, table, clientManager::refreshAfterFailure);
+            new DynamoDbKvStore.AsyncDynamoCaller() {
+              @Override
+              public <T> java.util.concurrent.CompletionStage<T> call(
+                  java.util.function.Function<
+                          DynamoDbAsyncClient, java.util.concurrent.CompletionStage<T>>
+                      operation) {
+                return clientManager.callAsync(operation);
+              }
+            },
+            new DynamoDbKvStore.BlockingDynamoCaller() {
+              @Override
+              public <T> T call(java.util.function.Function<DynamoDbAsyncClient, T> operation) {
+                return clientManager.call(operation);
+              }
+            },
+            table);
       }
     }
     return new DynamoDbKvStore(ddb, table);

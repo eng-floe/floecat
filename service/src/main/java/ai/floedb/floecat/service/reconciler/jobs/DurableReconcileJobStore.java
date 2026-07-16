@@ -264,8 +264,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     } else if (jobIndexBackend instanceof DynamoReconcileJobIndexBackend dynamoBackend
         && dynamoDbClientManager != null
         && dynamoDbClientManager.isResolvable()) {
-      DynamoDbClientManager manager = dynamoDbClientManager.get();
-      dynamoBackend.bind(manager::current, kvTable, manager::refreshAfterFailure);
+      dynamoBackend.bind(dynamoDbClientManager.get(), kvTable);
     }
     jobIndexStore.bind(
         jobIndexBackend,
@@ -335,8 +334,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     } else if (leaseBackend instanceof DynamoReconcileLeaseBackend dynamoBackend
         && dynamoDbClientManager != null
         && dynamoDbClientManager.isResolvable()) {
-      DynamoDbClientManager manager = dynamoDbClientManager.get();
-      dynamoBackend.bind(manager::current, kvTable, manager::refreshAfterFailure);
+      dynamoBackend.bind(dynamoDbClientManager.get(), kvTable);
     }
     leaseStore.bind(
         leaseBackend,
@@ -385,8 +383,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     } else if (readyQueueBackend instanceof DynamoReconcileReadyQueueBackend dynamoBackend
         && dynamoDbClientManager != null
         && dynamoDbClientManager.isResolvable()) {
-      DynamoDbClientManager manager = dynamoDbClientManager.get();
-      dynamoBackend.bind(manager::current, kvTable, manager::refreshAfterFailure);
+      dynamoBackend.bind(dynamoDbClientManager.get(), kvTable);
     }
     readyQueueStore.bind(
         readyQueueBackend,

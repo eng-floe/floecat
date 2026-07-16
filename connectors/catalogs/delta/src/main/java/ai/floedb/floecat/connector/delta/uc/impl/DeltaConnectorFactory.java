@@ -16,10 +16,10 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import ai.floedb.floecat.connector.common.auth.AwsGlueClientFactory;
 import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
 import ai.floedb.floecat.connector.common.auth.RegistryBackedAwsCredentialsProvider;
-import ai.floedb.floecat.connector.common.aws.RefreshingAwsClient;
 import ai.floedb.floecat.connector.spi.AuthProvider;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import io.delta.kernel.defaults.engine.DefaultEngine;
@@ -31,6 +31,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import org.apache.parquet.io.InputFile;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
@@ -180,22 +181,29 @@ final class DeltaConnectorFactory {
     boolean pathStyle =
         Boolean.parseBoolean(resolveOption(options, "s3.path-style-access", "false"));
 
-    var credentials = resolveCredentials(options);
+    var credentials = credentialsProviderFactory(options);
 
     String endpoint = resolveOption(options, "s3.endpoint", null);
     var s3Client =
-        new RefreshingAwsClient<S3Client>(
+        RefreshingAwsClient.withResourceFactory(
             () -> {
+              AwsCredentialsProvider provider = credentials.get();
               var s3Builder =
                   S3Client.builder()
                       .region(region)
                       .serviceConfiguration(
                           S3Configuration.builder().pathStyleAccessEnabled(pathStyle).build())
-                      .credentialsProvider(credentials);
-              if (endpoint != null && !endpoint.isBlank()) {
-                s3Builder.endpointOverride(URI.create(endpoint));
+                      .credentialsProvider(provider);
+              try {
+                if (endpoint != null && !endpoint.isBlank()) {
+                  s3Builder.endpointOverride(URI.create(endpoint));
+                }
+                return RefreshingAwsClient.clientResource(
+                    s3Builder.build(), RefreshingAwsClient.closeableResource(provider));
+              } catch (RuntimeException | Error e) {
+                RefreshingAwsClient.closeQuietly(RefreshingAwsClient.closeableResource(provider));
+                throw e;
               }
-              return s3Builder.build();
             });
     Engine engine = DefaultEngine.create(new S3V2FileSystemClient(s3Client));
     Function<String, InputFile> inputFn = p -> new ParquetS3V2InputFile(s3Client, p);
@@ -220,6 +228,10 @@ final class DeltaConnectorFactory {
       return StaticCredentialsProvider.create(creds);
     }
     return DefaultCredentialsProvider.builder().build();
+  }
+
+  static Supplier<AwsCredentialsProvider> credentialsProviderFactory(Map<String, String> options) {
+    return () -> resolveCredentials(options);
   }
 
   private static String resolveOption(

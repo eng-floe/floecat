@@ -15,7 +15,6 @@
  */
 package ai.floedb.floecat.storage.kv.dynamodb;
 
-import ai.floedb.floecat.storage.aws.ClosedAwsClientDetector;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.kv.KvStore;
 import io.smallrye.mutiny.Multi;
@@ -30,36 +29,39 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiConsumer;
 import java.util.function.Function;
-import java.util.function.Supplier;
-import org.jboss.logging.Logger;
 import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
 public final class DynamoDbKvStore implements KvStore, KvAttributes {
-  private static final Logger LOG = Logger.getLogger(DynamoDbKvStore.class);
-
   static final int DELETE_BATCH_LIMIT = Integer.getInteger("floedb.floecat.delete.batch.size", 25);
-  private final Supplier<DynamoDbAsyncClient> ddb;
-  private final BiConsumer<DynamoDbAsyncClient, Throwable> clientFailureHandler;
-  private final boolean supportsClientRefresh;
+  private final AsyncDynamoCaller ddb;
+  private final BlockingDynamoCaller blockingDdb;
   private final String table;
 
   public DynamoDbKvStore(DynamoDbAsyncClient ddb, String table) {
-    this(() -> ddb, table, null);
+    this(
+        new AsyncDynamoCaller() {
+          @Override
+          public <T> CompletionStage<T> call(
+              Function<DynamoDbAsyncClient, CompletionStage<T>> operation) {
+            return operation.apply(ddb);
+          }
+        },
+        new BlockingDynamoCaller() {
+          @Override
+          public <T> T call(Function<DynamoDbAsyncClient, T> operation) {
+            return operation.apply(ddb);
+          }
+        },
+        table);
   }
 
-  public DynamoDbKvStore(
-      Supplier<DynamoDbAsyncClient> ddb,
-      String table,
-      BiConsumer<DynamoDbAsyncClient, Throwable> clientFailureHandler) {
+  public DynamoDbKvStore(AsyncDynamoCaller ddb, BlockingDynamoCaller blockingDdb, String table) {
     this.ddb = ddb;
+    this.blockingDdb = blockingDdb;
     this.table = table;
-    this.supportsClientRefresh = clientFailureHandler != null;
-    this.clientFailureHandler =
-        clientFailureHandler == null ? (client, failure) -> {} : clientFailureHandler;
   }
 
   String getTable() {
@@ -200,85 +202,12 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
     return current;
   }
 
-  private DynamoDbAsyncClient ddb() {
-    return ddb.get();
-  }
-
   private <T> Uni<T> dynamo(Function<DynamoDbAsyncClient, CompletionStage<T>> operation) {
-    return dynamo(operation, 0, callerContext());
-  }
-
-  private <T> Uni<T> dynamo(
-      Function<DynamoDbAsyncClient, CompletionStage<T>> operation,
-      int attempt,
-      String callerContext) {
-    DynamoDbAsyncClient client = ddb();
-    try {
-      return fromStage(operation.apply(client))
-          .onFailure()
-          .recoverWithUni(
-              failure -> {
-                if (shouldRefreshAndRetry(failure, attempt)) {
-                  LOG.warnf(
-                      failure,
-                      "DynamoDB async connection pool shutdown in %s; refreshing client",
-                      callerContext);
-                  clientFailureHandler.accept(client, failure);
-                  return dynamo(operation, attempt + 1, callerContext);
-                }
-                return Uni.createFrom().failure(failure);
-              });
-    } catch (Throwable failure) {
-      if (shouldRefreshAndRetry(failure, attempt)) {
-        LOG.warnf(
-            failure,
-            "DynamoDB async connection pool shutdown in %s; refreshing client",
-            callerContext);
-        clientFailureHandler.accept(client, failure);
-        return dynamo(operation, attempt + 1, callerContext);
-      }
-      throw failure;
-    }
+    return fromStage(ddb.call(operation));
   }
 
   private <T> T dynamoBlocking(Function<DynamoDbAsyncClient, T> operation) {
-    for (int attempt = 0; ; attempt++) {
-      DynamoDbAsyncClient client = ddb();
-      try {
-        return operation.apply(client);
-      } catch (Throwable failure) {
-        if (shouldRefreshAndRetry(failure, attempt)) {
-          LOG.warnf(
-              failure,
-              "DynamoDB async connection pool shutdown in %s; refreshing client",
-              callerContext());
-          clientFailureHandler.accept(client, failure);
-          continue;
-        }
-        throw failure;
-      }
-    }
-  }
-
-  private boolean shouldRefreshAndRetry(Throwable failure, int attempt) {
-    return supportsClientRefresh
-        && attempt == 0
-        && ClosedAwsClientDetector.isConnectionPoolShutdown(failure);
-  }
-
-  private static String callerContext() {
-    String wrapperClassName = DynamoDbKvStore.class.getName();
-    for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
-      String className = frame.getClassName();
-      if (className.equals(Thread.class.getName()) || className.equals(wrapperClassName)) {
-        continue;
-      }
-      if (className.startsWith(wrapperClassName + "$")) {
-        continue;
-      }
-      return className + "." + frame.getMethodName();
-    }
-    return "unknown";
+    return blockingDdb.call(operation);
   }
 
   // ---- KvStore (reads)
@@ -763,5 +692,15 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
       Thread.currentThread().interrupt();
       throw new RuntimeException(ie);
     }
+  }
+
+  @FunctionalInterface
+  public interface AsyncDynamoCaller {
+    <T> CompletionStage<T> call(Function<DynamoDbAsyncClient, CompletionStage<T>> operation);
+  }
+
+  @FunctionalInterface
+  public interface BlockingDynamoCaller {
+    <T> T call(Function<DynamoDbAsyncClient, T> operation);
   }
 }

@@ -18,6 +18,7 @@ package ai.floedb.floecat.storage.aws;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -29,38 +30,48 @@ import software.amazon.awssdk.services.s3.S3Client;
 class S3ClientManagerTest {
 
   @Test
-  void refreshAfterFailure_replaces_client_on_connection_pool_shutdown() {
+  void call_replaces_client_on_connection_pool_shutdown() {
     FakeAwsClients clients = new FakeAwsClients();
     S3ClientManager manager = new S3ClientManager();
     manager.awsClients = clients;
 
-    S3Client first = manager.current();
-
-    manager.refreshAfterFailure(first, new IllegalStateException("Connection pool shut down"));
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            manager.call(
+                client -> {
+                  throw new IllegalStateException("Connection pool shut down");
+                }));
+    S3Client first = clients.handles.get(0).client;
 
     S3Client second = manager.current();
     assertNotSame(first, second);
     assertEquals(2, clients.handles.size());
     assertTrue(clients.handles.get(0).closed);
+    assertTrue(clients.handles.get(0).resourceClosed);
     assertFalse(clients.handles.get(1).closed);
+    assertFalse(clients.handles.get(1).resourceClosed);
   }
 
   @Test
-  void refreshAfterFailure_ignores_stale_failed_client() {
+  void call_does_not_replace_client_on_unrelated_failure() {
     FakeAwsClients clients = new FakeAwsClients();
     S3ClientManager manager = new S3ClientManager();
     manager.awsClients = clients;
 
-    S3Client first = manager.current();
-    manager.refreshAfterFailure(first, new IllegalStateException("Connection pool shut down"));
-    S3Client second = manager.current();
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            manager.call(
+                client -> {
+                  throw new IllegalStateException("throttled");
+                }));
+    S3Client first = clients.handles.get(0).client;
 
-    manager.refreshAfterFailure(first, new IllegalStateException("Connection pool shut down"));
-
-    assertSame(second, manager.current());
-    assertEquals(2, clients.handles.size());
-    assertTrue(clients.handles.get(0).closed);
-    assertFalse(clients.handles.get(1).closed);
+    assertSame(first, manager.current());
+    assertEquals(1, clients.handles.size());
+    assertFalse(clients.handles.get(0).closed);
+    assertFalse(clients.handles.get(0).resourceClosed);
   }
 
   @Test
@@ -74,9 +85,10 @@ class S3ClientManagerTest {
 
     IllegalStateException thrown = assertThrows(IllegalStateException.class, manager::current);
 
-    assertEquals("s3 client manager is shut down", thrown.getMessage());
+    assertEquals("S3 client is shut down", thrown.getMessage());
     assertEquals(1, clients.handles.size());
     assertTrue(clients.handles.get(0).closed);
+    assertTrue(clients.handles.get(0).resourceClosed);
     assertSame(first, clients.handles.get(0).client);
   }
 
@@ -84,10 +96,11 @@ class S3ClientManagerTest {
     private final List<ClientHandle> handles = new ArrayList<>();
 
     @Override
-    public S3Client newS3Client() {
+    public RefreshingAwsClient.ClientResource<S3Client> newS3ClientResource() {
       ClientHandle handle = new ClientHandle();
       handles.add(handle);
-      return handle.client;
+      return RefreshingAwsClient.clientResource(
+          handle.client, (AutoCloseable) () -> handle.resourceClosed = true);
     }
   }
 
@@ -98,6 +111,7 @@ class S3ClientManagerTest {
                 S3Client.class.getClassLoader(), new Class<?>[] {S3Client.class}, this);
 
     private boolean closed;
+    private boolean resourceClosed;
 
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) {
