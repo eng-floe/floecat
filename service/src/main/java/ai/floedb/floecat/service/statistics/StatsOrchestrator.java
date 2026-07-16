@@ -405,32 +405,66 @@ public class StatsOrchestrator {
   }
 
   /**
-   * Planner batch resolution that honors the query's pinned stats generation.
-   *
-   * <p>The pin freezes a stats generation for the query's lifetime (as the scan path does), so
-   * plans are stable and reproducible for a given pin. For each target the lookup order is:
-   *
-   * <ol>
-   *   <li>cache hit in the pinned generation's keyspace (the live/newest keyspace when the pin
-   *       froze no generation);
-   *   <li>the pinned generation for the pinned snapshot — the primary source;
-   *   <li>the newest (live active) generation, consulted only to fill targets the pinned generation
-   *       lacks, so an incomplete pinned generation never yields NOT_FOUND;
-   *   <li>stale stats from a snapshot &le; the pinned snapshot (when {@code staleOk});
-   *   <li>sync/async capture.
-   * </ol>
-   *
-   * <p>Hits are cached under the generation actually served — the pinned generation under its own
-   * token, newest-fill under the empty token — so the two never contaminate each other. When the
-   * pin froze no generation the primary source is the live/newest generation (empty token) and the
-   * fill step is skipped.
-   *
-   * @param pinnedGenerationToken the generation frozen on the query pin, read as the primary
-   *     source; empty when the pin froze no generation (then the live/newest generation is primary)
+   * Planner batch resolution that honors the query's pinned stats generation, with presence-only
+   * completeness: a target that exists in the pinned generation is a hit. Delegates to {@link
+   * #resolvePlannerBatchInGeneration(java.util.List, Optional, java.util.Map, boolean, long)} with
+   * no per-target completeness predicates.
    */
   public java.util.Map<String, StatsResolutionResult> resolvePlannerBatchInGeneration(
       java.util.List<StatsCaptureRequest> requests,
       Optional<String> pinnedGenerationToken,
+      boolean staleOk,
+      long deadlineNanos) {
+    return resolvePlannerBatchInGeneration(
+        requests, pinnedGenerationToken, java.util.Map.of(), staleOk, deadlineNanos);
+  }
+
+  /**
+   * Planner batch resolution that honors the query's pinned stats generation and the planner's
+   * per-target completeness needs.
+   *
+   * <p>The pin freezes a stats generation for the query's lifetime (as the scan path does), so
+   * plans are stable and reproducible for a given pin. "Exists in the pinned generation" alone is
+   * too coarse a hit rule, though: generations enrich over time (a finalize can add sketch payloads
+   * to a snapshot whose earlier generation was scalar-only), so a pinned record that lacks a
+   * requested capability must not stop resolution — the planner would consume it downgraded while a
+   * richer record for the SAME snapshot exists. For each target the lookup order is:
+   *
+   * <ol>
+   *   <li>cache hit in the pinned generation's keyspace (the live/newest keyspace when the pin
+   *       froze no generation), only if the cached record satisfies the target's completeness
+   *       predicate;
+   *   <li>the pinned generation for the pinned snapshot — the primary source; a record that fails
+   *       its predicate is held as a PARTIAL candidate rather than served;
+   *   <li>the newest (live active) generation of the SAME pinned snapshot, consulted for targets
+   *       the pinned generation lacks or serves only partially. Never a newer snapshot: this is
+   *       richer stats for identical data, not weakened snapshot consistency. If newest satisfies,
+   *       it wins; if not, the pinned partial is served (consistency prefers the pin between
+   *       equally incomplete records) — partial records never fall through to stale or capture;
+   *   <li>stale stats from a snapshot &le; the pinned snapshot (when {@code staleOk}), for targets
+   *       with no record at the pinned snapshot at all;
+   *   <li>sync/async capture.
+   * </ol>
+   *
+   * <p>Hits are cached under the generation actually served — the pinned generation under its own
+   * token, newest-fill under the empty token — so the two never contaminate each other. Records are
+   * cached whole and completeness is re-evaluated per read, so one query's lesser need never masks
+   * another's richer need. When the pin froze no generation the primary source is the live/newest
+   * generation (empty token) and the fill step is skipped: a partial primary record is served
+   * as-is, because no richer same-snapshot source exists.
+   *
+   * @param pinnedGenerationToken the generation frozen on the query pin, read as the primary
+   *     source; empty when the pin froze no generation (then the live/newest generation is primary)
+   * @param completenessByStorageId per-target completeness predicate keyed by {@code
+   *     StatsTargetIdentity.storageId}; a target with no entry treats presence as complete. Kept as
+   *     plain predicates so this class stays independent of the planner request model — callers
+   *     derive them from the request's needs (see {@code PlannerStatsResultMaterializer}).
+   */
+  public java.util.Map<String, StatsResolutionResult> resolvePlannerBatchInGeneration(
+      java.util.List<StatsCaptureRequest> requests,
+      Optional<String> pinnedGenerationToken,
+      java.util.Map<String, java.util.function.Predicate<TargetStatsRecord>>
+          completenessByStorageId,
       boolean staleOk,
       long deadlineNanos) {
     if (requests == null || requests.isEmpty()) {
@@ -439,6 +473,8 @@ public class StatsOrchestrator {
     // All requests must share the same tableId and snapshotId (grouped upstream by TableWork).
     StatsCaptureRequest first = requests.get(0);
     String pinnedGeneration = pinnedGenerationToken.filter(token -> !token.isBlank()).orElse("");
+    java.util.function.Function<String, java.util.function.Predicate<TargetStatsRecord>>
+        completenessFor = key -> completenessByStorageId.getOrDefault(key, record -> true);
     // Primary keyspace/reader: the pinned generation when the pin froze one, else the live/newest
     // generation (empty token). A new snapshotId is always a cache miss, so stats from a different
     // snapshot are never returned for the current query.
@@ -456,14 +492,17 @@ public class StatsOrchestrator {
                 statsStore.getTargetStatsInGeneration(
                     tableId, snapshotId, pinnedGeneration, target);
 
-    // 1. Cache check in the primary keyspace.
+    // 1. Cache check in the primary keyspace. A cached record that fails its completeness
+    // predicate reads as a miss — the store may hold an enriched generation this query can use —
+    // but is NOT evicted: it still satisfies lesser needs, and records are immutable per
+    // generation so re-reads converge on the same bytes.
     java.util.Map<String, StatsResolutionResult> out =
         new java.util.LinkedHashMap<>(requests.size());
     java.util.List<StatsCaptureRequest> cacheMisses = new java.util.ArrayList<>();
     for (StatsCaptureRequest req : requests) {
       String key = storageId(req);
       TargetStatsRecord cached = statsCache.getIfPresent(cacheKeyFor(req, primaryToken));
-      if (cached != null) {
+      if (cached != null && completenessFor.apply(key).test(cached)) {
         observeSyncOutcome(StatsSyncOutcome.HIT);
         out.put(key, StatsResolutionResult.hit(cached));
       } else {
@@ -485,15 +524,27 @@ public class StatsOrchestrator {
             primaryTarget,
             StatsResolutionResult::hit);
 
+    // Pinned records that exist but fail their completeness predicate: candidates the newest
+    // gap-fill may replace, and the answer of last resort if it cannot — a partial record is
+    // still a hit (the planner degrades per stat), never a stale/capture trigger.
+    java.util.Map<String, TargetStatsRecord> partialPinned = new java.util.LinkedHashMap<>();
     java.util.List<StatsCaptureRequest> misses = new java.util.ArrayList<>();
     for (StatsCaptureRequest req : cacheMisses) {
       String key = storageId(req);
       StatsResolutionResult hit = primaryHits.get(key);
       if (hit != null && hit.hasStats()) {
-        // Write-through under the primary (pinned, or live when unpinned) keyspace.
-        statsCache.put(cacheKeyFor(req, primaryToken), hit.stats().get());
-        observeSyncOutcome(StatsSyncOutcome.HIT);
-        out.put(key, StatsResolutionResult.hit(hit.stats().get()));
+        TargetStatsRecord record = hit.stats().get();
+        if (completenessFor.apply(key).test(record) || pinnedGeneration.isBlank()) {
+          // Complete — or partial with no pin, where the primary IS the newest generation and no
+          // richer same-snapshot source exists: serve as-is, the planner degrades per stat.
+          // Write-through under the primary (pinned, or live when unpinned) keyspace.
+          statsCache.put(cacheKeyFor(req, primaryToken), record);
+          observeSyncOutcome(StatsSyncOutcome.HIT);
+          out.put(key, StatsResolutionResult.hit(record));
+        } else {
+          partialPinned.put(key, record);
+          misses.add(req);
+        }
       } else if (hit != null && hit.outcome() == StatsSyncOutcome.FAILED) {
         out.put(key, hit);
       } else {
@@ -501,9 +552,9 @@ public class StatsOrchestrator {
       }
     }
 
-    // 3. Newest gap-fill — only when a specific generation was pinned. Fills targets the pinned
-    // generation lacks (prevents NOT_FOUND) without disturbing the pinned reads above; served from
-    // the live/newest generation and cached under the empty token.
+    // 3. Newest gap-fill — only when a specific generation was pinned. Serves targets the pinned
+    // generation lacks (prevents NOT_FOUND) or holds only partially (prevents a needless
+    // downgrade), from the newest generation of the SAME snapshot; cached under the empty token.
     java.util.List<StatsCaptureRequest> afterFill = new java.util.ArrayList<>();
     if (!pinnedGeneration.isBlank() && !misses.isEmpty()) {
       java.util.Map<String, StatsResolutionResult> fillHits =
@@ -517,7 +568,21 @@ public class StatsOrchestrator {
       for (StatsCaptureRequest req : misses) {
         String key = storageId(req);
         StatsResolutionResult hit = fillHits.get(key);
-        if (hit != null && hit.hasStats()) {
+        TargetStatsRecord partial = partialPinned.get(key);
+        boolean newestSatisfies =
+            hit != null && hit.hasStats() && completenessFor.apply(key).test(hit.stats().get());
+        if (newestSatisfies) {
+          statsCache.put(cacheKeyFor(req, ""), hit.stats().get());
+          observeSyncOutcome(StatsSyncOutcome.HIT);
+          out.put(key, StatsResolutionResult.hit(hit.stats().get()));
+        } else if (partial != null) {
+          // Newest is no more complete than the pin: between equally incomplete records,
+          // consistency prefers the pinned generation the scan reads.
+          statsCache.put(cacheKeyFor(req, primaryToken), partial);
+          observeSyncOutcome(StatsSyncOutcome.HIT);
+          out.put(key, StatsResolutionResult.hit(partial));
+        } else if (hit != null && hit.hasStats()) {
+          // Pin has nothing at all; a partial newest record beats stale or capture.
           statsCache.put(cacheKeyFor(req, ""), hit.stats().get());
           observeSyncOutcome(StatsSyncOutcome.HIT);
           out.put(key, StatsResolutionResult.hit(hit.stats().get()));

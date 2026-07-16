@@ -1046,6 +1046,155 @@ class StatsOrchestratorTest {
     assertThat(r.stats().get().getTable().getRowCount()).isEqualTo(3L);
   }
 
+  /**
+   * Completeness predicate used by the planner-completeness tests: the orchestrator treats the
+   * predicate as opaque, so a simple row-count threshold stands in for "carries the requested
+   * sketch payloads" (rowCount &lt; 10 = partial record, &ge; 10 = complete).
+   */
+  private static Map<String, java.util.function.Predicate<TargetStatsRecord>> completeAtRowCount(
+      String storageId, long threshold) {
+    return Map.of(storageId, record -> record.getTable().getRowCount() >= threshold);
+  }
+
+  @Test
+  void resolvePlannerBatch_partialPinnedFallsToSatisfyingNewest() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+    // Pinned generation HAS the target but only partially (fails the predicate)...
+    when(store.getTargetStatsBatchInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 1L))));
+    // ...while the newest generation of the SAME snapshot satisfies it.
+    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 10L))));
+
+    Map<String, StatsResolutionResult> result =
+        o.resolvePlannerBatchInGeneration(
+            List.of(req),
+            Optional.of("gen-pinned"),
+            completeAtRowCount(storageId, 10L),
+            false,
+            Long.MAX_VALUE);
+
+    assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(10L);
+  }
+
+  @Test
+  void resolvePlannerBatch_completePinnedRecordSkipsNewest() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+    when(store.getTargetStatsBatchInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 10L))));
+
+    Map<String, StatsResolutionResult> result =
+        o.resolvePlannerBatchInGeneration(
+            List.of(req),
+            Optional.of("gen-pinned"),
+            completeAtRowCount(storageId, 10L),
+            false,
+            Long.MAX_VALUE);
+
+    // The pinned record satisfies the need: the hot path is one pinned read, newest untouched.
+    assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(10L);
+    verify(store, Mockito.never()).getTargetStatsBatch(any(), anyLong(), any());
+  }
+
+  @Test
+  void resolvePlannerBatch_keepsPinnedPartialWhenNewestNoBetter() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+    // Both generations hold the target, neither satisfies the predicate.
+    when(store.getTargetStatsBatchInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 1L))));
+    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 2L))));
+
+    Map<String, StatsResolutionResult> result =
+        o.resolvePlannerBatchInGeneration(
+            List.of(req),
+            Optional.of("gen-pinned"),
+            completeAtRowCount(storageId, 10L),
+            /* staleOk= */ true,
+            Long.MAX_VALUE);
+
+    // Between equally incomplete records, consistency prefers the pinned generation — and a
+    // partial record is still a hit: it never falls through to the stale ladder rung.
+    assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(1L);
+    verify(store, Mockito.never()).getStaleTargetStatsBatch(any(), anyLong(), any());
+  }
+
+  @Test
+  void resolvePlannerBatch_cachedPartialDoesNotShortCircuitRicherNeed() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+    when(store.getTargetStatsBatchInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 1L))));
+    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 10L))));
+
+    // A need without a completeness predicate caches the pinned record: presence = complete.
+    assertThat(
+            o.resolvePlannerBatchInGeneration(
+                    List.of(req), Optional.of("gen-pinned"), false, Long.MAX_VALUE)
+                .get(storageId)
+                .stats()
+                .get()
+                .getTable()
+                .getRowCount())
+        .isEqualTo(1L);
+
+    // A richer need must not be short-circuited by that cached record: the cache read fails the
+    // predicate, the pinned re-read is still partial, and the newest generation serves it.
+    assertThat(
+            o.resolvePlannerBatchInGeneration(
+                    List.of(req),
+                    Optional.of("gen-pinned"),
+                    completeAtRowCount(storageId, 10L),
+                    false,
+                    Long.MAX_VALUE)
+                .get(storageId)
+                .stats()
+                .get()
+                .getTable()
+                .getRowCount())
+        .isEqualTo(10L);
+  }
+
   @Test
   void invalidateStatsCacheForPersistedRecordsUsesExplicitTableSnapshot() {
     StatsStore store = Mockito.mock(StatsStore.class);

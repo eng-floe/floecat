@@ -206,6 +206,43 @@ final class PlannerStatsResultMaterializer {
         .build();
   }
 
+  /**
+   * True when {@code record} can serve every stat {@code need} requests: the scalar header when
+   * {@code STAT_ROLE_SCALAR} is requested, and a payload matching each requested sketch role and
+   * type.
+   *
+   * <p>This is the planner-aware completeness rule behind generation fallback: a record that merely
+   * EXISTS in the pinned generation is not a complete hit — a scalar-only record must not satisfy a
+   * quantile need, or resolution would stop at a record the planner can only consume downgraded.
+   * Lives next to {@link #findMatchingSketch} so resolution and serving judge capability with the
+   * same rule and can never disagree.
+   *
+   * <p>Presence-only: a sketch that exists but exceeds the request's byte budget still satisfies —
+   * budget omission is a serving-policy decision, not a data gap another generation could fill.
+   */
+  static boolean satisfiesNeed(TargetStatsRecord record, PlannerStatsTargetNeed need) {
+    for (PlannerStatsStatRequest requested : need.requestedStats()) {
+      if (requested.omittedByPolicy()) {
+        // Served as OMITTED_BY_BUDGET regardless of what the record carries.
+        continue;
+      }
+      if (requested.role() == StatRole.STAT_ROLE_SCALAR) {
+        if (!record.hasScalar()) {
+          return false;
+        }
+        continue;
+      }
+      if (!requested.requestsSketchPayload()) {
+        // Unsupported role: served as ERROR; no generation can improve it.
+        continue;
+      }
+      if (findMatchingSketch(record, requested) == null) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   private static SketchPayload findMatchingSketch(
       TargetStatsRecord record, PlannerStatsStatRequest request) {
     if (!record.hasScalar()) {

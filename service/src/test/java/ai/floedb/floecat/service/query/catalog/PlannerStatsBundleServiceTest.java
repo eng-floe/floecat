@@ -29,6 +29,8 @@ import ai.floedb.floecat.catalog.rpc.SketchPayload;
 import ai.floedb.floecat.catalog.rpc.SketchRole;
 import ai.floedb.floecat.catalog.rpc.StatsCompleteness;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
 import ai.floedb.floecat.query.rpc.RequestedStat;
 import ai.floedb.floecat.query.rpc.ReturnedStat;
@@ -88,6 +90,64 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     assertEquals(1L, end.getRequestedTargets());
     assertEquals(1L, end.getReturnedTargets());
     assertEquals(0L, end.getNotFoundTargets());
+  }
+
+  @Test
+  void legacyUnspecifiedKindRequestDefaultsToTableIdentity() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createService(
+            repository, store, /* chunkSize= */ 10, /* maxTables= */ 10, /* maxTargets= */ 10);
+    QueryContext ctx = queryContextWithPin("query-legacy-kind", 100L);
+    store.seed(ctx);
+
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 100L, 1L, sampleStats(TABLE, 100L, 1L), null));
+
+    ResourceId legacyTableId = TABLE.toBuilder().setKind(ResourceKind.RK_UNSPECIFIED).build();
+    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), legacyTableId, List.of(1L));
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+
+    List<TargetStatsResult> results = flatten(chunks);
+    assertEquals(1, results.size());
+    assertEquals(StatsResultStatus.STATS_RESULT_HIT_COMPLETE, results.get(0).getStatus());
+    assertEquals(ResourceKind.RK_TABLE, results.get(0).getTableId().getKind());
+
+    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(1L, end.getReturnedTargets());
+    assertEquals(0L, end.getErrorTargets());
+  }
+
+  @Test
+  void explicitViewKindDoesNotMatchTablePin() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createService(
+            repository, store, /* chunkSize= */ 10, /* maxTables= */ 10, /* maxTargets= */ 10);
+    QueryContext ctx = queryContextWithPin("query-view-kind", 100L);
+    store.seed(ctx);
+
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 100L, 1L, sampleStats(TABLE, 100L, 1L), null));
+
+    ResourceId viewId = TABLE.toBuilder().setKind(ResourceKind.RK_VIEW).build();
+    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), viewId, List.of(1L));
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+
+    List<TargetStatsResult> results = flatten(chunks);
+    assertEquals(1, results.size());
+    assertEquals(StatsResultStatus.STATS_RESULT_ERROR, results.get(0).getStatus());
+    assertEquals("planner_stats.pin.missing", results.get(0).getFailure().getCode());
+
+    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(0L, end.getReturnedTargets());
+    assertEquals(1L, end.getErrorTargets());
   }
 
   @Test
@@ -1086,29 +1146,19 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
 
     long snapshotId = 482L;
     // Pinned generation: col1 = 10.
-    repository.replaceAllStatsForSnapshot(
-        TABLE,
+    publishColumn(
+        repository,
         snapshotId,
-        List.of(
-            TargetStatsRecords.columnRecord(
-                TABLE,
-                snapshotId,
-                1L,
-                ScalarStats.newBuilder().setDisplayName("col1").setRowCount(10L).build(),
-                null)));
+        1L,
+        ScalarStats.newBuilder().setDisplayName("col1").setRowCount(10L).build());
     String pinnedGeneration = repository.activeStatsGeneration(TABLE, snapshotId).orElseThrow();
 
     // A newer generation for the same snapshot: col1 = 20.
-    repository.replaceAllStatsForSnapshot(
-        TABLE,
+    publishColumn(
+        repository,
         snapshotId,
-        List.of(
-            TargetStatsRecords.columnRecord(
-                TABLE,
-                snapshotId,
-                1L,
-                ScalarStats.newBuilder().setDisplayName("col1").setRowCount(20L).build(),
-                null)));
+        1L,
+        ScalarStats.newBuilder().setDisplayName("col1").setRowCount(20L).build());
 
     QueryContext ctx =
         queryContextWithStatsGenerationRef(
@@ -1142,29 +1192,19 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
 
     long snapshotId = 482L;
     // Pinned generation carries only col2 — it never had col1.
-    repository.replaceAllStatsForSnapshot(
-        TABLE,
+    publishColumn(
+        repository,
         snapshotId,
-        List.of(
-            TargetStatsRecords.columnRecord(
-                TABLE,
-                snapshotId,
-                2L,
-                ScalarStats.newBuilder().setDisplayName("col2").setRowCount(99L).build(),
-                null)));
+        2L,
+        ScalarStats.newBuilder().setDisplayName("col2").setRowCount(99L).build());
     String pinnedGeneration = repository.activeStatsGeneration(TABLE, snapshotId).orElseThrow();
 
     // The newest generation carries col1 = 20.
-    repository.replaceAllStatsForSnapshot(
-        TABLE,
+    publishColumn(
+        repository,
         snapshotId,
-        List.of(
-            TargetStatsRecords.columnRecord(
-                TABLE,
-                snapshotId,
-                1L,
-                ScalarStats.newBuilder().setDisplayName("col1").setRowCount(20L).build(),
-                null)));
+        1L,
+        ScalarStats.newBuilder().setDisplayName("col1").setRowCount(20L).build());
 
     QueryContext ctx =
         queryContextWithStatsGenerationRef(
@@ -1183,6 +1223,72 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
     assertEquals(1L, end.getReturnedTargets());
     assertEquals(0L, end.getNotFoundTargets());
+  }
+
+  @Test
+  void realPlannerLookupFillsFromNewestWhenPinnedRecordLacksRequestedSketch() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createServiceWithRealLookup(
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 5, /* maxTargets= */ 10);
+
+    long snapshotId = 483L;
+    // Pinned generation carries col1 scalar-only: it EXISTS, but cannot serve a sketch need.
+    publishColumn(
+        repository,
+        snapshotId,
+        1L,
+        ScalarStats.newBuilder().setDisplayName("col1").setRowCount(10L).build());
+    String pinnedGeneration = repository.activeStatsGeneration(TABLE, snapshotId).orElseThrow();
+
+    // The newest generation of the SAME snapshot was enriched with the theta sketch.
+    SketchPayload sketch =
+        SketchPayload.newBuilder()
+            .setRole(SketchRole.SKETCH_ROLE_NDV)
+            .setSketchType(THETA_SKETCH_TYPE)
+            .setData(ByteString.copyFromUtf8("sketch-bytes"))
+            .setCompleteness(StatsCompleteness.SC_COMPLETE)
+            .build();
+    publishColumn(
+        repository,
+        snapshotId,
+        1L,
+        ScalarStats.newBuilder()
+            .setDisplayName("col1")
+            .setRowCount(10L)
+            .setNdv(Ndv.newBuilder().setExact(10L).addSketches(sketch))
+            .addSketches(sketch)
+            .build());
+
+    QueryContext ctx =
+        queryContextWithStatsGenerationRef(
+            "real-orchestrator-completeness-fill", snapshotId, pinnedGeneration);
+    store.seed(ctx);
+
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTables(
+                ai.floedb.floecat.query.rpc.TableStatsRequest.newBuilder()
+                    .setTableId(TABLE)
+                    .addTargets(sketchNeed(1L, 1)))
+            .build();
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+
+    // The pinned record exists but is scalar-only: "exists" alone must not be a hit for a sketch
+    // need. Resolution falls to the newest generation and serves the sketch — complete, not
+    // downgraded.
+    List<TargetStatsResult> results = flatten(chunks);
+    assertEquals(1, results.size(), "one column must produce a result");
+    assertEquals(StatsResultStatus.STATS_RESULT_HIT_COMPLETE, results.get(0).getStatus());
+    assertEquals(1, results.get(0).getStats().getScalar().getSketchesCount());
+    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(1L, end.getReturnedTargets());
+    assertEquals(0L, end.getNotFoundTargets());
+    assertEquals(0L, end.getPartialTargets());
   }
 
   @Test
@@ -1242,6 +1348,15 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     assertEquals(0L, end.getReturnedTargets());
     assertEquals(0L, end.getStaleTargets());
     assertEquals(1L, end.getNotFoundTargets());
+  }
+
+  /** Publishes one column record as a full replacement (a new live generation) of the snapshot. */
+  private static void publishColumn(
+      StatsRepository repository, long snapshotId, long columnId, ScalarStats scalar) {
+    repository.replaceAllStatsForSnapshot(
+        TABLE,
+        snapshotId,
+        List.of(TargetStatsRecords.columnRecord(TABLE, snapshotId, columnId, scalar, null)));
   }
 
   private static TargetStatsNeed sketchNeed(long columnId, int priority) {

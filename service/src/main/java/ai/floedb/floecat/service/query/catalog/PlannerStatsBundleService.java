@@ -21,6 +21,7 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.BundleFailure;
 import ai.floedb.floecat.query.rpc.BundleResultStatus;
@@ -337,9 +338,22 @@ public class PlannerStatsBundleService {
                 .build());
       }
 
+      /* Planner-aware completeness: a pinned record must carry every requested payload to count
+       * as a hit, or resolution falls through to the newest generation of the same snapshot.
+       * Passed as plain predicates so the orchestrator stays independent of the request model;
+       * the rule itself lives with the serving code (PlannerStatsResultMaterializer) so the two
+       * can never disagree on what "complete" means. */
+      java.util.Map<String, java.util.function.Predicate<TargetStatsRecord>> completeness =
+          new java.util.HashMap<>(targets.size());
+      for (PlannerStatsTargetNeed target : targets) {
+        completeness.put(
+            target.storageId(),
+            record -> PlannerStatsResultMaterializer.satisfiesNeed(record, target));
+      }
+
       java.util.Map<String, StatsResolutionResult> resolved =
           statsOrchestrator.resolvePlannerBatchInGeneration(
-              requests, statsGenerationRef, policy.staleOk(), deadlineNanos);
+              requests, statsGenerationRef, completeness, policy.staleOk(), deadlineNanos);
 
       Map<String, PlannerTargetStatsLookupResult> byTarget = new LinkedHashMap<>(targets.size());
       for (PlannerStatsTargetNeed target : targets) {
