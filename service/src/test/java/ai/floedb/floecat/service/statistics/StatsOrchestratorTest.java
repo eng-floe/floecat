@@ -1196,6 +1196,67 @@ class StatsOrchestratorTest {
   }
 
   @Test
+  void resolvePlannerBatch_unreadablePinnedGenerationFallsThroughToNewest() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+    // The frozen manifest is unreadable: every pinned-generation read throws (batch and the
+    // per-target isolation retry alike), so the primary read resolves to FAILED.
+    RuntimeException manifestGone =
+        new RuntimeException("frozen stats generation manifest missing for snapshot 42");
+    when(store.getTargetStatsBatchInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
+        .thenThrow(manifestGone);
+    when(store.getTargetStatsInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", req.target()))
+        .thenThrow(manifestGone);
+    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 10L))));
+
+    Map<String, StatsResolutionResult> result =
+        o.resolvePlannerBatchInGeneration(
+            List.of(req), Optional.of("gen-pinned"), false, Long.MAX_VALUE);
+
+    // A pinned read failure must not zero the batch: the newest generation is an independent
+    // path and still serves the target.
+    assertThat(result.get(storageId).hasStats()).isTrue();
+    assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(10L);
+  }
+
+  @Test
+  void resolveInGeneration_unreadablePinnedGenerationFallsThroughToNewest() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator o =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    when(store.getTargetStatsInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", req.target()))
+        .thenThrow(
+            new RuntimeException("frozen stats generation manifest missing for snapshot 42"));
+    when(store.getTargetStats(req.tableId(), req.snapshotId(), req.target()))
+        .thenReturn(Optional.of(columnRecord(req, 10L)));
+
+    StatsResolutionResult r = o.resolveInGeneration(req, Optional.of("gen-pinned"));
+
+    // Same contract as the batch path: a pinned read failure is a miss, not a lookup failure —
+    // the newest generation still serves the target.
+    assertThat(r.hasStats()).isTrue();
+    assertThat(r.stats().get().getTable().getRowCount()).isEqualTo(10L);
+  }
+
+  @Test
   void resolvePlannerBatch_countsTheLadderRungThatServedEachTarget() {
     StatsStore store = Mockito.mock(StatsStore.class);
     ai.floedb.floecat.telemetry.Observability obs =

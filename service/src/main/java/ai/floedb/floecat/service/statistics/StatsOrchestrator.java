@@ -299,11 +299,26 @@ public class StatsOrchestrator {
     String pinnedGeneration = pinnedGenerationToken.filter(token -> !token.isBlank()).orElse("");
 
     // Primary: the pinned generation (query-consistent), or live/newest when the pin froze none.
-    Optional<TargetStatsRecord> primary =
-        pinnedGeneration.isBlank()
-            ? readStore(request)
-            : statsStore.getTargetStatsInGeneration(
+    Optional<TargetStatsRecord> primary;
+    if (pinnedGeneration.isBlank()) {
+      primary = readStore(request);
+    } else {
+      try {
+        primary =
+            statsStore.getTargetStatsInGeneration(
                 request.tableId(), request.snapshotId(), pinnedGeneration, request.target());
+      } catch (RuntimeException e) {
+        // A pinned-generation read failure (e.g. an unreadable frozen manifest) must not fail the
+        // lookup outright: the newest generation of the same snapshot is an independent read path
+        // with no frozen manifest involved — treat the pin as a miss and let the gap-fill below
+        // serve, matching the batch path's fallback.
+        LOG.debugf(
+            e,
+            "pinned-generation read failed for %s; falling through to newest",
+            storageId(request));
+        primary = Optional.empty();
+      }
+    }
     if (primary.isPresent()) {
       observeSyncOutcome(StatsSyncOutcome.HIT, startNanos);
       return StatsResolutionResult.hit(primary.get());
@@ -554,8 +569,16 @@ public class StatsOrchestrator {
           misses.add(req);
         }
       } else if (hit != null && hit.outcome() == StatsSyncOutcome.FAILED) {
-        diagnostics.record(PlannerLookupOutcome.FAILED);
-        out.put(key, hit);
+        if (pinnedGeneration.isBlank()) {
+          diagnostics.record(PlannerLookupOutcome.FAILED);
+          out.put(key, hit);
+        } else {
+          // A pinned-generation read failure (e.g. an unreadable frozen manifest) must not zero
+          // planning quality for the batch: the newest generation of the same snapshot is an
+          // independent read path with no frozen manifest involved, so fall through to the
+          // gap-fill. If that fails too, ITS failure is the terminal one.
+          misses.add(req);
+        }
       } else {
         misses.add(req);
       }
