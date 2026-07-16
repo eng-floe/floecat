@@ -29,6 +29,7 @@ import ai.floedb.floecat.catalog.rpc.SketchPayload;
 import ai.floedb.floecat.catalog.rpc.SketchRole;
 import ai.floedb.floecat.catalog.rpc.StatsCompleteness;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
@@ -1500,5 +1501,114 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     assertEquals(1, results.size());
     // staleOk=true with no stale stats → NOT_FOUND (not an error)
     assertEquals(StatsResultStatus.STATS_RESULT_NOT_FOUND, results.get(0).getStatus());
+  }
+
+  /**
+   * End-to-end pipeline guard: file records with producer-owned sketches, through BOTH rollup
+   * stages exactly as a full rescan runs them, published as a generation, pinned, and served back
+   * to a planner-shaped request. Every recent stats regression (dropped quantile/tuple payloads,
+   * generation misses) crossed one of these seams while each seam's own unit tests stayed green —
+   * this test fails if any seam loses the payload again.
+   */
+  @Test
+  void fullRescanPipelineServesProducerSketchesEndToEnd() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createServiceWithRealLookup(
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 5, /* maxTargets= */ 10);
+
+    long snapshotId = 484L;
+    ai.floedb.floecat.catalog.rpc.SketchPayload tdigest =
+        ai.floedb.floecat.catalog.rpc.SketchPayload.newBuilder()
+            .setRole(SketchRole.SKETCH_ROLE_QUANTILES)
+            .setSketchType("apache-datasketches-tdigest-v1")
+            .setData(ByteString.copyFromUtf8("pipeline-quantile-bytes"))
+            .setCompleteness(StatsCompleteness.SC_COMPLETE)
+            .build();
+    ScalarStats fileScalar =
+        ScalarStats.newBuilder()
+            .setDisplayName("l_quantity")
+            .setLogicalType("BIGINT")
+            .setRowCount(120L)
+            .setNullCount(0L)
+            .setAvgWidthBytes(8)
+            .addSketches(tdigest)
+            .build();
+    TargetStatsRecord fileRecord =
+        TargetStatsRecord.newBuilder()
+            .setTableId(TABLE)
+            .setSnapshotId(snapshotId)
+            .setFile(
+                ai.floedb.floecat.catalog.rpc.FileTargetStats.newBuilder()
+                    .setTableId(TABLE)
+                    .setSnapshotId(snapshotId)
+                    .setFilePath("s3://bucket/pipeline/file-1.parquet")
+                    .setRowCount(120L)
+                    .addColumns(
+                        ai.floedb.floecat.catalog.rpc.FileColumnStats.newBuilder()
+                            .setColumnId(5L)
+                            .setScalar(fileScalar)))
+            .build();
+
+    // The full-rescan sequence: file records → per-group partials → merged snapshot records →
+    // published generation.
+    var kinds =
+        java.util.Set.of(
+            ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.TABLE,
+            ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.COLUMN);
+    List<TargetStatsRecord> partials =
+        ai.floedb.floecat.reconciler.impl.FileGroupTargetStatsRollup
+            .partialAggregatesFromFileRecords(TABLE, snapshotId, kinds, List.of(fileRecord));
+    List<TargetStatsRecord> finals =
+        ai.floedb.floecat.reconciler.impl.FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(
+            TABLE, snapshotId, kinds, partials);
+    repository.replaceAllStatsForSnapshot(TABLE, snapshotId, finals);
+
+    // Serve through the pinned-generation path a real query uses.
+    String pinnedGeneration = repository.activeStatsGeneration(TABLE, snapshotId).orElseThrow();
+    QueryContext ctx =
+        queryContextWithStatsGenerationRef("query-pipeline-e2e", snapshotId, pinnedGeneration);
+    store.seed(ctx);
+
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTables(
+                ai.floedb.floecat.query.rpc.TableStatsRequest.newBuilder()
+                    .setTableId(TABLE)
+                    .addTargets(
+                        TargetStatsNeed.newBuilder()
+                            .setTarget(
+                                StatsTarget.newBuilder()
+                                    .setColumn(ColumnStatsTarget.newBuilder().setColumnId(5L)))
+                            .setPriority(1)
+                            .addRequestedStats(
+                                RequestedStat.newBuilder()
+                                    .setRole(StatRole.STAT_ROLE_SCALAR)
+                                    .setPriority(1))
+                            .addRequestedStats(
+                                RequestedStat.newBuilder()
+                                    .setRole(StatRole.STAT_ROLE_QUANTILES)
+                                    .setSketchType("apache-datasketches-tdigest-v1")
+                                    .setPriority(2))))
+            .build();
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+
+    List<TargetStatsResult> results = flatten(chunks);
+    assertEquals(1, results.size(), "one column must produce a result");
+    assertEquals(StatsResultStatus.STATS_RESULT_HIT_COMPLETE, results.get(0).getStatus());
+    ScalarStats served = results.get(0).getStats().getScalar();
+    assertEquals(120L, served.getRowCount());
+    assertEquals(1, served.getSketchesCount());
+    // The payload must arrive byte-identical: never merged, never re-encoded, never dropped.
+    assertEquals("pipeline-quantile-bytes", served.getSketches(0).getData().toStringUtf8());
+    assertEquals(SketchRole.SKETCH_ROLE_QUANTILES, served.getSketches(0).getRole());
+    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(1L, end.getReturnedTargets());
+    assertEquals(0L, end.getNotFoundTargets());
+    assertEquals(0L, end.getPartialTargets());
   }
 }
