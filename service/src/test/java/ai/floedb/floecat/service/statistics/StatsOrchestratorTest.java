@@ -1196,6 +1196,56 @@ class StatsOrchestratorTest {
   }
 
   @Test
+  void resolvePlannerBatch_countsTheLadderRungThatServedEachTarget() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    ai.floedb.floecat.telemetry.Observability obs =
+        Mockito.mock(ai.floedb.floecat.telemetry.Observability.class);
+    @SuppressWarnings("unchecked")
+    jakarta.enterprise.inject.Instance<ai.floedb.floecat.telemetry.Observability> obsInstance =
+        Mockito.mock(jakarta.enterprise.inject.Instance.class);
+    when(obsInstance.isUnsatisfied()).thenReturn(false);
+    when(obsInstance.get()).thenReturn(obs);
+    StatsOrchestrator o =
+        new StatsOrchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            connectorRepositoryWith(),
+            Mockito.mock(StatsSyncCapture.class),
+            true,
+            obsInstance);
+
+    StatsCaptureRequest req = columnRequest(42L, 7L);
+    String storageId = StatsTargetIdentity.storageId(req.target());
+    // Pinned generation is partial; the newest generation satisfies → NEWEST_FILL rung.
+    when(store.getTargetStatsBatchInGeneration(
+            req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 1L))));
+    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
+        .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 10L))));
+
+    o.resolvePlannerBatchInGeneration(
+        List.of(req),
+        Optional.of("gen-pinned"),
+        completeAtRowCount(storageId, 10L),
+        false,
+        Long.MAX_VALUE);
+
+    // Exactly the rung that served the target is counted, tagged result=newest_fill.
+    ArgumentCaptor<ai.floedb.floecat.telemetry.Tag[]> tags =
+        ArgumentCaptor.forClass(ai.floedb.floecat.telemetry.Tag[].class);
+    verify(obs)
+        .counter(
+            Mockito.eq(
+                ai.floedb.floecat.service.telemetry.ServiceMetrics.Stats
+                    .PLANNER_LOOKUP_OUTCOMES_TOTAL),
+            Mockito.eq(1.0),
+            tags.capture());
+    assertThat(java.util.Arrays.stream(tags.getValue()))
+        .anyMatch(tag -> tag.key().equals("result") && tag.value().equals("newest_fill"));
+  }
+
+  @Test
   void invalidateStatsCacheForPersistedRecordsUsesExplicitTableSnapshot() {
     StatsStore store = Mockito.mock(StatsStore.class);
     StatsOrchestrator o =

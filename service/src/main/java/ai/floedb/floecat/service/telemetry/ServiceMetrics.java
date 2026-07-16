@@ -283,6 +283,19 @@ public final class ServiceMetrics {
     public static final MetricId SYNC_LATENCY =
         new MetricId(
             "floecat.service.stats.sync.latency", MetricType.TIMER, "ms", CONTRACT, "service");
+
+    /**
+     * Per-target planner lookup outcomes, tagged {@code result=<outcome>} with the ladder rung that
+     * served (or failed) each target: cache/pinned/newest-fill/partial/stale/captured/
+     * pending/failed. Answers "which rung is serving planner stats" without log archaeology.
+     */
+    public static final MetricId PLANNER_LOOKUP_OUTCOMES_TOTAL =
+        new MetricId(
+            "floecat.service.stats.planner_lookup_outcomes.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
   }
 
   /** CAS blob-GC backlog health: the signals that answer "is GC falling behind?". */

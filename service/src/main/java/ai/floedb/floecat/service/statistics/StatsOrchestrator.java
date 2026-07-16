@@ -475,6 +475,7 @@ public class StatsOrchestrator {
     String pinnedGeneration = pinnedGenerationToken.filter(token -> !token.isBlank()).orElse("");
     java.util.function.Function<String, java.util.function.Predicate<TargetStatsRecord>>
         completenessFor = key -> completenessByStorageId.getOrDefault(key, record -> true);
+    PlannerLookupDiagnostics diagnostics = new PlannerLookupDiagnostics();
     // Primary keyspace/reader: the pinned generation when the pin froze one, else the live/newest
     // generation (empty token). A new snapshotId is always a cache miss, so stats from a different
     // snapshot are never returned for the current query.
@@ -504,6 +505,7 @@ public class StatsOrchestrator {
       TargetStatsRecord cached = statsCache.getIfPresent(cacheKeyFor(req, primaryToken));
       if (cached != null && completenessFor.apply(key).test(cached)) {
         observeSyncOutcome(StatsSyncOutcome.HIT);
+        diagnostics.record(PlannerLookupOutcome.CACHE_HIT);
         out.put(key, StatsResolutionResult.hit(cached));
       } else {
         cacheMisses.add(req);
@@ -511,6 +513,7 @@ public class StatsOrchestrator {
     }
 
     if (cacheMisses.isEmpty()) {
+      diagnostics.emit(first.tableId(), first.snapshotId(), pinnedGeneration, requests.size());
       return java.util.Collections.unmodifiableMap(out);
     }
 
@@ -534,18 +537,24 @@ public class StatsOrchestrator {
       StatsResolutionResult hit = primaryHits.get(key);
       if (hit != null && hit.hasStats()) {
         TargetStatsRecord record = hit.stats().get();
-        if (completenessFor.apply(key).test(record) || pinnedGeneration.isBlank()) {
+        boolean satisfies = completenessFor.apply(key).test(record);
+        if (satisfies || pinnedGeneration.isBlank()) {
           // Complete — or partial with no pin, where the primary IS the newest generation and no
           // richer same-snapshot source exists: serve as-is, the planner degrades per stat.
-          // Write-through under the primary (pinned, or live when unpinned) keyspace.
-          statsCache.put(cacheKeyFor(req, primaryToken), record);
-          observeSyncOutcome(StatsSyncOutcome.HIT);
-          out.put(key, StatsResolutionResult.hit(record));
+          servePlannerHit(
+              out,
+              diagnostics,
+              req,
+              key,
+              record,
+              primaryToken,
+              satisfies ? PlannerLookupOutcome.PRIMARY_HIT : PlannerLookupOutcome.PARTIAL);
         } else {
           partialPinned.put(key, record);
           misses.add(req);
         }
       } else if (hit != null && hit.outcome() == StatsSyncOutcome.FAILED) {
+        diagnostics.record(PlannerLookupOutcome.FAILED);
         out.put(key, hit);
       } else {
         misses.add(req);
@@ -572,21 +581,19 @@ public class StatsOrchestrator {
         boolean newestSatisfies =
             hit != null && hit.hasStats() && completenessFor.apply(key).test(hit.stats().get());
         if (newestSatisfies) {
-          statsCache.put(cacheKeyFor(req, ""), hit.stats().get());
-          observeSyncOutcome(StatsSyncOutcome.HIT);
-          out.put(key, StatsResolutionResult.hit(hit.stats().get()));
+          servePlannerHit(
+              out, diagnostics, req, key, hit.stats().get(), "", PlannerLookupOutcome.NEWEST_FILL);
         } else if (partial != null) {
           // Newest is no more complete than the pin: between equally incomplete records,
           // consistency prefers the pinned generation the scan reads.
-          statsCache.put(cacheKeyFor(req, primaryToken), partial);
-          observeSyncOutcome(StatsSyncOutcome.HIT);
-          out.put(key, StatsResolutionResult.hit(partial));
+          servePlannerHit(
+              out, diagnostics, req, key, partial, primaryToken, PlannerLookupOutcome.PARTIAL);
         } else if (hit != null && hit.hasStats()) {
           // Pin has nothing at all; a partial newest record beats stale or capture.
-          statsCache.put(cacheKeyFor(req, ""), hit.stats().get());
-          observeSyncOutcome(StatsSyncOutcome.HIT);
-          out.put(key, StatsResolutionResult.hit(hit.stats().get()));
+          servePlannerHit(
+              out, diagnostics, req, key, hit.stats().get(), "", PlannerLookupOutcome.PARTIAL);
         } else if (hit != null && hit.outcome() == StatsSyncOutcome.FAILED) {
+          diagnostics.record(PlannerLookupOutcome.FAILED);
           out.put(key, hit);
         } else {
           afterFill.add(req);
@@ -613,8 +620,10 @@ public class StatsOrchestrator {
         String key = storageId(req);
         StatsResolutionResult stale = staleBatch.get(key);
         if (stale != null && stale.hasStats()) {
+          diagnostics.record(PlannerLookupOutcome.STALE_HIT);
           out.put(key, stale);
         } else if (stale != null && stale.outcome() == StatsSyncOutcome.FAILED) {
+          diagnostics.record(PlannerLookupOutcome.FAILED);
           out.put(key, stale);
         } else {
           stillMissing.add(req);
@@ -630,12 +639,14 @@ public class StatsOrchestrator {
       String key = storageId(req);
       if (!syncEnabled || req.executionMode() != StatsExecutionMode.SYNC) {
         asyncQueue.add(req);
+        diagnostics.record(PlannerLookupOutcome.CAPTURE_PENDING);
         out.put(key, StatsResolutionResult.skipped("async_mode"));
         continue;
       }
       long remainingNanos = deadlineNanos - System.nanoTime();
       if (remainingNanos <= 0) {
         asyncQueue.add(req);
+        diagnostics.record(PlannerLookupOutcome.CAPTURE_PENDING);
         out.put(key, StatsResolutionResult.timeout("latency_budget_exhausted"));
         continue;
       }
@@ -654,9 +665,11 @@ public class StatsOrchestrator {
       if (syncOutcome == StatsSyncOutcome.CAPTURED) {
         Optional<TargetStatsRecord> afterCapture = readStore(withBudget);
         if (afterCapture.isPresent()) {
+          diagnostics.record(PlannerLookupOutcome.CAPTURED);
           out.put(key, StatsResolutionResult.captured(afterCapture.get()));
         } else {
           asyncQueue.add(req);
+          diagnostics.record(PlannerLookupOutcome.CAPTURE_PENDING);
           out.put(
               key,
               StatsResolutionResult.partial(
@@ -664,6 +677,10 @@ public class StatsOrchestrator {
         }
       } else {
         asyncQueue.add(req);
+        diagnostics.record(
+            syncOutcome == StatsSyncOutcome.TIMEOUT
+                ? PlannerLookupOutcome.CAPTURE_PENDING
+                : PlannerLookupOutcome.FAILED);
         out.put(
             key,
             syncOutcome == StatsSyncOutcome.TIMEOUT
@@ -677,6 +694,7 @@ public class StatsOrchestrator {
       enqueueAsyncCaptureBatch(asyncQueue);
     }
 
+    diagnostics.emit(first.tableId(), first.snapshotId(), pinnedGeneration, requests.size());
     return java.util.Collections.unmodifiableMap(out);
   }
 
@@ -1139,6 +1157,84 @@ public class StatsOrchestrator {
         1,
         Tag.of(TagKey.RESULT, outcome.name()),
         Tag.of(TagKey.SCOPE, "orchestrator"));
+  }
+
+  /**
+   * The ladder rung that resolved (or failed) one planner target — the diagnostics vocabulary for
+   * {@link #resolvePlannerBatchInGeneration}. Emitted per target as a {@code result}-tagged count
+   * of {@code PLANNER_LOOKUP_OUTCOMES_TOTAL} and summarized in one DEBUG line per table batch, so
+   * "which rung served this query's stats" is a metric query or a log grep, not archaeology.
+   */
+  enum PlannerLookupOutcome {
+    /** Served from the cache keyspace of the primary generation. */
+    CACHE_HIT,
+    /** The primary generation (pinned, or live when unpinned) satisfied the need. */
+    PRIMARY_HIT,
+    /** The pinned generation lacked the target or capability; the newest generation satisfied. */
+    NEWEST_FILL,
+    /** Served a record that does not satisfy the full need (planner degrades per stat). */
+    PARTIAL,
+    /** No record at the pinned snapshot; served from an earlier snapshot. */
+    STALE_HIT,
+    /** Missing everywhere; a bounded sync capture produced the record. */
+    CAPTURED,
+    /** Missing everywhere; capture is pending (async mode, budget exhausted, or in flight). */
+    CAPTURE_PENDING,
+    /** A rung failed outright (store error surfaced as FAILED). */
+    FAILED
+  }
+
+  /**
+   * Per-batch outcome accumulator for the planner ladder: counts each target's outcome, then emits
+   * them once — as {@code result}-tagged counter increments and a single DEBUG summary line. One
+   * instance per {@link #resolvePlannerBatchInGeneration} call; never shared across threads.
+   */
+  private final class PlannerLookupDiagnostics {
+    private final java.util.EnumMap<PlannerLookupOutcome, Integer> counts =
+        new java.util.EnumMap<>(PlannerLookupOutcome.class);
+
+    void record(PlannerLookupOutcome outcome) {
+      counts.merge(outcome, 1, Integer::sum);
+    }
+
+    void emit(ResourceId tableId, long snapshotId, String pinnedGeneration, int requested) {
+      for (Map.Entry<PlannerLookupOutcome, Integer> entry : counts.entrySet()) {
+        incrementCounter(
+            ServiceMetrics.Stats.PLANNER_LOOKUP_OUTCOMES_TOTAL,
+            entry.getValue(),
+            Tag.of(TagKey.RESULT, entry.getKey().name().toLowerCase(java.util.Locale.ROOT)));
+      }
+      // The greppable per-batch summary: which generation the batch read and how each target
+      // resolved. "generation=live" means the pin froze none and the live generation was primary.
+      LOG.debugf(
+          "planner_stats lookup table=%s snapshot=%d generation=%s requested=%d outcomes=%s",
+          tableId.getId(),
+          snapshotId,
+          pinnedGeneration.isBlank() ? "live" : pinnedGeneration,
+          requested,
+          counts);
+    }
+  }
+
+  /**
+   * Serve one resolved planner target: write the record through to the cache keyspace it was served
+   * from ({@code cacheToken} — the pinned generation's token, or "" for the live/newest
+   * generation), count the ladder rung that produced it, and emit the hit. The single definition of
+   * "serve" for every rung of {@link #resolvePlannerBatchInGeneration}, so caching, telemetry, and
+   * result emission can never drift apart between rungs.
+   */
+  private void servePlannerHit(
+      java.util.Map<String, StatsResolutionResult> out,
+      PlannerLookupDiagnostics diagnostics,
+      StatsCaptureRequest req,
+      String key,
+      TargetStatsRecord record,
+      String cacheToken,
+      PlannerLookupOutcome outcome) {
+    statsCache.put(cacheKeyFor(req, cacheToken), record);
+    observeSyncOutcome(StatsSyncOutcome.HIT);
+    diagnostics.record(outcome);
+    out.put(key, StatsResolutionResult.hit(record));
   }
 
   private void incrementCounter(MetricId metric, double amount, Tag... tags) {
