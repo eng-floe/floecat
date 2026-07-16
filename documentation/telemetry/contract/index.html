@@ -2219,6 +2219,60 @@
 <td>component, operation</td>
 </tr>
 <tr>
+<td>floecat.service.gc.reconcile_jobs.account_page.index</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Current reconcile job GC index within the cached account page.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.gc.reconcile_jobs.account_page.size</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Current reconcile job GC cached account page size.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.gc.reconcile_jobs.account_tokens.active</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Accounts with active reconcile job GC continuation tokens.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.gc.reconcile_jobs.accounts.last_tick</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Reconcile job GC accounts processed in the last completed tick.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.gc.reconcile_jobs.deleted.last_tick</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Reconcile job GC pointer/blob deletes completed in the last completed tick.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.gc.reconcile_jobs.quarantined.last_tick</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Unreadable reconcile job GC payloads retained in the last completed tick.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
 <td>floecat.service.reconcile.cancel_job.total</td>
 <td>COUNTER</td>
 <td></td>
@@ -2349,7 +2403,7 @@
 <td>COUNTER</td>
 <td></td>
 <td>v1</td>
-<td>Ready-queue candidates skipped by durable reconcile leaseNext, grouped by reason. Lease race reasons distinguish active running races from stale ready entries that are missing, terminal, not queued, pointer-mismatched, or otherwise changed after the lease attempt. Lease conflict reasons expose the write-side reason returned by the canonical lease attempt, including owner-claim conflict scope and job kind.</td>
+<td>Ready-queue candidates skipped by durable reconcile leaseNext, grouped by reason.</td>
 <td>component, operation, reason</td>
 <td>component, operation, reason</td>
 </tr>

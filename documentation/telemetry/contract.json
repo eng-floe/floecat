@@ -480,6 +480,66 @@
     "allowedTags": ["component", "operation"]
   },
   {
+    "name": "floecat.service.gc.reconcile_jobs.account_page.index",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Current reconcile job GC index within the cached account page.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.gc.reconcile_jobs.account_page.size",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Current reconcile job GC cached account page size.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.gc.reconcile_jobs.account_tokens.active",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Accounts with active reconcile job GC continuation tokens.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.gc.reconcile_jobs.accounts.last_tick",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Reconcile job GC accounts processed in the last completed tick.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.gc.reconcile_jobs.deleted.last_tick",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Reconcile job GC pointer/blob deletes completed in the last completed tick.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.gc.reconcile_jobs.quarantined.last_tick",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Unreadable reconcile job GC payloads retained in the last completed tick.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
     "name": "floecat.service.reconcile.cancel_job.total",
     "type": "COUNTER",
     "unit": "",
@@ -625,7 +685,7 @@
     "unit": "",
     "since": "v1",
     "origin": "service",
-    "description": "Ready-queue candidates skipped by durable reconcile leaseNext, grouped by reason. Lease race reasons distinguish active running races from stale ready entries that are missing, terminal, not queued, pointer-mismatched, or otherwise changed after the lease attempt. Lease conflict reasons expose the write-side reason returned by the canonical lease attempt, including owner-claim conflict scope and job kind.",
+    "description": "Ready-queue candidates skipped by durable reconcile leaseNext, grouped by reason.",
     "requiredTags": ["component", "operation", "reason"],
     "allowedTags": ["component", "operation", "reason"]
   },
