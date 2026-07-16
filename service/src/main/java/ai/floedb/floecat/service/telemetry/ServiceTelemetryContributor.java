@@ -62,6 +62,7 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
     Set<String> gcRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> gcAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> statsRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    Set<String> plannerStatsLookupTags = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
     Set<String> statsAllowed =
         Set.of(
             TagKey.COMPONENT,
@@ -391,6 +392,12 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         statsAllowed,
         "Sync-first resolution outcomes by result (HIT, CAPTURED, PARTIAL, TIMEOUT, FAILED,"
             + " SKIPPED).");
+    add(
+        defs,
+        ServiceMetrics.Stats.PLANNER_LOOKUP_OUTCOMES_TOTAL,
+        plannerStatsLookupTags,
+        plannerStatsLookupTags,
+        "Planner stats lookup outcomes by the ladder rung that served or failed each target.");
     add(
         defs,
         ServiceMetrics.Stats.SYNC_LATENCY,
