@@ -22,7 +22,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
+import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.SketchPayload;
+import ai.floedb.floecat.catalog.rpc.SketchRole;
 import ai.floedb.floecat.catalog.rpc.StatsCaptureMode;
 import ai.floedb.floecat.catalog.rpc.StatsCompleteness;
 import ai.floedb.floecat.catalog.rpc.StatsMetadata;
@@ -1041,6 +1044,256 @@ class StatsRepositoryTargetStorageTest {
     // ...but the superseded generation's manifest is retained: a query that froze it keeps
     // reading its immutable keyspace to completion (GC collects it once unreferenced).
     assertThat(blobStore.get(pinnedManifestUri)).isNotNull();
+  }
+
+  /** A quantile sketch payload as an ANALYZE-style capture would publish it. */
+  private static SketchPayload quantileSketch(String data) {
+    return SketchPayload.newBuilder()
+        .setRole(SketchRole.SKETCH_ROLE_QUANTILES)
+        .setSketchType("kll-floats-v1")
+        .setData(ByteString.copyFromUtf8(data))
+        .setCompleteness(StatsCompleteness.SC_COMPLETE)
+        .build();
+  }
+
+  @Test
+  void replaceAllCarriesSupersededSketchesIntoTheNewGeneration() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 4244L;
+    var target = StatsTargetIdentity.columnTarget(7L);
+
+    // First generation: a sampled capture published the column WITH a quantile sketch.
+    repository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                7L,
+                ScalarStats.newBuilder()
+                    .setLogicalType("BIGINT")
+                    .setRowCount(1L)
+                    .addSketches(quantileSketch("captured"))
+                    .build(),
+                null)));
+
+    // Second generation: a scalar-only republish (a file-group rollup cannot derive sketches).
+    repository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                7L,
+                ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(2L).build(),
+                null)));
+
+    // Generations only enrich: the new generation keeps its own scalars AND the superseded
+    // generation's sketch — the unchanged snapshot's earlier payloads are still valid facts.
+    TargetStatsRecord live = repository.getTargetStats(TABLE_ID, snapshotId, target).orElseThrow();
+    assertThat(live.getScalar().getRowCount()).isEqualTo(2L);
+    assertThat(live.getScalar().getSketchesCount()).isEqualTo(1);
+    assertThat(live.getScalar().getSketches(0).getData().toStringUtf8()).isEqualTo("captured");
+  }
+
+  @Test
+  void replaceAllPrefersIncomingPayloadOverSupersededForSameIdentity() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 4245L;
+    var target = StatsTargetIdentity.columnTarget(7L);
+
+    repository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                7L,
+                ScalarStats.newBuilder()
+                    .setLogicalType("BIGINT")
+                    .setRowCount(1L)
+                    .addSketches(quantileSketch("old"))
+                    .build(),
+                null)));
+
+    // The republish carries its own payload for the same (role, sketch_type) identity: the
+    // incoming record is authoritative, so the superseded payload must not ride along.
+    repository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                7L,
+                ScalarStats.newBuilder()
+                    .setLogicalType("BIGINT")
+                    .setRowCount(2L)
+                    .addSketches(quantileSketch("new"))
+                    .build(),
+                null)));
+
+    TargetStatsRecord live = repository.getTargetStats(TABLE_ID, snapshotId, target).orElseThrow();
+    assertThat(live.getScalar().getSketchesCount()).isEqualTo(1);
+    assertThat(live.getScalar().getSketches(0).getData().toStringUtf8()).isEqualTo("new");
+  }
+
+  @Test
+  void replaceAllDoesNotResurrectTargetsAbsentFromTheNewGeneration() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 4246L;
+
+    repository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                1L,
+                ScalarStats.newBuilder()
+                    .setLogicalType("BIGINT")
+                    .setRowCount(1L)
+                    .addSketches(quantileSketch("col1"))
+                    .build(),
+                null),
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                2L,
+                ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(1L).build(),
+                null)));
+
+    repository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                2L,
+                ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(2L).build(),
+                null)));
+
+    // Enrichment is payload-only: which targets EXIST is the republish's decision, so col1 stays
+    // absent from the live generation (readers reach it through the pinned-generation fallback).
+    assertThat(
+            repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.columnTarget(1L)))
+        .isEmpty();
+    assertThat(
+            repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.columnTarget(2L)))
+        .isPresent();
+  }
+
+  @Test
+  void replaceAllMergesSupersededNdvEnvelopeSketches() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 4247L;
+    var target = StatsTargetIdentity.columnTarget(7L);
+    SketchPayload theta =
+        SketchPayload.newBuilder()
+            .setRole(SketchRole.SKETCH_ROLE_NDV)
+            .setSketchType("apache-datasketches-theta-v1")
+            .setData(ByteString.copyFromUtf8("theta-bytes"))
+            .setCompleteness(StatsCompleteness.SC_COMPLETE)
+            .build();
+
+    repository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                7L,
+                ScalarStats.newBuilder()
+                    .setLogicalType("BIGINT")
+                    .setRowCount(1L)
+                    .setNdv(Ndv.newBuilder().setExact(5L).addSketches(theta))
+                    .build(),
+                null)));
+
+    // The republish carries a fresher NDV ESTIMATE but no sketch payload.
+    repository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                7L,
+                ScalarStats.newBuilder()
+                    .setLogicalType("BIGINT")
+                    .setRowCount(2L)
+                    .setNdv(Ndv.newBuilder().setExact(6L))
+                    .build(),
+                null)));
+
+    // The new estimate stays authoritative; the superseded payload rides along in the envelope.
+    TargetStatsRecord live = repository.getTargetStats(TABLE_ID, snapshotId, target).orElseThrow();
+    assertThat(live.getScalar().getNdv().getExact()).isEqualTo(6L);
+    assertThat(live.getScalar().getNdv().getSketchesCount()).isEqualTo(1);
+    assertThat(live.getScalar().getNdv().getSketches(0).getData().toStringUtf8())
+        .isEqualTo("theta-bytes");
+  }
+
+  @Test
+  void replaceAllCarriesNdvSketchesIntoARecordWithoutAnNdvEnvelope() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 4248L;
+    var target = StatsTargetIdentity.columnTarget(7L);
+    SketchPayload theta =
+        SketchPayload.newBuilder()
+            .setRole(SketchRole.SKETCH_ROLE_NDV)
+            .setSketchType("apache-datasketches-theta-v1")
+            .setData(ByteString.copyFromUtf8("theta-bytes"))
+            .setCompleteness(StatsCompleteness.SC_COMPLETE)
+            .build();
+
+    repository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                7L,
+                ScalarStats.newBuilder()
+                    .setLogicalType("BIGINT")
+                    .setRowCount(1L)
+                    .setNdv(Ndv.newBuilder().setExact(5L).addSketches(theta))
+                    .build(),
+                null)));
+
+    // The republish carries NO NDV envelope at all.
+    repository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                7L,
+                ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(2L).build(),
+                null)));
+
+    // The carried payload rides in a fabricated, estimate-less envelope: hasNdv() is true but the
+    // exact/approx mode oneof stays UNSET — no estimate is invented for the new capture.
+    TargetStatsRecord live = repository.getTargetStats(TABLE_ID, snapshotId, target).orElseThrow();
+    assertThat(live.getScalar().hasNdv()).isTrue();
+    assertThat(live.getScalar().getNdv().hasExact()).isFalse();
+    assertThat(live.getScalar().getNdv().hasApprox()).isFalse();
+    assertThat(live.getScalar().getNdv().getSketchesCount()).isEqualTo(1);
+    assertThat(live.getScalar().getNdv().getSketches(0).getData().toStringUtf8())
+        .isEqualTo("theta-bytes");
   }
 
   @Test

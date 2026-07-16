@@ -33,6 +33,11 @@ message UpstreamStamp {
 }
 
 // Number-of-distinct-values payload supporting exact and approximate representations.
+// CONTRACT: the mode oneof MAY be unset while sketches are present. Stored records legitimately
+// carry payload-only envelopes (e.g. a sketch carried forward across a stats-generation republish
+// whose new capture produced no estimate). Consumers MUST gate estimate reads on the mode
+// (exact/approx presence), never on the envelope's own presence — reading approx from a mode-less
+// envelope yields a bogus zero estimate.
 message Ndv {
   oneof mode {
     int64 exact = 1;

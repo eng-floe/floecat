@@ -872,6 +872,11 @@ public class StatsRepository implements StatsStore {
                 .peek(record -> requireRecordForSnapshot(tableId, snapshotId, record))
                 .toList();
     Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
+    // Generations only enrich: fold the superseded generation's sketch payloads into same-target
+    // records before writing, so a scalar-only republish (e.g. a file-group rollup) never loses
+    // sketches an earlier capture already published for this unchanged snapshot. See
+    // StatsGenerationEnrichment for the contract and its deliberate boundaries.
+    canonicalRecords = carrySketchesFromSuperseded(tableId, snapshotId, canonicalRecords, current);
     String generationId = newGenerationId();
 
     try {
@@ -921,6 +926,42 @@ public class StatsRepository implements StatsStore {
     TargetStatsRecord canonical = TargetStatsRecords.canonicalize(value);
     Schemas.TARGET_STATS.keyFromValue.apply(canonical);
     return canonical;
+  }
+
+  /**
+   * Folds the superseded generation's sketch payloads into the records a new generation is about to
+   * publish (see {@link StatsGenerationEnrichment} for the contract). One batched read of the
+   * superseded generation, only for the scalar-bearing (column-style) targets being republished —
+   * this runs on the finalize/republish path, never on the query hot path.
+   */
+  private List<TargetStatsRecord> carrySketchesFromSuperseded(
+      ResourceId tableId,
+      long snapshotId,
+      List<TargetStatsRecord> incoming,
+      Optional<ActiveSnapshotStats> superseded) {
+    if (superseded.isEmpty() || incoming.isEmpty()) {
+      return incoming;
+    }
+    List<StatsTarget> scalarTargets =
+        incoming.stream()
+            .filter(TargetStatsRecord::hasScalar)
+            .map(TargetStatsRecord::getTarget)
+            .toList();
+    if (scalarTargets.isEmpty()) {
+      return incoming;
+    }
+    Map<String, Optional<TargetStatsRecord>> previous =
+        getTargetStatsBatchInResolvedGeneration(
+            tableId, snapshotId, scalarTargets, superseded.map(ActiveSnapshotStats::generationId));
+    return incoming.stream()
+        .map(
+            record ->
+                previous
+                    .getOrDefault(
+                        StatsTargetIdentity.storageId(record.getTarget()), Optional.empty())
+                    .map(prior -> StatsGenerationEnrichment.carrySketchesForward(record, prior))
+                    .orElse(record))
+        .toList();
   }
 
   private void publishActiveGeneration(
