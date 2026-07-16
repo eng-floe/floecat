@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.connector.common.auth;
 
-import ai.floedb.floecat.connector.common.aws.RefreshingAwsClient;
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
@@ -43,6 +43,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sts.StsClient;
@@ -390,14 +391,26 @@ public final class CredentialResolverSupport {
             option(properties, "client.region"),
             firstNonBlank(option(properties, "s3.region"), option(properties, "aws.region")));
 
-    try (var sts = new RefreshingAwsClient<>(() -> buildAmbientCredentialsStsClient(region))) {
+    try (var sts =
+        RefreshingAwsClient.withResourceFactory(
+            () -> {
+              var provider = DefaultCredentialsProvider.builder().build();
+              try {
+                return RefreshingAwsClient.clientResource(
+                    buildAmbientCredentialsStsClient(region, provider),
+                    RefreshingAwsClient.closeableResource(provider));
+              } catch (RuntimeException | Error e) {
+                RefreshingAwsClient.closeQuietly(RefreshingAwsClient.closeableResource(provider));
+                throw e;
+              }
+            })) {
       return assumeRole(req, sts);
     }
   }
 
-  private static StsClient buildAmbientCredentialsStsClient(String region) {
-    var builder =
-        StsClient.builder().credentialsProvider(DefaultCredentialsProvider.builder().build());
+  private static StsClient buildAmbientCredentialsStsClient(
+      String region, AwsCredentialsProvider provider) {
+    var builder = StsClient.builder().credentialsProvider(provider);
     if (region != null) {
       builder.region(Region.of(region));
     }

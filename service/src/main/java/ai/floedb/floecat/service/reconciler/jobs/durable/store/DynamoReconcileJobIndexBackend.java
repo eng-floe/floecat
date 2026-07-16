@@ -33,7 +33,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -63,11 +62,13 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
 
   public DynamoReconcileJobIndexBackend() {}
 
-  public void bind(
-      Supplier<DynamoDbClient> dynamoDbSupplier,
-      String table,
-      BiConsumer<DynamoDbClient, Throwable> clientFailureHandler) {
-    dynamoCaller.bind(dynamoDbSupplier, clientFailureHandler);
+  public void bind(Supplier<DynamoDbClient> dynamoDbSupplier, String table) {
+    dynamoCaller.bind(dynamoDbSupplier);
+    this.table = table;
+  }
+
+  public void bind(DynamoDbClientManager manager, String table) {
+    dynamoCaller.bind(manager);
     this.table = table;
   }
 

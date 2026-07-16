@@ -242,22 +242,17 @@ public class DynamoDbKvStoreTest {
             KvAttributes.ATTR_VERSION, AttributeValue.builder().n("3").build()));
     DynamoDbAsyncClient refreshedClient = clientFor(refreshedHandler);
 
-    AtomicReference<DynamoDbAsyncClient> current = new AtomicReference<>(staleClient);
-    AtomicInteger refreshes = new AtomicInteger();
+    AtomicInteger created = new AtomicInteger();
+    ai.floedb.floecat.aws.RefreshingAwsClient<DynamoDbAsyncClient> refreshingClient =
+        new ai.floedb.floecat.aws.RefreshingAwsClient<>(
+            "DynamoDB async", () -> created.getAndIncrement() == 0 ? staleClient : refreshedClient);
     DynamoDbKvStore store =
         new DynamoDbKvStore(
-            current::get,
-            staleHandler.tableName,
-            (client, failure) -> {
-              assertSame(staleClient, client);
-              assertSame(closedPool, failure);
-              refreshes.incrementAndGet();
-              current.set(refreshedClient);
-            });
+            refreshingClient::callAsync, refreshingClient::callUnchecked, staleHandler.tableName);
 
     KvStore.Record got = store.get(key("pk", "sk")).await().indefinitely().orElseThrow();
 
-    assertEquals(1, refreshes.get());
+    assertEquals(2, created.get());
     assertEquals(3L, got.version());
     assertEquals("pk", got.key().partitionKey());
     assertEquals("sk", got.key().sortKey());
@@ -290,6 +285,26 @@ public class DynamoDbKvStoreTest {
 
     var subscription = store.get(key("pk", "sk")).subscribe().with(_ -> {}, _ -> {});
     subscription.cancel();
+
+    assertTrue(pending.isCancelled());
+  }
+
+  @Test
+  void get_subscription_cancel_cancels_manager_wrapped_future() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    CompletableFuture<GetItemResponse> pending = new CompletableFuture<>();
+    handler.setPendingGetFuture(pending);
+
+    try (ai.floedb.floecat.aws.RefreshingAwsClient<DynamoDbAsyncClient> refreshingClient =
+        new ai.floedb.floecat.aws.RefreshingAwsClient<>(
+            "DynamoDB async", () -> clientFor(handler))) {
+      DynamoDbKvStore store =
+          new DynamoDbKvStore(
+              refreshingClient::callAsync, refreshingClient::callUnchecked, handler.tableName);
+
+      var subscription = store.get(key("pk", "sk")).subscribe().with(_ -> {}, _ -> {});
+      subscription.cancel();
+    }
 
     assertTrue(pending.isCancelled());
   }

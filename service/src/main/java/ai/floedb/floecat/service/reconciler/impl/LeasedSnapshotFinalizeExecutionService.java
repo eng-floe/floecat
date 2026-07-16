@@ -271,8 +271,11 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                 : persistence.mergeCompletedGroupPartials(
                     tableId, snapshotId, aggregateKinds, childState.completedGroupTasks());
         if (lease.fullRescan) {
-          persistence.replaceFileGroupStatsForSnapshot(
-              tableId, snapshotId, coverage.expectedFiles(), mergedAggregates);
+          persistence.publishFileGroupStatsGeneration(
+              tableId,
+              snapshotId,
+              LeasedFileGroupExecutionService.statsGenerationId(lease),
+              mergedAggregates);
         } else if (!mergedAggregates.isEmpty()) {
           persistence.persistStats(mergedAggregates);
         }

@@ -403,6 +403,12 @@ jobs:
               --destination /srv/output \
               --baseurl "${PREVIEW_BASEURL}"
 
+          docker run --rm \
+            --entrypoint chown \
+            -v "${PREVIEW_OUT}:/site-out" \
+            "${JEKYLL_PAGES_IMAGE}" \
+            -R "$(id -u):$(id -g)" /site-out
+
           ./tools/site/build-docs.sh --output-dir "${PREVIEW_OUT}/documentation"
 
       - name: Upload PR Preview Artifact

@@ -665,6 +665,14 @@ public final class Keys {
         accountId, tableId, snapshotId, generationId);
   }
 
+  public static String snapshotTargetStatsGenerationLifecyclePointer(
+      String accountId, String tableId, long snapshotId, String generationId) {
+    String generation = req("generation_id", generationId);
+    return snapshotTargetStatsGenerationRootPointer(accountId, tableId, snapshotId)
+        + encode(generation)
+        + "/lifecycle";
+  }
+
   public static String snapshotTargetColumnStatsGenerationPrefix(
       String accountId,
       String tableId,

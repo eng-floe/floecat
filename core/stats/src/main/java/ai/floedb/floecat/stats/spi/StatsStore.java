@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import com.google.protobuf.Timestamp;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -36,6 +37,12 @@ import java.util.Optional;
  * implementation needs to read or write persisted stats.
  */
 public interface StatsStore {
+  enum UnpublishedGenerationDeleteResult {
+    DELETED,
+    NOT_DELETABLE_PUBLISHED,
+    RETRYABLE_IN_PROGRESS
+  }
+
   /** Upserts a target stats record. */
   void putTargetStats(TargetStatsRecord value);
 
@@ -60,6 +67,29 @@ public interface StatsStore {
    * equal or conflicting record already owns the target key.
    */
   boolean putTargetStatsIfAbsent(TargetStatsRecord value);
+
+  /**
+   * Creates target stats records only when each exact table/snapshot/target key is absent.
+   *
+   * <p>Returns the records that were actually created. Existing equal or conflicting target keys
+   * are skipped.
+   */
+  default List<TargetStatsRecord> putTargetStatsBatchIfAbsent(
+      ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {
+    List<TargetStatsRecord> created = new ArrayList<>();
+    for (TargetStatsRecord record : records == null ? List.<TargetStatsRecord>of() : records) {
+      if (record == null) {
+        continue;
+      }
+      if (!tableId.equals(record.getTableId()) || record.getSnapshotId() != snapshotId) {
+        throw new IllegalArgumentException("target stats do not match table snapshot");
+      }
+      if (putTargetStatsIfAbsent(record)) {
+        created.add(record);
+      }
+    }
+    return List.copyOf(created);
+  }
 
   /** Returns the target stats record for the exact table/snapshot/target key, if present. */
   Optional<TargetStatsRecord> getTargetStats(
@@ -176,6 +206,50 @@ public interface StatsStore {
       int limit,
       String pageToken) {
     return listTargetStats(tableId, snapshotId, targetType, limit, pageToken);
+  }
+
+  /**
+   * Replaces target-scoped records inside an unpublished generation.
+   *
+   * <p>{@code targetsToReplace} defines the target keys owned by the writer. Implementations delete
+   * those target keys from {@code generationId}, then write {@code records} into that same
+   * generation. The generation must not become visible to normal readers until {@link
+   * #publishStatsGeneration(ResourceId, long, String, List)} succeeds.
+   */
+  default void replaceTargetStatsInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<StatsTarget> targetsToReplace,
+      List<TargetStatsRecord> records) {
+    throw new UnsupportedOperationException("unpublished stats generations are not supported");
+  }
+
+  /**
+   * Publishes an unpublished generation as the active stats generation for a table snapshot.
+   *
+   * <p>{@code finalRecords} are written into the generation immediately before publication; callers
+   * use this for records produced during finalization, such as aggregate stats.
+   */
+  default void publishStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<TargetStatsRecord> finalRecords) {
+    throw new UnsupportedOperationException("unpublished stats generations are not supported");
+  }
+
+  /**
+   * Deletes an unpublished stats generation.
+   *
+   * <p>Implementations must not delete a generation that has already been published as the active
+   * generation. {@link UnpublishedGenerationDeleteResult#RETRYABLE_IN_PROGRESS} means the
+   * generation is not conclusively published, but a writer may still be publishing it; callers must
+   * not treat that result as durable cleanup completion.
+   */
+  default UnpublishedGenerationDeleteResult deleteUnpublishedStatsGeneration(
+      ResourceId tableId, long snapshotId, String generationId) {
+    return UnpublishedGenerationDeleteResult.NOT_DELETABLE_PUBLISHED;
   }
 
   /**

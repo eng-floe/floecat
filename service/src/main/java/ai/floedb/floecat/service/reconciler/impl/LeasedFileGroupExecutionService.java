@@ -21,6 +21,7 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.PutIndexArtifactItem;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.MutationMeta;
@@ -70,8 +71,10 @@ import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -277,13 +280,17 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                             () -> {
                               long creatorStartNanos = System.nanoTime();
                               long snapshotId = plannedTask.snapshotId();
-                              persistTargetStats(
-                                  principalContext,
-                                  tableId,
-                                  snapshotId,
-                                  requiredResultId,
-                                  fileStats,
-                                  metrics);
+                              if (lease.fullRescan) {
+                                validateFileStats(tableId, snapshotId, fileStats);
+                              } else {
+                                persistTargetStats(
+                                    principalContext,
+                                    tableId,
+                                    snapshotId,
+                                    requiredResultId,
+                                    fileStats,
+                                    metrics);
+                              }
                               persistIndexArtifacts(
                                   principalContext,
                                   tableId,
@@ -383,9 +390,18 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                                   chunk ->
                                       partialAggregateRecords(chunk.getStatsRecordsList()).stream())
                               .toList();
+                      List<TargetStatsRecord> fileStats =
+                          stagedChunks.stream()
+                              .flatMap(
+                                  chunk ->
+                                      fileScopedStatsRecords(chunk.getStatsRecordsList()).stream())
+                              .toList();
                       List<TargetStatsRecord> mergedPartialAggregates =
                           mergedPartialAggregates(
                               tableId, latestTask.snapshotId(), latestTask, partialAggregates);
+                      if (lease.fullRescan) {
+                        persistDraftFileGroupStats(lease, tableId, latestTask, fileStats);
+                      }
                       ReconcileFileGroupTask persistedTask =
                           latestTask
                               .withFileResults(validatedFileResults)
@@ -504,12 +520,57 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       return;
     }
     long batchStartNanos = System.nanoTime();
-    statsStore.putTargetStatsBatch(tableId, snapshotId, nonNullStats);
-    statsOrchestrator.invalidateStatsCache(tableId, snapshotId, nonNullStats);
+    List<TargetStatsRecord> created =
+        statsStore.putTargetStatsBatchIfAbsent(tableId, snapshotId, nonNullStats);
+    if (!created.isEmpty()) {
+      statsOrchestrator.invalidateStatsCache(tableId, snapshotId, created);
+    }
+    metrics.statsItemCount += created.size();
     long batchNanos = System.nanoTime() - batchStartNanos;
     metrics.statsNanos += batchNanos;
     metrics.statsStorePutNanos += batchNanos;
-    metrics.statsItemCount += nonNullStats.size();
+  }
+
+  private void persistDraftFileGroupStats(
+      ReconcileJobStore.LeasedJob lease,
+      ResourceId tableId,
+      ReconcileFileGroupTask plannedTask,
+      List<TargetStatsRecord> fileStats) {
+    long snapshotId = plannedTask.snapshotId();
+    List<TargetStatsRecord> nonNullStats = validateFileStats(tableId, snapshotId, fileStats);
+    Set<String> plannedPaths = new LinkedHashSet<>(plannedTask.filePaths());
+    for (TargetStatsRecord record : nonNullStats) {
+      if (!plannedPaths.contains(record.getFile().getFilePath())) {
+        throw new IllegalArgumentException("file-group stats include an unplanned file");
+      }
+    }
+    List<StatsTarget> targetsToReplace =
+        plannedTask.filePaths().stream().map(path -> StatsTargetIdentity.fileTarget(path)).toList();
+    statsStore.replaceTargetStatsInGeneration(
+        tableId, snapshotId, statsGenerationId(lease), targetsToReplace, nonNullStats);
+  }
+
+  private static List<TargetStatsRecord> validateFileStats(
+      ResourceId tableId, long snapshotId, List<TargetStatsRecord> fileStats) {
+    List<TargetStatsRecord> nonNullStats = nonNullStatsRecords(fileStats);
+    for (TargetStatsRecord record : nonNullStats) {
+      if (!record.hasFile() || !record.hasTarget()) {
+        throw new IllegalArgumentException("file-group stats must be file-target records");
+      }
+      if (!tableId.equals(record.getTableId()) || record.getSnapshotId() != snapshotId) {
+        throw new IllegalArgumentException("file-group stats do not match file-group task");
+      }
+    }
+    return nonNullStats;
+  }
+
+  static String statsGenerationId(ReconcileJobStore.LeasedJob lease) {
+    String parentJobId = lease == null || lease.parentJobId == null ? "" : lease.parentJobId.trim();
+    if (parentJobId.isBlank()) {
+      throw new IllegalArgumentException(
+          "parent reconcile job id is required for stats generation");
+    }
+    return "full-rescan-" + parentJobId;
   }
 
   private void persistIndexArtifacts(

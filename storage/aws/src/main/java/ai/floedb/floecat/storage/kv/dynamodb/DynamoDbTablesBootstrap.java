@@ -15,7 +15,6 @@
  */
 package ai.floedb.floecat.storage.kv.dynamodb;
 
-import ai.floedb.floecat.storage.aws.ClosedAwsClientDetector;
 import ai.floedb.floecat.storage.aws.DynamoDbAsyncClientManager;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -230,49 +229,9 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
   }
 
   private <T> T ddbJoin(Function<DynamoDbAsyncClient, CompletableFuture<T>> operation) {
-    for (int attempt = 0; ; attempt++) {
-      DynamoDbAsyncClient client = ddbClient();
-      try {
-        return operation.apply(client).join();
-      } catch (RuntimeException e) {
-        if (attempt == 0 && ClosedAwsClientDetector.isConnectionPoolShutdown(e)) {
-          log.warn(
-              "DynamoDB table bootstrap connection pool shutdown in {}; refreshing client",
-              callerContext(),
-              e);
-          refreshDdbClient(client, e);
-          continue;
-        }
-        throw e;
-      }
-    }
-  }
-
-  private DynamoDbAsyncClient ddbClient() {
     if (ddbManager != null && ddbManager.isResolvable()) {
-      return ddbManager.get().current();
+      return ddbManager.get().callAsync(operation).join();
     }
-    return ddb;
-  }
-
-  private void refreshDdbClient(DynamoDbAsyncClient failedClient, Throwable failure) {
-    if (ddbManager != null && ddbManager.isResolvable()) {
-      ddbManager.get().refreshAfterFailure(failedClient, failure);
-    }
-  }
-
-  private static String callerContext() {
-    String wrapperClassName = DynamoDbTablesBootstrap.class.getName();
-    for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
-      String className = frame.getClassName();
-      if (className.equals(Thread.class.getName()) || className.equals(wrapperClassName)) {
-        continue;
-      }
-      if (className.startsWith(wrapperClassName + "$")) {
-        continue;
-      }
-      return className + "." + frame.getMethodName();
-    }
-    return "unknown";
+    return operation.apply(ddb).join();
   }
 }

@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
-import ai.floedb.floecat.connector.common.aws.RefreshingAwsClient;
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import io.delta.kernel.defaults.engine.fileio.FileIO;
 import io.delta.kernel.defaults.engine.fileio.InputFile;
 import io.delta.kernel.defaults.engine.fileio.OutputFile;
