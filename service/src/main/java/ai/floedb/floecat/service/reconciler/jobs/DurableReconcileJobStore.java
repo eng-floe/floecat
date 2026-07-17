@@ -2246,7 +2246,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return root != null
         && "JS_CANCELLED".equals(blankToEmpty(root.state))
         && root.finishedAtMs > 0L
-        && root.childrenFinalized;
+        && root.childrenFinalized
+        && !needsAbandonedFullRescanStatsCleanup(root);
   }
 
   private ReconcileCancellationMaintenanceService.CancellationCleanupResult
