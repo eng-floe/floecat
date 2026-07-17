@@ -38,6 +38,7 @@ import jakarta.inject.Inject;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Set;
@@ -91,6 +92,8 @@ public class ReconcileJobGc {
       RootSummaryReadStatus status, StoredReconcileJobListSummary summary) {}
 
   private record RootSummaryDeleteResult(int deleted, int quarantined) {}
+
+  private record JobCleanupResult(int expired, int ptrDeleted, int blobDeleted, int failed) {}
 
   public AccountResult runAccountSlice(String accountId, String jobTokenIn, String dedupeTokenIn) {
     return runAccountSlice(accountId, jobTokenIn, dedupeTokenIn, "");
@@ -170,6 +173,9 @@ public class ReconcileJobGc {
         break;
       }
 
+      List<ReconcileJobIndexStore.JobDeletePlan> deletePlans = new ArrayList<>();
+      List<ReconcileJobIndexStore.JobDeletePlan> quarantinedDeletePlans = new ArrayList<>();
+
       for (var canonical : pointers) {
         if (scanned >= batchLimit) {
           break;
@@ -179,13 +185,11 @@ public class ReconcileJobGc {
         JsonNode record = readRecordByReference(canonical.blobUri());
         String jobId = decodeJobId(jobPrefix, canonical.pointerKey());
         if (record == null) {
-          if (deleteCanonicalIfQuarantined(
-              accountId, jobId, canonical, nowMs, canonicalQuarantineRetentionMs)) {
-            expired++;
-            ptrDeleted++;
-            if (jobId != null) {
-              blobDeleted += deleteJobBlobs(accountId, jobId);
-            }
+          ReconcileJobIndexStore.JobDeletePlan deletePlan =
+              buildQuarantinedCanonicalDeletePlan(
+                  accountId, jobId, canonical, nowMs, canonicalQuarantineRetentionMs);
+          if (deletePlan != null) {
+            quarantinedDeletePlans.add(deletePlan);
           } else {
             canonicalQuarantined++;
           }
@@ -199,7 +203,16 @@ public class ReconcileJobGc {
                 longValue(record, "finishedAtMs", longValue(record, "createdAtMs", nowMs)));
 
         if (TERMINAL_STATES.contains(state)) {
-          // Terminal jobs must never hold queue/dedupe references.
+          if (updatedAt <= nowMs - retentionMs) {
+            ReconcileJobIndexStore.JobDeletePlan deletePlan =
+                buildCanonicalFootprintDeletePlan(accountId, jobId, canonical, record);
+            if (deletePlan != null) {
+              deletePlans.add(deletePlan);
+              continue;
+            }
+          }
+
+          // Terminal jobs that cannot yet be removed must never hold queue/dedupe references.
           StoredReconcileJob stored = storedJob(record);
           String dedupePointerKey = stored == null ? "" : jobIndexes.dedupePointerKey(stored);
           if (!dedupePointerKey.isBlank()
@@ -211,18 +224,20 @@ public class ReconcileJobGc {
               readyDeleted++;
             }
           }
-
-          if (updatedAt <= nowMs - retentionMs) {
-            if (deleteCanonicalFootprint(accountId, jobId, canonical, record)) {
-              expired++;
-              ptrDeleted++;
-              if (jobId != null) {
-                blobDeleted += deleteJobBlobs(accountId, jobId);
-              }
-            }
-          }
         }
       }
+
+      JobCleanupResult cleanup = deleteCanonicalFootprints(accountId, deletePlans);
+      expired += cleanup.expired();
+      ptrDeleted += cleanup.ptrDeleted();
+      blobDeleted += cleanup.blobDeleted();
+
+      JobCleanupResult quarantinedCleanup =
+          deleteCanonicalFootprints(accountId, quarantinedDeletePlans);
+      expired += quarantinedCleanup.expired();
+      ptrDeleted += quarantinedCleanup.ptrDeleted();
+      blobDeleted += quarantinedCleanup.blobDeleted();
+      canonicalQuarantined += quarantinedCleanup.failed();
 
       if (jobToken.isBlank()) {
         break;
@@ -457,14 +472,14 @@ public class ReconcileJobGc {
     return null;
   }
 
-  private boolean deleteCanonicalIfQuarantined(
+  private ReconcileJobIndexStore.JobDeletePlan buildQuarantinedCanonicalDeletePlan(
       String accountId,
       String jobId,
       JobIndexEntrySnapshot canonical,
       long nowMs,
       long quarantineRetentionMs) {
     if (canonical == null || accountId == null || accountId.isBlank()) {
-      return false;
+      return null;
     }
     String markerKey =
         Keys.reconcileCanonicalQuarantinePointer(accountId, hashValue(canonical.pointerKey()));
@@ -479,7 +494,7 @@ public class ReconcileJobGc {
             expectedVersion,
             PointerReferences.opaqueMarkerPointer(markerKey, markerPayload, expectedVersion + 1L));
       }
-      return false;
+      return null;
     } else {
       firstSeenMs = quarantineMarkerFirstSeenMs(marker.getBlobUri(), nowMs);
       if (quarantineMarkerCanonicalKey(marker.getBlobUri()).isBlank() && pointerStore != null) {
@@ -492,25 +507,25 @@ public class ReconcileJobGc {
                     quarantineMarkerPayload(canonical, firstSeenMs),
                     marker.getVersion() + 1L));
         if (migrated) {
-          return false;
+          return null;
         }
       }
     }
     if (firstSeenMs > nowMs - quarantineRetentionMs) {
-      return false;
+      return null;
     }
     ReconcileJobIndexStore.JobIndexWriteBatch deleteBatch =
         jobIndexStore.buildJobDeleteBatch(
             new CanonicalPointerSnapshot(
                 canonical.pointerKey(), canonical.blobUri(), canonical.version()));
     if (deleteBatch.writes().isEmpty()) {
-      return false;
+      return null;
     }
-    boolean purged = jobIndexBackend.compareAndSetBatch(deleteBatch);
-    if (purged && pointerStore != null) {
-      pointerStore.compareAndDelete(marker.getKey(), marker.getVersion());
+    List<PointerStore.CasOp> pointerDeletes = new ArrayList<>();
+    if (marker != null) {
+      pointerDeletes.add(new PointerStore.CasDelete(marker.getKey(), marker.getVersion()));
     }
-    return purged;
+    return new ReconcileJobIndexStore.JobDeletePlan(jobId, deleteBatch, pointerDeletes);
   }
 
   private void clearCanonicalQuarantineMarkerIfReadable(Pointer marker) {
@@ -669,10 +684,10 @@ public class ReconcileJobGc {
     }
   }
 
-  private boolean deleteCanonicalFootprint(
+  private ReconcileJobIndexStore.JobDeletePlan buildCanonicalFootprintDeletePlan(
       String accountId, String jobId, JobIndexEntrySnapshot canonical, JsonNode record) {
     if (canonical == null || jobId == null || jobId.isBlank()) {
-      return false;
+      return null;
     }
     var pointerDeletes = new java.util.ArrayList<PointerStore.CasOp>();
     if (record != null) {
@@ -708,8 +723,39 @@ public class ReconcileJobGc {
             accountId, jobId);
       }
     }
-    return !deleteBatch.writes().isEmpty()
-        && jobIndexBackend.compareAndSetBatch(deleteBatch, pointerDeletes);
+    if (deleteBatch.writes().isEmpty()) {
+      return null;
+    }
+    return new ReconcileJobIndexStore.JobDeletePlan(jobId, deleteBatch, pointerDeletes);
+  }
+
+  private JobCleanupResult deleteCanonicalFootprints(
+      String accountId, List<ReconcileJobIndexStore.JobDeletePlan> plans) {
+    int expired = 0;
+    int ptrDeleted = 0;
+    int blobDeleted = 0;
+    for (ReconcileJobIndexStore.JobDeleteChunk chunk : jobIndexStore.chunkJobDeletePlans(plans)) {
+      if (jobIndexBackend.compareAndSetBatch(chunk.indexBatch(), chunk.extraPointerOps())) {
+        for (ReconcileJobIndexStore.JobDeletePlan plan : chunk.plans()) {
+          expired++;
+          ptrDeleted++;
+          if (plan.jobId() != null && !plan.jobId().isBlank()) {
+            blobDeleted += deleteJobBlobs(accountId, plan.jobId());
+          }
+        }
+        continue;
+      }
+      for (ReconcileJobIndexStore.JobDeletePlan plan : chunk.plans()) {
+        if (jobIndexBackend.compareAndSetBatch(plan.indexBatch(), plan.extraPointerOps())) {
+          expired++;
+          ptrDeleted++;
+          if (plan.jobId() != null && !plan.jobId().isBlank()) {
+            blobDeleted += deleteJobBlobs(accountId, plan.jobId());
+          }
+        }
+      }
+    }
+    return new JobCleanupResult(expired, ptrDeleted, blobDeleted, plans.size() - expired);
   }
 
   private static String rootSummarySortableJobToken(long createdAtMs, String jobId) {

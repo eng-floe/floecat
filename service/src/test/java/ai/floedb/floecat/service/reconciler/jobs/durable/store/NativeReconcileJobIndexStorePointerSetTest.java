@@ -27,6 +27,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloa
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.List;
@@ -159,6 +160,38 @@ class NativeReconcileJobIndexStorePointerSetTest {
     assertThrows(
         IllegalStateException.class,
         () -> store.chunkJobWriteBatches(List.of(batchWithDeletes("oversized", 101))));
+  }
+
+  @Test
+  void cleanupChunkingCountsPointerOpsAndPreservesWholeJobPlans() {
+    ReconcileJobIndexStore.JobDeletePlan first =
+        new ReconcileJobIndexStore.JobDeletePlan(
+            "job-a",
+            batchWithDeletes("a", 60),
+            java.util.stream.IntStream.range(0, 40)
+                .mapToObj(
+                    i -> (PointerStore.CasOp) new PointerStore.CasDelete("pointer-a-" + i, 1L))
+                .toList());
+    ReconcileJobIndexStore.JobDeletePlan second =
+        new ReconcileJobIndexStore.JobDeletePlan("job-b", batchWithDeletes("b", 1), List.of());
+
+    List<ReconcileJobIndexStore.JobDeleteChunk> chunks =
+        store.chunkJobDeletePlans(List.of(first, second));
+
+    assertEquals(2, chunks.size());
+    assertEquals(List.of(first), chunks.get(0).plans());
+    assertEquals(
+        100,
+        NativeReconcileJobIndexStore.physicalWriteItemCount(chunks.get(0).indexBatch())
+            + chunks.get(0).extraPointerOps().size());
+    assertEquals(List.of(second), chunks.get(1).plans());
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            store.chunkJobDeletePlans(
+                List.of(
+                    new ReconcileJobIndexStore.JobDeletePlan(
+                        "oversized", batchWithDeletes("oversized", 101), List.of()))));
   }
 
   private StoredReconcileJob record(String state) {

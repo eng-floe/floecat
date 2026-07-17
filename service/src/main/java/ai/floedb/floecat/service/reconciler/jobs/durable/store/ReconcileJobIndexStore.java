@@ -86,6 +86,18 @@ public interface ReconcileJobIndexStore {
     }
   }
 
+  record JobDeletePlan(
+      String jobId, JobIndexWriteBatch indexBatch, List<PointerStore.CasOp> extraPointerOps) {
+    public JobDeletePlan {
+      extraPointerOps = extraPointerOps == null ? List.of() : List.copyOf(extraPointerOps);
+    }
+  }
+
+  record JobDeleteChunk(
+      List<JobDeletePlan> plans,
+      JobIndexWriteBatch indexBatch,
+      List<PointerStore.CasOp> extraPointerOps) {}
+
   record CanonicalRecordMutation(
       CanonicalPointerSnapshot snapshot, StoredReconcileJob previous, StoredReconcileJob current) {}
 
@@ -179,6 +191,8 @@ public interface ReconcileJobIndexStore {
       CanonicalPointerSnapshot currentSnapshot, StoredReconcileJob readableRecord);
 
   List<JobIndexWriteBatch> chunkJobWriteBatches(List<JobIndexWriteBatch> jobBatches);
+
+  List<JobDeleteChunk> chunkJobDeletePlans(List<JobDeletePlan> plans);
 
   JobIndexWriteBatch combineWriteBatches(List<JobIndexWriteBatch> batches);
 

@@ -573,6 +573,47 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     return List.copyOf(chunks);
   }
 
+  @Override
+  public List<JobDeleteChunk> chunkJobDeletePlans(List<JobDeletePlan> plans) {
+    if (plans == null || plans.isEmpty()) {
+      return List.of();
+    }
+    List<JobDeleteChunk> chunks = new ArrayList<>();
+    List<JobDeletePlan> chunkPlans = new ArrayList<>();
+    int chunkItems = 0;
+    for (JobDeletePlan plan : plans) {
+      int planItems = physicalWriteItemCount(plan.indexBatch()) + plan.extraPointerOps().size();
+      if (planItems > MAX_BATCH_WRITE_ITEMS) {
+        throw new IllegalStateException(
+            "single job cleanup requires more than " + MAX_BATCH_WRITE_ITEMS + " write items");
+      }
+      if (chunkItems > 0 && chunkItems + planItems > MAX_BATCH_WRITE_ITEMS) {
+        chunks.add(buildJobDeleteChunk(chunkPlans));
+        chunkPlans = new ArrayList<>();
+        chunkItems = 0;
+      }
+      if (planItems > 0) {
+        chunkPlans.add(plan);
+        chunkItems += planItems;
+      }
+    }
+    if (!chunkPlans.isEmpty()) {
+      chunks.add(buildJobDeleteChunk(chunkPlans));
+    }
+    return List.copyOf(chunks);
+  }
+
+  private JobDeleteChunk buildJobDeleteChunk(List<JobDeletePlan> plans) {
+    List<JobIndexWriteBatch> indexBatches = new ArrayList<>(plans.size());
+    List<PointerStore.CasOp> pointerOps = new ArrayList<>();
+    for (JobDeletePlan plan : plans) {
+      indexBatches.add(plan.indexBatch());
+      pointerOps.addAll(plan.extraPointerOps());
+    }
+    return new JobDeleteChunk(
+        List.copyOf(plans), combineWriteBatches(indexBatches), List.copyOf(pointerOps));
+  }
+
   public StoredReconcileJob cloneStoredRecord(StoredReconcileJob source) {
     if (source == null) {
       return null;
