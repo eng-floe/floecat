@@ -863,7 +863,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     finalBatches.addAll(trailingInsertBatches);
     finalBatches.addAll(ancestorBatches);
     JobIndexWriteBatch finalBatch = combineWriteBatches(finalBatches);
-    if (writeItemCount(finalBatch) > MAX_BATCH_WRITE_ITEMS) {
+    if (physicalWriteItemCount(finalBatch) > MAX_BATCH_WRITE_ITEMS) {
       throw new IllegalStateException(
           "reconcile enqueue batch requires more than " + MAX_BATCH_WRITE_ITEMS + " write items");
     }
@@ -884,7 +884,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     int chunkItems = 0;
     for (int i = 0; i < inserts.size(); i++) {
       JobIndexWriteBatch batch = batches.get(i);
-      int batchItems = writeItemCount(batch);
+      int batchItems = physicalWriteItemCount(batch);
       if (batchItems > maxWriteItems) {
         throw new IllegalStateException(
             "single reconcile enqueue batch requires more than " + maxWriteItems + " write items");
@@ -915,7 +915,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     int used = 0;
     int split = insertBatches.size();
     while (split > 0) {
-      int batchItems = writeItemCount(insertBatches.get(split - 1));
+      int batchItems = physicalWriteItemCount(insertBatches.get(split - 1));
       if (batchItems > finalCapacity) {
         return insertBatches.size();
       }
@@ -950,18 +950,33 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       return 0;
     }
     for (JobIndexWriteBatch batch : batches) {
-      total += writeItemCount(batch);
+      total += physicalWriteItemCount(batch);
     }
     return total;
   }
 
-  private int writeItemCount(JobIndexWriteBatch batch) {
+  static int physicalWriteItemCount(JobIndexWriteBatch batch) {
     if (batch == null) {
       return 0;
     }
-    return batch.writes().size()
-        + batch.readyMutation().upserts().size()
-        + batch.readyMutation().deletes().size();
+    int count = batch.readyMutation().upserts().size() + batch.readyMutation().deletes().size();
+    for (JobIndexWriteOp write : batch.writes()) {
+      count += physicalWriteItemCount(write);
+    }
+    return count;
+  }
+
+  private static int physicalWriteItemCount(JobIndexWriteOp write) {
+    if (write instanceof JobIndexUpsert upsert
+        && upsert.expectedVersion() == 0L
+        && JobIndexBackendSupport.parseLookupKey(upsert.pointerKey()) != null) {
+      return 2;
+    }
+    if (write instanceof JobIndexCheckAbsent check
+        && JobIndexBackendSupport.parseLookupKey(check.pointerKey()) != null) {
+      return 2;
+    }
+    return 1;
   }
 
   private List<QueuedJobInsert> remainingInserts(

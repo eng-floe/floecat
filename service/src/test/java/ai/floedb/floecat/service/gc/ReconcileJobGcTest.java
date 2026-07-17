@@ -124,6 +124,21 @@ class ReconcileJobGcTest {
   }
 
   @Test
+  void accountSlicePurgesResidualReferencesAfterDeletingExpiredTerminalJob() {
+    System.setProperty("floecat.gc.reconcile-jobs.retention-ms", "0");
+    String jobId = "job-expired-residual-purge";
+    String canonicalKey =
+        putInlineReconcileJob(jobId, "JS_SUCCEEDED", System.currentTimeMillis() - 10_000L, "", "");
+    RecordingPurgeBackend recordingBackend = new RecordingPurgeBackend(jobIndexBackend);
+    gc.jobIndexBackend = recordingBackend;
+
+    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertTrue(result.expired() >= 1);
+    assertTrue(recordingBackend.purgedCanonicalKeys.contains(canonicalKey));
+  }
+
+  @Test
   void accountSliceKeepsUnreadableCanonicalPointers() {
     String jobId = "job-missing-inline";
     String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
@@ -1205,6 +1220,84 @@ class ReconcileJobGcTest {
       return Base64.getUrlEncoder()
           .withoutPadding()
           .encodeToString(String.valueOf(value).getBytes(StandardCharsets.UTF_8));
+    }
+  }
+
+  private static final class RecordingPurgeBackend implements ReconcileJobIndexBackend {
+    private final ReconcileJobIndexBackend delegate;
+    private final java.util.ArrayList<String> purgedCanonicalKeys = new java.util.ArrayList<>();
+
+    private RecordingPurgeBackend(ReconcileJobIndexBackend delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public java.util.Optional<JobIndexEntrySnapshot> loadIndexEntry(String pointerKey) {
+      return delegate.loadIndexEntry(pointerKey);
+    }
+
+    @Override
+    public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
+      return delegate.compareAndSetBatch(batch);
+    }
+
+    @Override
+    public boolean compareAndSetBatch(
+        ReconcileJobIndexStore.JobIndexWriteBatch batch,
+        java.util.List<PointerStore.CasOp> extraPointerOps) {
+      return delegate.compareAndSetBatch(batch, extraPointerOps);
+    }
+
+    @Override
+    public JobIndexQueryPage listCanonicalEntries(String accountId, int limit, String pageToken) {
+      return delegate.listCanonicalEntries(accountId, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listDedupeEntries(String accountId, int limit, String pageToken) {
+      return delegate.listDedupeEntries(accountId, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listParentEntries(
+        String accountId, String parentJobId, int limit, String pageToken) {
+      return delegate.listParentEntries(accountId, parentJobId, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listConnectorEntries(
+        String accountId, String connectorId, int limit, String pageToken) {
+      return delegate.listConnectorEntries(accountId, connectorId, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listGlobalStateEntries(String state, int limit, String pageToken) {
+      return delegate.listGlobalStateEntries(state, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listAccountStateEntries(
+        String accountId, String state, int limit, String pageToken) {
+      return delegate.listAccountStateEntries(accountId, state, limit, pageToken);
+    }
+
+    @Override
+    public JobIndexQueryPage listConnectorStateEntries(
+        String accountId, String connectorId, String state, int limit, String pageToken) {
+      return delegate.listConnectorStateEntries(accountId, connectorId, state, limit, pageToken);
+    }
+
+    @Override
+    public boolean purgeEntriesByCanonicalReference(String canonicalPointerKey) {
+      purgedCanonicalKeys.add(canonicalPointerKey);
+      return delegate.purgeEntriesByCanonicalReference(canonicalPointerKey);
+    }
+
+    @Override
+    public boolean purgeEntriesByCanonicalReference(
+        String canonicalPointerKey, long expectedVersion, String expectedBlobUri) {
+      return delegate.purgeEntriesByCanonicalReference(
+          canonicalPointerKey, expectedVersion, expectedBlobUri);
     }
   }
 

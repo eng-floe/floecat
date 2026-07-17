@@ -168,8 +168,8 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   private List<JobIndexEntrySnapshot> matchingCanonicalReferences(String canonicalPointerKey) {
     List<JobIndexEntrySnapshot> matches = new ArrayList<>();
     collectMatches(matches, Keys.reconcileJobLookupPointerByIdPrefix(), canonicalPointerKey);
-    collectMatches(matches, "/accounts/by-id/reconcile/jobs/by-state/", canonicalPointerKey);
-    collectMatches(matches, "/accounts/", canonicalPointerKey);
+    collectMatches(matches, Keys.reconcileJobByStatePointerPrefix(), canonicalPointerKey);
+    collectMatches(matches, Keys.accountRootPrefix(), canonicalPointerKey);
     return matches;
   }
 

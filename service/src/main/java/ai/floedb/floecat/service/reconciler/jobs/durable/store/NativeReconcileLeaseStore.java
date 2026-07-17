@@ -43,8 +43,6 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
   private static final Logger LOG = Logger.getLogger(NativeReconcileLeaseStore.class);
-  private static final String LEASE_EXPIRY_POINTER_PREFIX =
-      "/accounts/by-id/reconcile/job-leases/by-expiry/";
   private static final long INVALID_ORDERED_POINTER_MS = -1L;
 
   private ReconcileLeaseBackend leaseBackend;
@@ -902,12 +900,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     if (expiresAtMs <= 0L || blank(accountId) || blank(jobId)) {
       return "";
     }
-    return LEASE_EXPIRY_POINTER_PREFIX
-        + String.format("%019d", expiresAtMs)
-        + "/accounts/"
-        + accountId
-        + "/jobs/"
-        + jobId;
+    return Keys.reconcileJobLeaseExpiryPointer(expiresAtMs, accountId, jobId);
   }
 
   // Lease coordination state is runtime ownership state and is intentionally separate from
@@ -1215,7 +1208,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
   }
 
   private long parseLeaseExpiryMillis(String leaseExpiryPointerKey) {
-    return parseTimestampFromOrderedPointer(leaseExpiryPointerKey, LEASE_EXPIRY_POINTER_PREFIX);
+    return parseTimestampFromOrderedPointer(
+        leaseExpiryPointerKey, Keys.reconcileJobLeaseExpiryPointerPrefix());
   }
 
   private long parseTimestampFromOrderedPointer(String pointerKey, String prefix) {

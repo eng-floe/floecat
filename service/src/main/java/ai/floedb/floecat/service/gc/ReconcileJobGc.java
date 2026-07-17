@@ -720,12 +720,17 @@ public class ReconcileJobGc {
       }
     }
 
-    return jobIndexBackend.compareAndSetBatch(
-        new ReconcileJobIndexStore.JobIndexWriteBatch(
-            deletes,
-            new ReconcileJobIndexStore.ReadyQueueMutation(
-                List.of(), new java.util.ArrayList<>(readyDeletes))),
-        pointerDeletes);
+    boolean deleted =
+        jobIndexBackend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                deletes,
+                new ReconcileJobIndexStore.ReadyQueueMutation(
+                    List.of(), new java.util.ArrayList<>(readyDeletes))),
+            pointerDeletes);
+    if (deleted) {
+      jobIndexBackend.purgeEntriesByCanonicalReference(canonical.pointerKey());
+    }
+    return deleted;
   }
 
   private void appendDeleteIfPresent(

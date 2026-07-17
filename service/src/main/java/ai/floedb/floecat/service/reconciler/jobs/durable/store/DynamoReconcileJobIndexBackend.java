@@ -21,6 +21,7 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_PARTITION_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -37,6 +38,7 @@ import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
 import software.amazon.awssdk.services.dynamodb.model.Delete;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.Put;
@@ -74,16 +76,24 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
 
   @Override
   public Optional<JobIndexEntrySnapshot> loadIndexEntry(String pointerKey) {
+    var lookupKey = JobIndexBackendSupport.parseLookupKey(pointerKey);
+    if (lookupKey != null) {
+      var current =
+          loadIndexPointer(
+              JobIndexBackendSupport.lookupPartitionKey(),
+              JobIndexBackendSupport.lookupSortKey(lookupKey),
+              JobIndexBackendSupport.ATTR_BLOB_URI);
+      if (current.isPresent()) {
+        return current;
+      }
+      return loadIndexPointer(
+          JobIndexBackendSupport.legacyLookupPartitionKey(),
+          JobIndexBackendSupport.lookupSortKey(lookupKey),
+          JobIndexBackendSupport.ATTR_BLOB_URI);
+    }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(pointerKey);
     if (canonicalKey != null) {
       return loadCanonicalPointer(canonicalKey);
-    }
-    var lookupKey = JobIndexBackendSupport.parseLookupKey(pointerKey);
-    if (lookupKey != null) {
-      return loadIndexPointer(
-          JobIndexBackendSupport.lookupPartitionKey(),
-          JobIndexBackendSupport.lookupSortKey(lookupKey),
-          JobIndexBackendSupport.ATTR_BLOB_URI);
     }
     var parentKey = JobIndexBackendSupport.parseParentKey(pointerKey);
     if (parentKey != null) {
@@ -243,11 +253,9 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
               .consistentRead(true)
               .expressionAttributeNames(
                   Map.of(
-                      "#pointer", JobIndexBackendSupport.ATTR_POINTER_KEY,
                       "#canonical", JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY,
                       "#blob", JobIndexBackendSupport.ATTR_BLOB_URI))
-              .filterExpression(
-                  "#pointer = :canonical OR #canonical = :canonical OR #blob = :canonical")
+              .filterExpression("#canonical = :canonical OR #blob = :canonical")
               .expressionAttributeValues(
                   Map.of(":canonical", AttributeValue.fromS(canonicalPointerKey)));
       if (exclusiveStartKey != null && !exclusiveStartKey.isEmpty()) {
@@ -259,18 +267,31 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         if (item == null || item.isEmpty()) {
           continue;
         }
-        dynamoCaller.callVoid(
-            dynamoDbClientManager,
-            client ->
-                client.deleteItem(
-                    software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest.builder()
-                        .tableName(table)
-                        .key(
-                            Map.of(
-                                ATTR_PARTITION_KEY, item.get(ATTR_PARTITION_KEY),
-                                ATTR_SORT_KEY, item.get(ATTR_SORT_KEY)))
-                        .build()));
-        deleted = true;
+        try {
+          dynamoCaller.callVoid(
+              dynamoDbClientManager,
+              client ->
+                  client.deleteItem(
+                      software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest.builder()
+                          .tableName(table)
+                          .key(
+                              Map.of(
+                                  ATTR_PARTITION_KEY, item.get(ATTR_PARTITION_KEY),
+                                  ATTR_SORT_KEY, item.get(ATTR_SORT_KEY)))
+                          .conditionExpression("#canonical = :canonical OR #blob = :canonical")
+                          .expressionAttributeNames(
+                              Map.of(
+                                  "#canonical",
+                                  JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY,
+                                  "#blob",
+                                  JobIndexBackendSupport.ATTR_BLOB_URI))
+                          .expressionAttributeValues(
+                              Map.of(":canonical", AttributeValue.fromS(canonicalPointerKey)))
+                          .build()));
+          deleted = true;
+        } catch (ConditionalCheckFailedException ignored) {
+          // The row changed after the scan; leave the new owner intact.
+        }
       }
       exclusiveStartKey = response.lastEvaluatedKey();
     } while (exclusiveStartKey != null && !exclusiveStartKey.isEmpty());
@@ -387,11 +408,11 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     if (batch != null) {
       for (ReconcileJobIndexStore.JobIndexWriteOp op : batch.writes()) {
         if (op instanceof ReconcileJobIndexStore.JobIndexUpsert upsert) {
-          tx.add(buildPointerUpsert(upsert));
+          tx.addAll(buildPointerUpsert(upsert));
         } else if (op instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
           tx.add(buildPointerDelete(delete));
         } else if (op instanceof ReconcileJobIndexStore.JobIndexCheckAbsent check) {
-          tx.add(buildPointerCheckAbsent(check.pointerKey()));
+          tx.addAll(buildPointerCheckAbsent(check.pointerKey()));
         }
       }
       for (var upsert : batch.readyMutation().upserts()) {
@@ -610,91 +631,103 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     return value == null || value.isBlank();
   }
 
-  private TransactWriteItem buildPointerUpsert(ReconcileJobIndexStore.JobIndexUpsert upsert) {
-    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(upsert.pointerKey());
-    if (canonicalKey != null) {
-      return buildCanonicalUpsert(canonicalKey, upsert);
-    }
+  private List<TransactWriteItem> buildPointerUpsert(ReconcileJobIndexStore.JobIndexUpsert upsert) {
     var lookupKey = JobIndexBackendSupport.parseLookupKey(upsert.pointerKey());
     if (lookupKey != null) {
-      return buildIndexUpsert(
-          JobIndexBackendSupport.lookupPartitionKey(),
-          JobIndexBackendSupport.lookupSortKey(lookupKey),
-          JobIndexBackendSupport.KIND_LOOKUP,
-          upsert,
-          JobIndexBackendSupport.ATTR_BLOB_URI);
+      String sortKey = JobIndexBackendSupport.lookupSortKey(lookupKey);
+      List<TransactWriteItem> items = new ArrayList<>();
+      items.add(
+          buildIndexUpsert(
+              JobIndexBackendSupport.lookupPartitionKey(),
+              sortKey,
+              JobIndexBackendSupport.KIND_LOOKUP,
+              upsert,
+              JobIndexBackendSupport.ATTR_BLOB_URI));
+      if (upsert.expectedVersion() == 0L) {
+        items.add(buildCheckAbsent(JobIndexBackendSupport.legacyLookupPartitionKey(), sortKey));
+      }
+      return List.copyOf(items);
+    }
+    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(upsert.pointerKey());
+    if (canonicalKey != null) {
+      return List.of(buildCanonicalUpsert(canonicalKey, upsert));
     }
     var parentKey = JobIndexBackendSupport.parseParentKey(upsert.pointerKey());
     if (parentKey != null) {
-      return buildIndexUpsert(
-          JobIndexBackendSupport.parentPartitionKey(parentKey),
-          JobIndexBackendSupport.parentSortKey(parentKey),
-          JobIndexBackendSupport.KIND_PARENT,
-          upsert,
-          JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY);
+      return List.of(
+          buildIndexUpsert(
+              JobIndexBackendSupport.parentPartitionKey(parentKey),
+              JobIndexBackendSupport.parentSortKey(parentKey),
+              JobIndexBackendSupport.KIND_PARENT,
+              upsert,
+              JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
     }
     var connectorKey = JobIndexBackendSupport.parseConnectorKey(upsert.pointerKey());
     if (connectorKey != null) {
-      return buildIndexUpsert(
-          JobIndexBackendSupport.connectorPartitionKey(connectorKey),
-          JobIndexBackendSupport.connectorSortKey(connectorKey),
-          JobIndexBackendSupport.KIND_CONNECTOR,
-          upsert,
-          JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY);
+      return List.of(
+          buildIndexUpsert(
+              JobIndexBackendSupport.connectorPartitionKey(connectorKey),
+              JobIndexBackendSupport.connectorSortKey(connectorKey),
+              JobIndexBackendSupport.KIND_CONNECTOR,
+              upsert,
+              JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
     }
     var globalStateKey = JobIndexBackendSupport.parseGlobalStateKey(upsert.pointerKey());
     if (globalStateKey != null) {
-      return buildIndexUpsert(
-          JobIndexBackendSupport.globalStatePartitionKey(globalStateKey),
-          JobIndexBackendSupport.globalStateSortKey(globalStateKey),
-          JobIndexBackendSupport.KIND_GLOBAL_STATE,
-          upsert,
-          JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY);
+      return List.of(
+          buildIndexUpsert(
+              JobIndexBackendSupport.globalStatePartitionKey(globalStateKey),
+              JobIndexBackendSupport.globalStateSortKey(globalStateKey),
+              JobIndexBackendSupport.KIND_GLOBAL_STATE,
+              upsert,
+              JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
     }
     var accountStateKey = JobIndexBackendSupport.parseAccountStateKey(upsert.pointerKey());
     if (accountStateKey != null) {
-      return buildIndexUpsert(
-          JobIndexBackendSupport.accountStatePartitionKey(accountStateKey),
-          JobIndexBackendSupport.accountStateSortKey(accountStateKey),
-          JobIndexBackendSupport.KIND_ACCOUNT_STATE,
-          upsert,
-          JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY);
+      return List.of(
+          buildIndexUpsert(
+              JobIndexBackendSupport.accountStatePartitionKey(accountStateKey),
+              JobIndexBackendSupport.accountStateSortKey(accountStateKey),
+              JobIndexBackendSupport.KIND_ACCOUNT_STATE,
+              upsert,
+              JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
     }
     var connectorStateKey = JobIndexBackendSupport.parseConnectorStateKey(upsert.pointerKey());
     if (connectorStateKey != null) {
-      return buildIndexUpsert(
-          JobIndexBackendSupport.connectorStatePartitionKey(connectorStateKey),
-          JobIndexBackendSupport.connectorStateSortKey(connectorStateKey),
-          JobIndexBackendSupport.KIND_CONNECTOR_STATE,
-          upsert,
-          JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY);
+      return List.of(
+          buildIndexUpsert(
+              JobIndexBackendSupport.connectorStatePartitionKey(connectorStateKey),
+              JobIndexBackendSupport.connectorStateSortKey(connectorStateKey),
+              JobIndexBackendSupport.KIND_CONNECTOR_STATE,
+              upsert,
+              JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
     }
     var dedupeKey = JobIndexBackendSupport.parseDedupeKey(upsert.pointerKey());
     if (dedupeKey != null) {
-      return buildIndexUpsert(
-          JobIndexBackendSupport.dedupePartitionKey(dedupeKey),
-          JobIndexBackendSupport.dedupeSortKey(dedupeKey),
-          JobIndexBackendSupport.KIND_DEDUPE,
-          upsert,
-          JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY);
+      return List.of(
+          buildIndexUpsert(
+              JobIndexBackendSupport.dedupePartitionKey(dedupeKey),
+              JobIndexBackendSupport.dedupeSortKey(dedupeKey),
+              JobIndexBackendSupport.KIND_DEDUPE,
+              upsert,
+              JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
     }
     throw new IllegalArgumentException(
         "Unsupported reconcile job index upsert key: " + upsert.pointerKey());
   }
 
   private TransactWriteItem buildPointerDelete(ReconcileJobIndexStore.JobIndexDelete delete) {
+    var lookupKey = JobIndexBackendSupport.parseLookupKey(delete.pointerKey());
+    if (lookupKey != null) {
+      LookupPhysicalKey physicalKey = lookupDeletePhysicalKey(lookupKey, delete.expectedVersion());
+      return buildDelete(
+          physicalKey.partitionKey(), physicalKey.sortKey(), delete.expectedVersion());
+    }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(delete.pointerKey());
     if (canonicalKey != null) {
       return buildDelete(
           JobIndexBackendSupport.canonicalPartitionKey(canonicalKey),
           JobIndexBackendSupport.canonicalSortKey(canonicalKey),
-          delete.expectedVersion());
-    }
-    var lookupKey = JobIndexBackendSupport.parseLookupKey(delete.pointerKey());
-    if (lookupKey != null) {
-      return buildDelete(
-          JobIndexBackendSupport.lookupPartitionKey(),
-          JobIndexBackendSupport.lookupSortKey(lookupKey),
           delete.expectedVersion());
     }
     var parentKey = JobIndexBackendSupport.parseParentKey(delete.pointerKey());
@@ -743,58 +776,82 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         "Unsupported reconcile job index delete key: " + delete.pointerKey());
   }
 
-  private TransactWriteItem buildPointerCheckAbsent(String pointerKey) {
-    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(pointerKey);
-    if (canonicalKey != null) {
-      return buildCheckAbsent(
-          JobIndexBackendSupport.canonicalPartitionKey(canonicalKey),
-          JobIndexBackendSupport.canonicalSortKey(canonicalKey));
-    }
+  private List<TransactWriteItem> buildPointerCheckAbsent(String pointerKey) {
     var lookupKey = JobIndexBackendSupport.parseLookupKey(pointerKey);
     if (lookupKey != null) {
-      return buildCheckAbsent(
-          JobIndexBackendSupport.lookupPartitionKey(),
-          JobIndexBackendSupport.lookupSortKey(lookupKey));
+      String sortKey = JobIndexBackendSupport.lookupSortKey(lookupKey);
+      return List.of(
+          buildCheckAbsent(JobIndexBackendSupport.lookupPartitionKey(), sortKey),
+          buildCheckAbsent(JobIndexBackendSupport.legacyLookupPartitionKey(), sortKey));
+    }
+    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(pointerKey);
+    if (canonicalKey != null) {
+      return List.of(
+          buildCheckAbsent(
+              JobIndexBackendSupport.canonicalPartitionKey(canonicalKey),
+              JobIndexBackendSupport.canonicalSortKey(canonicalKey)));
     }
     var parentKey = JobIndexBackendSupport.parseParentKey(pointerKey);
     if (parentKey != null) {
-      return buildCheckAbsent(
-          JobIndexBackendSupport.parentPartitionKey(parentKey),
-          JobIndexBackendSupport.parentSortKey(parentKey));
+      return List.of(
+          buildCheckAbsent(
+              JobIndexBackendSupport.parentPartitionKey(parentKey),
+              JobIndexBackendSupport.parentSortKey(parentKey)));
     }
     var connectorKey = JobIndexBackendSupport.parseConnectorKey(pointerKey);
     if (connectorKey != null) {
-      return buildCheckAbsent(
-          JobIndexBackendSupport.connectorPartitionKey(connectorKey),
-          JobIndexBackendSupport.connectorSortKey(connectorKey));
+      return List.of(
+          buildCheckAbsent(
+              JobIndexBackendSupport.connectorPartitionKey(connectorKey),
+              JobIndexBackendSupport.connectorSortKey(connectorKey)));
     }
     var globalStateKey = JobIndexBackendSupport.parseGlobalStateKey(pointerKey);
     if (globalStateKey != null) {
-      return buildCheckAbsent(
-          JobIndexBackendSupport.globalStatePartitionKey(globalStateKey),
-          JobIndexBackendSupport.globalStateSortKey(globalStateKey));
+      return List.of(
+          buildCheckAbsent(
+              JobIndexBackendSupport.globalStatePartitionKey(globalStateKey),
+              JobIndexBackendSupport.globalStateSortKey(globalStateKey)));
     }
     var accountStateKey = JobIndexBackendSupport.parseAccountStateKey(pointerKey);
     if (accountStateKey != null) {
-      return buildCheckAbsent(
-          JobIndexBackendSupport.accountStatePartitionKey(accountStateKey),
-          JobIndexBackendSupport.accountStateSortKey(accountStateKey));
+      return List.of(
+          buildCheckAbsent(
+              JobIndexBackendSupport.accountStatePartitionKey(accountStateKey),
+              JobIndexBackendSupport.accountStateSortKey(accountStateKey)));
     }
     var connectorStateKey = JobIndexBackendSupport.parseConnectorStateKey(pointerKey);
     if (connectorStateKey != null) {
-      return buildCheckAbsent(
-          JobIndexBackendSupport.connectorStatePartitionKey(connectorStateKey),
-          JobIndexBackendSupport.connectorStateSortKey(connectorStateKey));
+      return List.of(
+          buildCheckAbsent(
+              JobIndexBackendSupport.connectorStatePartitionKey(connectorStateKey),
+              JobIndexBackendSupport.connectorStateSortKey(connectorStateKey)));
     }
     var dedupeKey = JobIndexBackendSupport.parseDedupeKey(pointerKey);
     if (dedupeKey != null) {
-      return buildCheckAbsent(
-          JobIndexBackendSupport.dedupePartitionKey(dedupeKey),
-          JobIndexBackendSupport.dedupeSortKey(dedupeKey));
+      return List.of(
+          buildCheckAbsent(
+              JobIndexBackendSupport.dedupePartitionKey(dedupeKey),
+              JobIndexBackendSupport.dedupeSortKey(dedupeKey)));
     }
     throw new IllegalArgumentException(
         "Unsupported reconcile job index check-absent key: " + pointerKey);
   }
+
+  private LookupPhysicalKey lookupDeletePhysicalKey(
+      JobIndexBackendSupport.LookupKey lookupKey, long expectedVersion) {
+    String sortKey = JobIndexBackendSupport.lookupSortKey(lookupKey);
+    var current =
+        loadIndexPointer(
+            JobIndexBackendSupport.lookupPartitionKey(),
+            sortKey,
+            JobIndexBackendSupport.ATTR_BLOB_URI);
+    if (current.isPresent() && current.get().version() == expectedVersion) {
+      return new LookupPhysicalKey(JobIndexBackendSupport.lookupPartitionKey(), sortKey);
+    }
+    return new LookupPhysicalKey(JobIndexBackendSupport.legacyLookupPartitionKey(), sortKey);
+  }
+
+  private record LookupPhysicalKey(String partitionKey, String sortKey) {}
 
   private TransactWriteItem buildCanonicalUpsert(
       JobIndexBackendSupport.CanonicalJobKey key, ReconcileJobIndexStore.JobIndexUpsert upsert) {
@@ -932,13 +989,23 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         .build();
   }
 
+  private static String stripLeadingSlash(String key) {
+    if (key == null || key.isBlank()) {
+      return "";
+    }
+    return key.startsWith("/") ? key.substring(1) : key;
+  }
+
   private static GenericPointerKey genericPointerKey(String pointerKey) {
     String key = pointerKey == null ? "" : pointerKey;
     String k = key.startsWith("/") ? key.substring(1) : key;
-    if (k.startsWith("accounts/by-id/") || k.startsWith("accounts/by-name/")) {
+    String accountByIdPrefix = stripLeadingSlash(Keys.accountPointerByIdPrefix());
+    String accountByNamePrefix = stripLeadingSlash(Keys.accountPointerByNamePrefix());
+    String accountRootPrefix = stripLeadingSlash(Keys.accountRootPrefix());
+    if (k.startsWith(accountByIdPrefix) || k.startsWith(accountByNamePrefix)) {
       return new GenericPointerKey(GENERIC_POINTER_GLOBAL_PK, k);
     }
-    if (!k.startsWith("accounts/")) {
+    if (!k.startsWith(accountRootPrefix)) {
       throw new IllegalArgumentException("unexpected key: " + pointerKey);
     }
     int firstSlash = k.indexOf('/');
@@ -948,7 +1015,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     }
     String accountId = k.substring(firstSlash + 1, secondSlash);
     String remainder = k.substring(secondSlash + 1);
-    return new GenericPointerKey("accounts/" + accountId, remainder);
+    return new GenericPointerKey(accountRootPrefix + accountId, remainder);
   }
 
   private record GenericPointerKey(String partitionKey, String sortKey) {}
