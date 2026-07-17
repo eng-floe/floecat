@@ -292,6 +292,22 @@ public final class FileGroupTargetStatsRollup {
     private String displayName = "";
     private String logicalType = "";
 
+    /** Total sources folded into this column (files or partials), sketch-bearing or not. */
+    private int contributors = 0;
+
+    /**
+     * The contributing source's stats, held verbatim while it remains the ONLY contributor; {@code
+     * null} once a second source folds in.
+     *
+     * <p>This is the single sole-source rule of the rollup: producer-owned sketch payloads are
+     * never merged, re-encoded, or synthesized here — a payload from one of several sources
+     * describes only that source's rows and must not be advertised as the column's distribution.
+     * But when exactly one source contributed the whole column, its payloads ARE the column's
+     * distribution, so {@link #toScalar} propagates its scalar sketches and {@link #aggregateNdv}
+     * its entire NDV envelope untouched.
+     */
+    private ScalarStats soleSource;
+
     /** Cached decoded form of logicalType — decoding is not free, so cache after first decode. */
     private LogicalType decodedLogicalType = null;
 
@@ -301,8 +317,6 @@ public final class FileGroupTargetStatsRollup {
     private String min;
     private String max;
     private final ColumnNdv ndv = new ColumnNdv();
-    private Ndv singleSourceNdv;
-    private int ndvContributors = 0;
     private final Set<String> droppedNonThetaNdvTypes = new java.util.LinkedHashSet<>();
     private Double fallbackNdvEstimate;
     private long ndvRowsSeen = 0L;
@@ -312,6 +326,10 @@ public final class FileGroupTargetStatsRollup {
     private long totalRowsForWidth = 0L;
 
     void add(TargetStatsRecord source, ScalarStats scalar) {
+      contributors++;
+      // Exactly one contributor means its stats describe the whole column (see soleSource); a
+      // second contributor voids that claim for good.
+      soleSource = contributors == 1 ? scalar : null;
       if (source != null && metadataSource == null && source.hasMetadata()) {
         metadataSource = source;
       }
@@ -380,6 +398,10 @@ public final class FileGroupTargetStatsRollup {
       if (aggregatedNdv != null) {
         builder.setNdv(aggregatedNdv);
       }
+      if (soleSource != null) {
+        // Sole-source rule: propagated verbatim — never re-encoded, never merged.
+        builder.addAllSketches(soleSource.getSketchesList());
+      }
       if (totalRowsForWidth > 0) {
         builder.setAvgWidthBytes(
             Math.max(1L, (totalWidthBytes + totalRowsForWidth - 1) / totalRowsForWidth));
@@ -393,13 +415,7 @@ public final class FileGroupTargetStatsRollup {
         return;
       }
       Ndv currentNdv = scalar.getNdv();
-      ndvContributors++;
       collectNdvFallback(currentNdv);
-      if (ndvContributors == 1) {
-        singleSourceNdv = currentNdv;
-      } else {
-        singleSourceNdv = null;
-      }
       for (var sketch : currentNdv.getSketchesList()) {
         String type =
             sketch.getSketchType() == null ? "" : sketch.getSketchType().toLowerCase(Locale.ROOT);
@@ -410,7 +426,7 @@ public final class FileGroupTargetStatsRollup {
           // Only theta sketches can be unioned here; HLL/tuple NDV sketches from a multi-file group
           // are not mergeable, so they are not folded in. Record the type so aggregateNdv can flag
           // that the emitted estimate is a floor for mixed-format inputs rather than dropping it
-          // silently.
+          // silently. (Irrelevant for a sole source, whose envelope is returned verbatim.)
           droppedNonThetaNdvTypes.add(sketch.getSketchType());
         }
       }
@@ -441,14 +457,19 @@ public final class FileGroupTargetStatsRollup {
     }
 
     private Ndv aggregateNdv() {
+      if (soleSource != null) {
+        // Sole-source rule: the one contributor's envelope IS the column's — estimate, theta, and
+        // producer-owned payloads (tuple, HLL, …) propagate verbatim, never re-encoded or merged.
+        return soleSource.hasNdv() ? soleSource.getNdv() : null;
+      }
       ndv.finalizeTheta();
-      if (!droppedNonThetaNdvTypes.isEmpty() && ndvContributors > 1) {
+      if (!droppedNonThetaNdvTypes.isEmpty()) {
         // Non-theta NDV sketches across multiple files could not be merged, so the aggregate
         // estimate reflects only the theta-bearing (or rollup-max) subset — a floor, not exact.
         LOG.warnf(
-            "NDV rollup could not merge non-theta sketch type(s) %s across %d files; "
+            "NDV rollup could not merge non-theta sketch type(s) %s across %d sources; "
                 + "aggregate NDV estimate is a floor for this column",
-            droppedNonThetaNdvTypes, ndvContributors);
+            droppedNonThetaNdvTypes, contributors);
       }
       if (ndv.approx != null || (ndv.sketches != null && !ndv.sketches.isEmpty())) {
         Ndv.Builder builder = Ndv.newBuilder();
@@ -491,9 +512,6 @@ public final class FileGroupTargetStatsRollup {
           }
         }
         return builder.build();
-      }
-      if (ndvContributors == 1 && singleSourceNdv != null) {
-        return singleSourceNdv;
       }
       if (fallbackNdvEstimate != null) {
         NdvApprox.Builder approx =

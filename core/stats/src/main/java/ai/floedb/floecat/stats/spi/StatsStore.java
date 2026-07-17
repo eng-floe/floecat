@@ -43,6 +43,21 @@ public interface StatsStore {
     RETRYABLE_IN_PROGRESS
   }
 
+  /**
+   * Signals that a frozen generation token cannot be resolved before any target-specific read.
+   * Callers may handle this once for the whole generation-scoped batch rather than isolating
+   * individual targets. Retryable storage failures must retain their retryable exception type.
+   */
+  final class GenerationUnavailableException extends RuntimeException {
+    public GenerationUnavailableException(String message) {
+      super(message);
+    }
+
+    public GenerationUnavailableException(String message, Throwable cause) {
+      super(message, cause);
+    }
+  }
+
   /** Upserts a target stats record. */
   void putTargetStats(TargetStatsRecord value);
 
@@ -144,6 +159,34 @@ public interface StatsStore {
     Map<String, Optional<TargetStatsRecord>> out = new LinkedHashMap<>(targets.size());
     for (StatsTarget target : targets) {
       out.put(StatsTargetIdentity.storageId(target), getTargetStats(tableId, snapshotId, target));
+    }
+    return Collections.unmodifiableMap(out);
+  }
+
+  /**
+   * Returns the target stats record for the exact table/snapshot/target key within the frozen stats
+   * generation named by {@code generationToken}. Stores that do not track generations serve the
+   * live exact-snapshot record.
+   */
+  default Optional<TargetStatsRecord> getTargetStatsInGeneration(
+      ResourceId tableId, long snapshotId, String generationToken, StatsTarget target) {
+    return getTargetStats(tableId, snapshotId, target);
+  }
+
+  /**
+   * Batch variant of {@link #getTargetStatsInGeneration}. Tracking stores must read the immutable
+   * keyspace named by {@code generationToken}, not the live active generation for the snapshot.
+   */
+  default Map<String, Optional<TargetStatsRecord>> getTargetStatsBatchInGeneration(
+      ResourceId tableId, long snapshotId, String generationToken, List<StatsTarget> targets) {
+    if (targets == null || targets.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, Optional<TargetStatsRecord>> out = new LinkedHashMap<>(targets.size());
+    for (StatsTarget target : targets) {
+      out.put(
+          StatsTargetIdentity.storageId(target),
+          getTargetStatsInGeneration(tableId, snapshotId, generationToken, target));
     }
     return Collections.unmodifiableMap(out);
   }

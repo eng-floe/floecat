@@ -25,9 +25,10 @@ import jakarta.inject.Inject;
 import java.util.function.LongConsumer;
 
 /**
- * The durable queue of tables whose post-transaction root resync failed and awaits re-drive by the
- * periodic transaction GC. A table only ever written through REST transactions has no other writer
- * to converge its root, so an absorbed resync failure must leave a durable trace.
+ * The durable queue of tables whose root needs a re-driven resync by the periodic transaction GC.
+ * Two kinds of writer enqueue: the post-transaction resync path when its attempt was absorbed (a
+ * table only ever written through REST transactions has no other writer to converge its root), and
+ * query-path reads that observed a broken root ({@link RootRepairRequests}).
  *
  * <p>Enqueueing when a marker already exists TOUCHES it (bumps the pointer version): the GC pass
  * clears markers with a versioned delete taken against the version it listed, so a failure recorded
@@ -37,7 +38,7 @@ import java.util.function.LongConsumer;
 @ApplicationScoped
 public class RootResyncQueue {
 
-  private static final int ENQUEUE_ATTEMPTS = 4;
+  static final int ENQUEUE_ATTEMPTS = 4;
   private static final long[] RETRY_BACKOFF_MS = {10L, 25L, 50L};
 
   private final PointerStore pointerStore;

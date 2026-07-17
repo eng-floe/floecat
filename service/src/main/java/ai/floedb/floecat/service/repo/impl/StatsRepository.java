@@ -228,6 +228,8 @@ public class StatsRepository implements StatsStore {
                 .map(this::canonicalRecord)
                 .peek(record -> requireRecordForSnapshot(tableId, snapshotId, record))
                 .toList();
+    Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
+    canonicalRecords = carrySketchesFromSuperseded(tableId, snapshotId, canonicalRecords, current);
     markGenerationPublishing(tableId, snapshotId, effectiveGenerationId);
     List<TargetStatsWrite> writes = new ArrayList<>(canonicalRecords.size());
     for (TargetStatsRecord record : canonicalRecords) {
@@ -238,7 +240,6 @@ public class StatsRepository implements StatsStore {
               record));
     }
     targetStatsStorage.overwriteBatch(writes);
-    Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
     publishActiveGeneration(tableId, snapshotId, effectiveGenerationId, current);
     for (TargetStatsRecord record :
         listAllInGeneration(tableId, snapshotId, effectiveGenerationId)) {
@@ -363,13 +364,41 @@ public class StatsRepository implements StatsStore {
   @Override
   public Map<String, Optional<TargetStatsRecord>> getTargetStatsBatch(
       ResourceId tableId, long snapshotId, List<StatsTarget> targets) {
+    return getTargetStatsBatchInResolvedGeneration(
+        tableId,
+        snapshotId,
+        targets,
+        activeGeneration(tableId, snapshotId).map(ActiveSnapshotStats::generationId));
+  }
+
+  @Override
+  public Optional<TargetStatsRecord> getTargetStatsInGeneration(
+      ResourceId tableId, long snapshotId, String generationToken, StatsTarget target) {
+    return readGenerationIdForFrozenToken(snapshotId, generationToken)
+        .flatMap(
+            generationId ->
+                targetStatsStorage.getByPointer(
+                    targetPointerKey(tableId, snapshotId, generationId, target)));
+  }
+
+  @Override
+  public Map<String, Optional<TargetStatsRecord>> getTargetStatsBatchInGeneration(
+      ResourceId tableId, long snapshotId, String generationToken, List<StatsTarget> targets) {
+    return getTargetStatsBatchInResolvedGeneration(
+        tableId, snapshotId, targets, readGenerationIdForFrozenToken(snapshotId, generationToken));
+  }
+
+  private Map<String, Optional<TargetStatsRecord>> getTargetStatsBatchInResolvedGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      List<StatsTarget> targets,
+      Optional<String> generationIdOpt) {
     if (targets == null || targets.isEmpty()) {
       return Map.of();
     }
 
-    // Resolve active generation ONCE — shared manifest for all targets in this snapshot.
-    Optional<ActiveSnapshotStats> activeOpt = activeGeneration(tableId, snapshotId);
-    if (activeOpt.isEmpty()) {
+    // Resolve generation ONCE — shared manifest for all targets in this snapshot.
+    if (generationIdOpt.isEmpty()) {
       // No stats captured for this snapshot yet — all misses.
       Map<String, Optional<TargetStatsRecord>> out = new LinkedHashMap<>(targets.size());
       for (StatsTarget t : targets) {
@@ -377,7 +406,7 @@ public class StatsRepository implements StatsStore {
       }
       return Collections.unmodifiableMap(out);
     }
-    ActiveSnapshotStats active = activeOpt.get();
+    String generationId = generationIdOpt.get();
 
     // Parallel fetch: one virtual thread per target, bounded by MAX_PARALLEL_READS.
     // The semaphore is a sliding window: as any read completes its slot is immediately
@@ -391,8 +420,7 @@ public class StatsRepository implements StatsStore {
               .map(
                   target -> {
                     String key = StatsTargetIdentity.storageId(target);
-                    String pKey =
-                        targetPointerKey(tableId, snapshotId, active.generationId(), target);
+                    String pKey = targetPointerKey(tableId, snapshotId, generationId, target);
                     return CompletableFuture.runAsync(
                         () -> {
                           semaphore.acquireUninterruptibly();
@@ -415,6 +443,25 @@ public class StatsRepository implements StatsStore {
       out.put(k, parallel.getOrDefault(k, Optional.empty()));
     }
     return Collections.unmodifiableMap(out);
+  }
+
+  private Optional<String> readGenerationIdForFrozenToken(long snapshotId, String generationToken) {
+    if (generationToken == null || generationToken.isBlank()) {
+      return Optional.empty();
+    }
+    String unavailableMessage =
+        "frozen stats generation manifest unavailable for snapshot "
+            + snapshotId
+            + ": "
+            + generationToken;
+    try {
+      return Optional.of(
+          loadGenerationId(generationToken)
+              .orElseThrow(
+                  () -> new StatsStore.GenerationUnavailableException(unavailableMessage)));
+    } catch (BaseResourceRepository.CorruptionException e) {
+      throw new StatsStore.GenerationUnavailableException(unavailableMessage, e);
+    }
   }
 
   @Override
@@ -830,6 +877,11 @@ public class StatsRepository implements StatsStore {
                 .peek(record -> requireRecordForSnapshot(tableId, snapshotId, record))
                 .toList();
     Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
+    // Generations only enrich: fold the superseded generation's sketch payloads into same-target
+    // records before writing, so a scalar-only republish (e.g. a file-group rollup) never loses
+    // sketches an earlier capture already published for this unchanged snapshot. See
+    // StatsGenerationEnrichment for the contract and its deliberate boundaries.
+    canonicalRecords = carrySketchesFromSuperseded(tableId, snapshotId, canonicalRecords, current);
     String generationId = newGenerationId();
 
     try {
@@ -879,6 +931,42 @@ public class StatsRepository implements StatsStore {
     TargetStatsRecord canonical = TargetStatsRecords.canonicalize(value);
     Schemas.TARGET_STATS.keyFromValue.apply(canonical);
     return canonical;
+  }
+
+  /**
+   * Folds the superseded generation's sketch payloads into the records a new generation is about to
+   * publish (see {@link StatsGenerationEnrichment} for the contract). One batched read of the
+   * superseded generation, only for the scalar-bearing (column-style) targets being republished —
+   * this runs on the finalize/republish path, never on the query hot path.
+   */
+  private List<TargetStatsRecord> carrySketchesFromSuperseded(
+      ResourceId tableId,
+      long snapshotId,
+      List<TargetStatsRecord> incoming,
+      Optional<ActiveSnapshotStats> superseded) {
+    if (superseded.isEmpty() || incoming.isEmpty()) {
+      return incoming;
+    }
+    List<StatsTarget> scalarTargets =
+        incoming.stream()
+            .filter(TargetStatsRecord::hasScalar)
+            .map(TargetStatsRecord::getTarget)
+            .toList();
+    if (scalarTargets.isEmpty()) {
+      return incoming;
+    }
+    Map<String, Optional<TargetStatsRecord>> previous =
+        getTargetStatsBatchInResolvedGeneration(
+            tableId, snapshotId, scalarTargets, superseded.map(ActiveSnapshotStats::generationId));
+    return incoming.stream()
+        .map(
+            record ->
+                previous
+                    .getOrDefault(
+                        StatsTargetIdentity.storageId(record.getTarget()), Optional.empty())
+                    .map(prior -> StatsGenerationEnrichment.carrySketchesForward(record, prior))
+                    .orElse(record))
+        .toList();
   }
 
   private void publishActiveGeneration(

@@ -20,6 +20,7 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.FetchTableConstraintsRequest;
 import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
 import ai.floedb.floecat.query.rpc.RequestedStat;
@@ -72,11 +73,12 @@ final class PlannerStatsRequestNormalizer {
             PLANNER_STATS_REQUEST_TABLE_ID_MISSING,
             Map.of("table_index", Integer.toString(tableIndex)));
       }
+      ResourceId tableId = normalizePlannerTableId(table.getTableId());
       if (table.getTargetsCount() == 0) {
         throw GrpcErrors.invalidArgument(
             correlationId,
             PLANNER_STATS_REQUEST_TARGETS_MISSING,
-            Map.of("table_id", table.getTableId().getId()));
+            Map.of("table_id", tableId.getId()));
       }
 
       List<PlannerStatsTargetNeed> asTargets = new ArrayList<>(table.getTargetsCount());
@@ -102,18 +104,18 @@ final class PlannerStatsRequestNormalizer {
             new PlannerStatsTargetNeed(
                 target,
                 requestedStats,
-                validatedStorageId(correlationId, table.getTableId().getId(), target),
+                validatedStorageId(correlationId, tableId.getId(), target),
                 priority));
       }
 
       asTargets.sort(Comparator.comparingInt(PlannerStatsTargetNeed::priority));
       List<PlannerStatsTargetNeed> dedupedRaw =
-          dedupeTargets(correlationId, table.getTableId().getId(), asTargets);
+          dedupeTargets(correlationId, tableId.getId(), asTargets);
       if (dedupedRaw.isEmpty()) {
         throw GrpcErrors.invalidArgument(
             correlationId,
             PLANNER_STATS_REQUEST_TARGETS_MISSING,
-            Map.of("table_id", table.getTableId().getId()));
+            Map.of("table_id", tableId.getId()));
       }
 
       List<PlannerStatsTargetNeed> deduped = new ArrayList<>(dedupedRaw.size());
@@ -141,8 +143,7 @@ final class PlannerStatsRequestNormalizer {
         omitted = List.copyOf(deduped);
         omittedTargets += deduped.size();
         normalized.add(
-            new PlannerStatsTableRequest(
-                table.getTableId(), List.of(), omitted, snapshotOverride(table)));
+            new PlannerStatsTableRequest(tableId, List.of(), omitted, snapshotOverride(table)));
         continue;
       }
       if (deduped.size() > remaining) {
@@ -154,7 +155,7 @@ final class PlannerStatsRequestNormalizer {
       }
       normalized.add(
           new PlannerStatsTableRequest(
-              table.getTableId(), List.copyOf(deduped), omitted, snapshotOverride(table)));
+              tableId, List.copyOf(deduped), omitted, snapshotOverride(table)));
       totalTargets += deduped.size();
     }
 
@@ -173,6 +174,13 @@ final class PlannerStatsRequestNormalizer {
     }
   }
 
+  private static ResourceId normalizePlannerTableId(ResourceId tableId) {
+    if (tableId.getKind() == ResourceKind.RK_UNSPECIFIED) {
+      return tableId.toBuilder().setKind(ResourceKind.RK_TABLE).build();
+    }
+    return tableId;
+  }
+
   List<ResourceId> normalizeConstraints(
       String correlationId, FetchTableConstraintsRequest request) {
     if (request.getTableIdsCount() == 0) {
@@ -189,7 +197,9 @@ final class PlannerStatsRequestNormalizer {
             PLANNER_STATS_REQUEST_TABLE_ID_MISSING,
             Map.of("table_index", Integer.toString(tableIndex)));
       }
-      deduped.putIfAbsent(RequestScopeConstraintPruner.relationKey(tableId), tableId);
+      ResourceId normalizedTableId = normalizePlannerTableId(tableId);
+      deduped.putIfAbsent(
+          RequestScopeConstraintPruner.relationKey(normalizedTableId), normalizedTableId);
     }
     if (deduped.size() > maxTables) {
       throw GrpcErrors.invalidArgument(

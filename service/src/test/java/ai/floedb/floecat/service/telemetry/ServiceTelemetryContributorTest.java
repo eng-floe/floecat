@@ -201,6 +201,21 @@ class ServiceTelemetryContributorTest {
   }
 
   @Test
+  void registersPlannerLookupOutcomeMetricWithExpectedTags() {
+    TelemetryRegistry registry = new TelemetryRegistry();
+    registry.register(new ServiceTelemetryContributor());
+
+    MetricDef plannerLookup =
+        registry.metric(ServiceMetrics.Stats.PLANNER_LOOKUP_OUTCOMES_TOTAL.name());
+
+    assertThat(plannerLookup).isNotNull();
+    assertThat(plannerLookup.requiredTags())
+        .containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
+    assertThat(plannerLookup.allowedTags())
+        .containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
+  }
+
+  @Test
   void registersPartialStateAnomalyMetricWithExpectedTags() {
     TelemetryRegistry registry = new TelemetryRegistry();
     registry.register(new ServiceTelemetryContributor());

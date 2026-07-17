@@ -16,7 +16,10 @@
 
 package ai.floedb.floecat.service.query;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -24,7 +27,11 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
+import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,6 +40,7 @@ class PinValidatorTest {
 
   private TableRootRepository roots;
   private PinValidator validator;
+  private InMemoryPointerStore repairPointers;
 
   private static final ResourceId TABLE =
       ResourceId.newBuilder()
@@ -44,9 +52,19 @@ class PinValidatorTest {
   @BeforeEach
   void setUp() {
     roots = mock(TableRootRepository.class);
-    validator = new PinValidator(roots);
+    // A real repair pipeline over an in-memory store, so tests can assert which integrity
+    // failures durably enqueue the table for the resync re-drive and which do not.
+    repairPointers = new InMemoryPointerStore();
+    validator =
+        new PinValidator(roots, new RootRepairRequests(new RootResyncQueue(repairPointers)));
     // The pinned root resolves at its pinned version unless a test overrides it.
     when(roots.blobEtag("s3://t/root/abc.pb")).thenReturn("etag-root");
+  }
+
+  private boolean repairEnqueued(ResourceId tableId) {
+    return repairPointers
+        .get(Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId()))
+        .isPresent();
   }
 
   /** A root-backed pin — the only shape construction can produce. */
@@ -76,17 +94,48 @@ class PinValidatorTest {
   }
 
   @Test
-  void aVanishedRootBlobFails() {
+  void aVanishedRootBlobFailsAndEnqueuesRepair() {
     when(roots.blobEtag("s3://t/root/abc.pb")).thenReturn(null);
     assertThrows(StatusRuntimeException.class, () -> validator.validate("corr", pin().build()));
+    // A missing pinned root may mean the live pointer still names a swept blob — every future
+    // query fails until the root is re-derived, so the table is reported for the resync re-drive.
+    assertTrue(repairEnqueued(TABLE));
   }
 
   @Test
-  void aRootVersionMismatchFails() {
+  void aRootVersionMismatchFailsWithoutRepair() {
     // The URI is content-addressed, so a different etag at the pinned URI is a broken store
     // invariant, not a benign refresh.
     when(roots.blobEtag("s3://t/root/abc.pb")).thenReturn("etag-OTHER");
     assertThrows(StatusRuntimeException.class, () -> validator.validate("corr", pin().build()));
+    // The blob was REPLACED, not lost: a fresh pin would succeed, so there is nothing for the
+    // resync re-drive to converge and no marker is written.
+    assertFalse(repairEnqueued(TABLE));
+  }
+
+  @Test
+  void aMissingPinnedTableBlobRaisesInternalAndEnqueuesRepair() {
+    assertThrows(
+        StatusRuntimeException.class,
+        () -> validator.requirePinnedTableBlob(java.util.Optional.empty(), "corr", TABLE));
+    // The committed root names a blob no read can load; without a re-derived root every future
+    // query fails identically, so the failure durably enqueues the table for repair.
+    assertTrue(repairEnqueued(TABLE));
+  }
+
+  @Test
+  void aMissingPinnedSnapshotBlobRaisesInternalAndEnqueuesRepair() {
+    assertThrows(
+        StatusRuntimeException.class,
+        () -> validator.requirePinnedSnapshotBlob(java.util.Optional.empty(), "corr", TABLE, 7L));
+    assertTrue(repairEnqueued(TABLE));
+  }
+
+  @Test
+  void aPresentPinnedBlobUnwrapsWithoutRepair() {
+    assertEquals(
+        "blob", validator.requirePinnedTableBlob(java.util.Optional.of("blob"), "corr", TABLE));
+    assertFalse(repairEnqueued(TABLE));
   }
 
   @Test

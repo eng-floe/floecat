@@ -33,11 +33,15 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
+import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
 import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
 import ai.floedb.floecat.service.catalog.impl.TableRootMutations;
 import ai.floedb.floecat.service.catalog.impl.TableRootSynthesizer;
+import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -56,6 +60,8 @@ class SnapshotHelperTest {
   private TableRepository tableRepo;
   private TableRootRepository roots;
   private TableRootCommitter committer;
+  private InMemoryPointerStore repairPointers;
+  private PinValidator validator;
 
   @BeforeEach
   void setUp() {
@@ -67,7 +73,18 @@ class SnapshotHelperTest {
     when(tableRepo.blobEtag("s3://tbl/table.pb")).thenReturn("etag-t");
     roots = new TableRootRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     committer = new TableRootCommitter(roots);
-    helper = new SnapshotHelper(repository, roots, committer, null);
+    // A real repair pipeline over its own in-memory store, so tests can assert which broken-root
+    // observations durably enqueue the table for the resync re-drive and which do not.
+    repairPointers = new InMemoryPointerStore();
+    validator =
+        new PinValidator(roots, new RootRepairRequests(new RootResyncQueue(repairPointers)));
+    helper = new SnapshotHelper(repository, roots, committer, null, validator);
+  }
+
+  private boolean repairEnqueued(ResourceId tableId) {
+    return repairPointers
+        .get(Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId()))
+        .isPresent();
   }
 
   /** Seed a snapshot in the legacy fake so its blob identity resolves for validation. */
@@ -256,7 +273,8 @@ class SnapshotHelperTest {
     TableRootSynthesizer synthesizer = mock(TableRootSynthesizer.class);
     when(synthesizer.synthesize(tableId)).thenReturn(Optional.of(synthesized));
     helper =
-        new SnapshotHelper(repository, roots, new TableRootCommitter(roots, synthesizer), null);
+        new SnapshotHelper(
+            repository, roots, new TableRootCommitter(roots, synthesizer), null, validator);
 
     TablePin pin = helper.tablePinFor("corr", tableId, null, Optional.empty());
 
@@ -272,9 +290,15 @@ class SnapshotHelperTest {
     assertThatThrownBy(() -> helper.tablePinFor("corr", tableId, null, Optional.empty()))
         .isInstanceOf(StatusRuntimeException.class)
         .satisfies(
-            e ->
-                assertThat(((StatusRuntimeException) e).getStatus().getCode())
-                    .isEqualTo(io.grpc.Status.Code.NOT_FOUND));
+            e -> {
+              var status = ((StatusRuntimeException) e).getStatus();
+              assertThat(status.getCode()).isEqualTo(io.grpc.Status.Code.NOT_FOUND);
+              // The rendered message must name the failing table — an operator triaging "no
+              // queryable snapshot" needs the table identity, not an unfilled "{id}" placeholder.
+              assertThat(status.getDescription()).contains(tableId.getId()).doesNotContain("{");
+            });
+    // An expected client state (nothing broken), so nothing is enqueued for the resync re-drive.
+    assertThat(repairEnqueued(tableId)).isFalse();
   }
 
   @Test
@@ -293,6 +317,8 @@ class SnapshotHelperTest {
             e ->
                 assertThat(((StatusRuntimeException) e).getStatus().getCode())
                     .isEqualTo(io.grpc.Status.Code.NOT_FOUND));
+    // A committed root legitimately without currency is an expected client state, not breakage.
+    assertThat(repairEnqueued(tableId)).isFalse();
   }
 
   @Test
@@ -310,6 +336,9 @@ class SnapshotHelperTest {
             e ->
                 assertThat(((StatusRuntimeException) e).getStatus().getCode())
                     .isEqualTo(io.grpc.Status.Code.INTERNAL));
+    // A broken invariant fails every query against the table until its root is re-derived, so
+    // beyond the error the table is durably enqueued for the resync re-drive.
+    assertThat(repairEnqueued(tableId)).isTrue();
   }
 
   @Test
@@ -551,7 +580,7 @@ class SnapshotHelperTest {
     // Metadata surfaces (getCommittedCurrent*) still expose 12 as the committed selection.
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, committer, tracking);
+    helper = new SnapshotHelper(repository, roots, committer, tracking, validator);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 11, "2024-02-01T00:00:00Z");
     seedSnapshot(tableId, 12, "2024-03-01T00:00:00Z");
@@ -583,7 +612,7 @@ class SnapshotHelperTest {
     // among finalized entries only; CURRENT never points at it (currency advances at finalize).
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, committer, tracking);
+    helper = new SnapshotHelper(repository, roots, committer, tracking, validator);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 11, "2024-02-01T00:00:00Z");
     seedSnapshot(tableId, 12, "2024-03-01T00:00:00Z");
@@ -683,11 +712,50 @@ class SnapshotHelperTest {
                 .build(),
             BlobRef.newBuilder().setUri("s3://t/table.pb").setVersion("vt").build(),
             true));
-    var flakyHelper = new SnapshotHelper(repository, flakyRoots, flakyCommitter, null);
+    var flakyHelper = new SnapshotHelper(repository, flakyRoots, flakyCommitter, null, validator);
 
     TablePin pin = flakyHelper.tablePinFor("corr", table, null, Optional.empty());
 
     assertThat(pin.getSnapshotId()).isEqualTo(11);
+    // The one-shot re-follow recovered, so nothing was enqueued for the resync re-drive.
+    assertThat(repairEnqueued(table)).isFalse();
+  }
+
+  @Test
+  void aPersistentlyUnreadableRootBlobFailsThePinAndEnqueuesRepair() {
+    // The pointer names a blob no read can load, and the re-follow reads the same dead URI back:
+    // the table is broken for every query until its root is re-derived. The pin still fails this
+    // query, but the table must also be durably enqueued for the resync re-drive to converge.
+    var ptr = new InMemoryPointerStore();
+    var blobStore = new InMemoryBlobStore();
+    var deadRoots =
+        new TableRootRepository(ptr, blobStore) {
+          @Override
+          public java.util.Optional<ai.floedb.floecat.catalog.rpc.TableRoot> getByBlobUri(
+              String blobUri) {
+            return java.util.Optional.empty(); // swept/corrupt: never readable
+          }
+        };
+    ResourceId table = tableId("tbl-dead-root");
+    var deadCommitter = new TableRootCommitter(deadRoots);
+    deadCommitter.commit(
+        table,
+        TableRootMutations.upsertSnapshot(
+            deadRoots,
+            table,
+            SnapshotManifestEntry.newBuilder()
+                .setSnapshotId(12)
+                .setSnapshotRef(BlobRef.newBuilder().setUri("s3://t/snap-12.pb").setVersion("v12"))
+                .setStatsGenerationRef(BlobRef.newBuilder().setUri("s3://t/stats/12/gen.pb"))
+                .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(12_000))
+                .build(),
+            BlobRef.newBuilder().setUri("s3://t/table.pb").setVersion("vt").build(),
+            true));
+    var deadHelper = new SnapshotHelper(repository, deadRoots, deadCommitter, null, validator);
+
+    assertThatThrownBy(() -> deadHelper.tablePinFor("corr", table, null, Optional.empty()))
+        .isInstanceOf(StatusRuntimeException.class);
+    assertThat(repairEnqueued(table)).isTrue();
   }
 
   @Test
@@ -709,10 +777,12 @@ class SnapshotHelperTest {
                 .build(),
             BlobRef.newBuilder().setUri("s3://t/table.pb").setVersion("vt").build(),
             true));
-    var localHelper = new SnapshotHelper(repository, roots, localCommitter, null);
+    var localHelper = new SnapshotHelper(repository, roots, localCommitter, null, validator);
 
     assertThatThrownBy(() -> localHelper.tablePinFor("corr", table, null, Optional.empty()))
         .hasMessageContaining("INTERNAL");
+    // A broken root invariant: the table is durably enqueued for the resync re-drive.
+    assertThat(repairEnqueued(table)).isTrue();
   }
 
   @Test
@@ -722,7 +792,7 @@ class SnapshotHelperTest {
     // explicit-id (reject) and AS_OF (skip) paths — not pin a snapshot that would then scan empty.
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, committer, tracking);
+    helper = new SnapshotHelper(repository, roots, committer, tracking, validator);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 7, "2024-02-01T00:00:00Z");
     // Finalize 7 (generation ref present -> becomes current), then remove its generation.
@@ -745,7 +815,7 @@ class SnapshotHelperTest {
     // not be rejected. The gate keys on presence, not on the generation being non-empty.
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, committer, tracking);
+    helper = new SnapshotHelper(repository, roots, committer, tracking, validator);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 3, "2024-02-01T00:00:00Z");
     // The stats-generation ref points at an EMPTY generation — the snapshot is finalized, it just

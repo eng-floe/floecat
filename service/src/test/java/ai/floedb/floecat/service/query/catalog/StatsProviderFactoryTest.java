@@ -23,6 +23,8 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.SketchPayload;
+import ai.floedb.floecat.catalog.rpc.SketchRole;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -41,12 +43,14 @@ import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsResolutionResult;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import java.time.Duration;
@@ -199,6 +203,47 @@ class StatsProviderFactoryTest {
   }
 
   @Test
+  void columnStatsOmitsAnEstimateLessNdvEnvelope() {
+    CountingStatsRepository repository = new CountingStatsRepository();
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsProviderFactory factory = factory(repository, store);
+    long snapshotId = 23L;
+    long columnId = 2L;
+    Ndv sketchOnlyNdv =
+        Ndv.newBuilder()
+            .addSketches(
+                SketchPayload.newBuilder()
+                    .setRole(SketchRole.SKETCH_ROLE_NDV)
+                    .setSketchType("apache-datasketches-theta-v1")
+                    .setData(ByteString.copyFromUtf8("theta-bytes")))
+            .build();
+    ScalarStats stats =
+        ScalarStats.newBuilder()
+            .setDisplayName("col")
+            .setRowCount(77)
+            .setLogicalType("int64")
+            .setNdv(sketchOnlyNdv)
+            .build();
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, snapshotId, columnId, stats, null));
+
+    QueryContext ctx = queryContextWithPin(snapshotId);
+    store.seed(ctx);
+    var view = factory.forQuery(ctx, "corr").columnStats(TABLE, columnId).orElseThrow();
+
+    assertTrue(view.ndv().isEmpty());
+    assertEquals(
+        1,
+        repository
+            .getTargetStats(TABLE, snapshotId, StatsTargetIdentity.columnTarget(columnId))
+            .orElseThrow()
+            .getScalar()
+            .getNdv()
+            .getSketchesCount());
+  }
+
+  @Test
   void pinnedSnapshotIdReflectsStoredPin() {
     CountingStatsRepository repository = new CountingStatsRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
@@ -265,7 +310,7 @@ class StatsProviderFactoryTest {
                             .setFormat(TableFormat.TF_ICEBERG)
                             .build())
                     .build()));
-    when(orchestrator.resolve(any()))
+    when(orchestrator.resolveInGeneration(any(), any()))
         .thenReturn(
             StatsResolutionResult.hit(
                 TargetStatsRecords.tableRecord(
@@ -279,7 +324,7 @@ class StatsProviderFactoryTest {
 
     ArgumentCaptor<StatsCaptureRequest> requestCaptor =
         ArgumentCaptor.forClass(StatsCaptureRequest.class);
-    Mockito.verify(orchestrator).resolve(requestCaptor.capture());
+    Mockito.verify(orchestrator).resolveInGeneration(requestCaptor.capture(), any());
     assertEquals("iceberg", requestCaptor.getValue().connectorType());
     assertEquals(Duration.ofSeconds(1), requestCaptor.getValue().latencyBudget().orElseThrow());
     assertEquals(StatsExecutionMode.SYNC, requestCaptor.getValue().executionMode());
@@ -327,14 +372,15 @@ class StatsProviderFactoryTest {
                             .setFormat(TableFormat.TF_ICEBERG)
                             .build())
                     .build()));
-    when(orchestrator.resolve(any())).thenReturn(StatsResolutionResult.skipped("sync_disabled"));
+    when(orchestrator.resolveInGeneration(any(), any()))
+        .thenReturn(StatsResolutionResult.skipped("sync_disabled"));
 
     var provider = factory.forQuery(ctx, "corr");
     provider.tableStats(TABLE);
 
     ArgumentCaptor<StatsCaptureRequest> requestCaptor =
         ArgumentCaptor.forClass(StatsCaptureRequest.class);
-    Mockito.verify(orchestrator).resolve(requestCaptor.capture());
+    Mockito.verify(orchestrator).resolveInGeneration(requestCaptor.capture(), any());
     assertEquals(StatsExecutionMode.ASYNC, requestCaptor.getValue().executionMode());
     assertTrue(requestCaptor.getValue().latencyBudget().isEmpty());
   }
@@ -381,14 +427,15 @@ class StatsProviderFactoryTest {
                             .setFormat(TableFormat.TF_ICEBERG)
                             .build())
                     .build()));
-    when(orchestrator.resolve(any())).thenReturn(StatsResolutionResult.skipped("sync_disabled"));
+    when(orchestrator.resolveInGeneration(any(), any()))
+        .thenReturn(StatsResolutionResult.skipped("sync_disabled"));
 
     var provider = factory.forQuery(ctx, "corr");
     provider.tableStats(TABLE);
 
     ArgumentCaptor<StatsCaptureRequest> requestCaptor =
         ArgumentCaptor.forClass(StatsCaptureRequest.class);
-    Mockito.verify(orchestrator).resolve(requestCaptor.capture());
+    Mockito.verify(orchestrator).resolveInGeneration(requestCaptor.capture(), any());
     assertEquals(Duration.ofSeconds(10), requestCaptor.getValue().latencyBudget().orElseThrow());
   }
 

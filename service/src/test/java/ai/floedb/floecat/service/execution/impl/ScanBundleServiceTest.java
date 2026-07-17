@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.execution.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -35,12 +36,17 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.TableInfo;
 import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
+import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
+import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsStore.StatsStorePage;
+import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -74,6 +80,7 @@ class ScanBundleServiceTest {
   private ScanBundleService service;
   private ServerSideFileIoPropertiesResolver resolver;
   private StatsStore statsStore;
+  private InMemoryPointerStore repairPointers;
 
   @BeforeEach
   void setUp() {
@@ -81,7 +88,18 @@ class ScanBundleServiceTest {
     snapshotRepo = mock(SnapshotRepository.class);
     resolver = mock(ServerSideFileIoPropertiesResolver.class);
     statsStore = mock(StatsStore.class);
-    service = new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver);
+    // A real repair pipeline over an in-memory store: initScan's missing-pinned-blob failures
+    // must durably enqueue the table for the resync re-drive, and tests assert the marker.
+    repairPointers = new InMemoryPointerStore();
+    PinValidator pinValidator =
+        new PinValidator(null, new RootRepairRequests(new RootResyncQueue(repairPointers)));
+    service = new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver, pinValidator);
+  }
+
+  private boolean repairEnqueued(ResourceId tableId) {
+    return repairPointers
+        .get(Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId()))
+        .isPresent();
   }
 
   private void stubPinnedBlobsPresent() {
@@ -128,10 +146,23 @@ class ScanBundleServiceTest {
   }
 
   @Test
-  void initScanFailsWhenPinnedTableBlobMissing() {
+  void initScanFailsWhenPinnedTableBlobMissingAndEnqueuesRepair() {
     when(tableRepo.getByBlobUriLive(TABLE_BLOB_URI)).thenReturn(Optional.empty());
 
     assertThrows(io.grpc.StatusRuntimeException.class, () -> service.initScan("corr", PIN));
+    // The pinned root names a table blob no read can load: without a re-derived root every
+    // future scan fails the same way, so the failure durably enqueues the table for repair.
+    assertTrue(repairEnqueued(TABLE_ID));
+  }
+
+  @Test
+  void initScanFailsWhenPinnedSnapshotBlobMissingAndEnqueuesRepair() {
+    when(tableRepo.getByBlobUriLive(TABLE_BLOB_URI))
+        .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE_ID).build()));
+    when(snapshotRepo.getByBlobUriLive(SNAPSHOT_BLOB_URI)).thenReturn(Optional.empty());
+
+    assertThrows(io.grpc.StatusRuntimeException.class, () -> service.initScan("corr", PIN));
+    assertTrue(repairEnqueued(TABLE_ID));
   }
 
   private static ScanSession session(String statsGeneration) {

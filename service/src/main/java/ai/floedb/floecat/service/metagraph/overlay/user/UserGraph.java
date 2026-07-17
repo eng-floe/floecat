@@ -23,6 +23,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -75,6 +76,7 @@ public final class UserGraph {
   private final SnapshotHelper snapshots;
   private final EngineHintManager hints;
   private final PrincipalProvider principal;
+  private final PinValidator pinValidator;
 
   // ----------------------------------------------------------------------
   // Constructor
@@ -113,7 +115,8 @@ public final class UserGraph {
           long metaCacheTtlSeconds,
       EngineHintManager engineHints,
       ai.floedb.floecat.stats.spi.StatsStore statsStore,
-      ImmutableBlobCache blobCache) {
+      ImmutableBlobCache blobCache,
+      PinValidator pinValidator) {
     this.cache =
         new GraphCacheManager(
             cacheMaxSize > 0, cacheMaxSize, Math.max(0L, metaCacheTtlSeconds), observability);
@@ -123,7 +126,9 @@ public final class UserGraph {
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
-    this.snapshots = new SnapshotHelper(snapshotRepo, tableRootRepo, rootCommitter, statsStore);
+    this.pinValidator = pinValidator;
+    this.snapshots =
+        new SnapshotHelper(snapshotRepo, tableRootRepo, rootCommitter, statsStore, pinValidator);
     this.hints = engineHints;
     this.principal = principal;
   }
@@ -157,7 +162,9 @@ public final class UserGraph {
         // Mirror the pre-fold node-cache knob: a positive max size enables node caching.
         cacheMaxSize > 0
             ? new ImmutableBlobCache(true, 64L * 1024 * 1024, Duration.ofMinutes(15))
-            : null);
+            : null,
+        // No pointer store in this wiring, so broken-root repair reporting is disabled.
+        new PinValidator(tableRootRepo, RootRepairRequests.disabled()));
   }
 
   /** TEST-ONLY constructor; no legacy-root synthesis. */
@@ -188,7 +195,9 @@ public final class UserGraph {
         2L,
         null,
         null,
-        new ImmutableBlobCache(true, 64L * 1024 * 1024, Duration.ofMinutes(15)));
+        new ImmutableBlobCache(true, 64L * 1024 * 1024, Duration.ofMinutes(15)),
+        // No pointer store in this wiring, so broken-root repair reporting is disabled.
+        new PinValidator(tableRootRepo, RootRepairRequests.disabled()));
   }
 
   // No writer-refresh here, deliberately (unlike the root-pointer cache): resolve() always
@@ -514,7 +523,7 @@ public final class UserGraph {
                             cid,
                             GeneratedErrorMessages.MessageKey.TABLE,
                             Map.of("id", tblId.getId())))
-            : PinValidator.requirePinnedTableBlob(
+            : pinValidator.requirePinnedTableBlob(
                 nodes.tableFromBlob(tblId, tableBlobUri), cid, tblId);
     return new SchemaResolution(tbl, schemaJsonFor(cid, tbl, snapshot, snapshotBlobUri));
   }
