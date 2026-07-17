@@ -168,6 +168,8 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
           appendJobIndexUpsert(tx, upsert);
         } else if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
           appendJobIndexDelete(tx, new CasDelete(delete.pointerKey(), delete.expectedVersion()));
+        } else if (write instanceof ReconcileJobIndexStore.JobIndexCheckAbsent check) {
+          appendJobIndexCheckAbsent(tx, check.pointerKey());
         }
       }
       for (ReconcileJobIndexStore.ReadyQueueWrite readyUpsert :
@@ -455,14 +457,15 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
       List<TransactWriteItem> tx, ReconcileJobIndexStore.JobIndexUpsert upsert) {
     var lookupKey = JobIndexBackendSupport.parseLookupKey(upsert.pointerKey());
     if (lookupKey != null) {
-      String sortKey = JobIndexBackendSupport.lookupSortKey(lookupKey);
+      var storageKey = JobIndexBackendSupport.currentLookupStorageKey(lookupKey);
       tx.add(
           buildJobIndexReferenceUpsert(
-              JobIndexBackendSupport.lookupPartitionKey(),
-              sortKey,
+              storageKey.partitionKey(),
+              storageKey.sortKey(),
               JobIndexBackendSupport.KIND_LOOKUP,
               upsert,
               JobIndexBackendSupport.ATTR_BLOB_URI));
+      tx.add(DynamoReconcileJobLookupCompatibility.legacyCheckAbsent(table, lookupKey));
       return true;
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(upsert.pointerKey());
@@ -542,11 +545,9 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
   private boolean appendJobIndexDelete(List<TransactWriteItem> tx, CasDelete delete) {
     var lookupKey = JobIndexBackendSupport.parseLookupKey(delete.key());
     if (lookupKey != null) {
-      tx.add(
-          buildDelete(
-              JobIndexBackendSupport.lookupPartitionKey(),
-              JobIndexBackendSupport.lookupSortKey(lookupKey),
-              delete.expectedVersion()));
+      tx.addAll(
+          DynamoReconcileJobLookupCompatibility.deletes(
+              table, lookupKey, delete.expectedVersion()));
       return true;
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(delete.key());
@@ -613,6 +614,15 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
       return true;
     }
     return false;
+  }
+
+  private boolean appendJobIndexCheckAbsent(List<TransactWriteItem> tx, String pointerKey) {
+    var lookupKey = JobIndexBackendSupport.parseLookupKey(pointerKey);
+    if (lookupKey == null) {
+      return false;
+    }
+    tx.addAll(DynamoReconcileJobLookupCompatibility.checkAbsent(table, lookupKey));
+    return true;
   }
 
   private TransactWriteItem buildReadyUpsert(ReadyQueueBackendSupport.ReadyQueueRow row) {

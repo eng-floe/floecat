@@ -84,6 +84,22 @@ public class ReconcileJobGc {
 
   public record GlobalResult(int scanned, int deleted, int quarantined, String nextToken) {}
 
+  public record LookupMigrationResult(
+      int scanned, int migrated, int conflicted, String nextToken) {}
+
+  public LookupMigrationResult runLegacyLookupMigrationSlice(String pageTokenIn) {
+    int pageSize =
+        ConfigProvider.getConfig()
+            .getOptionalValue(
+                "floecat.gc.reconcile-jobs.legacy-lookup-migration-page-size", Integer.class)
+            .orElse(25);
+    var page =
+        jobIndexBackend.migrateLegacyLookupEntries(
+            Math.max(1, pageSize), pageTokenIn == null ? "" : pageTokenIn);
+    return new LookupMigrationResult(
+        page.scanned(), page.migrated(), page.conflicted(), page.nextPageToken());
+  }
+
   private enum RootSummaryReadStatus {
     READABLE,
     UNREADABLE

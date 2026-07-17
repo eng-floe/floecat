@@ -77,10 +77,20 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   public Optional<JobIndexEntrySnapshot> loadIndexEntry(String pointerKey) {
     var lookupKey = JobIndexBackendSupport.parseLookupKey(pointerKey);
     if (lookupKey != null) {
-      return loadIndexPointer(
-          JobIndexBackendSupport.lookupPartitionKey(),
-          JobIndexBackendSupport.lookupSortKey(lookupKey),
-          JobIndexBackendSupport.ATTR_BLOB_URI);
+      var currentKey = JobIndexBackendSupport.currentLookupStorageKey(lookupKey);
+      Optional<JobIndexEntrySnapshot> current = loadLookupPointer(currentKey);
+      if (current.isPresent()) {
+        return current;
+      }
+      var legacyKey = JobIndexBackendSupport.legacyLookupStorageKey(lookupKey);
+      Optional<JobIndexEntrySnapshot> legacy = loadLookupPointer(legacyKey);
+      if (legacy.isEmpty()) {
+        return Optional.empty();
+      }
+      if (migrateLegacyLookup(lookupKey, legacy.get())) {
+        return legacy;
+      }
+      return loadLookupPointer(currentKey).or(() -> legacy);
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(pointerKey);
     if (canonicalKey != null) {
@@ -129,6 +139,32 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
           JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY);
     }
     return Optional.empty();
+  }
+
+  @Override
+  public LegacyLookupMigrationPage migrateLegacyLookupEntries(int limit, String pageToken) {
+    JobIndexQueryPage page =
+        listIndexPointers(
+            JobIndexBackendSupport.legacyLookupPartitionKey(),
+            pageToken,
+            Math.max(1, limit),
+            JobIndexBackendSupport.ATTR_BLOB_URI);
+    int migrated = 0;
+    int conflicted = 0;
+    for (JobIndexEntrySnapshot legacy : page.entries()) {
+      var lookupKey = JobIndexBackendSupport.parseLookupKey(legacy.pointerKey());
+      if (lookupKey == null || blank(legacy.blobUri()) || legacy.version() <= 0L) {
+        conflicted++;
+        continue;
+      }
+      if (migrateLegacyLookup(lookupKey, legacy)) {
+        migrated++;
+      } else {
+        conflicted++;
+      }
+    }
+    return new LegacyLookupMigrationPage(
+        page.entries().size(), migrated, conflicted, page.nextPageToken());
   }
 
   @Override
@@ -313,7 +349,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         if (op instanceof ReconcileJobIndexStore.JobIndexUpsert upsert) {
           tx.addAll(buildPointerUpsert(upsert));
         } else if (op instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
-          tx.add(buildPointerDelete(delete));
+          tx.addAll(buildPointerDelete(delete));
         } else if (op instanceof ReconcileJobIndexStore.JobIndexCheckAbsent check) {
           tx.addAll(buildPointerCheckAbsent(check.pointerKey()));
         }
@@ -468,6 +504,72 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
             longAttr(response.item(), ATTR_VERSION)));
   }
 
+  private Optional<JobIndexEntrySnapshot> loadLookupPointer(
+      JobIndexBackendSupport.LookupStorageKey key) {
+    return loadIndexPointer(
+        key.partitionKey(), key.sortKey(), JobIndexBackendSupport.ATTR_BLOB_URI);
+  }
+
+  private boolean migrateLegacyLookup(
+      JobIndexBackendSupport.LookupKey lookupKey, JobIndexEntrySnapshot legacy) {
+    var currentKey = JobIndexBackendSupport.currentLookupStorageKey(lookupKey);
+    var legacyKey = JobIndexBackendSupport.legacyLookupStorageKey(lookupKey);
+    Map<String, AttributeValue> item = new HashMap<>();
+    item.put(ATTR_PARTITION_KEY, AttributeValue.fromS(currentKey.partitionKey()));
+    item.put(ATTR_SORT_KEY, AttributeValue.fromS(currentKey.sortKey()));
+    item.put(ATTR_KIND, AttributeValue.fromS(JobIndexBackendSupport.KIND_LOOKUP));
+    item.put(ATTR_VERSION, AttributeValue.fromN(Long.toString(legacy.version())));
+    item.put(JobIndexBackendSupport.ATTR_POINTER_KEY, AttributeValue.fromS(lookupKey.pointerKey()));
+    item.put(JobIndexBackendSupport.ATTR_BLOB_URI, AttributeValue.fromS(legacy.blobUri()));
+    TransactWriteItem put =
+        TransactWriteItem.builder()
+            .put(
+                Put.builder()
+                    .tableName(table)
+                    .item(item)
+                    .conditionExpression("attribute_not_exists(#pk)")
+                    .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
+                    .build())
+            .build();
+    TransactWriteItem delete =
+        buildDeleteWithReference(
+            legacyKey.partitionKey(),
+            legacyKey.sortKey(),
+            legacy.version(),
+            JobIndexBackendSupport.ATTR_BLOB_URI,
+            legacy.blobUri());
+    try {
+      dynamoCaller.callVoid(
+          dynamoDbClientManager,
+          client ->
+              client.transactWriteItems(
+                  TransactWriteItemsRequest.builder().transactItems(List.of(put, delete)).build()));
+      return true;
+    } catch (TransactionCanceledException ignored) {
+      Optional<JobIndexEntrySnapshot> current;
+      try {
+        current = loadLookupPointer(currentKey);
+      } catch (RuntimeException ignoredRead) {
+        return false;
+      }
+      if (current.isEmpty() || !legacy.blobUri().equals(current.get().blobUri())) {
+        return false;
+      }
+      try {
+        dynamoCaller.callVoid(
+            dynamoDbClientManager,
+            client ->
+                client.transactWriteItems(
+                    TransactWriteItemsRequest.builder().transactItems(List.of(delete)).build()));
+      } catch (RuntimeException ignoredDelete) {
+        // Best-effort cleanup: the equivalent current row already resolves this lookup.
+      }
+      return true;
+    } catch (RuntimeException ignored) {
+      return false;
+    }
+  }
+
   private JobIndexQueryPage listIndexPointers(
       String partitionKey, String pageToken, int limit, String referenceAttributeName) {
     QueryRequest.Builder query =
@@ -510,6 +612,10 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     if (pageToken == null || pageToken.isBlank()) {
       return "";
     }
+    var lookupKey = JobIndexBackendSupport.parseLookupKey(pageToken);
+    if (lookupKey != null) {
+      return JobIndexBackendSupport.lookupSortKey(lookupKey);
+    }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(pageToken);
     if (canonicalKey != null) {
       return JobIndexBackendSupport.canonicalSortKey(canonicalKey);
@@ -544,14 +650,15 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   private List<TransactWriteItem> buildPointerUpsert(ReconcileJobIndexStore.JobIndexUpsert upsert) {
     var lookupKey = JobIndexBackendSupport.parseLookupKey(upsert.pointerKey());
     if (lookupKey != null) {
-      String sortKey = JobIndexBackendSupport.lookupSortKey(lookupKey);
+      var currentKey = JobIndexBackendSupport.currentLookupStorageKey(lookupKey);
       return List.of(
           buildIndexUpsert(
-              JobIndexBackendSupport.lookupPartitionKey(),
-              sortKey,
+              currentKey.partitionKey(),
+              currentKey.sortKey(),
               JobIndexBackendSupport.KIND_LOOKUP,
               upsert,
-              JobIndexBackendSupport.ATTR_BLOB_URI));
+              JobIndexBackendSupport.ATTR_BLOB_URI),
+          DynamoReconcileJobLookupCompatibility.legacyCheckAbsent(table, lookupKey));
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(upsert.pointerKey());
     if (canonicalKey != null) {
@@ -621,62 +728,67 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         "Unsupported reconcile job index upsert key: " + upsert.pointerKey());
   }
 
-  private TransactWriteItem buildPointerDelete(ReconcileJobIndexStore.JobIndexDelete delete) {
+  private List<TransactWriteItem> buildPointerDelete(ReconcileJobIndexStore.JobIndexDelete delete) {
     var lookupKey = JobIndexBackendSupport.parseLookupKey(delete.pointerKey());
     if (lookupKey != null) {
-      return buildDelete(
-          JobIndexBackendSupport.lookupPartitionKey(),
-          JobIndexBackendSupport.lookupSortKey(lookupKey),
-          delete.expectedVersion());
+      return DynamoReconcileJobLookupCompatibility.deletes(
+          table, lookupKey, delete.expectedVersion());
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(delete.pointerKey());
     if (canonicalKey != null) {
-      return buildDelete(
-          JobIndexBackendSupport.canonicalPartitionKey(canonicalKey),
-          JobIndexBackendSupport.canonicalSortKey(canonicalKey),
-          delete.expectedVersion());
+      return List.of(
+          buildDelete(
+              JobIndexBackendSupport.canonicalPartitionKey(canonicalKey),
+              JobIndexBackendSupport.canonicalSortKey(canonicalKey),
+              delete.expectedVersion()));
     }
     var parentKey = JobIndexBackendSupport.parseParentKey(delete.pointerKey());
     if (parentKey != null) {
-      return buildDelete(
-          JobIndexBackendSupport.parentPartitionKey(parentKey),
-          JobIndexBackendSupport.parentSortKey(parentKey),
-          delete.expectedVersion());
+      return List.of(
+          buildDelete(
+              JobIndexBackendSupport.parentPartitionKey(parentKey),
+              JobIndexBackendSupport.parentSortKey(parentKey),
+              delete.expectedVersion()));
     }
     var connectorKey = JobIndexBackendSupport.parseConnectorKey(delete.pointerKey());
     if (connectorKey != null) {
-      return buildDelete(
-          JobIndexBackendSupport.connectorPartitionKey(connectorKey),
-          JobIndexBackendSupport.connectorSortKey(connectorKey),
-          delete.expectedVersion());
+      return List.of(
+          buildDelete(
+              JobIndexBackendSupport.connectorPartitionKey(connectorKey),
+              JobIndexBackendSupport.connectorSortKey(connectorKey),
+              delete.expectedVersion()));
     }
     var globalStateKey = JobIndexBackendSupport.parseGlobalStateKey(delete.pointerKey());
     if (globalStateKey != null) {
-      return buildDelete(
-          JobIndexBackendSupport.globalStatePartitionKey(globalStateKey),
-          JobIndexBackendSupport.globalStateSortKey(globalStateKey),
-          delete.expectedVersion());
+      return List.of(
+          buildDelete(
+              JobIndexBackendSupport.globalStatePartitionKey(globalStateKey),
+              JobIndexBackendSupport.globalStateSortKey(globalStateKey),
+              delete.expectedVersion()));
     }
     var accountStateKey = JobIndexBackendSupport.parseAccountStateKey(delete.pointerKey());
     if (accountStateKey != null) {
-      return buildDelete(
-          JobIndexBackendSupport.accountStatePartitionKey(accountStateKey),
-          JobIndexBackendSupport.accountStateSortKey(accountStateKey),
-          delete.expectedVersion());
+      return List.of(
+          buildDelete(
+              JobIndexBackendSupport.accountStatePartitionKey(accountStateKey),
+              JobIndexBackendSupport.accountStateSortKey(accountStateKey),
+              delete.expectedVersion()));
     }
     var connectorStateKey = JobIndexBackendSupport.parseConnectorStateKey(delete.pointerKey());
     if (connectorStateKey != null) {
-      return buildDelete(
-          JobIndexBackendSupport.connectorStatePartitionKey(connectorStateKey),
-          JobIndexBackendSupport.connectorStateSortKey(connectorStateKey),
-          delete.expectedVersion());
+      return List.of(
+          buildDelete(
+              JobIndexBackendSupport.connectorStatePartitionKey(connectorStateKey),
+              JobIndexBackendSupport.connectorStateSortKey(connectorStateKey),
+              delete.expectedVersion()));
     }
     var dedupeKey = JobIndexBackendSupport.parseDedupeKey(delete.pointerKey());
     if (dedupeKey != null) {
-      return buildDelete(
-          JobIndexBackendSupport.dedupePartitionKey(dedupeKey),
-          JobIndexBackendSupport.dedupeSortKey(dedupeKey),
-          delete.expectedVersion());
+      return List.of(
+          buildDelete(
+              JobIndexBackendSupport.dedupePartitionKey(dedupeKey),
+              JobIndexBackendSupport.dedupeSortKey(dedupeKey),
+              delete.expectedVersion()));
     }
     throw new IllegalArgumentException(
         "Unsupported reconcile job index delete key: " + delete.pointerKey());
@@ -685,8 +797,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   private List<TransactWriteItem> buildPointerCheckAbsent(String pointerKey) {
     var lookupKey = JobIndexBackendSupport.parseLookupKey(pointerKey);
     if (lookupKey != null) {
-      String sortKey = JobIndexBackendSupport.lookupSortKey(lookupKey);
-      return List.of(buildCheckAbsent(JobIndexBackendSupport.lookupPartitionKey(), sortKey));
+      return DynamoReconcileJobLookupCompatibility.checkAbsent(table, lookupKey);
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(pointerKey);
     if (canonicalKey != null) {
@@ -899,6 +1010,30 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
                 .expressionAttributeNames(Map.of("#v", ATTR_VERSION))
                 .expressionAttributeValues(
                     Map.of(":expected", AttributeValue.fromN(Long.toString(expectedVersion))))
+                .build())
+        .build();
+  }
+
+  private TransactWriteItem buildDeleteWithReference(
+      String partitionKey,
+      String sortKey,
+      long expectedVersion,
+      String referenceAttribute,
+      String expectedReference) {
+    return TransactWriteItem.builder()
+        .delete(
+            Delete.builder()
+                .tableName(table)
+                .key(
+                    Map.of(
+                        ATTR_PARTITION_KEY, AttributeValue.fromS(partitionKey),
+                        ATTR_SORT_KEY, AttributeValue.fromS(sortKey)))
+                .conditionExpression("#v = :expected AND #ref = :reference")
+                .expressionAttributeNames(Map.of("#v", ATTR_VERSION, "#ref", referenceAttribute))
+                .expressionAttributeValues(
+                    Map.of(
+                        ":expected", AttributeValue.fromN(Long.toString(expectedVersion)),
+                        ":reference", AttributeValue.fromS(expectedReference)))
                 .build())
         .build();
   }

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.service.repo.model.Keys;
+import java.util.List;
 
 final class JobIndexBackendSupport {
   static final String KIND_CANONICAL_JOB = "ReconcileJobCanonical";
@@ -314,8 +315,24 @@ final class JobIndexBackendSupport {
     return "reconcile-job-lookup";
   }
 
+  static String legacyLookupPartitionKey() {
+    return "reconcile-job/by-id";
+  }
+
   static String lookupSortKey(LookupKey key) {
     return "job/" + key.jobSegment();
+  }
+
+  static LookupStorageKey currentLookupStorageKey(LookupKey key) {
+    return new LookupStorageKey(lookupPartitionKey(), lookupSortKey(key));
+  }
+
+  static LookupStorageKey legacyLookupStorageKey(LookupKey key) {
+    return new LookupStorageKey(legacyLookupPartitionKey(), lookupSortKey(key));
+  }
+
+  static List<LookupStorageKey> lookupReadStorageKeys(LookupKey key) {
+    return List.of(currentLookupStorageKey(key), legacyLookupStorageKey(key));
   }
 
   static String parentPartitionKey(ParentKey key) {
@@ -543,6 +560,8 @@ final class JobIndexBackendSupport {
   record CanonicalJobKey(String pointerKey, String accountSegment, String jobSegment) {}
 
   record LookupKey(String pointerKey, String jobSegment) {}
+
+  record LookupStorageKey(String partitionKey, String sortKey) {}
 
   record ParentKey(
       String pointerKey, String accountSegment, String parentJobSegment, String jobSegment) {}

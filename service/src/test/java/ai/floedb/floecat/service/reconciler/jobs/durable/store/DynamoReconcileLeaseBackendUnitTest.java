@@ -66,14 +66,16 @@ class DynamoReconcileLeaseBackendUnitTest {
         ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
     verify(dynamoDb).transactWriteItems(captor.capture());
     var items = captor.getValue().transactItems();
-    assertEquals(1, items.size());
+    assertEquals(2, items.size());
     var item = items.getFirst().put().item();
     assertEquals("reconcile-job-lookup", item.get(ATTR_PARTITION_KEY).s());
     assertEquals("job/" + JOB_ID, item.get(ATTR_SORT_KEY).s());
+    assertEquals(
+        "reconcile-job/by-id", items.get(1).conditionCheck().key().get(ATTR_PARTITION_KEY).s());
   }
 
   @Test
-  void jobIndexLookupDeleteUsesLookupPartition() {
+  void jobIndexLookupDeleteUsesCurrentAndLegacyPartitions() {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
     when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
         .thenReturn(TransactWriteItemsResponse.builder().build());
@@ -91,9 +93,15 @@ class DynamoReconcileLeaseBackendUnitTest {
     ArgumentCaptor<TransactWriteItemsRequest> captor =
         ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
     verify(dynamoDb).transactWriteItems(captor.capture());
-    var key = captor.getValue().transactItems().getFirst().delete().key();
-    assertEquals("reconcile-job-lookup", key.get(ATTR_PARTITION_KEY).s());
-    assertEquals("job/" + JOB_ID, key.get(ATTR_SORT_KEY).s());
+    var items = captor.getValue().transactItems();
+    assertEquals(2, items.size());
+    assertEquals(
+        List.of("reconcile-job-lookup", "reconcile-job/by-id"),
+        items.stream().map(item -> item.delete().key().get(ATTR_PARTITION_KEY).s()).toList());
+    assertTrue(
+        items.stream()
+            .allMatch(
+                item -> ("job/" + JOB_ID).equals(item.delete().key().get(ATTR_SORT_KEY).s())));
   }
 
   @Test

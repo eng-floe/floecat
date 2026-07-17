@@ -23,7 +23,14 @@ import java.util.Optional;
 public interface ReconcileJobIndexBackend {
   record JobIndexQueryPage(List<JobIndexEntrySnapshot> entries, String nextPageToken) {}
 
+  record LegacyLookupMigrationPage(
+      int scanned, int migrated, int conflicted, String nextPageToken) {}
+
   Optional<JobIndexEntrySnapshot> loadIndexEntry(String pointerKey);
+
+  default LegacyLookupMigrationPage migrateLegacyLookupEntries(int limit, String pageToken) {
+    return new LegacyLookupMigrationPage(0, 0, 0, "");
+  }
 
   boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch);
 

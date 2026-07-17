@@ -21,13 +21,13 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_PARTITION_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -42,6 +42,8 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.GetItemResponse;
+import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
+import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 import software.amazon.awssdk.services.dynamodb.model.ScanResponse;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
@@ -92,13 +94,139 @@ class DynamoReconcileJobIndexBackendTest {
         ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
     verify(dynamoDb).transactWriteItems(captor.capture());
     var items = captor.getValue().transactItems();
-    assertEquals(1, items.size());
+    assertEquals(2, items.size());
     var item = items.getFirst().put().item();
     assertEquals("reconcile-job-lookup", item.get(ATTR_PARTITION_KEY).s());
     assertEquals("job/" + JOB_ID, item.get(ATTR_SORT_KEY).s());
     assertEquals(JobIndexBackendSupport.KIND_LOOKUP, item.get(ATTR_KIND).s());
     assertEquals(LOOKUP_KEY, item.get(JobIndexBackendSupport.ATTR_POINTER_KEY).s());
     assertEquals(CANONICAL_KEY, item.get(JobIndexBackendSupport.ATTR_BLOB_URI).s());
+    assertEquals(
+        "reconcile-job/by-id", items.get(1).conditionCheck().key().get(ATTR_PARTITION_KEY).s());
+  }
+
+  @Test
+  void lookupLoadFallsBackToLegacyCanonicalPartition() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
+        .thenReturn(TransactWriteItemsResponse.builder().build());
+    when(dynamoDb.getItem(any(GetItemRequest.class)))
+        .thenAnswer(
+            invocation -> {
+              GetItemRequest request = invocation.getArgument(0);
+              String partitionKey = request.key().get(ATTR_PARTITION_KEY).s();
+              if (!JobIndexBackendSupport.legacyLookupPartitionKey().equals(partitionKey)) {
+                return GetItemResponse.builder().build();
+              }
+              return GetItemResponse.builder()
+                  .item(
+                      Map.of(
+                          ATTR_PARTITION_KEY,
+                          AttributeValue.fromS(partitionKey),
+                          ATTR_SORT_KEY,
+                          AttributeValue.fromS("job/" + JOB_ID),
+                          ATTR_KIND,
+                          AttributeValue.fromS(JobIndexBackendSupport.KIND_CANONICAL_JOB),
+                          ATTR_VERSION,
+                          AttributeValue.fromN("1"),
+                          JobIndexBackendSupport.ATTR_POINTER_KEY,
+                          AttributeValue.fromS(LOOKUP_KEY),
+                          JobIndexBackendSupport.ATTR_BLOB_URI,
+                          AttributeValue.fromS(CANONICAL_KEY)))
+                  .build();
+            });
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+
+    JobIndexEntrySnapshot loaded = backend.loadIndexEntry(LOOKUP_KEY).orElseThrow();
+
+    assertEquals(LOOKUP_KEY, loaded.pointerKey());
+    assertEquals(CANONICAL_KEY, loaded.blobUri());
+    assertEquals(1L, loaded.version());
+    ArgumentCaptor<GetItemRequest> captor = ArgumentCaptor.forClass(GetItemRequest.class);
+    verify(dynamoDb, times(2)).getItem(captor.capture());
+    assertEquals(
+        List.of("reconcile-job-lookup", "reconcile-job/by-id"),
+        captor.getAllValues().stream()
+            .map(request -> request.key().get(ATTR_PARTITION_KEY).s())
+            .toList());
+    ArgumentCaptor<TransactWriteItemsRequest> txCaptor =
+        ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
+    verify(dynamoDb).transactWriteItems(txCaptor.capture());
+    assertEquals(2, txCaptor.getValue().transactItems().size());
+    assertEquals(
+        "reconcile-job-lookup",
+        txCaptor.getValue().transactItems().get(0).put().item().get(ATTR_PARTITION_KEY).s());
+    assertEquals(
+        "reconcile-job/by-id",
+        txCaptor.getValue().transactItems().get(1).delete().key().get(ATTR_PARTITION_KEY).s());
+  }
+
+  @Test
+  void lookupLoadUsesCurrentPartitionWithoutLegacyProbe() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.getItem(any(GetItemRequest.class)))
+        .thenReturn(
+            GetItemResponse.builder()
+                .item(
+                    Map.of(
+                        ATTR_PARTITION_KEY,
+                        AttributeValue.fromS("reconcile-job-lookup"),
+                        ATTR_SORT_KEY,
+                        AttributeValue.fromS("job/" + JOB_ID),
+                        ATTR_KIND,
+                        AttributeValue.fromS(JobIndexBackendSupport.KIND_LOOKUP),
+                        ATTR_VERSION,
+                        AttributeValue.fromN("1"),
+                        JobIndexBackendSupport.ATTR_POINTER_KEY,
+                        AttributeValue.fromS(LOOKUP_KEY),
+                        JobIndexBackendSupport.ATTR_BLOB_URI,
+                        AttributeValue.fromS(CANONICAL_KEY)))
+                .build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+
+    assertEquals(CANONICAL_KEY, backend.loadIndexEntry(LOOKUP_KEY).orElseThrow().blobUri());
+
+    verify(dynamoDb).getItem(any(GetItemRequest.class));
+    verify(dynamoDb, never()).transactWriteItems(any(TransactWriteItemsRequest.class));
+  }
+
+  @Test
+  void legacyLookupBackfillQueriesOnlyLegacyPartition() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.query(any(QueryRequest.class)))
+        .thenReturn(
+            QueryResponse.builder()
+                .items(
+                    Map.of(
+                        ATTR_PARTITION_KEY,
+                        AttributeValue.fromS("reconcile-job/by-id"),
+                        ATTR_SORT_KEY,
+                        AttributeValue.fromS("job/" + JOB_ID),
+                        ATTR_KIND,
+                        AttributeValue.fromS(JobIndexBackendSupport.KIND_CANONICAL_JOB),
+                        ATTR_VERSION,
+                        AttributeValue.fromN("1"),
+                        JobIndexBackendSupport.ATTR_POINTER_KEY,
+                        AttributeValue.fromS(LOOKUP_KEY),
+                        JobIndexBackendSupport.ATTR_BLOB_URI,
+                        AttributeValue.fromS(CANONICAL_KEY)))
+                .build());
+    when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
+        .thenReturn(TransactWriteItemsResponse.builder().build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+
+    var result = backend.migrateLegacyLookupEntries(25, "");
+
+    assertEquals(1, result.scanned());
+    assertEquals(1, result.migrated());
+    assertEquals(0, result.conflicted());
+    ArgumentCaptor<QueryRequest> queryCaptor = ArgumentCaptor.forClass(QueryRequest.class);
+    verify(dynamoDb).query(queryCaptor.capture());
+    assertEquals(
+        "reconcile-job/by-id", queryCaptor.getValue().expressionAttributeValues().get(":pk").s());
   }
 
   @Test
@@ -120,10 +248,39 @@ class DynamoReconcileJobIndexBackendTest {
         ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
     verify(dynamoDb).transactWriteItems(captor.capture());
     var items = captor.getValue().transactItems();
-    assertEquals(1, items.size());
+    assertEquals(2, items.size());
     assertEquals(
-        "reconcile-job-lookup", items.get(0).conditionCheck().key().get(ATTR_PARTITION_KEY).s());
-    assertFalse(items.get(0).conditionCheck().key().get(ATTR_SORT_KEY).s().isBlank());
+        List.of("reconcile-job-lookup", "reconcile-job/by-id"),
+        items.stream()
+            .map(item -> item.conditionCheck().key().get(ATTR_PARTITION_KEY).s())
+            .toList());
+    assertTrue(
+        items.stream()
+            .noneMatch(item -> item.conditionCheck().key().get(ATTR_SORT_KEY).s().isBlank()));
+  }
+
+  @Test
+  void lookupDeleteCleansCurrentAndLegacyPartitions() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
+        .thenReturn(TransactWriteItemsResponse.builder().build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+
+    assertTrue(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(new ReconcileJobIndexStore.JobIndexDelete(LOOKUP_KEY, 1L)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+
+    ArgumentCaptor<TransactWriteItemsRequest> captor =
+        ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
+    verify(dynamoDb).transactWriteItems(captor.capture());
+    assertEquals(
+        List.of("reconcile-job-lookup", "reconcile-job/by-id"),
+        captor.getValue().transactItems().stream()
+            .map(item -> item.delete().key().get(ATTR_PARTITION_KEY).s())
+            .toList());
   }
 
   @Test
@@ -150,6 +307,18 @@ class DynamoReconcileJobIndexBackendTest {
                         CANONICAL_KEY,
                         PointerReferenceKind.PRK_POINTER_KEY)),
                 List.of()));
+
+    assertEquals(5, NativeReconcileJobIndexStore.physicalWriteItemCount(batch));
+  }
+
+  @Test
+  void physicalWriteItemCountIncludesBothLookupCompatibilityLocations() {
+    var batch =
+        new ReconcileJobIndexStore.JobIndexWriteBatch(
+            List.of(
+                new ReconcileJobIndexStore.JobIndexDelete(LOOKUP_KEY, 1L),
+                new ReconcileJobIndexStore.JobIndexCheckAbsent(LOOKUP_KEY)),
+            ReconcileJobIndexStore.ReadyQueueMutation.empty());
 
     assertEquals(4, NativeReconcileJobIndexStore.physicalWriteItemCount(batch));
   }

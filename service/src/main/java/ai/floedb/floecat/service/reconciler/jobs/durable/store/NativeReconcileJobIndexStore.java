@@ -1190,6 +1190,18 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   }
 
   private static int physicalWriteItemCount(JobIndexWriteOp write) {
+    String pointerKey = null;
+    if (write instanceof JobIndexUpsert upsert) {
+      pointerKey = upsert.pointerKey();
+    } else if (write instanceof JobIndexDelete delete) {
+      pointerKey = delete.pointerKey();
+    } else if (write instanceof JobIndexCheckAbsent check) {
+      pointerKey = check.pointerKey();
+    }
+    var lookupKey = JobIndexBackendSupport.parseLookupKey(pointerKey);
+    if (lookupKey != null) {
+      return JobIndexBackendSupport.lookupReadStorageKeys(lookupKey).size();
+    }
     return 1;
   }
 

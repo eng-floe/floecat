@@ -54,6 +54,23 @@ class ReconcileJobGcSchedulerTest {
     assertEquals(List.of("acct-a", "acct-b"), gc.accountIds);
   }
 
+  @Test
+  void completedLegacyLookupMigrationRunsOnlyOnce() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any())).thenReturn(List.of());
+    RecordingGc gc = new RecordingGc();
+    ReconcileJobGcScheduler scheduler = new ReconcileJobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.reconcileJobGc = () -> gc;
+    scheduler.observability = new TestObservability();
+    scheduler.initMeters();
+
+    scheduler.tick();
+    scheduler.tick();
+
+    assertEquals(1, gc.lookupMigrationCalls);
+  }
+
   private static Account account(String accountId) {
     return Account.newBuilder()
         .setResourceId(
@@ -65,6 +82,13 @@ class ReconcileJobGcSchedulerTest {
   private static final class RecordingGc extends ReconcileJobGc {
     private final List<String> accountIds = new ArrayList<>();
     private String failAccountId;
+    private int lookupMigrationCalls;
+
+    @Override
+    public LookupMigrationResult runLegacyLookupMigrationSlice(String pageToken) {
+      lookupMigrationCalls++;
+      return new LookupMigrationResult(0, 0, 0, "");
+    }
 
     @Override
     public GlobalResult runReadySlice(String pageToken) {

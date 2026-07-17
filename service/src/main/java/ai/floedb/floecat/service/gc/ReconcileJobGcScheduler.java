@@ -66,6 +66,8 @@ public class ReconcileJobGcScheduler {
   private final Map<String, String> rootSummaryTokenByAccount = new ConcurrentHashMap<>();
   private final Map<String, String> connectorRootSummaryTokenByAccount = new ConcurrentHashMap<>();
   private volatile String readyToken = "";
+  private volatile String legacyLookupMigrationToken = "";
+  private volatile boolean legacyLookupMigrationComplete;
   private volatile String accountToken = "";
   private volatile List<Account> accountPage = List.of();
   private volatile int accountPageIndex = 0;
@@ -186,7 +188,27 @@ public class ReconcileJobGcScheduler {
     int readyScanned = 0;
     int readyDeleted = 0;
     int readyQuarantined = 0;
+    int legacyLookupScanned = 0;
+    int legacyLookupMigrated = 0;
+    int legacyLookupConflicted = 0;
     try {
+      if (!legacyLookupMigrationComplete) {
+        var migrationResult = gc.runLegacyLookupMigrationSlice(legacyLookupMigrationToken);
+        legacyLookupScanned = migrationResult.scanned();
+        legacyLookupMigrated = migrationResult.migrated();
+        legacyLookupConflicted = migrationResult.conflicted();
+        legacyLookupMigrationToken =
+            migrationResult.nextToken() == null ? "" : migrationResult.nextToken();
+        legacyLookupMigrationComplete =
+            legacyLookupScanned == 0 && legacyLookupMigrationToken.isBlank();
+        gcMetrics.recordCollection(
+            legacyLookupScanned, Tag.of(TagKey.RESULT, "legacy-lookup-scanned"));
+        gcMetrics.recordCollection(
+            legacyLookupMigrated, Tag.of(TagKey.RESULT, "legacy-lookup-migrated"));
+        gcMetrics.recordCollection(
+            legacyLookupConflicted, Tag.of(TagKey.RESULT, "legacy-lookup-conflicted"));
+      }
+
       long readyStart = System.nanoTime();
       var readyResult = gc.runReadySlice(readyToken);
       readyScanned = readyResult.scanned();
@@ -296,7 +318,9 @@ public class ReconcileJobGcScheduler {
           "reconcile job gc tick summary accounts=%d readyScanned=%d readyDeleted=%d"
               + " readyQuarantined=%d accountScanned=%d expired=%d ptrDeleted=%d blobDeleted=%d"
               + " dedupeDeleted=%d readyPointerDeleted=%d quarantined=%d accountPageIndex=%d"
-              + " accountPageSize=%d accountTokenPresent=%s activeAccountTokens=%d durationMs=%d",
+              + " accountPageSize=%d accountTokenPresent=%s activeAccountTokens=%d"
+              + " legacyLookupScanned=%d legacyLookupMigrated=%d legacyLookupConflicted=%d"
+              + " legacyLookupMigrationComplete=%s durationMs=%d",
           accountsProcessed,
           readyScanned,
           readyDeleted,
@@ -316,6 +340,10 @@ public class ReconcileJobGcScheduler {
               + dedupeTokenByAccount.size()
               + rootSummaryTokenByAccount.size()
               + connectorRootSummaryTokenByAccount.size(),
+          legacyLookupScanned,
+          legacyLookupMigrated,
+          legacyLookupConflicted,
+          legacyLookupMigrationComplete,
           Duration.ofNanos(System.nanoTime() - tickStart).toMillis());
     }
   }
