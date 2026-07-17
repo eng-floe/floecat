@@ -212,7 +212,8 @@ public class UserObjectBundleService {
         statsFactory,
         decoratorProvider,
         engineContext,
-        new PinValidator(null) {
+        new PinValidator(
+            null, ai.floedb.floecat.service.catalog.impl.RootRepairRequests.disabled()) {
           @Override
           public void validate(String correlationId, ai.floedb.floecat.query.rpc.TablePin pin) {
             throw new IllegalStateException(

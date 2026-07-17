@@ -71,17 +71,20 @@ public class ScanBundleService {
   private final SnapshotRepository snapshots;
   private final StatsStore statsStore;
   private final ServerSideFileIoPropertiesResolver fileIoPropertiesResolver;
+  private final PinValidator pinValidator;
 
   @Inject
   public ScanBundleService(
       TableRepository tables,
       SnapshotRepository snapshots,
       StatsStore statsStore,
-      ServerSideFileIoPropertiesResolver fileIoPropertiesResolver) {
+      ServerSideFileIoPropertiesResolver fileIoPropertiesResolver,
+      PinValidator pinValidator) {
     this.tables = tables;
     this.snapshots = snapshots;
     this.statsStore = statsStore;
     this.fileIoPropertiesResolver = fileIoPropertiesResolver;
+    this.pinValidator = pinValidator;
   }
 
   /**
@@ -104,13 +107,13 @@ public class ScanBundleService {
     // fails as catalog-integrity corruption — a still-resident decode must not mask a swept blob,
     // so these reads' emptiness has to reflect the store. Once per scan session, not per page.
     Table table =
-        PinValidator.requirePinnedTableBlob(
+        pinValidator.requirePinnedTableBlob(
             tables.getByBlobUriLive(pin.getTableBlobUri()), correlationId, tableId);
     StoreOperationSummary.nanos("table_load", System.nanoTime() - tableStartedNanos);
 
     long snapshotStartedNanos = System.nanoTime();
     Snapshot snapshot =
-        PinValidator.requirePinnedSnapshotBlob(
+        pinValidator.requirePinnedSnapshotBlob(
             snapshots.getByBlobUriLive(pin.getSnapshotBlobUri()),
             correlationId,
             tableId,

@@ -56,22 +56,26 @@ public class SnapshotHelper {
   private final TableRootRepository roots;
   private final TableRootCommitter rootCommitter;
   private final StatsStore statsStore;
+  private final PinValidator pins;
 
   /**
    * {@code rootCommitter} materializes a legacy table's root at first touch ({@code ensureRoot}),
    * so a pre-existing deployment migrates lazily as its tables are queried. Pins are built from a
    * just-read root blob and validated by every consumption through the {@link PinValidator}
-   * contract, so construction performs no extra validation round-trip.
+   * contract, so construction performs no extra validation round-trip — {@code pins} here serves
+   * the pinned schema read and reports broken roots observed during pin construction for repair.
    */
   public SnapshotHelper(
       SnapshotRepository snapshots,
       TableRootRepository roots,
       TableRootCommitter rootCommitter,
-      StatsStore statsStore) {
+      StatsStore statsStore,
+      PinValidator pins) {
     this.snapshots = snapshots;
     this.roots = roots;
     this.rootCommitter = rootCommitter;
     this.statsStore = statsStore;
+    this.pins = pins;
   }
 
   /**
@@ -141,6 +145,13 @@ public class SnapshotHelper {
       // pathological second race): fall through to the per-pin-kind not-found handling below.
       rootMeta = roots.metaForSafeLive(tableId);
       root = loadRoot(rootMeta);
+      if (root == null && rootMeta != null && !rootMeta.getBlobUri().isEmpty()) {
+        // The re-read pointer still names an unreadable blob (a vanished pointer would be a
+        // legitimate drop): every future query fails here the same way until the root is
+        // re-derived, so enqueue the table for the resync re-drive (fire-and-forget) before the
+        // per-pin-kind not-found handling below rejects this query.
+        pins.requestRootRepair(tableId);
+      }
     }
 
     if (override != null && override.hasSnapshotId()) {
@@ -198,14 +209,17 @@ public class SnapshotHelper {
         SnapshotManifests.findEntry(roots, manifestHead(root), currentId)
             .orElseThrow(
                 // Currency pointing at a snapshot the manifest does not carry is a broken root
-                // invariant (removal clears currency in the same commit), never a client state.
-                () ->
-                    GrpcErrors.internal(
-                        cid,
-                        QUERY_PINNED_SNAPSHOT_BLOB_MISSING,
-                        Map.of(
-                            "table_id", tableId.getId(),
-                            "snapshot_id", Long.toString(currentId))));
+                // invariant (removal clears currency in the same commit), never a client state —
+                // report the table for the resync re-drive to re-derive its root.
+                () -> {
+                  pins.requestRootRepair(tableId);
+                  return GrpcErrors.internal(
+                      cid,
+                      QUERY_PINNED_SNAPSHOT_BLOB_MISSING,
+                      Map.of(
+                          "table_id", tableId.getId(),
+                          "snapshot_id", Long.toString(currentId)));
+                });
     if (gateOnFinalize() && !entry.hasStatsGenerationRef()) {
       // Committed currency can move before the generation publishes. Rather than reporting no
       // current for the whole append->finalize window, pin the newest FINALIZED snapshot at or
@@ -278,13 +292,18 @@ public class SnapshotHelper {
       MutationMeta rootMeta,
       Timestamp originalAsOf) {
     if (!root.hasDefinitionRef() || root.getDefinitionRef().getUri().isEmpty()) {
+      // A root without a definition ref is a broken invariant every query trips over: report the
+      // table for the resync re-drive (which re-derives the definition ref from committed state).
+      pins.requestRootRepair(tableId);
       throw GrpcErrors.internal(
           cid, QUERY_PINNED_TABLE_BLOB_MISSING, Map.of("table_id", tableId.getId()));
     }
     if (!entry.hasSnapshotRef() || entry.getSnapshotRef().getUri().isEmpty()) {
       // Every writer records a snapshot ref with the entry; its absence is a broken root
       // invariant. Failing here names the real problem instead of pinning an empty URI that a
-      // downstream requirePinnedSnapshotBlob would report as a generic internal error.
+      // downstream requirePinnedSnapshotBlob would report as a generic internal error — and the
+      // repair report gives the re-drive a chance to rebuild the manifest entry.
+      pins.requestRootRepair(tableId);
       throw GrpcErrors.internal(
           cid,
           QUERY_PINNED_SNAPSHOT_BLOB_MISSING,
@@ -357,7 +376,7 @@ public class SnapshotHelper {
 
     if (snapshotBlobUri != null && !snapshotBlobUri.isEmpty()) {
       Snapshot snap =
-          PinValidator.requirePinnedSnapshotBlob(
+          pins.requirePinnedSnapshotBlob(
               // LIVE: this read's emptiness is the pin-integrity detector (requirePinned*); a
               // still-resident decode must not mask a swept pinned blob.
               snapshots.getByBlobUriLive(snapshotBlobUri), cid, tbl.id());
