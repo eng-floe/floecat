@@ -106,6 +106,12 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <!-- InMemorySpanExporter for the interceptor-ordering IT (SpanDecorationIT). -->
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk-testing</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>io.rest-assured</groupId>
       <artifactId>rest-assured</artifactId>
       <scope>test</scope>

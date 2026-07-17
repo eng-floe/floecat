@@ -42,6 +42,7 @@ import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
+import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.context.Context;
 import io.opentelemetry.context.Scope;
 import io.smallrye.mutiny.Multi;
@@ -90,13 +91,29 @@ public abstract class BaseServiceImpl {
     return idempotencyTtlSeconds;
   }
 
+  /**
+   * The OTel context to re-activate inside a hopped body. Prefers the context current at method
+   * entry, but when that carries no valid span — the norm on this server, where the span is only
+   * current inside the innermost tracing interceptor's window and never at the method layer — it
+   * grafts on the span {@code SpanCaptureInterceptor} stashed on the per-call duplicated-context
+   * carrier. Without this, {@code Span.current()} inside the body is the invalid root span and
+   * every per-request decoration and diagnostic summary event silently no-ops.
+   */
+  private static Context otelContextForBody(Context captured) {
+    if (Span.fromContext(captured).getSpanContext().isValid()) {
+      return captured;
+    }
+    Span carried = ResolvedCallContexts.currentCallSpanOrInvalid();
+    return carried.getSpanContext().isValid() ? captured.with(carried) : captured;
+  }
+
   protected <T> Uni<T> run(Supplier<T> body) {
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
     // Read the resolved call context at method entry — before any executor hop — and carry it by
     // reference into the body. The captured io.grpc.Context alone is unreliable across the hop
     // (eng-floe/floecat#361).
     ResolvedCallContext callCtx = ResolvedCallContexts.currentOrNull();
-    Context otelCtx = Context.current();
+    Context otelCtx = otelContextForBody(Context.current());
     return Uni.createFrom()
         .item(
             () ->
@@ -123,7 +140,7 @@ public abstract class BaseServiceImpl {
   protected <T> Multi<T> runStream(Function<ResolvedCallContext, Multi<T>> body) {
     ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
-    Context otelCtx = Context.current();
+    Context otelCtx = otelContextForBody(Context.current());
     return Multi.createFrom()
         .<T>deferred(
             () ->
@@ -144,7 +161,7 @@ public abstract class BaseServiceImpl {
       BiConsumer<ResolvedCallContext, MultiEmitter<? super T>> body) {
     ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
-    Context otelCtx = Context.current();
+    Context otelCtx = otelContextForBody(Context.current());
     return Multi.createFrom()
         .<T>emitter(
             emitter ->
