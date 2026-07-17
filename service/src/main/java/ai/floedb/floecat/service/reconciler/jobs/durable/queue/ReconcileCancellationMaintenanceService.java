@@ -132,12 +132,15 @@ public class ReconcileCancellationMaintenanceService {
           continue;
         }
         if (marker.request().paused()) {
-          paused++;
           if (isObsoleteCancellationRoot(marker.request())) {
             if (pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion())) {
               obsoleteDeleted++;
               deleted++;
+            } else {
+              paused++;
             }
+          } else {
+            paused++;
           }
           continue;
         }
