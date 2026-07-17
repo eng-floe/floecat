@@ -31,7 +31,7 @@ public class ReconcileJobCancellationMaintenanceScheduler {
   @Inject DurableReconcileJobStore jobs;
 
   @Scheduled(
-      every = "{floecat.reconciler.job-store.cancellation-maintenance.tick-every:1s}",
+      every = "{floecat.reconciler.job-store.cancellation-maintenance.tick-every:5s}",
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
       skipExecutionIf = ReconcileJobGcScheduler.DisabledOrStopping.class)
   void tick() {

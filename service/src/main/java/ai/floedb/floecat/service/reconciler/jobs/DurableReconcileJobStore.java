@@ -488,7 +488,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       cancellationMaintenanceService = new ReconcileCancellationMaintenanceService();
     }
     cancellationMaintenanceService.bind(
-        pointerStore, this::cleanupCancellationRoot, readyScanLimit);
+        pointerStore,
+        this::cleanupCancellationRoot,
+        this::isObsoleteCancellationCleanupRoot,
+        readyScanLimit);
     return cancellationMaintenanceService;
   }
 
@@ -2209,16 +2212,42 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
           true, "", false, false, false);
     }
+    StoredReconcileJob root = activeCancellationCleanupRoot(request);
+    if (root == null) {
+      throw ReconcileCancellationMaintenanceService.obsoleteMarker();
+    }
+    return propagateDirectChildCancellation(root, request, childPageSize);
+  }
+
+  private boolean isObsoleteCancellationCleanupRoot(
+      ReconcileCancellationMaintenanceService.CancellationCleanupRequest request) {
+    return activeCancellationCleanupRoot(request) == null;
+  }
+
+  private StoredReconcileJob activeCancellationCleanupRoot(
+      ReconcileCancellationMaintenanceService.CancellationCleanupRequest request) {
+    if (request == null) {
+      return null;
+    }
     String accountId = blankToEmpty(request.accountId());
     String rootJobId = blankToEmpty(request.rootJobId());
     StoredEnvelope loaded = loadByAnyAccount(rootJobId).orElse(null);
     if (loaded == null
         || loaded.record == null
         || !accountId.equals(blankToEmpty(loaded.record.accountId))
-        || !isCancellationState(loaded.record.state)) {
-      throw ReconcileCancellationMaintenanceService.obsoleteMarker();
+        || !isCancellationState(loaded.record.state)
+        || cancellationCleanupRootComplete(loaded.record)) {
+      return null;
     }
-    return propagateDirectChildCancellation(loaded.record, request, childPageSize);
+    return loaded.record;
+  }
+
+  private boolean cancellationCleanupRootComplete(StoredReconcileJob root) {
+    return root != null
+        && "JS_CANCELLED".equals(blankToEmpty(root.state))
+        && root.finishedAtMs > 0L
+        && root.childrenFinalized
+        && !needsAbandonedFullRescanStatsCleanup(root);
   }
 
   private ReconcileCancellationMaintenanceService.CancellationCleanupResult

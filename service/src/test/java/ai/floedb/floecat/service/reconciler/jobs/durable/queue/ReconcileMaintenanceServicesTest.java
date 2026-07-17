@@ -40,6 +40,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQue
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -326,6 +327,7 @@ class ReconcileMaintenanceServicesTest {
           return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
               true, "", false, false, false);
         },
+        request -> false,
         10);
 
     service.runCancellationMaintenanceOnce(200L);
@@ -361,12 +363,44 @@ class ReconcileMaintenanceServicesTest {
           return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
               true, "", false, false, false);
         },
+        request -> false,
         10);
 
     service.runCancellationMaintenanceOnce(200L);
 
     assertEquals(0, calls.get());
     assertTrue(pointerStore.get(key).isPresent());
+  }
+
+  @Test
+  void cancellationCleanupDeletesObsoletePausedMarker() throws Exception {
+    PointerStore pointerStore = new TestPointerStore();
+    ReconcileCancellationMaintenanceService service = new ReconcileCancellationMaintenanceService();
+    AtomicInteger calls = new AtomicInteger();
+    String key = Keys.reconcileCancellationCleanupPointer("acct", "missing-root");
+    String payload =
+        ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
+            new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
+                "acct", "missing-root", "", true, false, true));
+    pointerStore.compareAndSet(key, 0L, PointerReferences.opaqueMarkerPointer(key, payload, 1L));
+
+    service.bind(
+        pointerStore,
+        (request, childPageSize) -> {
+          calls.incrementAndGet();
+          return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
+              true, "", false, false, false);
+        },
+        request -> true,
+        10);
+
+    Object stats = cleanupCancellationMarkers(service, System.currentTimeMillis() + 200L);
+
+    assertEquals(0, calls.get());
+    assertEquals(0, cancellationStat(stats, "paused"));
+    assertEquals(1, cancellationStat(stats, "obsoleteDeleted"));
+    assertEquals(1, cancellationStat(stats, "deleted"));
+    assertTrue(pointerStore.get(key).isEmpty());
   }
 
   private static void putDirtyMarker(
@@ -394,6 +428,21 @@ class ReconcileMaintenanceServicesTest {
       Thread.currentThread().interrupt();
       throw new RuntimeException(e);
     }
+  }
+
+  private static Object cleanupCancellationMarkers(
+      ReconcileCancellationMaintenanceService service, long deadlineMs) throws Exception {
+    Method method =
+        ReconcileCancellationMaintenanceService.class.getDeclaredMethod(
+            "cleanupCancellationMarkers", long.class);
+    method.setAccessible(true);
+    return method.invoke(service, deadlineMs);
+  }
+
+  private static int cancellationStat(Object stats, String name) throws Exception {
+    Method method = stats.getClass().getDeclaredMethod(name);
+    method.setAccessible(true);
+    return (Integer) method.invoke(stats);
   }
 
   private static void putMarker(

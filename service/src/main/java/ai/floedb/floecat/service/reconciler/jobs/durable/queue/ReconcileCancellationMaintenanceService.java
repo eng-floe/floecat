@@ -33,17 +33,25 @@ public class ReconcileCancellationMaintenanceService {
     CancellationCleanupResult accept(CancellationCleanupRequest request, int childPageSize);
   }
 
+  @FunctionalInterface
+  public interface IsObsoleteCancellationRoot {
+    boolean test(CancellationCleanupRequest request);
+  }
+
   private PointerStore pointerStore;
   private CleanupCancellationRoot cleanupCancellationRoot;
+  private IsObsoleteCancellationRoot isObsoleteCancellationRoot;
   private int readyScanLimit;
   private volatile String cancellationScanToken = "";
 
   public void bind(
       PointerStore pointerStore,
       CleanupCancellationRoot cleanupCancellationRoot,
+      IsObsoleteCancellationRoot isObsoleteCancellationRoot,
       int readyScanLimit) {
     this.pointerStore = pointerStore;
     this.cleanupCancellationRoot = cleanupCancellationRoot;
+    this.isObsoleteCancellationRoot = isObsoleteCancellationRoot;
     this.readyScanLimit = readyScanLimit;
   }
 
@@ -66,10 +74,19 @@ public class ReconcileCancellationMaintenanceService {
     int invalidDeleted = 0;
     int obsoleteDeleted = 0;
     int failures = 0;
+    int paused = 0;
     while (true) {
       if (System.currentTimeMillis() > deadlineMs) {
         return new CancellationStats(
-            false, pages, scanned, cleaned, invalidDeleted, obsoleteDeleted, deleted, failures);
+            false,
+            pages,
+            scanned,
+            cleaned,
+            paused,
+            invalidDeleted,
+            obsoleteDeleted,
+            deleted,
+            failures);
       }
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers =
@@ -78,13 +95,29 @@ public class ReconcileCancellationMaintenanceService {
       if (pointers.isEmpty()) {
         cancellationScanToken = "";
         return new CancellationStats(
-            true, pages, scanned, cleaned, invalidDeleted, obsoleteDeleted, deleted, failures);
+            true,
+            pages,
+            scanned,
+            cleaned,
+            paused,
+            invalidDeleted,
+            obsoleteDeleted,
+            deleted,
+            failures);
       }
       String nextToken = blankToEmpty(next.toString());
       for (Pointer pointer : pointers) {
         if (System.currentTimeMillis() > deadlineMs) {
           return new CancellationStats(
-              false, pages, scanned, cleaned, invalidDeleted, obsoleteDeleted, deleted, failures);
+              false,
+              pages,
+              scanned,
+              cleaned,
+              paused,
+              invalidDeleted,
+              obsoleteDeleted,
+              deleted,
+              failures);
         }
         if (pointer == null || pointer.getKey().isBlank()) {
           continue;
@@ -99,6 +132,16 @@ public class ReconcileCancellationMaintenanceService {
           continue;
         }
         if (marker.request().paused()) {
+          if (isObsoleteCancellationRoot(marker.request())) {
+            if (pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion())) {
+              obsoleteDeleted++;
+              deleted++;
+            } else {
+              paused++;
+            }
+          } else {
+            paused++;
+          }
           continue;
         }
         try {
@@ -129,7 +172,15 @@ public class ReconcileCancellationMaintenanceService {
       if (nextToken.isBlank()) {
         cancellationScanToken = "";
         return new CancellationStats(
-            true, pages + 1, scanned, cleaned, invalidDeleted, obsoleteDeleted, deleted, failures);
+            true,
+            pages + 1,
+            scanned,
+            cleaned,
+            paused,
+            invalidDeleted,
+            obsoleteDeleted,
+            deleted,
+            failures);
       }
       if (nextToken.equals(token)) {
         LOG.warn(
@@ -137,7 +188,15 @@ public class ReconcileCancellationMaintenanceService {
                 + " avoid livelock");
         cancellationScanToken = "";
         return new CancellationStats(
-            true, pages + 1, scanned, cleaned, invalidDeleted, obsoleteDeleted, deleted, failures);
+            true,
+            pages + 1,
+            scanned,
+            cleaned,
+            paused,
+            invalidDeleted,
+            obsoleteDeleted,
+            deleted,
+            failures);
       }
       cancellationScanToken = nextToken;
       token = nextToken;
@@ -146,8 +205,32 @@ public class ReconcileCancellationMaintenanceService {
         LOG.warn("Reconcile cancellation cleanup pagination hit safety page cap; aborting scan");
         cancellationScanToken = "";
         return new CancellationStats(
-            true, pages, scanned, cleaned, invalidDeleted, obsoleteDeleted, deleted, failures);
+            true,
+            pages,
+            scanned,
+            cleaned,
+            paused,
+            invalidDeleted,
+            obsoleteDeleted,
+            deleted,
+            failures);
       }
+    }
+  }
+
+  private boolean isObsoleteCancellationRoot(CancellationCleanupRequest request) {
+    if (isObsoleteCancellationRoot == null) {
+      return false;
+    }
+    try {
+      return isObsoleteCancellationRoot.test(request);
+    } catch (RuntimeException e) {
+      LOG.warnf(
+          e,
+          "Failed to validate paused reconcile cancellation cleanup marker accountId=%s rootJobId=%s",
+          request == null ? "" : request.accountId(),
+          request == null ? "" : request.rootJobId());
+      return false;
     }
   }
 
@@ -178,20 +261,26 @@ public class ReconcileCancellationMaintenanceService {
 
   private void logMaintenanceSummary(long startedAtMs, CancellationStats stats) {
     long elapsedMs = System.currentTimeMillis() - startedAtMs;
-    if (!stats.active() && elapsedMs <= 500L) {
+    if (stats.infoQuiet() && elapsedMs <= 500L) {
       LOG.debugf(
-          "runCancellationMaintenanceOnce total_ms=%d completed=%s",
-          Long.valueOf(elapsedMs), Boolean.valueOf(stats.completed()));
+          "runCancellationMaintenanceOnce total_ms=%d completed=%s pages=%d scanned=%d"
+              + " paused=%d",
+          Long.valueOf(elapsedMs),
+          Boolean.valueOf(stats.completed()),
+          Integer.valueOf(stats.pages()),
+          Integer.valueOf(stats.scanned()),
+          Integer.valueOf(stats.paused()));
       return;
     }
     LOG.infof(
         "runCancellationMaintenanceOnce total_ms=%d completed=%s pages=%d scanned=%d cleaned=%d"
-            + " invalid_deleted=%d obsolete_deleted=%d deleted=%d failures=%d",
+            + " paused=%d invalid_deleted=%d obsolete_deleted=%d deleted=%d failures=%d",
         Long.valueOf(elapsedMs),
         Boolean.valueOf(stats.completed()),
         Integer.valueOf(stats.pages()),
         Integer.valueOf(stats.scanned()),
         Integer.valueOf(stats.cleaned()),
+        Integer.valueOf(stats.paused()),
         Integer.valueOf(stats.invalidDeleted()),
         Integer.valueOf(stats.obsoleteDeleted()),
         Integer.valueOf(stats.deleted()),
@@ -284,22 +373,22 @@ public class ReconcileCancellationMaintenanceService {
       int pages,
       int scanned,
       int cleaned,
+      int paused,
       int invalidDeleted,
       int obsoleteDeleted,
       int deleted,
       int failures) {
     static CancellationStats empty() {
-      return new CancellationStats(true, 0, 0, 0, 0, 0, 0, 0);
+      return new CancellationStats(true, 0, 0, 0, 0, 0, 0, 0, 0);
     }
 
-    boolean active() {
-      return !completed
-          || scanned > 0
-          || cleaned > 0
-          || invalidDeleted > 0
-          || obsoleteDeleted > 0
-          || deleted > 0
-          || failures > 0;
+    boolean infoQuiet() {
+      return completed
+          && cleaned == 0
+          && invalidDeleted == 0
+          && obsoleteDeleted == 0
+          && deleted == 0
+          && failures == 0;
     }
   }
 
