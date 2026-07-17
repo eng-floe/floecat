@@ -378,7 +378,7 @@ public class ReconcileJobEnqueuer {
             dedupeKeyHash,
             now,
             readyPointerKeyForDue.apply(spec.accountId, laneKey, jobId, now),
-            "",
+            indexes.connectorIndexPointerKey(spec.accountId, spec.connectorId, now, jobId),
             definition,
             snapshotPlanBlobUri);
     if (effectiveJobKind == ReconcileJobKind.PLAN_SNAPSHOT) {

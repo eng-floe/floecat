@@ -46,7 +46,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   private static final int LIST_SCAN_MAX_PAGES = 1_000;
   private static final String LIST_TOKEN_V1_PREFIX = "v1:";
   private static final String STATE_LIST_TOKEN_V1_PREFIX = "v1s:";
-  private static final int MAX_BATCH_WRITE_ITEMS = 100;
 
   private ReconcileJobIndexBackend jobIndexBackend;
   private ReconcilePayloadStore payloadStore;
@@ -146,7 +145,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
                   currentPointer.pointerKey(), currentPointer.blobUri(), currentPointer.version()),
               baseline,
               nextRecord);
-      if (jobIndexBackend.compareAndSetBatch(writeBatch)) {
+      if (compareAndSetBatchWithPointerOps(writeBatch, List.of())) {
         logStateTransition.accept(baseline, nextRecord, "mutate");
         return Optional.of(
             new CanonicalEnvelope(canonicalPointerKey, cloneStoredRecord(nextRecord)));
@@ -206,10 +205,11 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       return Optional.empty();
     }
     if (!isDedupeActiveState(record.get().state)) {
-      jobIndexBackend.compareAndSetBatch(
+      compareAndSetBatchWithPointerOps(
           new JobIndexWriteBatch(
               List.of(new JobIndexDelete(dedupePointer.pointerKey(), dedupePointer.version())),
-              ReadyQueueMutation.empty()));
+              ReadyQueueMutation.empty()),
+          List.of());
       return Optional.empty();
     }
     return record;
@@ -235,7 +235,9 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
           combineWriteBatches(
               prependInsertBatch(
                   queuedJobInsertOps(insert, existingDedupePointer), ancestorMutations));
-      if (jobIndexBackend.compareAndSetBatch(batch)) {
+      JobWriteChunk<QueuedJobInsert> chunk =
+          requireSingleAtomicWrite(new JobWritePlan<>(insert, batch, List.of()));
+      if (jobIndexBackend.compareAndSetBatch(chunk.indexBatch(), chunk.extraPointerOps())) {
         return null;
       }
     }
@@ -353,14 +355,24 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       batches.add(
           buildJobIndexWriteBatch(mutation.snapshot(), mutation.previous(), mutation.current()));
     }
-    return jobIndexBackend.compareAndSetBatch(combineWriteBatches(batches));
+    if (batches.isEmpty()) {
+      return true;
+    }
+    JobWriteChunk<List<CanonicalRecordMutation>> chunk =
+        requireSingleAtomicWrite(
+            new JobWritePlan<>(List.copyOf(mutations), combineWriteBatches(batches), List.of()));
+    return jobIndexBackend.compareAndSetBatch(chunk.indexBatch(), chunk.extraPointerOps());
   }
 
   @Override
   public boolean compareAndSetBatchWithPointerOps(
       JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
-    return jobIndexBackend.compareAndSetBatch(
-        batch, extraPointerOps == null ? List.of() : extraPointerOps);
+    if (writeItemCount(batch, extraPointerOps) == 0) {
+      return true;
+    }
+    JobWriteChunk<Void> chunk =
+        requireSingleAtomicWrite(new JobWritePlan<>(null, batch, extraPointerOps));
+    return jobIndexBackend.compareAndSetBatch(chunk.indexBatch(), chunk.extraPointerOps());
   }
 
   @Override
@@ -386,7 +398,16 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
           new JobIndexWriteBatch(
               List.of(), new ReadyQueueMutation(List.copyOf(readyWrites), List.of())));
     }
-    return jobIndexBackend.compareAndSetBatch(combineWriteBatches(batches));
+    if (batches.isEmpty()) {
+      return true;
+    }
+    JobWriteChunk<Void> chunk =
+        requireSingleAtomicWrite(new JobWritePlan<>(null, combineWriteBatches(batches), List.of()));
+    return jobIndexBackend.compareAndSetBatch(chunk.indexBatch(), chunk.extraPointerOps());
+  }
+
+  private <T> JobWriteChunk<T> requireSingleAtomicWrite(JobWritePlan<T> plan) {
+    return chunkJobWritePlans(List.of(plan)).getFirst();
   }
 
   public StoredJobPage listStoredJobs(
@@ -542,6 +563,15 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     return buildJobDeleteBatch(currentSnapshot, cleanupManifest(readableRecord));
   }
 
+  @Override
+  public JobIndexWriteBatch buildDiscoveredLegacyJobDeleteBatch(
+      CanonicalPointerSnapshot currentSnapshot, ReconcileJobIndexCleanupManifest manifest) {
+    if (currentSnapshot == null || blank(currentSnapshot.canonicalPointerKey())) {
+      return JobIndexWriteBatch.empty();
+    }
+    return buildJobDeleteBatch(currentSnapshot, manifest);
+  }
+
   private JobIndexWriteBatch buildJobDeleteBatch(
       CanonicalPointerSnapshot currentSnapshot, ReconcileJobIndexCleanupManifest manifest) {
     if (manifest == null || manifest.isEmpty()) {
@@ -558,37 +588,34 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   }
 
   @Override
-  public List<JobIndexWriteBatch> chunkJobWriteBatches(List<JobIndexWriteBatch> jobBatches) {
-    if (jobBatches == null || jobBatches.isEmpty()) {
-      return List.of();
-    }
-    List<WriteUnit<JobIndexWriteBatch>> units = new ArrayList<>();
-    for (JobIndexWriteBatch jobBatch : jobBatches) {
-      units.add(new WriteUnit<>(jobBatch, jobBatch));
-    }
-    List<JobIndexWriteBatch> chunks = new ArrayList<>();
-    for (WriteChunk<JobIndexWriteBatch> chunk : chunkWriteUnits(units, MAX_BATCH_WRITE_ITEMS)) {
-      chunks.add(chunk.batch());
-    }
-    return List.copyOf(chunks);
+  public int writeItemCount(JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
+    return physicalWriteItemCount(batch) + (extraPointerOps == null ? 0 : extraPointerOps.size());
   }
 
   @Override
-  public List<JobDeleteChunk> chunkJobDeletePlans(List<JobDeletePlan> plans) {
+  public int maxWriteItemsPerBatch() {
+    return ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS;
+  }
+
+  @Override
+  public <T> List<JobWriteChunk<T>> chunkJobWritePlans(List<JobWritePlan<T>> plans) {
     if (plans == null || plans.isEmpty()) {
       return List.of();
     }
-    List<JobDeleteChunk> chunks = new ArrayList<>();
-    List<JobDeletePlan> chunkPlans = new ArrayList<>();
+    List<JobWriteChunk<T>> chunks = new ArrayList<>();
+    List<JobWritePlan<T>> chunkPlans = new ArrayList<>();
     int chunkItems = 0;
-    for (JobDeletePlan plan : plans) {
-      int planItems = physicalWriteItemCount(plan.indexBatch()) + plan.extraPointerOps().size();
-      if (planItems > MAX_BATCH_WRITE_ITEMS) {
+    for (JobWritePlan<T> plan : plans) {
+      int planItems = writeItemCount(plan.indexBatch(), plan.extraPointerOps());
+      if (planItems > ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS) {
         throw new IllegalStateException(
-            "single job cleanup requires more than " + MAX_BATCH_WRITE_ITEMS + " write items");
+            "single atomic job write requires more than "
+                + ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS
+                + " write items");
       }
-      if (chunkItems > 0 && chunkItems + planItems > MAX_BATCH_WRITE_ITEMS) {
-        chunks.add(buildJobDeleteChunk(chunkPlans));
+      if (chunkItems > 0
+          && chunkItems + planItems > ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS) {
+        chunks.add(buildJobWriteChunk(chunkPlans));
         chunkPlans = new ArrayList<>();
         chunkItems = 0;
       }
@@ -598,19 +625,19 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       }
     }
     if (!chunkPlans.isEmpty()) {
-      chunks.add(buildJobDeleteChunk(chunkPlans));
+      chunks.add(buildJobWriteChunk(chunkPlans));
     }
     return List.copyOf(chunks);
   }
 
-  private JobDeleteChunk buildJobDeleteChunk(List<JobDeletePlan> plans) {
+  private <T> JobWriteChunk<T> buildJobWriteChunk(List<JobWritePlan<T>> plans) {
     List<JobIndexWriteBatch> indexBatches = new ArrayList<>(plans.size());
     List<PointerStore.CasOp> pointerOps = new ArrayList<>();
-    for (JobDeletePlan plan : plans) {
+    for (JobWritePlan<T> plan : plans) {
       indexBatches.add(plan.indexBatch());
       pointerOps.addAll(plan.extraPointerOps());
     }
-    return new JobDeleteChunk(
+    return new JobWriteChunk<>(
         List.copyOf(plans), combineWriteBatches(indexBatches), List.copyOf(pointerOps));
   }
 
@@ -860,7 +887,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     java.util.LinkedHashSet<String> indexKeys = new java.util.LinkedHashSet<>();
     indexKeys.add(insert.lookupKey());
     indexKeys.add(insert.parentKey());
-    indexKeys.add(insert.connectorIndexKey());
+    indexKeys.add(queuedConnectorIndexPointerKey(insert));
     indexKeys.addAll(insert.stateKeys());
     indexKeys.add(insert.dedupePointerKey());
     indexKeys.removeIf(NativeReconcileJobIndexStore::blank);
@@ -894,6 +921,15 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         ? indexes.connectorIndexPointerKey(
             record.accountId, record.connectorId, record.createdAtMs, record.jobId)
         : record.connectorIndexPointerKey;
+  }
+
+  private String queuedConnectorIndexPointerKey(QueuedJobInsert insert) {
+    if (insert == null) {
+      return "";
+    }
+    return blank(insert.connectorIndexKey())
+        ? connectorIndexPointerKey(insert.record())
+        : insert.connectorIndexKey();
   }
 
   private long parseDueMillis(String readyPointerKey) {
@@ -976,13 +1012,11 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
           new JobIndexUpsert(
               insert.parentKey(), 0L, insert.canonicalKey(), PointerReferenceKind.PRK_POINTER_KEY));
     }
-    if (!blank(insert.connectorIndexKey())) {
+    String connectorIndexKey = queuedConnectorIndexPointerKey(insert);
+    if (!blank(connectorIndexKey)) {
       ops.add(
           new JobIndexUpsert(
-              insert.connectorIndexKey(),
-              0L,
-              insert.canonicalKey(),
-              PointerReferenceKind.PRK_POINTER_KEY));
+              connectorIndexKey, 0L, insert.canonicalKey(), PointerReferenceKind.PRK_POINTER_KEY));
     }
     for (String stateKey : insert.stateKeys()) {
       if (!blank(stateKey)) {
@@ -1051,21 +1085,23 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       List<CanonicalRecordMutation> ancestorMutations) {
     List<JobIndexWriteBatch> ancestorBatches = ancestorWriteBatches(ancestorMutations);
     int ancestorItemCount = totalWriteItems(ancestorBatches);
-    if (ancestorItemCount > MAX_BATCH_WRITE_ITEMS) {
+    if (ancestorItemCount > ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS) {
       throw new IllegalStateException(
           "ancestor reconcile mutation requires more than "
-              + MAX_BATCH_WRITE_ITEMS
+              + ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS
               + " write items");
     }
 
     int trailingInsertStart = trailingInsertStart(insertBatches, ancestorItemCount);
     List<CommitBatch> commitBatches = new ArrayList<>();
-    List<WriteUnit<QueuedJobInsert>> leadingUnits = new ArrayList<>();
+    List<JobWritePlan<QueuedJobInsert>> leadingPlans = new ArrayList<>();
     for (int i = 0; i < trailingInsertStart; i++) {
-      leadingUnits.add(new WriteUnit<>(inserts.get(i), insertBatches.get(i)));
+      leadingPlans.add(new JobWritePlan<>(inserts.get(i), insertBatches.get(i), List.of()));
     }
-    for (WriteChunk<QueuedJobInsert> chunk : chunkWriteUnits(leadingUnits, MAX_BATCH_WRITE_ITEMS)) {
-      commitBatches.add(new CommitBatch(chunk.subjects(), chunk.batch()));
+    for (JobWriteChunk<QueuedJobInsert> chunk : chunkJobWritePlans(leadingPlans)) {
+      commitBatches.add(
+          new CommitBatch(
+              chunk.plans().stream().map(JobWritePlan::subject).toList(), chunk.indexBatch()));
     }
 
     List<QueuedJobInsert> trailingInserts = inserts.subList(trailingInsertStart, inserts.size());
@@ -1074,7 +1110,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     if (trailingInserts.isEmpty() && !ancestorBatches.isEmpty() && !inserts.isEmpty()) {
       throw new IllegalStateException(
           "unable to reserve space for ancestor reconcile mutation within a "
-              + MAX_BATCH_WRITE_ITEMS
+              + ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS
               + "-item batch");
     }
     List<JobIndexWriteBatch> finalBatches =
@@ -1082,60 +1118,27 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     finalBatches.addAll(trailingInsertBatches);
     finalBatches.addAll(ancestorBatches);
     JobIndexWriteBatch finalBatch = combineWriteBatches(finalBatches);
-    if (physicalWriteItemCount(finalBatch) > MAX_BATCH_WRITE_ITEMS) {
-      throw new IllegalStateException(
-          "reconcile enqueue batch requires more than " + MAX_BATCH_WRITE_ITEMS + " write items");
-    }
-    commitBatches.add(new CommitBatch(List.copyOf(trailingInserts), finalBatch));
+    JobWriteChunk<List<QueuedJobInsert>> finalChunk =
+        chunkJobWritePlans(
+                List.of(new JobWritePlan<>(List.copyOf(trailingInserts), finalBatch, List.of())))
+            .getFirst();
+    commitBatches.add(
+        new CommitBatch(finalChunk.plans().getFirst().subject(), finalChunk.indexBatch()));
     return commitBatches;
-  }
-
-  private <T> List<WriteChunk<T>> chunkWriteUnits(List<WriteUnit<T>> units, int maxWriteItems) {
-    if (units == null || units.isEmpty()) {
-      return List.of();
-    }
-    List<WriteChunk<T>> chunks = new ArrayList<>();
-    List<T> chunkSubjects = new ArrayList<>();
-    List<JobIndexWriteBatch> chunkBatches = new ArrayList<>();
-    int chunkItems = 0;
-    for (WriteUnit<T> unit : units) {
-      JobIndexWriteBatch batch = unit.batch();
-      int batchItems = physicalWriteItemCount(batch);
-      if (batchItems > maxWriteItems) {
-        throw new IllegalStateException(
-            "single job pointer mutation requires more than " + maxWriteItems + " write items");
-      }
-      if (batchItems == 0) {
-        continue;
-      }
-      if (chunkItems > 0 && chunkItems + batchItems > maxWriteItems) {
-        chunks.add(new WriteChunk<>(List.copyOf(chunkSubjects), combineWriteBatches(chunkBatches)));
-        chunkSubjects = new ArrayList<>();
-        chunkBatches = new ArrayList<>();
-        chunkItems = 0;
-      }
-      chunkSubjects.add(unit.subject());
-      chunkBatches.add(batch);
-      chunkItems += batchItems;
-    }
-    if (!chunkSubjects.isEmpty()) {
-      chunks.add(new WriteChunk<>(List.copyOf(chunkSubjects), combineWriteBatches(chunkBatches)));
-    }
-    return List.copyOf(chunks);
   }
 
   private int trailingInsertStart(List<JobIndexWriteBatch> insertBatches, int reservedWriteItems) {
     if (insertBatches == null || insertBatches.isEmpty()) {
       return 0;
     }
-    int finalCapacity = MAX_BATCH_WRITE_ITEMS - reservedWriteItems;
+    int finalCapacity = ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS - reservedWriteItems;
     if (finalCapacity <= 0) {
       return insertBatches.size();
     }
     int used = 0;
     int split = insertBatches.size();
     while (split > 0) {
-      int batchItems = physicalWriteItemCount(insertBatches.get(split - 1));
+      int batchItems = writeItemCount(insertBatches.get(split - 1), List.of());
       if (batchItems > finalCapacity) {
         return insertBatches.size();
       }
@@ -1170,7 +1173,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       return 0;
     }
     for (JobIndexWriteBatch batch : batches) {
-      total += physicalWriteItemCount(batch);
+      total += writeItemCount(batch, List.of());
     }
     return total;
   }
@@ -1219,10 +1222,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   }
 
   private record CommitBatch(List<QueuedJobInsert> inserts, JobIndexWriteBatch batch) {}
-
-  private record WriteUnit<T>(T subject, JobIndexWriteBatch batch) {}
-
-  private record WriteChunk<T>(List<T> subjects, JobIndexWriteBatch batch) {}
 
   private StoredJobPage listAccountWide(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states) {

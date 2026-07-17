@@ -105,6 +105,36 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   }
 
   @Override
+  public ReconcileJobIndexCleanupManifest discoverLegacyCleanupManifest(
+      String canonicalPointerKey) {
+    if (canonicalPointerKey == null || canonicalPointerKey.isBlank()) {
+      return ReconcileJobIndexCleanupManifest.EMPTY;
+    }
+    java.util.LinkedHashSet<String> indexKeys = new java.util.LinkedHashSet<>();
+    java.util.LinkedHashSet<String> readyKeys = new java.util.LinkedHashSet<>();
+    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(canonicalPointerKey);
+    if (canonicalKey != null) {
+      indexKeys.add(Keys.reconcileJobLookupPointerByIdPrefix() + canonicalKey.jobSegment());
+    }
+    String token = "";
+    do {
+      StringBuilder next = new StringBuilder();
+      for (var pointer : pointerStore.listPointersByPrefix("/", 500, token, next)) {
+        if (!canonicalPointerKey.equals(pointer.getBlobUri())) {
+          continue;
+        }
+        if (pointer.getKey().startsWith(Keys.reconcileReadyPointerPrefix())) {
+          readyKeys.add(pointer.getKey());
+        } else if (!canonicalPointerKey.equals(pointer.getKey())) {
+          indexKeys.add(pointer.getKey());
+        }
+      }
+      token = next.toString();
+    } while (!token.isBlank());
+    return new ReconcileJobIndexCleanupManifest(List.copyOf(indexKeys), List.copyOf(readyKeys));
+  }
+
+  @Override
   public JobIndexQueryPage listCanonicalEntries(String accountId, int limit, String pageToken) {
     return listPointers(Keys.reconcileJobPointerByIdPrefix(accountId), limit, pageToken);
   }

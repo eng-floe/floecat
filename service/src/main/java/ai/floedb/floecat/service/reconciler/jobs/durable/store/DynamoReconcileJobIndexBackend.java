@@ -42,6 +42,7 @@ import software.amazon.awssdk.services.dynamodb.model.Delete;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.Put;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
+import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
 import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException;
@@ -49,7 +50,6 @@ import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledExcepti
 @Singleton
 @IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
 public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend {
-  private static final int MAX_TRANSACTION_ITEMS = 100;
   private static final String KIND_GENERIC_POINTER = "Pointer";
   private static final String GENERIC_POINTER_GLOBAL_PK = "_ACCOUNT_DIR";
   private static final String ATTR_GENERIC_BLOB_URI = "blob_uri";
@@ -260,6 +260,51 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         stringListAttr(response.item(), JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS));
   }
 
+  @Override
+  public ReconcileJobIndexCleanupManifest discoverLegacyCleanupManifest(
+      String canonicalPointerKey) {
+    if (blank(canonicalPointerKey)) {
+      return ReconcileJobIndexCleanupManifest.EMPTY;
+    }
+    java.util.LinkedHashSet<String> indexKeys = new java.util.LinkedHashSet<>();
+    java.util.LinkedHashSet<String> readyKeys = new java.util.LinkedHashSet<>();
+    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(canonicalPointerKey);
+    if (canonicalKey != null) {
+      indexKeys.add(Keys.reconcileJobLookupPointerByIdPrefix() + canonicalKey.jobSegment());
+    }
+    Map<String, AttributeValue> cursor = Map.of();
+    do {
+      ScanRequest.Builder scan =
+          ScanRequest.builder()
+              .tableName(table)
+              .consistentRead(true)
+              .expressionAttributeNames(
+                  Map.of(
+                      "#canonical", JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY,
+                      "#blob", JobIndexBackendSupport.ATTR_BLOB_URI))
+              .filterExpression("#canonical = :canonical OR #blob = :canonical")
+              .expressionAttributeValues(
+                  Map.of(":canonical", AttributeValue.fromS(canonicalPointerKey)));
+      if (!cursor.isEmpty()) {
+        scan.exclusiveStartKey(cursor);
+      }
+      var response = dynamoCaller.call(dynamoDbClientManager, client -> client.scan(scan.build()));
+      for (var item : response.items()) {
+        String readyKey = stringAttr(item, DynamoReconcileReadyQueueBackend.ATTR_READY_POINTER_KEY);
+        if (!blank(readyKey)) {
+          readyKeys.add(readyKey);
+          continue;
+        }
+        String pointerKey = stringAttr(item, JobIndexBackendSupport.ATTR_POINTER_KEY);
+        if (!blank(pointerKey) && !canonicalPointerKey.equals(pointerKey)) {
+          indexKeys.add(pointerKey);
+        }
+      }
+      cursor = response.lastEvaluatedKey();
+    } while (cursor != null && !cursor.isEmpty());
+    return new ReconcileJobIndexCleanupManifest(List.copyOf(indexKeys), List.copyOf(readyKeys));
+  }
+
   private boolean compareAndSetDynamo(
       ReconcileJobIndexStore.JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
     List<TransactWriteItem> tx = new ArrayList<>();
@@ -306,9 +351,12 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         tx.add(buildGenericPointerCheckAbsent(check.key()));
       }
     }
-    if (tx.size() > MAX_TRANSACTION_ITEMS) {
+    if (tx.size() > ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS) {
       throw new IllegalArgumentException(
-          "DynamoDB transaction exceeds " + MAX_TRANSACTION_ITEMS + " items: " + tx.size());
+          "DynamoDB transaction exceeds "
+              + ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS
+              + " items: "
+              + tx.size());
     }
     try {
       dynamoCaller.callVoid(

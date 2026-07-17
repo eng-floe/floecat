@@ -86,15 +86,16 @@ public interface ReconcileJobIndexStore {
     }
   }
 
-  record JobDeletePlan(
-      String jobId, JobIndexWriteBatch indexBatch, List<PointerStore.CasOp> extraPointerOps) {
-    public JobDeletePlan {
+  record JobWritePlan<T>(
+      T subject, JobIndexWriteBatch indexBatch, List<PointerStore.CasOp> extraPointerOps) {
+    public JobWritePlan {
+      indexBatch = indexBatch == null ? JobIndexWriteBatch.empty() : indexBatch;
       extraPointerOps = extraPointerOps == null ? List.of() : List.copyOf(extraPointerOps);
     }
   }
 
-  record JobDeleteChunk(
-      List<JobDeletePlan> plans,
+  record JobWriteChunk<T>(
+      List<JobWritePlan<T>> plans,
       JobIndexWriteBatch indexBatch,
       List<PointerStore.CasOp> extraPointerOps) {}
 
@@ -190,9 +191,14 @@ public interface ReconcileJobIndexStore {
   JobIndexWriteBatch buildReadableLegacyJobDeleteBatch(
       CanonicalPointerSnapshot currentSnapshot, StoredReconcileJob readableRecord);
 
-  List<JobIndexWriteBatch> chunkJobWriteBatches(List<JobIndexWriteBatch> jobBatches);
+  JobIndexWriteBatch buildDiscoveredLegacyJobDeleteBatch(
+      CanonicalPointerSnapshot currentSnapshot, ReconcileJobIndexCleanupManifest manifest);
 
-  List<JobDeleteChunk> chunkJobDeletePlans(List<JobDeletePlan> plans);
+  int writeItemCount(JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps);
+
+  int maxWriteItemsPerBatch();
+
+  <T> List<JobWriteChunk<T>> chunkJobWritePlans(List<JobWritePlan<T>> plans);
 
   JobIndexWriteBatch combineWriteBatches(List<JobIndexWriteBatch> batches);
 

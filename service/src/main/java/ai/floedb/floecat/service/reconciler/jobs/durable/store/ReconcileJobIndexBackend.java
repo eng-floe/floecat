@@ -57,4 +57,9 @@ public interface ReconcileJobIndexBackend {
   default ReconcileJobIndexCleanupManifest loadCleanupManifest(String canonicalPointerKey) {
     return ReconcileJobIndexCleanupManifest.EMPTY;
   }
+
+  default ReconcileJobIndexCleanupManifest discoverLegacyCleanupManifest(
+      String canonicalPointerKey) {
+    return ReconcileJobIndexCleanupManifest.EMPTY;
+  }
 }

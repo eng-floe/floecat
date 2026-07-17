@@ -25,6 +25,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.CanonicalPointerS
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.JobIndexEntrySnapshot;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReadyQueueKeys;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexCleanupManifest;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -173,8 +174,8 @@ public class ReconcileJobGc {
         break;
       }
 
-      List<ReconcileJobIndexStore.JobDeletePlan> deletePlans = new ArrayList<>();
-      List<ReconcileJobIndexStore.JobDeletePlan> quarantinedDeletePlans = new ArrayList<>();
+      List<ReconcileJobIndexStore.JobWritePlan<String>> deletePlans = new ArrayList<>();
+      List<ReconcileJobIndexStore.JobWritePlan<String>> quarantinedDeletePlans = new ArrayList<>();
 
       for (var canonical : pointers) {
         if (scanned >= batchLimit) {
@@ -185,7 +186,7 @@ public class ReconcileJobGc {
         JsonNode record = readRecordByReference(canonical.blobUri());
         String jobId = decodeJobId(jobPrefix, canonical.pointerKey());
         if (record == null) {
-          ReconcileJobIndexStore.JobDeletePlan deletePlan =
+          ReconcileJobIndexStore.JobWritePlan<String> deletePlan =
               buildQuarantinedCanonicalDeletePlan(
                   accountId, jobId, canonical, nowMs, canonicalQuarantineRetentionMs);
           if (deletePlan != null) {
@@ -204,7 +205,7 @@ public class ReconcileJobGc {
 
         if (TERMINAL_STATES.contains(state)) {
           if (updatedAt <= nowMs - retentionMs) {
-            ReconcileJobIndexStore.JobDeletePlan deletePlan =
+            ReconcileJobIndexStore.JobWritePlan<String> deletePlan =
                 buildCanonicalFootprintDeletePlan(accountId, jobId, canonical, record);
             if (deletePlan != null) {
               deletePlans.add(deletePlan);
@@ -472,7 +473,7 @@ public class ReconcileJobGc {
     return null;
   }
 
-  private ReconcileJobIndexStore.JobDeletePlan buildQuarantinedCanonicalDeletePlan(
+  private ReconcileJobIndexStore.JobWritePlan<String> buildQuarantinedCanonicalDeletePlan(
       String accountId,
       String jobId,
       JobIndexEntrySnapshot canonical,
@@ -519,13 +520,30 @@ public class ReconcileJobGc {
             new CanonicalPointerSnapshot(
                 canonical.pointerKey(), canonical.blobUri(), canonical.version()));
     if (deleteBatch.writes().isEmpty()) {
+      ReconcileJobIndexCleanupManifest discovered =
+          jobIndexBackend.discoverLegacyCleanupManifest(canonical.pointerKey());
+      deleteBatch =
+          jobIndexStore.buildDiscoveredLegacyJobDeleteBatch(
+              new CanonicalPointerSnapshot(
+                  canonical.pointerKey(), canonical.blobUri(), canonical.version()),
+              discovered);
+      if (!deleteBatch.writes().isEmpty()) {
+        LOG.warnf(
+            "Using reverse-reference cleanup fallback for unreadable legacy reconcile job accountId=%s jobId=%s indexPointers=%d readyPointers=%d",
+            accountId,
+            jobId,
+            discovered.indexPointerKeys().size(),
+            discovered.readyPointerKeys().size());
+      }
+    }
+    if (deleteBatch.writes().isEmpty()) {
       return null;
     }
     List<PointerStore.CasOp> pointerDeletes = new ArrayList<>();
     if (marker != null) {
       pointerDeletes.add(new PointerStore.CasDelete(marker.getKey(), marker.getVersion()));
     }
-    return new ReconcileJobIndexStore.JobDeletePlan(jobId, deleteBatch, pointerDeletes);
+    return new ReconcileJobIndexStore.JobWritePlan<>(jobId, deleteBatch, pointerDeletes);
   }
 
   private void clearCanonicalQuarantineMarkerIfReadable(Pointer marker) {
@@ -684,7 +702,7 @@ public class ReconcileJobGc {
     }
   }
 
-  private ReconcileJobIndexStore.JobDeletePlan buildCanonicalFootprintDeletePlan(
+  private ReconcileJobIndexStore.JobWritePlan<String> buildCanonicalFootprintDeletePlan(
       String accountId, String jobId, JobIndexEntrySnapshot canonical, JsonNode record) {
     if (canonical == null || jobId == null || jobId.isBlank()) {
       return null;
@@ -726,31 +744,32 @@ public class ReconcileJobGc {
     if (deleteBatch.writes().isEmpty()) {
       return null;
     }
-    return new ReconcileJobIndexStore.JobDeletePlan(jobId, deleteBatch, pointerDeletes);
+    return new ReconcileJobIndexStore.JobWritePlan<>(jobId, deleteBatch, pointerDeletes);
   }
 
   private JobCleanupResult deleteCanonicalFootprints(
-      String accountId, List<ReconcileJobIndexStore.JobDeletePlan> plans) {
+      String accountId, List<ReconcileJobIndexStore.JobWritePlan<String>> plans) {
     int expired = 0;
     int ptrDeleted = 0;
     int blobDeleted = 0;
-    for (ReconcileJobIndexStore.JobDeleteChunk chunk : jobIndexStore.chunkJobDeletePlans(plans)) {
+    for (ReconcileJobIndexStore.JobWriteChunk<String> chunk :
+        jobIndexStore.chunkJobWritePlans(plans)) {
       if (jobIndexBackend.compareAndSetBatch(chunk.indexBatch(), chunk.extraPointerOps())) {
-        for (ReconcileJobIndexStore.JobDeletePlan plan : chunk.plans()) {
+        for (ReconcileJobIndexStore.JobWritePlan<String> plan : chunk.plans()) {
           expired++;
           ptrDeleted++;
-          if (plan.jobId() != null && !plan.jobId().isBlank()) {
-            blobDeleted += deleteJobBlobs(accountId, plan.jobId());
+          if (plan.subject() != null && !plan.subject().isBlank()) {
+            blobDeleted += deleteJobBlobs(accountId, plan.subject());
           }
         }
         continue;
       }
-      for (ReconcileJobIndexStore.JobDeletePlan plan : chunk.plans()) {
+      for (ReconcileJobIndexStore.JobWritePlan<String> plan : chunk.plans()) {
         if (jobIndexBackend.compareAndSetBatch(plan.indexBatch(), plan.extraPointerOps())) {
           expired++;
           ptrDeleted++;
-          if (plan.jobId() != null && !plan.jobId().isBlank()) {
-            blobDeleted += deleteJobBlobs(accountId, plan.jobId());
+          if (plan.subject() != null && !plan.subject().isBlank()) {
+            blobDeleted += deleteJobBlobs(accountId, plan.subject());
           }
         }
       }

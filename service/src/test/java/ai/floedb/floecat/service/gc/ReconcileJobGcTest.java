@@ -404,7 +404,7 @@ class ReconcileJobGcTest {
   }
 
   @Test
-  void accountSliceDoesNotPartiallyPurgeUnreadableLegacyCanonicalWithoutManifest() {
+  void accountSlicePurgesUnreadableLegacyCanonicalWithoutManifest() {
     System.setProperty("floecat.gc.reconcile-jobs.canonical-quarantine-retention-ms", "0");
     String jobId = "job-legacy-corrupt-no-manifest";
     String parentJobId = "parent-legacy-corrupt-no-manifest";
@@ -432,15 +432,31 @@ class ReconcileJobGcTest {
     var second = gc.runAccountSlice(ACCOUNT_ID, "", "");
 
     assertEquals(1, first.canonicalQuarantined());
-    assertEquals(1, second.canonicalQuarantined());
-    assertEquals(0, second.expired());
-    assertTrue(jobIndexBackend.loadIndexEntry(canonicalKey).isPresent());
-    assertTrue(
-        jobIndexBackend.loadIndexEntry(Keys.reconcileJobLookupPointerById(jobId)).isPresent());
+    assertEquals(0, second.canonicalQuarantined());
+    assertEquals(1, second.expired());
+    assertTrue(jobIndexBackend.loadIndexEntry(canonicalKey).isEmpty());
+    assertTrue(jobIndexBackend.loadIndexEntry(Keys.reconcileJobLookupPointerById(jobId)).isEmpty());
     assertTrue(
         jobIndexBackend
             .loadIndexEntry(Keys.reconcileJobByParentPointer(ACCOUNT_ID, parentJobId, jobId))
-            .isPresent());
+            .isEmpty());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(
+                Keys.reconcileJobByConnectorPointer(
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    String.format("%019d-%s", Long.MAX_VALUE - now, jobId)))
+            .isEmpty());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(Keys.reconcileJobByStatePointer("JS_SUCCEEDED", now, ACCOUNT_ID, jobId))
+            .isEmpty());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(Keys.reconcileDedupePointer(ACCOUNT_ID, dedupeHash))
+            .isEmpty());
+    assertTrue(pointers.get(record.readyPointerKey).isEmpty());
   }
 
   @Test

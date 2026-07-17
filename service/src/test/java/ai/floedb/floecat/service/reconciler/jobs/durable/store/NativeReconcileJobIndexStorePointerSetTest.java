@@ -61,7 +61,10 @@ class NativeReconcileJobIndexStorePointerSetTest {
     String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, JOB_ID);
     String lookupKey = Keys.reconcileJobLookupPointerById(JOB_ID);
     String parentKey = Keys.reconcileJobByParentPointer(ACCOUNT_ID, "parent-1", JOB_ID);
-    String connectorKey = Keys.reconcileJobByConnectorPointer(ACCOUNT_ID, CONNECTOR_ID, "token-1");
+    record.connectorIndexPointerKey = "";
+    String connectorKey =
+        indexes.connectorIndexPointerKey(
+            ACCOUNT_ID, CONNECTOR_ID, record.createdAtMs, record.jobId);
     List<String> stateKeys = indexes.statePointerKeys(record);
     String dedupeKey = Keys.reconcileDedupePointer(ACCOUNT_ID, record.dedupeKeyHash);
 
@@ -75,7 +78,7 @@ class NativeReconcileJobIndexStorePointerSetTest {
                 parentKey,
                 List.of(),
                 stateKeys,
-                connectorKey,
+                "",
                 "",
                 record)));
 
@@ -147,50 +150,57 @@ class NativeReconcileJobIndexStorePointerSetTest {
 
   @Test
   void chunkingPacksWholeJobsToOneHundredItemsAndSplitsOnlyBetweenJobs() {
-    ReconcileJobIndexStore.JobIndexWriteBatch sixty = batchWithDeletes("a", 60);
-    ReconcileJobIndexStore.JobIndexWriteBatch forty = batchWithDeletes("b", 40);
-    ReconcileJobIndexStore.JobIndexWriteBatch one = batchWithDeletes("c", 1);
+    ReconcileJobIndexStore.JobWritePlan<String> sixty =
+        new ReconcileJobIndexStore.JobWritePlan<>("a", batchWithDeletes("a", 60), List.of());
+    ReconcileJobIndexStore.JobWritePlan<String> forty =
+        new ReconcileJobIndexStore.JobWritePlan<>("b", batchWithDeletes("b", 40), List.of());
+    ReconcileJobIndexStore.JobWritePlan<String> one =
+        new ReconcileJobIndexStore.JobWritePlan<>("c", batchWithDeletes("c", 1), List.of());
 
-    List<ReconcileJobIndexStore.JobIndexWriteBatch> chunks =
-        store.chunkJobWriteBatches(List.of(sixty, forty, one));
+    List<ReconcileJobIndexStore.JobWriteChunk<String>> chunks =
+        store.chunkJobWritePlans(List.of(sixty, forty, one));
 
     assertEquals(2, chunks.size());
-    assertEquals(100, NativeReconcileJobIndexStore.physicalWriteItemCount(chunks.get(0)));
-    assertEquals(1, NativeReconcileJobIndexStore.physicalWriteItemCount(chunks.get(1)));
+    assertEquals(List.of(sixty, forty), chunks.get(0).plans());
+    assertEquals(100, store.writeItemCount(chunks.get(0).indexBatch(), List.of()));
+    assertEquals(List.of(one), chunks.get(1).plans());
+    assertEquals(1, store.writeItemCount(chunks.get(1).indexBatch(), List.of()));
     assertThrows(
         IllegalStateException.class,
-        () -> store.chunkJobWriteBatches(List.of(batchWithDeletes("oversized", 101))));
+        () ->
+            store.chunkJobWritePlans(
+                List.of(
+                    new ReconcileJobIndexStore.JobWritePlan<>(
+                        "oversized", batchWithDeletes("oversized", 101), List.of()))));
   }
 
   @Test
   void cleanupChunkingCountsPointerOpsAndPreservesWholeJobPlans() {
-    ReconcileJobIndexStore.JobDeletePlan first =
-        new ReconcileJobIndexStore.JobDeletePlan(
+    ReconcileJobIndexStore.JobWritePlan<String> first =
+        new ReconcileJobIndexStore.JobWritePlan<>(
             "job-a",
             batchWithDeletes("a", 60),
             java.util.stream.IntStream.range(0, 40)
                 .mapToObj(
                     i -> (PointerStore.CasOp) new PointerStore.CasDelete("pointer-a-" + i, 1L))
                 .toList());
-    ReconcileJobIndexStore.JobDeletePlan second =
-        new ReconcileJobIndexStore.JobDeletePlan("job-b", batchWithDeletes("b", 1), List.of());
+    ReconcileJobIndexStore.JobWritePlan<String> second =
+        new ReconcileJobIndexStore.JobWritePlan<>("job-b", batchWithDeletes("b", 1), List.of());
 
-    List<ReconcileJobIndexStore.JobDeleteChunk> chunks =
-        store.chunkJobDeletePlans(List.of(first, second));
+    List<ReconcileJobIndexStore.JobWriteChunk<String>> chunks =
+        store.chunkJobWritePlans(List.of(first, second));
 
     assertEquals(2, chunks.size());
     assertEquals(List.of(first), chunks.get(0).plans());
     assertEquals(
-        100,
-        NativeReconcileJobIndexStore.physicalWriteItemCount(chunks.get(0).indexBatch())
-            + chunks.get(0).extraPointerOps().size());
+        100, store.writeItemCount(chunks.get(0).indexBatch(), chunks.get(0).extraPointerOps()));
     assertEquals(List.of(second), chunks.get(1).plans());
     assertThrows(
         IllegalStateException.class,
         () ->
-            store.chunkJobDeletePlans(
+            store.chunkJobWritePlans(
                 List.of(
-                    new ReconcileJobIndexStore.JobDeletePlan(
+                    new ReconcileJobIndexStore.JobWritePlan<>(
                         "oversized", batchWithDeletes("oversized", 101), List.of()))));
   }
 

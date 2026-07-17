@@ -32,7 +32,6 @@ import org.jboss.logging.Logger;
 public class ReconcileReadyIndexMaintenanceService {
   private static final Logger LOG = Logger.getLogger(ReconcileReadyIndexMaintenanceService.class);
   private static final String QUEUED_STATE = "JS_QUEUED";
-  private static final int MAX_READY_REPAIR_WRITE_ITEMS = 100;
   public static final int CURRENT_READY_INDEX_VERSION = 2;
 
   private ReconcileJobIndexStore jobIndexStore;
@@ -69,7 +68,6 @@ public class ReconcileReadyIndexMaintenanceService {
     int chunks = 0;
     int failedChunks = 0;
     List<ReadyIndexRepairWork> pendingWork = new ArrayList<>();
-    int pendingWriteItems = 0;
     while (true) {
       if (System.currentTimeMillis() > deadlineMs) {
         RepairFlushResult flush = flushReadyRepairChunks(pendingWork);
@@ -113,14 +111,13 @@ public class ReconcileReadyIndexMaintenanceService {
         if (work == null) {
           continue;
         }
-        if (work.writeItems() > MAX_READY_REPAIR_WRITE_ITEMS) {
+        if (work.writeItems() > maxWriteItems()) {
           RepairFlushResult flush = flushReadyRepairChunks(pendingWork);
           jobsRepaired += flush.jobsRepaired();
           readyWrites += flush.readyWrites();
           chunks += flush.chunks();
           failedChunks += flush.failedChunks();
           pendingWork.clear();
-          pendingWriteItems = 0;
           RepairFlushResult oversizedFlush = flushOversizedReadyRepair(work);
           jobsRepaired += oversizedFlush.jobsRepaired();
           readyWrites += oversizedFlush.readyWrites();
@@ -128,18 +125,15 @@ public class ReconcileReadyIndexMaintenanceService {
           failedChunks += oversizedFlush.failedChunks();
           continue;
         }
-        if (pendingWriteItems + work.writeItems() > MAX_READY_REPAIR_WRITE_ITEMS) {
-          RepairFlushResult flush = flushReadyRepairChunks(pendingWork);
-          jobsRepaired += flush.jobsRepaired();
-          readyWrites += flush.readyWrites();
-          chunks += flush.chunks();
-          failedChunks += flush.failedChunks();
-          pendingWork.clear();
-          pendingWriteItems = 0;
-        }
         pendingWork.add(work);
-        pendingWriteItems += work.writeItems();
       }
+
+      RepairFlushResult pageFlush = flushReadyRepairChunks(pendingWork);
+      jobsRepaired += pageFlush.jobsRepaired();
+      readyWrites += pageFlush.readyWrites();
+      chunks += pageFlush.chunks();
+      failedChunks += pageFlush.failedChunks();
+      pendingWork.clear();
 
       String nextToken = blankToEmpty(page.nextPageToken());
       if (nextToken.isBlank()) {
@@ -218,7 +212,8 @@ public class ReconcileReadyIndexMaintenanceService {
     repaired.canonicalPointerKey = snapshot.canonicalPointerKey();
     ReconcileJobIndexStore.CanonicalRecordMutation mutation =
         new ReconcileJobIndexStore.CanonicalRecordMutation(snapshot, previous, repaired);
-    int writeItems = canonicalMutationWriteItems(mutation) + writes.size();
+    int writeItems =
+        jobIndexStore.writeItemCount(readyRepairWriteBatch(mutation, writes), List.of());
     return new ReadyIndexRepairWork(mutation, writes, writeItems);
   }
 
@@ -244,42 +239,55 @@ public class ReconcileReadyIndexMaintenanceService {
     if (workItems == null || workItems.isEmpty()) {
       return RepairFlushResult.empty();
     }
+    List<ReconcileJobIndexStore.JobWritePlan<ReadyIndexRepairWork>> plans = new ArrayList<>();
+    for (ReadyIndexRepairWork work : workItems) {
+      if (work != null) {
+        plans.add(
+            new ReconcileJobIndexStore.JobWritePlan<>(
+                work, readyRepairWriteBatch(work.mutation(), work.readyWrites()), List.of()));
+      }
+    }
     int jobsRepaired = 0;
     int readyWrites = 0;
     int chunks = 0;
     int failedChunks = 0;
-    List<ReconcileJobIndexStore.CanonicalRecordMutation> mutations = new ArrayList<>();
-    List<ReconcileJobIndexStore.ReadyQueueWrite> writes = new ArrayList<>();
-    int writeItems = 0;
-    for (ReadyIndexRepairWork work : workItems) {
-      if (work == null) {
+    for (ReconcileJobIndexStore.JobWriteChunk<ReadyIndexRepairWork> chunk :
+        jobIndexStore.chunkJobWritePlans(plans)) {
+      chunks++;
+      if (!jobIndexStore.compareAndSetBatchWithPointerOps(
+          chunk.indexBatch(), chunk.extraPointerOps())) {
+        failedChunks++;
         continue;
       }
-      if (writeItems + work.writeItems() > MAX_READY_REPAIR_WRITE_ITEMS && !mutations.isEmpty()) {
-        RepairFlushResult flush = commitReadyRepairChunk(mutations, writes);
-        jobsRepaired += flush.jobsRepaired();
-        readyWrites += flush.readyWrites();
-        chunks += flush.chunks();
-        failedChunks += flush.failedChunks();
-        mutations = new ArrayList<>();
-        writes = new ArrayList<>();
-        writeItems = 0;
+      jobsRepaired += chunk.plans().size();
+      for (ReconcileJobIndexStore.JobWritePlan<ReadyIndexRepairWork> plan : chunk.plans()) {
+        readyWrites += plan.subject().readyWrites().size();
       }
-      mutations.add(work.mutation());
-      writes.addAll(work.readyWrites());
-      writeItems += work.writeItems();
     }
-    RepairFlushResult flush = commitReadyRepairChunk(mutations, writes);
-    return new RepairFlushResult(
-        jobsRepaired + flush.jobsRepaired(),
-        readyWrites + flush.readyWrites(),
-        chunks + flush.chunks(),
-        failedChunks + flush.failedChunks());
+    return new RepairFlushResult(jobsRepaired, readyWrites, chunks, failedChunks);
+  }
+
+  private ReconcileJobIndexStore.JobIndexWriteBatch readyRepairWriteBatch(
+      ReconcileJobIndexStore.CanonicalRecordMutation mutation,
+      List<ReconcileJobIndexStore.ReadyQueueWrite> writes) {
+    List<ReconcileJobIndexStore.JobIndexWriteBatch> batches = new ArrayList<>();
+    if (mutation != null && mutation.snapshot() != null && mutation.current() != null) {
+      batches.add(
+          jobIndexStore.buildJobIndexWriteBatch(
+              mutation.snapshot(), mutation.previous(), mutation.current()));
+    }
+    if (writes != null && !writes.isEmpty()) {
+      batches.add(
+          new ReconcileJobIndexStore.JobIndexWriteBatch(
+              List.of(),
+              new ReconcileJobIndexStore.ReadyQueueMutation(List.copyOf(writes), List.of())));
+    }
+    return jobIndexStore.combineWriteBatches(batches);
   }
 
   private RepairFlushResult flushOversizedReadyRepair(ReadyIndexRepairWork work) {
     int mutationWriteItems = canonicalMutationWriteItems(work.mutation());
-    if (mutationWriteItems > MAX_READY_REPAIR_WRITE_ITEMS) {
+    if (mutationWriteItems > maxWriteItems()) {
       LOG.warnf(
           "Reconcile ready-index repair skipped oversized mutation jobId=%s write_items=%d"
               + " max_write_items=%d",
@@ -287,7 +295,7 @@ public class ReconcileReadyIndexMaintenanceService {
               ? ""
               : blankToEmpty(work.mutation().current().jobId),
           Integer.valueOf(mutationWriteItems),
-          Integer.valueOf(MAX_READY_REPAIR_WRITE_ITEMS));
+          Integer.valueOf(maxWriteItems()));
       return RepairFlushResult.empty();
     }
     int jobsRepaired = 0;
@@ -296,9 +304,9 @@ public class ReconcileReadyIndexMaintenanceService {
     int failedChunks = 0;
     List<ReconcileJobIndexStore.ReadyQueueWrite> writes = work.readyWrites();
     int index = 0;
-    int finalChunkCapacity = MAX_READY_REPAIR_WRITE_ITEMS - mutationWriteItems;
+    int finalChunkCapacity = maxWriteItems() - mutationWriteItems;
     while (writes.size() - index > finalChunkCapacity) {
-      int nextIndex = Math.min(writes.size(), index + MAX_READY_REPAIR_WRITE_ITEMS);
+      int nextIndex = Math.min(writes.size(), index + maxWriteItems());
       RepairFlushResult flush = commitReadyRepairChunk(List.of(), writes.subList(index, nextIndex));
       readyWrites += flush.readyWrites();
       chunks += flush.chunks();
@@ -334,7 +342,7 @@ public class ReconcileReadyIndexMaintenanceService {
         Integer.valueOf(mutationCount),
         Integer.valueOf(readyWriteCount),
         Integer.valueOf(writeItemCount),
-        Integer.valueOf(MAX_READY_REPAIR_WRITE_ITEMS));
+        Integer.valueOf(maxWriteItems()));
     if (jobIndexStore.commitReadyQueueRepairBatch(
         mutations == null ? List.of() : mutations, writes == null ? List.of() : writes)) {
       return new RepairFlushResult(mutationCount, readyWriteCount, 1, 0);
@@ -345,14 +353,23 @@ public class ReconcileReadyIndexMaintenanceService {
   private int repairWriteItems(
       List<ReconcileJobIndexStore.CanonicalRecordMutation> mutations,
       List<ReconcileJobIndexStore.ReadyQueueWrite> writes) {
-    int writeItems = writes == null ? 0 : writes.size();
-    if (mutations == null) {
-      return writeItems;
+    List<ReconcileJobIndexStore.JobIndexWriteBatch> batches = new ArrayList<>();
+    if (mutations != null) {
+      for (ReconcileJobIndexStore.CanonicalRecordMutation mutation : mutations) {
+        if (mutation != null && mutation.snapshot() != null && mutation.current() != null) {
+          batches.add(
+              jobIndexStore.buildJobIndexWriteBatch(
+                  mutation.snapshot(), mutation.previous(), mutation.current()));
+        }
+      }
     }
-    for (ReconcileJobIndexStore.CanonicalRecordMutation mutation : mutations) {
-      writeItems += canonicalMutationWriteItems(mutation);
+    if (writes != null && !writes.isEmpty()) {
+      batches.add(
+          new ReconcileJobIndexStore.JobIndexWriteBatch(
+              List.of(),
+              new ReconcileJobIndexStore.ReadyQueueMutation(List.copyOf(writes), List.of())));
     }
-    return writeItems;
+    return jobIndexStore.writeItemCount(jobIndexStore.combineWriteBatches(batches), List.of());
   }
 
   private int canonicalMutationWriteItems(ReconcileJobIndexStore.CanonicalRecordMutation mutation) {
@@ -362,9 +379,11 @@ public class ReconcileReadyIndexMaintenanceService {
     ReconcileJobIndexStore.JobIndexWriteBatch batch =
         jobIndexStore.buildJobIndexWriteBatch(
             mutation.snapshot(), mutation.previous(), mutation.current());
-    return batch.writes().size()
-        + batch.readyMutation().upserts().size()
-        + batch.readyMutation().deletes().size();
+    return jobIndexStore.writeItemCount(batch, List.of());
+  }
+
+  private int maxWriteItems() {
+    return jobIndexStore.maxWriteItemsPerBatch();
   }
 
   private void logMaintenanceSummary(long startedAtMs, ReadyIndexRepairStats stats) {

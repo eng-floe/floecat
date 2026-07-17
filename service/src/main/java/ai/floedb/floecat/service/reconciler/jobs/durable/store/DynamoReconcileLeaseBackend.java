@@ -50,7 +50,6 @@ import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledExcepti
 @Singleton
 @IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
 public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
-  private static final int MAX_TRANSACTION_ITEMS = 100;
   private static final String ATTR_BLOB_URI = "blob_uri";
 
   @Inject Instance<DynamoDbClientManager> dynamoDbClientManager;
@@ -230,9 +229,12 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
         }
       }
     }
-    if (tx.size() > MAX_TRANSACTION_ITEMS) {
+    if (tx.size() > ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS) {
       throw new IllegalArgumentException(
-          "DynamoDB transaction exceeds " + MAX_TRANSACTION_ITEMS + " items: " + tx.size());
+          "DynamoDB transaction exceeds "
+              + ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS
+              + " items: "
+              + tx.size());
     }
     try {
       dynamoCaller.callVoid(

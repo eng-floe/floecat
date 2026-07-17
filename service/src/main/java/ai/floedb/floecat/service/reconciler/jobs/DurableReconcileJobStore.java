@@ -141,7 +141,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private static final long DEFAULT_LEASE_MS = 120_000L;
   private static final long DEFAULT_RECLAIM_INTERVAL_MS = 5_000L;
   private static final long DEFAULT_LEASE_RENEW_GRACE_MS = 5_000L;
-  private static final int CANCELLATION_BATCH_WRITE_ITEM_LIMIT = 100;
   private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
   private static final int DEFAULT_READY_SCAN_LIMIT = 128;
   // Caps how many ready-queue lease scans may run concurrently across all callers (the in-process
@@ -2601,91 +2600,56 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (mutations == null || mutations.isEmpty()) {
       return new CancellationCommitStats(true, 0, 0, 0);
     }
-    List<ReconcileJobIndexStore.CanonicalRecordMutation> chunk = new ArrayList<>();
-    int chunkWriteItems = 0;
-    int batches = 0;
-    int writeItems = 0;
-    int committedMutations = 0;
+    List<ReconcileJobIndexStore.JobWritePlan<ReconcileJobIndexStore.CanonicalRecordMutation>>
+        plans = new ArrayList<>();
+    int maxWriteItems = jobIndexStore().maxWriteItemsPerBatch();
     for (ReconcileJobIndexStore.CanonicalRecordMutation mutation : mutations) {
-      int mutationWriteItems = cancellationMutationWriteItems(mutation);
-      if (mutationWriteItems > CANCELLATION_BATCH_WRITE_ITEM_LIMIT) {
+      if (mutation == null || mutation.snapshot() == null || mutation.current() == null) {
+        continue;
+      }
+      ReconcileJobIndexStore.JobIndexWriteBatch batch =
+          jobIndexStore()
+              .buildJobIndexWriteBatch(
+                  mutation.snapshot(), mutation.previous(), mutation.current());
+      int mutationWriteItems = jobIndexStore().writeItemCount(batch, List.of());
+      if (mutationWriteItems > maxWriteItems) {
         LOG.warnf(
             "reconcile cancellation cleanup skipped oversized mutation accountId=%s rootJobId=%s"
                 + " jobId=%s write_items=%d max_write_items=%d",
             blankToEmpty(accountId),
             blankToEmpty(rootJobId),
-            mutation == null || mutation.current() == null
-                ? ""
-                : blankToEmpty(mutation.current().jobId),
+            blankToEmpty(mutation.current().jobId),
             Integer.valueOf(mutationWriteItems),
-            Integer.valueOf(CANCELLATION_BATCH_WRITE_ITEM_LIMIT));
-        return new CancellationCommitStats(false, batches, committedMutations, writeItems);
+            Integer.valueOf(maxWriteItems));
+        return new CancellationCommitStats(false, 0, 0, 0);
       }
-      if (!chunk.isEmpty()
-          && chunkWriteItems + mutationWriteItems > CANCELLATION_BATCH_WRITE_ITEM_LIMIT) {
-        if (!commitCancellationMutationChunk(accountId, rootJobId, chunk, chunkWriteItems)) {
-          return new CancellationCommitStats(false, batches, committedMutations, writeItems);
-        }
-        batches++;
-        committedMutations += chunk.size();
-        writeItems += chunkWriteItems;
-        chunk = new ArrayList<>();
-        chunkWriteItems = 0;
-      }
-      chunk.add(mutation);
-      chunkWriteItems += mutationWriteItems;
+      plans.add(new ReconcileJobIndexStore.JobWritePlan<>(mutation, batch, List.of()));
     }
-    if (!chunk.isEmpty()) {
-      if (!commitCancellationMutationChunk(accountId, rootJobId, chunk, chunkWriteItems)) {
+    int batches = 0;
+    int writeItems = 0;
+    int committedMutations = 0;
+    for (ReconcileJobIndexStore.JobWriteChunk<ReconcileJobIndexStore.CanonicalRecordMutation>
+        chunk : jobIndexStore().chunkJobWritePlans(plans)) {
+      int chunkWriteItems =
+          jobIndexStore().writeItemCount(chunk.indexBatch(), chunk.extraPointerOps());
+      boolean committed =
+          jobIndexStore()
+              .compareAndSetBatchWithPointerOps(chunk.indexBatch(), chunk.extraPointerOps());
+      if (!committed) {
+        LOG.warnf(
+            "reconcile cancellation cleanup batch CAS failed accountId=%s rootJobId=%s"
+                + " batch_mutations=%d batch_write_items=%d",
+            blankToEmpty(accountId),
+            blankToEmpty(rootJobId),
+            Integer.valueOf(chunk.plans().size()),
+            Integer.valueOf(chunkWriteItems));
         return new CancellationCommitStats(false, batches, committedMutations, writeItems);
       }
       batches++;
-      committedMutations += chunk.size();
+      committedMutations += chunk.plans().size();
       writeItems += chunkWriteItems;
     }
     return new CancellationCommitStats(true, batches, committedMutations, writeItems);
-  }
-
-  private boolean commitCancellationMutationChunk(
-      String accountId,
-      String rootJobId,
-      List<ReconcileJobIndexStore.CanonicalRecordMutation> chunk,
-      int chunkWriteItems) {
-    if (chunk == null || chunk.isEmpty()) {
-      return true;
-    }
-    boolean committed = jobIndexStore().compareAndSetCanonicalMutations(chunk);
-    if (!committed) {
-      LOG.warnf(
-          "reconcile cancellation cleanup batch CAS failed accountId=%s rootJobId=%s"
-              + " batch_mutations=%d batch_write_items=%d",
-          blankToEmpty(accountId),
-          blankToEmpty(rootJobId),
-          Integer.valueOf(chunk.size()),
-          Integer.valueOf(chunkWriteItems));
-    } else if (LOG.isDebugEnabled()) {
-      LOG.debugf(
-          "reconcile cancellation cleanup batch committed accountId=%s rootJobId=%s"
-              + " batch_mutations=%d batch_write_items=%d",
-          blankToEmpty(accountId),
-          blankToEmpty(rootJobId),
-          Integer.valueOf(chunk.size()),
-          Integer.valueOf(chunkWriteItems));
-    }
-    return committed;
-  }
-
-  private int cancellationMutationWriteItems(
-      ReconcileJobIndexStore.CanonicalRecordMutation mutation) {
-    if (mutation == null || mutation.snapshot() == null || mutation.current() == null) {
-      return 0;
-    }
-    ReconcileJobIndexStore.JobIndexWriteBatch batch =
-        jobIndexStore()
-            .buildJobIndexWriteBatch(mutation.snapshot(), mutation.previous(), mutation.current());
-    return batch.writes().size()
-        + batch.readyMutation().upserts().size()
-        + batch.readyMutation().deletes().size();
   }
 
   private record CancellationCommitStats(

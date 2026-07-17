@@ -43,6 +43,7 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.GetItemResponse;
 import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
+import software.amazon.awssdk.services.dynamodb.model.ScanResponse;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsResponse;
 
@@ -238,5 +239,39 @@ class DynamoReconcileJobIndexBackendTest {
     assertEquals(List.of(LOOKUP_KEY), manifest.indexPointerKeys());
     assertEquals(List.of(readyKey), manifest.readyPointerKeys());
     verify(dynamoDb, never()).scan(any(ScanRequest.class));
+  }
+
+  @Test
+  void discoversLegacyCleanupManifestFromCanonicalReverseReferences() {
+    String parentKey = Keys.reconcileJobByParentPointer(ACCOUNT_ID, "parent-1", JOB_ID);
+    String readyKey = Keys.reconcileReadyPointerByDue(1L, ACCOUNT_ID, "lane", JOB_ID);
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.scan(any(ScanRequest.class)))
+        .thenReturn(
+            ScanResponse.builder()
+                .items(
+                    Map.of(
+                        JobIndexBackendSupport.ATTR_POINTER_KEY,
+                        AttributeValue.fromS(parentKey),
+                        JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY,
+                        AttributeValue.fromS(CANONICAL_KEY)),
+                    Map.of(
+                        DynamoReconcileReadyQueueBackend.ATTR_READY_POINTER_KEY,
+                        AttributeValue.fromS(readyKey),
+                        DynamoReconcileReadyQueueBackend.ATTR_CANONICAL_POINTER_KEY,
+                        AttributeValue.fromS(CANONICAL_KEY)))
+                .build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+
+    var manifest = backend.discoverLegacyCleanupManifest(CANONICAL_KEY);
+
+    assertEquals(List.of(LOOKUP_KEY, parentKey), manifest.indexPointerKeys());
+    assertEquals(List.of(readyKey), manifest.readyPointerKeys());
+    ArgumentCaptor<ScanRequest> scanCaptor = ArgumentCaptor.forClass(ScanRequest.class);
+    verify(dynamoDb).scan(scanCaptor.capture());
+    assertEquals(
+        AttributeValue.fromS(CANONICAL_KEY),
+        scanCaptor.getValue().expressionAttributeValues().get(":canonical"));
   }
 }
