@@ -21,10 +21,8 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_PARTITION_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
-import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import ai.floedb.floecat.storage.spi.PointerStore.CasDelete;
-import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -52,6 +50,7 @@ import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledExcepti
 @Singleton
 @IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
 public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
+  private static final int MAX_TRANSACTION_ITEMS = 100;
   private static final String ATTR_BLOB_URI = "blob_uri";
 
   @Inject Instance<DynamoDbClientManager> dynamoDbClientManager;
@@ -167,28 +166,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     if (jobIndexBatch != null) {
       for (ReconcileJobIndexStore.JobIndexWriteOp write : jobIndexBatch.writes()) {
         if (write instanceof ReconcileJobIndexStore.JobIndexUpsert upsert) {
-          appendJobIndexUpsert(
-              tx,
-              new CasUpsert(
-                  upsert.pointerKey(),
-                  upsert.expectedVersion(),
-                  switch (upsert.referenceKind()) {
-                    case PRK_BLOB_URI ->
-                        PointerReferences.blobPointer(
-                            upsert.pointerKey(), upsert.blobUri(), upsert.expectedVersion() + 1L);
-                    case PRK_INLINE_JSON ->
-                        PointerReferences.inlineJsonPointer(
-                            upsert.pointerKey(), upsert.blobUri(), upsert.expectedVersion() + 1L);
-                    case PRK_POINTER_KEY ->
-                        PointerReferences.pointerKeyPointer(
-                            upsert.pointerKey(), upsert.blobUri(), upsert.expectedVersion() + 1L);
-                    case PRK_OPAQUE_MARKER ->
-                        PointerReferences.opaqueMarkerPointer(
-                            upsert.pointerKey(), upsert.blobUri(), upsert.expectedVersion() + 1L);
-                    case PRK_UNSPECIFIED, UNRECOGNIZED ->
-                        throw new IllegalStateException(
-                            "missing pointer reference kind for " + upsert.pointerKey());
-                  }));
+          appendJobIndexUpsert(tx, upsert);
         } else if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
           appendJobIndexDelete(tx, new CasDelete(delete.pointerKey(), delete.expectedVersion()));
         }
@@ -251,6 +229,10 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
           tx.add(buildLeaseOwnerDelete(delete));
         }
       }
+    }
+    if (tx.size() > MAX_TRANSACTION_ITEMS) {
+      throw new IllegalArgumentException(
+          "DynamoDB transaction exceeds " + MAX_TRANSACTION_ITEMS + " items: " + tx.size());
     }
     try {
       dynamoCaller.callVoid(
@@ -467,8 +449,9 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
         delete.expectedVersion());
   }
 
-  private boolean appendJobIndexUpsert(List<TransactWriteItem> tx, CasUpsert upsert) {
-    var lookupKey = JobIndexBackendSupport.parseLookupKey(upsert.key());
+  private boolean appendJobIndexUpsert(
+      List<TransactWriteItem> tx, ReconcileJobIndexStore.JobIndexUpsert upsert) {
+    var lookupKey = JobIndexBackendSupport.parseLookupKey(upsert.pointerKey());
     if (lookupKey != null) {
       String sortKey = JobIndexBackendSupport.lookupSortKey(lookupKey);
       tx.add(
@@ -478,17 +461,14 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.KIND_LOOKUP,
               upsert,
               JobIndexBackendSupport.ATTR_BLOB_URI));
-      if (upsert.expectedVersion() == 0L) {
-        tx.add(buildCheckAbsent(JobIndexBackendSupport.legacyLookupPartitionKey(), sortKey));
-      }
       return true;
     }
-    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(upsert.key());
+    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(upsert.pointerKey());
     if (canonicalKey != null) {
       tx.add(buildCanonicalUpsert(canonicalKey, upsert));
       return true;
     }
-    var parentKey = JobIndexBackendSupport.parseParentKey(upsert.key());
+    var parentKey = JobIndexBackendSupport.parseParentKey(upsert.pointerKey());
     if (parentKey != null) {
       tx.add(
           buildJobIndexReferenceUpsert(
@@ -499,7 +479,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
       return true;
     }
-    var connectorKey = JobIndexBackendSupport.parseConnectorKey(upsert.key());
+    var connectorKey = JobIndexBackendSupport.parseConnectorKey(upsert.pointerKey());
     if (connectorKey != null) {
       tx.add(
           buildJobIndexReferenceUpsert(
@@ -510,7 +490,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
       return true;
     }
-    var globalStateKey = JobIndexBackendSupport.parseGlobalStateKey(upsert.key());
+    var globalStateKey = JobIndexBackendSupport.parseGlobalStateKey(upsert.pointerKey());
     if (globalStateKey != null) {
       tx.add(
           buildJobIndexReferenceUpsert(
@@ -521,7 +501,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
       return true;
     }
-    var accountStateKey = JobIndexBackendSupport.parseAccountStateKey(upsert.key());
+    var accountStateKey = JobIndexBackendSupport.parseAccountStateKey(upsert.pointerKey());
     if (accountStateKey != null) {
       tx.add(
           buildJobIndexReferenceUpsert(
@@ -532,7 +512,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
       return true;
     }
-    var connectorStateKey = JobIndexBackendSupport.parseConnectorStateKey(upsert.key());
+    var connectorStateKey = JobIndexBackendSupport.parseConnectorStateKey(upsert.pointerKey());
     if (connectorStateKey != null) {
       tx.add(
           buildJobIndexReferenceUpsert(
@@ -543,7 +523,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
       return true;
     }
-    var dedupeKey = JobIndexBackendSupport.parseDedupeKey(upsert.key());
+    var dedupeKey = JobIndexBackendSupport.parseDedupeKey(upsert.pointerKey());
     if (dedupeKey != null) {
       tx.add(
           buildJobIndexReferenceUpsert(
@@ -560,9 +540,11 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
   private boolean appendJobIndexDelete(List<TransactWriteItem> tx, CasDelete delete) {
     var lookupKey = JobIndexBackendSupport.parseLookupKey(delete.key());
     if (lookupKey != null) {
-      LookupPhysicalKey physicalKey = lookupDeletePhysicalKey(lookupKey, delete.expectedVersion());
       tx.add(
-          buildDelete(physicalKey.partitionKey(), physicalKey.sortKey(), delete.expectedVersion()));
+          buildDelete(
+              JobIndexBackendSupport.lookupPartitionKey(),
+              JobIndexBackendSupport.lookupSortKey(lookupKey),
+              delete.expectedVersion()));
       return true;
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(delete.key());
@@ -631,34 +613,6 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     return false;
   }
 
-  private LookupPhysicalKey lookupDeletePhysicalKey(
-      JobIndexBackendSupport.LookupKey lookupKey, long expectedVersion) {
-    String sortKey = JobIndexBackendSupport.lookupSortKey(lookupKey);
-    var current =
-        dynamoCaller.call(
-            dynamoDbClientManager,
-            client ->
-                client.getItem(
-                    GetItemRequest.builder()
-                        .tableName(table)
-                        .consistentRead(true)
-                        .key(
-                            Map.of(
-                                ATTR_PARTITION_KEY,
-                                AttributeValue.fromS(JobIndexBackendSupport.lookupPartitionKey()),
-                                ATTR_SORT_KEY,
-                                AttributeValue.fromS(sortKey)))
-                        .build()));
-    if (current.hasItem()
-        && !current.item().isEmpty()
-        && longAttr(current.item(), ATTR_VERSION) == expectedVersion) {
-      return new LookupPhysicalKey(JobIndexBackendSupport.lookupPartitionKey(), sortKey);
-    }
-    return new LookupPhysicalKey(JobIndexBackendSupport.legacyLookupPartitionKey(), sortKey);
-  }
-
-  private record LookupPhysicalKey(String partitionKey, String sortKey) {}
-
   private TransactWriteItem buildReadyUpsert(ReadyQueueBackendSupport.ReadyQueueRow row) {
     Map<String, AttributeValue> item = new HashMap<>();
     item.put(ATTR_PARTITION_KEY, AttributeValue.fromS(row.partitionKey()));
@@ -703,7 +657,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
   }
 
   private TransactWriteItem buildCanonicalUpsert(
-      JobIndexBackendSupport.CanonicalJobKey key, CasUpsert upsert) {
+      JobIndexBackendSupport.CanonicalJobKey key, ReconcileJobIndexStore.JobIndexUpsert upsert) {
     Map<String, AttributeValue> item = new HashMap<>();
     item.put(
         ATTR_PARTITION_KEY,
@@ -712,10 +666,17 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     item.put(ATTR_KIND, AttributeValue.fromS(JobIndexBackendSupport.KIND_CANONICAL_JOB));
     item.put(ATTR_VERSION, AttributeValue.fromN(Long.toString(upsert.expectedVersion() + 1L)));
     item.put(JobIndexBackendSupport.ATTR_POINTER_KEY, AttributeValue.fromS(key.pointerKey()));
-    item.put(
-        JobIndexBackendSupport.ATTR_BLOB_URI, AttributeValue.fromS(upsert.next().getBlobUri()));
+    item.put(JobIndexBackendSupport.ATTR_BLOB_URI, AttributeValue.fromS(upsert.blobUri()));
     item.put(JobIndexBackendSupport.ATTR_ACCOUNT_ID, AttributeValue.fromS(key.accountSegment()));
     item.put(JobIndexBackendSupport.ATTR_JOB_ID, AttributeValue.fromS(key.jobSegment()));
+    putStringList(
+        item,
+        JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS,
+        upsert.cleanupManifest().indexPointerKeys());
+    putStringList(
+        item,
+        JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS,
+        upsert.cleanupManifest().readyPointerKeys());
     return buildPut(item, upsert.expectedVersion());
   }
 
@@ -723,15 +684,15 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
       String partitionKey,
       String sortKey,
       String kind,
-      CasUpsert upsert,
+      ReconcileJobIndexStore.JobIndexUpsert upsert,
       String referenceAttributeName) {
     Map<String, AttributeValue> item = new HashMap<>();
     item.put(ATTR_PARTITION_KEY, AttributeValue.fromS(partitionKey));
     item.put(ATTR_SORT_KEY, AttributeValue.fromS(sortKey));
     item.put(ATTR_KIND, AttributeValue.fromS(kind));
     item.put(ATTR_VERSION, AttributeValue.fromN(Long.toString(upsert.expectedVersion() + 1L)));
-    item.put(JobIndexBackendSupport.ATTR_POINTER_KEY, AttributeValue.fromS(upsert.key()));
-    item.put(referenceAttributeName, AttributeValue.fromS(upsert.next().getBlobUri()));
+    item.put(JobIndexBackendSupport.ATTR_POINTER_KEY, AttributeValue.fromS(upsert.pointerKey()));
+    item.put(referenceAttributeName, AttributeValue.fromS(upsert.blobUri()));
     return buildPut(item, upsert.expectedVersion());
   }
 
@@ -747,21 +708,6 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               Map.of(":expected", AttributeValue.fromN(Long.toString(expectedVersion))));
     }
     return TransactWriteItem.builder().put(put.build()).build();
-  }
-
-  private TransactWriteItem buildCheckAbsent(String partitionKey, String sortKey) {
-    return TransactWriteItem.builder()
-        .conditionCheck(
-            ConditionCheck.builder()
-                .tableName(table)
-                .key(
-                    Map.of(
-                        ATTR_PARTITION_KEY, AttributeValue.fromS(partitionKey),
-                        ATTR_SORT_KEY, AttributeValue.fromS(sortKey)))
-                .conditionExpression("attribute_not_exists(#pk)")
-                .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
-                .build())
-        .build();
   }
 
   private TransactWriteItem buildDelete(String partitionKey, String sortKey, long expectedVersion) {
@@ -795,6 +741,22 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
       return Long.parseLong(value.n());
     } catch (NumberFormatException ignored) {
       return 0L;
+    }
+  }
+
+  private static void putStringList(
+      Map<String, AttributeValue> item, String name, List<String> values) {
+    if (values == null || values.isEmpty()) {
+      return;
+    }
+    List<AttributeValue> attrs = new ArrayList<>();
+    for (String value : values) {
+      if (value != null && !value.isBlank()) {
+        attrs.add(AttributeValue.fromS(value));
+      }
+    }
+    if (!attrs.isEmpty()) {
+      item.put(name, AttributeValue.fromL(attrs));
     }
   }
 }

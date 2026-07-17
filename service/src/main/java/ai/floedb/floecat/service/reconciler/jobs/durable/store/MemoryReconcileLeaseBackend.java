@@ -33,16 +33,20 @@ import java.util.Optional;
 @IfBuildProperty(name = "floecat.kv", stringValue = "memory")
 public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
   private PointerStore pointerStore;
+  private ReconcileJobIndexBackend jobIndexBackend;
 
   @Inject
-  public MemoryReconcileLeaseBackend(PointerStore pointerStore) {
+  public MemoryReconcileLeaseBackend(
+      PointerStore pointerStore, ReconcileJobIndexBackend jobIndexBackend) {
     this.pointerStore = pointerStore;
+    this.jobIndexBackend = jobIndexBackend;
   }
 
   public MemoryReconcileLeaseBackend() {}
 
-  public void bind(PointerStore pointerStore) {
+  public void bind(PointerStore pointerStore, ReconcileJobIndexBackend jobIndexBackend) {
     this.pointerStore = pointerStore;
+    this.jobIndexBackend = jobIndexBackend;
   }
 
   @Override
@@ -87,21 +91,9 @@ public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
   }
 
   @Override
-  public boolean compareAndSetBatch(
+  public synchronized boolean compareAndSetBatch(
       ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch, LeaseWriteBatch leaseBatch) {
-    List<CasOp> ops =
-        new ArrayList<>(
-            JobIndexWriteBatchSupport.toCasOps(
-                jobIndexBatch,
-                key ->
-                    pointerStore
-                        .get(key)
-                        .map(
-                            pointer ->
-                                new JobIndexEntrySnapshot(
-                                    pointer.getKey(),
-                                    pointer.getBlobUri(),
-                                    pointer.getVersion()))));
+    List<CasOp> ops = new ArrayList<>();
     if (leaseBatch != null) {
       for (LeaseWriteOp write : leaseBatch.writes()) {
         if (write instanceof LeaseRecordCondition condition) {
@@ -162,6 +154,9 @@ public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
         }
       }
     }
-    return pointerStore.compareAndSetBatch(ops);
+    if (jobIndexBackend == null) {
+      throw new IllegalStateException("memory reconcile job index backend is not bound");
+    }
+    return jobIndexBackend.compareAndSetBatch(jobIndexBatch, ops);
   }
 }

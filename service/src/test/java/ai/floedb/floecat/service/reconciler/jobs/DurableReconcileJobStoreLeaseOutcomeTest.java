@@ -32,8 +32,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.service.it.profiles.ReconcileJobStoreControlPlaneProfile;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.NativeReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileLeaseStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileReadyQueueStore;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -129,7 +129,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
               store.readyQueueBackend)
           .bind(() -> sharedDynamoDbClient, store.kvTable);
     } else {
-      store.jobIndexStore = new InMemoryReconcileJobIndexStore();
+      store.jobIndexStore = new NativeReconcileJobIndexStore();
       store.leaseStore = new InMemoryReconcileLeaseStore();
       store.readyQueueStore = new InMemoryReconcileReadyQueueStore();
     }

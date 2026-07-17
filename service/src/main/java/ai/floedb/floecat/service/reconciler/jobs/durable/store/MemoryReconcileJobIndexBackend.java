@@ -23,12 +23,16 @@ import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Singleton
 @IfBuildProperty(name = "floecat.kv", stringValue = "memory")
 public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend {
   private PointerStore pointerStore;
+  private final Map<String, ReconcileJobIndexCleanupManifest> cleanupManifests =
+      new ConcurrentHashMap<>();
 
   @Inject
   public MemoryReconcileJobIndexBackend(PointerStore pointerStore) {
@@ -57,7 +61,7 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   }
 
   @Override
-  public boolean compareAndSetBatch(
+  public synchronized boolean compareAndSetBatch(
       ReconcileJobIndexStore.JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
     List<PointerStore.CasOp> ops =
         new ArrayList<>(
@@ -79,7 +83,25 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     if (!committed) {
       return false;
     }
+    if (batch != null) {
+      for (ReconcileJobIndexStore.JobIndexWriteOp write : batch.writes()) {
+        if (write instanceof ReconcileJobIndexStore.JobIndexUpsert upsert
+            && JobIndexBackendSupport.parseCanonicalJobKey(upsert.pointerKey()) != null) {
+          cleanupManifests.put(upsert.pointerKey(), upsert.cleanupManifest());
+        } else if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete
+            && JobIndexBackendSupport.parseCanonicalJobKey(delete.pointerKey()) != null) {
+          cleanupManifests.remove(delete.pointerKey());
+        }
+      }
+    }
     return true;
+  }
+
+  @Override
+  public synchronized ReconcileJobIndexCleanupManifest loadCleanupManifest(
+      String canonicalPointerKey) {
+    return cleanupManifests.getOrDefault(
+        canonicalPointerKey, ReconcileJobIndexCleanupManifest.EMPTY);
   }
 
   @Override
@@ -127,52 +149,6 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         pageToken);
   }
 
-  @Override
-  public boolean purgeEntriesByCanonicalReference(String canonicalPointerKey) {
-    if (pointerStore == null || blank(canonicalPointerKey)) {
-      return false;
-    }
-    List<JobIndexEntrySnapshot> matches = matchingCanonicalReferences(canonicalPointerKey);
-    boolean deleted = false;
-    for (JobIndexEntrySnapshot entry : matches) {
-      deleted |=
-          pointerStore.compareAndSetBatch(
-              List.of(new PointerStore.CasDelete(entry.pointerKey(), entry.version())));
-    }
-    return deleted;
-  }
-
-  @Override
-  public boolean purgeEntriesByCanonicalReference(
-      String canonicalPointerKey, long expectedVersion, String expectedBlobUri) {
-    if (pointerStore == null || blank(canonicalPointerKey)) {
-      return false;
-    }
-    var canonical = loadIndexEntry(canonicalPointerKey).orElse(null);
-    if (canonical == null
-        || canonical.version() != expectedVersion
-        || !java.util.Objects.equals(canonical.blobUri(), expectedBlobUri)) {
-      return false;
-    }
-    java.util.LinkedHashMap<String, PointerStore.CasDelete> deletes =
-        new java.util.LinkedHashMap<>();
-    for (JobIndexEntrySnapshot entry : matchingCanonicalReferences(canonicalPointerKey)) {
-      deletes.putIfAbsent(
-          entry.pointerKey(), new PointerStore.CasDelete(entry.pointerKey(), entry.version()));
-    }
-    List<PointerStore.CasOp> ops = new ArrayList<>();
-    ops.addAll(deletes.values());
-    return !ops.isEmpty() && pointerStore.compareAndSetBatch(ops);
-  }
-
-  private List<JobIndexEntrySnapshot> matchingCanonicalReferences(String canonicalPointerKey) {
-    List<JobIndexEntrySnapshot> matches = new ArrayList<>();
-    collectMatches(matches, Keys.reconcileJobLookupPointerByIdPrefix(), canonicalPointerKey);
-    collectMatches(matches, Keys.reconcileJobByStatePointerPrefix(), canonicalPointerKey);
-    collectMatches(matches, Keys.accountRootPrefix(), canonicalPointerKey);
-    return matches;
-  }
-
   private JobIndexQueryPage listPointers(String prefix, int limit, String pageToken) {
     StringBuilder nextPageToken = new StringBuilder();
     List<JobIndexEntrySnapshot> entries =
@@ -183,36 +159,5 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
                         pointer.getKey(), pointer.getBlobUri(), pointer.getVersion()))
             .toList();
     return new JobIndexQueryPage(entries, nextPageToken.toString());
-  }
-
-  private void collectMatches(
-      List<JobIndexEntrySnapshot> matches, String prefix, String canonicalPointerKey) {
-    String token = "";
-    while (true) {
-      StringBuilder nextPageToken = new StringBuilder();
-      List<JobIndexEntrySnapshot> page =
-          pointerStore.listPointersByPrefix(prefix, 256, token, nextPageToken).stream()
-              .map(
-                  pointer ->
-                      new JobIndexEntrySnapshot(
-                          pointer.getKey(), pointer.getBlobUri(), pointer.getVersion()))
-              .filter(entry -> referencesCanonical(entry, canonicalPointerKey))
-              .toList();
-      matches.addAll(page);
-      token = nextPageToken.toString();
-      if (token.isBlank()) {
-        return;
-      }
-    }
-  }
-
-  private boolean referencesCanonical(JobIndexEntrySnapshot entry, String canonicalPointerKey) {
-    return entry != null
-        && (canonicalPointerKey.equals(entry.pointerKey())
-            || canonicalPointerKey.equals(entry.blobUri()));
-  }
-
-  private static boolean blank(String value) {
-    return value == null || value.isBlank();
   }
 }

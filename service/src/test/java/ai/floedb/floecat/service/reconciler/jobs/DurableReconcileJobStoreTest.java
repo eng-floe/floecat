@@ -55,6 +55,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJo
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileLeaseBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexCleanupManifest;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -5128,7 +5129,7 @@ class DurableReconcileJobStoreTest {
     isolatedStore.mapper = new ObjectMapper();
     isolatedStore.config = ConfigProvider.getConfig();
     isolatedStore.jobIndexBackend = jobIndexBackend;
-    isolatedStore.leaseBackend = new MemoryReconcileLeaseBackend(pointerStore);
+    isolatedStore.leaseBackend = new MemoryReconcileLeaseBackend();
     isolatedStore.readyQueueBackend = new MemoryReconcileReadyQueueBackend(pointerStore);
     isolatedStore.init();
     return isolatedStore;
@@ -5391,17 +5392,29 @@ class DurableReconcileJobStoreTest {
     }
 
     @Override
+    public ReconcileJobIndexCleanupManifest loadCleanupManifest(String canonicalPointerKey) {
+      return delegate.loadCleanupManifest(canonicalPointerKey);
+    }
+
+    @Override
     public boolean compareAndSetBatch(
         ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore
                 .JobIndexWriteBatch
             batch) {
+      return compareAndSetBatch(batch, java.util.List.of());
+    }
+
+    @Override
+    public boolean compareAndSetBatch(
+        ReconcileJobIndexStore.JobIndexWriteBatch batch,
+        java.util.List<PointerStore.CasOp> extraPointerOps) {
       int call = armedCalls.incrementAndGet();
       if (!failed && failOnCall > 0 && call == failOnCall) {
         failed = true;
         onFailedCompareAndSetBatch.run();
         return false;
       }
-      return delegate.compareAndSetBatch(batch);
+      return delegate.compareAndSetBatch(batch, extraPointerOps);
     }
 
     @Override
@@ -5441,11 +5454,6 @@ class DurableReconcileJobStoreTest {
     public JobIndexQueryPage listConnectorStateEntries(
         String accountId, String connectorId, String state, int limit, String pageToken) {
       return delegate.listConnectorStateEntries(accountId, connectorId, state, limit, pageToken);
-    }
-
-    @Override
-    public boolean purgeEntriesByCanonicalReference(String canonicalPointerKey) {
-      return delegate.purgeEntriesByCanonicalReference(canonicalPointerKey);
     }
   }
 
@@ -5468,9 +5476,21 @@ class DurableReconcileJobStoreTest {
     }
 
     @Override
+    public ReconcileJobIndexCleanupManifest loadCleanupManifest(String canonicalPointerKey) {
+      return delegate.loadCleanupManifest(canonicalPointerKey);
+    }
+
+    @Override
     public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
+      return compareAndSetBatch(batch, java.util.List.of());
+    }
+
+    @Override
+    public boolean compareAndSetBatch(
+        ReconcileJobIndexStore.JobIndexWriteBatch batch,
+        java.util.List<PointerStore.CasOp> extraPointerOps) {
       beforeCompareAndSetBatch.accept(batch);
-      return delegate.compareAndSetBatch(batch);
+      return delegate.compareAndSetBatch(batch, extraPointerOps);
     }
 
     @Override
@@ -5510,11 +5530,6 @@ class DurableReconcileJobStoreTest {
     public JobIndexQueryPage listConnectorStateEntries(
         String accountId, String connectorId, String state, int limit, String pageToken) {
       return delegate.listConnectorStateEntries(accountId, connectorId, state, limit, pageToken);
-    }
-
-    @Override
-    public boolean purgeEntriesByCanonicalReference(String canonicalPointerKey) {
-      return delegate.purgeEntriesByCanonicalReference(canonicalPointerKey);
     }
   }
 

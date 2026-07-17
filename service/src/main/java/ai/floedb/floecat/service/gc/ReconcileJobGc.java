@@ -21,6 +21,7 @@ import ai.floedb.floecat.service.reconciler.jobs.ReconcilerSettingsStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.CanonicalPointerSnapshot;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.JobIndexEntrySnapshot;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReadyQueueKeys;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
@@ -41,9 +42,12 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Set;
 import org.eclipse.microprofile.config.ConfigProvider;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class ReconcileJobGc {
+
+  private static final Logger LOG = Logger.getLogger(ReconcileJobGc.class);
 
   private static final String INLINE_JOB_STATE_PREFIX = "inline:reconcile-job:";
   private static final String INLINE_JOB_LIST_SUMMARY_PREFIX = "inline:reconcile-job-list-summary:";
@@ -55,6 +59,7 @@ public class ReconcileJobGc {
   @Inject ObjectMapper mapper;
   @Inject ReconcilerSettingsStore settings;
   @Inject ReconcileJobIndexBackend jobIndexBackend;
+  @Inject ReconcileJobIndexStore jobIndexStore;
   @Inject ReconcileReadyQueueBackend readyQueueBackend;
   @Inject ReconcileJobIndexes jobIndexes;
   @Inject PointerStore pointerStore;
@@ -494,9 +499,14 @@ public class ReconcileJobGc {
     if (firstSeenMs > nowMs - quarantineRetentionMs) {
       return false;
     }
-    boolean purged =
-        jobIndexBackend.purgeEntriesByCanonicalReference(
-            canonical.pointerKey(), canonical.version(), canonical.blobUri());
+    ReconcileJobIndexStore.JobIndexWriteBatch deleteBatch =
+        jobIndexStore.buildJobDeleteBatch(
+            new CanonicalPointerSnapshot(
+                canonical.pointerKey(), canonical.blobUri(), canonical.version()));
+    if (deleteBatch.writes().isEmpty()) {
+      return false;
+    }
+    boolean purged = jobIndexBackend.compareAndSetBatch(deleteBatch);
     if (purged && pointerStore != null) {
       pointerStore.compareAndDelete(marker.getKey(), marker.getVersion());
     }
@@ -664,24 +674,10 @@ public class ReconcileJobGc {
     if (canonical == null || jobId == null || jobId.isBlank()) {
       return false;
     }
-    var deletes = new java.util.ArrayList<ReconcileJobIndexStore.JobIndexWriteOp>();
     var pointerDeletes = new java.util.ArrayList<PointerStore.CasOp>();
-    deletes.add(
-        new ReconcileJobIndexStore.JobIndexDelete(canonical.pointerKey(), canonical.version()));
-    appendDeleteIfPresent(deletes, Keys.reconcileJobLookupPointerById(jobId));
-
     if (record != null) {
-      String parentJobId = text(record, "parentJobId");
-      if (!parentJobId.isBlank()) {
-        appendDeleteIfPresent(deletes, jobIndexes.parentPointerKey(accountId, parentJobId, jobId));
-      }
-      StoredReconcileJob stored = storedJob(record);
       appendPointerDeleteIfPresent(
           pointerDeletes, Keys.reconcileJobProjectionPointer(accountId, jobId));
-      appendDeleteIfPresent(
-          deletes,
-          jobIndexes.connectorIndexPointerKey(
-              accountId, text(record, "connectorId"), longValue(record, "createdAtMs", 0L), jobId));
       if (text(record, "parentJobId").isBlank()) {
         appendPointerDeleteIfPresent(
             pointerDeletes,
@@ -698,51 +694,22 @@ public class ReconcileJobGc {
                   rootSummarySortableJobToken(longValue(record, "createdAtMs", 0L), jobId)));
         }
       }
-      for (String stateKey : jobIndexes.statePointerKeys(stored)) {
-        appendDeleteIfPresent(deletes, stateKey);
-      }
-      String dedupeKey = jobIndexes.dedupePointerKey(stored);
-      if (!dedupeKey.isBlank()) {
-        appendOwnedDeleteIfPresent(deletes, dedupeKey, canonical.pointerKey());
-      }
     }
-
-    java.util.LinkedHashSet<String> readyDeletes = new java.util.LinkedHashSet<>();
-    if (record != null) {
-      String preferredReadyKey = text(record, "readyPointerKey");
-      if (!preferredReadyKey.isBlank()) {
-        readyDeletes.add(preferredReadyKey);
-      }
-      for (String readyKey : readyPointerKeysForCleanup(record)) {
-        if (!readyKey.isBlank()) {
-          readyDeletes.add(readyKey);
-        }
+    CanonicalPointerSnapshot snapshot =
+        new CanonicalPointerSnapshot(
+            canonical.pointerKey(), canonical.blobUri(), canonical.version());
+    ReconcileJobIndexStore.JobIndexWriteBatch deleteBatch =
+        jobIndexStore.buildJobDeleteBatch(snapshot);
+    if (deleteBatch.writes().isEmpty() && record != null) {
+      deleteBatch = jobIndexStore.buildReadableLegacyJobDeleteBatch(snapshot, storedJob(record));
+      if (!deleteBatch.writes().isEmpty()) {
+        LOG.infof(
+            "Using readable legacy reconcile-job GC fallback accountId=%s jobId=%s",
+            accountId, jobId);
       }
     }
-
-    boolean deleted =
-        jobIndexBackend.compareAndSetBatch(
-            new ReconcileJobIndexStore.JobIndexWriteBatch(
-                deletes,
-                new ReconcileJobIndexStore.ReadyQueueMutation(
-                    List.of(), new java.util.ArrayList<>(readyDeletes))),
-            pointerDeletes);
-    if (deleted) {
-      jobIndexBackend.purgeEntriesByCanonicalReference(canonical.pointerKey());
-    }
-    return deleted;
-  }
-
-  private void appendDeleteIfPresent(
-      java.util.List<ReconcileJobIndexStore.JobIndexWriteOp> deletes, String pointerKey) {
-    if (pointerKey == null || pointerKey.isBlank()) {
-      return;
-    }
-    var existing = jobIndexBackend.loadIndexEntry(pointerKey).orElse(null);
-    if (existing != null) {
-      deletes.add(
-          new ReconcileJobIndexStore.JobIndexDelete(existing.pointerKey(), existing.version()));
-    }
+    return !deleteBatch.writes().isEmpty()
+        && jobIndexBackend.compareAndSetBatch(deleteBatch, pointerDeletes);
   }
 
   private static String rootSummarySortableJobToken(long createdAtMs, String jobId) {
@@ -771,20 +738,6 @@ public class ReconcileJobGc {
     if (existing != null) {
       deletes.putIfAbsent(
           existing.getKey(), new PointerStore.CasDelete(existing.getKey(), existing.getVersion()));
-    }
-  }
-
-  private void appendOwnedDeleteIfPresent(
-      java.util.List<ReconcileJobIndexStore.JobIndexWriteOp> deletes,
-      String pointerKey,
-      String expectedReference) {
-    if (pointerKey == null || pointerKey.isBlank() || expectedReference == null) {
-      return;
-    }
-    var existing = jobIndexBackend.loadIndexEntry(pointerKey).orElse(null);
-    if (existing != null && expectedReference.equals(existing.blobUri())) {
-      deletes.add(
-          new ReconcileJobIndexStore.JobIndexDelete(existing.pointerKey(), existing.version()));
     }
   }
 

@@ -54,16 +54,7 @@ public interface ReconcileJobIndexBackend {
   JobIndexQueryPage listConnectorStateEntries(
       String accountId, String connectorId, String state, int limit, String pageToken);
 
-  boolean purgeEntriesByCanonicalReference(String canonicalPointerKey);
-
-  default boolean purgeEntriesByCanonicalReference(
-      String canonicalPointerKey, long expectedVersion, String expectedBlobUri) {
-    var current = loadIndexEntry(canonicalPointerKey).orElse(null);
-    if (current == null
-        || current.version() != expectedVersion
-        || !java.util.Objects.equals(current.blobUri(), expectedBlobUri)) {
-      return false;
-    }
-    return purgeEntriesByCanonicalReference(canonicalPointerKey);
+  default ReconcileJobIndexCleanupManifest loadCleanupManifest(String canonicalPointerKey) {
+    return ReconcileJobIndexCleanupManifest.EMPTY;
   }
 }

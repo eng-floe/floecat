@@ -51,8 +51,30 @@ public interface ReconcileJobIndexStore {
   sealed interface JobIndexWriteOp permits JobIndexUpsert, JobIndexDelete, JobIndexCheckAbsent {}
 
   record JobIndexUpsert(
-      String pointerKey, long expectedVersion, String blobUri, PointerReferenceKind referenceKind)
-      implements JobIndexWriteOp {}
+      String pointerKey,
+      long expectedVersion,
+      String blobUri,
+      PointerReferenceKind referenceKind,
+      ReconcileJobIndexCleanupManifest cleanupManifest)
+      implements JobIndexWriteOp {
+    public JobIndexUpsert {
+      cleanupManifest =
+          cleanupManifest == null ? ReconcileJobIndexCleanupManifest.EMPTY : cleanupManifest;
+    }
+
+    public JobIndexUpsert(
+        String pointerKey,
+        long expectedVersion,
+        String blobUri,
+        PointerReferenceKind referenceKind) {
+      this(
+          pointerKey,
+          expectedVersion,
+          blobUri,
+          referenceKind,
+          ReconcileJobIndexCleanupManifest.EMPTY);
+    }
+  }
 
   record JobIndexDelete(String pointerKey, long expectedVersion) implements JobIndexWriteOp {}
 
@@ -150,6 +172,13 @@ public interface ReconcileJobIndexStore {
       CanonicalPointerSnapshot currentSnapshot,
       StoredReconcileJob previous,
       StoredReconcileJob current);
+
+  JobIndexWriteBatch buildJobDeleteBatch(CanonicalPointerSnapshot currentSnapshot);
+
+  JobIndexWriteBatch buildReadableLegacyJobDeleteBatch(
+      CanonicalPointerSnapshot currentSnapshot, StoredReconcileJob readableRecord);
+
+  List<JobIndexWriteBatch> chunkJobWriteBatches(List<JobIndexWriteBatch> jobBatches);
 
   JobIndexWriteBatch combineWriteBatches(List<JobIndexWriteBatch> batches);
 

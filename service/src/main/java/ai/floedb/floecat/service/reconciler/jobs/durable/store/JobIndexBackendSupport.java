@@ -36,6 +36,8 @@ final class JobIndexBackendSupport {
   static final String ATTR_PARENT_JOB_ID = "parent_job_id";
   static final String ATTR_DEDUPE_KEY_HASH = "dedupe_key_hash";
   static final String ATTR_BLOB_URI = "blob_uri";
+  static final String ATTR_CLEANUP_INDEX_POINTER_KEYS = "cleanup_index_pointer_keys";
+  static final String ATTR_CLEANUP_READY_POINTER_KEYS = "cleanup_ready_pointer_keys";
   private static final String ACCOUNT_SEGMENT_PLACEHOLDER = "__account__";
   private static final String PARENT_SEGMENT_PLACEHOLDER = "__parent__";
   private static final String CONNECTOR_SEGMENT_PLACEHOLDER = "__connector__";
@@ -314,10 +316,6 @@ final class JobIndexBackendSupport {
 
   static String lookupSortKey(LookupKey key) {
     return "job/" + key.jobSegment();
-  }
-
-  static String legacyLookupPartitionKey() {
-    return "reconcile-job/by-id";
   }
 
   static String parentPartitionKey(ParentKey key) {

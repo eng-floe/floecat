@@ -330,7 +330,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       }
     }
     if (leaseBackend instanceof MemoryReconcileLeaseBackend memoryBackend) {
-      memoryBackend.bind(pointerStore);
+      jobIndexStore();
+      memoryBackend.bind(pointerStore, jobIndexBackend);
     } else if (leaseBackend instanceof DynamoReconcileLeaseBackend dynamoBackend
         && dynamoDbClientManager != null
         && dynamoDbClientManager.isResolvable()) {
@@ -1123,8 +1124,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   public void runCancellationMaintenanceOnce(long maxMillis) {
-    cancellationMaintenance().runCancellationMaintenanceOnce(maxMillis);
     runAbandonedFullRescanStatsCleanupMaintenanceOnce(maxMillis);
+    cancellationMaintenance().runCancellationMaintenanceOnce(maxMillis);
   }
 
   public void runReadyIndexMaintenanceOnce(long maxMillis) {

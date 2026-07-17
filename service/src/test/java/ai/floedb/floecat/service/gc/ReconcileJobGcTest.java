@@ -29,11 +29,14 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
+import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.CanonicalPointerSnapshot;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.JobIndexEntrySnapshot;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJobIndexBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileReadyQueueBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.NativeReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexCleanupManifest;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
@@ -80,6 +83,16 @@ class ReconcileJobGcTest {
     gc.pointerStore = pointers;
     gc.jobIndexes = new ReconcileJobIndexes();
     gc.jobIndexes.bind(pointers, ignored -> false, ignored -> java.util.List.of());
+    ReconcilePayloadStore payloadStore = new ReconcilePayloadStore();
+    payloadStore.bind(blobs, pointers, mapper);
+    gc.jobIndexStore = new NativeReconcileJobIndexStore();
+    gc.jobIndexStore.bind(
+        jobIndexBackend,
+        payloadStore,
+        gc.jobIndexes,
+        16,
+        (previous, current) -> {},
+        (previous, current, operation) -> {});
   }
 
   @AfterEach
@@ -102,16 +115,20 @@ class ReconcileJobGcTest {
     String readyPointer =
         Keys.reconcileReadyPointerByDue(
             System.currentTimeMillis() - 1_000L, ACCOUNT_ID, "lane", jobId);
-    String canonicalKey =
-        putInlineReconcileJob(
-            jobId, "JS_SUCCEEDED", System.currentTimeMillis() - 10_000L, dedupeHash, readyPointer);
+    StoredReconcileJob record =
+        storedJob(
+            jobId,
+            "JS_SUCCEEDED",
+            System.currentTimeMillis() - 10_000L,
+            "",
+            dedupeHash,
+            readyPointer);
+    putNativeJobIndexRows(record);
     String historyBlob = Keys.reconcileJobBlobUri(ACCOUNT_ID, jobId, "history");
     blobs.put(
         historyBlob,
         "{\"old\":true}".getBytes(StandardCharsets.UTF_8),
         "application/json; charset=UTF-8");
-    putPointer(dedupePointer, canonicalKey);
-    putPointer(readyPointer, canonicalKey);
     var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
 
     assertTrue(result.expired() >= 1);
@@ -121,21 +138,6 @@ class ReconcileJobGcTest {
     assertTrue(pointers.get(dedupePointer).isEmpty());
     assertTrue(pointers.get(readyPointer).isEmpty());
     assertFalse(blobs.head(historyBlob).isPresent());
-  }
-
-  @Test
-  void accountSlicePurgesResidualReferencesAfterDeletingExpiredTerminalJob() {
-    System.setProperty("floecat.gc.reconcile-jobs.retention-ms", "0");
-    String jobId = "job-expired-residual-purge";
-    String canonicalKey =
-        putInlineReconcileJob(jobId, "JS_SUCCEEDED", System.currentTimeMillis() - 10_000L, "", "");
-    RecordingPurgeBackend recordingBackend = new RecordingPurgeBackend(jobIndexBackend);
-    gc.jobIndexBackend = recordingBackend;
-
-    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
-
-    assertTrue(result.expired() >= 1);
-    assertTrue(recordingBackend.purgedCanonicalKeys.contains(canonicalKey));
   }
 
   @Test
@@ -277,8 +279,107 @@ class ReconcileJobGcTest {
             .isEmpty());
     assertTrue(
         jobIndexBackend
+            .loadIndexEntry(
+                Keys.reconcileJobByConnectorPointer(
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    String.format("%019d-%s", Long.MAX_VALUE - now, jobId)))
+            .isEmpty());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(Keys.reconcileJobByStatePointer("JS_SUCCEEDED", now, ACCOUNT_ID, jobId))
+            .isEmpty());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(
+                Keys.reconcileJobByAccountStatePointer(ACCOUNT_ID, "JS_SUCCEEDED", now, jobId))
+            .isEmpty());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(
+                Keys.reconcileJobByConnectorStatePointer(
+                    ACCOUNT_ID, CONNECTOR_ID, "JS_SUCCEEDED", now, jobId))
+            .isEmpty());
+    assertTrue(
+        jobIndexBackend
             .loadIndexEntry(Keys.reconcileDedupePointer(ACCOUNT_ID, dedupeHash))
             .isEmpty());
+    assertTrue(pointers.get(record.readyPointerKey).isEmpty());
+  }
+
+  @Test
+  void accountSlicePurgesReadableLegacyCanonicalWithoutManifest() {
+    System.setProperty("floecat.gc.reconcile-jobs.retention-ms", "0");
+    String jobId = "job-readable-no-manifest";
+    String parentJobId = "parent-readable-no-manifest";
+    long now = System.currentTimeMillis() - 10_000L;
+    String dedupeHash = hashValue(ACCOUNT_ID + "|" + CONNECTOR_ID + "|readable|*|*|");
+    StoredReconcileJob record =
+        storedJob(
+            jobId,
+            "JS_SUCCEEDED",
+            now,
+            parentJobId,
+            dedupeHash,
+            Keys.reconcileReadyPointerByDue(now, ACCOUNT_ID, "lane-native", jobId));
+    putNativeJobIndexRows(record, false);
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    assertTrue(jobIndexBackend.loadCleanupManifest(canonicalKey).isEmpty());
+
+    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertTrue(result.expired() >= 1);
+    assertTrue(jobIndexBackend.loadIndexEntry(canonicalKey).isEmpty());
+    assertTrue(jobIndexBackend.loadIndexEntry(Keys.reconcileJobLookupPointerById(jobId)).isEmpty());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(Keys.reconcileJobByParentPointer(ACCOUNT_ID, parentJobId, jobId))
+            .isEmpty());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(Keys.reconcileDedupePointer(ACCOUNT_ID, dedupeHash))
+            .isEmpty());
+    assertTrue(pointers.get(record.readyPointerKey).isEmpty());
+  }
+
+  @Test
+  void accountSliceDoesNotPartiallyPurgeUnreadableLegacyCanonicalWithoutManifest() {
+    System.setProperty("floecat.gc.reconcile-jobs.canonical-quarantine-retention-ms", "0");
+    String jobId = "job-legacy-corrupt-no-manifest";
+    String parentJobId = "parent-legacy-corrupt-no-manifest";
+    long now = System.currentTimeMillis() - 10_000L;
+    String dedupeHash = hashValue(ACCOUNT_ID + "|" + CONNECTOR_ID + "|legacy-corrupt|*|*|");
+    StoredReconcileJob record =
+        storedJob(
+            jobId,
+            "JS_SUCCEEDED",
+            now,
+            parentJobId,
+            dedupeHash,
+            Keys.reconcileReadyPointerByDue(now, ACCOUNT_ID, "lane-native", jobId));
+    putNativeJobIndexRows(record, false);
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    Pointer canonical = pointers.get(canonicalKey).orElseThrow();
+    assertTrue(
+        pointers.compareAndSet(
+            canonicalKey,
+            canonical.getVersion(),
+            PointerReferences.inlineJsonPointer(
+                canonicalKey, "inline:reconcile-job:not-valid", canonical.getVersion() + 1L)));
+
+    var first = gc.runAccountSlice(ACCOUNT_ID, "", "");
+    var second = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(1, first.canonicalQuarantined());
+    assertEquals(1, second.canonicalQuarantined());
+    assertEquals(0, second.expired());
+    assertTrue(jobIndexBackend.loadIndexEntry(canonicalKey).isPresent());
+    assertTrue(
+        jobIndexBackend.loadIndexEntry(Keys.reconcileJobLookupPointerById(jobId)).isPresent());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(Keys.reconcileJobByParentPointer(ACCOUNT_ID, parentJobId, jobId))
+            .isPresent());
   }
 
   @Test
@@ -312,7 +413,7 @@ class ReconcileJobGcTest {
         storedJob(jobId, "JS_RUNNING", System.currentTimeMillis(), parentJobId, dedupeHash, "");
     String replacementReference = inlineJobReference(replacement);
     gc.jobIndexBackend =
-        new ReplacingBeforeConditionalPurgeBackend(
+        new ReplacingBeforeQuarantineDeleteBackend(
             jobIndexBackend, pointers, canonicalKey, replacementReference);
     System.setProperty("floecat.gc.reconcile-jobs.canonical-quarantine-retention-ms", "0");
 
@@ -966,11 +1067,6 @@ class ReconcileJobGcTest {
               String accountId, String connectorId, String state, int limit, String pageToken) {
             return new JobIndexQueryPage(java.util.List.of(), "");
           }
-
-          @Override
-          public boolean purgeEntriesByCanonicalReference(String canonicalPointerKey) {
-            return false;
-          }
         };
 
     assertThrows(
@@ -1074,6 +1170,10 @@ class ReconcileJobGcTest {
   }
 
   private void putNativeJobIndexRows(StoredReconcileJob record) {
+    putNativeJobIndexRows(record, true);
+  }
+
+  private void putNativeJobIndexRows(StoredReconcileJob record, boolean includeCleanupManifest) {
     String canonicalKey = Keys.reconcileJobPointerById(record.accountId, record.jobId);
     String inlineReference =
         INLINE_JOB_STATE_PREFIX
@@ -1147,6 +1247,47 @@ class ReconcileJobGcTest {
             : java.util.List.of(
                 new ReconcileJobIndexStore.ReadyQueueWrite(
                     record.readyPointerKey, canonicalKey, PointerReferenceKind.PRK_POINTER_KEY));
+    if (includeCleanupManifest) {
+      java.util.LinkedHashSet<String> cleanupIndexKeys = new java.util.LinkedHashSet<>();
+      cleanupIndexKeys.add(Keys.reconcileJobLookupPointerById(record.jobId));
+      if (record.parentJobId != null && !record.parentJobId.isBlank()) {
+        cleanupIndexKeys.add(
+            Keys.reconcileJobByParentPointer(record.accountId, record.parentJobId, record.jobId));
+      }
+      cleanupIndexKeys.add(
+          Keys.reconcileJobByConnectorPointer(
+              record.accountId,
+              record.connectorId,
+              String.format("%019d-%s", Long.MAX_VALUE - record.createdAtMs, record.jobId)));
+      cleanupIndexKeys.add(
+          Keys.reconcileJobByStatePointer(
+              record.state, record.createdAtMs, record.accountId, record.jobId));
+      cleanupIndexKeys.add(
+          Keys.reconcileJobByAccountStatePointer(
+              record.accountId, record.state, record.createdAtMs, record.jobId));
+      cleanupIndexKeys.add(
+          Keys.reconcileJobByConnectorStatePointer(
+              record.accountId,
+              record.connectorId,
+              record.state,
+              record.createdAtMs,
+              record.jobId));
+      if (record.dedupeKeyHash != null && !record.dedupeKeyHash.isBlank()) {
+        cleanupIndexKeys.add(Keys.reconcileDedupePointer(record.accountId, record.dedupeKeyHash));
+      }
+      writes.set(
+          0,
+          new ReconcileJobIndexStore.JobIndexUpsert(
+              canonicalKey,
+              0L,
+              inlineReference,
+              PointerReferenceKind.PRK_INLINE_JSON,
+              new ReconcileJobIndexCleanupManifest(
+                  java.util.List.copyOf(cleanupIndexKeys),
+                  readyWrites.stream()
+                      .map(ReconcileJobIndexStore.ReadyQueueWrite::readyPointerKey)
+                      .toList())));
+    }
     assertTrue(
         jobIndexBackend.compareAndSetBatch(
             new ReconcileJobIndexStore.JobIndexWriteBatch(
@@ -1223,92 +1364,15 @@ class ReconcileJobGcTest {
     }
   }
 
-  private static final class RecordingPurgeBackend implements ReconcileJobIndexBackend {
-    private final ReconcileJobIndexBackend delegate;
-    private final java.util.ArrayList<String> purgedCanonicalKeys = new java.util.ArrayList<>();
-
-    private RecordingPurgeBackend(ReconcileJobIndexBackend delegate) {
-      this.delegate = delegate;
-    }
-
-    @Override
-    public java.util.Optional<JobIndexEntrySnapshot> loadIndexEntry(String pointerKey) {
-      return delegate.loadIndexEntry(pointerKey);
-    }
-
-    @Override
-    public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
-      return delegate.compareAndSetBatch(batch);
-    }
-
-    @Override
-    public boolean compareAndSetBatch(
-        ReconcileJobIndexStore.JobIndexWriteBatch batch,
-        java.util.List<PointerStore.CasOp> extraPointerOps) {
-      return delegate.compareAndSetBatch(batch, extraPointerOps);
-    }
-
-    @Override
-    public JobIndexQueryPage listCanonicalEntries(String accountId, int limit, String pageToken) {
-      return delegate.listCanonicalEntries(accountId, limit, pageToken);
-    }
-
-    @Override
-    public JobIndexQueryPage listDedupeEntries(String accountId, int limit, String pageToken) {
-      return delegate.listDedupeEntries(accountId, limit, pageToken);
-    }
-
-    @Override
-    public JobIndexQueryPage listParentEntries(
-        String accountId, String parentJobId, int limit, String pageToken) {
-      return delegate.listParentEntries(accountId, parentJobId, limit, pageToken);
-    }
-
-    @Override
-    public JobIndexQueryPage listConnectorEntries(
-        String accountId, String connectorId, int limit, String pageToken) {
-      return delegate.listConnectorEntries(accountId, connectorId, limit, pageToken);
-    }
-
-    @Override
-    public JobIndexQueryPage listGlobalStateEntries(String state, int limit, String pageToken) {
-      return delegate.listGlobalStateEntries(state, limit, pageToken);
-    }
-
-    @Override
-    public JobIndexQueryPage listAccountStateEntries(
-        String accountId, String state, int limit, String pageToken) {
-      return delegate.listAccountStateEntries(accountId, state, limit, pageToken);
-    }
-
-    @Override
-    public JobIndexQueryPage listConnectorStateEntries(
-        String accountId, String connectorId, String state, int limit, String pageToken) {
-      return delegate.listConnectorStateEntries(accountId, connectorId, state, limit, pageToken);
-    }
-
-    @Override
-    public boolean purgeEntriesByCanonicalReference(String canonicalPointerKey) {
-      purgedCanonicalKeys.add(canonicalPointerKey);
-      return delegate.purgeEntriesByCanonicalReference(canonicalPointerKey);
-    }
-
-    @Override
-    public boolean purgeEntriesByCanonicalReference(
-        String canonicalPointerKey, long expectedVersion, String expectedBlobUri) {
-      return delegate.purgeEntriesByCanonicalReference(
-          canonicalPointerKey, expectedVersion, expectedBlobUri);
-    }
-  }
-
-  private static final class ReplacingBeforeConditionalPurgeBackend
+  private static final class ReplacingBeforeQuarantineDeleteBackend
       implements ReconcileJobIndexBackend {
     private final ReconcileJobIndexBackend delegate;
     private final PointerStore pointers;
     private final String canonicalKey;
     private final String replacementReference;
+    private boolean replaced;
 
-    private ReplacingBeforeConditionalPurgeBackend(
+    private ReplacingBeforeQuarantineDeleteBackend(
         ReconcileJobIndexBackend delegate,
         PointerStore pointers,
         String canonicalKey,
@@ -1325,7 +1389,13 @@ class ReconcileJobGcTest {
     }
 
     @Override
+    public ReconcileJobIndexCleanupManifest loadCleanupManifest(String canonicalPointerKey) {
+      return delegate.loadCleanupManifest(canonicalPointerKey);
+    }
+
+    @Override
     public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
+      replaceBeforeCanonicalDelete(batch);
       return delegate.compareAndSetBatch(batch);
     }
 
@@ -1333,25 +1403,30 @@ class ReconcileJobGcTest {
     public boolean compareAndSetBatch(
         ReconcileJobIndexStore.JobIndexWriteBatch batch,
         java.util.List<PointerStore.CasOp> extraPointerOps) {
+      replaceBeforeCanonicalDelete(batch);
       return delegate.compareAndSetBatch(batch, extraPointerOps);
     }
 
-    @Override
-    public boolean purgeEntriesByCanonicalReference(String canonicalPointerKey) {
-      return delegate.purgeEntriesByCanonicalReference(canonicalPointerKey);
-    }
-
-    @Override
-    public boolean purgeEntriesByCanonicalReference(
-        String canonicalPointerKey, long expectedVersion, String expectedBlobUri) {
+    private void replaceBeforeCanonicalDelete(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
+      if (replaced || batch == null) {
+        return;
+      }
+      boolean deletesCanonical =
+          batch.writes().stream()
+              .anyMatch(
+                  write ->
+                      write instanceof ReconcileJobIndexStore.JobIndexDelete delete
+                          && canonicalKey.equals(delete.pointerKey()));
+      if (!deletesCanonical) {
+        return;
+      }
+      replaced = true;
       Pointer current = pointers.get(canonicalKey).orElseThrow();
       pointers.compareAndSet(
           canonicalKey,
           current.getVersion(),
           PointerReferences.inlineJsonPointer(
               canonicalKey, replacementReference, current.getVersion() + 1L));
-      return delegate.purgeEntriesByCanonicalReference(
-          canonicalPointerKey, expectedVersion, expectedBlobUri);
     }
 
     @Override
@@ -1466,6 +1541,11 @@ class ReconcileJobGcTest {
     }
 
     @Override
+    public ReconcileJobIndexCleanupManifest loadCleanupManifest(String canonicalPointerKey) {
+      return delegate.loadCleanupManifest(canonicalPointerKey);
+    }
+
+    @Override
     public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
       return delegate.compareAndSetBatch(batch);
     }
@@ -1475,18 +1555,6 @@ class ReconcileJobGcTest {
         ReconcileJobIndexStore.JobIndexWriteBatch batch,
         java.util.List<PointerStore.CasOp> extraPointerOps) {
       return delegate.compareAndSetBatch(batch, extraPointerOps);
-    }
-
-    @Override
-    public boolean purgeEntriesByCanonicalReference(String canonicalPointerKey) {
-      return delegate.purgeEntriesByCanonicalReference(canonicalPointerKey);
-    }
-
-    @Override
-    public boolean purgeEntriesByCanonicalReference(
-        String canonicalPointerKey, long expectedVersion, String expectedBlobUri) {
-      return delegate.purgeEntriesByCanonicalReference(
-          canonicalPointerKey, expectedVersion, expectedBlobUri);
     }
 
     @Override
@@ -1560,6 +1628,11 @@ class ReconcileJobGcTest {
     }
 
     @Override
+    public ReconcileJobIndexCleanupManifest loadCleanupManifest(String canonicalPointerKey) {
+      return delegate.loadCleanupManifest(canonicalPointerKey);
+    }
+
+    @Override
     public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
       return delegate.compareAndSetBatch(batch);
     }
@@ -1573,18 +1646,6 @@ class ReconcileJobGcTest {
         beforeBatch.run();
       }
       return delegate.compareAndSetBatch(batch, extraPointerOps);
-    }
-
-    @Override
-    public boolean purgeEntriesByCanonicalReference(String canonicalPointerKey) {
-      return delegate.purgeEntriesByCanonicalReference(canonicalPointerKey);
-    }
-
-    @Override
-    public boolean purgeEntriesByCanonicalReference(
-        String canonicalPointerKey, long expectedVersion, String expectedBlobUri) {
-      return delegate.purgeEntriesByCanonicalReference(
-          canonicalPointerKey, expectedVersion, expectedBlobUri);
     }
 
     @Override
@@ -1643,6 +1704,11 @@ class ReconcileJobGcTest {
     }
 
     @Override
+    public ReconcileJobIndexCleanupManifest loadCleanupManifest(String canonicalPointerKey) {
+      return delegate.loadCleanupManifest(canonicalPointerKey);
+    }
+
+    @Override
     public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
       return delegate.compareAndSetBatch(batch);
     }
@@ -1691,11 +1757,6 @@ class ReconcileJobGcTest {
     public JobIndexQueryPage listConnectorStateEntries(
         String accountId, String connectorId, String state, int limit, String pageToken) {
       return delegate.listConnectorStateEntries(accountId, connectorId, state, limit, pageToken);
-    }
-
-    @Override
-    public boolean purgeEntriesByCanonicalReference(String canonicalPointerKey) {
-      return delegate.purgeEntriesByCanonicalReference(canonicalPointerKey);
     }
   }
 }

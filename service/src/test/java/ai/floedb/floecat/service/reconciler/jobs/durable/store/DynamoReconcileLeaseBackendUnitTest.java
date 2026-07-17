@@ -19,20 +19,21 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_PARTITION_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
 import java.util.List;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
-import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
-import software.amazon.awssdk.services.dynamodb.model.GetItemResponse;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsResponse;
 
@@ -65,19 +66,15 @@ class DynamoReconcileLeaseBackendUnitTest {
         ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
     verify(dynamoDb).transactWriteItems(captor.capture());
     var items = captor.getValue().transactItems();
-    assertEquals(2, items.size());
+    assertEquals(1, items.size());
     var item = items.getFirst().put().item();
     assertEquals("reconcile-job-lookup", item.get(ATTR_PARTITION_KEY).s());
     assertEquals("job/" + JOB_ID, item.get(ATTR_SORT_KEY).s());
-    assertEquals(
-        "reconcile-job/by-id", items.get(1).conditionCheck().key().get(ATTR_PARTITION_KEY).s());
-    assertEquals("job/" + JOB_ID, items.get(1).conditionCheck().key().get(ATTR_SORT_KEY).s());
   }
 
   @Test
-  void jobIndexLookupDeleteFallsBackToLegacyPartition() {
+  void jobIndexLookupDeleteUsesLookupPartition() {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
-    when(dynamoDb.getItem(any(GetItemRequest.class))).thenReturn(GetItemResponse.builder().build());
     when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
         .thenReturn(TransactWriteItemsResponse.builder().build());
     DynamoReconcileLeaseBackend backend = new DynamoReconcileLeaseBackend();
@@ -95,7 +92,34 @@ class DynamoReconcileLeaseBackendUnitTest {
         ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
     verify(dynamoDb).transactWriteItems(captor.capture());
     var key = captor.getValue().transactItems().getFirst().delete().key();
-    assertEquals("reconcile-job/by-id", key.get(ATTR_PARTITION_KEY).s());
+    assertEquals("reconcile-job-lookup", key.get(ATTR_PARTITION_KEY).s());
     assertEquals("job/" + JOB_ID, key.get(ATTR_SORT_KEY).s());
+  }
+
+  @Test
+  void rejectsCombinedTransactionsOverDynamoLimit() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    DynamoReconcileLeaseBackend backend = new DynamoReconcileLeaseBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+    var writes =
+        IntStream.range(0, 101)
+            .mapToObj(
+                index ->
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        Keys.reconcileJobLookupPointerById("job-" + index),
+                        0L,
+                        CANONICAL_KEY,
+                        PointerReferenceKind.PRK_POINTER_KEY))
+            .map(ReconcileJobIndexStore.JobIndexWriteOp.class::cast)
+            .toList();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            backend.compareAndSetBatch(
+                new ReconcileJobIndexStore.JobIndexWriteBatch(
+                    writes, ReconcileJobIndexStore.ReadyQueueMutation.empty()),
+                ReconcileLeaseBackend.LeaseWriteBatch.empty()));
+    verify(dynamoDb, never()).transactWriteItems(any(TransactWriteItemsRequest.class));
   }
 }
