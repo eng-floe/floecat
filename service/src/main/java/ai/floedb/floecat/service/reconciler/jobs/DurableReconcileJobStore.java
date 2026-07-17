@@ -488,7 +488,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       cancellationMaintenanceService = new ReconcileCancellationMaintenanceService();
     }
     cancellationMaintenanceService.bind(
-        pointerStore, this::cleanupCancellationRoot, readyScanLimit);
+        pointerStore,
+        this::cleanupCancellationRoot,
+        this::isObsoleteCancellationCleanupRoot,
+        readyScanLimit);
     return cancellationMaintenanceService;
   }
 
@@ -2219,6 +2222,20 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       throw ReconcileCancellationMaintenanceService.obsoleteMarker();
     }
     return propagateDirectChildCancellation(loaded.record, request, childPageSize);
+  }
+
+  private boolean isObsoleteCancellationCleanupRoot(
+      ReconcileCancellationMaintenanceService.CancellationCleanupRequest request) {
+    if (request == null) {
+      return true;
+    }
+    String accountId = blankToEmpty(request.accountId());
+    String rootJobId = blankToEmpty(request.rootJobId());
+    StoredEnvelope loaded = loadByAnyAccount(rootJobId).orElse(null);
+    return loaded == null
+        || loaded.record == null
+        || !accountId.equals(blankToEmpty(loaded.record.accountId))
+        || !isCancellationState(loaded.record.state);
   }
 
   private ReconcileCancellationMaintenanceService.CancellationCleanupResult

@@ -326,6 +326,7 @@ class ReconcileMaintenanceServicesTest {
           return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
               true, "", false, false, false);
         },
+        request -> false,
         10);
 
     service.runCancellationMaintenanceOnce(200L);
@@ -361,12 +362,41 @@ class ReconcileMaintenanceServicesTest {
           return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
               true, "", false, false, false);
         },
+        request -> false,
         10);
 
     service.runCancellationMaintenanceOnce(200L);
 
     assertEquals(0, calls.get());
     assertTrue(pointerStore.get(key).isPresent());
+  }
+
+  @Test
+  void cancellationCleanupDeletesObsoletePausedMarker() {
+    PointerStore pointerStore = new TestPointerStore();
+    ReconcileCancellationMaintenanceService service = new ReconcileCancellationMaintenanceService();
+    AtomicInteger calls = new AtomicInteger();
+    String key = Keys.reconcileCancellationCleanupPointer("acct", "missing-root");
+    String payload =
+        ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
+            new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
+                "acct", "missing-root", "", true, false, true));
+    pointerStore.compareAndSet(key, 0L, PointerReferences.opaqueMarkerPointer(key, payload, 1L));
+
+    service.bind(
+        pointerStore,
+        (request, childPageSize) -> {
+          calls.incrementAndGet();
+          return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
+              true, "", false, false, false);
+        },
+        request -> true,
+        10);
+
+    service.runCancellationMaintenanceOnce(200L);
+
+    assertEquals(0, calls.get());
+    assertTrue(pointerStore.get(key).isEmpty());
   }
 
   private static void putDirtyMarker(
