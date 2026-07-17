@@ -4491,6 +4491,47 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void cancellationMaintenanceDeletesPausedMarkerForCompletedCancelledRoot() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId),
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.state = "JS_CANCELLED";
+                      current.message = "Cancelled";
+                      current.startedAtMs = Math.max(current.startedAtMs, 50L);
+                      current.finishedAtMs = Math.max(current.finishedAtMs, 100L);
+                      current.childrenFinalized = true;
+                      current.readyPointerKey = null;
+                      current.nextAttemptAtMs = 0L;
+                      return current;
+                    }));
+    String key = Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId);
+    String payload =
+        ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
+            new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
+                ACCOUNT_ID, connectorJobId, "", true, false, true));
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            key, 0L, PointerReferences.opaqueMarkerPointer(key, payload, 1L)));
+
+    runCancellationMaintenance();
+
+    assertTrue(store.pointerStore.get(key).isEmpty());
+  }
+
+  @Test
   void repeatedSnapshotFinalizationResetsFinalizedStatusUntilNewFinalizerSucceeds() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
