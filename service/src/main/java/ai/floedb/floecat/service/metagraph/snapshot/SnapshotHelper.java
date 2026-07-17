@@ -153,7 +153,7 @@ public class SnapshotHelper {
                   () ->
                       GrpcErrors.notFound(
                           cid,
-                          SNAPSHOT,
+                          QUERY_SNAPSHOT_NOT_IN_TABLE,
                           Map.of(
                               "table_id", tableId.getId(),
                               "snapshot_id", Long.toString(snapshotId))));
@@ -190,7 +190,8 @@ public class SnapshotHelper {
     // current snapshot (freshly created with no data yet, or its current snapshot was deleted) is
     // an expected, client-reachable state — NOT_FOUND.
     if (root == null || !root.hasCurrentSnapshotId()) {
-      throw GrpcErrors.notFound(cid, SNAPSHOT, Map.of("table_id", tableId.getId()));
+      throw GrpcErrors.notFound(
+          cid, QUERY_TABLE_NO_QUERYABLE_SNAPSHOT, Map.of("table_id", tableId.getId()));
     }
     long currentId = root.getCurrentSnapshotId();
     SnapshotManifestEntry entry =
@@ -214,7 +215,11 @@ public class SnapshotHelper {
       entry =
           SnapshotManifests.latestQueryableCurrent(roots, manifestHead(root), entry)
               .orElseThrow(
-                  () -> GrpcErrors.notFound(cid, SNAPSHOT, Map.of("table_id", tableId.getId())));
+                  () ->
+                      GrpcErrors.notFound(
+                          cid,
+                          QUERY_TABLE_NO_QUERYABLE_SNAPSHOT,
+                          Map.of("table_id", tableId.getId())));
     }
     return pinFromEntry(cid, tableId, PinKind.PIN_KIND_CURRENT, entry, root, rootMeta, null);
   }
@@ -382,7 +387,7 @@ public class SnapshotHelper {
                   () ->
                       GrpcErrors.notFound(
                           cid,
-                          SNAPSHOT,
+                          QUERY_SNAPSHOT_NOT_IN_TABLE,
                           Map.of(
                               "table_id", tableId.getId(),
                               "snapshot_id", Long.toString(ref.getSnapshotId()))));
@@ -394,7 +399,7 @@ public class SnapshotHelper {
                   () ->
                       GrpcErrors.notFound(
                           cid,
-                          SNAPSHOT,
+                          QUERY_SNAPSHOT_NOT_FOUND_AT_TIME,
                           Map.of(
                               "table_id", tableId.getId(),
                               "as_of",

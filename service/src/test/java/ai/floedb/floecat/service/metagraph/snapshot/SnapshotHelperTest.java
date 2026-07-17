@@ -272,9 +272,13 @@ class SnapshotHelperTest {
     assertThatThrownBy(() -> helper.tablePinFor("corr", tableId, null, Optional.empty()))
         .isInstanceOf(StatusRuntimeException.class)
         .satisfies(
-            e ->
-                assertThat(((StatusRuntimeException) e).getStatus().getCode())
-                    .isEqualTo(io.grpc.Status.Code.NOT_FOUND));
+            e -> {
+              var status = ((StatusRuntimeException) e).getStatus();
+              assertThat(status.getCode()).isEqualTo(io.grpc.Status.Code.NOT_FOUND);
+              // The rendered message must name the failing table — an operator triaging "no
+              // queryable snapshot" needs the table identity, not an unfilled "{id}" placeholder.
+              assertThat(status.getDescription()).contains(tableId.getId()).doesNotContain("{");
+            });
   }
 
   @Test
