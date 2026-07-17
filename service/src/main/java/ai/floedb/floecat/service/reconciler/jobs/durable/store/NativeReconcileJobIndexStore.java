@@ -294,7 +294,14 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         int firstFailedBatch = -1;
         for (int batchIndex = 0; batchIndex < commitBatches.size(); batchIndex++) {
           CommitBatch commitBatch = commitBatches.get(batchIndex);
-          if (jobIndexBackend.compareAndSetBatch(commitBatch.batch())) {
+          final boolean batchCommitted;
+          try {
+            batchCommitted = jobIndexBackend.compareAndSetBatch(commitBatch.batch());
+          } catch (RuntimeException e) {
+            throw new BulkEnqueueCommitException(
+                e, queuedInsertIndexes(remainingInserts(commitBatches, batchIndex + 1)));
+          }
+          if (batchCommitted) {
             continue;
           }
           committed = false;

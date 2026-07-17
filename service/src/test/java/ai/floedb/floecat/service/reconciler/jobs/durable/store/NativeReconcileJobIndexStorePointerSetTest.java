@@ -30,7 +30,10 @@ import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -39,13 +42,14 @@ class NativeReconcileJobIndexStorePointerSetTest {
   private static final String CONNECTOR_ID = "connector-1";
   private static final String JOB_ID = "job-1";
 
+  private InMemoryPointerStore pointers;
   private MemoryReconcileJobIndexBackend backend;
   private ReconcileJobIndexes indexes;
   private NativeReconcileJobIndexStore store;
 
   @BeforeEach
   void setUp() {
-    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    pointers = new InMemoryPointerStore();
     backend = new MemoryReconcileJobIndexBackend(pointers);
     indexes = new ReconcileJobIndexes();
     indexes.bind(pointers, ignored -> false, ignored -> List.of());
@@ -204,6 +208,57 @@ class NativeReconcileJobIndexStorePointerSetTest {
                         "oversized", batchWithDeletes("oversized", 101), List.of()))));
   }
 
+  @Test
+  void bulkCommitExceptionRollsBackOnlyDefinitelyUnattemptedChunks() {
+    ThrowOnSecondBatchBackend throwingBackend = new ThrowOnSecondBatchBackend(pointers);
+    store.bind(
+        throwingBackend, payloadStore(), indexes, 4, (previous, current) -> {}, (a, b, op) -> {});
+    List<ReconcileJobIndexStore.QueuedJobInsert> inserts = new ArrayList<>();
+    for (int i = 0; i < 40; i++) {
+      String jobId = "job-" + i;
+      StoredReconcileJob record = record("JS_QUEUED");
+      record.jobId = jobId;
+      record.dedupeKeyHash = "hash-" + i;
+      inserts.add(
+          new ReconcileJobIndexStore.QueuedJobInsert(
+              i,
+              Keys.reconcileDedupePointer(ACCOUNT_ID, record.dedupeKeyHash),
+              Keys.reconcileJobPointerById(ACCOUNT_ID, jobId),
+              Keys.reconcileJobLookupPointerById(jobId),
+              "",
+              List.of(),
+              List.of(),
+              "",
+              "",
+              record));
+    }
+
+    ReconcileJobIndexStore.BulkEnqueueCommitException failure =
+        assertThrows(
+            ReconcileJobIndexStore.BulkEnqueueCommitException.class,
+            () -> store.commitQueuedJobInserts(inserts, ignored -> List.of()));
+
+    Set<Integer> rollbackIndexes = new HashSet<>(failure.rollbackIndexes());
+    assertTrue(java.util.Collections.disjoint(throwingBackend.committedIndexes, rollbackIndexes));
+    assertTrue(
+        java.util.Collections.disjoint(throwingBackend.indeterminateIndexes, rollbackIndexes));
+    assertTrue(
+        java.util.Collections.disjoint(
+            throwingBackend.committedIndexes, throwingBackend.indeterminateIndexes));
+    assertEquals(
+        inserts.size(),
+        throwingBackend.committedIndexes.size()
+            + throwingBackend.indeterminateIndexes.size()
+            + rollbackIndexes.size());
+    assertEquals(2, throwingBackend.calls.get());
+  }
+
+  private ReconcilePayloadStore payloadStore() {
+    ReconcilePayloadStore payloadStore = new ReconcilePayloadStore();
+    payloadStore.bind(new InMemoryBlobStore(), pointers, new ObjectMapper());
+    return payloadStore;
+  }
+
   private StoredReconcileJob record(String state) {
     StoredReconcileJob record = new StoredReconcileJob();
     record.accountId = ACCOUNT_ID;
@@ -227,5 +282,35 @@ class NativeReconcileJobIndexStorePointerSetTest {
     }
     return new ReconcileJobIndexStore.JobIndexWriteBatch(
         writes, ReconcileJobIndexStore.ReadyQueueMutation.empty());
+  }
+
+  private static final class ThrowOnSecondBatchBackend extends MemoryReconcileJobIndexBackend {
+    private final AtomicInteger calls = new AtomicInteger();
+    private final Set<Integer> committedIndexes = new HashSet<>();
+    private final Set<Integer> indeterminateIndexes = new HashSet<>();
+
+    private ThrowOnSecondBatchBackend(PointerStore pointerStore) {
+      super(pointerStore);
+    }
+
+    @Override
+    public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
+      int call = calls.incrementAndGet();
+      Set<Integer> batchIndexes = new HashSet<>();
+      for (var write : batch.writes()) {
+        if (write instanceof ReconcileJobIndexStore.JobIndexUpsert upsert) {
+          var canonical = JobIndexBackendSupport.parseCanonicalJobKey(upsert.pointerKey());
+          if (canonical != null) {
+            batchIndexes.add(Integer.parseInt(canonical.jobSegment().substring("job-".length())));
+          }
+        }
+      }
+      if (call == 2) {
+        indeterminateIndexes.addAll(batchIndexes);
+        throw new RuntimeException("injected second chunk failure");
+      }
+      committedIndexes.addAll(batchIndexes);
+      return super.compareAndSetBatch(batch);
+    }
   }
 }

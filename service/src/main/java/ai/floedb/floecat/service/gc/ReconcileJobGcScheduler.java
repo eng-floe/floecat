@@ -66,7 +66,12 @@ public class ReconcileJobGcScheduler {
   private final Map<String, String> rootSummaryTokenByAccount = new ConcurrentHashMap<>();
   private final Map<String, String> connectorRootSummaryTokenByAccount = new ConcurrentHashMap<>();
   private volatile String readyToken = "";
+  private volatile String legacyCleanupMigrationToken = "";
+  private volatile int legacyCleanupRetryableThisPass;
+  private volatile boolean legacyCleanupMigrationComplete;
   private volatile String legacyLookupMigrationToken = "";
+  private volatile int legacyLookupMigratedThisPass;
+  private volatile int legacyLookupRetryableThisPass;
   private volatile boolean legacyLookupMigrationComplete;
   private volatile String accountToken = "";
   private volatile List<Account> accountPage = List.of();
@@ -188,25 +193,65 @@ public class ReconcileJobGcScheduler {
     int readyScanned = 0;
     int readyDeleted = 0;
     int readyQuarantined = 0;
+    int legacyCleanupScanned = 0;
+    int legacyCleanupManifestsUpdated = 0;
+    int legacyCleanupConflicted = 0;
+    int legacyCleanupRetryable = 0;
     int legacyLookupScanned = 0;
     int legacyLookupMigrated = 0;
     int legacyLookupConflicted = 0;
+    int legacyLookupRetryable = 0;
     try {
+      if (!legacyCleanupMigrationComplete) {
+        var migrationResult = gc.runLegacyCleanupMigrationSlice(legacyCleanupMigrationToken);
+        legacyCleanupScanned = migrationResult.scanned();
+        legacyCleanupManifestsUpdated = migrationResult.manifestsUpdated();
+        legacyCleanupConflicted = migrationResult.conflicted();
+        legacyCleanupRetryable = migrationResult.retryable();
+        legacyCleanupRetryableThisPass += legacyCleanupRetryable;
+        legacyCleanupMigrationToken =
+            migrationResult.nextToken() == null ? "" : migrationResult.nextToken();
+        if (legacyCleanupMigrationToken.isBlank()) {
+          legacyCleanupMigrationComplete =
+              legacyCleanupRetryableThisPass == 0 && gc.completeLegacyCleanupMigration();
+          legacyCleanupRetryableThisPass = 0;
+        }
+        gcMetrics.recordCollection(
+            legacyCleanupScanned, Tag.of(TagKey.RESULT, "legacy-cleanup-scanned"));
+        gcMetrics.recordCollection(
+            legacyCleanupManifestsUpdated,
+            Tag.of(TagKey.RESULT, "legacy-cleanup-manifests-updated"));
+        gcMetrics.recordCollection(
+            legacyCleanupConflicted, Tag.of(TagKey.RESULT, "legacy-cleanup-conflicted"));
+        gcMetrics.recordCollection(
+            legacyCleanupRetryable, Tag.of(TagKey.RESULT, "legacy-cleanup-retryable"));
+      }
+
       if (!legacyLookupMigrationComplete) {
         var migrationResult = gc.runLegacyLookupMigrationSlice(legacyLookupMigrationToken);
         legacyLookupScanned = migrationResult.scanned();
         legacyLookupMigrated = migrationResult.migrated();
         legacyLookupConflicted = migrationResult.conflicted();
+        legacyLookupRetryable = migrationResult.retryable();
+        legacyLookupMigratedThisPass += legacyLookupMigrated;
+        legacyLookupRetryableThisPass += legacyLookupRetryable;
         legacyLookupMigrationToken =
             migrationResult.nextToken() == null ? "" : migrationResult.nextToken();
-        legacyLookupMigrationComplete =
-            legacyLookupScanned == 0 && legacyLookupMigrationToken.isBlank();
+        if (legacyLookupMigrationToken.isBlank()) {
+          legacyLookupMigrationComplete =
+              legacyLookupScanned == 0
+                  || (legacyLookupMigratedThisPass == 0 && legacyLookupRetryableThisPass == 0);
+          legacyLookupMigratedThisPass = 0;
+          legacyLookupRetryableThisPass = 0;
+        }
         gcMetrics.recordCollection(
             legacyLookupScanned, Tag.of(TagKey.RESULT, "legacy-lookup-scanned"));
         gcMetrics.recordCollection(
             legacyLookupMigrated, Tag.of(TagKey.RESULT, "legacy-lookup-migrated"));
         gcMetrics.recordCollection(
             legacyLookupConflicted, Tag.of(TagKey.RESULT, "legacy-lookup-conflicted"));
+        gcMetrics.recordCollection(
+            legacyLookupRetryable, Tag.of(TagKey.RESULT, "legacy-lookup-retryable"));
       }
 
       long readyStart = System.nanoTime();
@@ -319,7 +364,11 @@ public class ReconcileJobGcScheduler {
               + " readyQuarantined=%d accountScanned=%d expired=%d ptrDeleted=%d blobDeleted=%d"
               + " dedupeDeleted=%d readyPointerDeleted=%d quarantined=%d accountPageIndex=%d"
               + " accountPageSize=%d accountTokenPresent=%s activeAccountTokens=%d"
+              + " legacyCleanupScanned=%d legacyCleanupManifestsUpdated=%d"
+              + " legacyCleanupConflicted=%d legacyCleanupRetryable=%d"
+              + " legacyCleanupMigrationComplete=%s"
               + " legacyLookupScanned=%d legacyLookupMigrated=%d legacyLookupConflicted=%d"
+              + " legacyLookupRetryable=%d"
               + " legacyLookupMigrationComplete=%s durationMs=%d",
           accountsProcessed,
           readyScanned,
@@ -340,9 +389,15 @@ public class ReconcileJobGcScheduler {
               + dedupeTokenByAccount.size()
               + rootSummaryTokenByAccount.size()
               + connectorRootSummaryTokenByAccount.size(),
+          legacyCleanupScanned,
+          legacyCleanupManifestsUpdated,
+          legacyCleanupConflicted,
+          legacyCleanupRetryable,
+          legacyCleanupMigrationComplete,
           legacyLookupScanned,
           legacyLookupMigrated,
           legacyLookupConflicted,
+          legacyLookupRetryable,
           legacyLookupMigrationComplete,
           Duration.ofNanos(System.nanoTime() - tickStart).toMillis());
     }

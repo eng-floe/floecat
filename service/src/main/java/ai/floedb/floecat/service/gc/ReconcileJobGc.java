@@ -85,7 +85,31 @@ public class ReconcileJobGc {
   public record GlobalResult(int scanned, int deleted, int quarantined, String nextToken) {}
 
   public record LookupMigrationResult(
-      int scanned, int migrated, int conflicted, String nextToken) {}
+      int scanned, int migrated, int conflicted, int retryable, String nextToken) {}
+
+  public record CleanupMigrationResult(
+      int scanned, int manifestsUpdated, int conflicted, int retryable, String nextToken) {}
+
+  public CleanupMigrationResult runLegacyCleanupMigrationSlice(String pageTokenIn) {
+    int pageSize =
+        ConfigProvider.getConfig()
+            .getOptionalValue(
+                "floecat.gc.reconcile-jobs.legacy-cleanup-migration-page-size", Integer.class)
+            .orElse(500);
+    var page =
+        jobIndexBackend.migrateLegacyCleanupManifests(
+            Math.max(1, pageSize), pageTokenIn == null ? "" : pageTokenIn);
+    return new CleanupMigrationResult(
+        page.scanned(),
+        page.manifestsUpdated(),
+        page.conflicted(),
+        page.retryable(),
+        page.nextPageToken());
+  }
+
+  public boolean completeLegacyCleanupMigration() {
+    return jobIndexBackend.completeLegacyCleanupMigration();
+  }
 
   public LookupMigrationResult runLegacyLookupMigrationSlice(String pageTokenIn) {
     int pageSize =
@@ -97,7 +121,7 @@ public class ReconcileJobGc {
         jobIndexBackend.migrateLegacyLookupEntries(
             Math.max(1, pageSize), pageTokenIn == null ? "" : pageTokenIn);
     return new LookupMigrationResult(
-        page.scanned(), page.migrated(), page.conflicted(), page.nextPageToken());
+        page.scanned(), page.migrated(), page.conflicted(), page.retryable(), page.nextPageToken());
   }
 
   private enum RootSummaryReadStatus {

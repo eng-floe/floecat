@@ -48,6 +48,7 @@ import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 import software.amazon.awssdk.services.dynamodb.model.ScanResponse;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsResponse;
+import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest;
 
 class DynamoReconcileJobIndexBackendTest {
   private static final String TABLE = "floecat_pointers";
@@ -223,10 +224,45 @@ class DynamoReconcileJobIndexBackendTest {
     assertEquals(1, result.scanned());
     assertEquals(1, result.migrated());
     assertEquals(0, result.conflicted());
+    assertEquals(0, result.retryable());
     ArgumentCaptor<QueryRequest> queryCaptor = ArgumentCaptor.forClass(QueryRequest.class);
     verify(dynamoDb).query(queryCaptor.capture());
     assertEquals(
         "reconcile-job/by-id", queryCaptor.getValue().expressionAttributeValues().get(":pk").s());
+  }
+
+  @Test
+  void legacyLookupBackfillReportsTransientWriteFailureAsRetryable() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.query(any(QueryRequest.class)))
+        .thenReturn(
+            QueryResponse.builder()
+                .items(
+                    Map.of(
+                        ATTR_PARTITION_KEY,
+                        AttributeValue.fromS("reconcile-job/by-id"),
+                        ATTR_SORT_KEY,
+                        AttributeValue.fromS("job/" + JOB_ID),
+                        ATTR_KIND,
+                        AttributeValue.fromS(JobIndexBackendSupport.KIND_CANONICAL_JOB),
+                        ATTR_VERSION,
+                        AttributeValue.fromN("1"),
+                        JobIndexBackendSupport.ATTR_POINTER_KEY,
+                        AttributeValue.fromS(LOOKUP_KEY),
+                        JobIndexBackendSupport.ATTR_BLOB_URI,
+                        AttributeValue.fromS(CANONICAL_KEY)))
+                .build());
+    when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
+        .thenThrow(new RuntimeException("transient write failure"));
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+
+    var result = backend.migrateLegacyLookupEntries(25, "");
+
+    assertEquals(1, result.scanned());
+    assertEquals(0, result.migrated());
+    assertEquals(0, result.conflicted());
+    assertEquals(1, result.retryable());
   }
 
   @Test
@@ -372,6 +408,8 @@ class DynamoReconcileJobIndexBackendTest {
                         AttributeValue.fromS(CANONICAL_KEY),
                         JobIndexBackendSupport.ATTR_BLOB_URI,
                         AttributeValue.fromS("inline:reconcile-job:e30"),
+                        "cleanup_manifest_complete",
+                        AttributeValue.fromBool(true),
                         JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS,
                         AttributeValue.fromL(List.of(AttributeValue.fromS(LOOKUP_KEY))),
                         JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS,
@@ -405,26 +443,58 @@ class DynamoReconcileJobIndexBackendTest {
     assertEquals(
         readyKey,
         item.get(JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS).l().getFirst().s());
+    assertTrue(item.get("cleanup_manifest_complete").bool());
     assertEquals(List.of(LOOKUP_KEY), manifest.indexPointerKeys());
     assertEquals(List.of(readyKey), manifest.readyPointerKeys());
     verify(dynamoDb, never()).scan(any(ScanRequest.class));
   }
 
   @Test
-  void discoversLegacyCleanupManifestFromCanonicalReverseReferences() {
+  void migratesLegacyCleanupManifestsWithOnePaginatedScan() {
     String parentKey = Keys.reconcileJobByParentPointer(ACCOUNT_ID, "parent-1", JOB_ID);
     String readyKey = Keys.reconcileReadyPointerByDue(1L, ACCOUNT_ID, "lane", JOB_ID);
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.getItem(any(GetItemRequest.class)))
+        .thenReturn(
+            GetItemResponse.builder().build(),
+            GetItemResponse.builder()
+                .item(
+                    Map.of(
+                        ATTR_PARTITION_KEY,
+                        AttributeValue.fromS("reconcile-job/" + ACCOUNT_ID),
+                        ATTR_SORT_KEY,
+                        AttributeValue.fromS("job/" + JOB_ID),
+                        ATTR_KIND,
+                        AttributeValue.fromS(JobIndexBackendSupport.KIND_CANONICAL_JOB),
+                        ATTR_VERSION,
+                        AttributeValue.fromN("1"),
+                        JobIndexBackendSupport.ATTR_POINTER_KEY,
+                        AttributeValue.fromS(CANONICAL_KEY),
+                        JobIndexBackendSupport.ATTR_BLOB_URI,
+                        AttributeValue.fromS("unreadable")))
+                .build());
     when(dynamoDb.scan(any(ScanRequest.class)))
         .thenReturn(
             ScanResponse.builder()
+                .scannedCount(3)
                 .items(
                     Map.of(
+                        ATTR_KIND,
+                        AttributeValue.fromS(JobIndexBackendSupport.KIND_CANONICAL_JOB),
+                        JobIndexBackendSupport.ATTR_POINTER_KEY,
+                        AttributeValue.fromS(CANONICAL_KEY),
+                        JobIndexBackendSupport.ATTR_BLOB_URI,
+                        AttributeValue.fromS("unreadable")),
+                    Map.of(
+                        ATTR_KIND,
+                        AttributeValue.fromS(JobIndexBackendSupport.KIND_PARENT),
                         JobIndexBackendSupport.ATTR_POINTER_KEY,
                         AttributeValue.fromS(parentKey),
                         JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY,
                         AttributeValue.fromS(CANONICAL_KEY)),
                     Map.of(
+                        ATTR_KIND,
+                        AttributeValue.fromS(DynamoReconcileReadyQueueBackend.KIND_READY_ENTRY),
                         DynamoReconcileReadyQueueBackend.ATTR_READY_POINTER_KEY,
                         AttributeValue.fromS(readyKey),
                         DynamoReconcileReadyQueueBackend.ATTR_CANONICAL_POINTER_KEY,
@@ -433,14 +503,61 @@ class DynamoReconcileJobIndexBackendTest {
     DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
     backend.bind(() -> dynamoDb, TABLE);
 
-    var manifest = backend.discoverLegacyCleanupManifest(CANONICAL_KEY);
+    var result = backend.migrateLegacyCleanupManifests(500, "");
 
-    assertEquals(List.of(LOOKUP_KEY, parentKey), manifest.indexPointerKeys());
-    assertEquals(List.of(readyKey), manifest.readyPointerKeys());
+    assertEquals(3, result.scanned());
+    assertEquals(1, result.manifestsUpdated());
+    assertEquals(0, result.conflicted());
+    assertEquals(0, result.retryable());
     ArgumentCaptor<ScanRequest> scanCaptor = ArgumentCaptor.forClass(ScanRequest.class);
     verify(dynamoDb).scan(scanCaptor.capture());
+    assertEquals(500, scanCaptor.getValue().limit());
+    ArgumentCaptor<UpdateItemRequest> updateCaptor =
+        ArgumentCaptor.forClass(UpdateItemRequest.class);
+    verify(dynamoDb).updateItem(updateCaptor.capture());
     assertEquals(
-        AttributeValue.fromS(CANONICAL_KEY),
-        scanCaptor.getValue().expressionAttributeValues().get(":canonical"));
+        List.of(LOOKUP_KEY, parentKey),
+        updateCaptor.getValue().expressionAttributeValues().get(":idx").l().stream()
+            .map(AttributeValue::s)
+            .toList());
+    assertEquals(
+        List.of(readyKey),
+        updateCaptor.getValue().expressionAttributeValues().get(":ready").l().stream()
+            .map(AttributeValue::s)
+            .toList());
+  }
+
+  @Test
+  void legacyCleanupManifestRemainsHiddenUntilMigrationMarkerIsWritten() {
+    Map<String, AttributeValue> legacyCanonical =
+        Map.of(
+            ATTR_PARTITION_KEY,
+            AttributeValue.fromS("reconcile-job/" + ACCOUNT_ID),
+            ATTR_SORT_KEY,
+            AttributeValue.fromS("job/" + JOB_ID),
+            ATTR_KIND,
+            AttributeValue.fromS(JobIndexBackendSupport.KIND_CANONICAL_JOB),
+            ATTR_VERSION,
+            AttributeValue.fromN("1"),
+            JobIndexBackendSupport.ATTR_POINTER_KEY,
+            AttributeValue.fromS(CANONICAL_KEY),
+            JobIndexBackendSupport.ATTR_BLOB_URI,
+            AttributeValue.fromS("unreadable"),
+            JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS,
+            AttributeValue.fromL(List.of(AttributeValue.fromS(LOOKUP_KEY))));
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.getItem(any(GetItemRequest.class)))
+        .thenReturn(
+            GetItemResponse.builder().item(legacyCanonical).build(),
+            GetItemResponse.builder().build(),
+            GetItemResponse.builder().build(),
+            GetItemResponse.builder().item(legacyCanonical).build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+
+    assertTrue(backend.loadCleanupManifest(CANONICAL_KEY).isEmpty());
+    assertTrue(backend.completeLegacyCleanupMigration());
+    assertEquals(
+        List.of(LOOKUP_KEY), backend.loadCleanupManifest(CANONICAL_KEY).indexPointerKeys());
   }
 }

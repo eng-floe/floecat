@@ -123,6 +123,8 @@ public interface ReconcileJobIndexStore {
     }
 
     public List<Integer> rollbackIndexes() {
+      // Only entries from batches that were never attempted are safe to roll back. The batch that
+      // raised the exception may have committed remotely before the client observed the failure.
       return rollbackIndexes;
     }
   }

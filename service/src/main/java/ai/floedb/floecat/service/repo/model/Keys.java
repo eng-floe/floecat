@@ -1293,8 +1293,9 @@ public final class Keys {
   }
 
   public static String reconcileJobLeaseExpiryPointerSuffix(String accountId, String jobId) {
+    String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
-    return accountRootPrefix(accountId) + "jobs/" + encode(jid);
+    return "/accounts/" + tid + "/jobs/" + jid;
   }
 
   public static String reconcileJobResultBlobUri(String accountId, String jobId, String suffix) {

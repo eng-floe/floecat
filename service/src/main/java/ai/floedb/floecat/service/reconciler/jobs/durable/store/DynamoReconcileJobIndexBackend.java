@@ -38,14 +38,17 @@ import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
 import software.amazon.awssdk.services.dynamodb.model.Delete;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.Put;
+import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
 import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
 import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException;
+import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest;
 
 @Singleton
 @IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
@@ -54,12 +57,18 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   private static final String GENERIC_POINTER_GLOBAL_PK = "_ACCOUNT_DIR";
   private static final String ATTR_GENERIC_BLOB_URI = "blob_uri";
   private static final String ATTR_GENERIC_REFERENCE_KIND = "reference_kind";
+  private static final String ATTR_CLEANUP_MANIFEST_COMPLETE = "cleanup_manifest_complete";
+  private static final String LEGACY_CLEANUP_MARKER_PARTITION = "reconcile-job-maintenance";
+  private static final String LEGACY_CLEANUP_MARKER_SORT = "legacy-cleanup-manifest-v1";
+  private static final String KIND_LEGACY_CLEANUP_MARKER = "ReconcileJobLegacyCleanupMigration";
 
   @Inject Instance<DynamoDbClientManager> dynamoDbClientManager;
   private final RefreshingDynamoCaller dynamoCaller = new RefreshingDynamoCaller();
 
   @ConfigProperty(name = "floecat.kv.table", defaultValue = "floecat_pointers")
   String table = "floecat_pointers";
+
+  private volatile boolean legacyCleanupMigrationMarkedComplete;
 
   public DynamoReconcileJobIndexBackend() {}
 
@@ -87,7 +96,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       if (legacy.isEmpty()) {
         return Optional.empty();
       }
-      if (migrateLegacyLookup(lookupKey, legacy.get())) {
+      if (migrateLegacyLookup(lookupKey, legacy.get()) == LegacyLookupMigrationOutcome.MIGRATED) {
         return legacy;
       }
       return loadLookupPointer(currentKey).or(() -> legacy);
@@ -151,20 +160,21 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
             JobIndexBackendSupport.ATTR_BLOB_URI);
     int migrated = 0;
     int conflicted = 0;
+    int retryable = 0;
     for (JobIndexEntrySnapshot legacy : page.entries()) {
       var lookupKey = JobIndexBackendSupport.parseLookupKey(legacy.pointerKey());
       if (lookupKey == null || blank(legacy.blobUri()) || legacy.version() <= 0L) {
         conflicted++;
         continue;
       }
-      if (migrateLegacyLookup(lookupKey, legacy)) {
-        migrated++;
-      } else {
-        conflicted++;
+      switch (migrateLegacyLookup(lookupKey, legacy)) {
+        case MIGRATED -> migrated++;
+        case PERMANENT_CONFLICT -> conflicted++;
+        case RETRYABLE_FAILURE -> retryable++;
       }
     }
     return new LegacyLookupMigrationPage(
-        page.entries().size(), migrated, conflicted, page.nextPageToken());
+        page.entries().size(), migrated, conflicted, retryable, page.nextPageToken());
   }
 
   @Override
@@ -291,54 +301,329 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     if (!response.hasItem() || response.item().isEmpty()) {
       return ReconcileJobIndexCleanupManifest.EMPTY;
     }
+    if (!boolAttr(response.item(), ATTR_CLEANUP_MANIFEST_COMPLETE)
+        && !legacyCleanupMigrationMarkedComplete()) {
+      return ReconcileJobIndexCleanupManifest.EMPTY;
+    }
     return new ReconcileJobIndexCleanupManifest(
         stringListAttr(response.item(), JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS),
         stringListAttr(response.item(), JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS));
   }
 
   @Override
-  public ReconcileJobIndexCleanupManifest discoverLegacyCleanupManifest(
-      String canonicalPointerKey) {
-    if (blank(canonicalPointerKey)) {
-      return ReconcileJobIndexCleanupManifest.EMPTY;
+  public LegacyCleanupMigrationPage migrateLegacyCleanupManifests(int limit, String pageToken) {
+    if (legacyCleanupMigrationMarkedComplete()) {
+      return new LegacyCleanupMigrationPage(0, 0, 0, 0, "");
     }
-    java.util.LinkedHashSet<String> indexKeys = new java.util.LinkedHashSet<>();
-    java.util.LinkedHashSet<String> readyKeys = new java.util.LinkedHashSet<>();
-    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(canonicalPointerKey);
-    if (canonicalKey != null) {
-      indexKeys.add(Keys.reconcileJobLookupPointerByIdPrefix() + canonicalKey.jobSegment());
+
+    List<String> kinds =
+        List.of(
+            JobIndexBackendSupport.KIND_CANONICAL_JOB,
+            JobIndexBackendSupport.KIND_LOOKUP,
+            JobIndexBackendSupport.KIND_DEDUPE,
+            JobIndexBackendSupport.KIND_PARENT,
+            JobIndexBackendSupport.KIND_CONNECTOR,
+            JobIndexBackendSupport.KIND_GLOBAL_STATE,
+            JobIndexBackendSupport.KIND_ACCOUNT_STATE,
+            JobIndexBackendSupport.KIND_CONNECTOR_STATE,
+            DynamoReconcileReadyQueueBackend.KIND_READY_ENTRY);
+    Map<String, AttributeValue> values = new HashMap<>();
+    List<String> kindTokens = new ArrayList<>();
+    for (int i = 0; i < kinds.size(); i++) {
+      String token = ":kind" + i;
+      kindTokens.add(token);
+      values.put(token, AttributeValue.fromS(kinds.get(i)));
     }
-    Map<String, AttributeValue> cursor = Map.of();
-    do {
-      ScanRequest.Builder scan =
-          ScanRequest.builder()
-              .tableName(table)
-              .consistentRead(true)
-              .expressionAttributeNames(
-                  Map.of(
-                      "#canonical", JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY,
-                      "#blob", JobIndexBackendSupport.ATTR_BLOB_URI))
-              .filterExpression("#canonical = :canonical OR #blob = :canonical")
-              .expressionAttributeValues(
-                  Map.of(":canonical", AttributeValue.fromS(canonicalPointerKey)));
-      if (!cursor.isEmpty()) {
-        scan.exclusiveStartKey(cursor);
+    Map<String, String> names =
+        Map.of(
+            "#kind", ATTR_KIND,
+            "#pointer", JobIndexBackendSupport.ATTR_POINTER_KEY,
+            "#canonical", JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY,
+            "#blob", JobIndexBackendSupport.ATTR_BLOB_URI,
+            "#ready", DynamoReconcileReadyQueueBackend.ATTR_READY_POINTER_KEY);
+    ScanRequest.Builder scan =
+        ScanRequest.builder()
+            .tableName(table)
+            .consistentRead(true)
+            .limit(Math.max(1, limit))
+            .expressionAttributeNames(names)
+            .filterExpression(
+                "#kind IN ("
+                    + String.join(", ", kindTokens)
+                    + ") AND (attribute_exists(#canonical) OR attribute_exists(#blob))")
+            .projectionExpression("#kind, #pointer, #canonical, #blob, #ready")
+            .expressionAttributeValues(values);
+    ReadyQueueBackendSupport.ReadyRowCursor cursor =
+        ReadyQueueBackendSupport.decodeCursor(pageToken);
+    if (cursor != null) {
+      scan.exclusiveStartKey(
+          Map.of(
+              ATTR_PARTITION_KEY,
+              AttributeValue.fromS(cursor.partitionKey()),
+              ATTR_SORT_KEY,
+              AttributeValue.fromS(cursor.sortKey())));
+    }
+
+    var response = dynamoCaller.call(dynamoDbClientManager, client -> client.scan(scan.build()));
+    Map<String, LegacyCleanupManifestBuilder> manifests = new java.util.LinkedHashMap<>();
+    int conflicted = 0;
+    for (var item : response.items()) {
+      String canonicalPointerKey = canonicalPointerForCleanupItem(item);
+      if (blank(canonicalPointerKey)
+          || JobIndexBackendSupport.parseCanonicalJobKey(canonicalPointerKey) == null) {
+        conflicted++;
+        continue;
       }
-      var response = dynamoCaller.call(dynamoDbClientManager, client -> client.scan(scan.build()));
-      for (var item : response.items()) {
-        String readyKey = stringAttr(item, DynamoReconcileReadyQueueBackend.ATTR_READY_POINTER_KEY);
-        if (!blank(readyKey)) {
-          readyKeys.add(readyKey);
-          continue;
-        }
-        String pointerKey = stringAttr(item, JobIndexBackendSupport.ATTR_POINTER_KEY);
-        if (!blank(pointerKey) && !canonicalPointerKey.equals(pointerKey)) {
-          indexKeys.add(pointerKey);
-        }
+      LegacyCleanupManifestBuilder manifest =
+          manifests.computeIfAbsent(
+              canonicalPointerKey, ignored -> new LegacyCleanupManifestBuilder());
+      var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(canonicalPointerKey);
+      manifest.indexKeys.add(
+          Keys.reconcileJobLookupPointerByIdPrefix() + canonicalKey.jobSegment());
+      String readyKey = stringAttr(item, DynamoReconcileReadyQueueBackend.ATTR_READY_POINTER_KEY);
+      if (!blank(readyKey)) {
+        manifest.readyKeys.add(readyKey);
+        continue;
       }
-      cursor = response.lastEvaluatedKey();
-    } while (cursor != null && !cursor.isEmpty());
-    return new ReconcileJobIndexCleanupManifest(List.copyOf(indexKeys), List.copyOf(readyKeys));
+      String pointerKey = stringAttr(item, JobIndexBackendSupport.ATTR_POINTER_KEY);
+      if (!blank(pointerKey) && !canonicalPointerKey.equals(pointerKey)) {
+        manifest.indexKeys.add(pointerKey);
+      }
+    }
+
+    int updated = 0;
+    int retryable = 0;
+    for (var entry : manifests.entrySet()) {
+      LegacyCleanupMergeOutcome outcome =
+          mergeLegacyCleanupManifest(entry.getKey(), entry.getValue().build());
+      if (outcome == LegacyCleanupMergeOutcome.UPDATED) {
+        updated++;
+      } else if (outcome == LegacyCleanupMergeOutcome.CONFLICTED) {
+        conflicted++;
+      } else if (outcome == LegacyCleanupMergeOutcome.RETRYABLE) {
+        retryable++;
+      }
+    }
+
+    String nextToken = "";
+    if (response.lastEvaluatedKey() != null && !response.lastEvaluatedKey().isEmpty()) {
+      nextToken =
+          ReadyQueueBackendSupport.encodeCursor(
+              stringAttr(response.lastEvaluatedKey(), ATTR_PARTITION_KEY),
+              stringAttr(response.lastEvaluatedKey(), ATTR_SORT_KEY));
+    }
+    return new LegacyCleanupMigrationPage(
+        response.scannedCount(), updated, conflicted, retryable, nextToken);
+  }
+
+  @Override
+  public boolean completeLegacyCleanupMigration() {
+    if (legacyCleanupMigrationMarkedComplete()) {
+      return true;
+    }
+    Map<String, AttributeValue> item = new HashMap<>();
+    item.put(ATTR_PARTITION_KEY, AttributeValue.fromS(LEGACY_CLEANUP_MARKER_PARTITION));
+    item.put(ATTR_SORT_KEY, AttributeValue.fromS(LEGACY_CLEANUP_MARKER_SORT));
+    item.put(ATTR_KIND, AttributeValue.fromS(KIND_LEGACY_CLEANUP_MARKER));
+    try {
+      dynamoCaller.callVoid(
+          dynamoDbClientManager,
+          client -> client.putItem(PutItemRequest.builder().tableName(table).item(item).build()));
+      legacyCleanupMigrationMarkedComplete = true;
+      return true;
+    } catch (RuntimeException ignored) {
+      return false;
+    }
+  }
+
+  private boolean legacyCleanupMigrationMarkedComplete() {
+    if (legacyCleanupMigrationMarkedComplete) {
+      return true;
+    }
+    try {
+      var response =
+          dynamoCaller.call(
+              dynamoDbClientManager,
+              client ->
+                  client.getItem(
+                      GetItemRequest.builder()
+                          .tableName(table)
+                          .consistentRead(true)
+                          .key(
+                              Map.of(
+                                  ATTR_PARTITION_KEY,
+                                  AttributeValue.fromS(LEGACY_CLEANUP_MARKER_PARTITION),
+                                  ATTR_SORT_KEY,
+                                  AttributeValue.fromS(LEGACY_CLEANUP_MARKER_SORT)))
+                          .build()));
+      legacyCleanupMigrationMarkedComplete = response.hasItem() && !response.item().isEmpty();
+      return legacyCleanupMigrationMarkedComplete;
+    } catch (RuntimeException ignored) {
+      return false;
+    }
+  }
+
+  private String canonicalPointerForCleanupItem(Map<String, AttributeValue> item) {
+    String kind = stringAttr(item, ATTR_KIND);
+    String pointerKey = stringAttr(item, JobIndexBackendSupport.ATTR_POINTER_KEY);
+    if (JobIndexBackendSupport.KIND_CANONICAL_JOB.equals(kind)) {
+      if (JobIndexBackendSupport.parseCanonicalJobKey(pointerKey) != null) {
+        return pointerKey;
+      }
+      if (JobIndexBackendSupport.parseLookupKey(pointerKey) != null) {
+        return stringAttr(item, JobIndexBackendSupport.ATTR_BLOB_URI);
+      }
+    }
+    String canonical = stringAttr(item, JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY);
+    if (!blank(canonical)) {
+      return canonical;
+    }
+    if (JobIndexBackendSupport.KIND_LOOKUP.equals(kind)) {
+      return stringAttr(item, JobIndexBackendSupport.ATTR_BLOB_URI);
+    }
+    return "";
+  }
+
+  private LegacyCleanupMergeOutcome mergeLegacyCleanupManifest(
+      String canonicalPointerKey, ReconcileJobIndexCleanupManifest discovered) {
+    var key = JobIndexBackendSupport.parseCanonicalJobKey(canonicalPointerKey);
+    if (key == null || discovered == null || discovered.isEmpty()) {
+      return LegacyCleanupMergeOutcome.CONFLICTED;
+    }
+    Map<String, AttributeValue> dynamoKey =
+        Map.of(
+            ATTR_PARTITION_KEY,
+            AttributeValue.fromS(JobIndexBackendSupport.canonicalPartitionKey(key)),
+            ATTR_SORT_KEY,
+            AttributeValue.fromS(JobIndexBackendSupport.canonicalSortKey(key)));
+    final Map<String, AttributeValue> item;
+    try {
+      var response =
+          dynamoCaller.call(
+              dynamoDbClientManager,
+              client ->
+                  client.getItem(
+                      GetItemRequest.builder()
+                          .tableName(table)
+                          .consistentRead(true)
+                          .key(dynamoKey)
+                          .build()));
+      if (!response.hasItem() || response.item().isEmpty()) {
+        return LegacyCleanupMergeOutcome.CONFLICTED;
+      }
+      item = response.item();
+    } catch (RuntimeException ignored) {
+      return LegacyCleanupMergeOutcome.RETRYABLE;
+    }
+    if (!canonicalPointerKey.equals(stringAttr(item, JobIndexBackendSupport.ATTR_POINTER_KEY))) {
+      return LegacyCleanupMergeOutcome.CONFLICTED;
+    }
+    if (boolAttr(item, ATTR_CLEANUP_MANIFEST_COMPLETE)) {
+      return LegacyCleanupMergeOutcome.UNCHANGED;
+    }
+
+    List<String> existingIndexKeys =
+        stringListAttr(item, JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS);
+    List<String> existingReadyKeys =
+        stringListAttr(item, JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS);
+    ReconcileJobIndexCleanupManifest merged =
+        new ReconcileJobIndexCleanupManifest(
+            concat(existingIndexKeys, discovered.indexPointerKeys()),
+            concat(existingReadyKeys, discovered.readyPointerKeys()));
+    if (merged.indexPointerKeys().equals(existingIndexKeys)
+        && merged.readyPointerKeys().equals(existingReadyKeys)) {
+      return LegacyCleanupMergeOutcome.UNCHANGED;
+    }
+
+    Map<String, String> names = new HashMap<>();
+    names.put("#v", ATTR_VERSION);
+    names.put("#pointer", JobIndexBackendSupport.ATTR_POINTER_KEY);
+    names.put("#idx", JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS);
+    names.put("#ready", JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS);
+    names.put("#complete", ATTR_CLEANUP_MANIFEST_COMPLETE);
+    Map<String, AttributeValue> values = new HashMap<>();
+    values.put(":v", AttributeValue.fromN(Long.toString(longAttr(item, ATTR_VERSION))));
+    values.put(":canonical", AttributeValue.fromS(canonicalPointerKey));
+    values.put(":idx", stringListValue(merged.indexPointerKeys()));
+    values.put(":ready", stringListValue(merged.readyPointerKeys()));
+    StringBuilder condition =
+        new StringBuilder("#v = :v AND #pointer = :canonical AND attribute_not_exists(#complete)");
+    appendExpectedListCondition(
+        condition,
+        values,
+        item,
+        "#idx",
+        ":oldIdx",
+        JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS);
+    appendExpectedListCondition(
+        condition,
+        values,
+        item,
+        "#ready",
+        ":oldReady",
+        JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS);
+    try {
+      dynamoCaller.callVoid(
+          dynamoDbClientManager,
+          client ->
+              client.updateItem(
+                  UpdateItemRequest.builder()
+                      .tableName(table)
+                      .key(dynamoKey)
+                      .updateExpression("SET #idx = :idx, #ready = :ready")
+                      .conditionExpression(condition.toString())
+                      .expressionAttributeNames(names)
+                      .expressionAttributeValues(values)
+                      .build()));
+      return LegacyCleanupMergeOutcome.UPDATED;
+    } catch (ConditionalCheckFailedException ignored) {
+      return LegacyCleanupMergeOutcome.RETRYABLE;
+    } catch (RuntimeException ignored) {
+      return LegacyCleanupMergeOutcome.RETRYABLE;
+    }
+  }
+
+  private static void appendExpectedListCondition(
+      StringBuilder condition,
+      Map<String, AttributeValue> values,
+      Map<String, AttributeValue> item,
+      String nameToken,
+      String valueToken,
+      String attributeName) {
+    AttributeValue existing = item.get(attributeName);
+    if (existing == null) {
+      condition.append(" AND attribute_not_exists(").append(nameToken).append(')');
+    } else {
+      condition.append(" AND ").append(nameToken).append(" = ").append(valueToken);
+      values.put(valueToken, existing);
+    }
+  }
+
+  private static AttributeValue stringListValue(List<String> values) {
+    return AttributeValue.fromL(values.stream().map(AttributeValue::fromS).toList());
+  }
+
+  private static List<String> concat(List<String> left, List<String> right) {
+    List<String> values = new ArrayList<>(left.size() + right.size());
+    values.addAll(left);
+    values.addAll(right);
+    return values;
+  }
+
+  private enum LegacyCleanupMergeOutcome {
+    UPDATED,
+    UNCHANGED,
+    CONFLICTED,
+    RETRYABLE
+  }
+
+  private static final class LegacyCleanupManifestBuilder {
+    private final java.util.LinkedHashSet<String> indexKeys = new java.util.LinkedHashSet<>();
+    private final java.util.LinkedHashSet<String> readyKeys = new java.util.LinkedHashSet<>();
+
+    private ReconcileJobIndexCleanupManifest build() {
+      return new ReconcileJobIndexCleanupManifest(List.copyOf(indexKeys), List.copyOf(readyKeys));
+    }
   }
 
   private boolean compareAndSetDynamo(
@@ -510,7 +795,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         key.partitionKey(), key.sortKey(), JobIndexBackendSupport.ATTR_BLOB_URI);
   }
 
-  private boolean migrateLegacyLookup(
+  private LegacyLookupMigrationOutcome migrateLegacyLookup(
       JobIndexBackendSupport.LookupKey lookupKey, JobIndexEntrySnapshot legacy) {
     var currentKey = JobIndexBackendSupport.currentLookupStorageKey(lookupKey);
     var legacyKey = JobIndexBackendSupport.legacyLookupStorageKey(lookupKey);
@@ -544,16 +829,19 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
           client ->
               client.transactWriteItems(
                   TransactWriteItemsRequest.builder().transactItems(List.of(put, delete)).build()));
-      return true;
+      return LegacyLookupMigrationOutcome.MIGRATED;
     } catch (TransactionCanceledException ignored) {
       Optional<JobIndexEntrySnapshot> current;
       try {
         current = loadLookupPointer(currentKey);
       } catch (RuntimeException ignoredRead) {
-        return false;
+        return LegacyLookupMigrationOutcome.RETRYABLE_FAILURE;
       }
-      if (current.isEmpty() || !legacy.blobUri().equals(current.get().blobUri())) {
-        return false;
+      if (current.isEmpty()) {
+        return LegacyLookupMigrationOutcome.RETRYABLE_FAILURE;
+      }
+      if (!legacy.blobUri().equals(current.get().blobUri())) {
+        return LegacyLookupMigrationOutcome.PERMANENT_CONFLICT;
       }
       try {
         dynamoCaller.callVoid(
@@ -562,12 +850,25 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
                 client.transactWriteItems(
                     TransactWriteItemsRequest.builder().transactItems(List.of(delete)).build()));
       } catch (RuntimeException ignoredDelete) {
-        // Best-effort cleanup: the equivalent current row already resolves this lookup.
+        try {
+          if (loadLookupPointer(legacyKey).isEmpty()) {
+            return LegacyLookupMigrationOutcome.MIGRATED;
+          }
+        } catch (RuntimeException ignoredRead) {
+          // The legacy row may still exist; leave the migration retryable.
+        }
+        return LegacyLookupMigrationOutcome.RETRYABLE_FAILURE;
       }
-      return true;
+      return LegacyLookupMigrationOutcome.MIGRATED;
     } catch (RuntimeException ignored) {
-      return false;
+      return LegacyLookupMigrationOutcome.RETRYABLE_FAILURE;
     }
+  }
+
+  private enum LegacyLookupMigrationOutcome {
+    MIGRATED,
+    PERMANENT_CONFLICT,
+    RETRYABLE_FAILURE
   }
 
   private JobIndexQueryPage listIndexPointers(
@@ -865,6 +1166,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     item.put(JobIndexBackendSupport.ATTR_BLOB_URI, AttributeValue.fromS(upsert.blobUri()));
     item.put(JobIndexBackendSupport.ATTR_ACCOUNT_ID, AttributeValue.fromS(key.accountSegment()));
     item.put(JobIndexBackendSupport.ATTR_JOB_ID, AttributeValue.fromS(key.jobSegment()));
+    item.put(ATTR_CLEANUP_MANIFEST_COMPLETE, AttributeValue.fromBool(true));
     putStringList(
         item,
         JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS,
@@ -1065,6 +1367,11 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   private static String stringAttr(Map<String, AttributeValue> item, String name) {
     AttributeValue value = item.get(name);
     return value == null || value.s() == null ? "" : value.s();
+  }
+
+  private static boolean boolAttr(Map<String, AttributeValue> item, String name) {
+    AttributeValue value = item.get(name);
+    return value != null && Boolean.TRUE.equals(value.bool());
   }
 
   private static long longAttr(Map<String, AttributeValue> item, String name) {

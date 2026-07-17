@@ -24,12 +24,23 @@ public interface ReconcileJobIndexBackend {
   record JobIndexQueryPage(List<JobIndexEntrySnapshot> entries, String nextPageToken) {}
 
   record LegacyLookupMigrationPage(
-      int scanned, int migrated, int conflicted, String nextPageToken) {}
+      int scanned, int migrated, int conflicted, int retryable, String nextPageToken) {}
+
+  record LegacyCleanupMigrationPage(
+      int scanned, int manifestsUpdated, int conflicted, int retryable, String nextPageToken) {}
 
   Optional<JobIndexEntrySnapshot> loadIndexEntry(String pointerKey);
 
   default LegacyLookupMigrationPage migrateLegacyLookupEntries(int limit, String pageToken) {
-    return new LegacyLookupMigrationPage(0, 0, 0, "");
+    return new LegacyLookupMigrationPage(0, 0, 0, 0, "");
+  }
+
+  default LegacyCleanupMigrationPage migrateLegacyCleanupManifests(int limit, String pageToken) {
+    return new LegacyCleanupMigrationPage(0, 0, 0, 0, "");
+  }
+
+  default boolean completeLegacyCleanupMigration() {
+    return true;
   }
 
   boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch);
