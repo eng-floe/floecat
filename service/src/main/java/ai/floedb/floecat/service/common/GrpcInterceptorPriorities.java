@@ -39,12 +39,32 @@ public final class GrpcInterceptorPriorities {
    */
   public static final int INBOUND_CONTEXT = 1_000_000;
 
-  public static final int TELEMETRY = 300;
-
   public static final int RPC_LOGGING = 200;
 
-  /** Innermost: localizes error payloads before the outer logging interceptor observes them. */
+  /** Localizes error payloads before the outer logging interceptor observes them. */
   public static final int LOCALIZE_ERRORS = 100;
+
+  /**
+   * Telemetry runs INNER of Quarkus's tracing interceptor — deliberately below 0. Quarkus's {@code
+   * GrpcTracingServerInterceptor} implements no {@code Prioritized}, so the comparator gives it 0;
+   * it creates the call's server span and makes it current ONLY inside its own {@code
+   * interceptCall} window, never re-attaching around listener events. Telemetry's delegate ({@code
+   * GrpcTelemetryServerInterceptor}) captures {@code Span.current()} AND builds its {@code
+   * PhaseDiagnostics} at {@code interceptCall}, so anything above 0 captures the invalid root span
+   * and a {@code NOOP} diagnostics — and then emits neither {@code floecat.rpc.status} nor the
+   * {@code floecat.rpc.summary} event. Sorting below 0 runs its chain build inside the window; it
+   * captures the span synchronously there, so its later {@code finish()} (on call close, outside
+   * the window) still holds a valid captured span.
+   */
+  public static final int TELEMETRY = -500;
+
+  /**
+   * Innermost of ALL interceptors — below {@link #TELEMETRY}. Captures the server span (valid only
+   * here, inside the tracing window; see {@link #TELEMETRY}) onto the per-call carrier and applies
+   * the per-request identity attributes. Ordering relative to {@link #TELEMETRY} is immaterial —
+   * both sit inside the window and touch the span independently.
+   */
+  public static final int SPAN_CAPTURE = -1_000;
 
   private GrpcInterceptorPriorities() {}
 }

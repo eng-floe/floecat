@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.context.impl;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import io.opentelemetry.api.trace.Span;
 import io.smallrye.common.vertx.VertxContext;
 import io.vertx.core.Vertx;
 import java.util.Objects;
@@ -59,6 +60,18 @@ public final class ResolvedCallContexts {
   /** Vert.x duplicated-context local key under which the resolved call context is stored. */
   private static final String CONTEXT_LOCAL = "floecat.resolved-call-context";
 
+  /**
+   * Vert.x duplicated-context local key under which the call's gRPC server span is stored. The span
+   * is created by Quarkus's {@code GrpcTracingServerInterceptor} — which carries no {@code
+   * Prioritized} priority and therefore sorts to 0, the INNERMOST slot of the chain — and is only
+   * current inside that interceptor's {@code makeCurrent()} window. No floecat interceptor or
+   * handler thread ever has it current, so every {@code Span.current()} decoration silently no-ops.
+   * {@code SpanCaptureInterceptor} (priority below 0, inner to the tracing interceptor) captures
+   * the span inside that window and stows it here — the same per-call channel MDC and the resolved
+   * call context already ride — so decoration code anywhere in the call can reach it.
+   */
+  private static final String SPAN_LOCAL = "floecat.call-span";
+
   private static final ThreadLocal<ResolvedCallContext> SCOPE = new ThreadLocal<>();
 
   private ResolvedCallContexts() {}
@@ -89,6 +102,43 @@ public final class ResolvedCallContexts {
           resolved.correlationId());
     }
     ctx.putLocal(CONTEXT_LOCAL, resolved);
+  }
+
+  /**
+   * Stores the call's gRPC server span on the current Vert.x duplicated context so decoration code
+   * outside the tracing interceptor's {@code makeCurrent()} window (every floecat interceptor,
+   * service handlers, Mutiny bodies) can reach it. Called once per call by {@code
+   * SpanCaptureInterceptor}, the only floecat code that runs inside that window.
+   *
+   * <p>A pure store: no-op when off a duplicated context or when no valid span is current. The
+   * loud-vs-quiet judgement for a missing span (ordering regression vs tracing disabled) belongs to
+   * {@code SpanCaptureInterceptor}, which knows whether tracing is enabled; this carrier stays a
+   * dumb sink so both callers and tests can invoke it without a config dependency.
+   */
+  public static void storeSpanOnDuplicatedContext(Span span) {
+    io.vertx.core.Context ctx = Vertx.currentContext();
+    if (ctx == null || !VertxContext.isDuplicatedContext(ctx)) {
+      return;
+    }
+    if (span == null || !span.getSpanContext().isValid()) {
+      return;
+    }
+    ctx.putLocal(SPAN_LOCAL, span);
+  }
+
+  /**
+   * The gRPC server span carried on the current duplicated context, or {@link Span#getInvalid()}
+   * when none is present (off a duplicated context, or no span was captured for this call).
+   */
+  public static Span currentCallSpanOrInvalid() {
+    io.vertx.core.Context ctx = Vertx.currentContext();
+    if (ctx != null && VertxContext.isDuplicatedContext(ctx)) {
+      Object value = ctx.getLocal(SPAN_LOCAL);
+      if (value instanceof Span span) {
+        return span;
+      }
+    }
+    return Span.getInvalid();
   }
 
   /**
