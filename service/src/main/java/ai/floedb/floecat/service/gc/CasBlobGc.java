@@ -438,10 +438,12 @@ public class CasBlobGc {
         if (pinWalkFailed) {
           break; // reachability unprovable mid-flush: stop, the next tick retries
         }
-        // Residual-race detector for UNVERSIONED stores, mirroring the inline path's post-delete
-        // probe: a second re-mark sees the settled state; a candidate it now references AND whose
-        // key is actually gone was destroyed by a delete that degraded to unconditional — name it
-        // at ERROR so the operator knows exactly what to repair.
+        // Defensive post-delete corruption detector, mirroring the inline path's probe. The flush
+        // is only reached on a versioned store (unversioned/blank-version blobs fail closed at the
+        // top of runForAccount), where a version-targeted delete keeps any concurrent re-PUT as a
+        // new version — so this should never fire. If it does (a second re-mark now references a
+        // candidate AND its key is actually gone), a live blob was destroyed: name it at ERROR so
+        // the operator knows exactly what to repair.
         if (!deleted.isEmpty()) {
           var after = new HashSet<String>();
           if (remarkTable(accountId, tableId, after, pageSize)) {
