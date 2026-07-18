@@ -17,7 +17,7 @@
 package ai.floedb.floecat.storage.aws.s3;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -29,8 +29,11 @@ import java.util.Optional;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectResponse;
+import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
+import software.amazon.awssdk.services.s3.model.GetBucketVersioningResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 
@@ -93,7 +96,7 @@ class S3BlobStoreTest {
   }
 
   @Test
-  void blankVersionDegradesToUnconditionalDelete() {
+  void aBlankVersionIdIsRejectedNotDegradedToUnconditional() {
     List<DeleteObjectRequest> captured = new ArrayList<>();
     var client =
         new FakeS3Client() {
@@ -105,10 +108,69 @@ class S3BlobStoreTest {
         };
     S3BlobStore store = new S3BlobStore(client, Optional.of("bucket"));
 
-    assertTrue(store.delete("/k", ""));
+    assertThrows(IllegalArgumentException.class, () -> store.delete("/k", ""));
+    assertEquals(0, captured.size(), "no delete request was sent");
+  }
 
-    assertEquals(1, captured.size());
-    assertNull(captured.get(0).versionId(), "no version targeting on an unversioned observation");
+  @Test
+  void versionedDeletesAreSupportedOnlyWhileBucketVersioningIsEnabled() {
+    assertTrue(versioningStore(BucketVersioningStatus.ENABLED).supportsVersionedDeletes());
+    // Suspended buckets overwrite the "null" version in place — a targeted delete of it could
+    // destroy a concurrent re-write, so it must report unsupported (fail closed).
+    assertFalse(versioningStore(BucketVersioningStatus.SUSPENDED).supportsVersionedDeletes());
+    assertFalse(versioningStore(null).supportsVersionedDeletes());
+  }
+
+  @Test
+  void versioningStatusLookupFailureFailsClosed() {
+    var client =
+        new FakeS3Client() {
+          @Override
+          public GetBucketVersioningResponse getBucketVersioning(
+              GetBucketVersioningRequest request) {
+            throw new IllegalStateException("s3:GetBucketVersioning denied");
+          }
+        };
+    S3BlobStore store = new S3BlobStore(client, Optional.of("bucket"));
+
+    assertFalse(store.supportsVersionedDeletes());
+  }
+
+  @Test
+  void versioningStatusIsCachedAcrossCalls() {
+    int[] calls = {0};
+    var client =
+        new FakeS3Client() {
+          @Override
+          public GetBucketVersioningResponse getBucketVersioning(
+              GetBucketVersioningRequest request) {
+            calls[0]++;
+            return GetBucketVersioningResponse.builder()
+                .status(BucketVersioningStatus.ENABLED)
+                .build();
+          }
+        };
+    S3BlobStore store = new S3BlobStore(client, Optional.of("bucket"));
+
+    assertTrue(store.supportsVersionedDeletes());
+    assertTrue(store.supportsVersionedDeletes());
+    assertEquals(1, calls[0], "the versioning status is cached, not re-fetched per call");
+  }
+
+  private static S3BlobStore versioningStore(BucketVersioningStatus status) {
+    var client =
+        new FakeS3Client() {
+          @Override
+          public GetBucketVersioningResponse getBucketVersioning(
+              GetBucketVersioningRequest request) {
+            var b = GetBucketVersioningResponse.builder();
+            if (status != null) {
+              b.status(status);
+            }
+            return b.build();
+          }
+        };
+    return new S3BlobStore(client, Optional.of("bucket"));
   }
 
   @Test

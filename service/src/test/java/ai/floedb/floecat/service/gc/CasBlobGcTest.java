@@ -262,6 +262,51 @@ class CasBlobGcTest {
   }
 
   @Test
+  void sweepFailsClosedWhenTheStoreCannotDeleteByVersion() {
+    // Without immutable version identities (S3: bucket versioning not Enabled) every delete is
+    // the eng-floe/core#1904 race, so the pass must collect NOTHING — never fall back to
+    // unconditional deletes — and must report the skip so it is gauged, not silent.
+    var unversionedBlobs =
+        new InMemoryBlobStore() {
+          @Override
+          public boolean supportsVersionedDeletes() {
+            return false;
+          }
+        };
+    gc.blobStore = unversionedBlobs;
+    String orphan = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-orphan");
+    unversionedBlobs.put(orphan, "x".getBytes(StandardCharsets.UTF_8), "text/plain");
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(unversionedBlobs.head(orphan).isPresent(), "a fail-closed pass deletes nothing");
+    assertEquals(0, result.blobsDeleted());
+    assertTrue(result.deletesUnsupported(), "the skip surfaces for the scheduler gauge");
+  }
+
+  @Test
+  void aBlobWhoseHeaderLacksAVersionIdIsSkippedNotDeleted() {
+    // Capability says versioned deletes work, but this header carries no versionId: the pass
+    // cannot name the version it age-checked, so it must fail closed on this blob rather than
+    // fall back to an unconditional delete.
+    var versionlessHeads =
+        new InMemoryBlobStore() {
+          @Override
+          public java.util.Optional<ai.floedb.floecat.common.rpc.BlobHeader> head(String key) {
+            return super.head(key).map(h -> h.toBuilder().clearVersionId().build());
+          }
+        };
+    gc.blobStore = versionlessHeads;
+    String orphan = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-orphan");
+    versionlessHeads.put(orphan, "x".getBytes(StandardCharsets.UTF_8), "text/plain");
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(versionlessHeads.head(orphan).isPresent(), "the unnameable version is skipped");
+    assertEquals(0, result.blobsDeleted());
+  }
+
+  @Test
   void secondaryPointerDoesNotProtectBlob() {
     String blobUri = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-secondary");
     blobs.put(blobUri, "data".getBytes(StandardCharsets.UTF_8), "text/plain");

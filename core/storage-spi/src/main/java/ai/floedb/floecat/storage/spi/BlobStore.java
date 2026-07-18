@@ -32,17 +32,30 @@ public interface BlobStore {
   boolean delete(String uri);
 
   /**
+   * Whether {@link #delete(String, String)} acts on immutable version identities. {@code false}
+   * means a version-targeted delete cannot be trusted to leave a concurrent re-write intact — e.g.
+   * an S3 bucket whose versioning status is not {@code Enabled}: unversioned and suspended buckets
+   * overwrite the {@code "null"} version in place — so callers deleting for correctness must skip
+   * deleting instead. The default is {@code false}: fail closed.
+   */
+  default boolean supportsVersionedDeletes() {
+    return false;
+  }
+
+  /**
    * Deletes only the blob version that {@code versionId} names (as observed via {@link
    * BlobHeader#getVersionId()}). A different version — in particular one written concurrently after
    * the caller's {@link #head} — must survive, so a check-then-delete caller acts on exactly the
    * object it checked. Returns true when the named version was deleted (or already absent); false
    * when the store can tell the blob has moved past it and nothing was deleted.
    *
-   * <p>A blank {@code versionId} (store without versioning) and the default implementation both
-   * fall back to the unconditional {@link #delete(String)}; version-capable stores must override.
+   * <p>Callers must gate on {@link #supportsVersionedDeletes()}; a blank {@code versionId} is a
+   * caller bug and is rejected. There is deliberately NO fallback to the unconditional {@link
+   * #delete(String)} — that would silently reintroduce the delete-after-re-reference race this
+   * method exists to close.
    */
   default boolean delete(String uri, String versionId) {
-    return delete(uri);
+    throw new UnsupportedOperationException("versioned deletes not supported by this store");
   }
 
   void deletePrefix(String prefix);

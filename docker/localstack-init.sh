@@ -6,6 +6,10 @@ BUCKET="${FLOECAT_BLOB_S3_BUCKET:-floecat-dev}"
 TABLE="${FLOECAT_KV_TABLE:-floecat_pointers}"
 
 awslocal s3api create-bucket --bucket "${BUCKET}" --region "${REGION}" >/dev/null 2>&1 || true
+# CAS blob GC fails closed (collects nothing) unless the blob bucket's versioning is Enabled:
+# version-targeted deletes are what let a delete race a concurrent re-reference safely.
+awslocal s3api put-bucket-versioning --bucket "${BUCKET}" \
+  --versioning-configuration Status=Enabled >/dev/null 2>&1 || true
 awslocal s3api create-bucket --bucket "bucket" --region "${REGION}" >/dev/null 2>&1 || true
 awslocal s3api create-bucket --bucket "warehouse" --region "${REGION}" >/dev/null 2>&1 || true
 awslocal s3api create-bucket --bucket "yb-iceberg-tpcds" --region "${REGION}" >/dev/null 2>&1 || true
