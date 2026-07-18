@@ -70,29 +70,15 @@ public class ReconcileReadyIndexMaintenanceService {
     List<ReadyIndexRepairWork> pendingWork = new ArrayList<>();
     while (true) {
       if (System.currentTimeMillis() > deadlineMs) {
-        RepairFlushResult flush = flushReadyRepairChunks(pendingWork);
         return new ReadyIndexRepairStats(
-            false,
-            pages,
-            scanned,
-            jobsRepaired + flush.jobsRepaired(),
-            readyWrites + flush.readyWrites(),
-            chunks + flush.chunks(),
-            failedChunks + flush.failedChunks());
+            false, pages, scanned, jobsRepaired, readyWrites, chunks, failedChunks);
       }
       ReconcileJobIndexStore.StoredJobPage page =
           jobIndexStore.listStoredJobsInState(QUEUED_STATE, readyScanLimit, token);
       if (page.records().isEmpty()) {
-        RepairFlushResult flush = flushReadyRepairChunks(pendingWork);
         queuedStateScanToken = "";
         return new ReadyIndexRepairStats(
-            true,
-            pages,
-            scanned,
-            jobsRepaired + flush.jobsRepaired(),
-            readyWrites + flush.readyWrites(),
-            chunks + flush.chunks(),
-            failedChunks + flush.failedChunks());
+            true, pages, scanned, jobsRepaired, readyWrites, chunks, failedChunks);
       }
       for (StoredReconcileJob record : page.records()) {
         if (System.currentTimeMillis() > deadlineMs) {
@@ -137,47 +123,26 @@ public class ReconcileReadyIndexMaintenanceService {
 
       String nextToken = blankToEmpty(page.nextPageToken());
       if (nextToken.isBlank()) {
-        RepairFlushResult flush = flushReadyRepairChunks(pendingWork);
         queuedStateScanToken = "";
         return new ReadyIndexRepairStats(
-            true,
-            pages + 1,
-            scanned,
-            jobsRepaired + flush.jobsRepaired(),
-            readyWrites + flush.readyWrites(),
-            chunks + flush.chunks(),
-            failedChunks + flush.failedChunks());
+            true, pages + 1, scanned, jobsRepaired, readyWrites, chunks, failedChunks);
       }
       if (nextToken.equals(token)) {
-        RepairFlushResult flush = flushReadyRepairChunks(pendingWork);
         LOG.warn(
             "Reconcile ready-index repair pagination token did not advance; aborting scan to avoid"
                 + " livelock");
         queuedStateScanToken = "";
         return new ReadyIndexRepairStats(
-            true,
-            pages + 1,
-            scanned,
-            jobsRepaired + flush.jobsRepaired(),
-            readyWrites + flush.readyWrites(),
-            chunks + flush.chunks(),
-            failedChunks + flush.failedChunks());
+            true, pages + 1, scanned, jobsRepaired, readyWrites, chunks, failedChunks);
       }
       queuedStateScanToken = nextToken;
       token = nextToken;
       pages++;
       if (pages >= 10_000) {
-        RepairFlushResult flush = flushReadyRepairChunks(pendingWork);
         LOG.warn("Reconcile ready-index repair pagination hit safety page cap; aborting scan");
         queuedStateScanToken = "";
         return new ReadyIndexRepairStats(
-            true,
-            pages,
-            scanned,
-            jobsRepaired + flush.jobsRepaired(),
-            readyWrites + flush.readyWrites(),
-            chunks + flush.chunks(),
-            failedChunks + flush.failedChunks());
+            true, pages, scanned, jobsRepaired, readyWrites, chunks, failedChunks);
       }
     }
   }
