@@ -42,6 +42,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.GetItemResponse;
+import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
 import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
@@ -266,6 +267,43 @@ class DynamoReconcileJobIndexBackendTest {
   }
 
   @Test
+  void legacyLookupBackfillSkipsQueryWhenDurableMarkerExists() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.getItem(any(GetItemRequest.class)))
+        .thenReturn(
+            GetItemResponse.builder()
+                .item(
+                    Map.of(
+                        ATTR_PARTITION_KEY,
+                        AttributeValue.fromS("reconcile-job-maintenance"),
+                        ATTR_SORT_KEY,
+                        AttributeValue.fromS("legacy-lookup-v1")))
+                .build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+
+    var result = backend.migrateLegacyLookupEntries(25, "");
+
+    assertEquals(0, result.scanned());
+    verify(dynamoDb, never()).query(any(QueryRequest.class));
+  }
+
+  @Test
+  void completingLegacyLookupBackfillWritesDurableMarker() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.getItem(any(GetItemRequest.class))).thenReturn(GetItemResponse.builder().build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+
+    assertTrue(backend.completeLegacyLookupMigration());
+
+    ArgumentCaptor<PutItemRequest> captor = ArgumentCaptor.forClass(PutItemRequest.class);
+    verify(dynamoDb).putItem(captor.capture());
+    assertEquals("reconcile-job-maintenance", captor.getValue().item().get(ATTR_PARTITION_KEY).s());
+    assertEquals("legacy-lookup-v1", captor.getValue().item().get(ATTR_SORT_KEY).s());
+  }
+
+  @Test
   void lookupCheckAbsentChecksLookupPartition() {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
     when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
@@ -408,7 +446,7 @@ class DynamoReconcileJobIndexBackendTest {
                         AttributeValue.fromS(CANONICAL_KEY),
                         JobIndexBackendSupport.ATTR_BLOB_URI,
                         AttributeValue.fromS("inline:reconcile-job:e30"),
-                        "cleanup_manifest_complete",
+                        JobIndexBackendSupport.ATTR_CLEANUP_MANIFEST_COMPLETE,
                         AttributeValue.fromBool(true),
                         JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS,
                         AttributeValue.fromL(List.of(AttributeValue.fromS(LOOKUP_KEY))),
@@ -443,7 +481,7 @@ class DynamoReconcileJobIndexBackendTest {
     assertEquals(
         readyKey,
         item.get(JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS).l().getFirst().s());
-    assertTrue(item.get("cleanup_manifest_complete").bool());
+    assertTrue(item.get(JobIndexBackendSupport.ATTR_CLEANUP_MANIFEST_COMPLETE).bool());
     assertEquals(List.of(LOOKUP_KEY), manifest.indexPointerKeys());
     assertEquals(List.of(readyKey), manifest.readyPointerKeys());
     verify(dynamoDb, never()).scan(any(ScanRequest.class));

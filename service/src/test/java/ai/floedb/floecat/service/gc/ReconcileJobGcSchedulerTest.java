@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.gc;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -135,6 +136,27 @@ class ReconcileJobGcSchedulerTest {
     assertEquals(1, gc.cleanupMigrationCompletionCalls);
   }
 
+  @Test
+  void accountGcWaitsForLegacyCleanupMigrationCompletion() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a")), List.of());
+    RecordingGc gc = new RecordingGc();
+    gc.cleanupMigrationResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 2, 0, 0, "next"));
+    gc.cleanupMigrationResults.add(new ReconcileJobGc.CleanupMigrationResult(5, 1, 0, 0, ""));
+    ReconcileJobGcScheduler scheduler = new ReconcileJobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.reconcileJobGc = () -> gc;
+    scheduler.observability = new TestObservability();
+    scheduler.initMeters();
+
+    scheduler.tick();
+    assertTrue(gc.accountIds.isEmpty());
+
+    scheduler.tick();
+    assertEquals(List.of("acct-a"), gc.accountIds);
+  }
+
   private static Account account(String accountId) {
     return Account.newBuilder()
         .setResourceId(
@@ -172,6 +194,11 @@ class ReconcileJobGcSchedulerTest {
       return lookupMigrationResults.isEmpty()
           ? new LookupMigrationResult(0, 0, 0, 0, "")
           : lookupMigrationResults.removeFirst();
+    }
+
+    @Override
+    public boolean completeLegacyLookupMigration() {
+      return true;
     }
 
     @Override

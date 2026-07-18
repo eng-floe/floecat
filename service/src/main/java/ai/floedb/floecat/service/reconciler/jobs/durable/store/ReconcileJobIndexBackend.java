@@ -35,6 +35,10 @@ public interface ReconcileJobIndexBackend {
     return new LegacyLookupMigrationPage(0, 0, 0, 0, "");
   }
 
+  default boolean completeLegacyLookupMigration() {
+    return true;
+  }
+
   default LegacyCleanupMigrationPage migrateLegacyCleanupManifests(int limit, String pageToken) {
     return new LegacyCleanupMigrationPage(0, 0, 0, 0, "");
   }

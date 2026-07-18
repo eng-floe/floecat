@@ -124,6 +124,10 @@ public class ReconcileJobGc {
         page.scanned(), page.migrated(), page.conflicted(), page.retryable(), page.nextPageToken());
   }
 
+  public boolean completeLegacyLookupMigration() {
+    return jobIndexBackend.completeLegacyLookupMigration();
+  }
+
   private enum RootSummaryReadStatus {
     READABLE,
     UNREADABLE
@@ -560,6 +564,9 @@ public class ReconcileJobGc {
             new CanonicalPointerSnapshot(
                 canonical.pointerKey(), canonical.blobUri(), canonical.version()));
     if (deleteBatch.writes().isEmpty()) {
+      // Dynamo GC is held behind the durable bulk-migration completion marker, so production
+      // canonical rows reach this point with a complete manifest. Direct discovery remains for
+      // non-Dynamo backends that can reconstruct legacy references without a table scan.
       ReconcileJobIndexCleanupManifest discovered =
           jobIndexBackend.discoverLegacyCleanupManifest(canonical.pointerKey());
       deleteBatch =

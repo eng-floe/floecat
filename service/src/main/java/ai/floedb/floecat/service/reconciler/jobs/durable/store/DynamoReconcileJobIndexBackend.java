@@ -57,10 +57,11 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   private static final String GENERIC_POINTER_GLOBAL_PK = "_ACCOUNT_DIR";
   private static final String ATTR_GENERIC_BLOB_URI = "blob_uri";
   private static final String ATTR_GENERIC_REFERENCE_KIND = "reference_kind";
-  private static final String ATTR_CLEANUP_MANIFEST_COMPLETE = "cleanup_manifest_complete";
   private static final String LEGACY_CLEANUP_MARKER_PARTITION = "reconcile-job-maintenance";
   private static final String LEGACY_CLEANUP_MARKER_SORT = "legacy-cleanup-manifest-v1";
   private static final String KIND_LEGACY_CLEANUP_MARKER = "ReconcileJobLegacyCleanupMigration";
+  private static final String LEGACY_LOOKUP_MARKER_SORT = "legacy-lookup-v1";
+  private static final String KIND_LEGACY_LOOKUP_MARKER = "ReconcileJobLegacyLookupMigration";
 
   @Inject Instance<DynamoDbClientManager> dynamoDbClientManager;
   private final RefreshingDynamoCaller dynamoCaller = new RefreshingDynamoCaller();
@@ -69,6 +70,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   String table = "floecat_pointers";
 
   private volatile boolean legacyCleanupMigrationMarkedComplete;
+  private volatile boolean legacyLookupMigrationMarkedComplete;
 
   public DynamoReconcileJobIndexBackend() {}
 
@@ -152,6 +154,9 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
 
   @Override
   public LegacyLookupMigrationPage migrateLegacyLookupEntries(int limit, String pageToken) {
+    if (legacyLookupMigrationMarkedComplete()) {
+      return new LegacyLookupMigrationPage(0, 0, 0, 0, "");
+    }
     JobIndexQueryPage page =
         listIndexPointers(
             JobIndexBackendSupport.legacyLookupPartitionKey(),
@@ -175,6 +180,26 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     }
     return new LegacyLookupMigrationPage(
         page.entries().size(), migrated, conflicted, retryable, page.nextPageToken());
+  }
+
+  @Override
+  public boolean completeLegacyLookupMigration() {
+    if (legacyLookupMigrationMarkedComplete()) {
+      return true;
+    }
+    Map<String, AttributeValue> item = new HashMap<>();
+    item.put(ATTR_PARTITION_KEY, AttributeValue.fromS(LEGACY_CLEANUP_MARKER_PARTITION));
+    item.put(ATTR_SORT_KEY, AttributeValue.fromS(LEGACY_LOOKUP_MARKER_SORT));
+    item.put(ATTR_KIND, AttributeValue.fromS(KIND_LEGACY_LOOKUP_MARKER));
+    try {
+      dynamoCaller.callVoid(
+          dynamoDbClientManager,
+          client -> client.putItem(PutItemRequest.builder().tableName(table).item(item).build()));
+      legacyLookupMigrationMarkedComplete = true;
+      return true;
+    } catch (RuntimeException ignored) {
+      return false;
+    }
   }
 
   @Override
@@ -301,7 +326,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     if (!response.hasItem() || response.item().isEmpty()) {
       return ReconcileJobIndexCleanupManifest.EMPTY;
     }
-    if (!boolAttr(response.item(), ATTR_CLEANUP_MANIFEST_COMPLETE)
+    if (!boolAttr(response.item(), JobIndexBackendSupport.ATTR_CLEANUP_MANIFEST_COMPLETE)
         && !legacyCleanupMigrationMarkedComplete()) {
       return ReconcileJobIndexCleanupManifest.EMPTY;
     }
@@ -463,6 +488,33 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     }
   }
 
+  private boolean legacyLookupMigrationMarkedComplete() {
+    if (legacyLookupMigrationMarkedComplete) {
+      return true;
+    }
+    try {
+      var response =
+          dynamoCaller.call(
+              dynamoDbClientManager,
+              client ->
+                  client.getItem(
+                      GetItemRequest.builder()
+                          .tableName(table)
+                          .consistentRead(true)
+                          .key(
+                              Map.of(
+                                  ATTR_PARTITION_KEY,
+                                  AttributeValue.fromS(LEGACY_CLEANUP_MARKER_PARTITION),
+                                  ATTR_SORT_KEY,
+                                  AttributeValue.fromS(LEGACY_LOOKUP_MARKER_SORT)))
+                          .build()));
+      legacyLookupMigrationMarkedComplete = response.hasItem() && !response.item().isEmpty();
+      return legacyLookupMigrationMarkedComplete;
+    } catch (RuntimeException ignored) {
+      return false;
+    }
+  }
+
   private String canonicalPointerForCleanupItem(Map<String, AttributeValue> item) {
     String kind = stringAttr(item, ATTR_KIND);
     String pointerKey = stringAttr(item, JobIndexBackendSupport.ATTR_POINTER_KEY);
@@ -518,7 +570,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     if (!canonicalPointerKey.equals(stringAttr(item, JobIndexBackendSupport.ATTR_POINTER_KEY))) {
       return LegacyCleanupMergeOutcome.CONFLICTED;
     }
-    if (boolAttr(item, ATTR_CLEANUP_MANIFEST_COMPLETE)) {
+    if (boolAttr(item, JobIndexBackendSupport.ATTR_CLEANUP_MANIFEST_COMPLETE)) {
       return LegacyCleanupMergeOutcome.UNCHANGED;
     }
 
@@ -540,7 +592,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     names.put("#pointer", JobIndexBackendSupport.ATTR_POINTER_KEY);
     names.put("#idx", JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS);
     names.put("#ready", JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS);
-    names.put("#complete", ATTR_CLEANUP_MANIFEST_COMPLETE);
+    names.put("#complete", JobIndexBackendSupport.ATTR_CLEANUP_MANIFEST_COMPLETE);
     Map<String, AttributeValue> values = new HashMap<>();
     values.put(":v", AttributeValue.fromN(Long.toString(longAttr(item, ATTR_VERSION))));
     values.put(":canonical", AttributeValue.fromS(canonicalPointerKey));
@@ -1166,7 +1218,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     item.put(JobIndexBackendSupport.ATTR_BLOB_URI, AttributeValue.fromS(upsert.blobUri()));
     item.put(JobIndexBackendSupport.ATTR_ACCOUNT_ID, AttributeValue.fromS(key.accountSegment()));
     item.put(JobIndexBackendSupport.ATTR_JOB_ID, AttributeValue.fromS(key.jobSegment()));
-    item.put(ATTR_CLEANUP_MANIFEST_COMPLETE, AttributeValue.fromBool(true));
+    item.put(JobIndexBackendSupport.ATTR_CLEANUP_MANIFEST_COMPLETE, AttributeValue.fromBool(true));
     putStringList(
         item,
         JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS,

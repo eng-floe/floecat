@@ -681,6 +681,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     item.put(JobIndexBackendSupport.ATTR_BLOB_URI, AttributeValue.fromS(upsert.blobUri()));
     item.put(JobIndexBackendSupport.ATTR_ACCOUNT_ID, AttributeValue.fromS(key.accountSegment()));
     item.put(JobIndexBackendSupport.ATTR_JOB_ID, AttributeValue.fromS(key.jobSegment()));
+    item.put(JobIndexBackendSupport.ATTR_CLEANUP_MANIFEST_COMPLETE, AttributeValue.fromBool(true));
     putStringList(
         item,
         JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS,

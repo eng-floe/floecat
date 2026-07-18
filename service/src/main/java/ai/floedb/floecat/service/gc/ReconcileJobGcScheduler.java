@@ -238,9 +238,10 @@ public class ReconcileJobGcScheduler {
         legacyLookupMigrationToken =
             migrationResult.nextToken() == null ? "" : migrationResult.nextToken();
         if (legacyLookupMigrationToken.isBlank()) {
-          legacyLookupMigrationComplete =
+          boolean passComplete =
               legacyLookupScanned == 0
                   || (legacyLookupMigratedThisPass == 0 && legacyLookupRetryableThisPass == 0);
+          legacyLookupMigrationComplete = passComplete && gc.completeLegacyLookupMigration();
           legacyLookupMigratedThisPass = 0;
           legacyLookupRetryableThisPass = 0;
         }
@@ -252,6 +253,13 @@ public class ReconcileJobGcScheduler {
             legacyLookupConflicted, Tag.of(TagKey.RESULT, "legacy-lookup-conflicted"));
         gcMetrics.recordCollection(
             legacyLookupRetryable, Tag.of(TagKey.RESULT, "legacy-lookup-retryable"));
+      }
+
+      // Legacy manifests are populated incrementally. Do not run GC until the durable completion
+      // marker makes the entire backfill visible, otherwise an unreadable job could be deleted
+      // using a partial footprint.
+      if (!legacyCleanupMigrationComplete) {
+        return;
       }
 
       long readyStart = System.nanoTime();

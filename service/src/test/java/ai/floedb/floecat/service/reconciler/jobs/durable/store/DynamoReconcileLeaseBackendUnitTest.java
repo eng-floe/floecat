@@ -105,6 +105,38 @@ class DynamoReconcileLeaseBackendUnitTest {
   }
 
   @Test
+  void canonicalUpsertPreservesCleanupManifestCompleteness() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
+        .thenReturn(TransactWriteItemsResponse.builder().build());
+    DynamoReconcileLeaseBackend backend = new DynamoReconcileLeaseBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+
+    boolean committed =
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        CANONICAL_KEY,
+                        1L,
+                        "inline:reconcile-job:e30",
+                        PointerReferenceKind.PRK_INLINE_JSON,
+                        new ReconcileJobIndexCleanupManifest(List.of(LOOKUP_KEY), List.of()))),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty()),
+            ReconcileLeaseBackend.LeaseWriteBatch.empty());
+
+    assertTrue(committed);
+    ArgumentCaptor<TransactWriteItemsRequest> captor =
+        ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
+    verify(dynamoDb).transactWriteItems(captor.capture());
+    var item = captor.getValue().transactItems().getFirst().put().item();
+    assertTrue(item.get(JobIndexBackendSupport.ATTR_CLEANUP_MANIFEST_COMPLETE).bool());
+    assertEquals(
+        LOOKUP_KEY,
+        item.get(JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS).l().getFirst().s());
+  }
+
+  @Test
   void rejectsCombinedTransactionsOverDynamoLimit() {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
     DynamoReconcileLeaseBackend backend = new DynamoReconcileLeaseBackend();
