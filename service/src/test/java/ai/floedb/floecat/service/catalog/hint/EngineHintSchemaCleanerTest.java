@@ -74,8 +74,12 @@ class EngineHintSchemaCleanerTest {
     return FieldMask.newBuilder().addPaths("upstream.pointer").build();
   }
 
-  private static FieldMask nonSchemaMask() {
-    return FieldMask.newBuilder().addPaths("display_name").build();
+  private static FieldMask mask(String... paths) {
+    FieldMask.Builder b = FieldMask.newBuilder();
+    for (String p : paths) {
+      b.addPaths(p);
+    }
+    return b.build();
   }
 
   private static HintClearDecision none() {
@@ -132,11 +136,21 @@ class EngineHintSchemaCleanerTest {
   // ----------------------
 
   @Test
-  void shouldClearHints_schemaAndUpstreamPaths() {
+  void shouldClearHints_firesForEveryShapePath() {
     assertThat(cleaner.shouldClearHints(schemaMask())).isTrue();
     assertThat(cleaner.shouldClearHints(upstreamMask())).isTrue();
     assertThat(cleaner.shouldClearHints(schemaColumnsMask())).isTrue();
-    assertThat(cleaner.shouldClearHints(nonSchemaMask())).isFalse();
+    // Shape fields beyond schema/upstream gate too — name/namespace/catalog are part of the
+    // relation identity hints encode, and view shape fields must reach the diff as well.
+    assertThat(cleaner.shouldClearHints(mask("display_name"))).isTrue();
+    assertThat(cleaner.shouldClearHints(mask("namespace_id"))).isTrue();
+    assertThat(cleaner.shouldClearHints(mask("catalog_id"))).isTrue();
+    assertThat(cleaner.shouldClearHints(mask("sql_definitions"))).isTrue();
+    assertThat(cleaner.shouldClearHints(mask("output_columns"))).isTrue();
+    // Non-shape fields never gate.
+    assertThat(cleaner.shouldClearHints(mask("properties"))).isFalse();
+    assertThat(cleaner.shouldClearHints(mask("description"))).isFalse();
+    assertThat(cleaner.shouldClearHints(mask("properties", "description"))).isFalse();
   }
 
   @Test
@@ -424,5 +438,96 @@ class EngineHintSchemaCleanerTest {
     cleaner.cleanTableHints(builder, reconcileMask(), current, builder.build());
 
     assertThat(builder.getPropertiesMap().keySet()).containsExactlyInAnyOrder("storage_location");
+  }
+
+  // display_name/namespace_id-masked updates never reached the cleaner before (the gate only
+  // fired on schema_json/upstream paths — a pre-existing gap): a rename left stale hints behind.
+  @Test
+  void displayNameValueChange_withDisplayNameMask_clearsHints() {
+    Table current = tableWithShapeAndHints().build();
+    Table.Builder builder = current.toBuilder().setDisplayName("renamed");
+    Mockito.when(extension.decideHintClear(Mockito.any(), Mockito.any()))
+        .thenReturn(new HintClearDecision(true, true, Set.of(), Set.of(), Set.of()));
+
+    cleaner.cleanTableHints(builder, mask("display_name"), current, builder.build());
+
+    assertThat(builder.getPropertiesMap().keySet()).containsExactlyInAnyOrder("storage_location");
+  }
+
+  @Test
+  void namespaceValueChange_withNamespaceMask_clearsHints() {
+    Table current = tableWithShapeAndHints().build();
+    Table.Builder builder =
+        current.toBuilder()
+            .setNamespaceId(
+                ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("other-ns")
+                    .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_NAMESPACE));
+    Mockito.when(extension.decideHintClear(Mockito.any(), Mockito.any()))
+        .thenReturn(new HintClearDecision(true, true, Set.of(), Set.of(), Set.of()));
+
+    cleaner.cleanTableHints(builder, mask("namespace_id"), current, builder.build());
+
+    assertThat(builder.getPropertiesMap().keySet()).containsExactlyInAnyOrder("storage_location");
+  }
+
+  @Test
+  void displayNameMask_contentIdentical_keepsHintsAndSkipsExtension() {
+    Table current = tableWithShapeAndHints().build();
+    Table.Builder builder = current.toBuilder();
+
+    cleaner.cleanTableHints(builder, mask("display_name"), current, builder.build());
+
+    assertThat(builder.build()).isEqualTo(current);
+    Mockito.verifyNoInteractions(extension);
+  }
+
+  private static ai.floedb.floecat.catalog.rpc.View.Builder viewWithHints() {
+    return ai.floedb.floecat.catalog.rpc.View.newBuilder()
+        .setResourceId(
+            ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+                .setAccountId("acct")
+                .setId("view-1")
+                .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_VIEW))
+        .setDisplayName("v")
+        .addSqlDefinitions(
+            ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                .setSql("select 1")
+                .setDialect("floe"))
+        .putProperties("custom", "keep")
+        .putProperties(
+            EngineHintMetadata.tableHintKey("floe.relation+proto"), encoded("floedb", "1", 4));
+  }
+
+  // View updates could never reach the cleaner before: schema_json/upstream are not valid
+  // UpdateView mask paths, so the old gate made cleanViewHints dead code in the service path.
+  @Test
+  void viewSqlDefinitionChange_clearsHints() {
+    ai.floedb.floecat.catalog.rpc.View current = viewWithHints().build();
+    ai.floedb.floecat.catalog.rpc.View.Builder builder =
+        current.toBuilder()
+            .clearSqlDefinitions()
+            .addSqlDefinitions(
+                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                    .setSql("select 2")
+                    .setDialect("floe"));
+    Mockito.when(extension.decideHintClear(Mockito.any(), Mockito.any()))
+        .thenReturn(new HintClearDecision(true, true, Set.of(), Set.of(), Set.of()));
+
+    cleaner.cleanViewHints(builder, mask("sql_definitions"), current, builder.build());
+
+    assertThat(builder.getPropertiesMap().keySet()).containsExactlyInAnyOrder("custom");
+  }
+
+  @Test
+  void viewContentIdentical_keepsHintsAndSkipsExtension() {
+    ai.floedb.floecat.catalog.rpc.View current = viewWithHints().build();
+    ai.floedb.floecat.catalog.rpc.View.Builder builder = current.toBuilder();
+
+    cleaner.cleanViewHints(builder, mask("sql_definitions"), current, builder.build());
+
+    assertThat(builder.build()).isEqualTo(current);
+    Mockito.verifyNoInteractions(extension);
   }
 }
