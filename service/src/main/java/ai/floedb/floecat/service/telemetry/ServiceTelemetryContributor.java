@@ -313,6 +313,12 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         "Accounts whose CAS GC delete phase was poisoned in the last tick.");
     add(
         defs,
+        ServiceMetrics.Gc.CAS_DELETE_UNSUPPORTED_ACCOUNTS,
+        gcRequired,
+        gcAllowed,
+        "Accounts whose CAS GC sweep was skipped because immutable version deletes are unsupported.");
+    add(
+        defs,
         ServiceMetrics.Gc.CAS_OLDEST_SWEEP_AGE,
         gcRequired,
         gcAllowed,

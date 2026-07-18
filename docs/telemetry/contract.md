@@ -68,6 +68,7 @@ This lists all metrics currently available in the repository:
 | floecat.service.flight.inflight | GAUGE |  | v1 | Current number of in-flight Flight streams. | component, operation | component, operation, resource |
 | floecat.service.flight.latency | TIMER | ms | v1 | Flight request latency by operation, table, and terminal status. | component, operation, status | component, operation, reason, resource, status |
 | floecat.service.flight.requests.total | COUNTER |  | v1 | Total Flight requests by operation, table, and terminal status. | component, operation, status | component, operation, reason, resource, status |
+| floecat.service.gc.cas.delete_unsupported_accounts | GAUGE |  | v1 | Accounts whose CAS GC sweep was skipped because immutable version deletes are unsupported. | component, operation | component, operation |
 | floecat.service.gc.cas.oldest_sweep_age | GAUGE | ms | v1 | Age in milliseconds of the least-recently cleanly-swept CAS GC account. | component, operation | component, operation |
 | floecat.service.gc.cas.poisoned_accounts | GAUGE |  | v1 | Accounts whose CAS GC delete phase was poisoned in the last tick. | component, operation | component, operation |
 | floecat.service.gc.reconcile_jobs.account_page.index | GAUGE | count | v1 | Current reconcile job GC index within the cached account page. | component, operation | component, operation |
@@ -109,6 +110,7 @@ This lists all metrics currently available in the repository:
 | floecat.service.stats.batch_groups.total | COUNTER |  | v1 | Stats batch request groups processed. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
 | floecat.service.stats.batch_items.total | COUNTER |  | v1 | Stats batch item counters (untagged series tracks submitted items; tagged series with result=* tracks per-outcome items; query with result tag filters to avoid double-counting). | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
 | floecat.service.stats.engine_batch_calls.total | COUNTER |  | v1 | Stats engine batch capture calls. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
+| floecat.service.stats.planner_lookup_outcomes.total | COUNTER |  | v1 | Planner stats lookup outcomes by the ladder rung that served or failed each target. | component, operation, result | component, operation, result |
 | floecat.service.stats.store_hits.total | COUNTER |  | v1 | Stats store hit count for batch resolution. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
 | floecat.service.stats.store_misses.total | COUNTER |  | v1 | Stats store miss count for batch resolution. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
 | floecat.service.stats.sync.latency | TIMER | ms | v1 | End-to-end latency of a single sync-first resolution attempt including store reads. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
