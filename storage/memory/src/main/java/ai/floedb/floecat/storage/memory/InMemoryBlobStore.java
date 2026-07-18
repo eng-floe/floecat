@@ -130,6 +130,11 @@ public class InMemoryBlobStore implements BlobStore {
       throw new IllegalArgumentException("versioned delete requires a versionId: " + uri);
     }
     final String k = normalize(uri);
+    if (!map.containsKey(k)) {
+      // Contract (and S3 behavior, which maps the 404 to true): the named version being already
+      // absent counts as deleted — the caller's goal state holds.
+      return true;
+    }
     boolean[] removed = {false};
     map.computeIfPresent(
         k,
