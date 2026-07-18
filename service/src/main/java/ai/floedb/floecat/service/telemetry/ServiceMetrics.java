@@ -312,6 +312,20 @@ public final class ServiceMetrics {
             "floecat.service.gc.cas.poisoned_accounts", MetricType.GAUGE, "", CONTRACT, "service");
 
     /**
+     * Accounts whose sweep was skipped in the last tick because the blob store cannot delete by
+     * immutable version (on S3: bucket versioning not Enabled, or s3:GetBucketVersioning denied).
+     * Fail-closed is safe but collects NOTHING — a persistently non-zero value means the bucket or
+     * IAM policy is misconfigured and garbage is accumulating.
+     */
+    public static final MetricId CAS_DELETE_UNSUPPORTED_ACCOUNTS =
+        new MetricId(
+            "floecat.service.gc.cas.delete_unsupported_accounts",
+            MetricType.GAUGE,
+            "",
+            CONTRACT,
+            "service");
+
+    /**
      * Age in milliseconds of the LEAST-recently cleanly-swept account — the direct "GC is N behind"
      * signal. It climbs when an account is poisoned or is starved by the per-tick deadline, and
      * resets as each account completes a clean sweep.

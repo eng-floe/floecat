@@ -62,6 +62,7 @@ public class CasBlobGcScheduler {
   // climbs — the direct "GC is falling behind on this account" signal.
   private final Map<String, Long> lastCleanSweepMs = new ConcurrentHashMap<>();
   private final AtomicInteger poisonedAccountsLastTick = new AtomicInteger(0);
+  private final AtomicInteger deleteUnsupportedAccountsLastTick = new AtomicInteger(0);
   private ScheduledTaskMetrics taskMetrics;
 
   private volatile boolean stopping;
@@ -83,6 +84,12 @@ public class CasBlobGcScheduler {
         ServiceMetrics.Gc.CAS_POISONED_ACCOUNTS,
         () -> (double) poisonedAccountsLastTick.get(),
         "Accounts whose CAS GC delete phase was poisoned in the last tick",
+        Tag.of(TagKey.COMPONENT, "service"),
+        Tag.of(TagKey.OPERATION, "gc_cas"));
+    observability.gauge(
+        ServiceMetrics.Gc.CAS_DELETE_UNSUPPORTED_ACCOUNTS,
+        () -> (double) deleteUnsupportedAccountsLastTick.get(),
+        "Accounts whose CAS GC sweep was skipped: store cannot delete by immutable version",
         Tag.of(TagKey.COMPONENT, "service"),
         Tag.of(TagKey.OPERATION, "gc_cas"));
     observability.gauge(
@@ -147,6 +154,7 @@ public class CasBlobGcScheduler {
 
     long tickStart = System.nanoTime();
     int poisonedThisTick = 0;
+    int deleteUnsupportedThisTick = 0;
     try {
       List<Account> allAccounts = fetchAllAccounts(accountRepo, accountsPageSize);
 
@@ -168,7 +176,11 @@ public class CasBlobGcScheduler {
         long accountStart = System.nanoTime();
         String accountId = account.getResourceId().getId();
         var result = gc.runForAccount(accountId);
-        if (result.poisoned()) {
+        if (result.deletesUnsupported()) {
+          // Fail-closed skip (store cannot delete by immutable version): nothing was collected,
+          // so the account's backlog age must keep climbing, exactly like a poisoned sweep.
+          deleteUnsupportedThisTick++;
+        } else if (result.poisoned()) {
           poisonedThisTick++;
         } else {
           // A clean, fully-reached sweep resets this account's backlog age.
@@ -186,6 +198,7 @@ public class CasBlobGcScheduler {
       }
     } finally {
       poisonedAccountsLastTick.set(poisonedThisTick);
+      deleteUnsupportedAccountsLastTick.set(deleteUnsupportedThisTick);
       gcMetrics.recordPause(
           Duration.ofNanos(System.nanoTime() - tickStart), Tag.of(TagKey.RESULT, "tick"));
       lastTickEndMs.set(System.currentTimeMillis());

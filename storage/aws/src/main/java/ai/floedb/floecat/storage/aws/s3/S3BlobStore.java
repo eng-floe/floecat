@@ -37,11 +37,14 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.core.sync.ResponseTransformer;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
@@ -54,11 +57,17 @@ import software.amazon.awssdk.services.s3.model.S3Exception;
 @Singleton
 @IfBuildProperty(name = "floecat.blob", stringValue = "s3")
 public class S3BlobStore implements BlobStore {
+  private static final Logger LOG = Logger.getLogger(S3BlobStore.class);
   private static final String META_SHA256 = "floecat-sha256";
   private static final String META_CREATED_AT = "floecat-created-at";
+  private static final long VERSIONING_STATUS_TTL_NANOS = java.time.Duration.ofMinutes(5).toNanos();
 
   private final S3Caller s3;
   private final String bucket;
+  // Cached GetBucketVersioning outcome (a bucket's status changes rarely); refreshed on TTL
+  // expiry. A lookup failure is cached as false — fail closed — and retried after the TTL.
+  private volatile Boolean versionedDeletesSupported;
+  private volatile long versionedDeletesCheckedAtNanos;
 
   @Inject
   public S3BlobStore(
@@ -122,7 +131,10 @@ public class S3BlobStore implements BlobStore {
               .setEtag(metaSha == null ? "" : metaSha)
               .setCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
               .setLastModifiedAt(com.google.protobuf.util.Timestamps.fromMillis(lastModifiedMs))
-              .setContentLength((int) Math.min(Integer.MAX_VALUE, storedBytes));
+              .setContentLength((int) Math.min(Integer.MAX_VALUE, storedBytes))
+              // Null on unversioned buckets; the literal "null" versionId of objects written
+              // before versioning was enabled is a real, targetable version and passes through.
+              .setVersionId(r.versionId() == null ? "" : r.versionId());
 
       return Optional.of(hb.build());
     } catch (S3Exception e) {
@@ -272,6 +284,83 @@ public class S3BlobStore implements BlobStore {
       throw new StorageAbortRetryableException(msg("DELETE", k, e.getMessage()));
     } catch (RuntimeException e) {
       throw mapClosedPoolOrRethrow("DELETE", k, e);
+    }
+  }
+
+  /**
+   * Version-targeted deletes are safe only while the bucket's versioning status is {@code Enabled}:
+   * every PUT then mints a fresh immutable versionId (pre-versioning objects keep their literal
+   * {@code "null"} id as a noncurrent version, so even those are targetable). Unversioned AND
+   * suspended buckets overwrite the {@code "null"} version in place, which reintroduces the
+   * delete-after-re-reference race — so both report unsupported and the CAS GC fails closed.
+   */
+  @Override
+  public boolean supportsVersionedDeletes() {
+    Boolean cached = versionedDeletesSupported;
+    if (cached != null
+        && System.nanoTime() - versionedDeletesCheckedAtNanos < VERSIONING_STATUS_TTL_NANOS) {
+      return cached;
+    }
+    boolean enabled;
+    try {
+      var status =
+          s3.call(
+                  c ->
+                      c.getBucketVersioning(
+                          GetBucketVersioningRequest.builder().bucket(bucket).build()))
+              .status();
+      enabled = BucketVersioningStatus.ENABLED.equals(status);
+      if (!enabled) {
+        LOG.warnf(
+            "bucket %s versioning status is %s; version-targeted deletes disabled (fail closed)",
+            bucket, status == null ? "not enabled" : status);
+      }
+    } catch (RuntimeException e) {
+      // Without s3:GetBucketVersioning we cannot prove version identities are immutable: fail
+      // closed, and retry after the TTL so a fixed policy recovers without a restart.
+      LOG.warnf(
+          e,
+          "could not read bucket %s versioning status; version-targeted deletes disabled"
+              + " (fail closed)",
+          bucket);
+      enabled = false;
+    }
+    versionedDeletesSupported = enabled;
+    versionedDeletesCheckedAtNanos = System.nanoTime();
+    return enabled;
+  }
+
+  @Override
+  public boolean delete(String key, String versionId) {
+    if (versionId == null || versionId.isBlank()) {
+      // Never degrade to the unconditional delete — that silently reintroduces the
+      // delete-after-re-reference race. A blank version is a caller bug.
+      throw new IllegalArgumentException("versioned delete requires a versionId: " + key);
+    }
+    final String k = normalize(key);
+    try {
+      // Version-targeted DeleteObject: a HARD delete of exactly this version (no delete marker).
+      // A version PUT concurrently after the caller's HEAD is untouched and stays current.
+      // (SDK 2.44.4 also models If-Match conditional deletes, but S3 supports those only on
+      // directory buckets, so versionId targeting is the mechanism here.)
+      s3.call(
+          c ->
+              c.deleteObject(
+                  DeleteObjectRequest.builder()
+                      .bucket(bucket)
+                      .key(k)
+                      .versionId(versionId)
+                      .build()));
+      return true;
+    } catch (S3Exception e) {
+      if (e.statusCode() == 404) {
+        return true;
+      }
+      throw mapAndWrap("DELETE_VERSION", k, e);
+    } catch (SdkClientException e) {
+      throw new StorageAbortRetryableException(msg("DELETE_VERSION", k, e.getMessage()));
+    } catch (RuntimeException e) {
+      throw mapClosedPoolOrRethrow("DELETE_VERSION", k, e);
     }
   }
 

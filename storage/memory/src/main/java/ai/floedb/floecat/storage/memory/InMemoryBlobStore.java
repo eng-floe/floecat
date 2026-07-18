@@ -43,14 +43,28 @@ public class InMemoryBlobStore implements BlobStore {
   private static final class Blob {
     final byte[] data;
     final BlobHeader hdr;
+    // Write counter emulating S3 object versions (exposed as BlobHeader.versionId) so
+    // version-targeted delete semantics are deterministically testable. Ids are STORE-wide unique
+    // and never reused, so a delete-and-recreate of a key cannot resurrect an old id (the ABA a
+    // stale versioned delete would otherwise exploit).
+    final long version;
 
-    Blob(byte[] d, BlobHeader h) {
+    Blob(byte[] d, BlobHeader h, long version) {
       this.data = d;
       this.hdr = h;
+      this.version = version;
     }
   }
 
   private final Map<String, Blob> map = new ConcurrentHashMap<>();
+  private final java.util.concurrent.atomic.AtomicLong versionCounter =
+      new java.util.concurrent.atomic.AtomicLong();
+
+  /** Models an S3 bucket with versioning Enabled: ids are immutable, unique, never reused. */
+  @Override
+  public boolean supportsVersionedDeletes() {
+    return true;
+  }
 
   @Override
   public void put(String uri, byte[] bytes, String contentType) {
@@ -70,6 +84,7 @@ public class InMemoryBlobStore implements BlobStore {
           final BlobHeader prevHdr = prev == null ? null : prev.hdr;
           final Timestamp createdAt =
               prevHdr == null ? Timestamps.fromMillis(now) : prevHdr.getCreatedAt();
+          final long version = versionCounter.incrementAndGet();
 
           BlobHeader.Builder hb =
               BlobHeader.newBuilder()
@@ -77,11 +92,12 @@ public class InMemoryBlobStore implements BlobStore {
                   .setEtag(etag)
                   .setCreatedAt(createdAt)
                   .setContentLength(copy.length)
-                  .setLastModifiedAt(Timestamps.fromMillis(now));
+                  .setLastModifiedAt(Timestamps.fromMillis(now))
+                  .setVersionId(Long.toString(version));
 
           addTag(hb, TAG_CONTENT_TYPE, ct);
 
-          return new Blob(copy, hb.build());
+          return new Blob(copy, hb.build(), version);
         });
   }
 
@@ -105,6 +121,28 @@ public class InMemoryBlobStore implements BlobStore {
   public boolean delete(String uri) {
     uri = normalize(uri);
     return map.remove(uri) != null;
+  }
+
+  @Override
+  public boolean delete(String uri, String versionId) {
+    if (versionId == null || versionId.isBlank()) {
+      // Match the S3 store: never degrade to the unconditional delete.
+      throw new IllegalArgumentException("versioned delete requires a versionId: " + uri);
+    }
+    final String k = normalize(uri);
+    boolean[] removed = {false};
+    map.computeIfPresent(
+        k,
+        (key, blob) -> {
+          // Only the named version dies; a write that landed after the caller's head() minted a
+          // higher version and must survive — mirroring an S3 version-targeted DeleteObject.
+          if (Long.toString(blob.version).equals(versionId)) {
+            removed[0] = true;
+            return null;
+          }
+          return blob;
+        });
+    return removed[0];
   }
 
   @Override

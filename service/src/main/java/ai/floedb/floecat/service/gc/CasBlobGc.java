@@ -70,9 +70,22 @@ public class CasBlobGc {
       int blobsDeleted,
       int referenced,
       int tablesScanned,
-      boolean poisoned) {}
+      boolean poisoned,
+      boolean deletesUnsupported) {}
 
   public Result runForAccount(String accountId) {
+    if (!blobStore.supportsVersionedDeletes()) {
+      // Fail closed: without immutable version identities every delete is the
+      // eng-floe/core#1904 race (an S3 bucket whose versioning is not Enabled overwrites version
+      // state in place), so nothing may be collected. One warn per pass; the scheduler gauges
+      // this so a misconfigured bucket is noticed rather than silently never collecting.
+      LOG.warnf(
+          "cas gc for account %s skipped: blob store cannot delete by immutable version"
+              + " (on S3 the bucket's versioning status must be Enabled)",
+          accountId);
+      return new Result(0, 0, 0, 0, 0, false, true);
+    }
+
     final var cfg = ConfigProvider.getConfig();
     final int pageSize =
         cfg.getOptionalValue("floecat.gc.cas.page-size", Integer.class).orElse(500);
@@ -196,7 +209,7 @@ public class CasBlobGc {
       LOG.warnf(
           "cas gc for account %s skipped its delete phase: %d root-chain walk(s) failed",
           accountId, walkFailures[0]);
-      return new Result(pointersScanned, 0, 0, referenced.size(), tablesScanned, true);
+      return new Result(pointersScanned, 0, 0, referenced.size(), tablesScanned, true, false);
     }
 
     var account =
@@ -303,7 +316,8 @@ public class CasBlobGc {
         blobsDeleted,
         referenced.size(),
         tablesScanned,
-        walkFailures[0] > 0);
+        walkFailures[0] > 0,
+        false);
   }
 
   /**
@@ -514,7 +528,27 @@ public class CasBlobGc {
           if (nowMs - lastModified < minAgeMs) {
             continue;
           }
-          if (blobStore.delete(key)) {
+          // Second fence against the mark/CAS race: a pointer CAS can re-target an OLD existing
+          // blob after this pass's one-time mark, invisible to both the mark and (if the writer
+          // left LastModified stale) the age fence. For pointer-rooted families the key encodes
+          // its owner (see Keys.ownerPointerKeyForBlob) — re-read that pointer right before the
+          // delete and keep the blob it currently references.
+          if (referencedByOwnerPointer(normalized)) {
+            continue;
+          }
+          String versionId = header.getVersionId();
+          if (versionId.isBlank()) {
+            // Cannot name the version this pass age-checked (unexpected on a store that reports
+            // supportsVersionedDeletes): fail closed and leave the blob for a future pass — an
+            // unconditional delete here would reintroduce the race.
+            continue;
+          }
+          // Delete exactly the version this pass age-checked: the fences above are still stale
+          // reads — a writer can re-PUT the blob and CAS its pointer between them and this delete
+          // — but that re-PUT mints a NEW version a targeted delete cannot touch, so the check and
+          // the act name the same immutable object and the pointer stays resolvable in every
+          // interleaving.
+          if (blobStore.delete(key, versionId)) {
             deleted++;
           }
         }
@@ -526,6 +560,15 @@ public class CasBlobGc {
     }
 
     return new DeleteResult(scanned, deleted);
+  }
+
+  private boolean referencedByOwnerPointer(String normalizedKey) {
+    String ownerKey = Keys.ownerPointerKeyForBlob(normalizedKey);
+    if (ownerKey == null) {
+      return false;
+    }
+    var owner = pointerStore.get(ownerKey).orElse(null);
+    return owner != null && normalizedKey.equals(normalizeKey(owner.getBlobUri()));
   }
 
   private static String decodeSuffix(String prefix, String fullKey) {

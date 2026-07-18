@@ -91,4 +91,65 @@ class KeysTest {
     assertEquals(null, Keys.tableIdFromSnapshotPointerKey("/accounts/a/connectors/by-id/c"));
     assertEquals(null, Keys.tableIdFromSnapshotPointerKey(null));
   }
+
+  @Test
+  void ownerPointerKeyForBlobDerivesTheOwnerForEveryPointerRootedFamily() {
+    // Ids with spaces exercise the percent-decode/re-encode round trip.
+    assertEquals(
+        Keys.accountPointerById("a c"),
+        Keys.ownerPointerKeyForBlob(Keys.accountBlobUri("a c", "sha")));
+    assertEquals(
+        Keys.catalogPointerById("a c", "cat 1"),
+        Keys.ownerPointerKeyForBlob(Keys.catalogBlobUri("a c", "cat 1", "sha")));
+    assertEquals(
+        Keys.namespacePointerById("a c", "ns 1"),
+        Keys.ownerPointerKeyForBlob(Keys.namespaceBlobUri("a c", "ns 1", "sha")));
+    assertEquals(
+        Keys.tablePointerById("a c", "tbl 1"),
+        Keys.ownerPointerKeyForBlob(Keys.tableBlobUri("a c", "tbl 1", "sha")));
+    assertEquals(
+        Keys.viewPointerById("a c", "v 1"),
+        Keys.ownerPointerKeyForBlob(Keys.viewBlobUri("a c", "v 1", "sha")));
+    assertEquals(
+        Keys.connectorPointerById("a c", "con 1"),
+        Keys.ownerPointerKeyForBlob(Keys.connectorBlobUri("a c", "con 1", "sha")));
+    assertEquals(
+        Keys.tableRootByTable("a c", "tbl 1"),
+        Keys.ownerPointerKeyForBlob(Keys.tableRootBlobUri("a c", "tbl 1", "sha")));
+    assertEquals(
+        Keys.snapshotPointerById("a c", "tbl 1", 7L),
+        Keys.ownerPointerKeyForBlob(Keys.snapshotBlobUri("a c", "tbl 1", 7L, "sha")));
+    assertEquals(
+        Keys.snapshotConstraintsPointer("a c", "tbl 1", 7L),
+        Keys.ownerPointerKeyForBlob(Keys.snapshotConstraintsBlobUri("a c", "tbl 1", 7L, "sha")));
+    assertEquals(
+        Keys.snapshotTargetStatsManifestPointer("a c", "tbl 1", 7L),
+        Keys.ownerPointerKeyForBlob(
+            Keys.snapshotTargetStatsManifestBlobUri("a c", "tbl 1", 7L, "gen 1")));
+    assertEquals(
+        Keys.snapshotTargetStatsGenerationPointer("a c", "tbl 1", 7L, "gen 1", "tgt 1"),
+        Keys.ownerPointerKeyForBlob(
+            Keys.snapshotTargetStatsBlobUri("a c", "tbl 1", 7L, "gen 1", "tgt 1", "sha")));
+    // Blob LISTs return keys without the leading slash — same derivation.
+    assertEquals(
+        Keys.tablePointerById("a c", "tbl 1"),
+        Keys.ownerPointerKeyForBlob(Keys.tableBlobUri("a c", "tbl 1", "sha").substring(1)));
+  }
+
+  @Test
+  void ownerPointerKeyForBlobIsNullWhereNoSingleOwnerIsDerivable() {
+    // Root manifest pages are referenced from TableRoot blob content, not by any pointer.
+    assertEquals(null, Keys.ownerPointerKeyForBlob(Keys.snapshotManifestBlobUri("a", "t", "sha")));
+    // Per-target stats and file-stats blobs carry no snapshot id in the key, so their owning
+    // /snapshots/<snapshot_id>/stats/... pointers cannot be derived.
+    assertEquals(
+        null, Keys.ownerPointerKeyForBlob(Keys.snapshotTargetStatsBlobUri("a", "t", "tgt", "sha")));
+    assertEquals(
+        null, Keys.ownerPointerKeyForBlob(Keys.snapshotFileStatsBlobUri("a", "t", "f", "sha")));
+    assertEquals(null, Keys.ownerPointerKeyForBlob(null));
+    assertEquals(null, Keys.ownerPointerKeyForBlob("/accounts/a"));
+    assertEquals(null, Keys.ownerPointerKeyForBlob("/other/a/tables/t/table/sha.pb"));
+    // Malformed (blank) segments degrade to "no owner", never throw.
+    assertEquals(null, Keys.ownerPointerKeyForBlob("/accounts/%20/tables/t/table/sha.pb"));
+  }
 }
