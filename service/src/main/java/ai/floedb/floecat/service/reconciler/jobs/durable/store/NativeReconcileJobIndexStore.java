@@ -302,6 +302,8 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
           try {
             batchCommitted = jobIndexBackend.compareAndSetBatch(commitBatch.batch());
           } catch (RuntimeException e) {
+            // Exclude the ambiguous failing batch: retaining payloads may leak blobs, but deleting
+            // them could leave a transaction that committed remotely pointing at missing data.
             throw new BulkEnqueueCommitException(
                 e, queuedInsertIndexes(remainingInserts(commitBatches, batchIndex + 1)));
           }
