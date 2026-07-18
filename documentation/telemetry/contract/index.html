@@ -2201,6 +2201,15 @@
 <td>component, operation, reason, resource, status</td>
 </tr>
 <tr>
+<td>floecat.service.gc.cas.delete_unsupported_accounts</td>
+<td>GAUGE</td>
+<td></td>
+<td>v1</td>
+<td>Accounts whose CAS GC sweep was skipped because immutable version deletes are unsupported.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
 <td>floecat.service.gc.cas.oldest_sweep_age</td>
 <td>GAUGE</td>
 <td>ms</td>
@@ -2568,6 +2577,15 @@
 <td>Stats engine batch capture calls.</td>
 <td>component, operation</td>
 <td>component, mode, operation, reason, resource, result, scope, trigger</td>
+</tr>
+<tr>
+<td>floecat.service.stats.planner_lookup_outcomes.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Planner stats lookup outcomes by the ladder rung that served or failed each target.</td>
+<td>component, operation, result</td>
+<td>component, operation, result</td>
 </tr>
 <tr>
 <td>floecat.service.stats.store_hits.total</td>
