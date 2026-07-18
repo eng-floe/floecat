@@ -95,8 +95,7 @@ public class ReconcileJobLegacyMigrationScheduler {
     metrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "cleanup-scanned"));
     metrics.recordCollection(
         result.manifestsUpdated(), Tag.of(TagKey.RESULT, "cleanup-manifests-updated"));
-    metrics.recordCollection(
-        result.unresolvable(), Tag.of(TagKey.RESULT, "cleanup-unresolvable"));
+    metrics.recordCollection(result.unresolvable(), Tag.of(TagKey.RESULT, "cleanup-unresolvable"));
     metrics.recordCollection(result.conflicted(), Tag.of(TagKey.RESULT, "cleanup-conflicted"));
     metrics.recordCollection(result.retryable(), Tag.of(TagKey.RESULT, "cleanup-retryable"));
     if (!cleanupToken.isBlank()) {

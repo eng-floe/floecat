@@ -146,7 +146,8 @@ class DynamoReconcileJobIndexBackendTest {
     assertEquals(LOOKUP_KEY, loaded.pointerKey());
     assertEquals(CANONICAL_KEY, loaded.blobUri());
     assertEquals(1L, loaded.version());
-    assertEquals(JobIndexBackendSupport.legacyLookupPartitionKey(), loaded.lookupStoragePartitionKey());
+    assertEquals(
+        JobIndexBackendSupport.legacyLookupPartitionKey(), loaded.lookupStoragePartitionKey());
     ArgumentCaptor<GetItemRequest> captor = ArgumentCaptor.forClass(GetItemRequest.class);
     verify(dynamoDb, times(2)).getItem(captor.capture());
     assertEquals(
