@@ -160,6 +160,77 @@ public final class EngineHintPersistenceImpl implements EngineHintPersistence {
     }
   }
 
+  @Override
+  public void persistRelationAndColumnHints(
+      ResourceId relationId,
+      String relationPayloadType,
+      byte[] relationPayload,
+      String engineKind,
+      String engineVersion,
+      List<EngineHintPersistence.ColumnHint> columnHints) {
+    if (relationId == null) {
+      return;
+    }
+    String relationKey =
+        relationPayload == null ? null : EngineHintMetadata.tableHintKey(relationPayloadType);
+    String relationEncoded =
+        relationPayload == null
+            ? null
+            : EngineHintMetadata.encodeValue(engineKind, engineVersion, relationPayload);
+    Map<String, EngineHintPersistence.ColumnHint> deduped =
+        columnHints == null ? Map.of() : deduplicateColumnHints(columnHints);
+    if (relationKey == null && deduped.isEmpty()) {
+      return;
+    }
+    ResourceKind kind = relationId.getKind();
+    if (kind == ResourceKind.RK_TABLE) {
+      persistTable(
+          relationId,
+          builder ->
+              applyRelationAndColumnHints(
+                  relationKey,
+                  relationEncoded,
+                  deduped,
+                  builder.getPropertiesMap(),
+                  builder::putProperties,
+                  engineKind,
+                  engineVersion));
+      return;
+    }
+    if (kind == ResourceKind.RK_VIEW) {
+      persistView(
+          relationId,
+          builder ->
+              applyRelationAndColumnHints(
+                  relationKey,
+                  relationEncoded,
+                  deduped,
+                  builder.getPropertiesMap(),
+                  builder::putProperties,
+                  engineKind,
+                  engineVersion));
+      return;
+    }
+    LOG.debugf("Skipping engine hints for non-table relation %s", relationId);
+  }
+
+  private boolean applyRelationAndColumnHints(
+      String relationKey,
+      String relationEncoded,
+      Map<String, EngineHintPersistence.ColumnHint> deduped,
+      Map<String, String> properties,
+      java.util.function.BiConsumer<String, String> setter,
+      String engineKind,
+      String engineVersion) {
+    boolean changed = false;
+    if (relationKey != null && !relationEncoded.equals(properties.get(relationKey))) {
+      setter.accept(relationKey, relationEncoded);
+      changed = true;
+    }
+    changed |= applyColumnHints(deduped, properties, setter, engineKind, engineVersion);
+    return changed;
+  }
+
   private boolean applyColumnHints(
       Map<String, EngineHintPersistence.ColumnHint> deduped,
       Map<String, String> properties,

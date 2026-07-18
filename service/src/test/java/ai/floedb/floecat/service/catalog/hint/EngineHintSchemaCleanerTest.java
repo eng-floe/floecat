@@ -74,8 +74,12 @@ class EngineHintSchemaCleanerTest {
     return FieldMask.newBuilder().addPaths("upstream.pointer").build();
   }
 
-  private static FieldMask nonSchemaMask() {
-    return FieldMask.newBuilder().addPaths("display_name").build();
+  private static FieldMask mask(String... paths) {
+    FieldMask.Builder b = FieldMask.newBuilder();
+    for (String p : paths) {
+      b.addPaths(p);
+    }
+    return b.build();
   }
 
   private static HintClearDecision none() {
@@ -120,7 +124,11 @@ class EngineHintSchemaCleanerTest {
   }
 
   private void runClean(Table.Builder builder, FieldMask mask) {
-    cleaner.cleanTableHints(builder, mask, builder.build(), builder.build());
+    // The decision-routing tests below model an update whose schema actually changed; a
+    // shape-identical before/after short-circuits the cleaner entirely (see the no-op tests).
+    Table after = builder.build();
+    Table before = after.toBuilder().setSchemaJson("{\"schema-id\":99}").build();
+    cleaner.cleanTableHints(builder, mask, before, after);
   }
 
   // ----------------------
@@ -128,11 +136,21 @@ class EngineHintSchemaCleanerTest {
   // ----------------------
 
   @Test
-  void shouldClearHints_schemaAndUpstreamPaths() {
+  void shouldClearHints_firesForEveryShapePath() {
     assertThat(cleaner.shouldClearHints(schemaMask())).isTrue();
     assertThat(cleaner.shouldClearHints(upstreamMask())).isTrue();
     assertThat(cleaner.shouldClearHints(schemaColumnsMask())).isTrue();
-    assertThat(cleaner.shouldClearHints(nonSchemaMask())).isFalse();
+    // Shape fields beyond schema/upstream gate too — name/namespace/catalog are part of the
+    // relation identity hints encode, and view shape fields must reach the diff as well.
+    assertThat(cleaner.shouldClearHints(mask("display_name"))).isTrue();
+    assertThat(cleaner.shouldClearHints(mask("namespace_id"))).isTrue();
+    assertThat(cleaner.shouldClearHints(mask("catalog_id"))).isTrue();
+    assertThat(cleaner.shouldClearHints(mask("sql_definitions"))).isTrue();
+    assertThat(cleaner.shouldClearHints(mask("output_columns"))).isTrue();
+    // Non-shape fields never gate.
+    assertThat(cleaner.shouldClearHints(mask("properties"))).isFalse();
+    assertThat(cleaner.shouldClearHints(mask("description"))).isFalse();
+    assertThat(cleaner.shouldClearHints(mask("properties", "description"))).isFalse();
   }
 
   @Test
@@ -359,5 +377,157 @@ class EngineHintSchemaCleanerTest {
     // v2.0: no-op => stays.
     assertThat(builder.getPropertiesMap())
         .containsEntry(EngineHintMetadata.tableHintKey("floe.rel.v2"), encoded("floedb", "2.0", 2));
+  }
+
+  /** Mask sent by GrpcReconcilerBackend.updateTableById on every PLAN_TABLE apply. */
+  private static FieldMask reconcileMask() {
+    return FieldMask.newBuilder()
+        .addPaths("schema_json")
+        .addPaths("upstream")
+        .addPaths("properties")
+        .build();
+  }
+
+  private static Table.Builder tableWithShapeAndHints() {
+    Table.Builder builder =
+        baseBuilder()
+            .setDisplayName("variant_decimal4_negative")
+            .setSchemaJson("{\"type\":\"struct\",\"schema-id\":0}")
+            .setUpstream(
+                ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder()
+                    .setUri("https://glue.us-east-1.amazonaws.com/iceberg/")
+                    .setTableDisplayName("variant_decimal4_negative"))
+            .putProperties("storage_location", "s3://bucket/t");
+    putRelationHint(builder, "floe.relation+proto", "floedb", "0.1", 1);
+    putColumnHint(builder, "floe.column+proto", 1L, "floedb", "0.1", 2);
+    putColumnHint(builder, "floe.column+proto", 2L, "floedb", "0.1", 3);
+    return builder;
+  }
+
+  @Test
+  void unchangedShape_reconcileMaskKeepsAllHintsAndSkipsExtension() {
+    Table current = tableWithShapeAndHints().build();
+    Table.Builder builder = current.toBuilder();
+
+    cleaner.cleanTableHints(builder, reconcileMask(), current, builder.build());
+
+    assertThat(builder.build()).isEqualTo(current);
+    Mockito.verifyNoInteractions(extension);
+  }
+
+  @Test
+  void changedSchema_reconcileMaskStillClears() {
+    Table current = tableWithShapeAndHints().build();
+    Table.Builder builder =
+        current.toBuilder().setSchemaJson("{\"type\":\"struct\",\"schema-id\":1}");
+    Mockito.when(extension.decideHintClear(Mockito.any(), Mockito.any()))
+        .thenReturn(new HintClearDecision(true, true, Set.of(), Set.of(), Set.of()));
+
+    cleaner.cleanTableHints(builder, reconcileMask(), current, builder.build());
+
+    assertThat(builder.getPropertiesMap().keySet()).containsExactlyInAnyOrder("storage_location");
+  }
+
+  @Test
+  void changedDisplayName_doesNotShortCircuit() {
+    Table current = tableWithShapeAndHints().build();
+    Table.Builder builder = current.toBuilder().setDisplayName("renamed");
+    Mockito.when(extension.decideHintClear(Mockito.any(), Mockito.any()))
+        .thenReturn(new HintClearDecision(true, true, Set.of(), Set.of(), Set.of()));
+
+    cleaner.cleanTableHints(builder, reconcileMask(), current, builder.build());
+
+    assertThat(builder.getPropertiesMap().keySet()).containsExactlyInAnyOrder("storage_location");
+  }
+
+  // display_name/namespace_id-masked updates never reached the cleaner before (the gate only
+  // fired on schema_json/upstream paths — a pre-existing gap): a rename left stale hints behind.
+  @Test
+  void displayNameValueChange_withDisplayNameMask_clearsHints() {
+    Table current = tableWithShapeAndHints().build();
+    Table.Builder builder = current.toBuilder().setDisplayName("renamed");
+    Mockito.when(extension.decideHintClear(Mockito.any(), Mockito.any()))
+        .thenReturn(new HintClearDecision(true, true, Set.of(), Set.of(), Set.of()));
+
+    cleaner.cleanTableHints(builder, mask("display_name"), current, builder.build());
+
+    assertThat(builder.getPropertiesMap().keySet()).containsExactlyInAnyOrder("storage_location");
+  }
+
+  @Test
+  void namespaceValueChange_withNamespaceMask_clearsHints() {
+    Table current = tableWithShapeAndHints().build();
+    Table.Builder builder =
+        current.toBuilder()
+            .setNamespaceId(
+                ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("other-ns")
+                    .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_NAMESPACE));
+    Mockito.when(extension.decideHintClear(Mockito.any(), Mockito.any()))
+        .thenReturn(new HintClearDecision(true, true, Set.of(), Set.of(), Set.of()));
+
+    cleaner.cleanTableHints(builder, mask("namespace_id"), current, builder.build());
+
+    assertThat(builder.getPropertiesMap().keySet()).containsExactlyInAnyOrder("storage_location");
+  }
+
+  @Test
+  void displayNameMask_contentIdentical_keepsHintsAndSkipsExtension() {
+    Table current = tableWithShapeAndHints().build();
+    Table.Builder builder = current.toBuilder();
+
+    cleaner.cleanTableHints(builder, mask("display_name"), current, builder.build());
+
+    assertThat(builder.build()).isEqualTo(current);
+    Mockito.verifyNoInteractions(extension);
+  }
+
+  private static ai.floedb.floecat.catalog.rpc.View.Builder viewWithHints() {
+    return ai.floedb.floecat.catalog.rpc.View.newBuilder()
+        .setResourceId(
+            ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+                .setAccountId("acct")
+                .setId("view-1")
+                .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_VIEW))
+        .setDisplayName("v")
+        .addSqlDefinitions(
+            ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                .setSql("select 1")
+                .setDialect("floe"))
+        .putProperties("custom", "keep")
+        .putProperties(
+            EngineHintMetadata.tableHintKey("floe.relation+proto"), encoded("floedb", "1", 4));
+  }
+
+  // View updates could never reach the cleaner before: schema_json/upstream are not valid
+  // UpdateView mask paths, so the old gate made cleanViewHints dead code in the service path.
+  @Test
+  void viewSqlDefinitionChange_clearsHints() {
+    ai.floedb.floecat.catalog.rpc.View current = viewWithHints().build();
+    ai.floedb.floecat.catalog.rpc.View.Builder builder =
+        current.toBuilder()
+            .clearSqlDefinitions()
+            .addSqlDefinitions(
+                ai.floedb.floecat.catalog.rpc.ViewSqlDefinition.newBuilder()
+                    .setSql("select 2")
+                    .setDialect("floe"));
+    Mockito.when(extension.decideHintClear(Mockito.any(), Mockito.any()))
+        .thenReturn(new HintClearDecision(true, true, Set.of(), Set.of(), Set.of()));
+
+    cleaner.cleanViewHints(builder, mask("sql_definitions"), current, builder.build());
+
+    assertThat(builder.getPropertiesMap().keySet()).containsExactlyInAnyOrder("custom");
+  }
+
+  @Test
+  void viewContentIdentical_keepsHintsAndSkipsExtension() {
+    ai.floedb.floecat.catalog.rpc.View current = viewWithHints().build();
+    ai.floedb.floecat.catalog.rpc.View.Builder builder = current.toBuilder();
+
+    cleaner.cleanViewHints(builder, mask("sql_definitions"), current, builder.build());
+
+    assertThat(builder.build()).isEqualTo(current);
+    Mockito.verifyNoInteractions(extension);
   }
 }

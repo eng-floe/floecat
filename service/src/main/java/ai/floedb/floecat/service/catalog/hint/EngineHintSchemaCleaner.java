@@ -51,18 +51,24 @@ public class EngineHintSchemaCleaner {
     this.catalogProvider = Objects.requireNonNull(catalogProvider);
   }
 
+  /**
+   * Fields that can never invalidate a persisted hint. Everything else — including proto fields
+   * added later — is shape, both for the mask gate and for {@link #relationShapeUnchanged}: a new
+   * field defaults to "may invalidate hints", and the value diff keeps unchanged updates a no-op.
+   */
+  private static final Set<String> NON_SHAPE_FIELDS = Set.of("properties", "description");
+
   public boolean shouldClearHints(FieldMask mask) {
     if (mask == null) {
       return false;
     }
-    return normalizedMaskPaths(mask).stream().anyMatch(this::isSchemaPath);
+    return normalizedMaskPaths(mask).stream().anyMatch(this::isShapePath);
   }
 
-  private boolean isSchemaPath(String path) {
-    return path.equals("schema_json")
-        || path.startsWith("schema_json.")
-        || path.equals("upstream")
-        || path.startsWith("upstream.");
+  private boolean isShapePath(String path) {
+    int dot = path.indexOf('.');
+    String root = dot < 0 ? path : path.substring(0, dot);
+    return !NON_SHAPE_FIELDS.contains(root);
   }
 
   private Set<String> normalizedMaskPaths(FieldMask mask) {
@@ -100,6 +106,13 @@ public class EngineHintSchemaCleaner {
     if (!shouldClearHints(mask)) {
       return;
     }
+    // Hints derive from the relation's shape; an update that leaves the shape untouched cannot
+    // invalidate them. Clearing on mask presence alone breaks the caller's no-op check: every
+    // content-identical UpdateTable strips hints, rewrites the blob, and advances the pointer
+    // (eng-floe/core#1905).
+    if (relationShapeUnchanged(beforeTable, afterTable, beforeView, afterView)) {
+      return;
+    }
     Map<EngineIdentity, List<String>> grouped = groupHintsByEngine(properties);
     if (grouped.isEmpty()) {
       return;
@@ -118,6 +131,27 @@ public class EngineHintSchemaCleaner {
               .orElseGet(HintClearDecision::dropAll);
       applyDecision(decision, keys, properties);
     }
+  }
+
+  // Both branches compare everything except NON_SHAPE_FIELDS (and created_at, mutation
+  // metadata), so a field added to either proto defaults to shape-changing.
+  private boolean relationShapeUnchanged(
+      Table beforeTable, Table afterTable, View beforeView, View afterView) {
+    if (beforeTable != null && afterTable != null) {
+      return stripNonShape(beforeTable).equals(stripNonShape(afterTable));
+    }
+    if (beforeView != null && afterView != null) {
+      return stripNonShape(beforeView).equals(stripNonShape(afterView));
+    }
+    return false;
+  }
+
+  private static Table stripNonShape(Table table) {
+    return table.toBuilder().clearProperties().clearDescription().clearCreatedAt().build();
+  }
+
+  private static View stripNonShape(View view) {
+    return view.toBuilder().clearProperties().clearDescription().clearCreatedAt().build();
   }
 
   private void applyDecision(
