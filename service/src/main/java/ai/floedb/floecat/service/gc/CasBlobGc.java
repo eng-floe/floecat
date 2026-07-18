@@ -96,10 +96,13 @@ public class CasBlobGc {
   @Inject StatsRepository statsRepository;
 
   /**
-   * One sweep's tallies. On a versioned store {@code blobsDeleted} counts VERSION deletes, not
-   * whole-blob removals: deleting the current version of an N-version blob leaves it readable with
-   * N-1 versions, so this metric must not be read as "garbage fully reclaimed" (see the class note
-   * on lifecycle rules).
+   * One sweep's tallies. {@code blobsDeleted} counts successful version-delete CALLS, not blobs
+   * physically removed: (a) on a versioned store, deleting the current version of an N-version blob
+   * leaves it readable with N-1 versions, so it is not "garbage fully reclaimed" (see the class
+   * note on lifecycle rules); and (b) a version-targeted delete returns success — and is counted —
+   * even for an already-absent blob (another actor removed it between this pass's head() and the
+   * delete, or a 404). So the count can read slightly high; treat it as a delete-throughput signal,
+   * not a reclaimed-bytes measure.
    */
   public record Result(
       int pointersScanned,
