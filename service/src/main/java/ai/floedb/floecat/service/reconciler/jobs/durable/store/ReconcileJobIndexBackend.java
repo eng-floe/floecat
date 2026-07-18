@@ -47,6 +47,10 @@ public interface ReconcileJobIndexBackend {
     return true;
   }
 
+  default boolean legacyCleanupMigrationComplete() {
+    return true;
+  }
+
   boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch);
 
   default boolean compareAndSetBatch(

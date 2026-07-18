@@ -85,7 +85,9 @@ class DynamoReconcileLeaseBackendUnitTest {
     boolean committed =
         backend.compareAndSetBatch(
             new ReconcileJobIndexStore.JobIndexWriteBatch(
-                List.of(new ReconcileJobIndexStore.JobIndexDelete(LOOKUP_KEY, 1L)),
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexDelete(
+                        LOOKUP_KEY, 1L, CANONICAL_KEY, "reconcile-job-lookup")),
                 ReconcileJobIndexStore.ReadyQueueMutation.empty()),
             ReconcileLeaseBackend.LeaseWriteBatch.empty());
 
@@ -96,12 +98,10 @@ class DynamoReconcileLeaseBackendUnitTest {
     var items = captor.getValue().transactItems();
     assertEquals(2, items.size());
     assertEquals(
-        List.of("reconcile-job-lookup", "reconcile-job/by-id"),
-        items.stream().map(item -> item.delete().key().get(ATTR_PARTITION_KEY).s()).toList());
-    assertTrue(
-        items.stream()
-            .allMatch(
-                item -> ("job/" + JOB_ID).equals(item.delete().key().get(ATTR_SORT_KEY).s())));
+        "reconcile-job-lookup", items.getFirst().delete().key().get(ATTR_PARTITION_KEY).s());
+    assertEquals("1", items.getFirst().delete().expressionAttributeValues().get(":expected").n());
+    assertEquals(
+        "reconcile-job/by-id", items.get(1).conditionCheck().key().get(ATTR_PARTITION_KEY).s());
   }
 
   @Test

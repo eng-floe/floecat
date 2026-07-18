@@ -33,6 +33,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
@@ -40,6 +41,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.GetItemResponse;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
@@ -233,6 +235,65 @@ class DynamoReconcileJobIndexBackendTest {
   }
 
   @Test
+  void dedupePaginationTokenResumesFromItsPhysicalSortKey() {
+    String dedupeKey = Keys.reconcileDedupePointer(ACCOUNT_ID, "hash-1");
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.query(any(QueryRequest.class))).thenReturn(QueryResponse.builder().build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+
+    backend.listDedupeEntries(ACCOUNT_ID, 25, dedupeKey);
+
+    ArgumentCaptor<QueryRequest> queryCaptor = ArgumentCaptor.forClass(QueryRequest.class);
+    verify(dynamoDb).query(queryCaptor.capture());
+    var parsed = JobIndexBackendSupport.parseDedupeKey(dedupeKey);
+    assertEquals(
+        JobIndexBackendSupport.dedupeSortKey(parsed),
+        queryCaptor.getValue().exclusiveStartKey().get(ATTR_SORT_KEY).s());
+  }
+
+  @Test
+  void malformedLegacyLookupRowDoesNotTruncatePaginatedMigration() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    Map<String, AttributeValue> physicalKey =
+        Map.of(
+            ATTR_PARTITION_KEY,
+            AttributeValue.fromS("reconcile-job/by-id"),
+            ATTR_SORT_KEY,
+            AttributeValue.fromS("job/" + JOB_ID));
+    when(dynamoDb.query(any(QueryRequest.class)))
+        .thenReturn(
+            QueryResponse.builder()
+                .items(
+                    Map.of(
+                        ATTR_PARTITION_KEY,
+                        AttributeValue.fromS("reconcile-job/by-id"),
+                        ATTR_SORT_KEY,
+                        AttributeValue.fromS("job/" + JOB_ID),
+                        ATTR_VERSION,
+                        AttributeValue.fromN("1"),
+                        JobIndexBackendSupport.ATTR_POINTER_KEY,
+                        AttributeValue.fromS("garbage"),
+                        JobIndexBackendSupport.ATTR_BLOB_URI,
+                        AttributeValue.fromS(CANONICAL_KEY)))
+                .lastEvaluatedKey(physicalKey)
+                .build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+
+    var first = backend.migrateLegacyLookupEntries(25, "");
+    backend.migrateLegacyLookupEntries(25, first.nextPageToken());
+
+    assertEquals(1, first.conflicted());
+    assertTrue(!first.nextPageToken().isBlank());
+    ArgumentCaptor<QueryRequest> queryCaptor = ArgumentCaptor.forClass(QueryRequest.class);
+    verify(dynamoDb, times(2)).query(queryCaptor.capture());
+    assertEquals(
+        "job/" + JOB_ID,
+        queryCaptor.getAllValues().get(1).exclusiveStartKey().get(ATTR_SORT_KEY).s());
+  }
+
+  @Test
   void legacyLookupBackfillReportsTransientWriteFailureAsRetryable() {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
     when(dynamoDb.query(any(QueryRequest.class)))
@@ -334,7 +395,7 @@ class DynamoReconcileJobIndexBackendTest {
   }
 
   @Test
-  void lookupDeleteCleansCurrentAndLegacyPartitions() {
+  void lookupDeleteUsesOriginalVersionForObservedCurrentPartition() {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
     when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
         .thenReturn(TransactWriteItemsResponse.builder().build());
@@ -344,17 +405,46 @@ class DynamoReconcileJobIndexBackendTest {
     assertTrue(
         backend.compareAndSetBatch(
             new ReconcileJobIndexStore.JobIndexWriteBatch(
-                List.of(new ReconcileJobIndexStore.JobIndexDelete(LOOKUP_KEY, 1L)),
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexDelete(
+                        LOOKUP_KEY, 1L, CANONICAL_KEY, "reconcile-job-lookup")),
                 ReconcileJobIndexStore.ReadyQueueMutation.empty())));
 
     ArgumentCaptor<TransactWriteItemsRequest> captor =
         ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
     verify(dynamoDb).transactWriteItems(captor.capture());
+    var items = captor.getValue().transactItems();
     assertEquals(
-        List.of("reconcile-job-lookup", "reconcile-job/by-id"),
-        captor.getValue().transactItems().stream()
-            .map(item -> item.delete().key().get(ATTR_PARTITION_KEY).s())
-            .toList());
+        "reconcile-job-lookup", items.getFirst().delete().key().get(ATTR_PARTITION_KEY).s());
+    assertEquals("1", items.getFirst().delete().expressionAttributeValues().get(":expected").n());
+    assertEquals(
+        "reconcile-job/by-id", items.get(1).conditionCheck().key().get(ATTR_PARTITION_KEY).s());
+  }
+
+  @Test
+  void lookupDeleteLeavesConflictingLegacyOwnerUntouched() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
+        .thenReturn(TransactWriteItemsResponse.builder().build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+
+    assertTrue(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexDelete(
+                        LOOKUP_KEY, 1L, CANONICAL_KEY, "reconcile-job-lookup")),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+
+    ArgumentCaptor<TransactWriteItemsRequest> captor =
+        ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
+    verify(dynamoDb).transactWriteItems(captor.capture());
+    var items = captor.getValue().transactItems();
+    assertEquals(
+        "reconcile-job-lookup", items.getFirst().delete().key().get(ATTR_PARTITION_KEY).s());
+    assertEquals(
+        "reconcile-job/by-id", items.get(1).conditionCheck().key().get(ATTR_PARTITION_KEY).s());
   }
 
   @Test
@@ -589,6 +679,47 @@ class DynamoReconcileJobIndexBackendTest {
         updateCaptor.getValue().expressionAttributeValues().get(":ready").l().stream()
             .map(AttributeValue::s)
             .toList());
+  }
+
+  @Test
+  void concurrentLegacyCleanupMergeIsRecognizedAsCompleted() {
+    Map<String, AttributeValue> legacyCanonical =
+        Map.of(
+            ATTR_PARTITION_KEY,
+            AttributeValue.fromS("reconcile-job/" + ACCOUNT_ID),
+            ATTR_SORT_KEY,
+            AttributeValue.fromS("job/" + JOB_ID),
+            ATTR_KIND,
+            AttributeValue.fromS(JobIndexBackendSupport.KIND_CANONICAL_JOB),
+            ATTR_VERSION,
+            AttributeValue.fromN("1"),
+            JobIndexBackendSupport.ATTR_POINTER_KEY,
+            AttributeValue.fromS(CANONICAL_KEY),
+            JobIndexBackendSupport.ATTR_BLOB_URI,
+            AttributeValue.fromS("unreadable"));
+    Map<String, AttributeValue> concurrentlyUpdated = new HashMap<>(legacyCanonical);
+    concurrentlyUpdated.put(
+        JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS,
+        AttributeValue.fromL(List.of(AttributeValue.fromS(LOOKUP_KEY))));
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.getItem(any(GetItemRequest.class)))
+        .thenReturn(
+            GetItemResponse.builder().build(),
+            GetItemResponse.builder().item(legacyCanonical).build(),
+            GetItemResponse.builder().item(concurrentlyUpdated).build());
+    when(dynamoDb.scan(any(ScanRequest.class)))
+        .thenReturn(ScanResponse.builder().scannedCount(1).items(legacyCanonical).build());
+    when(dynamoDb.updateItem(any(UpdateItemRequest.class)))
+        .thenThrow(ConditionalCheckFailedException.builder().build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+
+    var result = backend.migrateLegacyCleanupManifests(500, "");
+
+    assertEquals(1, result.scanned());
+    assertEquals(0, result.manifestsUpdated());
+    assertEquals(0, result.conflicted());
+    assertEquals(0, result.retryable());
   }
 
   @Test

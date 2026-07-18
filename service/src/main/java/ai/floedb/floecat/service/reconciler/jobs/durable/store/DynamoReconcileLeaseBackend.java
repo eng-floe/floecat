@@ -546,8 +546,12 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     var lookupKey = JobIndexBackendSupport.parseLookupKey(delete.pointerKey());
     if (lookupKey != null) {
       tx.addAll(
-          DynamoReconcileJobLookupCompatibility.deletes(
-              table, lookupKey, delete.expectedVersion(), delete.expectedCanonicalPointerKey()));
+          DynamoReconcileJobLookupCompatibility.ownedDeletes(
+              table,
+              lookupKey,
+              delete.expectedVersion(),
+              delete.expectedCanonicalPointerKey(),
+              delete.expectedLookupStoragePartitionKey()));
       return true;
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(delete.pointerKey());

@@ -61,6 +61,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   private static final String LEGACY_CLEANUP_MARKER_SORT = "legacy-cleanup-manifest-v1";
   private static final String KIND_LEGACY_CLEANUP_MARKER = "ReconcileJobLegacyCleanupMigration";
   private static final String LEGACY_LOOKUP_MARKER_SORT = "legacy-lookup-v1";
+  private static final String PHYSICAL_SORT_TOKEN_PREFIX = "dynamo-sort:";
   private static final String KIND_LEGACY_LOOKUP_MARKER = "ReconcileJobLegacyLookupMigration";
 
   @Inject Instance<DynamoDbClientManager> dynamoDbClientManager;
@@ -99,7 +100,12 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         return Optional.empty();
       }
       if (migrateLegacyLookup(lookupKey, legacy.get()) == LegacyLookupMigrationOutcome.MIGRATED) {
-        return legacy;
+        return Optional.of(
+            new JobIndexEntrySnapshot(
+                legacy.get().pointerKey(),
+                legacy.get().blobUri(),
+                legacy.get().version(),
+                currentKey.partitionKey()));
       }
       return loadLookupPointer(currentKey).or(() -> legacy);
     }
@@ -461,6 +467,11 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     }
   }
 
+  @Override
+  public boolean legacyCleanupMigrationComplete() {
+    return legacyCleanupMigrationMarkedComplete();
+  }
+
   private boolean legacyCleanupMigrationMarkedComplete() {
     if (legacyCleanupMigrationMarkedComplete) {
       return true;
@@ -629,10 +640,50 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
                       .build()));
       return LegacyCleanupMergeOutcome.UPDATED;
     } catch (ConditionalCheckFailedException ignored) {
-      return LegacyCleanupMergeOutcome.RETRYABLE;
+      return classifyLegacyCleanupConditionalConflict(dynamoKey, canonicalPointerKey, merged);
     } catch (RuntimeException ignored) {
       return LegacyCleanupMergeOutcome.RETRYABLE;
     }
+  }
+
+  private LegacyCleanupMergeOutcome classifyLegacyCleanupConditionalConflict(
+      Map<String, AttributeValue> dynamoKey,
+      String canonicalPointerKey,
+      ReconcileJobIndexCleanupManifest expectedManifest) {
+    final Map<String, AttributeValue> current;
+    try {
+      var response =
+          dynamoCaller.call(
+              dynamoDbClientManager,
+              client ->
+                  client.getItem(
+                      GetItemRequest.builder()
+                          .tableName(table)
+                          .consistentRead(true)
+                          .key(dynamoKey)
+                          .build()));
+      if (!response.hasItem() || response.item().isEmpty()) {
+        return LegacyCleanupMergeOutcome.CONFLICTED;
+      }
+      current = response.item();
+    } catch (RuntimeException ignored) {
+      return LegacyCleanupMergeOutcome.RETRYABLE;
+    }
+    if (!canonicalPointerKey.equals(stringAttr(current, JobIndexBackendSupport.ATTR_POINTER_KEY))) {
+      return LegacyCleanupMergeOutcome.CONFLICTED;
+    }
+    if (boolAttr(current, JobIndexBackendSupport.ATTR_CLEANUP_MANIFEST_COMPLETE)) {
+      return LegacyCleanupMergeOutcome.UNCHANGED;
+    }
+    List<String> currentIndexKeys =
+        stringListAttr(current, JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS);
+    List<String> currentReadyKeys =
+        stringListAttr(current, JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS);
+    if (currentIndexKeys.containsAll(expectedManifest.indexPointerKeys())
+        && currentReadyKeys.containsAll(expectedManifest.readyPointerKeys())) {
+      return LegacyCleanupMergeOutcome.UNCHANGED;
+    }
+    return LegacyCleanupMergeOutcome.RETRYABLE;
   }
 
   private static void appendExpectedListCondition(
@@ -843,8 +894,14 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
 
   private Optional<JobIndexEntrySnapshot> loadLookupPointer(
       JobIndexBackendSupport.LookupStorageKey key) {
-    return loadIndexPointer(
-        key.partitionKey(), key.sortKey(), JobIndexBackendSupport.ATTR_BLOB_URI);
+    return loadIndexPointer(key.partitionKey(), key.sortKey(), JobIndexBackendSupport.ATTR_BLOB_URI)
+        .map(
+            snapshot ->
+                new JobIndexEntrySnapshot(
+                    snapshot.pointerKey(),
+                    snapshot.blobUri(),
+                    snapshot.version(),
+                    key.partitionKey()));
   }
 
   private LegacyLookupMigrationOutcome migrateLegacyLookup(
@@ -953,10 +1010,10 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     if (response.lastEvaluatedKey() != null
         && !response.lastEvaluatedKey().isEmpty()
         && !response.items().isEmpty()) {
-      nextPageToken =
-          stringAttr(
-              response.items().get(response.items().size() - 1),
-              JobIndexBackendSupport.ATTR_POINTER_KEY);
+      String physicalSortKey = stringAttr(response.lastEvaluatedKey(), ATTR_SORT_KEY);
+      if (!physicalSortKey.isBlank()) {
+        nextPageToken = PHYSICAL_SORT_TOKEN_PREFIX + physicalSortKey;
+      }
     }
     return new JobIndexQueryPage(List.copyOf(pointers), nextPageToken);
   }
@@ -964,6 +1021,9 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   private String sortKeyFromPageToken(String pageToken) {
     if (pageToken == null || pageToken.isBlank()) {
       return "";
+    }
+    if (pageToken.startsWith(PHYSICAL_SORT_TOKEN_PREFIX)) {
+      return pageToken.substring(PHYSICAL_SORT_TOKEN_PREFIX.length());
     }
     var lookupKey = JobIndexBackendSupport.parseLookupKey(pageToken);
     if (lookupKey != null) {
@@ -992,6 +1052,10 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     var connectorStateKey = JobIndexBackendSupport.parseConnectorStateKey(pageToken);
     if (connectorStateKey != null) {
       return JobIndexBackendSupport.connectorStateSortKey(connectorStateKey);
+    }
+    var dedupeKey = JobIndexBackendSupport.parseDedupeKey(pageToken);
+    if (dedupeKey != null) {
+      return JobIndexBackendSupport.dedupeSortKey(dedupeKey);
     }
     return "";
   }
@@ -1084,8 +1148,12 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   private List<TransactWriteItem> buildPointerDelete(ReconcileJobIndexStore.JobIndexDelete delete) {
     var lookupKey = JobIndexBackendSupport.parseLookupKey(delete.pointerKey());
     if (lookupKey != null) {
-      return DynamoReconcileJobLookupCompatibility.deletes(
-          table, lookupKey, delete.expectedVersion(), delete.expectedCanonicalPointerKey());
+      return DynamoReconcileJobLookupCompatibility.ownedDeletes(
+          table,
+          lookupKey,
+          delete.expectedVersion(),
+          delete.expectedCanonicalPointerKey(),
+          delete.expectedLookupStoragePartitionKey());
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(delete.pointerKey());
     if (canonicalKey != null) {

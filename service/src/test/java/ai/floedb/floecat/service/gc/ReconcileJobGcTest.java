@@ -460,6 +460,47 @@ class ReconcileJobGcTest {
   }
 
   @Test
+  void accountSliceRetainsUnreadableLegacyCanonicalUntilManifestMigrationCompletes() {
+    System.setProperty("floecat.gc.reconcile-jobs.canonical-quarantine-retention-ms", "0");
+    AwaitingMigrationMemoryJobIndexBackend awaitingBackend =
+        new AwaitingMigrationMemoryJobIndexBackend();
+    awaitingBackend.bind(pointers);
+    jobIndexBackend = awaitingBackend;
+    gc.jobIndexBackend = awaitingBackend;
+    ReconcilePayloadStore payloadStore = new ReconcilePayloadStore();
+    payloadStore.bind(blobs, pointers, mapper);
+    gc.jobIndexStore = new NativeReconcileJobIndexStore();
+    gc.jobIndexStore.bind(
+        awaitingBackend,
+        payloadStore,
+        gc.jobIndexes,
+        16,
+        (previous, current) -> {},
+        (previous, current, operation) -> {});
+
+    String jobId = "job-awaiting-cleanup-migration";
+    long now = System.currentTimeMillis() - 10_000L;
+    StoredReconcileJob record =
+        storedJob(jobId, "JS_SUCCEEDED", now, "parent-awaiting", "dedupe-awaiting", "");
+    putNativeJobIndexRows(record, false);
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    Pointer canonical = pointers.get(canonicalKey).orElseThrow();
+    assertTrue(
+        pointers.compareAndSet(
+            canonicalKey,
+            canonical.getVersion(),
+            PointerReferences.inlineJsonPointer(
+                canonicalKey, "inline:reconcile-job:not-valid", canonical.getVersion() + 1L)));
+
+    gc.runAccountSlice(ACCOUNT_ID, "", "");
+    var retained = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(1, retained.canonicalQuarantined());
+    assertTrue(awaitingBackend.loadIndexEntry(canonicalKey).isPresent());
+    assertEquals(0, awaitingBackend.discoveryCalls);
+  }
+
+  @Test
   void accountSliceDoesNotPurgeReadableReplacementThatRacesQuarantinePurge() {
     String jobId = "job-corrupt-replaced-during-purge";
     String parentJobId = "parent-corrupt-replaced";
@@ -1492,6 +1533,23 @@ class ReconcileJobGcTest {
         singleDeleteCalls++;
       }
       return super.compareAndSetBatch(batch, extraPointerOps);
+    }
+  }
+
+  private static final class AwaitingMigrationMemoryJobIndexBackend
+      extends MemoryReconcileJobIndexBackend {
+    private int discoveryCalls;
+
+    @Override
+    public boolean legacyCleanupMigrationComplete() {
+      return false;
+    }
+
+    @Override
+    public ReconcileJobIndexCleanupManifest discoverLegacyCleanupManifest(
+        String canonicalPointerKey) {
+      discoveryCalls++;
+      return super.discoverLegacyCleanupManifest(canonicalPointerKey);
     }
   }
 

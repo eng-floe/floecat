@@ -16,4 +16,13 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
-public record JobIndexEntrySnapshot(String pointerKey, String blobUri, long version) {}
+public record JobIndexEntrySnapshot(
+    String pointerKey, String blobUri, long version, String lookupStoragePartitionKey) {
+  public JobIndexEntrySnapshot(String pointerKey, String blobUri, long version) {
+    this(pointerKey, blobUri, version, "");
+  }
+
+  public JobIndexEntrySnapshot {
+    lookupStoragePartitionKey = lookupStoragePartitionKey == null ? "" : lookupStoragePartitionKey;
+  }
+}

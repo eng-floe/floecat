@@ -42,20 +42,32 @@ final class DynamoReconcileJobLookupCompatibility {
         .toList();
   }
 
-  static List<TransactWriteItem> deletes(
-      String table, JobIndexBackendSupport.LookupKey lookupKey, long expectedVersion) {
-    return deletes(table, lookupKey, expectedVersion, "");
-  }
-
-  static List<TransactWriteItem> deletes(
+  static List<TransactWriteItem> ownedDeletes(
       String table,
       JobIndexBackendSupport.LookupKey lookupKey,
       long expectedVersion,
-      String expectedCanonicalPointerKey) {
+      String expectedCanonicalPointerKey,
+      String expectedStoragePartitionKey) {
+    if (expectedCanonicalPointerKey == null || expectedCanonicalPointerKey.isBlank()) {
+      throw new IllegalArgumentException("lookup deletes require an expected canonical owner");
+    }
+    if (expectedStoragePartitionKey == null || expectedStoragePartitionKey.isBlank()) {
+      throw new IllegalArgumentException("lookup deletes require an observed storage partition");
+    }
+    boolean knownStoragePartition =
+        JobIndexBackendSupport.lookupReadStorageKeys(lookupKey).stream()
+            .anyMatch(key -> expectedStoragePartitionKey.equals(key.partitionKey()));
+    if (!knownStoragePartition) {
+      throw new IllegalArgumentException(
+          "lookup delete has an unknown observed storage partition: "
+              + expectedStoragePartitionKey);
+    }
     return JobIndexBackendSupport.lookupReadStorageKeys(lookupKey).stream()
         .map(
             key ->
-                deleteIfVersionOrAbsent(table, key, expectedVersion, expectedCanonicalPointerKey))
+                expectedStoragePartitionKey.equals(key.partitionKey())
+                    ? deleteOwned(table, key, expectedVersion, expectedCanonicalPointerKey)
+                    : checkAbsentOrNotOwned(table, key, expectedCanonicalPointerKey))
         .toList();
   }
 
@@ -72,32 +84,43 @@ final class DynamoReconcileJobLookupCompatibility {
         .build();
   }
 
-  private static TransactWriteItem deleteIfVersionOrAbsent(
+  private static TransactWriteItem deleteOwned(
       String table,
       JobIndexBackendSupport.LookupStorageKey key,
       long expectedVersion,
       String expectedCanonicalPointerKey) {
-    boolean checkOwner =
-        expectedCanonicalPointerKey != null && !expectedCanonicalPointerKey.isBlank();
-    Map<String, String> names = new java.util.HashMap<>();
-    names.put("#pk", ATTR_PARTITION_KEY);
-    names.put("#v", ATTR_VERSION);
-    Map<String, AttributeValue> values = new java.util.HashMap<>();
-    values.put(":expected", AttributeValue.fromN(Long.toString(expectedVersion)));
-    String condition = "attribute_not_exists(#pk) OR #v = :expected";
-    if (checkOwner) {
-      names.put("#owner", JobIndexBackendSupport.ATTR_BLOB_URI);
-      values.put(":owner", AttributeValue.fromS(expectedCanonicalPointerKey));
-      condition = "attribute_not_exists(#pk) OR (#v = :expected AND #owner = :owner)";
-    }
     return TransactWriteItem.builder()
         .delete(
             Delete.builder()
                 .tableName(table)
                 .key(dynamoKey(key))
-                .conditionExpression(condition)
-                .expressionAttributeNames(names)
-                .expressionAttributeValues(values)
+                .conditionExpression("#v = :expected AND #owner = :owner")
+                .expressionAttributeNames(
+                    Map.of("#v", ATTR_VERSION, "#owner", JobIndexBackendSupport.ATTR_BLOB_URI))
+                .expressionAttributeValues(
+                    Map.of(
+                        ":expected", AttributeValue.fromN(Long.toString(expectedVersion)),
+                        ":owner", AttributeValue.fromS(expectedCanonicalPointerKey)))
+                .build())
+        .build();
+  }
+
+  private static TransactWriteItem checkAbsentOrNotOwned(
+      String table,
+      JobIndexBackendSupport.LookupStorageKey key,
+      String expectedCanonicalPointerKey) {
+    return TransactWriteItem.builder()
+        .conditionCheck(
+            ConditionCheck.builder()
+                .tableName(table)
+                .key(dynamoKey(key))
+                .conditionExpression(
+                    "attribute_not_exists(#pk) OR attribute_not_exists(#owner) OR #owner <> :owner")
+                .expressionAttributeNames(
+                    Map.of(
+                        "#pk", ATTR_PARTITION_KEY, "#owner", JobIndexBackendSupport.ATTR_BLOB_URI))
+                .expressionAttributeValues(
+                    Map.of(":owner", AttributeValue.fromS(expectedCanonicalPointerKey)))
                 .build())
         .build();
   }

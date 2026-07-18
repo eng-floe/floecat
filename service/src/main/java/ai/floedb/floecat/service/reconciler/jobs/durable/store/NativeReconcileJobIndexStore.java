@@ -831,7 +831,12 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       return;
     }
     if (canonicalPointerKey.equals(existing.blobUri())) {
-      ops.add(new JobIndexDelete(pointerKey, existing.version(), canonicalPointerKey));
+      ops.add(
+          new JobIndexDelete(
+              pointerKey,
+              existing.version(),
+              canonicalPointerKey,
+              existing.lookupStoragePartitionKey()));
     }
   }
 
