@@ -214,6 +214,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
 
           if (pointerStore.compareAndSetBatch(ops)) {
+            healCanonicalBlobIfMissing(blobUri, value);
             return;
           }
 
@@ -314,6 +315,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
 
           if (pointerStore.compareAndSetBatch(ops)) {
+            healCanonicalBlobIfMissing(blobUri, value);
             return true;
           }
           return classifyCreateIfAbsentConflict(
@@ -523,10 +525,33 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
 
           if (pointerStore.compareAndSetBatch(ops)) {
+            healCanonicalBlobIfMissing(blobUri, updatedValue);
             return true;
           }
           return classifyUpdateConflict(canonicalPointer, expectedCanonicalVersion, blobUri, toAdd);
         });
+  }
+
+  /**
+   * Post-commit backstop for the CAS-GC mark/CAS race (eng-floe/core#1904): if a concurrent sweep
+   * deleted the (re-referenced) canonical blob between this call's writeBlob and its pointer batch
+   * commit, re-PUT it — the writer still holds the bytes, so the residual race becomes a transient
+   * blip instead of a permanent dangling pointer, and a pre-existing dangling heals on the next
+   * write. One cheap HEAD per committed write. Best-effort: the pointers HAVE committed, so a heal
+   * failure must not fail the call; the warn is the GC-race detection signal.
+   */
+  private void healCanonicalBlobIfMissing(String blobUri, T value) {
+    try {
+      if (blobStore.head(blobUri).isPresent()) {
+        return;
+      }
+      log.warnf(
+          "canonical %s blob %s missing after pointer commit; re-writing (gc-race heal)",
+          schema.resourceName, blobUri);
+      writeBlob(blobUri, value);
+    } catch (RuntimeException e) {
+      log.errorf(e, "failed to heal canonical blob %s after pointer commit", blobUri);
+    }
   }
 
   private boolean classifyUpdateConflict(
