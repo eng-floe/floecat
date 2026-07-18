@@ -18,6 +18,7 @@ package ai.floedb.floecat.storage.memory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
@@ -57,11 +58,31 @@ class InMemoryBlobStoreVersioningTest {
   }
 
   @Test
-  void blankVersionDegradesToUnconditionalDelete() {
+  void aStaleVersionIdCannotDeleteARecreatedBlob() {
+    // Version ids are store-wide unique and never reused: a delete-and-recreate of the same key
+    // must not resurrect an old id, or a stale versioned delete (the GC's) would remove the
+    // recreation — the ABA shape of the eng-floe/core#1904 race.
+    var store = new InMemoryBlobStore();
+    store.put("/k", BYTES, "text/plain");
+    String observed = store.head("/k").orElseThrow().getVersionId();
+    assertTrue(store.delete("/k"));
+    store.put("/k", BYTES, "text/plain");
+
+    assertFalse(store.delete("/k", observed), "a pre-delete version id must not match again");
+    assertTrue(store.head("/k").isPresent(), "the recreated blob survives the stale delete");
+  }
+
+  @Test
+  void modelsAVersioningEnabledBucket() {
+    assertTrue(new InMemoryBlobStore().supportsVersionedDeletes());
+  }
+
+  @Test
+  void aBlankVersionIdIsRejectedNotDegradedToUnconditional() {
     var store = new InMemoryBlobStore();
     store.put("/k", BYTES, "text/plain");
 
-    assertTrue(store.delete("/k", ""));
-    assertTrue(store.head("/k").isEmpty());
+    assertThrows(IllegalArgumentException.class, () -> store.delete("/k", ""));
+    assertTrue(store.head("/k").isPresent(), "nothing was deleted");
   }
 }

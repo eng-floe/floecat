@@ -43,8 +43,10 @@ public class InMemoryBlobStore implements BlobStore {
   private static final class Blob {
     final byte[] data;
     final BlobHeader hdr;
-    // Per-key monotonic write counter emulating S3 object versions (exposed as
-    // BlobHeader.versionId) so version-targeted delete semantics are deterministically testable.
+    // Write counter emulating S3 object versions (exposed as BlobHeader.versionId) so
+    // version-targeted delete semantics are deterministically testable. Ids are STORE-wide unique
+    // and never reused, so a delete-and-recreate of a key cannot resurrect an old id (the ABA a
+    // stale versioned delete would otherwise exploit).
     final long version;
 
     Blob(byte[] d, BlobHeader h, long version) {
@@ -55,6 +57,14 @@ public class InMemoryBlobStore implements BlobStore {
   }
 
   private final Map<String, Blob> map = new ConcurrentHashMap<>();
+  private final java.util.concurrent.atomic.AtomicLong versionCounter =
+      new java.util.concurrent.atomic.AtomicLong();
+
+  /** Models an S3 bucket with versioning Enabled: ids are immutable, unique, never reused. */
+  @Override
+  public boolean supportsVersionedDeletes() {
+    return true;
+  }
 
   @Override
   public void put(String uri, byte[] bytes, String contentType) {
@@ -74,7 +84,7 @@ public class InMemoryBlobStore implements BlobStore {
           final BlobHeader prevHdr = prev == null ? null : prev.hdr;
           final Timestamp createdAt =
               prevHdr == null ? Timestamps.fromMillis(now) : prevHdr.getCreatedAt();
-          final long version = prev == null ? 1L : prev.version + 1;
+          final long version = versionCounter.incrementAndGet();
 
           BlobHeader.Builder hb =
               BlobHeader.newBuilder()
@@ -116,7 +126,8 @@ public class InMemoryBlobStore implements BlobStore {
   @Override
   public boolean delete(String uri, String versionId) {
     if (versionId == null || versionId.isBlank()) {
-      return delete(uri);
+      // Match the S3 store: never degrade to the unconditional delete.
+      throw new IllegalArgumentException("versioned delete requires a versionId: " + uri);
     }
     final String k = normalize(uri);
     boolean[] removed = {false};
