@@ -59,6 +59,64 @@ Extensibility:
 - Wrap additional S3 options (encryption, storage classes) inside `S3BlobStore` by extending metadata
   tags.
 
+### Required S3 versioning and lifecycle policy
+
+An S3-backed deployment **must** provision both of the following on the bucket configured by
+`floecat.blob.s3.bucket`:
+
+1. Bucket versioning with status `Enabled`. CAS blob GC fails closed when versioning is disabled or
+   suspended because it cannot safely race a blob re-reference without immutable version IDs. The
+   service role needs `s3:GetBucketVersioning` to verify this prerequisite, and — because CAS GC
+   deletes a specific version id (`DeleteObject` with `versionId`), not the current version —
+   `s3:DeleteObjectVersion`. Plain `s3:DeleteObject` is insufficient: without
+   `s3:DeleteObjectVersion` every version-targeted GC delete fails with `AccessDenied` and aborts
+   the tick.
+2. A `NoncurrentVersionExpiration` lifecycle rule. Repository writes deliberately PUT recurring
+   content-addressed keys again on every re-reference. Each PUT refreshes the current version for GC
+   safety and makes the previous version noncurrent. CAS GC only lists and deletes current versions;
+   without a bucket lifecycle rule, noncurrent versions of hot keys accumulate indefinitely. See
+   [Deleting object versions from a versioning-enabled bucket](https://docs.aws.amazon.com/AmazonS3/latest/userguide/DeletingObjectVersions.html)
+   for AWS's lifecycle and billing behavior.
+
+Choose the expiration window and retained-version count to match the deployment's recovery policy.
+For example, the following rule keeps at least three newer noncurrent versions and does not expire a
+noncurrent version until it has been noncurrent for 30 days:
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "floecat-expire-noncurrent-cas-versions",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "" },
+      "NoncurrentVersionExpiration": {
+        "NoncurrentDays": 30,
+        "NewerNoncurrentVersions": 3
+      }
+    }
+  ]
+}
+```
+
+Apply the rule through the deployment's bucket IaC. For a newly provisioned bucket, the equivalent
+AWS CLI operations are:
+
+```bash
+aws s3api put-bucket-versioning \
+  --bucket "$FLOECAT_BLOB_S3_BUCKET" \
+  --versioning-configuration Status=Enabled
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket "$FLOECAT_BLOB_S3_BUCKET" \
+  --lifecycle-configuration file://floecat-blob-lifecycle.json
+```
+
+`put-bucket-lifecycle-configuration` replaces the bucket's complete lifecycle configuration. When a
+bucket already has lifecycle rules, merge the Floecat rule into the existing `Rules` array instead of
+overwriting it. The provisioning identity needs `s3:PutLifecycleConfiguration`; the Floecat runtime
+identity does not. Expiration permanently removes noncurrent versions, so shortening the example
+window trades recovery history for lower storage cost. The bundled LocalStack initializer provisions
+this example policy automatically.
+
 ## Examples & Scenarios
 - **Production deployment** – Set `floecat.kv=dynamodb`, `floecat.blob=s3`, supply the DynamoDB table
   name and S3 bucket. On startup, `AwsClients` initialises AWS SDK clients and repositories begin
