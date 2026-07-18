@@ -36,7 +36,6 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -112,10 +111,8 @@ class DynamoReconcileJobIndexBackendTest {
   }
 
   @Test
-  void lookupLoadFallsBackToLegacyCanonicalPartition() {
+  void lookupLoadFallsBackToLegacyCanonicalPartitionWithoutMigrating() {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
-    when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
-        .thenReturn(TransactWriteItemsResponse.builder().build());
     when(dynamoDb.getItem(any(GetItemRequest.class)))
         .thenAnswer(
             invocation -> {
@@ -149,6 +146,7 @@ class DynamoReconcileJobIndexBackendTest {
     assertEquals(LOOKUP_KEY, loaded.pointerKey());
     assertEquals(CANONICAL_KEY, loaded.blobUri());
     assertEquals(1L, loaded.version());
+    assertEquals(JobIndexBackendSupport.legacyLookupPartitionKey(), loaded.lookupStoragePartitionKey());
     ArgumentCaptor<GetItemRequest> captor = ArgumentCaptor.forClass(GetItemRequest.class);
     verify(dynamoDb, times(2)).getItem(captor.capture());
     assertEquals(
@@ -156,16 +154,7 @@ class DynamoReconcileJobIndexBackendTest {
         captor.getAllValues().stream()
             .map(request -> request.key().get(ATTR_PARTITION_KEY).s())
             .toList());
-    ArgumentCaptor<TransactWriteItemsRequest> txCaptor =
-        ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
-    verify(dynamoDb).transactWriteItems(txCaptor.capture());
-    assertEquals(2, txCaptor.getValue().transactItems().size());
-    assertEquals(
-        "reconcile-job-lookup",
-        txCaptor.getValue().transactItems().get(0).put().item().get(ATTR_PARTITION_KEY).s());
-    assertEquals(
-        "reconcile-job/by-id",
-        txCaptor.getValue().transactItems().get(1).delete().key().get(ATTR_PARTITION_KEY).s());
+    verify(dynamoDb, never()).transactWriteItems(any(TransactWriteItemsRequest.class));
   }
 
   @Test
@@ -199,27 +188,33 @@ class DynamoReconcileJobIndexBackendTest {
   }
 
   @Test
-  void lookupLoadDeletesConflictingLegacyOwnerAndKeepsCurrentOwnerAuthoritative() {
+  void legacyLookupBackfillDeletesConflictingLegacyOwnerAndKeepsCurrentOwnerAuthoritative() {
     String conflictingCanonical = Keys.reconcileJobPointerById("acct-legacy", JOB_ID);
-    AtomicInteger currentReads = new AtomicInteger();
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.query(any(QueryRequest.class)))
+        .thenReturn(
+            QueryResponse.builder()
+                .items(
+                    Map.of(
+                        ATTR_PARTITION_KEY,
+                        AttributeValue.fromS(JobIndexBackendSupport.legacyLookupPartitionKey()),
+                        ATTR_SORT_KEY,
+                        AttributeValue.fromS("job/" + JOB_ID),
+                        ATTR_KIND,
+                        AttributeValue.fromS(JobIndexBackendSupport.KIND_CANONICAL_JOB),
+                        ATTR_VERSION,
+                        AttributeValue.fromN("1"),
+                        JobIndexBackendSupport.ATTR_POINTER_KEY,
+                        AttributeValue.fromS(LOOKUP_KEY),
+                        JobIndexBackendSupport.ATTR_BLOB_URI,
+                        AttributeValue.fromS(conflictingCanonical)))
+                .build());
     when(dynamoDb.getItem(any(GetItemRequest.class)))
         .thenAnswer(
             invocation -> {
               GetItemRequest request = invocation.getArgument(0);
               String partitionKey = request.key().get(ATTR_PARTITION_KEY).s();
-              String owner;
-              String kind;
-              if (JobIndexBackendSupport.lookupPartitionKey().equals(partitionKey)) {
-                if (currentReads.getAndIncrement() == 0) {
-                  return GetItemResponse.builder().build();
-                }
-                owner = CANONICAL_KEY;
-                kind = JobIndexBackendSupport.KIND_LOOKUP;
-              } else if (JobIndexBackendSupport.legacyLookupPartitionKey().equals(partitionKey)) {
-                owner = conflictingCanonical;
-                kind = JobIndexBackendSupport.KIND_CANONICAL_JOB;
-              } else {
+              if (!JobIndexBackendSupport.lookupPartitionKey().equals(partitionKey)) {
                 return GetItemResponse.builder().build();
               }
               return GetItemResponse.builder()
@@ -230,13 +225,13 @@ class DynamoReconcileJobIndexBackendTest {
                           ATTR_SORT_KEY,
                           AttributeValue.fromS("job/" + JOB_ID),
                           ATTR_KIND,
-                          AttributeValue.fromS(kind),
+                          AttributeValue.fromS(JobIndexBackendSupport.KIND_LOOKUP),
                           ATTR_VERSION,
                           AttributeValue.fromN("1"),
                           JobIndexBackendSupport.ATTR_POINTER_KEY,
                           AttributeValue.fromS(LOOKUP_KEY),
                           JobIndexBackendSupport.ATTR_BLOB_URI,
-                          AttributeValue.fromS(owner)))
+                          AttributeValue.fromS(CANONICAL_KEY)))
                   .build();
             });
     when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
@@ -245,9 +240,12 @@ class DynamoReconcileJobIndexBackendTest {
     DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
     backend.bind(() -> dynamoDb, TABLE);
 
-    JobIndexEntrySnapshot loaded = backend.loadIndexEntry(LOOKUP_KEY).orElseThrow();
+    var result = backend.migrateLegacyLookupEntries(25, "");
 
-    assertEquals(CANONICAL_KEY, loaded.blobUri());
+    assertEquals(1, result.scanned());
+    assertEquals(1, result.migrated());
+    assertEquals(0, result.conflicted());
+    assertEquals(0, result.retryable());
     ArgumentCaptor<TransactWriteItemsRequest> txCaptor =
         ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
     verify(dynamoDb, times(2)).transactWriteItems(txCaptor.capture());
@@ -742,6 +740,37 @@ class DynamoReconcileJobIndexBackendTest {
         updateCaptor.getValue().expressionAttributeValues().get(":ready").l().stream()
             .map(AttributeValue::s)
             .toList());
+  }
+
+  @Test
+  void legacyCleanupMigrationReportsUnresolvableRowsWithoutBlockingConflicts() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.getItem(any(GetItemRequest.class))).thenReturn(GetItemResponse.builder().build());
+    when(dynamoDb.scan(any(ScanRequest.class)))
+        .thenReturn(
+            ScanResponse.builder()
+                .scannedCount(1)
+                .items(
+                    Map.of(
+                        ATTR_KIND,
+                        AttributeValue.fromS(JobIndexBackendSupport.KIND_PARENT),
+                        JobIndexBackendSupport.ATTR_POINTER_KEY,
+                        AttributeValue.fromS("/corrupt/legacy/parent"),
+                        JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY,
+                        AttributeValue.fromS("not-a-canonical-pointer")))
+                .build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+
+    var result = backend.migrateLegacyCleanupManifests(500, "");
+
+    assertEquals(1, result.scanned());
+    assertEquals(0, result.manifestsUpdated());
+    assertEquals(1, result.unresolvable());
+    assertEquals(0, result.conflicted());
+    assertEquals(0, result.retryable());
+    verify(dynamoDb, never()).updateItem(any(UpdateItemRequest.class));
+    verify(dynamoDb, never()).transactWriteItems(any(TransactWriteItemsRequest.class));
   }
 
   @Test

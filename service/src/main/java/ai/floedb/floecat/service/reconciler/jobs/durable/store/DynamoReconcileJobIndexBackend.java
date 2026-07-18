@@ -95,23 +95,9 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         return current;
       }
       var legacyKey = JobIndexBackendSupport.legacyLookupStorageKey(lookupKey);
-      Optional<JobIndexEntrySnapshot> legacy = loadLookupPointer(legacyKey);
-      if (legacy.isEmpty()) {
-        return Optional.empty();
-      }
-      LegacyLookupMigrationOutcome migration = migrateLegacyLookup(lookupKey, legacy.get());
-      if (migration == LegacyLookupMigrationOutcome.MIGRATED) {
-        return Optional.of(
-            new JobIndexEntrySnapshot(
-                legacy.get().pointerKey(),
-                legacy.get().blobUri(),
-                legacy.get().version(),
-                currentKey.partitionKey()));
-      }
-      if (migration == LegacyLookupMigrationOutcome.CONFLICT_RESOLVED) {
-        return loadLookupPointer(currentKey);
-      }
-      return loadLookupPointer(currentKey).or(() -> legacy);
+      // Keep reads side-effect-free. The scheduled legacy lookup migrator owns relocation and
+      // conflict cleanup; readers only preserve current-first, legacy-second compatibility.
+      return loadLookupPointer(legacyKey);
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(pointerKey);
     if (canonicalKey != null) {
@@ -347,7 +333,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   @Override
   public LegacyCleanupMigrationPage migrateLegacyCleanupManifests(int limit, String pageToken) {
     if (legacyCleanupMigrationMarkedComplete()) {
-      return new LegacyCleanupMigrationPage(0, 0, 0, 0, "");
+      return new LegacyCleanupMigrationPage(0, 0, 0, 0, 0, "");
     }
 
     List<String> kinds =
@@ -400,12 +386,13 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
 
     var response = dynamoCaller.call(dynamoDbClientManager, client -> client.scan(scan.build()));
     Map<String, LegacyCleanupManifestBuilder> manifests = new java.util.LinkedHashMap<>();
+    int unresolvable = 0;
     int conflicted = 0;
     for (var item : response.items()) {
       String canonicalPointerKey = canonicalPointerForCleanupItem(item);
       if (blank(canonicalPointerKey)
           || JobIndexBackendSupport.parseCanonicalJobKey(canonicalPointerKey) == null) {
-        conflicted++;
+        unresolvable++;
         continue;
       }
       LegacyCleanupManifestBuilder manifest =
@@ -447,7 +434,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
               stringAttr(response.lastEvaluatedKey(), ATTR_SORT_KEY));
     }
     return new LegacyCleanupMigrationPage(
-        response.scannedCount(), updated, conflicted, retryable, nextToken);
+        response.scannedCount(), updated, unresolvable, conflicted, retryable, nextToken);
   }
 
   @Override

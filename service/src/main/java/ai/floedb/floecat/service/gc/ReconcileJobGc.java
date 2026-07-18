@@ -88,7 +88,12 @@ public class ReconcileJobGc {
       int scanned, int migrated, int conflicted, int retryable, String nextToken) {}
 
   public record CleanupMigrationResult(
-      int scanned, int manifestsUpdated, int conflicted, int retryable, String nextToken) {}
+      int scanned,
+      int manifestsUpdated,
+      int unresolvable,
+      int conflicted,
+      int retryable,
+      String nextToken) {}
 
   public CleanupMigrationResult runLegacyCleanupMigrationSlice(String pageTokenIn) {
     int pageSize =
@@ -102,6 +107,7 @@ public class ReconcileJobGc {
     return new CleanupMigrationResult(
         page.scanned(),
         page.manifestsUpdated(),
+        page.unresolvable(),
         page.conflicted(),
         page.retryable(),
         page.nextPageToken());

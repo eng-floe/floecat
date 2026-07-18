@@ -37,6 +37,7 @@ public class ReconcileJobLegacyMigrationScheduler {
 
   private GcMetrics metrics;
   private volatile String cleanupToken = "";
+  private volatile int cleanupUnresolvableThisPass;
   private volatile int cleanupConflictedThisPass;
   private volatile int cleanupRetryableThisPass;
   private volatile boolean cleanupComplete;
@@ -87,24 +88,36 @@ public class ReconcileJobLegacyMigrationScheduler {
       return;
     }
     var result = gc.runLegacyCleanupMigrationSlice(cleanupToken);
+    cleanupUnresolvableThisPass += result.unresolvable();
     cleanupConflictedThisPass += result.conflicted();
     cleanupRetryableThisPass += result.retryable();
     cleanupToken = blankToEmpty(result.nextToken());
     metrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "cleanup-scanned"));
     metrics.recordCollection(
         result.manifestsUpdated(), Tag.of(TagKey.RESULT, "cleanup-manifests-updated"));
+    metrics.recordCollection(
+        result.unresolvable(), Tag.of(TagKey.RESULT, "cleanup-unresolvable"));
     metrics.recordCollection(result.conflicted(), Tag.of(TagKey.RESULT, "cleanup-conflicted"));
     metrics.recordCollection(result.retryable(), Tag.of(TagKey.RESULT, "cleanup-retryable"));
     if (!cleanupToken.isBlank()) {
       return;
     }
 
+    int passUnresolvable = cleanupUnresolvableThisPass;
     int passConflicted = cleanupConflictedThisPass;
     int passRetryable = cleanupRetryableThisPass;
+    cleanupUnresolvableThisPass = 0;
     cleanupConflictedThisPass = 0;
     cleanupRetryableThisPass = 0;
     if (passRetryable == 0 && passConflicted == 0) {
       cleanupComplete = gc.completeLegacyCleanupMigration();
+    }
+    if (cleanupComplete && passUnresolvable > 0) {
+      metrics.recordCollection(
+          passUnresolvable, Tag.of(TagKey.RESULT, "cleanup-completed-unresolvable"));
+      LOG.warnf(
+          "reconcile job legacy cleanup migration completed with unresolvable rows=%d; affected rows require operator review",
+          passUnresolvable);
     }
     if (passConflicted > 0) {
       metrics.recordCollection(passConflicted, Tag.of(TagKey.RESULT, "cleanup-blocked-conflicted"));

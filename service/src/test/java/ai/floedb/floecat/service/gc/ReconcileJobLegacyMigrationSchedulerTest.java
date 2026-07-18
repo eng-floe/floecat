@@ -69,8 +69,8 @@ class ReconcileJobLegacyMigrationSchedulerTest {
   @Test
   void cleanupMigrationRetriesBeforeWritingCompletionMarker() {
     RecordingGc gc = new RecordingGc();
-    gc.cleanupResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 2, 0, 1, ""));
-    gc.cleanupResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 3, 0, 0, ""));
+    gc.cleanupResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 2, 0, 0, 1, ""));
+    gc.cleanupResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 3, 0, 0, 0, ""));
     ReconcileJobLegacyMigrationScheduler scheduler = scheduler(gc);
 
     scheduler.tick();
@@ -84,8 +84,8 @@ class ReconcileJobLegacyMigrationSchedulerTest {
   @Test
   void cleanupMigrationDoesNotCompleteWhileConflictsRemain() {
     RecordingGc gc = new RecordingGc();
-    gc.cleanupResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 2, 3, 0, ""));
-    gc.cleanupResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 0, 3, 0, ""));
+    gc.cleanupResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 2, 0, 3, 0, ""));
+    gc.cleanupResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 0, 0, 3, 0, ""));
     ReconcileJobLegacyMigrationScheduler scheduler = scheduler(gc);
 
     scheduler.tick();
@@ -93,6 +93,19 @@ class ReconcileJobLegacyMigrationSchedulerTest {
 
     assertEquals(2, gc.cleanupMigrationCalls);
     assertEquals(0, gc.cleanupCompletionCalls);
+  }
+
+  @Test
+  void cleanupMigrationCompletesWithUnresolvableRows() {
+    RecordingGc gc = new RecordingGc();
+    gc.cleanupResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 2, 3, 0, 0, ""));
+    ReconcileJobLegacyMigrationScheduler scheduler = scheduler(gc);
+
+    scheduler.tick();
+    scheduler.tick();
+
+    assertEquals(1, gc.cleanupMigrationCalls);
+    assertEquals(1, gc.cleanupCompletionCalls);
   }
 
   private static ReconcileJobLegacyMigrationScheduler scheduler(RecordingGc gc) {
@@ -114,7 +127,7 @@ class ReconcileJobLegacyMigrationSchedulerTest {
     public CleanupMigrationResult runLegacyCleanupMigrationSlice(String pageToken) {
       cleanupMigrationCalls++;
       return cleanupResults.isEmpty()
-          ? new CleanupMigrationResult(0, 0, 0, 0, "")
+          ? new CleanupMigrationResult(0, 0, 0, 0, 0, "")
           : cleanupResults.removeFirst();
     }
 

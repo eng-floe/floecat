@@ -27,8 +27,14 @@ public interface ReconcileJobIndexBackend {
       int scanned, int migrated, int conflicted, int retryable, String nextPageToken) {}
 
   record LegacyCleanupMigrationPage(
-      int scanned, int manifestsUpdated, int conflicted, int retryable, String nextPageToken) {}
+      int scanned,
+      int manifestsUpdated,
+      int unresolvable,
+      int conflicted,
+      int retryable,
+      String nextPageToken) {}
 
+  /** Loads an index entry without modifying the backing store. */
   Optional<JobIndexEntrySnapshot> loadIndexEntry(String pointerKey);
 
   default LegacyLookupMigrationPage migrateLegacyLookupEntries(int limit, String pageToken) {
@@ -40,7 +46,7 @@ public interface ReconcileJobIndexBackend {
   }
 
   default LegacyCleanupMigrationPage migrateLegacyCleanupManifests(int limit, String pageToken) {
-    return new LegacyCleanupMigrationPage(0, 0, 0, 0, "");
+    return new LegacyCleanupMigrationPage(0, 0, 0, 0, 0, "");
   }
 
   default boolean completeLegacyCleanupMigration() {
