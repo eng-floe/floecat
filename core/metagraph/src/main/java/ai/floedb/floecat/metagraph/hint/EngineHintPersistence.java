@@ -80,5 +80,25 @@ public interface EngineHintPersistence {
     }
   }
 
+  /**
+   * Persists a relation hint and column hints together. Implementations should apply both in a
+   * single mutation of the underlying resource so callers producing them at the same time (e.g. a
+   * decorator completing a relation) do not issue two writes back to back. {@code relationPayload}
+   * may be null (columns only) and {@code columnHints} may be empty (relation only).
+   */
+  default void persistRelationAndColumnHints(
+      ResourceId relationId,
+      String relationPayloadType,
+      byte[] relationPayload,
+      String engineKind,
+      String engineVersion,
+      List<ColumnHint> columnHints) {
+    if (relationPayload != null) {
+      persistRelationHint(
+          relationId, relationPayloadType, engineKind, engineVersion, relationPayload);
+    }
+    persistColumnHints(relationId, engineKind, engineVersion, columnHints);
+  }
+
   record ColumnHint(String payloadType, long columnId, byte[] payload) {}
 }

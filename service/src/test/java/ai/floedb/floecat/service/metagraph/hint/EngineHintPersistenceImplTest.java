@@ -193,6 +193,52 @@ class EngineHintPersistenceImplTest {
   }
 
   @Test
+  void persistRelationAndColumnHints_singleRepositoryUpdate() {
+    Table table = Table.newBuilder().setResourceId(TABLE_ID).build();
+    when(tableRepository.getById(TABLE_ID)).thenReturn(Optional.of(table));
+    when(tableRepository.metaForSafe(TABLE_ID)).thenReturn(meta(42L));
+    when(tableRepository.update(any(Table.class), eq(42L))).thenReturn(true);
+
+    persistence.persistRelationAndColumnHints(
+        TABLE_ID,
+        PAYLOAD_TYPE,
+        PAYLOAD,
+        ENGINE_KIND,
+        ENGINE_VERSION,
+        List.of(new EngineHintPersistence.ColumnHint("floe.column+proto", 5L, PAYLOAD)));
+
+    ArgumentCaptor<Table> tableCaptor = ArgumentCaptor.forClass(Table.class);
+    verify(tableRepository).update(tableCaptor.capture(), eq(42L));
+    Table updated = tableCaptor.getValue();
+    assertThat(updated.getPropertiesMap())
+        .containsEntry(EngineHintMetadata.tableHintKey(PAYLOAD_TYPE), encode())
+        .containsEntry(EngineHintMetadata.columnHintKey("floe.column+proto", 5L), encode());
+    verify(cacheInvalidator).accept(TABLE_ID);
+  }
+
+  @Test
+  void persistRelationAndColumnHints_noopWhenAllPresent() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(TABLE_ID)
+            .putProperties(EngineHintMetadata.tableHintKey(PAYLOAD_TYPE), encode())
+            .putProperties(EngineHintMetadata.columnHintKey("floe.column+proto", 5L), encode())
+            .build();
+    when(tableRepository.getById(TABLE_ID)).thenReturn(Optional.of(table));
+
+    persistence.persistRelationAndColumnHints(
+        TABLE_ID,
+        PAYLOAD_TYPE,
+        PAYLOAD,
+        ENGINE_KIND,
+        ENGINE_VERSION,
+        List.of(new EngineHintPersistence.ColumnHint("floe.column+proto", 5L, PAYLOAD)));
+
+    verify(tableRepository, never()).update(any(), anyLong());
+    verify(cacheInvalidator, never()).accept(any());
+  }
+
+  @Test
   void deduplicateColumnHints_keepsSingleEntryPerColumnType() {
     List<EngineHintPersistence.ColumnHint> hints =
         List.of(

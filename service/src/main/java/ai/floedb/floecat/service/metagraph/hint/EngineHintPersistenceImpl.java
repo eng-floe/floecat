@@ -160,6 +160,74 @@ public final class EngineHintPersistenceImpl implements EngineHintPersistence {
     }
   }
 
+  @Override
+  public void persistRelationAndColumnHints(
+      ResourceId relationId,
+      String relationPayloadType,
+      byte[] relationPayload,
+      String engineKind,
+      String engineVersion,
+      List<EngineHintPersistence.ColumnHint> columnHints) {
+    if (relationId == null) {
+      return;
+    }
+    String relationKey =
+        relationPayload == null ? null : EngineHintMetadata.tableHintKey(relationPayloadType);
+    String relationEncoded =
+        relationPayload == null
+            ? null
+            : EngineHintMetadata.encodeValue(engineKind, engineVersion, relationPayload);
+    Map<String, EngineHintPersistence.ColumnHint> deduped =
+        columnHints == null ? Map.of() : deduplicateColumnHints(columnHints);
+    if (relationKey == null && deduped.isEmpty()) {
+      return;
+    }
+    ResourceKind kind = relationId.getKind();
+    if (kind == ResourceKind.RK_TABLE) {
+      persistTable(
+          relationId,
+          builder -> {
+            boolean changed = false;
+            if (relationKey != null
+                && !relationEncoded.equals(builder.getPropertiesMap().get(relationKey))) {
+              builder.putProperties(relationKey, relationEncoded);
+              changed = true;
+            }
+            changed |=
+                applyColumnHints(
+                    deduped,
+                    builder.getPropertiesMap(),
+                    builder::putProperties,
+                    engineKind,
+                    engineVersion);
+            return changed;
+          });
+      return;
+    }
+    if (kind == ResourceKind.RK_VIEW) {
+      persistView(
+          relationId,
+          builder -> {
+            boolean changed = false;
+            if (relationKey != null
+                && !relationEncoded.equals(builder.getPropertiesMap().get(relationKey))) {
+              builder.putProperties(relationKey, relationEncoded);
+              changed = true;
+            }
+            changed |=
+                applyColumnHints(
+                    deduped,
+                    builder.getPropertiesMap(),
+                    builder::putProperties,
+                    engineKind,
+                    engineVersion);
+            return changed;
+          });
+      return;
+    }
+    LOG.debugf("Skipping engine hints for non-table relation %s", relationId);
+  }
+
   private boolean applyColumnHints(
       Map<String, EngineHintPersistence.ColumnHint> deduped,
       Map<String, String> properties,
