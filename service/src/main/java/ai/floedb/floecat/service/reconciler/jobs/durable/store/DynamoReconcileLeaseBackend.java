@@ -22,7 +22,6 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
-import ai.floedb.floecat.storage.spi.PointerStore.CasDelete;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -167,7 +166,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
         if (write instanceof ReconcileJobIndexStore.JobIndexUpsert upsert) {
           appendJobIndexUpsert(tx, upsert);
         } else if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
-          appendJobIndexDelete(tx, new CasDelete(delete.pointerKey(), delete.expectedVersion()));
+          appendJobIndexDelete(tx, delete);
         } else if (write instanceof ReconcileJobIndexStore.JobIndexCheckAbsent check) {
           appendJobIndexCheckAbsent(tx, check.pointerKey());
         }
@@ -542,15 +541,16 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     return false;
   }
 
-  private boolean appendJobIndexDelete(List<TransactWriteItem> tx, CasDelete delete) {
-    var lookupKey = JobIndexBackendSupport.parseLookupKey(delete.key());
+  private boolean appendJobIndexDelete(
+      List<TransactWriteItem> tx, ReconcileJobIndexStore.JobIndexDelete delete) {
+    var lookupKey = JobIndexBackendSupport.parseLookupKey(delete.pointerKey());
     if (lookupKey != null) {
       tx.addAll(
           DynamoReconcileJobLookupCompatibility.deletes(
-              table, lookupKey, delete.expectedVersion()));
+              table, lookupKey, delete.expectedVersion(), delete.expectedCanonicalPointerKey()));
       return true;
     }
-    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(delete.key());
+    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(delete.pointerKey());
     if (canonicalKey != null) {
       tx.add(
           buildDelete(
@@ -559,58 +559,58 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               delete.expectedVersion()));
       return true;
     }
-    var parentKey = JobIndexBackendSupport.parseParentKey(delete.key());
+    var parentKey = JobIndexBackendSupport.parseParentKey(delete.pointerKey());
     if (parentKey != null) {
       tx.add(
-          buildDelete(
+          buildReferenceDelete(
               JobIndexBackendSupport.parentPartitionKey(parentKey),
               JobIndexBackendSupport.parentSortKey(parentKey),
-              delete.expectedVersion()));
+              delete));
       return true;
     }
-    var connectorKey = JobIndexBackendSupport.parseConnectorKey(delete.key());
+    var connectorKey = JobIndexBackendSupport.parseConnectorKey(delete.pointerKey());
     if (connectorKey != null) {
       tx.add(
-          buildDelete(
+          buildReferenceDelete(
               JobIndexBackendSupport.connectorPartitionKey(connectorKey),
               JobIndexBackendSupport.connectorSortKey(connectorKey),
-              delete.expectedVersion()));
+              delete));
       return true;
     }
-    var globalStateKey = JobIndexBackendSupport.parseGlobalStateKey(delete.key());
+    var globalStateKey = JobIndexBackendSupport.parseGlobalStateKey(delete.pointerKey());
     if (globalStateKey != null) {
       tx.add(
-          buildDelete(
+          buildReferenceDelete(
               JobIndexBackendSupport.globalStatePartitionKey(globalStateKey),
               JobIndexBackendSupport.globalStateSortKey(globalStateKey),
-              delete.expectedVersion()));
+              delete));
       return true;
     }
-    var accountStateKey = JobIndexBackendSupport.parseAccountStateKey(delete.key());
+    var accountStateKey = JobIndexBackendSupport.parseAccountStateKey(delete.pointerKey());
     if (accountStateKey != null) {
       tx.add(
-          buildDelete(
+          buildReferenceDelete(
               JobIndexBackendSupport.accountStatePartitionKey(accountStateKey),
               JobIndexBackendSupport.accountStateSortKey(accountStateKey),
-              delete.expectedVersion()));
+              delete));
       return true;
     }
-    var connectorStateKey = JobIndexBackendSupport.parseConnectorStateKey(delete.key());
+    var connectorStateKey = JobIndexBackendSupport.parseConnectorStateKey(delete.pointerKey());
     if (connectorStateKey != null) {
       tx.add(
-          buildDelete(
+          buildReferenceDelete(
               JobIndexBackendSupport.connectorStatePartitionKey(connectorStateKey),
               JobIndexBackendSupport.connectorStateSortKey(connectorStateKey),
-              delete.expectedVersion()));
+              delete));
       return true;
     }
-    var dedupeKey = JobIndexBackendSupport.parseDedupeKey(delete.key());
+    var dedupeKey = JobIndexBackendSupport.parseDedupeKey(delete.pointerKey());
     if (dedupeKey != null) {
       tx.add(
-          buildDelete(
+          buildReferenceDelete(
               JobIndexBackendSupport.dedupePartitionKey(dedupeKey),
               JobIndexBackendSupport.dedupeSortKey(dedupeKey),
-              delete.expectedVersion()));
+              delete));
       return true;
     }
     return false;
@@ -736,6 +736,34 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
                 .expressionAttributeNames(Map.of("#v", ATTR_VERSION))
                 .expressionAttributeValues(
                     Map.of(":expected", AttributeValue.fromN(Long.toString(expectedVersion))))
+                .build())
+        .build();
+  }
+
+  private TransactWriteItem buildReferenceDelete(
+      String partitionKey, String sortKey, ReconcileJobIndexStore.JobIndexDelete delete) {
+    if (delete.expectedCanonicalPointerKey().isBlank()) {
+      return buildDelete(partitionKey, sortKey, delete.expectedVersion());
+    }
+    return TransactWriteItem.builder()
+        .delete(
+            Delete.builder()
+                .tableName(table)
+                .key(
+                    Map.of(
+                        ATTR_PARTITION_KEY, AttributeValue.fromS(partitionKey),
+                        ATTR_SORT_KEY, AttributeValue.fromS(sortKey)))
+                .conditionExpression("#v = :expected AND #owner = :owner")
+                .expressionAttributeNames(
+                    Map.of(
+                        "#v",
+                        ATTR_VERSION,
+                        "#owner",
+                        JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY))
+                .expressionAttributeValues(
+                    Map.of(
+                        ":expected", AttributeValue.fromN(Long.toString(delete.expectedVersion())),
+                        ":owner", AttributeValue.fromS(delete.expectedCanonicalPointerKey())))
                 .build())
         .build();
   }

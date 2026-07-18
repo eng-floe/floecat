@@ -102,6 +102,12 @@ class NativeReconcileJobIndexStorePointerSetTest {
             new CanonicalPointerSnapshot(
                 canonical.pointerKey(), canonical.blobUri(), canonical.version()));
     assertEquals(1 + expectedIndexes.size(), deleteBatch.writes().size());
+    assertTrue(
+        deleteBatch.writes().stream()
+            .filter(ReconcileJobIndexStore.JobIndexDelete.class::isInstance)
+            .map(ReconcileJobIndexStore.JobIndexDelete.class::cast)
+            .filter(delete -> !canonicalKey.equals(delete.pointerKey()))
+            .allMatch(delete -> canonicalKey.equals(delete.expectedCanonicalPointerKey())));
     assertTrue(backend.compareAndSetBatch(deleteBatch));
     assertTrue(backend.loadIndexEntry(canonicalKey).isEmpty());
     for (String pointerKey : expectedIndexes) {

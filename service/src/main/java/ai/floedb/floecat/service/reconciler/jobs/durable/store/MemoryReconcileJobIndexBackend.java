@@ -63,6 +63,18 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   @Override
   public synchronized boolean compareAndSetBatch(
       ReconcileJobIndexStore.JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
+    if (batch != null) {
+      for (ReconcileJobIndexStore.JobIndexWriteOp write : batch.writes()) {
+        if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete
+            && !delete.expectedCanonicalPointerKey().isBlank()) {
+          JobIndexEntrySnapshot existing = loadIndexEntry(delete.pointerKey()).orElse(null);
+          if (existing == null
+              || !delete.expectedCanonicalPointerKey().equals(existing.blobUri())) {
+            return false;
+          }
+        }
+      }
+    }
     List<PointerStore.CasOp> ops =
         new ArrayList<>(
             JobIndexWriteBatchSupport.toCasOps(

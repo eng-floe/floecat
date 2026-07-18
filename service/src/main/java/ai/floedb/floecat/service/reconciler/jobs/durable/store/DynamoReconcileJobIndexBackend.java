@@ -1085,7 +1085,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     var lookupKey = JobIndexBackendSupport.parseLookupKey(delete.pointerKey());
     if (lookupKey != null) {
       return DynamoReconcileJobLookupCompatibility.deletes(
-          table, lookupKey, delete.expectedVersion());
+          table, lookupKey, delete.expectedVersion(), delete.expectedCanonicalPointerKey());
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(delete.pointerKey());
     if (canonicalKey != null) {
@@ -1098,50 +1098,50 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     var parentKey = JobIndexBackendSupport.parseParentKey(delete.pointerKey());
     if (parentKey != null) {
       return List.of(
-          buildDelete(
+          buildReferenceDelete(
               JobIndexBackendSupport.parentPartitionKey(parentKey),
               JobIndexBackendSupport.parentSortKey(parentKey),
-              delete.expectedVersion()));
+              delete));
     }
     var connectorKey = JobIndexBackendSupport.parseConnectorKey(delete.pointerKey());
     if (connectorKey != null) {
       return List.of(
-          buildDelete(
+          buildReferenceDelete(
               JobIndexBackendSupport.connectorPartitionKey(connectorKey),
               JobIndexBackendSupport.connectorSortKey(connectorKey),
-              delete.expectedVersion()));
+              delete));
     }
     var globalStateKey = JobIndexBackendSupport.parseGlobalStateKey(delete.pointerKey());
     if (globalStateKey != null) {
       return List.of(
-          buildDelete(
+          buildReferenceDelete(
               JobIndexBackendSupport.globalStatePartitionKey(globalStateKey),
               JobIndexBackendSupport.globalStateSortKey(globalStateKey),
-              delete.expectedVersion()));
+              delete));
     }
     var accountStateKey = JobIndexBackendSupport.parseAccountStateKey(delete.pointerKey());
     if (accountStateKey != null) {
       return List.of(
-          buildDelete(
+          buildReferenceDelete(
               JobIndexBackendSupport.accountStatePartitionKey(accountStateKey),
               JobIndexBackendSupport.accountStateSortKey(accountStateKey),
-              delete.expectedVersion()));
+              delete));
     }
     var connectorStateKey = JobIndexBackendSupport.parseConnectorStateKey(delete.pointerKey());
     if (connectorStateKey != null) {
       return List.of(
-          buildDelete(
+          buildReferenceDelete(
               JobIndexBackendSupport.connectorStatePartitionKey(connectorStateKey),
               JobIndexBackendSupport.connectorStateSortKey(connectorStateKey),
-              delete.expectedVersion()));
+              delete));
     }
     var dedupeKey = JobIndexBackendSupport.parseDedupeKey(delete.pointerKey());
     if (dedupeKey != null) {
       return List.of(
-          buildDelete(
+          buildReferenceDelete(
               JobIndexBackendSupport.dedupePartitionKey(dedupeKey),
               JobIndexBackendSupport.dedupeSortKey(dedupeKey),
-              delete.expectedVersion()));
+              delete));
     }
     throw new IllegalArgumentException(
         "Unsupported reconcile job index delete key: " + delete.pointerKey());
@@ -1390,6 +1390,19 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
                         ":reference", AttributeValue.fromS(expectedReference)))
                 .build())
         .build();
+  }
+
+  private TransactWriteItem buildReferenceDelete(
+      String partitionKey, String sortKey, ReconcileJobIndexStore.JobIndexDelete delete) {
+    if (delete.expectedCanonicalPointerKey().isBlank()) {
+      return buildDelete(partitionKey, sortKey, delete.expectedVersion());
+    }
+    return buildDeleteWithReference(
+        partitionKey,
+        sortKey,
+        delete.expectedVersion(),
+        JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY,
+        delete.expectedCanonicalPointerKey());
   }
 
   private JobIndexBackendSupport.CanonicalJobKey parseCanonicalPrefix(String prefix) {

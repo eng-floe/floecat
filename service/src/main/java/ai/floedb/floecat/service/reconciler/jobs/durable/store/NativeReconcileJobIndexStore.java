@@ -207,7 +207,11 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     if (!isDedupeActiveState(record.get().state)) {
       compareAndSetBatchWithPointerOps(
           new JobIndexWriteBatch(
-              List.of(new JobIndexDelete(dedupePointer.pointerKey(), dedupePointer.version())),
+              List.of(
+                  new JobIndexDelete(
+                      dedupePointer.pointerKey(),
+                      dedupePointer.version(),
+                      dedupePointer.blobUri())),
               ReadyQueueMutation.empty()),
           List.of());
       return Optional.empty();
@@ -827,7 +831,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       return;
     }
     if (canonicalPointerKey.equals(existing.blobUri())) {
-      ops.add(new JobIndexDelete(pointerKey, existing.version()));
+      ops.add(new JobIndexDelete(pointerKey, existing.version(), canonicalPointerKey));
     }
   }
 

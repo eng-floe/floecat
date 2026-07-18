@@ -868,7 +868,7 @@ public class ReconcileJobGc {
         new ReconcileJobIndexStore.JobIndexWriteBatch(
             List.of(
                 new ReconcileJobIndexStore.JobIndexDelete(
-                    existing.pointerKey(), existing.version())),
+                    existing.pointerKey(), existing.version(), expectedReference)),
             ReconcileJobIndexStore.ReadyQueueMutation.empty()));
   }
 

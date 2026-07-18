@@ -44,8 +44,18 @@ final class DynamoReconcileJobLookupCompatibility {
 
   static List<TransactWriteItem> deletes(
       String table, JobIndexBackendSupport.LookupKey lookupKey, long expectedVersion) {
+    return deletes(table, lookupKey, expectedVersion, "");
+  }
+
+  static List<TransactWriteItem> deletes(
+      String table,
+      JobIndexBackendSupport.LookupKey lookupKey,
+      long expectedVersion,
+      String expectedCanonicalPointerKey) {
     return JobIndexBackendSupport.lookupReadStorageKeys(lookupKey).stream()
-        .map(key -> deleteIfVersionOrAbsent(table, key, expectedVersion))
+        .map(
+            key ->
+                deleteIfVersionOrAbsent(table, key, expectedVersion, expectedCanonicalPointerKey))
         .toList();
   }
 
@@ -63,16 +73,31 @@ final class DynamoReconcileJobLookupCompatibility {
   }
 
   private static TransactWriteItem deleteIfVersionOrAbsent(
-      String table, JobIndexBackendSupport.LookupStorageKey key, long expectedVersion) {
+      String table,
+      JobIndexBackendSupport.LookupStorageKey key,
+      long expectedVersion,
+      String expectedCanonicalPointerKey) {
+    boolean checkOwner =
+        expectedCanonicalPointerKey != null && !expectedCanonicalPointerKey.isBlank();
+    Map<String, String> names = new java.util.HashMap<>();
+    names.put("#pk", ATTR_PARTITION_KEY);
+    names.put("#v", ATTR_VERSION);
+    Map<String, AttributeValue> values = new java.util.HashMap<>();
+    values.put(":expected", AttributeValue.fromN(Long.toString(expectedVersion)));
+    String condition = "attribute_not_exists(#pk) OR #v = :expected";
+    if (checkOwner) {
+      names.put("#owner", JobIndexBackendSupport.ATTR_BLOB_URI);
+      values.put(":owner", AttributeValue.fromS(expectedCanonicalPointerKey));
+      condition = "attribute_not_exists(#pk) OR (#v = :expected AND #owner = :owner)";
+    }
     return TransactWriteItem.builder()
         .delete(
             Delete.builder()
                 .tableName(table)
                 .key(dynamoKey(key))
-                .conditionExpression("attribute_not_exists(#pk) OR #v = :expected")
-                .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY, "#v", ATTR_VERSION))
-                .expressionAttributeValues(
-                    Map.of(":expected", AttributeValue.fromN(Long.toString(expectedVersion))))
+                .conditionExpression(condition)
+                .expressionAttributeNames(names)
+                .expressionAttributeValues(values)
                 .build())
         .build();
   }

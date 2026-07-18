@@ -105,6 +105,33 @@ class DynamoReconcileLeaseBackendUnitTest {
   }
 
   @Test
+  void jobIndexOwnedReferenceDeleteChecksVersionAndCanonicalOwner() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
+        .thenReturn(TransactWriteItemsResponse.builder().build());
+    DynamoReconcileLeaseBackend backend = new DynamoReconcileLeaseBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+    String dedupeKey = Keys.reconcileDedupePointer(ACCOUNT_ID, "hash-1");
+
+    assertTrue(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(new ReconcileJobIndexStore.JobIndexDelete(dedupeKey, 1L, CANONICAL_KEY)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty()),
+            ReconcileLeaseBackend.LeaseWriteBatch.empty()));
+
+    ArgumentCaptor<TransactWriteItemsRequest> captor =
+        ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
+    verify(dynamoDb).transactWriteItems(captor.capture());
+    var delete = captor.getValue().transactItems().getFirst().delete();
+    assertEquals("#v = :expected AND #owner = :owner", delete.conditionExpression());
+    assertEquals(
+        JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY,
+        delete.expressionAttributeNames().get("#owner"));
+    assertEquals(CANONICAL_KEY, delete.expressionAttributeValues().get(":owner").s());
+  }
+
+  @Test
   void canonicalUpsertPreservesCleanupManifestCompleteness() {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
     when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))

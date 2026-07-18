@@ -358,6 +358,32 @@ class DynamoReconcileJobIndexBackendTest {
   }
 
   @Test
+  void ownedReferenceDeleteChecksVersionAndCanonicalOwner() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
+        .thenReturn(TransactWriteItemsResponse.builder().build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+    String dedupeKey = Keys.reconcileDedupePointer(ACCOUNT_ID, "hash-1");
+
+    assertTrue(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(new ReconcileJobIndexStore.JobIndexDelete(dedupeKey, 1L, CANONICAL_KEY)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+
+    ArgumentCaptor<TransactWriteItemsRequest> captor =
+        ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
+    verify(dynamoDb).transactWriteItems(captor.capture());
+    var delete = captor.getValue().transactItems().getFirst().delete();
+    assertEquals("#v = :expected AND #ref = :reference", delete.conditionExpression());
+    assertEquals(
+        JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY,
+        delete.expressionAttributeNames().get("#ref"));
+    assertEquals(CANONICAL_KEY, delete.expressionAttributeValues().get(":reference").s());
+  }
+
+  @Test
   void physicalWriteItemCountCountsEachPointerMutationOnce() {
     var batch =
         new ReconcileJobIndexStore.JobIndexWriteBatch(
