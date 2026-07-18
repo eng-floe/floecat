@@ -514,15 +514,21 @@ public class CasBlobGc {
           if (nowMs - lastModified < minAgeMs) {
             continue;
           }
-          // Last line of defense against the mark/CAS race: a pointer CAS can re-target an OLD
-          // existing blob after this pass's one-time mark, invisible to both the mark and (if the
-          // writer left LastModified stale) the age fence. For pointer-rooted families the key
-          // encodes its owner (see Keys.ownerPointerKeyForBlob) — re-read that pointer right
-          // before the delete and keep the blob it currently references.
+          // Second fence against the mark/CAS race: a pointer CAS can re-target an OLD existing
+          // blob after this pass's one-time mark, invisible to both the mark and (if the writer
+          // left LastModified stale) the age fence. For pointer-rooted families the key encodes
+          // its owner (see Keys.ownerPointerKeyForBlob) — re-read that pointer right before the
+          // delete and keep the blob it currently references.
           if (referencedByOwnerPointer(normalized)) {
             continue;
           }
-          if (blobStore.delete(key)) {
+          // Delete exactly the version this pass age-checked: the fences above are still stale
+          // reads — a writer can re-PUT the blob and CAS its pointer between them and this delete
+          // — but that re-PUT mints a NEW version a targeted delete cannot touch, so the check and
+          // the act name the same immutable object and the pointer stays resolvable in every
+          // interleaving. An empty version id (store without versioning) degrades to the
+          // unconditional delete: on S3, fully closing the race requires bucket versioning.
+          if (blobStore.delete(key, header.getVersionId())) {
             deleted++;
           }
         }

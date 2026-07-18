@@ -211,6 +211,57 @@ class CasBlobGcTest {
   }
 
   @Test
+  void aPointerRetargetedBetweenTheGcHeadAndItsDeleteIsNotSwept() {
+    // The narrower TOCTOU inside a single delete candidate: GC HEADs old blob A (stale header),
+    // the writer THEN re-PUTs A (new version, fresh LastModified) and CASes the pointer onto it,
+    // and only then does GC act. Both GC fences already ran on stale reads — the age fence on the
+    // stale header, the owner re-check on the pre-CAS pointer — so only the version-targeted
+    // delete can refuse: it names the version the pass age-checked, which the re-PUT superseded.
+    String pointerKey = Keys.tablePointerById(ACCOUNT_ID, TABLE_ID);
+    String blobA = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-a");
+    String blobB = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-b");
+    boolean[] injected = {false};
+    var racingPointers =
+        new InMemoryPointerStore() {
+          @Override
+          public java.util.Optional<Pointer> get(String key) {
+            var observed = super.get(key);
+            // The only get() of the table's by-id pointer in a pass is the pre-delete owner
+            // re-check (the mark scans by prefix), so GC has already HEAD'd blob A here. Serve
+            // the stale pointer (still on B), then land the writer's re-PUT + CAS onto A before
+            // GC reaches its delete.
+            if (!injected[0] && pointerKey.equals(key)) {
+              injected[0] = true;
+              blobs.put(blobA, "a".getBytes(StandardCharsets.UTF_8), "text/plain");
+              var current = super.get(key).orElseThrow();
+              super.compareAndSet(
+                  key,
+                  current.getVersion(),
+                  PointerReferences.blobPointer(pointerKey, blobA, current.getVersion() + 1));
+            }
+            return observed;
+          }
+        };
+    gc.pointerStore = racingPointers;
+    blobs.put(blobA, "a".getBytes(StandardCharsets.UTF_8), "text/plain");
+    blobs.put(blobB, "b".getBytes(StandardCharsets.UTF_8), "text/plain");
+    racingPointers.compareAndSet(
+        pointerKey, 0L, PointerReferences.blobPointer(pointerKey, blobB, 1L));
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(injected[0], "the between-head-and-delete re-PUT + CAS was injected");
+    assertTrue(
+        blobs.head(blobA).isPresent(),
+        "the version-targeted delete must not touch the version the writer just re-PUT");
+    assertEquals(0, result.blobsDeleted(), "nothing was deleted this pass");
+    assertEquals(
+        blobA,
+        racingPointers.get(pointerKey).orElseThrow().getBlobUri(),
+        "the pointer resolves — no dangling");
+  }
+
+  @Test
   void secondaryPointerDoesNotProtectBlob() {
     String blobUri = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-secondary");
     blobs.put(blobUri, "data".getBytes(StandardCharsets.UTF_8), "text/plain");
