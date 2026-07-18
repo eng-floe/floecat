@@ -1517,6 +1517,118 @@ public final class Keys {
   }
 
   /**
+   * The pointer key that owns a content-addressed blob, derived from the blob key's shape, or
+   * {@code null} when no single owning pointer is derivable. Accepts keys with or without the
+   * leading slash (blob LISTs return them unslashed). Used by {@code CasBlobGc} to re-check, right
+   * before deleting a candidate, that no pointer CAS re-targeted it after the mark phase.
+   *
+   * <p>Not derivable — {@code null} — for:
+   *
+   * <ul>
+   *   <li>root manifest pages ({@code .../root/manifest/<sha>.pb}): referenced by the {@code
+   *       TableRoot} blob's content, not by any pointer;
+   *   <li>per-target stats records ({@code .../target-stats/<target>/<sha>.pb}) and file stats
+   *       ({@code .../file-stats/<path>/<sha>.pb}): their owning pointers live under {@code
+   *       .../snapshots/<snapshot_id>/stats/...} and the snapshot id is not part of the blob key.
+   * </ul>
+   */
+  public static String ownerPointerKeyForBlob(String blobKey) {
+    if (blobKey == null || blobKey.isEmpty()) {
+      return null;
+    }
+    String key = blobKey.startsWith("/") ? blobKey.substring(1) : blobKey;
+    String[] seg = key.split("/", -1);
+    if (seg.length < 4 || !"accounts".equals(seg[0])) {
+      return null;
+    }
+    try {
+      return ownerPointerKeyForSegments(seg);
+    } catch (IllegalArgumentException e) {
+      // A malformed key (blank segment, ...) has no derivable owner; the caller falls back to
+      // treating the blob as unowned, exactly as before this mapping existed.
+      return null;
+    }
+  }
+
+  private static String ownerPointerKeyForSegments(String[] seg) {
+    String account = percentDecode(seg[1]);
+    return switch (seg[2]) {
+      case "account" -> seg.length == 4 ? accountPointerById(account) : null;
+      case "catalogs" ->
+          seg.length == 6 && "catalog".equals(seg[4])
+              ? catalogPointerById(account, percentDecode(seg[3]))
+              : null;
+      case "namespaces" ->
+          seg.length == 6 && "namespace".equals(seg[4])
+              ? namespacePointerById(account, percentDecode(seg[3]))
+              : null;
+      case "views" ->
+          seg.length == 6 && "view".equals(seg[4])
+              ? viewPointerById(account, percentDecode(seg[3]))
+              : null;
+      case "connectors" ->
+          seg.length == 6 && "connector".equals(seg[4])
+              ? connectorPointerById(account, percentDecode(seg[3]))
+              : null;
+      case "tables" -> seg.length >= 6 ? tableBlobOwner(account, seg) : null;
+      default -> null;
+    };
+  }
+
+  private static String tableBlobOwner(String account, String[] seg) {
+    String table = percentDecode(seg[3]);
+    switch (seg[4]) {
+      case "table":
+        return seg.length == 6 ? tablePointerById(account, table) : null;
+      case "root":
+        // root/<sha>.pb is owned by the current-root pointer; root/manifest/<sha>.pb pages are
+        // referenced only from root blob content — no owning pointer.
+        return seg.length == 6 ? tableRootByTable(account, table) : null;
+      case "snapshots":
+        {
+          // snapshots/<snapshot_id>/snapshot/<sha>.pb
+          Long sid = seg.length == 8 && "snapshot".equals(seg[6]) ? parseSnapshotId(seg[5]) : null;
+          return sid == null ? null : snapshotPointerById(account, table, sid);
+        }
+      case "constraints":
+        {
+          // constraints/<snapshot_id>/<sha>.pb
+          Long sid = seg.length == 7 ? parseSnapshotId(seg[5]) : null;
+          return sid == null ? null : snapshotConstraintsPointer(account, table, sid);
+        }
+      case "target-stats":
+        {
+          // target-stats/<snapshot_id>/manifests/<generation>.pb -> the active-generation pointer;
+          // target-stats/<snapshot_id>/generations/<gen>/<target>/<sha>.pb -> per-record pointer;
+          // target-stats/<target>/<sha>.pb carries no snapshot id -> not derivable.
+          Long sid = parseSnapshotId(seg[5]);
+          if (sid == null) {
+            return null;
+          }
+          if (seg.length == 8 && "manifests".equals(seg[6])) {
+            return snapshotTargetStatsManifestPointer(account, table, sid);
+          }
+          if (seg.length == 10 && "generations".equals(seg[6])) {
+            return snapshotTargetStatsGenerationPointer(
+                account, table, sid, percentDecode(seg[7]), percentDecode(seg[8]));
+          }
+          return null;
+        }
+      default:
+        return null;
+    }
+  }
+
+  private static Long parseSnapshotId(String segment) {
+    try {
+      long sid = Long.parseLong(segment);
+      return sid < 0 ? null : sid;
+    } catch (NumberFormatException e) {
+      return null;
+    }
+  }
+
+  /**
    * Returns the last path segment of a pointer key, percent-decoded. Used as a fallback to extract
    * display_name from a by-name pointer key when the Pointer.display_name field is not set (e.g.
    * for pointers written before the topology fields were added).

@@ -514,6 +514,14 @@ public class CasBlobGc {
           if (nowMs - lastModified < minAgeMs) {
             continue;
           }
+          // Last line of defense against the mark/CAS race: a pointer CAS can re-target an OLD
+          // existing blob after this pass's one-time mark, invisible to both the mark and (if the
+          // writer left LastModified stale) the age fence. For pointer-rooted families the key
+          // encodes its owner (see Keys.ownerPointerKeyForBlob) — re-read that pointer right
+          // before the delete and keep the blob it currently references.
+          if (referencedByOwnerPointer(normalized)) {
+            continue;
+          }
           if (blobStore.delete(key)) {
             deleted++;
           }
@@ -526,6 +534,15 @@ public class CasBlobGc {
     }
 
     return new DeleteResult(scanned, deleted);
+  }
+
+  private boolean referencedByOwnerPointer(String normalizedKey) {
+    String ownerKey = Keys.ownerPointerKeyForBlob(normalizedKey);
+    if (ownerKey == null) {
+      return false;
+    }
+    var owner = pointerStore.get(ownerKey).orElse(null);
+    return owner != null && normalizedKey.equals(normalizeKey(owner.getBlobUri()));
   }
 
   private static String decodeSuffix(String prefix, String fullKey) {

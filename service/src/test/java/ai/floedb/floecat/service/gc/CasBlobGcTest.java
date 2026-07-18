@@ -166,6 +166,51 @@ class CasBlobGcTest {
   }
 
   @Test
+  void aPointerRetargetedToAnOldExistingBlobMidPassIsNotSwept() {
+    // The staging data-loss interleave (eng-floe/core#1904): contents A and B both exist, the
+    // pointer is on B when the pass marks its roots, and a concurrent update CASes it back to the
+    // OLD blob A before the delete phase reaches A. The mark cannot see the CAS and A is already
+    // older than min-age, so only the pre-delete owner re-check can keep it.
+    String pointerKey = Keys.tablePointerById(ACCOUNT_ID, TABLE_ID);
+    String blobA = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-a");
+    String blobB = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-b");
+    boolean[] flipped = {false};
+    var racingBlobs =
+        new InMemoryBlobStore() {
+          @Override
+          public BlobStore.Page list(String prefix, int limit, String pageToken) {
+            // The first LIST of the delete phase runs strictly after the one-time pointer mark:
+            // flip the pointer back onto the old blob A right here, mid-pass.
+            if (!flipped[0]) {
+              flipped[0] = true;
+              var current = pointers.get(pointerKey).orElseThrow();
+              pointers.compareAndSet(
+                  pointerKey,
+                  current.getVersion(),
+                  PointerReferences.blobPointer(pointerKey, blobA, current.getVersion() + 1));
+            }
+            return super.list(prefix, limit, pageToken);
+          }
+        };
+    gc.blobStore = racingBlobs;
+    racingBlobs.put(blobA, "a".getBytes(StandardCharsets.UTF_8), "text/plain");
+    racingBlobs.put(blobB, "b".getBytes(StandardCharsets.UTF_8), "text/plain");
+    putPointer(pointerKey, blobB);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(flipped[0], "the mid-pass pointer CAS was injected");
+    assertTrue(
+        racingBlobs.head(blobA).isPresent(),
+        "a blob its owning pointer re-targeted mid-pass must survive the sweep");
+
+    // Next pass: the mark sees the pointer on A; B is genuinely unreferenced and is collected.
+    gc.runForAccount(ACCOUNT_ID);
+    assertTrue(racingBlobs.head(blobA).isPresent());
+    assertFalse(racingBlobs.head(blobB).isPresent());
+  }
+
+  @Test
   void secondaryPointerDoesNotProtectBlob() {
     String blobUri = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-secondary");
     blobs.put(blobUri, "data".getBytes(StandardCharsets.UTF_8), "text/plain");
