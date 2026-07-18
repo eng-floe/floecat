@@ -452,7 +452,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
         delete.expectedVersion());
   }
 
-  private boolean appendJobIndexUpsert(
+  private void appendJobIndexUpsert(
       List<TransactWriteItem> tx, ReconcileJobIndexStore.JobIndexUpsert upsert) {
     var lookupKey = JobIndexBackendSupport.parseLookupKey(upsert.pointerKey());
     if (lookupKey != null) {
@@ -465,12 +465,12 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               upsert,
               JobIndexBackendSupport.ATTR_BLOB_URI));
       tx.add(DynamoReconcileJobLookupCompatibility.legacyCheckAbsent(table, lookupKey));
-      return true;
+      return;
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(upsert.pointerKey());
     if (canonicalKey != null) {
       tx.add(buildCanonicalUpsert(canonicalKey, upsert));
-      return true;
+      return;
     }
     var parentKey = JobIndexBackendSupport.parseParentKey(upsert.pointerKey());
     if (parentKey != null) {
@@ -481,7 +481,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.KIND_PARENT,
               upsert,
               JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
-      return true;
+      return;
     }
     var connectorKey = JobIndexBackendSupport.parseConnectorKey(upsert.pointerKey());
     if (connectorKey != null) {
@@ -492,7 +492,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.KIND_CONNECTOR,
               upsert,
               JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
-      return true;
+      return;
     }
     var globalStateKey = JobIndexBackendSupport.parseGlobalStateKey(upsert.pointerKey());
     if (globalStateKey != null) {
@@ -503,7 +503,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.KIND_GLOBAL_STATE,
               upsert,
               JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
-      return true;
+      return;
     }
     var accountStateKey = JobIndexBackendSupport.parseAccountStateKey(upsert.pointerKey());
     if (accountStateKey != null) {
@@ -514,7 +514,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.KIND_ACCOUNT_STATE,
               upsert,
               JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
-      return true;
+      return;
     }
     var connectorStateKey = JobIndexBackendSupport.parseConnectorStateKey(upsert.pointerKey());
     if (connectorStateKey != null) {
@@ -525,7 +525,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.KIND_CONNECTOR_STATE,
               upsert,
               JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
-      return true;
+      return;
     }
     var dedupeKey = JobIndexBackendSupport.parseDedupeKey(upsert.pointerKey());
     if (dedupeKey != null) {
@@ -536,12 +536,13 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.KIND_DEDUPE,
               upsert,
               JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
-      return true;
+      return;
     }
-    return false;
+    throw new IllegalArgumentException(
+        "Unsupported reconcile job index upsert key: " + upsert.pointerKey());
   }
 
-  private boolean appendJobIndexDelete(
+  private void appendJobIndexDelete(
       List<TransactWriteItem> tx, ReconcileJobIndexStore.JobIndexDelete delete) {
     var lookupKey = JobIndexBackendSupport.parseLookupKey(delete.pointerKey());
     if (lookupKey != null) {
@@ -552,7 +553,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               delete.expectedVersion(),
               delete.expectedCanonicalPointerKey(),
               delete.expectedLookupStoragePartitionKey()));
-      return true;
+      return;
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(delete.pointerKey());
     if (canonicalKey != null) {
@@ -561,7 +562,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.canonicalPartitionKey(canonicalKey),
               JobIndexBackendSupport.canonicalSortKey(canonicalKey),
               delete.expectedVersion()));
-      return true;
+      return;
     }
     var parentKey = JobIndexBackendSupport.parseParentKey(delete.pointerKey());
     if (parentKey != null) {
@@ -570,7 +571,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.parentPartitionKey(parentKey),
               JobIndexBackendSupport.parentSortKey(parentKey),
               delete));
-      return true;
+      return;
     }
     var connectorKey = JobIndexBackendSupport.parseConnectorKey(delete.pointerKey());
     if (connectorKey != null) {
@@ -579,7 +580,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.connectorPartitionKey(connectorKey),
               JobIndexBackendSupport.connectorSortKey(connectorKey),
               delete));
-      return true;
+      return;
     }
     var globalStateKey = JobIndexBackendSupport.parseGlobalStateKey(delete.pointerKey());
     if (globalStateKey != null) {
@@ -588,7 +589,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.globalStatePartitionKey(globalStateKey),
               JobIndexBackendSupport.globalStateSortKey(globalStateKey),
               delete));
-      return true;
+      return;
     }
     var accountStateKey = JobIndexBackendSupport.parseAccountStateKey(delete.pointerKey());
     if (accountStateKey != null) {
@@ -597,7 +598,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.accountStatePartitionKey(accountStateKey),
               JobIndexBackendSupport.accountStateSortKey(accountStateKey),
               delete));
-      return true;
+      return;
     }
     var connectorStateKey = JobIndexBackendSupport.parseConnectorStateKey(delete.pointerKey());
     if (connectorStateKey != null) {
@@ -606,7 +607,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.connectorStatePartitionKey(connectorStateKey),
               JobIndexBackendSupport.connectorStateSortKey(connectorStateKey),
               delete));
-      return true;
+      return;
     }
     var dedupeKey = JobIndexBackendSupport.parseDedupeKey(delete.pointerKey());
     if (dedupeKey != null) {
@@ -615,18 +616,19 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.dedupePartitionKey(dedupeKey),
               JobIndexBackendSupport.dedupeSortKey(dedupeKey),
               delete));
-      return true;
+      return;
     }
-    return false;
+    throw new IllegalArgumentException(
+        "Unsupported reconcile job index delete key: " + delete.pointerKey());
   }
 
-  private boolean appendJobIndexCheckAbsent(List<TransactWriteItem> tx, String pointerKey) {
+  private void appendJobIndexCheckAbsent(List<TransactWriteItem> tx, String pointerKey) {
     var lookupKey = JobIndexBackendSupport.parseLookupKey(pointerKey);
     if (lookupKey == null) {
-      return false;
+      throw new IllegalArgumentException(
+          "Unsupported reconcile job index check-absent key: " + pointerKey);
     }
     tx.addAll(DynamoReconcileJobLookupCompatibility.checkAbsent(table, lookupKey));
-    return true;
   }
 
   private TransactWriteItem buildReadyUpsert(ReadyQueueBackendSupport.ReadyQueueRow row) {

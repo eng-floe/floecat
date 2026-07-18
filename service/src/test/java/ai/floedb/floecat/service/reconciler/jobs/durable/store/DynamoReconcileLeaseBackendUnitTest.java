@@ -164,6 +164,78 @@ class DynamoReconcileLeaseBackendUnitTest {
   }
 
   @Test
+  void rejectsUnsupportedJobIndexUpsertKey() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    DynamoReconcileLeaseBackend backend = new DynamoReconcileLeaseBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+    String unsupportedKey = "/unsupported/index/upsert";
+
+    IllegalArgumentException failure =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                backend.compareAndSetBatch(
+                    new ReconcileJobIndexStore.JobIndexWriteBatch(
+                        List.of(
+                            new ReconcileJobIndexStore.JobIndexUpsert(
+                                unsupportedKey,
+                                0L,
+                                CANONICAL_KEY,
+                                PointerReferenceKind.PRK_POINTER_KEY)),
+                        ReconcileJobIndexStore.ReadyQueueMutation.empty()),
+                    ReconcileLeaseBackend.LeaseWriteBatch.empty()));
+
+    assertEquals(
+        "Unsupported reconcile job index upsert key: " + unsupportedKey, failure.getMessage());
+    verify(dynamoDb, never()).transactWriteItems(any(TransactWriteItemsRequest.class));
+  }
+
+  @Test
+  void rejectsUnsupportedJobIndexDeleteKey() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    DynamoReconcileLeaseBackend backend = new DynamoReconcileLeaseBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+    String unsupportedKey = "/unsupported/index/delete";
+
+    IllegalArgumentException failure =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                backend.compareAndSetBatch(
+                    new ReconcileJobIndexStore.JobIndexWriteBatch(
+                        List.of(new ReconcileJobIndexStore.JobIndexDelete(unsupportedKey, 1L)),
+                        ReconcileJobIndexStore.ReadyQueueMutation.empty()),
+                    ReconcileLeaseBackend.LeaseWriteBatch.empty()));
+
+    assertEquals(
+        "Unsupported reconcile job index delete key: " + unsupportedKey, failure.getMessage());
+    verify(dynamoDb, never()).transactWriteItems(any(TransactWriteItemsRequest.class));
+  }
+
+  @Test
+  void rejectsUnsupportedJobIndexCheckAbsentKey() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    DynamoReconcileLeaseBackend backend = new DynamoReconcileLeaseBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+    String unsupportedKey = "/unsupported/index/check-absent";
+
+    IllegalArgumentException failure =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                backend.compareAndSetBatch(
+                    new ReconcileJobIndexStore.JobIndexWriteBatch(
+                        List.of(new ReconcileJobIndexStore.JobIndexCheckAbsent(unsupportedKey)),
+                        ReconcileJobIndexStore.ReadyQueueMutation.empty()),
+                    ReconcileLeaseBackend.LeaseWriteBatch.empty()));
+
+    assertEquals(
+        "Unsupported reconcile job index check-absent key: " + unsupportedKey,
+        failure.getMessage());
+    verify(dynamoDb, never()).transactWriteItems(any(TransactWriteItemsRequest.class));
+  }
+
+  @Test
   void rejectsCombinedTransactionsOverDynamoLimit() {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
     DynamoReconcileLeaseBackend backend = new DynamoReconcileLeaseBackend();
