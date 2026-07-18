@@ -99,13 +99,17 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       if (legacy.isEmpty()) {
         return Optional.empty();
       }
-      if (migrateLegacyLookup(lookupKey, legacy.get()) == LegacyLookupMigrationOutcome.MIGRATED) {
+      LegacyLookupMigrationOutcome migration = migrateLegacyLookup(lookupKey, legacy.get());
+      if (migration == LegacyLookupMigrationOutcome.MIGRATED) {
         return Optional.of(
             new JobIndexEntrySnapshot(
                 legacy.get().pointerKey(),
                 legacy.get().blobUri(),
                 legacy.get().version(),
                 currentKey.partitionKey()));
+      }
+      if (migration == LegacyLookupMigrationOutcome.CONFLICT_RESOLVED) {
+        return loadLookupPointer(currentKey);
       }
       return loadLookupPointer(currentKey).or(() -> legacy);
     }
@@ -179,8 +183,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         continue;
       }
       switch (migrateLegacyLookup(lookupKey, legacy)) {
-        case MIGRATED -> migrated++;
-        case PERMANENT_CONFLICT -> conflicted++;
+        case MIGRATED, CONFLICT_RESOLVED -> migrated++;
         case RETRYABLE_FAILURE -> retryable++;
       }
     }
@@ -572,7 +575,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
                           .key(dynamoKey)
                           .build()));
       if (!response.hasItem() || response.item().isEmpty()) {
-        return LegacyCleanupMergeOutcome.CONFLICTED;
+        return purgeOrphanedLegacyFootprint(canonicalPointerKey, discovered);
       }
       item = response.item();
     } catch (RuntimeException ignored) {
@@ -684,6 +687,47 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       return LegacyCleanupMergeOutcome.UNCHANGED;
     }
     return LegacyCleanupMergeOutcome.RETRYABLE;
+  }
+
+  private LegacyCleanupMergeOutcome purgeOrphanedLegacyFootprint(
+      String canonicalPointerKey, ReconcileJobIndexCleanupManifest discovered) {
+    boolean deleted = false;
+    for (String pointerKey : discovered.indexPointerKeys()) {
+      final JobIndexEntrySnapshot current;
+      try {
+        current = loadIndexEntry(pointerKey).orElse(null);
+      } catch (RuntimeException ignored) {
+        return LegacyCleanupMergeOutcome.RETRYABLE;
+      }
+      if (current == null || !canonicalPointerKey.equals(current.blobUri())) {
+        continue;
+      }
+      ReconcileJobIndexStore.JobIndexWriteBatch deleteBatch =
+          new ReconcileJobIndexStore.JobIndexWriteBatch(
+              List.of(
+                  new ReconcileJobIndexStore.JobIndexCheckAbsent(canonicalPointerKey),
+                  new ReconcileJobIndexStore.JobIndexDelete(
+                      current.pointerKey(),
+                      current.version(),
+                      canonicalPointerKey,
+                      current.lookupStoragePartitionKey())),
+              ReconcileJobIndexStore.ReadyQueueMutation.empty());
+      if (!compareAndSetDynamo(deleteBatch, List.of())) {
+        return LegacyCleanupMergeOutcome.RETRYABLE;
+      }
+      deleted = true;
+    }
+    for (String readyPointerKey : discovered.readyPointerKeys()) {
+      ReconcileJobIndexStore.JobIndexWriteBatch deleteBatch =
+          new ReconcileJobIndexStore.JobIndexWriteBatch(
+              List.of(new ReconcileJobIndexStore.JobIndexCheckAbsent(canonicalPointerKey)),
+              new ReconcileJobIndexStore.ReadyQueueMutation(List.of(), List.of(readyPointerKey)));
+      if (!compareAndSetDynamo(deleteBatch, List.of())) {
+        return LegacyCleanupMergeOutcome.RETRYABLE;
+      }
+      deleted = true;
+    }
+    return deleted ? LegacyCleanupMergeOutcome.UPDATED : LegacyCleanupMergeOutcome.UNCHANGED;
   }
 
   private static void appendExpectedListCondition(
@@ -950,7 +994,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         return LegacyLookupMigrationOutcome.RETRYABLE_FAILURE;
       }
       if (!legacy.blobUri().equals(current.get().blobUri())) {
-        return LegacyLookupMigrationOutcome.PERMANENT_CONFLICT;
+        return deleteConflictingLegacyLookup(legacyKey, legacy);
       }
       try {
         dynamoCaller.callVoid(
@@ -974,9 +1018,37 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     }
   }
 
+  private LegacyLookupMigrationOutcome deleteConflictingLegacyLookup(
+      JobIndexBackendSupport.LookupStorageKey legacyKey, JobIndexEntrySnapshot legacy) {
+    TransactWriteItem delete =
+        buildDeleteWithReference(
+            legacyKey.partitionKey(),
+            legacyKey.sortKey(),
+            legacy.version(),
+            JobIndexBackendSupport.ATTR_BLOB_URI,
+            legacy.blobUri());
+    try {
+      dynamoCaller.callVoid(
+          dynamoDbClientManager,
+          client ->
+              client.transactWriteItems(
+                  TransactWriteItemsRequest.builder().transactItems(List.of(delete)).build()));
+      return LegacyLookupMigrationOutcome.CONFLICT_RESOLVED;
+    } catch (RuntimeException ignoredDelete) {
+      try {
+        if (loadLookupPointer(legacyKey).isEmpty()) {
+          return LegacyLookupMigrationOutcome.CONFLICT_RESOLVED;
+        }
+      } catch (RuntimeException ignoredRead) {
+        // The conflicting legacy row may still exist; leave the migration retryable.
+      }
+      return LegacyLookupMigrationOutcome.RETRYABLE_FAILURE;
+    }
+  }
+
   private enum LegacyLookupMigrationOutcome {
     MIGRATED,
-    PERMANENT_CONFLICT,
+    CONFLICT_RESOLVED,
     RETRYABLE_FAILURE
   }
 
