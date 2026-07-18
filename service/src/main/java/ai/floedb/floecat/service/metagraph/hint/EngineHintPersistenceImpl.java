@@ -186,46 +186,49 @@ public final class EngineHintPersistenceImpl implements EngineHintPersistence {
     if (kind == ResourceKind.RK_TABLE) {
       persistTable(
           relationId,
-          builder -> {
-            boolean changed = false;
-            if (relationKey != null
-                && !relationEncoded.equals(builder.getPropertiesMap().get(relationKey))) {
-              builder.putProperties(relationKey, relationEncoded);
-              changed = true;
-            }
-            changed |=
-                applyColumnHints(
-                    deduped,
-                    builder.getPropertiesMap(),
-                    builder::putProperties,
-                    engineKind,
-                    engineVersion);
-            return changed;
-          });
+          builder ->
+              applyRelationAndColumnHints(
+                  relationKey,
+                  relationEncoded,
+                  deduped,
+                  builder.getPropertiesMap(),
+                  builder::putProperties,
+                  engineKind,
+                  engineVersion));
       return;
     }
     if (kind == ResourceKind.RK_VIEW) {
       persistView(
           relationId,
-          builder -> {
-            boolean changed = false;
-            if (relationKey != null
-                && !relationEncoded.equals(builder.getPropertiesMap().get(relationKey))) {
-              builder.putProperties(relationKey, relationEncoded);
-              changed = true;
-            }
-            changed |=
-                applyColumnHints(
-                    deduped,
-                    builder.getPropertiesMap(),
-                    builder::putProperties,
-                    engineKind,
-                    engineVersion);
-            return changed;
-          });
+          builder ->
+              applyRelationAndColumnHints(
+                  relationKey,
+                  relationEncoded,
+                  deduped,
+                  builder.getPropertiesMap(),
+                  builder::putProperties,
+                  engineKind,
+                  engineVersion));
       return;
     }
     LOG.debugf("Skipping engine hints for non-table relation %s", relationId);
+  }
+
+  private boolean applyRelationAndColumnHints(
+      String relationKey,
+      String relationEncoded,
+      Map<String, EngineHintPersistence.ColumnHint> deduped,
+      Map<String, String> properties,
+      java.util.function.BiConsumer<String, String> setter,
+      String engineKind,
+      String engineVersion) {
+    boolean changed = false;
+    if (relationKey != null && !relationEncoded.equals(properties.get(relationKey))) {
+      setter.accept(relationKey, relationEncoded);
+      changed = true;
+    }
+    changed |= applyColumnHints(deduped, properties, setter, engineKind, engineVersion);
+    return changed;
   }
 
   private boolean applyColumnHints(
