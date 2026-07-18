@@ -31,6 +31,20 @@ public interface BlobStore {
 
   boolean delete(String uri);
 
+  /**
+   * Deletes only the blob version that {@code versionId} names (as observed via {@link
+   * BlobHeader#getVersionId()}). A different version — in particular one written concurrently after
+   * the caller's {@link #head} — must survive, so a check-then-delete caller acts on exactly the
+   * object it checked. Returns true when the named version was deleted (or already absent); false
+   * when the store can tell the blob has moved past it and nothing was deleted.
+   *
+   * <p>A blank {@code versionId} (store without versioning) and the default implementation both
+   * fall back to the unconditional {@link #delete(String)}; version-capable stores must override.
+   */
+  default boolean delete(String uri, String versionId) {
+    return delete(uri);
+  }
+
   void deletePrefix(String prefix);
 
   default Map<String, byte[]> getBatch(List<String> uris) {

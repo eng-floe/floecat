@@ -122,7 +122,10 @@ public class S3BlobStore implements BlobStore {
               .setEtag(metaSha == null ? "" : metaSha)
               .setCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(createdAtMs))
               .setLastModifiedAt(com.google.protobuf.util.Timestamps.fromMillis(lastModifiedMs))
-              .setContentLength((int) Math.min(Integer.MAX_VALUE, storedBytes));
+              .setContentLength((int) Math.min(Integer.MAX_VALUE, storedBytes))
+              // Null on unversioned buckets; the literal "null" versionId of objects written
+              // before versioning was enabled is a real, targetable version and passes through.
+              .setVersionId(r.versionId() == null ? "" : r.versionId());
 
       return Optional.of(hb.build());
     } catch (S3Exception e) {
@@ -272,6 +275,39 @@ public class S3BlobStore implements BlobStore {
       throw new StorageAbortRetryableException(msg("DELETE", k, e.getMessage()));
     } catch (RuntimeException e) {
       throw mapClosedPoolOrRethrow("DELETE", k, e);
+    }
+  }
+
+  @Override
+  public boolean delete(String key, String versionId) {
+    if (versionId == null || versionId.isBlank()) {
+      // No version observed (unversioned bucket): degrade to the unconditional delete.
+      return delete(key);
+    }
+    final String k = normalize(key);
+    try {
+      // Version-targeted DeleteObject: a HARD delete of exactly this version (no delete marker).
+      // A version PUT concurrently after the caller's HEAD is untouched and stays current.
+      // (SDK 2.44.4 also models If-Match conditional deletes, but S3 supports those only on
+      // directory buckets, so versionId targeting is the mechanism here.)
+      s3.call(
+          c ->
+              c.deleteObject(
+                  DeleteObjectRequest.builder()
+                      .bucket(bucket)
+                      .key(k)
+                      .versionId(versionId)
+                      .build()));
+      return true;
+    } catch (S3Exception e) {
+      if (e.statusCode() == 404) {
+        return true;
+      }
+      throw mapAndWrap("DELETE_VERSION", k, e);
+    } catch (SdkClientException e) {
+      throw new StorageAbortRetryableException(msg("DELETE_VERSION", k, e.getMessage()));
+    } catch (RuntimeException e) {
+      throw mapClosedPoolOrRethrow("DELETE_VERSION", k, e);
     }
   }
 

@@ -16,15 +16,118 @@
 
 package ai.floedb.floecat.storage.aws.s3;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.DeleteObjectResponse;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 
 class S3BlobStoreTest {
+
+  @Test
+  void headExposesTheS3VersionId() {
+    var client =
+        new FakeS3Client() {
+          @Override
+          public HeadObjectResponse headObject(HeadObjectRequest request) {
+            return HeadObjectResponse.builder()
+                .versionId("v9")
+                .contentLength(3L)
+                .lastModified(Instant.EPOCH)
+                .build();
+          }
+        };
+    S3BlobStore store = new S3BlobStore(client, Optional.of("bucket"));
+
+    assertEquals("v9", store.head("/k").orElseThrow().getVersionId());
+  }
+
+  @Test
+  void headMapsAMissingVersionIdToEmpty() {
+    var client =
+        new FakeS3Client() {
+          @Override
+          public HeadObjectResponse headObject(HeadObjectRequest request) {
+            // Unversioned bucket: S3 returns no versionId.
+            return HeadObjectResponse.builder()
+                .contentLength(3L)
+                .lastModified(Instant.EPOCH)
+                .build();
+          }
+        };
+    S3BlobStore store = new S3BlobStore(client, Optional.of("bucket"));
+
+    assertEquals("", store.head("/k").orElseThrow().getVersionId());
+  }
+
+  @Test
+  void versionTargetedDeleteNamesExactlyTheObservedVersion() {
+    List<DeleteObjectRequest> captured = new ArrayList<>();
+    var client =
+        new FakeS3Client() {
+          @Override
+          public DeleteObjectResponse deleteObject(DeleteObjectRequest request) {
+            captured.add(request);
+            return DeleteObjectResponse.builder().build();
+          }
+        };
+    S3BlobStore store = new S3BlobStore(client, Optional.of("bucket"));
+
+    assertTrue(store.delete("/k", "v123"));
+
+    assertEquals(1, captured.size());
+    assertEquals("k", captured.get(0).key());
+    assertEquals("v123", captured.get(0).versionId());
+  }
+
+  @Test
+  void blankVersionDegradesToUnconditionalDelete() {
+    List<DeleteObjectRequest> captured = new ArrayList<>();
+    var client =
+        new FakeS3Client() {
+          @Override
+          public DeleteObjectResponse deleteObject(DeleteObjectRequest request) {
+            captured.add(request);
+            return DeleteObjectResponse.builder().build();
+          }
+        };
+    S3BlobStore store = new S3BlobStore(client, Optional.of("bucket"));
+
+    assertTrue(store.delete("/k", ""));
+
+    assertEquals(1, captured.size());
+    assertNull(captured.get(0).versionId(), "no version targeting on an unversioned observation");
+  }
+
+  @Test
+  void mapsRuntimeClosedPoolFailureToRetryableForVersionDelete() {
+    S3BlobStore store = closedPoolStore();
+
+    assertThrows(StorageAbortRetryableException.class, () -> store.delete("key", "v1"));
+  }
+
+  /** All S3Client operations are codegen defaults throwing UnsupportedOperationException. */
+  private abstract static class FakeS3Client implements S3Client {
+    @Override
+    public String serviceName() {
+      return "s3";
+    }
+
+    @Override
+    public void close() {}
+  }
 
   @Test
   void mapsRuntimeClosedPoolFailureToRetryableForHead() {

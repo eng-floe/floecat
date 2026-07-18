@@ -43,10 +43,14 @@ public class InMemoryBlobStore implements BlobStore {
   private static final class Blob {
     final byte[] data;
     final BlobHeader hdr;
+    // Per-key monotonic write counter emulating S3 object versions (exposed as
+    // BlobHeader.versionId) so version-targeted delete semantics are deterministically testable.
+    final long version;
 
-    Blob(byte[] d, BlobHeader h) {
+    Blob(byte[] d, BlobHeader h, long version) {
       this.data = d;
       this.hdr = h;
+      this.version = version;
     }
   }
 
@@ -70,6 +74,7 @@ public class InMemoryBlobStore implements BlobStore {
           final BlobHeader prevHdr = prev == null ? null : prev.hdr;
           final Timestamp createdAt =
               prevHdr == null ? Timestamps.fromMillis(now) : prevHdr.getCreatedAt();
+          final long version = prev == null ? 1L : prev.version + 1;
 
           BlobHeader.Builder hb =
               BlobHeader.newBuilder()
@@ -77,11 +82,12 @@ public class InMemoryBlobStore implements BlobStore {
                   .setEtag(etag)
                   .setCreatedAt(createdAt)
                   .setContentLength(copy.length)
-                  .setLastModifiedAt(Timestamps.fromMillis(now));
+                  .setLastModifiedAt(Timestamps.fromMillis(now))
+                  .setVersionId(Long.toString(version));
 
           addTag(hb, TAG_CONTENT_TYPE, ct);
 
-          return new Blob(copy, hb.build());
+          return new Blob(copy, hb.build(), version);
         });
   }
 
@@ -105,6 +111,27 @@ public class InMemoryBlobStore implements BlobStore {
   public boolean delete(String uri) {
     uri = normalize(uri);
     return map.remove(uri) != null;
+  }
+
+  @Override
+  public boolean delete(String uri, String versionId) {
+    if (versionId == null || versionId.isBlank()) {
+      return delete(uri);
+    }
+    final String k = normalize(uri);
+    boolean[] removed = {false};
+    map.computeIfPresent(
+        k,
+        (key, blob) -> {
+          // Only the named version dies; a write that landed after the caller's head() minted a
+          // higher version and must survive — mirroring an S3 version-targeted DeleteObject.
+          if (Long.toString(blob.version).equals(versionId)) {
+            removed[0] = true;
+            return null;
+          }
+          return blob;
+        });
+    return removed[0];
   }
 
   @Override
