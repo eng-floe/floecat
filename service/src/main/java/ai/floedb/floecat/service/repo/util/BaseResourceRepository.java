@@ -265,12 +265,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   protected void writeBlob(String blobUri, T value) {
     byte[] bytes = toBytes.apply(value);
     String want = sha256B64(bytes);
-    var before = blobStore.head(blobUri);
 
-    if (before.isPresent() && want.equals(before.get().getEtag())) {
-      return;
-    }
-
+    // Always PUT, even when an identical blob already exists. Content-addressed URIs recur
+    // (rewrites oscillate between content states), and CasBlobGc's min-age fence is anchored on
+    // LastModified: skipping the PUT would leave a re-referenced old blob "already old" and thus
+    // sweepable in a pass whose mark predates the pointer CAS (eng-floe/core#1904).
     blobStore.put(blobUri, bytes, contentType);
     var after = blobStore.head(blobUri);
 
@@ -286,10 +285,8 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   protected void writeBlobStrictBytes(String blobUri, byte[] bytes) {
     final String want = sha256B64(bytes);
 
-    if (blobStore.head(blobUri).map(h -> want.equals(h.getEtag())).orElse(false)) {
-      return;
-    }
-
+    // No exists-with-matching-etag skip: see writeBlob — the PUT refreshes LastModified, which
+    // the CAS GC's min-age fence depends on.
     blobStore.put(blobUri, bytes, contentType);
 
     if (!blobStore.head(blobUri).map(h -> want.equals(h.getEtag())).orElse(false)) {
