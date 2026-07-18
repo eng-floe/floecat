@@ -120,7 +120,11 @@ class EngineHintSchemaCleanerTest {
   }
 
   private void runClean(Table.Builder builder, FieldMask mask) {
-    cleaner.cleanTableHints(builder, mask, builder.build(), builder.build());
+    // The decision-routing tests below model an update whose schema actually changed; a
+    // shape-identical before/after short-circuits the cleaner entirely (see the no-op tests).
+    Table after = builder.build();
+    Table before = after.toBuilder().setSchemaJson("{\"schema-id\":99}").build();
+    cleaner.cleanTableHints(builder, mask, before, after);
   }
 
   // ----------------------
@@ -359,5 +363,66 @@ class EngineHintSchemaCleanerTest {
     // v2.0: no-op => stays.
     assertThat(builder.getPropertiesMap())
         .containsEntry(EngineHintMetadata.tableHintKey("floe.rel.v2"), encoded("floedb", "2.0", 2));
+  }
+
+  /** Mask sent by GrpcReconcilerBackend.updateTableById on every PLAN_TABLE apply. */
+  private static FieldMask reconcileMask() {
+    return FieldMask.newBuilder()
+        .addPaths("schema_json")
+        .addPaths("upstream")
+        .addPaths("properties")
+        .build();
+  }
+
+  private static Table.Builder tableWithShapeAndHints() {
+    Table.Builder builder =
+        baseBuilder()
+            .setDisplayName("variant_decimal4_negative")
+            .setSchemaJson("{\"type\":\"struct\",\"schema-id\":0}")
+            .setUpstream(
+                ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder()
+                    .setUri("https://glue.us-east-1.amazonaws.com/iceberg/")
+                    .setTableDisplayName("variant_decimal4_negative"))
+            .putProperties("storage_location", "s3://bucket/t");
+    putRelationHint(builder, "floe.relation+proto", "floedb", "0.1", 1);
+    putColumnHint(builder, "floe.column+proto", 1L, "floedb", "0.1", 2);
+    putColumnHint(builder, "floe.column+proto", 2L, "floedb", "0.1", 3);
+    return builder;
+  }
+
+  @Test
+  void unchangedShape_reconcileMaskKeepsAllHintsAndSkipsExtension() {
+    Table current = tableWithShapeAndHints().build();
+    Table.Builder builder = current.toBuilder();
+
+    cleaner.cleanTableHints(builder, reconcileMask(), current, builder.build());
+
+    assertThat(builder.build()).isEqualTo(current);
+    Mockito.verifyNoInteractions(extension);
+  }
+
+  @Test
+  void changedSchema_reconcileMaskStillClears() {
+    Table current = tableWithShapeAndHints().build();
+    Table.Builder builder =
+        current.toBuilder().setSchemaJson("{\"type\":\"struct\",\"schema-id\":1}");
+    Mockito.when(extension.decideHintClear(Mockito.any(), Mockito.any()))
+        .thenReturn(new HintClearDecision(true, true, Set.of(), Set.of(), Set.of()));
+
+    cleaner.cleanTableHints(builder, reconcileMask(), current, builder.build());
+
+    assertThat(builder.getPropertiesMap().keySet()).containsExactlyInAnyOrder("storage_location");
+  }
+
+  @Test
+  void changedDisplayName_doesNotShortCircuit() {
+    Table current = tableWithShapeAndHints().build();
+    Table.Builder builder = current.toBuilder().setDisplayName("renamed");
+    Mockito.when(extension.decideHintClear(Mockito.any(), Mockito.any()))
+        .thenReturn(new HintClearDecision(true, true, Set.of(), Set.of(), Set.of()));
+
+    cleaner.cleanTableHints(builder, reconcileMask(), current, builder.build());
+
+    assertThat(builder.getPropertiesMap().keySet()).containsExactlyInAnyOrder("storage_location");
   }
 }

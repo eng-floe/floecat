@@ -100,6 +100,13 @@ public class EngineHintSchemaCleaner {
     if (!shouldClearHints(mask)) {
       return;
     }
+    // Hints derive from the relation's shape; an update that leaves the shape untouched cannot
+    // invalidate them. Clearing on mask presence alone breaks the caller's no-op check: every
+    // content-identical UpdateTable strips hints, rewrites the blob, and advances the pointer
+    // (eng-floe/core#1905).
+    if (relationShapeUnchanged(beforeTable, afterTable, beforeView, afterView)) {
+      return;
+    }
     Map<EngineIdentity, List<String>> grouped = groupHintsByEngine(properties);
     if (grouped.isEmpty()) {
       return;
@@ -118,6 +125,23 @@ public class EngineHintSchemaCleaner {
               .orElseGet(HintClearDecision::dropAll);
       applyDecision(decision, keys, properties);
     }
+  }
+
+  private boolean relationShapeUnchanged(
+      Table beforeTable, Table afterTable, View beforeView, View afterView) {
+    if (beforeTable != null && afterTable != null) {
+      return beforeTable.getSchemaJson().equals(afterTable.getSchemaJson())
+          && beforeTable.getUpstream().equals(afterTable.getUpstream())
+          && beforeTable.getDisplayName().equals(afterTable.getDisplayName())
+          && beforeTable.getNamespaceId().equals(afterTable.getNamespaceId());
+    }
+    if (beforeView != null && afterView != null) {
+      return beforeView.toBuilder()
+          .clearProperties()
+          .build()
+          .equals(afterView.toBuilder().clearProperties().build());
+    }
+    return false;
   }
 
   private void applyDecision(
