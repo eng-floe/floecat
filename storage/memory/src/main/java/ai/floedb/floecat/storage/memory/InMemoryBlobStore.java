@@ -129,13 +129,25 @@ public class InMemoryBlobStore implements BlobStore {
       // Match the S3 store: never degrade to the unconditional delete.
       throw new IllegalArgumentException("versioned delete requires a versionId: " + uri);
     }
+    // The SPI contract distinguishes two outcomes, and this single-version model maps both:
+    //   - key WHOLLY absent  -> true  ("the named version is gone; the caller's goal state holds",
+    //                                   matching S3's 404 -> true);
+    //   - key present but the CURRENT version differs -> false ("the store can tell the blob has
+    //                                   moved past the caller's head(): nothing was deleted").
+    // The two returns look opposite for what is, in both, "the named version is not current", but
+    // they answer different questions the contract asks: "is that version gone?" (yes for absent)
+    // vs "did I delete something / did the current copy survive?" (nothing deleted, survived).
     final String k = normalize(uri);
+    if (!map.containsKey(k)) {
+      return true;
+    }
     boolean[] removed = {false};
     map.computeIfPresent(
         k,
         (key, blob) -> {
-          // Only the named version dies; a write that landed after the caller's head() minted a
-          // higher version and must survive — mirroring an S3 version-targeted DeleteObject.
+          // This store keeps only the CURRENT version. Delete it iff it IS the named one; a newer
+          // version (higher counter) means a write landed after the caller's head() and must
+          // survive — mirroring an S3 version-targeted DeleteObject that leaves other versions.
           if (Long.toString(blob.version).equals(versionId)) {
             removed[0] = true;
             return null;

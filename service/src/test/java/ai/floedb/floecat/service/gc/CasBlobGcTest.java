@@ -32,6 +32,7 @@ import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -78,6 +79,58 @@ class CasBlobGcTest {
     gc.runForAccount(ACCOUNT_ID);
 
     assertTrue(blobs.head(blobUri).isPresent());
+  }
+
+  @Test
+  void keyWithoutADerivableOwnerIsNeverDeletedInANonDeferringPass() {
+    // A candidate that passes a family's segment filter but whose key shape yields no owner
+    // pointer (malformed/blank rid) must NOT take the unconditional-delete path in the
+    // account/catalog/namespace/view/connector passes (which do not defer). Fail safe: leave it.
+    String malformed = "/accounts/" + ACCOUNT_ID + "/catalogs//catalog/sha-x.pb";
+    blobs.put(malformed, "x".getBytes(StandardCharsets.UTF_8), "text/plain");
+    assertEquals(null, Keys.ownerPointerKeyForBlob(malformed), "precondition: no derivable owner");
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(malformed).isPresent(),
+        "an owner-underivable candidate must be kept, not blind-deleted");
+  }
+
+  @Test
+  void aLatePinPublishedDuringTheFlushProtectsADeferredBlob() {
+    // P1 regression: the flush snapshots pins once per table, then deletes each deferred candidate.
+    // A query pinning a superseded root AFTER that snapshot would lose a blob reachable only
+    // through
+    // it — pin publication is read-only, so version-targeting cannot catch it. The per-candidate
+    // pin re-read closes this. No by-id pointer is seeded, so the mark phase never reads this
+    // table's root; the ONLY tableRootByTable read is remarkTable's, strictly after the flush's
+    // per-table pin snapshot — so the pin the flag then reveals is invisible to that snapshot and
+    // only the per-candidate re-read can catch it.
+    String fileStatsBlob = Keys.snapshotFileStatsBlobUri(ACCOUNT_ID, TABLE_ID, "f1", "sha-fs");
+    blobs.put(
+        fileStatsBlob, "fs".getBytes(StandardCharsets.UTF_8), "text/plain"); // deferred garbage
+    String rootKey = Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID);
+    java.util.concurrent.atomic.AtomicBoolean remarkStarted =
+        new java.util.concurrent.atomic.AtomicBoolean();
+    gc.pointerStore =
+        new ScanHidingPointerStore(pointers, Set.of()) {
+          @Override
+          public java.util.Optional<Pointer> get(String key) {
+            if (rootKey.equals(key)) {
+              remarkStarted.set(true); // remarkTable reached this table -> after the pin snapshot
+            }
+            return super.get(key);
+          }
+        };
+    when(queryContextStore.referencedPinBlobUris())
+        .thenAnswer(inv -> remarkStarted.get() ? Set.of(fileStatsBlob) : Set.of());
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(fileStatsBlob).isPresent(),
+        "a pin published after the per-table snapshot must still protect the deferred blob");
   }
 
   @Test
@@ -760,5 +813,297 @@ class CasBlobGcTest {
                 .setVersion("v-t")
                 .build(),
             true));
+  }
+
+  // ===== Delete-time owner-liveness recheck (last line of defense) =====
+
+  /**
+   * Delegates to the real in-memory store but HIDES chosen keys from {@code listPointersByPrefix}
+   * while still serving them from {@code get}. This reproduces the signature of a reachability gap
+   * — the referenced-set computation (built from prefix scans) misses a pointer that is very much
+   * alive — regardless of which upstream race caused it.
+   */
+  private static class ScanHidingPointerStore implements PointerStore {
+    private final PointerStore delegate;
+    private final Set<String> hiddenFromScans;
+
+    ScanHidingPointerStore(PointerStore delegate, Set<String> hiddenFromScans) {
+      this.delegate = delegate;
+      this.hiddenFromScans = hiddenFromScans;
+    }
+
+    @Override
+    public java.util.Optional<Pointer> get(String key) {
+      return delegate.get(key);
+    }
+
+    @Override
+    public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
+      return delegate.compareAndSet(key, expectedVersion, next);
+    }
+
+    @Override
+    public boolean delete(String key) {
+      return delegate.delete(key);
+    }
+
+    @Override
+    public boolean compareAndDelete(String key, long expectedVersion) {
+      return delegate.compareAndDelete(key, expectedVersion);
+    }
+
+    @Override
+    public boolean compareAndSetBatch(List<PointerStore.CasOp> ops) {
+      return delegate.compareAndSetBatch(ops);
+    }
+
+    @Override
+    public List<Pointer> listPointersByPrefix(
+        String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+      List<Pointer> page = delegate.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+      return page.stream().filter(ptr -> !hiddenFromScans.contains(ptr.getKey())).toList();
+    }
+
+    @Override
+    public int deleteByPrefix(String prefix) {
+      return delegate.deleteByPrefix(prefix);
+    }
+
+    @Override
+    public int countByPrefix(String prefix) {
+      return delegate.countByPrefix(prefix);
+    }
+
+    @Override
+    public boolean isEmpty() {
+      return delegate.isEmpty();
+    }
+  }
+
+  @Test
+  void rescuesLiveDefinitionBlobWhenThePointerScanMissedIt() {
+    // The CI-observed data-loss shape: the CurrentTableState pointer references the table
+    // definition blob, but the referenced-set missed that pointer. Without the delete-time
+    // recheck the sweep deletes the blob and every read of the table fails forever with
+    // "dangling pointer, missing blob". With it, the blob survives and the rescue is counted.
+    String pointerKey = Keys.tablePointerById(ACCOUNT_ID, TABLE_ID);
+    String blobUri = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-live");
+    blobs.put(blobUri, "live".getBytes(StandardCharsets.UTF_8), "text/plain");
+    putPointer(pointerKey, blobUri);
+    gc.pointerStore = new ScanHidingPointerStore(pointers, Set.of(pointerKey));
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(blobs.head(blobUri).isPresent(), "live definition blob must never be deleted");
+    assertEquals(1, result.blobsRescued(), "the rescue must be counted (reachability-bug signal)");
+    assertFalse(
+        result.poisoned(),
+        "a rescue keeps the blob but does NOT poison — the recheck protects each delete");
+  }
+
+  @Test
+  void rescuesLiveRootBlobWhenThePointerScanMissedIt() {
+    // Same defense for the table-root family: the root pointer's blob is owner-derivable from
+    // the key shape, so a scan miss must not destroy the root chain's anchor.
+    String rootPointerKey = Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID);
+    String rootBlobUri = Keys.tableRootBlobUri(ACCOUNT_ID, TABLE_ID, "sha-root");
+    blobs.put(rootBlobUri, "root".getBytes(StandardCharsets.UTF_8), "application/octet-stream");
+    putPointer(rootPointerKey, rootBlobUri);
+    gc.pointerStore = new ScanHidingPointerStore(pointers, Set.of(rootPointerKey));
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(blobs.head(rootBlobUri).isPresent(), "live root blob must never be deleted");
+    assertEquals(1, result.blobsRescued());
+    assertFalse(result.poisoned());
+  }
+
+  @Test
+  void rescuesContentAddressedBlobTheScanSawUnderItsSupersededTarget() {
+    // The root-cause interleave behind the staging "dangling pointer, missing blob" corruption
+    // (Jul 2026), reproduced red/green against the pre-fix sweep: a table definition flip-flops
+    // A -> B -> A across a sweep. The pointer scan runs while the pointer is at B, so A is
+    // unreferenced in the captured set. The mutation then reverts to content A: the
+    // content-addressed write path finds blob A already present and SKIPS the put — leaving A's
+    // lastModified ancient, so the min-age fence (which only protects recent WRITES) cannot save
+    // it — and CASes the pointer back to A. The delete phase, trusting the stale set, destroyed
+    // the blob the pointer references. Only the delete-time owner recheck closes this
+    // time-of-check-to-time-of-delete gap.
+    String pointerKey = Keys.tablePointerById(ACCOUNT_ID, TABLE_ID);
+    String blobA = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-a-reverted-to");
+    String blobB = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-b-superseded");
+    blobs.put(blobA, "a".getBytes(StandardCharsets.UTF_8), "text/plain");
+    blobs.put(blobB, "b".getBytes(StandardCharsets.UTF_8), "text/plain");
+    // Live truth: pointer is (back) at A ...
+    putPointer(pointerKey, blobA);
+    // ... but every SCAN sees the stale mid-flip view: pointer at B.
+    Pointer staleView = PointerReferences.blobPointer(pointerKey, blobB, 1L);
+    gc.pointerStore =
+        new ScanHidingPointerStore(pointers, Set.of()) {
+          @Override
+          public List<Pointer> listPointersByPrefix(
+              String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+            return super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut).stream()
+                .map(ptr -> pointerKey.equals(ptr.getKey()) ? staleView : ptr)
+                .toList();
+          }
+        };
+
+    // An unrelated, genuinely-unreferenced orphan LATER in the same pass's key order: a rescue
+    // must NOT poison/abort the sweep, so this real garbage is still collected in the same tick.
+    // (The rescue keeps only the live blob; every other candidate is judged independently by its
+    // own recheck, so a persistent flip-flop on one table can't starve the account's collection.)
+    String unrelatedOrphan = Keys.tableBlobUri(ACCOUNT_ID, "zz-other-table", "sha-orphan");
+    blobs.put(unrelatedOrphan, "x".getBytes(StandardCharsets.UTF_8), "text/plain");
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(blobA).isPresent(),
+        "the blob the pointer references at delete time must survive the stale-scan race");
+    assertEquals(1, result.blobsRescued());
+    assertFalse(result.poisoned());
+    assertFalse(
+        blobs.head(unrelatedOrphan).isPresent(),
+        "a rescue must not starve collection of unrelated garbage in the same tick");
+  }
+
+  @Test
+  void aLiveNoOwnerBlobSurvivesARescueElsewhereViaTheFlushRemark() {
+    // A LIVE no-owner family (file-stats, with its own live pointer) sorts BEFORE the table's
+    // definition blob. When the scan misses the table's by-id pointer, the definition is only
+    // rescued AFTER the file-stats was already reached. Deferral keeps the file-stats out of the
+    // inline delete path; the flush then re-proves it against the settled store (its live stats
+    // pointer) and keeps it — and the rescue does NOT poison the flush, so this works even under a
+    // concurrent rescue.
+    String tablePtr = Keys.tablePointerById(ACCOUNT_ID, TABLE_ID);
+    String definitionBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-def");
+    String fileStatsPtr = Keys.snapshotFileStatsPointer(ACCOUNT_ID, TABLE_ID, 7L, "f1");
+    String fileStatsBlob = Keys.snapshotFileStatsBlobUri(ACCOUNT_ID, TABLE_ID, "f1", "sha-fs");
+    blobs.put(definitionBlob, "def".getBytes(StandardCharsets.UTF_8), "text/plain");
+    blobs.put(fileStatsBlob, "fs".getBytes(StandardCharsets.UTF_8), "text/plain");
+    putPointer(tablePtr, definitionBlob); // live definition (its by-id pointer)
+    putPointer(fileStatsPtr, fileStatsBlob); // live file-stats
+    // The scan misses only the table's by-id pointer, so the table is absent from tableIds and its
+    // mark-phase stats/root scans never run — the definition and file-stats are both unreferenced
+    // in the stale set. The file-stats pointer itself stays visible for the flush re-mark.
+    gc.pointerStore = new ScanHidingPointerStore(pointers, Set.of(tablePtr));
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(blobs.head(definitionBlob).isPresent(), "definition rescued by the owner recheck");
+    assertTrue(
+        blobs.head(fileStatsBlob).isPresent(),
+        "a live no-owner blob is deferred, then kept by the flush re-mark despite the rescue");
+    assertEquals(1, result.blobsRescued());
+    assertFalse(result.poisoned());
+  }
+
+  @Test
+  void constraintsBlobsRescueThemselvesInlineViaTheirDerivablePointer() {
+    // Constraints blob keys embed the snapshot id, so their per-snapshot pointer is derivable
+    // from the key shape: a live constraints blob whose pointer the scan missed rescues ITSELF
+    // inline — no reliance on the definition rescue or the deferred flush.
+    String tablePtr = Keys.tablePointerById(ACCOUNT_ID, TABLE_ID);
+    String constraintsPtr = Keys.snapshotConstraintsPointer(ACCOUNT_ID, TABLE_ID, 7L);
+    String definitionBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-def");
+    String constraintsBlob = Keys.snapshotConstraintsBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "sha-con");
+    blobs.put(definitionBlob, "def".getBytes(StandardCharsets.UTF_8), "text/plain");
+    blobs.put(constraintsBlob, "con".getBytes(StandardCharsets.UTF_8), "text/plain");
+    putPointer(tablePtr, definitionBlob);
+    putPointer(constraintsPtr, constraintsBlob);
+    // Both pointers invisible to prefix scans (the deep visibility race), alive on get().
+    gc.pointerStore = new ScanHidingPointerStore(pointers, Set.of(tablePtr, constraintsPtr));
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(constraintsBlob).isPresent(),
+        "the constraints blob's own inline recheck must rescue it");
+    assertTrue(blobs.head(definitionBlob).isPresent());
+    assertTrue(result.blobsRescued() >= 1);
+    assertFalse(result.poisoned());
+  }
+
+  @Test
+  void flushReprovesLivenessAgainstTheSettledStoreBeforeDeletingSideResources() {
+    // Constraints/stats records are referenced by their OWN per-snapshot pointers, which have no
+    // inline rescue path (the pointer key is not reconstructible from the blob key). A transient
+    // visibility miss on that pointer during the mark scan therefore produces NO rescue signal
+    // anywhere — the table itself is fully live and referenced. The flush must not trust the
+    // sweep's stale set: it re-scans the owning table's constraints/stats pointer prefixes
+    // against the settled store and keeps anything they reference.
+    seedCurrentTable();
+    String statsPtr = Keys.snapshotFileStatsPointer(ACCOUNT_ID, TABLE_ID, 7L, "f1");
+    String statsBlob = Keys.snapshotFileStatsBlobUri(ACCOUNT_ID, TABLE_ID, "f1", "sha-live");
+    blobs.put(statsBlob, "live".getBytes(StandardCharsets.UTF_8), "text/plain");
+    putPointer(statsPtr, statsBlob);
+    // The pointer is invisible to the FIRST prefix scan that would return it (the mark scan) and
+    // visible afterwards (the flush re-mark) — a transient list-visibility race.
+    java.util.concurrent.atomic.AtomicBoolean missConsumed =
+        new java.util.concurrent.atomic.AtomicBoolean();
+    gc.pointerStore =
+        new ScanHidingPointerStore(pointers, Set.of()) {
+          @Override
+          public List<Pointer> listPointersByPrefix(
+              String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+            List<Pointer> page = super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+            if (!missConsumed.get()
+                && page.stream().anyMatch(ptr -> statsPtr.equals(ptr.getKey()))) {
+              missConsumed.set(true);
+              return page.stream().filter(ptr -> !statsPtr.equals(ptr.getKey())).toList();
+            }
+            return page;
+          }
+        };
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(statsBlob).isPresent(),
+        "a live side-resource blob must survive a transient mark-scan miss via the flush re-mark");
+    assertEquals(0, result.blobsRescued(), "no rescue fires here: the re-mark alone must save it");
+    assertFalse(result.poisoned());
+  }
+
+  @Test
+  void oneTablesUnprovableRemarkDoesNotStarveAnotherTablesFlush() {
+    // A re-mark failure is per-table: table A's root pointer references a missing root blob, so
+    // A's chain is unprovable and its deferred candidates must be kept — but table B's deferred
+    // garbage has its own independent re-mark proof and must still be reclaimed in the same
+    // flush. The failure still surfaces on the poisoned gauge (unprovable garbage was left).
+    String rootPtrA = Keys.tableRootByTable(ACCOUNT_ID, "tbl-a");
+    putPointer(rootPtrA, Keys.tableRootBlobUri(ACCOUNT_ID, "tbl-a", "sha-missing"));
+    String deferredA = Keys.snapshotFileStatsBlobUri(ACCOUNT_ID, "tbl-a", "f", "sha-a");
+    String deferredB = Keys.snapshotFileStatsBlobUri(ACCOUNT_ID, "tbl-b", "f", "sha-b");
+    blobs.put(deferredA, "a".getBytes(StandardCharsets.UTF_8), "text/plain");
+    blobs.put(deferredB, "b".getBytes(StandardCharsets.UTF_8), "text/plain");
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(deferredA).isPresent(), "candidates of the unprovable table must be kept");
+    assertFalse(
+        blobs.head(deferredB).isPresent(),
+        "the other table's independently-proven garbage must still be reclaimed");
+    assertTrue(result.poisoned(), "an unprovable re-mark must still reach the poisoned gauge");
+  }
+
+  @Test
+  void stillDeletesSupersededBlobWhosePointerMovedOn() {
+    // The recheck must not resurrect garbage: when the owner pointer references a NEWER blob,
+    // the superseded one is genuinely unreferenced and the sweep reclaims it as before.
+    String pointerKey = Keys.tablePointerById(ACCOUNT_ID, TABLE_ID);
+    String oldBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-old");
+    String newBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-new");
+    blobs.put(oldBlob, "old".getBytes(StandardCharsets.UTF_8), "text/plain");
+    blobs.put(newBlob, "new".getBytes(StandardCharsets.UTF_8), "text/plain");
+    putPointer(pointerKey, newBlob);
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(blobs.head(oldBlob).isPresent(), "superseded blob is still reclaimed");
+    assertTrue(blobs.head(newBlob).isPresent());
+    assertEquals(0, result.blobsRescued());
   }
 }

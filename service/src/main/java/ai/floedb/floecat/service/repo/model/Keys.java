@@ -1527,9 +1527,14 @@ public final class Keys {
    * <ul>
    *   <li>root manifest pages ({@code .../root/manifest/<sha>.pb}): referenced by the {@code
    *       TableRoot} blob's content, not by any pointer;
-   *   <li>per-target stats records ({@code .../target-stats/<target>/<sha>.pb}) and file stats
-   *       ({@code .../file-stats/<path>/<sha>.pb}): their owning pointers live under {@code
+   *   <li>the snapshot-id-less per-target stats records ({@code
+   *       .../target-stats/<target>/<sha>.pb}) and file stats ({@code
+   *       .../file-stats/<path>/<sha>.pb}): their owning pointers live under {@code
    *       .../snapshots/<snapshot_id>/stats/...} and the snapshot id is not part of the blob key.
+   *       Note the generation-scoped target-stats shape ({@code
+   *       .../target-stats/<snapshot_id>/generations/<gen>/<target>/<sha>.pb}) DOES carry the
+   *       snapshot id and IS derivable — it takes the inline recheck path below, not this null
+   *       branch.
    * </ul>
    */
   public static String ownerPointerKeyForBlob(String blobKey) {

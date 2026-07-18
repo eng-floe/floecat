@@ -44,9 +44,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import org.eclipse.microprofile.config.ConfigProvider;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class CasBlobGcScheduler {
+
+  private static final Logger LOG = Logger.getLogger(CasBlobGcScheduler.class);
 
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<CasBlobGc> casBlobGc;
@@ -175,7 +178,23 @@ public class CasBlobGcScheduler {
         }
         long accountStart = System.nanoTime();
         String accountId = account.getResourceId().getId();
-        var result = gc.runForAccount(accountId);
+        CasBlobGc.Result result;
+        try {
+          result = gc.runForAccount(accountId);
+        } catch (RuntimeException e) {
+          // Isolate one account's failure from the rest of the tick. A version-targeted delete
+          // throws StorageAbortRetryableException on a transient SDK fault and maps non-404 S3
+          // errors (e.g. 403 AccessDenied when the role lacks s3:DeleteObjectVersion) — unguarded,
+          // one such fault would skip every remaining shuffled account. Treat it like a poisoned
+          // sweep (backlog age keeps climbing) and move on.
+          LOG.warnf(
+              e, "cas gc for account %s failed; skipping to next account this tick", accountId);
+          poisonedThisTick++;
+          gcMetrics.recordPause(
+              Duration.ofNanos(System.nanoTime() - accountStart),
+              Tag.of(TagKey.RESULT, "account-error"));
+          continue;
+        }
         if (result.deletesUnsupported()) {
           // Fail-closed skip (store cannot delete by immutable version): nothing was collected,
           // so the account's backlog age must keep climbing, exactly like a poisoned sweep.
@@ -190,6 +209,7 @@ public class CasBlobGcScheduler {
             result.pointersScanned(), Tag.of(TagKey.RESULT, "pointers-scanned"));
         gcMetrics.recordCollection(result.blobsScanned(), Tag.of(TagKey.RESULT, "blobs-scanned"));
         gcMetrics.recordCollection(result.blobsDeleted(), Tag.of(TagKey.RESULT, "blobs-deleted"));
+        gcMetrics.recordCollection(result.blobsRescued(), Tag.of(TagKey.RESULT, "blobs-rescued"));
         gcMetrics.recordCollection(result.referenced(), Tag.of(TagKey.RESULT, "referenced"));
         gcMetrics.recordCollection(result.tablesScanned(), Tag.of(TagKey.RESULT, "tables-scanned"));
         gcMetrics.recordPause(

@@ -85,4 +85,12 @@ class InMemoryBlobStoreVersioningTest {
     assertThrows(IllegalArgumentException.class, () -> store.delete("/k", ""));
     assertTrue(store.head("/k").isPresent(), "nothing was deleted");
   }
+
+  @Test
+  void versionTargetedDeleteOfAnAbsentKeyCountsAsDeleted() {
+    // SPI contract (and S3, which maps the 404 to true): the named version being already absent
+    // means the caller's goal state holds.
+    var store = new InMemoryBlobStore();
+    assertTrue(store.delete("/accounts/a/tables/t/table/never-existed.pb", "42"));
+  }
 }

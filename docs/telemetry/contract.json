@@ -460,6 +460,16 @@
     "allowedTags": ["component", "operation", "reason", "resource", "status"]
   },
   {
+    "name": "floecat.service.gc.cas.delete_unsupported_accounts",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Accounts whose CAS GC sweep was skipped because immutable version deletes are unsupported.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
     "name": "floecat.service.gc.cas.oldest_sweep_age",
     "type": "GAUGE",
     "unit": "ms",
@@ -868,6 +878,16 @@
     "description": "Stats engine batch capture calls.",
     "requiredTags": ["component", "operation"],
     "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
+  },
+  {
+    "name": "floecat.service.stats.planner_lookup_outcomes.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Planner stats lookup outcomes by the ladder rung that served or failed each target.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "result"]
   },
   {
     "name": "floecat.service.stats.store_hits.total",

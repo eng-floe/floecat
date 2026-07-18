@@ -10,6 +10,14 @@ awslocal s3api create-bucket --bucket "${BUCKET}" --region "${REGION}" >/dev/nul
 # version-targeted deletes are what let a delete race a concurrent re-reference safely.
 awslocal s3api put-bucket-versioning --bucket "${BUCKET}" \
   --versioning-configuration Status=Enabled >/dev/null 2>&1 || true
+# Every content-addressed re-reference is deliberately a fresh PUT so a concurrent CAS GC cannot
+# delete it. Versioning turns those PUTs into noncurrent versions; expire old history so hot keys do
+# not grow without bound. Keep a small, time-bounded recovery window, matching the production
+# prerequisite documented in docs/storage-aws.md.
+awslocal s3api put-bucket-lifecycle-configuration --bucket "${BUCKET}" \
+  --lifecycle-configuration \
+  '{"Rules":[{"ID":"floecat-expire-noncurrent-cas-versions","Status":"Enabled","Filter":{"Prefix":""},"NoncurrentVersionExpiration":{"NoncurrentDays":30,"NewerNoncurrentVersions":3}}]}' \
+  >/dev/null 2>&1 || true
 awslocal s3api create-bucket --bucket "bucket" --region "${REGION}" >/dev/null 2>&1 || true
 awslocal s3api create-bucket --bucket "warehouse" --region "${REGION}" >/dev/null 2>&1 || true
 awslocal s3api create-bucket --bucket "yb-iceberg-tpcds" --region "${REGION}" >/dev/null 2>&1 || true
