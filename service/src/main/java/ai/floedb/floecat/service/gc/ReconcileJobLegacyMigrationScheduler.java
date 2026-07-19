@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.gc;
 
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
@@ -26,6 +27,9 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.inject.Provider;
 import java.time.Duration;
+import java.util.UUID;
+import java.util.function.LongSupplier;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -35,17 +39,16 @@ public class ReconcileJobLegacyMigrationScheduler {
   @Inject Provider<ReconcileJobGc> reconcileJobGc;
   @Inject Observability observability;
 
+  @ConfigProperty(
+      name = "floecat.gc.reconcile-jobs.legacy-migration.lease-duration",
+      defaultValue = "PT5M")
+  Duration leaseDuration = Duration.ofMinutes(5);
+
   private GcMetrics metrics;
-  private volatile String cleanupToken = "";
-  private volatile int cleanupUnresolvableThisPass;
-  private volatile int cleanupConflictedThisPass;
-  private volatile int cleanupRetryableThisPass;
   private volatile boolean cleanupComplete;
-  private volatile String lookupToken = "";
-  private volatile int lookupMigratedThisPass;
-  private volatile int lookupConflictedThisPass;
-  private volatile int lookupRetryableThisPass;
   private volatile boolean lookupComplete;
+  String ownerId = UUID.randomUUID().toString();
+  LongSupplier currentTimeMillis = System::currentTimeMillis;
 
   @PostConstruct
   void initMeters() {
@@ -72,11 +75,18 @@ public class ReconcileJobLegacyMigrationScheduler {
     long started = System.nanoTime();
     try {
       // Keep the small lookup migration moving even if a cleanup page is expensive.
-      runLookupSlice(gc);
-      runCleanupSlice(gc);
-    } catch (Throwable t) {
-      metrics.recordError(1, Tag.of(TagKey.RESULT, "tick-failed"));
-      LOG.warnf(t, "reconcile job legacy migration tick failed");
+      try {
+        runLookupSlice(gc);
+      } catch (Throwable t) {
+        metrics.recordError(1, Tag.of(TagKey.RESULT, "lookup-failed"));
+        LOG.warnf(t, "reconcile job legacy lookup migration tick failed");
+      }
+      try {
+        runCleanupSlice(gc);
+      } catch (Throwable t) {
+        metrics.recordError(1, Tag.of(TagKey.RESULT, "cleanup-failed"));
+        LOG.warnf(t, "reconcile job legacy cleanup migration tick failed");
+      }
     } finally {
       metrics.recordPause(
           Duration.ofNanos(System.nanoTime() - started), Tag.of(TagKey.RESULT, "tick"));
@@ -87,38 +97,110 @@ public class ReconcileJobLegacyMigrationScheduler {
     if (cleanupComplete) {
       return;
     }
-    var result = gc.runLegacyCleanupMigrationSlice(cleanupToken);
-    cleanupUnresolvableThisPass += result.unresolvable();
-    cleanupConflictedThisPass += result.conflicted();
-    cleanupRetryableThisPass += result.retryable();
-    cleanupToken = blankToEmpty(result.nextToken());
-    metrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "cleanup-scanned"));
-    metrics.recordCollection(
-        result.manifestsUpdated(), Tag.of(TagKey.RESULT, "cleanup-manifests-updated"));
-    metrics.recordCollection(result.unresolvable(), Tag.of(TagKey.RESULT, "cleanup-unresolvable"));
-    metrics.recordCollection(result.conflicted(), Tag.of(TagKey.RESULT, "cleanup-conflicted"));
-    metrics.recordCollection(result.retryable(), Tag.of(TagKey.RESULT, "cleanup-retryable"));
-    if (!cleanupToken.isBlank()) {
+    if (!gc.legacyMigrationComplete(ReconcileJobIndexBackend.LegacyMigration.LOOKUP)) {
+      return;
+    }
+    if (gc.legacyMigrationComplete(ReconcileJobIndexBackend.LegacyMigration.CLEANUP)) {
+      cleanupComplete = true;
+      return;
+    }
+    long nowMs = currentTimeMillis.getAsLong();
+    long leaseDurationMs = Math.max(1L, leaseDuration.toMillis());
+    var lease =
+        gc.acquireLegacyMigrationLease(
+                ReconcileJobIndexBackend.LegacyMigration.CLEANUP, ownerId, nowMs, leaseDurationMs)
+            .orElse(null);
+    if (lease == null) {
+      return;
+    }
+    var stored = lease.progress();
+    if (stored.quietPassComplete()) {
+      cleanupComplete =
+          gc.completeLegacyMigration(
+              ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
+              ownerId,
+              lease.fence(),
+              currentTimeMillis.getAsLong());
       return;
     }
 
-    int passUnresolvable = cleanupUnresolvableThisPass;
-    int passConflicted = cleanupConflictedThisPass;
-    int passRetryable = cleanupRetryableThisPass;
-    cleanupUnresolvableThisPass = 0;
-    cleanupConflictedThisPass = 0;
-    cleanupRetryableThisPass = 0;
-    if (passRetryable == 0 && passConflicted == 0) {
-      cleanupComplete = gc.completeLegacyCleanupMigration();
+    // Persist a conservative change before doing side effects. If the slice succeeds, the
+    // checkpoint below replaces it with the real count. If the process or lease is lost, the
+    // sentinel survives and forces a full quiet verification pass.
+    var inFlight =
+        new ReconcileJobIndexBackend.LegacyMigrationProgress(
+            stored.pageToken(),
+            Math.max(1, stored.changed()),
+            stored.unresolvable(),
+            stored.conflicted(),
+            stored.retryable(),
+            false);
+    if (!gc.checkpointLegacyMigration(
+        ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
+        ownerId,
+        lease.fence(),
+        inFlight,
+        currentTimeMillis.getAsLong(),
+        leaseDurationMs)) {
+      return;
     }
-    if (cleanupComplete && passUnresolvable > 0) {
+
+    var result = gc.runLegacyCleanupMigrationSlice(stored.pageToken());
+    int passUnresolvable = add(stored.unresolvable(), result.unresolvable());
+    int passConflicted = add(stored.conflicted(), result.conflicted());
+    int passRetryable = add(stored.retryable(), result.retryable());
+    int passChanged =
+        add(stored.changed(), add(result.manifestsUpdated(), result.indexesBackfilled()));
+    String nextToken = blankToEmpty(result.nextToken());
+    metrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "cleanup-scanned"));
+    metrics.recordCollection(
+        result.manifestsUpdated(), Tag.of(TagKey.RESULT, "cleanup-manifests-updated"));
+    metrics.recordCollection(
+        result.indexesBackfilled(), Tag.of(TagKey.RESULT, "cleanup-indexes-backfilled"));
+    metrics.recordCollection(result.unresolvable(), Tag.of(TagKey.RESULT, "cleanup-unresolvable"));
+    metrics.recordCollection(result.conflicted(), Tag.of(TagKey.RESULT, "cleanup-conflicted"));
+    metrics.recordCollection(result.retryable(), Tag.of(TagKey.RESULT, "cleanup-retryable"));
+    boolean passEnded = nextToken.isBlank();
+    boolean quietPass =
+        passEnded
+            && passUnresolvable == 0
+            && passRetryable == 0
+            && passConflicted == 0
+            && passChanged == 0;
+    var checkpoint =
+        passEnded && !quietPass
+            ? ReconcileJobIndexBackend.LegacyMigrationProgress.empty()
+            : new ReconcileJobIndexBackend.LegacyMigrationProgress(
+                nextToken, passChanged, passUnresolvable, passConflicted, passRetryable, quietPass);
+    boolean checkpointed =
+        gc.checkpointLegacyMigration(
+            ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
+            ownerId,
+            lease.fence(),
+            checkpoint,
+            currentTimeMillis.getAsLong(),
+            leaseDurationMs);
+    if (!checkpointed) {
+      return;
+    }
+    if (quietPass) {
+      cleanupComplete =
+          gc.completeLegacyMigration(
+              ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
+              ownerId,
+              lease.fence(),
+              currentTimeMillis.getAsLong());
+    }
+    if (!passEnded) {
+      return;
+    }
+    if (passUnresolvable > 0) {
       metrics.recordCollection(
-          passUnresolvable, Tag.of(TagKey.RESULT, "cleanup-completed-unresolvable"));
+          passUnresolvable, Tag.of(TagKey.RESULT, "cleanup-blocked-unresolvable"));
       LOG.warnf(
-          "reconcile job legacy cleanup migration completed with unresolvable rows=%d; affected rows require operator review",
+          "reconcile job legacy cleanup migration completion blocked by unresolvable rows=%d; affected rows require operator review",
           passUnresolvable);
-    }
-    if (passConflicted > 0) {
+    } else if (passConflicted > 0) {
       metrics.recordCollection(passConflicted, Tag.of(TagKey.RESULT, "cleanup-blocked-conflicted"));
       LOG.warnf(
           "reconcile job legacy cleanup migration completion blocked by conflicts=%d; affected legacy rows require operator review",
@@ -127,6 +209,10 @@ public class ReconcileJobLegacyMigrationScheduler {
       LOG.warnf(
           "reconcile job legacy cleanup migration pass will retry retryable=%d conflicted=%d",
           passRetryable, passConflicted);
+    } else if (passChanged > 0) {
+      LOG.infof(
+          "reconcile job legacy cleanup migration changed rows=%d; running a quiet verification pass",
+          passChanged);
     }
   }
 
@@ -134,34 +220,102 @@ public class ReconcileJobLegacyMigrationScheduler {
     if (lookupComplete) {
       return;
     }
-    var result = gc.runLegacyLookupMigrationSlice(lookupToken);
-    lookupMigratedThisPass += result.migrated();
-    lookupConflictedThisPass += result.conflicted();
-    lookupRetryableThisPass += result.retryable();
-    lookupToken = blankToEmpty(result.nextToken());
+    if (gc.legacyMigrationComplete(ReconcileJobIndexBackend.LegacyMigration.LOOKUP)) {
+      lookupComplete = true;
+      return;
+    }
+    long nowMs = currentTimeMillis.getAsLong();
+    long leaseDurationMs = Math.max(1L, leaseDuration.toMillis());
+    var lease =
+        gc.acquireLegacyMigrationLease(
+                ReconcileJobIndexBackend.LegacyMigration.LOOKUP, ownerId, nowMs, leaseDurationMs)
+            .orElse(null);
+    if (lease == null) {
+      return;
+    }
+    var stored = lease.progress();
+    if (stored.quietPassComplete()) {
+      lookupComplete =
+          gc.completeLegacyMigration(
+              ReconcileJobIndexBackend.LegacyMigration.LOOKUP,
+              ownerId,
+              lease.fence(),
+              currentTimeMillis.getAsLong());
+      if (lookupComplete && stored.conflicted() > 0) {
+        recordLookupConflicts(stored.conflicted());
+      }
+      return;
+    }
+
+    // See the cleanup path above. This closes the mutation-succeeded/checkpoint-lost window.
+    var inFlight =
+        new ReconcileJobIndexBackend.LegacyMigrationProgress(
+            stored.pageToken(),
+            Math.max(1, stored.changed()),
+            0,
+            stored.conflicted(),
+            stored.retryable(),
+            false);
+    if (!gc.checkpointLegacyMigration(
+        ReconcileJobIndexBackend.LegacyMigration.LOOKUP,
+        ownerId,
+        lease.fence(),
+        inFlight,
+        currentTimeMillis.getAsLong(),
+        leaseDurationMs)) {
+      return;
+    }
+
+    var result = gc.runLegacyLookupMigrationSlice(stored.pageToken());
+    int passMigrated = add(stored.changed(), result.migrated());
+    int passConflicted = add(stored.conflicted(), result.conflicted());
+    int passRetryable = add(stored.retryable(), result.retryable());
+    String nextToken = blankToEmpty(result.nextToken());
     metrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "lookup-scanned"));
     metrics.recordCollection(result.migrated(), Tag.of(TagKey.RESULT, "lookup-migrated"));
     metrics.recordCollection(result.conflicted(), Tag.of(TagKey.RESULT, "lookup-conflicted"));
     metrics.recordCollection(result.retryable(), Tag.of(TagKey.RESULT, "lookup-retryable"));
-    if (!lookupToken.isBlank()) {
+    boolean passEnded = nextToken.isBlank();
+    boolean quietPass = passEnded && passMigrated == 0 && passRetryable == 0;
+    var checkpoint =
+        passEnded && !quietPass
+            ? ReconcileJobIndexBackend.LegacyMigrationProgress.empty()
+            : new ReconcileJobIndexBackend.LegacyMigrationProgress(
+                nextToken, passMigrated, 0, passConflicted, passRetryable, quietPass);
+    boolean checkpointed =
+        gc.checkpointLegacyMigration(
+            ReconcileJobIndexBackend.LegacyMigration.LOOKUP,
+            ownerId,
+            lease.fence(),
+            checkpoint,
+            currentTimeMillis.getAsLong(),
+            leaseDurationMs);
+    if (!checkpointed) {
       return;
     }
-
-    int passMigrated = lookupMigratedThisPass;
-    int passConflicted = lookupConflictedThisPass;
-    int passRetryable = lookupRetryableThisPass;
-    boolean passComplete = result.scanned() == 0 || (passMigrated == 0 && passRetryable == 0);
-    lookupMigratedThisPass = 0;
-    lookupConflictedThisPass = 0;
-    lookupRetryableThisPass = 0;
-    lookupComplete = passComplete && gc.completeLegacyLookupMigration();
-    if (lookupComplete && passConflicted > 0) {
-      metrics.recordCollection(
-          passConflicted, Tag.of(TagKey.RESULT, "lookup-completed-conflicted"));
-      LOG.warnf(
-          "reconcile job legacy lookup migration completed with residual conflicts=%d; affected legacy rows require operator review",
-          passConflicted);
+    if (quietPass) {
+      lookupComplete =
+          gc.completeLegacyMigration(
+              ReconcileJobIndexBackend.LegacyMigration.LOOKUP,
+              ownerId,
+              lease.fence(),
+              currentTimeMillis.getAsLong());
     }
+    if (lookupComplete && passConflicted > 0) {
+      recordLookupConflicts(passConflicted);
+    }
+  }
+
+  private void recordLookupConflicts(int conflicts) {
+    metrics.recordCollection(conflicts, Tag.of(TagKey.RESULT, "lookup-completed-conflicted"));
+    LOG.warnf(
+        "reconcile job legacy lookup migration completed with residual conflicts=%d; affected legacy rows require operator review",
+        conflicts);
+  }
+
+  private static int add(int left, int right) {
+    long sum = (long) left + right;
+    return sum >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) Math.max(0L, sum);
   }
 
   private static String blankToEmpty(String value) {

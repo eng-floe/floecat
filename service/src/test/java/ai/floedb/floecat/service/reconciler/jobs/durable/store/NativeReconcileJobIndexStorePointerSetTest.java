@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -32,6 +33,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
@@ -113,6 +115,35 @@ class NativeReconcileJobIndexStorePointerSetTest {
     for (String pointerKey : expectedIndexes) {
       assertTrue(backend.loadIndexEntry(pointerKey).isEmpty(), pointerKey);
     }
+  }
+
+  @Test
+  void drainedLegacyFootprintBuildsCanonicalOnlyDelete() {
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, "legacy-drained");
+    MemoryReconcileJobIndexBackend drainedBackend =
+        new MemoryReconcileJobIndexBackend(pointers) {
+          @Override
+          public Optional<ReconcileJobIndexBackend.JobCleanupSession> beginJobCleanup(
+              CanonicalPointerSnapshot expected,
+              ReconcileJobIndexCleanupManifest fallbackManifest) {
+            return Optional.of(
+                new ReconcileJobIndexBackend.JobCleanupSession(
+                    expected, ReconcileJobIndexCleanupManifest.EMPTY, true, true));
+          }
+        };
+    NativeReconcileJobIndexStore drainedStore = new NativeReconcileJobIndexStore();
+    drainedStore.bind(
+        drainedBackend, payloadStore(), indexes, 4, (previous, current) -> {}, (a, b, op) -> {});
+
+    ReconcileJobIndexStore.JobIndexWriteBatch deleteBatch =
+        drainedStore.buildJobDeleteBatch(
+            new CanonicalPointerSnapshot(canonicalKey, "inline:reconcile-job:e30", 7L));
+
+    assertEquals(1, deleteBatch.writes().size());
+    var delete = (ReconcileJobIndexStore.JobIndexDelete) deleteBatch.writes().getFirst();
+    assertEquals(canonicalKey, delete.pointerKey());
+    assertEquals(7L, delete.expectedVersion());
+    assertTrue(delete.requireCleanupLock());
   }
 
   @Test
@@ -212,6 +243,156 @@ class NativeReconcileJobIndexStorePointerSetTest {
                 List.of(
                     new ReconcileJobIndexStore.JobWritePlan<>(
                         "oversized", batchWithDeletes("oversized", 101), List.of()))));
+  }
+
+  @Test
+  void oversizedCleanupLocksCanonicalAndDeletesReferencesInBoundedPhases() {
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, "oversized-cleanup");
+    List<String> referenceKeys = new ArrayList<>();
+    List<ReconcileJobIndexStore.JobIndexWriteOp> seedWrites = new ArrayList<>();
+    for (int i = 0; i < 125; i++) {
+      String referenceKey =
+          Keys.reconcileJobByParentPointer(ACCOUNT_ID, "cleanup-parent-" + i, "oversized-cleanup");
+      referenceKeys.add(referenceKey);
+      seedWrites.add(
+          new ReconcileJobIndexStore.JobIndexUpsert(
+              referenceKey,
+              0L,
+              canonicalKey,
+              ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_POINTER_KEY));
+    }
+    seedWrites.add(
+        0,
+        new ReconcileJobIndexStore.JobIndexUpsert(
+            canonicalKey,
+            0L,
+            "inline:reconcile-job:e30",
+            ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_INLINE_JSON,
+            new ReconcileJobIndexCleanupManifest(referenceKeys, List.of())));
+    assertTrue(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                seedWrites, ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+
+    JobIndexEntrySnapshot canonical = backend.loadIndexEntry(canonicalKey).orElseThrow();
+    ReconcileJobIndexStore.JobIndexWriteBatch deleteBatch =
+        store.buildJobDeleteBatch(
+            new CanonicalPointerSnapshot(
+                canonical.pointerKey(), canonical.blobUri(), canonical.version()));
+    ReconcileJobIndexStore.JobWritePlan<String> plan =
+        new ReconcileJobIndexStore.JobWritePlan<>("oversized-cleanup", deleteBatch, List.of());
+    List<ReconcileJobIndexStore.JobWriteChunk<String>> phases =
+        store.chunkOversizedJobDeletePlan(plan);
+
+    assertTrue(phases.size() > 1);
+    assertTrue(
+        phases.stream()
+            .allMatch(
+                phase -> store.writeItemCount(phase.indexBatch(), phase.extraPointerOps()) <= 100));
+    assertFalse(
+        backend.compareAndSetBatch(
+            store.buildJobIndexWriteBatch(
+                new CanonicalPointerSnapshot(
+                    canonical.pointerKey(), canonical.blobUri(), canonical.version()),
+                record("JS_SUCCEEDED"),
+                record("JS_FAILED"))));
+    for (int i = 0; i < phases.size(); i++) {
+      assertTrue(
+          backend.compareAndSetBatch(phases.get(i).indexBatch(), phases.get(i).extraPointerOps()));
+      if (i + 1 < phases.size()) {
+        assertTrue(backend.loadIndexEntry(canonicalKey).isPresent());
+      }
+    }
+    assertTrue(backend.loadIndexEntry(canonicalKey).isEmpty());
+    for (String referenceKey : referenceKeys) {
+      assertTrue(backend.loadIndexEntry(referenceKey).isEmpty(), referenceKey);
+    }
+  }
+
+  @Test
+  void migrationBackfillInstallsMissingConnectorAndStateIndexes() {
+    StoredReconcileJob legacy = record("JS_QUEUED");
+    legacy.jobId = "legacy-backfill";
+    legacy.connectorIndexPointerKey = "";
+    legacy.laneKey = "lane-backfill";
+    legacy.nextAttemptAtMs = 1_000L;
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, legacy.jobId);
+    assertTrue(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        canonicalKey,
+                        0L,
+                        payloadStore().encodeInlineJobState(legacy),
+                        ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_INLINE_JSON,
+                        ReconcileJobIndexCleanupManifest.EMPTY)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+
+    ReconcileJobIndexStore.IndexBackfillResult first = store.backfillStoredJobIndexes(canonicalKey);
+
+    assertTrue(first.updated());
+    assertFalse(first.retryable());
+    String connectorKey =
+        indexes.connectorIndexPointerKey(
+            ACCOUNT_ID, CONNECTOR_ID, legacy.createdAtMs, legacy.jobId);
+    assertEquals(canonicalKey, backend.loadIndexEntry(connectorKey).orElseThrow().blobUri());
+    for (String stateKey : indexes.statePointerKeys(legacy)) {
+      assertEquals(canonicalKey, backend.loadIndexEntry(stateKey).orElseThrow().blobUri());
+    }
+    assertFalse(store.backfillStoredJobIndexes(canonicalKey).updated());
+  }
+
+  @Test
+  void bulkEnqueueDoesNotCommitChildOnlyChunksBeforeAncestorOutcome() {
+    String parentJobId = "parent-gate";
+    String parentCanonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, parentJobId);
+    RejectAncestorBatchBackend rejectingBackend =
+        new RejectAncestorBatchBackend(pointers, parentCanonicalKey);
+    store.bind(
+        rejectingBackend, payloadStore(), indexes, 4, (previous, current) -> {}, (a, b, op) -> {});
+    List<ReconcileJobIndexStore.QueuedJobInsert> inserts = new ArrayList<>();
+    for (int i = 0; i < 40; i++) {
+      String jobId = "gated-child-" + i;
+      StoredReconcileJob child = record("JS_QUEUED");
+      child.jobId = jobId;
+      child.parentJobId = parentJobId;
+      child.dedupeKeyHash = "gated-hash-" + i;
+      child.connectorIndexPointerKey =
+          Keys.reconcileJobByConnectorPointer(ACCOUNT_ID, CONNECTOR_ID, "gated-child-token-" + i);
+      inserts.add(
+          new ReconcileJobIndexStore.QueuedJobInsert(
+              i,
+              Keys.reconcileDedupePointer(ACCOUNT_ID, child.dedupeKeyHash),
+              Keys.reconcileJobPointerById(ACCOUNT_ID, jobId),
+              Keys.reconcileJobLookupPointerById(jobId),
+              Keys.reconcileJobByParentPointer(ACCOUNT_ID, parentJobId, jobId),
+              List.of(),
+              List.of(),
+              child.connectorIndexPointerKey,
+              "",
+              child));
+    }
+    StoredReconcileJob previousParent = record("JS_RUNNING");
+    previousParent.jobId = parentJobId;
+    previousParent.parentJobId = "";
+    previousParent.dedupeKeyHash = "parent-gate-hash";
+    StoredReconcileJob waitingParent = store.cloneStoredRecord(previousParent);
+    waitingParent.state = "JS_WAITING";
+    ReconcileJobIndexStore.CanonicalRecordMutation parentOutcome =
+        new ReconcileJobIndexStore.CanonicalRecordMutation(
+            new CanonicalPointerSnapshot(parentCanonicalKey, "inline:reconcile-job:e30", 1L),
+            previousParent,
+            waitingParent);
+
+    List<ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueItemResult> results =
+        store.commitQueuedJobInserts(inserts, ignored -> List.of(parentOutcome));
+
+    assertEquals(inserts.size(), results.size());
+    assertTrue(rejectingBackend.ancestorRejections.get() > 0);
+    for (ReconcileJobIndexStore.QueuedJobInsert insert : inserts) {
+      assertFalse(rejectingBackend.loadIndexEntry(insert.canonicalKey()).isPresent());
+    }
   }
 
   @Test
@@ -316,6 +497,31 @@ class NativeReconcileJobIndexStorePointerSetTest {
         throw new RuntimeException("injected second chunk failure");
       }
       committedIndexes.addAll(batchIndexes);
+      return super.compareAndSetBatch(batch);
+    }
+  }
+
+  private static final class RejectAncestorBatchBackend extends MemoryReconcileJobIndexBackend {
+    private final String ancestorCanonicalKey;
+    private final AtomicInteger ancestorRejections = new AtomicInteger();
+
+    private RejectAncestorBatchBackend(PointerStore pointerStore, String ancestorCanonicalKey) {
+      super(pointerStore);
+      this.ancestorCanonicalKey = ancestorCanonicalKey;
+    }
+
+    @Override
+    public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
+      boolean containsAncestor =
+          batch.writes().stream()
+              .anyMatch(
+                  write ->
+                      write instanceof ReconcileJobIndexStore.JobIndexUpsert upsert
+                          && ancestorCanonicalKey.equals(upsert.pointerKey()));
+      if (containsAncestor) {
+        ancestorRejections.incrementAndGet();
+        return false;
+      }
       return super.compareAndSetBatch(batch);
     }
   }

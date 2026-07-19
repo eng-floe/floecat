@@ -45,6 +45,7 @@ import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
 import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException;
+import software.amazon.awssdk.services.dynamodb.model.Update;
 
 @Singleton
 @IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
@@ -167,6 +168,8 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
           appendJobIndexUpsert(tx, upsert);
         } else if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
           appendJobIndexDelete(tx, delete);
+        } else if (write instanceof ReconcileJobIndexStore.JobIndexCheck check) {
+          appendJobIndexCheck(tx, check);
         } else if (write instanceof ReconcileJobIndexStore.JobIndexCheckAbsent check) {
           appendJobIndexCheckAbsent(tx, check.pointerKey());
         }
@@ -558,10 +561,10 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(delete.pointerKey());
     if (canonicalKey != null) {
       tx.add(
-          buildDelete(
+          buildCanonicalDelete(
               JobIndexBackendSupport.canonicalPartitionKey(canonicalKey),
               JobIndexBackendSupport.canonicalSortKey(canonicalKey),
-              delete.expectedVersion()));
+              delete));
       return;
     }
     var parentKey = JobIndexBackendSupport.parseParentKey(delete.pointerKey());
@@ -631,6 +634,43 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     tx.addAll(DynamoReconcileJobLookupCompatibility.checkAbsent(table, lookupKey));
   }
 
+  private void appendJobIndexCheck(
+      List<TransactWriteItem> tx, ReconcileJobIndexStore.JobIndexCheck check) {
+    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(check.pointerKey());
+    if (canonicalKey == null) {
+      throw new IllegalArgumentException(
+          "Unsupported reconcile job index version check key: " + check.pointerKey());
+    }
+    Map<String, String> names = new HashMap<>();
+    names.put("#v", ATTR_VERSION);
+    Map<String, AttributeValue> values = new HashMap<>();
+    values.put(":expected", AttributeValue.fromN(Long.toString(check.expectedVersion())));
+    String condition = "#v = :expected";
+    if (check.requireCleanupLock()) {
+      names.put("#lock", JobIndexBackendSupport.ATTR_CLEANUP_DELETE_IN_PROGRESS);
+      values.put(":true", AttributeValue.fromBool(true));
+      condition += " AND #lock = :true";
+    }
+    tx.add(
+        TransactWriteItem.builder()
+            .conditionCheck(
+                ConditionCheck.builder()
+                    .tableName(table)
+                    .key(
+                        Map.of(
+                            ATTR_PARTITION_KEY,
+                            AttributeValue.fromS(
+                                JobIndexBackendSupport.canonicalPartitionKey(canonicalKey)),
+                            ATTR_SORT_KEY,
+                            AttributeValue.fromS(
+                                JobIndexBackendSupport.canonicalSortKey(canonicalKey))))
+                    .conditionExpression(condition)
+                    .expressionAttributeNames(names)
+                    .expressionAttributeValues(values)
+                    .build())
+            .build());
+  }
+
   private TransactWriteItem buildReadyUpsert(ReadyQueueBackendSupport.ReadyQueueRow row) {
     Map<String, AttributeValue> item = new HashMap<>();
     item.put(ATTR_PARTITION_KEY, AttributeValue.fromS(row.partitionKey()));
@@ -676,6 +716,47 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
 
   private TransactWriteItem buildCanonicalUpsert(
       JobIndexBackendSupport.CanonicalJobKey key, ReconcileJobIndexStore.JobIndexUpsert upsert) {
+    if (upsert.expectedVersion() > 0L) {
+      Map<String, String> names =
+          Map.ofEntries(
+              Map.entry("#kind", ATTR_KIND),
+              Map.entry("#v", ATTR_VERSION),
+              Map.entry("#pointer", JobIndexBackendSupport.ATTR_POINTER_KEY),
+              Map.entry("#blob", JobIndexBackendSupport.ATTR_BLOB_URI),
+              Map.entry("#account", JobIndexBackendSupport.ATTR_ACCOUNT_ID),
+              Map.entry("#job", JobIndexBackendSupport.ATTR_JOB_ID),
+              Map.entry("#idx", JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS),
+              Map.entry("#ready", JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS),
+              Map.entry("#lock", JobIndexBackendSupport.ATTR_CLEANUP_DELETE_IN_PROGRESS));
+      Map<String, AttributeValue> values = new HashMap<>();
+      values.put(":kind", AttributeValue.fromS(JobIndexBackendSupport.KIND_CANONICAL_JOB));
+      values.put(":expected", AttributeValue.fromN(Long.toString(upsert.expectedVersion())));
+      values.put(":next", AttributeValue.fromN(Long.toString(upsert.expectedVersion() + 1L)));
+      values.put(":pointer", AttributeValue.fromS(key.pointerKey()));
+      values.put(":blob", AttributeValue.fromS(upsert.blobUri()));
+      values.put(":account", AttributeValue.fromS(key.accountSegment()));
+      values.put(":job", AttributeValue.fromS(key.jobSegment()));
+      values.put(":idx", stringListValue(upsert.cleanupManifest().indexPointerKeys()));
+      values.put(":ready", stringListValue(upsert.cleanupManifest().readyPointerKeys()));
+      return TransactWriteItem.builder()
+          .update(
+              Update.builder()
+                  .tableName(table)
+                  .key(
+                      Map.of(
+                          ATTR_PARTITION_KEY,
+                          AttributeValue.fromS(JobIndexBackendSupport.canonicalPartitionKey(key)),
+                          ATTR_SORT_KEY,
+                          AttributeValue.fromS(JobIndexBackendSupport.canonicalSortKey(key))))
+                  .updateExpression(
+                      "SET #kind = :kind, #v = :next, #pointer = :pointer, #blob = :blob, "
+                          + "#account = :account, #job = :job, #idx = :idx, #ready = :ready")
+                  .conditionExpression("#v = :expected AND attribute_not_exists(#lock)")
+                  .expressionAttributeNames(names)
+                  .expressionAttributeValues(values)
+                  .build())
+          .build();
+    }
     Map<String, AttributeValue> item = new HashMap<>();
     item.put(
         ATTR_PARTITION_KEY,
@@ -746,6 +827,33 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
         .build();
   }
 
+  private TransactWriteItem buildCanonicalDelete(
+      String partitionKey, String sortKey, ReconcileJobIndexStore.JobIndexDelete delete) {
+    Map<String, String> names = new HashMap<>();
+    names.put("#v", ATTR_VERSION);
+    Map<String, AttributeValue> values = new HashMap<>();
+    values.put(":expected", AttributeValue.fromN(Long.toString(delete.expectedVersion())));
+    String condition = "#v = :expected";
+    if (delete.requireCleanupLock()) {
+      names.put("#lock", JobIndexBackendSupport.ATTR_CLEANUP_DELETE_IN_PROGRESS);
+      values.put(":true", AttributeValue.fromBool(true));
+      condition += " AND #lock = :true";
+    }
+    return TransactWriteItem.builder()
+        .delete(
+            Delete.builder()
+                .tableName(table)
+                .key(
+                    Map.of(
+                        ATTR_PARTITION_KEY, AttributeValue.fromS(partitionKey),
+                        ATTR_SORT_KEY, AttributeValue.fromS(sortKey)))
+                .conditionExpression(condition)
+                .expressionAttributeNames(names)
+                .expressionAttributeValues(values)
+                .build())
+        .build();
+  }
+
   private TransactWriteItem buildReferenceDelete(
       String partitionKey, String sortKey, ReconcileJobIndexStore.JobIndexDelete delete) {
     if (delete.expectedCanonicalPointerKey().isBlank()) {
@@ -805,5 +913,15 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     if (!attrs.isEmpty()) {
       item.put(name, AttributeValue.fromL(attrs));
     }
+  }
+
+  private static AttributeValue stringListValue(List<String> values) {
+    return AttributeValue.fromL(
+        values == null
+            ? List.of()
+            : values.stream()
+                .filter(value -> value != null && !value.isBlank())
+                .map(AttributeValue::fromS)
+                .toList());
   }
 }

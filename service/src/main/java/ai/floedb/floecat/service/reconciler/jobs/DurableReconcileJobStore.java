@@ -275,6 +275,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return jobIndexStore;
   }
 
+  public void initializeJobIndexStore() {
+    jobIndexStore();
+  }
+
   private ReconcileJobIndexes indexes() {
     if (jobIndexes == null) {
       jobIndexes = new ReconcileJobIndexes();
@@ -569,6 +573,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                 .orElse(DEFAULT_LEASE_SCAN_BUDGET_MS));
     leaseScanPermits = new Semaphore(leaseMaxConcurrency, true);
     observeLeaseScanPermitGauges();
+    jobIndexStore();
   }
 
   @Override
@@ -774,6 +779,54 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                                   "reconcile job missing canonical state while applying planner outcome: "
                                       + jobId);
                             }
+                            String plannerOutcomeFingerprint =
+                                plannerOutcomeFingerprint(jobId, queuedInserts);
+                            long expectedDirectChildren =
+                                directPlannerChildCount(jobId, queuedInserts);
+                            boolean repairingCommittedPlannerOutcome =
+                                completionKind == CompletionKind.SUCCEEDED_WAITING
+                                    && !blankToEmpty(previous.plannerOutcomeFingerprint).isBlank();
+                            if (repairingCommittedPlannerOutcome
+                                && ((!"JS_WAITING".equals(previous.state)
+                                        && !"JS_RUNNING".equals(previous.state))
+                                    || !plannerOutcomeFingerprint.equals(
+                                        blankToEmpty(previous.plannerOutcomeFingerprint))
+                                    || expectedDirectChildren
+                                        != Math.max(0L, previous.expectedDirectChildren)
+                                    || ("JS_WAITING".equals(previous.state)
+                                        && !blankToEmpty(leaseEpoch)
+                                            .equals(
+                                                blankToEmpty(
+                                                    previous.plannerOutcomeLeaseEpoch))))) {
+                              throw new IllegalStateException(
+                                  "planner outcome replay does not match the committed child set for job "
+                                      + jobId);
+                            }
+                            if (matchesLeaseOutcome(
+                                previous,
+                                completionKind,
+                                finishedAtMs,
+                                message,
+                                tablesScanned,
+                                tablesChanged,
+                                viewsScanned,
+                                viewsChanged,
+                                errors,
+                                snapshotsProcessed,
+                                statsProcessed,
+                                0L)) {
+                              StoredReconcileJob guarded =
+                                  jobIndexStore().cloneStoredRecord(previous);
+                              guarded.updatedAtMs = System.currentTimeMillis();
+                              guarded.canonicalPointerKey = loaded.canonicalPointerKey;
+                              completedParent.set(
+                                  new StoredEnvelope(
+                                      loaded.canonicalPointerKey,
+                                      jobIndexStore().cloneStoredRecord(guarded)));
+                              return List.of(
+                                  new ReconcileJobIndexStore.CanonicalRecordMutation(
+                                      snapshot, previous, guarded));
+                            }
                             StoredReconcileJob next =
                                 applyLeaseOutcomeToRecord(
                                     loaded.canonicalPointerKey,
@@ -793,6 +846,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                                     0L);
                             if (next == null) {
                               throw new LeaseOutcomeRejectedException();
+                            }
+                            next.expectedDirectChildren = expectedDirectChildren;
+                            if (completionKind == CompletionKind.SUCCEEDED_WAITING) {
+                              next.plannerOutcomeFingerprint = plannerOutcomeFingerprint;
+                              next.plannerOutcomeLeaseEpoch = blankToEmpty(leaseEpoch);
                             }
                             completedParent.set(
                                 new StoredEnvelope(
@@ -877,14 +935,62 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (shouldMarkSelfDirtyAfterEnqueue(spec)) {
         markDirtyParent(spec.accountId, item.jobId);
       }
+      boolean directPlannerChild = jobId.equals(blankToEmpty(spec.parentJobId));
       if (item.created) {
         resetFinalizedSnapshotIfEligible(spec);
+      }
+      // Direct children were reserved on the parent in the outcome transaction. Keep the
+      // per-child increment as the fallback for any non-direct enqueue routed through this path.
+      if (item.created && !directPlannerChild) {
         requestProjectionRefresh(spec.accountId, spec.parentJobId, 1L);
       } else {
         markDirtyParent(spec.accountId, spec.parentJobId);
       }
     }
     return true;
+  }
+
+  private long directPlannerChildCount(
+      String parentJobId, List<ReconcileJobIndexStore.QueuedJobInsert> inserts) {
+    return (inserts == null ? List.<ReconcileJobIndexStore.QueuedJobInsert>of() : inserts)
+        .stream()
+            .filter(Objects::nonNull)
+            .filter(
+                insert ->
+                    insert.record() != null
+                        && parentJobId.equals(blankToEmpty(insert.record().parentJobId)))
+            .map(ReconcileJobIndexStore.QueuedJobInsert::dedupePointerKey)
+            .filter(key -> !blankToEmpty(key).isBlank())
+            .distinct()
+            .count();
+  }
+
+  private String plannerOutcomeFingerprint(
+      String parentJobId, List<ReconcileJobIndexStore.QueuedJobInsert> inserts) {
+    try {
+      var digest = java.security.MessageDigest.getInstance("SHA-256");
+      digest.update(blankToEmpty(parentJobId).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+      digest.update((byte) 0);
+      (inserts == null ? List.<ReconcileJobIndexStore.QueuedJobInsert>of() : inserts)
+          .stream()
+              .filter(Objects::nonNull)
+              .filter(
+                  insert ->
+                      insert.record() != null
+                          && parentJobId.equals(blankToEmpty(insert.record().parentJobId)))
+              .map(ReconcileJobIndexStore.QueuedJobInsert::dedupePointerKey)
+              .filter(key -> !blankToEmpty(key).isBlank())
+              .distinct()
+              .sorted()
+              .forEach(
+                  key -> {
+                    digest.update(key.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    digest.update((byte) 0);
+                  });
+      return java.util.HexFormat.of().formatHex(digest.digest());
+    } catch (java.security.NoSuchAlgorithmException impossible) {
+      throw new IllegalStateException("SHA-256 is unavailable", impossible);
+    }
   }
 
   @Override
@@ -1148,15 +1254,21 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return Optional.empty();
     }
     StoredReconcileJob existing = loaded.get().record;
-    if (!leaseManager()
-        .hasActiveLease(
-            jobId,
-            leaseEpoch,
-            existing,
-            "getCompletionLeaseView",
-            true,
-            true,
-            allowExpiredWithinGrace)) {
+    boolean replayingCommittedWaitingOutcome =
+        "JS_WAITING".equals(existing.state)
+            && !blankToEmpty(existing.plannerOutcomeFingerprint).isBlank()
+            && !blankToEmpty(leaseEpoch).isBlank()
+            && blankToEmpty(leaseEpoch).equals(blankToEmpty(existing.plannerOutcomeLeaseEpoch));
+    if (!replayingCommittedWaitingOutcome
+        && !leaseManager()
+            .hasActiveLease(
+                jobId,
+                leaseEpoch,
+                existing,
+                "getCompletionLeaseView",
+                true,
+                true,
+                allowExpiredWithinGrace)) {
       return Optional.empty();
     }
     ReconcileJob job = projector().toCanonicalLeaseView(existing);
@@ -4212,23 +4324,32 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     Optional<StoredEnvelope> updated =
         mutateByJobIdReturningRecord(
             jobId,
-            existing ->
-                applyLeaseOutcomeToRecord(
-                    existing.canonicalPointerKey,
-                    existing,
-                    jobId,
-                    leaseEpoch,
-                    completionKind,
-                    finishedAtMs,
-                    message,
-                    tablesScanned,
-                    tablesChanged,
-                    viewsScanned,
-                    viewsChanged,
-                    errors,
-                    snapshotsProcessed,
-                    statsProcessed,
-                    indexesProcessed));
+            existing -> {
+              if ((completionKind == CompletionKind.SUCCEEDED
+                      || completionKind == CompletionKind.SUCCEEDED_WAITING)
+                  && !blankToEmpty(existing.plannerOutcomeFingerprint).isBlank()
+                  && !"JS_CANCELLING".equals(blankToEmpty(existing.state))) {
+                throw new IllegalStateException(
+                    "planner outcome replay does not match the committed child set for job "
+                        + jobId);
+              }
+              return applyLeaseOutcomeToRecord(
+                  existing.canonicalPointerKey,
+                  existing,
+                  jobId,
+                  leaseEpoch,
+                  completionKind,
+                  finishedAtMs,
+                  message,
+                  tablesScanned,
+                  tablesChanged,
+                  viewsScanned,
+                  viewsChanged,
+                  errors,
+                  snapshotsProcessed,
+                  statsProcessed,
+                  indexesProcessed);
+            });
     updated.ifPresent(
         env -> {
           clearExecutionLeasesIfOwned(env, jobId, leaseEpoch);
@@ -4364,7 +4485,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       long indexesProcessed) {
     String op = operationName(completionKind);
     boolean allowExpiredWithinGrace =
-        completionKind == CompletionKind.SUCCEEDED
+        completionKind == CompletionKind.SUCCEEDED_WAITING
+            || completionKind == CompletionKind.SUCCEEDED
             || completionKind == CompletionKind.FAILED_TERMINAL
             || completionKind == CompletionKind.CANCELLED;
     if (!leaseManager()

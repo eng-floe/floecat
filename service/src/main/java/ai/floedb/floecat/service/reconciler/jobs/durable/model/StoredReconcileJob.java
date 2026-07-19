@@ -72,6 +72,8 @@ public class StoredReconcileJob {
   public long completedFiles;
   public long failedFiles;
   public long expectedDirectChildren;
+  public String plannerOutcomeFingerprint;
+  public String plannerOutcomeLeaseEpoch;
   public boolean childrenFinalized;
   public String statsCleanupState;
   public long statsCleanupUpdatedAtMs;

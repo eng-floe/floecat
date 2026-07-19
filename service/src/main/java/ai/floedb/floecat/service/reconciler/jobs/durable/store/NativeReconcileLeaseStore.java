@@ -962,8 +962,10 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
 
   private void reclaimRunningOrCancellingJob(
       String canonicalKey, StoredReconcileJob canonicalRecord, StoredJobLease lease, long nowMs) {
+    boolean repairIncompletePlannerFanout = waitingPlannerFanoutIncomplete(canonicalRecord);
     if (!"JS_RUNNING".equals(canonicalRecord.state)
-        && !"JS_CANCELLING".equals(canonicalRecord.state)) {
+        && !"JS_CANCELLING".equals(canonicalRecord.state)
+        && !repairIncompletePlannerFanout) {
       clearLeaseIfEpochMatches(canonicalRecord.accountId, canonicalRecord.jobId, lease.epoch);
       return;
     }
@@ -973,7 +975,11 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
             .apply(
                 canonicalKey,
                 record -> {
-                  if (!"JS_RUNNING".equals(record.state) && !"JS_CANCELLING".equals(record.state)) {
+                  boolean repairingWaitingPlanner =
+                      repairIncompletePlannerFanout && "JS_WAITING".equals(record.state);
+                  if (!"JS_RUNNING".equals(record.state)
+                      && !"JS_CANCELLING".equals(record.state)
+                      && !repairingWaitingPlanner) {
                     return null;
                   }
                   StoredJobLease currentLease = loadLease(record).orElse(null);
@@ -997,11 +1003,18 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
                     record.readyPointerKey = null;
                   } else {
                     record.attempt = Math.max(0, record.attempt) + 1;
-                    record.lastError = "Lease expired";
+                    record.lastError =
+                        repairingWaitingPlanner
+                            ? "Planner fanout incomplete after outcome commit"
+                            : "Lease expired";
                     record.executorId = "";
+                    record.childrenFinalized = false;
                     if (record.attempt >= maxAttempts) {
                       record.state = "JS_FAILED";
-                      record.message = "Lease expired repeatedly; failed";
+                      record.message =
+                          repairingWaitingPlanner
+                              ? "Planner fanout repair failed repeatedly"
+                              : "Lease expired repeatedly; failed";
                       if (record.startedAtMs <= 0L) {
                         record.startedAtMs = nowMs;
                       }
@@ -1011,7 +1024,10 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
                       long nextAttemptAtMs =
                           nowMs + Math.max(0L, backoffMs.applyAsLong(record.attempt));
                       record.state = "JS_QUEUED";
-                      record.message = "Lease expired; requeued";
+                      record.message =
+                          repairingWaitingPlanner
+                              ? "Planner fanout incomplete; requeued for repair"
+                              : "Lease expired; requeued";
                       record.nextAttemptAtMs = nextAttemptAtMs;
                       record.finishedAtMs = 0L;
                       record.readyPointerKey =
@@ -1025,6 +1041,26 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     if (updated && !blank(expiredEpoch.get())) {
       clearLeaseIfEpochMatches(
           canonicalRecord.accountId, canonicalRecord.jobId, expiredEpoch.get());
+    }
+  }
+
+  private boolean waitingPlannerFanoutIncomplete(StoredReconcileJob record) {
+    if (record == null
+        || !"JS_WAITING".equals(record.state)
+        || record.jobKind() != ReconcileJobKind.PLAN_CONNECTOR
+        || blank(record.plannerOutcomeFingerprint)
+        || blank(record.accountId)
+        || blank(record.jobId)
+        || Math.max(0L, record.expectedDirectChildren) <= 0L) {
+      return false;
+    }
+    try {
+      return jobIndexStore.countStoredChildJobs(record.accountId, record.jobId)
+          < Math.max(0L, record.expectedDirectChildren);
+    } catch (RuntimeException ignored) {
+      // Do not discard the only repair capability when the child-count read is temporarily
+      // unavailable. Replanning is deduped and fingerprint-guarded.
+      return true;
     }
   }
 

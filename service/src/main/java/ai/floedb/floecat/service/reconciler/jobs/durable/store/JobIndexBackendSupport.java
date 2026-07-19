@@ -39,7 +39,13 @@ final class JobIndexBackendSupport {
   static final String ATTR_BLOB_URI = "blob_uri";
   static final String ATTR_CLEANUP_INDEX_POINTER_KEYS = "cleanup_index_pointer_keys";
   static final String ATTR_CLEANUP_READY_POINTER_KEYS = "cleanup_ready_pointer_keys";
+  static final String ATTR_CLEANUP_LEGACY_INDEX_POINTER_KEYS = "cleanup_legacy_index_pointer_keys";
+  static final String ATTR_CLEANUP_LEGACY_READY_POINTER_KEYS = "cleanup_legacy_ready_pointer_keys";
   static final String ATTR_CLEANUP_MANIFEST_COMPLETE = "cleanup_manifest_complete";
+  static final String ATTR_CLEANUP_LEGACY_SCAN_REQUIRED = "cleanup_legacy_scan_required";
+  static final String ATTR_CLEANUP_LEGACY_SCAN_CURSOR = "cleanup_legacy_scan_cursor";
+  static final String ATTR_CLEANUP_LEGACY_SCAN_DRAINED = "cleanup_legacy_scan_drained";
+  static final String ATTR_CLEANUP_DELETE_IN_PROGRESS = "cleanup_delete_in_progress";
   private static final String ACCOUNT_SEGMENT_PLACEHOLDER = "__account__";
   private static final String PARENT_SEGMENT_PLACEHOLDER = "__parent__";
   private static final String CONNECTOR_SEGMENT_PLACEHOLDER = "__connector__";

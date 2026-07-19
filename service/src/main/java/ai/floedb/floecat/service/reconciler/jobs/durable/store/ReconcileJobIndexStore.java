@@ -35,6 +35,12 @@ public interface ReconcileJobIndexStore {
 
   record StoredJobPage(List<StoredReconcileJob> records, String nextPageToken) {}
 
+  record IndexBackfillResult(boolean updated, boolean retryable) {
+    public static IndexBackfillResult unchanged() {
+      return new IndexBackfillResult(false, false);
+    }
+  }
+
   record ReadyQueueWrite(
       String readyPointerKey, String canonicalPointerKey, PointerReferenceKind referenceKind) {}
 
@@ -48,7 +54,8 @@ public interface ReconcileJobIndexStore {
     }
   }
 
-  sealed interface JobIndexWriteOp permits JobIndexUpsert, JobIndexDelete, JobIndexCheckAbsent {}
+  sealed interface JobIndexWriteOp
+      permits JobIndexUpsert, JobIndexDelete, JobIndexCheck, JobIndexCheckAbsent {}
 
   record JobIndexUpsert(
       String pointerKey,
@@ -80,7 +87,8 @@ public interface ReconcileJobIndexStore {
       String pointerKey,
       long expectedVersion,
       String expectedCanonicalPointerKey,
-      String expectedLookupStoragePartitionKey)
+      String expectedLookupStoragePartitionKey,
+      boolean requireCleanupLock)
       implements JobIndexWriteOp {
     public JobIndexDelete {
       expectedCanonicalPointerKey =
@@ -90,12 +98,32 @@ public interface ReconcileJobIndexStore {
     }
 
     public JobIndexDelete(
+        String pointerKey,
+        long expectedVersion,
+        String expectedCanonicalPointerKey,
+        String expectedLookupStoragePartitionKey) {
+      this(
+          pointerKey,
+          expectedVersion,
+          expectedCanonicalPointerKey,
+          expectedLookupStoragePartitionKey,
+          false);
+    }
+
+    public JobIndexDelete(
         String pointerKey, long expectedVersion, String expectedCanonicalPointerKey) {
-      this(pointerKey, expectedVersion, expectedCanonicalPointerKey, "");
+      this(pointerKey, expectedVersion, expectedCanonicalPointerKey, "", false);
     }
 
     public JobIndexDelete(String pointerKey, long expectedVersion) {
-      this(pointerKey, expectedVersion, "", "");
+      this(pointerKey, expectedVersion, "", "", false);
+    }
+  }
+
+  record JobIndexCheck(String pointerKey, long expectedVersion, boolean requireCleanupLock)
+      implements JobIndexWriteOp {
+    public JobIndexCheck(String pointerKey, long expectedVersion) {
+      this(pointerKey, expectedVersion, false);
     }
   }
 
@@ -217,11 +245,15 @@ public interface ReconcileJobIndexStore {
   JobIndexWriteBatch buildDiscoveredLegacyJobDeleteBatch(
       CanonicalPointerSnapshot currentSnapshot, ReconcileJobIndexCleanupManifest manifest);
 
+  IndexBackfillResult backfillStoredJobIndexes(String canonicalPointerKey);
+
   int writeItemCount(JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps);
 
   int maxWriteItemsPerBatch();
 
   <T> List<JobWriteChunk<T>> chunkJobWritePlans(List<JobWritePlan<T>> plans);
+
+  <T> List<JobWriteChunk<T>> chunkOversizedJobDeletePlan(JobWritePlan<T> plan);
 
   JobIndexWriteBatch combineWriteBatches(List<JobIndexWriteBatch> batches);
 

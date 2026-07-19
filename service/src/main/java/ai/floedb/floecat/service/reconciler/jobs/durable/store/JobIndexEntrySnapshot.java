@@ -16,10 +16,28 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
+/**
+ * Read-only view of a job index entry. {@code cleanupLocked} is set only for a canonical entry
+ * whose durable deletion claim has already been acquired.
+ */
 public record JobIndexEntrySnapshot(
-    String pointerKey, String blobUri, long version, String lookupStoragePartitionKey) {
+    String pointerKey,
+    String blobUri,
+    long version,
+    String lookupStoragePartitionKey,
+    boolean cleanupLocked) {
   public JobIndexEntrySnapshot(String pointerKey, String blobUri, long version) {
-    this(pointerKey, blobUri, version, "");
+    this(pointerKey, blobUri, version, "", false);
+  }
+
+  public JobIndexEntrySnapshot(
+      String pointerKey, String blobUri, long version, String lookupStoragePartitionKey) {
+    this(pointerKey, blobUri, version, lookupStoragePartitionKey, false);
+  }
+
+  public JobIndexEntrySnapshot(
+      String pointerKey, String blobUri, long version, boolean cleanupLocked) {
+    this(pointerKey, blobUri, version, "", cleanupLocked);
   }
 
   public JobIndexEntrySnapshot {

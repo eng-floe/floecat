@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.reconciler.jobs.DurableReconcileJobStore;
 import ai.floedb.floecat.service.reconciler.jobs.ReconcilerSettingsStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
@@ -34,7 +35,9 @@ import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
@@ -42,6 +45,7 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
@@ -65,6 +69,15 @@ public class ReconcileJobGc {
   @Inject ReconcileReadyQueueBackend readyQueueBackend;
   @Inject ReconcileJobIndexes jobIndexes;
   @Inject PointerStore pointerStore;
+  @Inject Instance<DurableReconcileJobStore> durableJobStore;
+  java.util.function.LongSupplier clock = System::currentTimeMillis;
+
+  @PostConstruct
+  void initializeDurableJobStore() {
+    if (durableJobStore.isResolvable()) {
+      durableJobStore.get().initializeJobIndexStore();
+    }
+  }
 
   public record AccountResult(
       int scanned,
@@ -90,10 +103,21 @@ public class ReconcileJobGc {
   public record CleanupMigrationResult(
       int scanned,
       int manifestsUpdated,
+      int indexesBackfilled,
       int unresolvable,
       int conflicted,
       int retryable,
-      String nextToken) {}
+      String nextToken) {
+    public CleanupMigrationResult(
+        int scanned,
+        int manifestsUpdated,
+        int unresolvable,
+        int conflicted,
+        int retryable,
+        String nextToken) {
+      this(scanned, manifestsUpdated, 0, unresolvable, conflicted, retryable, nextToken);
+    }
+  }
 
   public CleanupMigrationResult runLegacyCleanupMigrationSlice(String pageTokenIn) {
     int pageSize =
@@ -104,12 +128,24 @@ public class ReconcileJobGc {
     var page =
         jobIndexBackend.migrateLegacyCleanupManifests(
             Math.max(1, pageSize), pageTokenIn == null ? "" : pageTokenIn);
+    int indexesBackfilled = 0;
+    int retryable = page.retryable();
+    for (String canonicalPointerKey : page.canonicalPointerKeys()) {
+      var backfill = jobIndexStore.backfillStoredJobIndexes(canonicalPointerKey);
+      if (backfill.updated()) {
+        indexesBackfilled++;
+      }
+      if (backfill.retryable()) {
+        retryable++;
+      }
+    }
     return new CleanupMigrationResult(
         page.scanned(),
         page.manifestsUpdated(),
+        indexesBackfilled,
         page.unresolvable(),
         page.conflicted(),
-        page.retryable(),
+        retryable,
         page.nextPageToken());
   }
 
@@ -122,7 +158,7 @@ public class ReconcileJobGc {
         ConfigProvider.getConfig()
             .getOptionalValue(
                 "floecat.gc.reconcile-jobs.legacy-lookup-migration-page-size", Integer.class)
-            .orElse(25);
+            .orElse(100);
     var page =
         jobIndexBackend.migrateLegacyLookupEntries(
             Math.max(1, pageSize), pageTokenIn == null ? "" : pageTokenIn);
@@ -132,6 +168,34 @@ public class ReconcileJobGc {
 
   public boolean completeLegacyLookupMigration() {
     return jobIndexBackend.completeLegacyLookupMigration();
+  }
+
+  public Optional<ReconcileJobIndexBackend.LegacyMigrationLease> acquireLegacyMigrationLease(
+      ReconcileJobIndexBackend.LegacyMigration migration,
+      String ownerId,
+      long nowMs,
+      long leaseDurationMs) {
+    return jobIndexBackend.acquireLegacyMigrationLease(migration, ownerId, nowMs, leaseDurationMs);
+  }
+
+  public boolean checkpointLegacyMigration(
+      ReconcileJobIndexBackend.LegacyMigration migration,
+      String ownerId,
+      long fence,
+      ReconcileJobIndexBackend.LegacyMigrationProgress progress,
+      long nowMs,
+      long leaseDurationMs) {
+    return jobIndexBackend.checkpointLegacyMigration(
+        migration, ownerId, fence, progress, nowMs, leaseDurationMs);
+  }
+
+  public boolean completeLegacyMigration(
+      ReconcileJobIndexBackend.LegacyMigration migration, String ownerId, long fence, long nowMs) {
+    return jobIndexBackend.completeLegacyMigration(migration, ownerId, fence, nowMs);
+  }
+
+  public boolean legacyMigrationComplete(ReconcileJobIndexBackend.LegacyMigration migration) {
+    return jobIndexBackend.legacyMigrationComplete(migration);
   }
 
   private enum RootSummaryReadStatus {
@@ -145,6 +209,18 @@ public class ReconcileJobGc {
   private record RootSummaryDeleteResult(int deleted, int quarantined) {}
 
   private record JobCleanupResult(int expired, int ptrDeleted, int blobDeleted, int failed) {}
+
+  private static final class CleanupWriteBudget {
+    private boolean attempted;
+
+    private boolean canAttempt(long nowMs, long deadline) {
+      return !attempted || nowMs < deadline;
+    }
+
+    private void recordAttempt() {
+      attempted = true;
+    }
+  }
 
   public AccountResult runAccountSlice(String accountId, String jobTokenIn, String dedupeTokenIn) {
     return runAccountSlice(accountId, jobTokenIn, dedupeTokenIn, "");
@@ -193,7 +269,7 @@ public class ReconcileJobGc {
                     "floecat.gc.reconcile-jobs.canonical-quarantine-retention-ms", Long.class)
                 .orElse(24L * 60L * 60L * 1000L));
 
-    final long nowMs = System.currentTimeMillis();
+    final long nowMs = clock.getAsLong();
     final long deadline = nowMs + sliceMillis;
 
     String jobToken = jobTokenIn == null ? "" : jobTokenIn;
@@ -215,87 +291,131 @@ public class ReconcileJobGc {
     int rootSummaryQuarantined = 0;
 
     String jobPrefix = Keys.reconcileJobPointerByIdPrefix(accountId);
-    while (scanned < batchLimit && System.currentTimeMillis() < deadline) {
+    List<ReconcileJobIndexStore.JobWritePlan<String>> deletePlans = new ArrayList<>();
+    List<ReconcileJobIndexStore.JobWritePlan<String>> quarantinedDeletePlans = new ArrayList<>();
+    String cleanupRetryToken = null;
+    while (scanned < batchLimit && clock.getAsLong() < deadline) {
       int limit = Math.min(pageSize, batchLimit - scanned);
+      String jobPageStartToken = jobToken;
       var page = jobIndexBackend.listCanonicalEntries(accountId, limit, jobToken);
       var pointers = page.entries();
       jobToken = page.nextPageToken();
       if (pointers.isEmpty()) {
         break;
       }
-
-      List<ReconcileJobIndexStore.JobWritePlan<String>> deletePlans = new ArrayList<>();
-      List<ReconcileJobIndexStore.JobWritePlan<String>> quarantinedDeletePlans = new ArrayList<>();
-
+      boolean partialPage = false;
+      int preparedInPage = 0;
+      String lastPreparedJobToken = jobPageStartToken;
       for (var canonical : pointers) {
-        if (scanned >= batchLimit) {
+        if (scanned >= batchLimit || (preparedInPage > 0 && clock.getAsLong() >= deadline)) {
+          partialPage = true;
           break;
         }
         scanned++;
+        preparedInPage++;
+        lastPreparedJobToken = canonical.pointerKey();
 
-        JsonNode record = readRecordByReference(canonical.blobUri());
         String jobId = decodeJobId(jobPrefix, canonical.pointerKey());
-        if (record == null) {
+        if (canonical.cleanupLocked()) {
           ReconcileJobIndexStore.JobWritePlan<String> deletePlan =
-              buildQuarantinedCanonicalDeletePlan(
-                  accountId, jobId, canonical, nowMs, canonicalQuarantineRetentionMs);
+              buildLockedCanonicalFootprintDeletePlan(accountId, jobId, canonical);
           if (deletePlan != null) {
-            quarantinedDeletePlans.add(deletePlan);
-          } else {
-            canonicalQuarantined++;
-          }
-          continue;
-        }
-        String state = text(record, "state");
-        long updatedAt =
-            longValue(
-                record,
-                "updatedAtMs",
-                longValue(record, "finishedAtMs", longValue(record, "createdAtMs", nowMs)));
-
-        if (TERMINAL_STATES.contains(state)) {
-          if (updatedAt <= nowMs - retentionMs) {
-            ReconcileJobIndexStore.JobWritePlan<String> deletePlan =
-                buildCanonicalFootprintDeletePlan(accountId, jobId, canonical, record);
-            if (deletePlan != null) {
-              deletePlans.add(deletePlan);
-              continue;
+            deletePlans.add(deletePlan);
+            if (cleanupRetryToken == null) {
+              cleanupRetryToken = jobPageStartToken;
             }
           }
+        } else {
+          JsonNode record = readRecordByReference(canonical.blobUri());
+          if (record == null) {
+            ReconcileJobIndexStore.JobWritePlan<String> deletePlan =
+                buildQuarantinedCanonicalDeletePlan(
+                    accountId, jobId, canonical, nowMs, canonicalQuarantineRetentionMs);
+            if (deletePlan != null) {
+              quarantinedDeletePlans.add(deletePlan);
+              if (cleanupRetryToken == null) {
+                cleanupRetryToken = jobPageStartToken;
+              }
+            } else {
+              canonicalQuarantined++;
+            }
+          } else {
+            String state = text(record, "state");
+            long updatedAt =
+                longValue(
+                    record,
+                    "updatedAtMs",
+                    longValue(record, "finishedAtMs", longValue(record, "createdAtMs", nowMs)));
 
-          // Terminal jobs that cannot yet be removed must never hold queue/dedupe references.
-          StoredReconcileJob stored = storedJob(record);
-          String dedupePointerKey = stored == null ? "" : jobIndexes.dedupePointerKey(stored);
-          if (!dedupePointerKey.isBlank()
-              && deleteJobIndexPointerIfOwned(dedupePointerKey, canonical.pointerKey())) {
-            dedupeDeleted++;
-          }
-          for (String readyKey : readyPointerKeysForCleanup(record)) {
-            if (!readyKey.isBlank() && readyQueueBackend.deleteReadyEntry(readyKey)) {
-              readyDeleted++;
+            if (TERMINAL_STATES.contains(state)) {
+              boolean deletePlanned = false;
+              if (updatedAt <= nowMs - retentionMs) {
+                ReconcileJobIndexStore.JobWritePlan<String> deletePlan =
+                    buildCanonicalFootprintDeletePlan(accountId, jobId, canonical, record);
+                if (deletePlan != null) {
+                  deletePlans.add(deletePlan);
+                  deletePlanned = true;
+                  if (cleanupRetryToken == null) {
+                    cleanupRetryToken = jobPageStartToken;
+                  }
+                }
+              }
+
+              if (!deletePlanned) {
+                // Terminal jobs that cannot yet be removed must not hold queue references. Root-job
+                // dedupe ownership can also be released immediately; child dedupe ownership is
+                // retained until canonical deletion because it is the durable identity used by
+                // planner repair.
+                StoredReconcileJob stored = storedJob(record);
+                String dedupePointerKey = stored == null ? "" : jobIndexes.dedupePointerKey(stored);
+                if (!dedupePointerKey.isBlank()
+                    && (stored.parentJobId == null || stored.parentJobId.isBlank())
+                    && deleteJobIndexPointerIfOwned(dedupePointerKey, canonical.pointerKey())) {
+                  dedupeDeleted++;
+                }
+                for (String readyKey : readyPointerKeysForCleanup(record)) {
+                  if (!readyKey.isBlank() && readyQueueBackend.deleteReadyEntry(readyKey)) {
+                    readyDeleted++;
+                  }
+                }
+              }
             }
           }
         }
       }
 
-      JobCleanupResult cleanup = deleteCanonicalFootprints(accountId, deletePlans);
-      expired += cleanup.expired();
-      ptrDeleted += cleanup.ptrDeleted();
-      blobDeleted += cleanup.blobDeleted();
-
-      JobCleanupResult quarantinedCleanup =
-          deleteCanonicalFootprints(accountId, quarantinedDeletePlans);
-      expired += quarantinedCleanup.expired();
-      ptrDeleted += quarantinedCleanup.ptrDeleted();
-      blobDeleted += quarantinedCleanup.blobDeleted();
-      canonicalQuarantined += quarantinedCleanup.failed();
-
+      if (partialPage) {
+        // The backend page token resumes after the whole fetched page. When the slice deadline
+        // interrupts preparation mid-page, resume after the last entry actually prepared so the
+        // unvisited suffix is not skipped. Both native backends accept a canonical pointer key as
+        // an exclusive-start token. A failed cleanup below still pins the cursor to the page start.
+        jobToken = lastPreparedJobToken;
+        break;
+      }
       if (jobToken.isBlank()) {
         break;
       }
     }
 
-    while (scanned < batchLimit && System.currentTimeMillis() < deadline && pointerStore != null) {
+    CleanupWriteBudget cleanupWriteBudget = new CleanupWriteBudget();
+    JobCleanupResult cleanup =
+        deleteCanonicalFootprints(accountId, deletePlans, deadline, cleanupWriteBudget);
+    expired += cleanup.expired();
+    ptrDeleted += cleanup.ptrDeleted();
+    blobDeleted += cleanup.blobDeleted();
+
+    JobCleanupResult quarantinedCleanup =
+        deleteCanonicalFootprints(accountId, quarantinedDeletePlans, deadline, cleanupWriteBudget);
+    expired += quarantinedCleanup.expired();
+    ptrDeleted += quarantinedCleanup.ptrDeleted();
+    blobDeleted += quarantinedCleanup.blobDeleted();
+    canonicalQuarantined += quarantinedCleanup.failed();
+
+    if ((cleanup.failed() > 0 || quarantinedCleanup.failed() > 0) && cleanupRetryToken != null) {
+      jobToken = cleanupRetryToken;
+    }
+
+    while (scanned < batchLimit && clock.getAsLong() < deadline && pointerStore != null) {
       int limit = Math.min(pageSize, batchLimit - scanned);
       StringBuilder next = new StringBuilder();
       var markers =
@@ -321,7 +441,7 @@ public class ReconcileJobGc {
     }
 
     String dedupePrefix = Keys.reconcileDedupePointerPrefix(accountId);
-    while (scanned < batchLimit && System.currentTimeMillis() < deadline) {
+    while (scanned < batchLimit && clock.getAsLong() < deadline) {
       int limit = Math.min(pageSize, batchLimit - scanned);
       var dedupePage = jobIndexBackend.listDedupeEntries(accountId, limit, dedupeToken);
       var dedupePointers = dedupePage.entries();
@@ -349,7 +469,12 @@ public class ReconcileJobGc {
           continue;
         }
 
-        if (TERMINAL_STATES.contains(text(record, "state"))) {
+        // Direct-child dedupe ownership remains the durable identity for parent-first planner
+        // repair. A child may finish before a later planner chunk is retried; deleting its dedupe
+        // row here would let the retry create an N+1 replacement. Child GC deletes the row with
+        // the canonical child. Root jobs retain the historical terminal-dedupe cleanup behavior.
+        if (TERMINAL_STATES.contains(text(record, "state"))
+            && text(record, "parentJobId").isBlank()) {
           if (deleteJobIndexPointerIfOwned(dedupe.pointerKey(), dedupe.blobUri())) {
             dedupeDeleted++;
           }
@@ -362,7 +487,7 @@ public class ReconcileJobGc {
     }
 
     String rootSummaryPrefix = Keys.reconcileRootJobSummaryByAccountPointerPrefix(accountId);
-    while (scanned < batchLimit && System.currentTimeMillis() < deadline && pointerStore != null) {
+    while (scanned < batchLimit && clock.getAsLong() < deadline && pointerStore != null) {
       int limit = Math.min(pageSize, batchLimit - scanned);
       StringBuilder next = new StringBuilder();
       var summaries =
@@ -389,7 +514,7 @@ public class ReconcileJobGc {
 
     String connectorRootSummaryPrefix =
         Keys.reconcileRootJobSummaryByConnectorAccountPrefix(accountId);
-    while (scanned < batchLimit && System.currentTimeMillis() < deadline && pointerStore != null) {
+    while (scanned < batchLimit && clock.getAsLong() < deadline && pointerStore != null) {
       int limit = Math.min(pageSize, batchLimit - scanned);
       StringBuilder next = new StringBuilder();
       var summaries =
@@ -565,6 +690,12 @@ public class ReconcileJobGc {
     if (firstSeenMs > nowMs - quarantineRetentionMs) {
       return null;
     }
+    if (!jobIndexBackend.legacyCleanupMigrationComplete()) {
+      LOG.debugf(
+          "Retaining quarantined reconcile job while awaiting cleanup migration accountId=%s jobId=%s canonicalKey=%s",
+          accountId, jobId, canonical.pointerKey());
+      return null;
+    }
     ReconcileJobIndexStore.JobIndexWriteBatch deleteBatch =
         jobIndexStore.buildJobDeleteBatch(
             new CanonicalPointerSnapshot(
@@ -631,9 +762,14 @@ public class ReconcileJobGc {
       return false;
     }
     String[] parts = markerPayload.split("\n", 4);
+    // The cleanup lock advances the canonical version without changing the corrupt payload. Treat
+    // that as the same quarantined observation so a failed cleanup attempt cannot restart the
+    // retention clock indefinitely.
     return parts.length >= 3
-        && parseLong(parts[0], -1L) == canonical.version()
-        && java.util.Objects.equals(parts[1], canonical.blobUri());
+        && java.util.Objects.equals(parts[1], canonical.blobUri())
+        && (parts.length < 4
+            || parts[3].isBlank()
+            || java.util.Objects.equals(parts[3], canonical.pointerKey()));
   }
 
   private static long quarantineMarkerFirstSeenMs(String markerPayload, long defaultValue) {
@@ -761,12 +897,61 @@ public class ReconcileJobGc {
     }
   }
 
+  private ReconcileJobIndexStore.JobWritePlan<String> buildLockedCanonicalFootprintDeletePlan(
+      String accountId, String jobId, JobIndexEntrySnapshot canonical) {
+    if (canonical == null || !canonical.cleanupLocked() || jobId == null || jobId.isBlank()) {
+      return null;
+    }
+    var pointerDeletes = new java.util.ArrayList<PointerStore.CasOp>();
+    appendPointerDeleteIfPresent(
+        pointerDeletes,
+        Keys.reconcileCanonicalQuarantinePointer(accountId, hashValue(canonical.pointerKey())));
+    JsonNode record = readRecordByReference(canonical.blobUri());
+    if (record != null) {
+      appendPointerDeleteIfPresent(
+          pointerDeletes, Keys.reconcileJobProjectionPointer(accountId, jobId));
+      if (text(record, "parentJobId").isBlank()) {
+        appendPointerDeleteIfPresent(
+            pointerDeletes,
+            Keys.reconcileRootJobSummaryByAccountPointer(
+                accountId,
+                rootSummarySortableJobToken(longValue(record, "createdAtMs", 0L), jobId)));
+        String connectorId = text(record, "connectorId");
+        if (!connectorId.isBlank()) {
+          appendPointerDeleteIfPresent(
+              pointerDeletes,
+              Keys.reconcileRootJobSummaryByConnectorPointer(
+                  accountId,
+                  connectorId,
+                  rootSummarySortableJobToken(longValue(record, "createdAtMs", 0L), jobId)));
+        }
+      }
+    }
+    ReconcileJobIndexStore.JobIndexWriteBatch deleteBatch =
+        jobIndexStore.buildJobDeleteBatch(
+            new CanonicalPointerSnapshot(
+                canonical.pointerKey(), canonical.blobUri(), canonical.version()));
+    if (deleteBatch.writes().isEmpty()) {
+      LOG.warnf(
+          "Deferring claimed reconcile-job cleanup until its manifest is available accountId=%s jobId=%s canonicalKey=%s",
+          accountId, jobId, canonical.pointerKey());
+      return null;
+    }
+    return new ReconcileJobIndexStore.JobWritePlan<>(jobId, deleteBatch, pointerDeletes);
+  }
+
   private ReconcileJobIndexStore.JobWritePlan<String> buildCanonicalFootprintDeletePlan(
       String accountId, String jobId, JobIndexEntrySnapshot canonical, JsonNode record) {
     if (canonical == null || jobId == null || jobId.isBlank()) {
       return null;
     }
+    if (!jobIndexBackend.legacyCleanupMigrationComplete()) {
+      return null;
+    }
     var pointerDeletes = new java.util.ArrayList<PointerStore.CasOp>();
+    appendPointerDeleteIfPresent(
+        pointerDeletes,
+        Keys.reconcileCanonicalQuarantinePointer(accountId, hashValue(canonical.pointerKey())));
     if (record != null) {
       appendPointerDeleteIfPresent(
           pointerDeletes, Keys.reconcileJobProjectionPointer(accountId, jobId));
@@ -807,12 +992,48 @@ public class ReconcileJobGc {
   }
 
   private JobCleanupResult deleteCanonicalFootprints(
-      String accountId, List<ReconcileJobIndexStore.JobWritePlan<String>> plans) {
+      String accountId,
+      List<ReconcileJobIndexStore.JobWritePlan<String>> plans,
+      long deadline,
+      CleanupWriteBudget writeBudget) {
     int expired = 0;
     int ptrDeleted = 0;
     int blobDeleted = 0;
+    List<ReconcileJobIndexStore.JobWritePlan<String>> regularPlans = new ArrayList<>();
+    for (ReconcileJobIndexStore.JobWritePlan<String> plan : plans) {
+      if (jobIndexStore.writeItemCount(plan.indexBatch(), plan.extraPointerOps())
+          <= jobIndexStore.maxWriteItemsPerBatch()) {
+        regularPlans.add(plan);
+        continue;
+      }
+      boolean completed = true;
+      for (ReconcileJobIndexStore.JobWriteChunk<String> phase :
+          jobIndexStore.chunkOversizedJobDeletePlan(plan)) {
+        if (!writeBudget.canAttempt(clock.getAsLong(), deadline)) {
+          completed = false;
+          break;
+        }
+        writeBudget.recordAttempt();
+        if (!jobIndexBackend.compareAndSetBatch(phase.indexBatch(), phase.extraPointerOps())) {
+          completed = false;
+          break;
+        }
+      }
+      if (completed) {
+        expired++;
+        ptrDeleted++;
+        if (plan.subject() != null && !plan.subject().isBlank()) {
+          blobDeleted += deleteJobBlobs(accountId, plan.subject());
+        }
+      }
+    }
+    regularChunks:
     for (ReconcileJobIndexStore.JobWriteChunk<String> chunk :
-        jobIndexStore.chunkJobWritePlans(plans)) {
+        jobIndexStore.chunkJobWritePlans(regularPlans)) {
+      if (!writeBudget.canAttempt(clock.getAsLong(), deadline)) {
+        break;
+      }
+      writeBudget.recordAttempt();
       if (jobIndexBackend.compareAndSetBatch(chunk.indexBatch(), chunk.extraPointerOps())) {
         for (ReconcileJobIndexStore.JobWritePlan<String> plan : chunk.plans()) {
           expired++;
@@ -824,6 +1045,10 @@ public class ReconcileJobGc {
         continue;
       }
       for (ReconcileJobIndexStore.JobWritePlan<String> plan : chunk.plans()) {
+        if (!writeBudget.canAttempt(clock.getAsLong(), deadline)) {
+          break regularChunks;
+        }
+        writeBudget.recordAttempt();
         if (jobIndexBackend.compareAndSetBatch(plan.indexBatch(), plan.extraPointerOps())) {
           expired++;
           ptrDeleted++;

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.storage.spi.PointerStore.CasCheck;
 import ai.floedb.floecat.storage.spi.PointerStore.CasCheckAbsent;
 import ai.floedb.floecat.storage.spi.PointerStore.CasDelete;
 import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
@@ -65,6 +66,8 @@ public final class JobIndexWriteBatchSupport {
                 }));
       } else if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
         ops.add(new CasDelete(delete.pointerKey(), delete.expectedVersion()));
+      } else if (write instanceof ReconcileJobIndexStore.JobIndexCheck check) {
+        ops.add(new CasCheck(check.pointerKey(), check.expectedVersion()));
       } else if (write instanceof ReconcileJobIndexStore.JobIndexCheckAbsent check) {
         ops.add(new CasCheckAbsent(check.pointerKey()));
       }

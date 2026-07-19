@@ -166,6 +166,16 @@ public class ReconcileJobEnqueuer {
         pending.add(entry);
       }
     }
+    if (ancestorMutationsBuilder != null
+        && results.stream()
+            .filter(java.util.Objects::nonNull)
+            .anyMatch(result -> !result.succeeded())) {
+      for (PendingBulkEnqueue entry : pending) {
+        rollbackFailedBulkEnqueue(entry);
+      }
+      throw new IllegalStateException(
+          "atomic planner enqueue preparation failed before parent outcome commit");
+    }
     if (pending.isEmpty()) {
       return new BulkEnqueueResult(results);
     }

@@ -156,11 +156,12 @@ class DynamoReconcileLeaseBackendUnitTest {
     ArgumentCaptor<TransactWriteItemsRequest> captor =
         ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
     verify(dynamoDb).transactWriteItems(captor.capture());
-    var item = captor.getValue().transactItems().getFirst().put().item();
-    assertTrue(item.get(JobIndexBackendSupport.ATTR_CLEANUP_MANIFEST_COMPLETE).bool());
+    var update = captor.getValue().transactItems().getFirst().update();
+    assertEquals(LOOKUP_KEY, update.expressionAttributeValues().get(":idx").l().getFirst().s());
     assertEquals(
-        LOOKUP_KEY,
-        item.get(JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS).l().getFirst().s());
+        JobIndexBackendSupport.ATTR_CLEANUP_DELETE_IN_PROGRESS,
+        update.expressionAttributeNames().get("#lock"));
+    assertEquals("#v = :expected AND attribute_not_exists(#lock)", update.conditionExpression());
   }
 
   @Test
