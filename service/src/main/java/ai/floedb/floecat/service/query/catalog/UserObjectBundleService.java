@@ -742,21 +742,6 @@ public class UserObjectBundleService {
     attachTableStats(builder, relation.relationId(), statsProvider);
     timings.addStatsLookupNanos(System.nanoTime() - statsLookupStartNs);
 
-    // Attach the opaque pin identity so a caching client can key this relation by its immutable
-    // content version. Tables use the query pin's identity (frozen at first touch); views and
-    // system relations carry a derived content token (see pinIdentityFor).
-    //
-    // ONLY on a full-schema response: the version token means "I hold this relation's complete
-    // column set." A projected payload is a subset, so stamping it would let a client cache a
-    // partial schema under the version, advertise it, and then be starved of columns it never
-    // received. Withholding the token on projected responses keeps the contract "advertising a
-    // version ⟹ holding its full schema", so the server may serve any later request for that
-    // version identity-only and the client projects locally from its cached full schema.
-    if (servesFullSchema(relation.candidate())) {
-      scopedPinIdentity(correlationId, relation, queryContext, resolutionContext.engineContext())
-          .ifPresent(builder::setPinIdentity);
-    }
-
     // If this is a view, keep a mutable builder around for decoration.
     ViewDefinition.Builder viewBuilder = null;
     if (relation.node() instanceof ViewNode view) {
@@ -891,6 +876,26 @@ public class UserObjectBundleService {
           relationWarmHitCount,
           relationColdMissCount,
           relationDecorationNanos / 1_000_000.0);
+    }
+
+    // Stamp the opaque payload cache token — AFTER decoration, so it reflects the payload actually
+    // served. A caching client that holds this token is later served identity-only and reuses its
+    // cached payload verbatim, so only stamp when that payload is complete and cacheable:
+    //   - full schema: a projected subset must never advertise "I hold every column", or a later
+    //     request would be starved of columns it never received;
+    //   - decoration fully succeeded: no column ended up FAILED and the relation decoration did not
+    //     throw. FAILED columns still ride the wire (name/type present, engine payload missing), so
+    //     the client legitimately holds them and would advertise the token — locking a transient
+    //     decoration failure into its cache for the whole lifetime instead of self-healing on the
+    //     next query. This is the same caution commitColumnHints applies to persisting hints;
+    //   - non-blank token: a blank version can never prove possession (the match path rejects it),
+    //     and every blank-etag relation would otherwise collide on the empty key.
+    if (servesFullSchema(relation.candidate())
+        && relationDecorationSucceeded
+        && countColumnsWithStatus(columnResults, ColumnStatus.COLUMN_STATUS_FAILED) == 0) {
+      scopedPinIdentity(correlationId, relation, queryContext, ctx)
+          .filter(id -> !id.getTableBlobVersion().isBlank())
+          .ifPresent(builder::setPinIdentity);
     }
 
     builder.addAllColumns(columnResults);

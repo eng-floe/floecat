@@ -378,6 +378,59 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void failedColumnDecorationIsNotStampedAsCacheable() {
+    // A full payload whose columns FAILED decoration (engine payload missing) is incomplete, so it
+    // must not carry the possession token — otherwise a client caches it, is served identity-only
+    // later, and reuses the incomplete payload, locking in a transient failure instead of
+    // re-fetching until decoration succeeds.
+    EngineMetadataDecoratorProvider missingPayload =
+        c -> Optional.of(new CountingDecorator(new AtomicInteger(), false, false));
+    UserObjectBundleService failing =
+        new UserObjectBundleService(
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            missingPayload,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
+            .build();
+    EngineContext engine = EngineContext.of("pg", "16.0");
+
+    RelationInfo failed = firstRelationUnderEngine(failing, candidate, Set.of(), engine);
+    assertThat(failed.getColumnsList())
+        .allMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_FAILED);
+    assertThat(failed.hasPinIdentity()).isFalse();
+
+    // Control: when decoration succeeds, the same full response IS stamped and cacheable.
+    EngineMetadataDecoratorProvider okPayload =
+        c -> Optional.of(new CountingDecorator(new AtomicInteger(), true, false));
+    UserObjectBundleService succeeding =
+        new UserObjectBundleService(
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            okPayload,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+    RelationInfo ok = firstRelationUnderEngine(succeeding, candidate, Set.of(), engine);
+    assertThat(ok.getColumnsList()).allMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_OK);
+    assertThat(ok.hasPinIdentity()).isTrue();
+  }
+
+  @Test
   void projectedResponseCarriesNoPinIdentitySoItIsNotCacheable() {
     // A two-column table so a single-column projection is a genuine strict subset.
     overlay.registerTable(
