@@ -309,6 +309,75 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void identityOnlyPossessionIsScopedToTheRequestingEngine() {
+    // With engine-specific decoration in play the withheld columns are engine-keyed, so a version
+    // proved under one engine must NOT be honored identity-only under another — otherwise a client
+    // sharing one cache across engines would reuse engine-A decoration for an engine-B query.
+    AtomicInteger decorations = new AtomicInteger();
+    EngineMetadataDecoratorProvider provider =
+        c -> Optional.of(new CountingDecorator(decorations, true, false));
+    UserObjectBundleService decorated =
+        new UserObjectBundleService(
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
+            .build();
+    EngineContext engineA = EngineContext.of("pg", "16.0");
+    EngineContext engineB = EngineContext.of("pg", "17.0");
+
+    // Full payload under engine A; capture the possession token it mints.
+    RelationInfo fullA = firstRelationUnderEngine(decorated, candidate, Set.of(), engineA);
+    String tokenA = fullA.getPinIdentity().getTableBlobVersion();
+    assertThat(fullA.getColumnsCount()).isPositive();
+    assertThat(tokenA).isNotEmpty();
+
+    // Same engine, advertising tokenA: served identity-only (control — the token still works).
+    RelationInfo slimSame = firstRelationUnderEngine(decorated, candidate, Set.of(tokenA), engineA);
+    assertThat(slimSame.getColumnsCount()).isZero();
+    assertThat(slimSame.getPinIdentity().getTableBlobVersion()).isEqualTo(tokenA);
+
+    // Different engine, advertising engine-A's token: NOT honored — full payload, distinct token.
+    RelationInfo fullB = firstRelationUnderEngine(decorated, candidate, Set.of(tokenA), engineB);
+    assertThat(fullB.getColumnsCount()).isPositive();
+    assertThat(fullB.getPinIdentity().getTableBlobVersion()).isNotEqualTo(tokenA);
+  }
+
+  private RelationInfo firstRelationUnderEngine(
+      UserObjectBundleService svc,
+      TableReferenceCandidate candidate,
+      Set<String> known,
+      EngineContext engine) {
+    Context context =
+        Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, engine);
+    Context previous = context.attach();
+    try {
+      return svc.stream("cid", ctx, List.of(candidate), known)
+          .collect()
+          .asList()
+          .await()
+          .indefinitely()
+          .get(1)
+          .getResolutions()
+          .getItems(0)
+          .getRelation();
+    } finally {
+      context.detach(previous);
+    }
+  }
+
+  @Test
   void projectedResponseCarriesNoPinIdentitySoItIsNotCacheable() {
     // A two-column table so a single-column projection is a genuine strict subset.
     overlay.registerTable(

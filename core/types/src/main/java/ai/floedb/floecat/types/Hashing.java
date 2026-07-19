@@ -16,11 +16,17 @@
 
 package ai.floedb.floecat.types;
 
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 
 /** Shared hashing helpers for cross-module stable digest generation. */
 public final class Hashing {
   private Hashing() {}
+
+  /** Stable hex SHA-256 of a string's UTF-8 bytes. */
+  public static String sha256Hex(String value) {
+    return sha256Hex(value.getBytes(StandardCharsets.UTF_8));
+  }
 
   public static String sha256Hex(byte[] bytes) {
     try {

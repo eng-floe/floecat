@@ -82,7 +82,6 @@ import io.opentelemetry.api.trace.Span;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -121,6 +120,9 @@ public class UserObjectBundleService {
   private final EngineMetadataDecoratorProvider decoratorProvider;
   private final EngineContextProvider engineContext;
   private final boolean engineSpecificEnabled;
+  // Bumped when the engine decorator's behavior changes WITHOUT moving the engine version; folded
+  // into the identity-only possession token so a decorator change invalidates cached decoration.
+  private final String decorationEpoch;
   private final StatsProviderFactory statsFactory;
   private final PinValidator pinValidator;
   private final long slowRpcMs;
@@ -168,6 +170,8 @@ public class UserObjectBundleService {
       PinValidator pinValidator,
       @ConfigProperty(name = "floecat.catalog.bundle.emit_engine_specific", defaultValue = "true")
           boolean engineSpecificEnabled,
+      @ConfigProperty(name = "floecat.catalog.bundle.decoration_epoch", defaultValue = "1")
+          String decorationEpoch,
       @ConfigProperty(name = "floecat.flight.advertised-host", defaultValue = "localhost")
           String flightHost,
       @ConfigProperty(name = "floecat.flight.advertised-port", defaultValue = "80") int flightPort,
@@ -183,6 +187,7 @@ public class UserObjectBundleService {
     this.engineContext = engineContext;
     this.pinValidator = pinValidator;
     this.engineSpecificEnabled = engineSpecificEnabled;
+    this.decorationEpoch = safe(decorationEpoch);
     this.slowRpcMs = Math.max(0L, slowRpcMs);
     this.floecatFlightEndpoint =
         FlightEndpointRef.newBuilder()
@@ -223,6 +228,7 @@ public class UserObjectBundleService {
           }
         },
         engineSpecificEnabled,
+        "1",
         flightHost,
         flightPort,
         grpcPlainText,
@@ -554,8 +560,56 @@ public class UserObjectBundleService {
         relId.getAccountId() + '\0' + relId.getId() + '\0' + relId.getKindValue() + '\0' + cacheIdentity;
     return Optional.of(
         RelationPinIdentity.newBuilder()
-            .setTableBlobVersion(Hashing.sha256Hex(keyMaterial.getBytes(StandardCharsets.UTF_8)))
+            .setTableBlobVersion(Hashing.sha256Hex(keyMaterial))
             .build());
+  }
+
+  /**
+   * The pin identity as stamped on the wire, with its {@code table_blob_version} scoped to the
+   * SERVED PAYLOAD rather than the bare content version (see {@link #possessionToken}). Both the
+   * full-response stamp and the identity-only match go through here, so the token a client
+   * advertises and the token the gate compares can never drift.
+   */
+  private Optional<RelationPinIdentity> scopedPinIdentity(
+      String correlationId, ResolvedRelation relation, QueryContext queryContext, EngineContext ctx) {
+    return pinIdentityFor(correlationId, relation, queryContext)
+        .map(
+            id ->
+                id.toBuilder()
+                    .setTableBlobVersion(possessionToken(id.getTableBlobVersion(), ctx))
+                    .build());
+  }
+
+  /**
+   * The possession token a caching client advertises (GetUserObjectsRequest.known_table_blob_versions)
+   * and the identity-only gate matches on. It must identify the WITHHELD PAYLOAD, not merely the
+   * content version: withheld columns carry engine-keyed payload (decorateColumns /
+   * hasRequiredEnginePayload), so a bare content version would let a client that shares one catalog
+   * cache across engines — or that spans an engine-version or decorator upgrade — advertise a
+   * version decorated for engine A, be served identity-only under engine B, and reuse engine-A
+   * decoration for an engine-B query. The requesting engine is already on the wire (EngineContext),
+   * so we fold it in server-side at both mint sites; the client stays engine-agnostic and
+   * correctness no longer depends on it keying its own cache by engine.
+   *
+   * <p>When decoration is not in play ({@code !decorationRequired}) the payload is fully determined
+   * by the content version, so the token IS the content version — byte-identical to the unscoped
+   * behavior, so no cache fragmentation and no change for single-engine or decoration-off
+   * deployments. {@code decorationEpoch} additionally invalidates cached decoration when the
+   * decorator's behavior changes without moving the engine version.
+   */
+  private String possessionToken(String contentVersion, EngineContext ctx) {
+    if (contentVersion == null || contentVersion.isBlank() || !decorationRequired(ctx)) {
+      return contentVersion;
+    }
+    String material =
+        contentVersion
+            + '\0'
+            + safe(ctx.normalizedKind())
+            + '\0'
+            + safe(ctx.normalizedVersion())
+            + '\0'
+            + decorationEpoch;
+    return Hashing.sha256Hex(material);
   }
 
   /*
@@ -572,12 +626,16 @@ public class UserObjectBundleService {
       String correlationId,
       ResolvedRelation relation,
       QueryContext queryContext,
+      EngineContext engineCtx,
       StatsProvider statsProvider,
       Set<String> knownBlobVersions) {
     if (knownBlobVersions.isEmpty()) {
       return null;
     }
-    Optional<RelationPinIdentity> identity = pinIdentityFor(correlationId, relation, queryContext);
+    // Match on the engine-scoped payload token, not the bare content version, so a client that
+    // proved possession under a different engine cannot be served identity-only here.
+    Optional<RelationPinIdentity> identity =
+        scopedPinIdentity(correlationId, relation, queryContext, engineCtx);
     // A blank version can never prove possession: a user table whose definition blob had no etag
     // resolves to table_blob_version="" (the repository defaults a missing etag to empty), and
     // every such table would otherwise share that key — one cached, the rest served the wrong
@@ -695,7 +753,8 @@ public class UserObjectBundleService {
     // version ⟹ holding its full schema", so the server may serve any later request for that
     // version identity-only and the client projects locally from its cached full schema.
     if (servesFullSchema(relation.candidate())) {
-      pinIdentityFor(correlationId, relation, queryContext).ifPresent(builder::setPinIdentity);
+      scopedPinIdentity(correlationId, relation, queryContext, resolutionContext.engineContext())
+          .ifPresent(builder::setPinIdentity);
     }
 
     // If this is a view, keep a mutable builder around for decoration.
@@ -1697,7 +1756,12 @@ public class UserObjectBundleService {
          * possession would be served a payload-less relation. */
         RelationInfo slim =
             identityOnlyOrNull(
-                correlationId, found.relation(), liveCtx, statsProvider, knownBlobVersions);
+                correlationId,
+                found.relation(),
+                liveCtx,
+                resolutionContext.engineContext(),
+                statsProvider,
+                knownBlobVersions);
         if (slim != null) {
           resolutions.add(
               RelationResolution.newBuilder()
