@@ -623,29 +623,23 @@ public class UserObjectBundleService {
    * the relation must be built in full.
    */
   private RelationInfo identityOnlyOrNull(
-      String correlationId,
       ResolvedRelation relation,
-      QueryContext queryContext,
-      EngineContext engineCtx,
+      Optional<RelationPinIdentity> scopedIdentity,
       StatsProvider statsProvider,
       Set<String> knownBlobVersions) {
-    if (knownBlobVersions.isEmpty()) {
-      return null;
-    }
-    // Match on the engine-scoped payload token, not the bare content version, so a client that
-    // proved possession under a different engine cannot be served identity-only here.
-    Optional<RelationPinIdentity> identity =
-        scopedPinIdentity(correlationId, relation, queryContext, engineCtx);
+    // The token is the engine-scoped payload token (scopedIdentity), not the bare content version,
+    // so a client that proved possession under a different engine cannot be served identity-only.
     // A blank version can never prove possession: a user table whose definition blob had no etag
     // resolves to table_blob_version="" (the repository defaults a missing etag to empty), and
     // every such table would otherwise share that key — one cached, the rest served the wrong
     // schema identity-only. Force the full payload rather than match on the empty string.
-    if (identity.isEmpty()
-        || identity.get().getTableBlobVersion().isBlank()
-        || !knownBlobVersions.contains(identity.get().getTableBlobVersion())) {
+    if (knownBlobVersions.isEmpty()
+        || scopedIdentity.isEmpty()
+        || scopedIdentity.get().getTableBlobVersion().isBlank()
+        || !knownBlobVersions.contains(scopedIdentity.get().getTableBlobVersion())) {
       return null;
     }
-    RelationInfo.Builder slim = baseRelationInfo(relation).setPinIdentity(identity.get());
+    RelationInfo.Builder slim = baseRelationInfo(relation).setPinIdentity(scopedIdentity.get());
     attachTableStats(slim, relation.relationId(), statsProvider);
     return slim.build();
   }
@@ -682,7 +676,8 @@ public class UserObjectBundleService {
       QueryContext queryContext,
       MetadataResolutionContext resolutionContext,
       StatsProvider statsProvider,
-      TimingAccumulator timings) {
+      TimingAccumulator timings,
+      Optional<RelationPinIdentity> scopedIdentity) {
     if (LOG.isTraceEnabled()) {
       LOG.tracef(
           "Building relation bundle query_id=%s relation=%s kind=%s origin=%s",
@@ -890,10 +885,18 @@ public class UserObjectBundleService {
     //     next query. This is the same caution commitColumnHints applies to persisting hints;
     //   - non-blank token: a blank version can never prove possession (the match path rejects it),
     //     and every blank-etag relation would otherwise collide on the empty key.
+    //
+    // scopedIdentity is computed once by the caller and threaded into both the identity-only match
+    // and this stamp, so a cache miss under a populated hint set does not hash the relation twice.
+    //
+    // Caveat for system tables: a slim reply omits the endpoint metadata, and for a config-resolved
+    // endpoint (configuredEndpointForKey) that value is NOT covered by the token — see pinIdentityFor.
+    // Identity-only reuse of such a table therefore assumes its Flight endpoint config is deploy-time
+    // fixed; if it ever becomes hot-reloadable, fold the resolved endpoint into the token there.
     if (servesFullSchema(relation.candidate())
         && relationDecorationSucceeded
         && countColumnsWithStatus(columnResults, ColumnStatus.COLUMN_STATUS_FAILED) == 0) {
-      scopedPinIdentity(correlationId, relation, queryContext, ctx)
+      scopedIdentity
           .filter(id -> !id.getTableBlobVersion().isBlank())
           .ifPresent(builder::setPinIdentity);
     }
@@ -1756,17 +1759,20 @@ public class UserObjectBundleService {
         if (liveCtx == null) {
           liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
         }
+        // Compute the engine-scoped payload token at most once per relation: the identity-only
+        // match consults it when the client sent hints, and the full-payload stamp reuses it — so a
+        // cache miss under a populated hint set does not hash the relation twice. Skip it only when
+        // neither consumer can use it (no hints AND a projected response, which never stamps).
+        Optional<RelationPinIdentity> scopedIdentity =
+            (!knownBlobVersions.isEmpty() || servesFullSchema(found.relation().candidate()))
+                ? scopedPinIdentity(
+                    correlationId, found.relation(), liveCtx, resolutionContext.engineContext())
+                : Optional.empty();
         /* Identity-only fast path: never cached — the info cache must only
          * ever hold full payloads, or a later request that did NOT prove
          * possession would be served a payload-less relation. */
         RelationInfo slim =
-            identityOnlyOrNull(
-                correlationId,
-                found.relation(),
-                liveCtx,
-                resolutionContext.engineContext(),
-                statsProvider,
-                knownBlobVersions);
+            identityOnlyOrNull(found.relation(), scopedIdentity, statsProvider, knownBlobVersions);
         if (slim != null) {
           resolutions.add(
               RelationResolution.newBuilder()
@@ -1783,7 +1789,8 @@ public class UserObjectBundleService {
                 liveCtx,
                 resolutionContext,
                 statsProvider,
-                timings);
+                timings,
+                scopedIdentity);
         long buildNanos = System.nanoTime() - buildStartNs;
         long statsDeltaNanos = timings.statsLookupNanos() - statsBeforeNanos;
         long decorationDeltaNanos = timings.decorationTotalNanos() - decorationBeforeNanos;
