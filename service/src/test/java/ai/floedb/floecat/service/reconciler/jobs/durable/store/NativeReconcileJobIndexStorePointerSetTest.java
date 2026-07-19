@@ -293,18 +293,25 @@ class NativeReconcileJobIndexStorePointerSetTest {
               canonicalKey,
               ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_POINTER_KEY));
     }
-    seedWrites.add(
-        0,
-        new ReconcileJobIndexStore.JobIndexUpsert(
-            canonicalKey,
-            0L,
-            "inline:reconcile-job:e30",
-            ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_INLINE_JSON,
-            new ReconcileJobIndexCleanupManifest(referenceKeys, List.of())));
     assertTrue(
         backend.compareAndSetBatch(
             new ReconcileJobIndexStore.JobIndexWriteBatch(
-                seedWrites, ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        canonicalKey,
+                        0L,
+                        "inline:reconcile-job:e30",
+                        ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_INLINE_JSON,
+                        new ReconcileJobIndexCleanupManifest(referenceKeys, List.of()))),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+    for (int offset = 0; offset < seedWrites.size(); offset += 100) {
+      int end = Math.min(seedWrites.size(), offset + 100);
+      assertTrue(
+          backend.compareAndSetBatch(
+              new ReconcileJobIndexStore.JobIndexWriteBatch(
+                  List.copyOf(seedWrites.subList(offset, end)),
+                  ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+    }
 
     JobIndexEntrySnapshot canonical = backend.loadIndexEntry(canonicalKey).orElseThrow();
     ReconcileJobIndexStore.JobIndexWriteBatch deleteBatch =

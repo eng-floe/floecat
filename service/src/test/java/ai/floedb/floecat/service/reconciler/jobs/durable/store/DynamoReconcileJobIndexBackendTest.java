@@ -1502,6 +1502,55 @@ class DynamoReconcileJobIndexBackendTest {
   }
 
   @Test
+  void oversizedCleanupFallbackUsesBoundedScanInsteadOfCanonicalPromotion() {
+    String blob = "inline:reconcile-job:e30";
+    String parentKey = Keys.reconcileJobByParentPointer(ACCOUNT_ID, "parent-1", JOB_ID);
+    Map<String, AttributeValue> marker =
+        Map.of(ATTR_KIND, AttributeValue.fromS("ReconcileJobLegacyCleanupMigration"));
+    Map<String, AttributeValue> canonical = new HashMap<>();
+    canonical.put(
+        ATTR_PARTITION_KEY,
+        AttributeValue.fromS(JobIndexBackendSupport.canonicalPartitionKey(ACCOUNT_ID)));
+    canonical.put(ATTR_SORT_KEY, AttributeValue.fromS("job/" + JOB_ID));
+    canonical.put(ATTR_KIND, AttributeValue.fromS(JobIndexBackendSupport.KIND_CANONICAL_JOB));
+    canonical.put(ATTR_VERSION, AttributeValue.fromN("1"));
+    canonical.put(JobIndexBackendSupport.ATTR_POINTER_KEY, AttributeValue.fromS(CANONICAL_KEY));
+    canonical.put(JobIndexBackendSupport.ATTR_BLOB_URI, AttributeValue.fromS(blob));
+    canonical.put(
+        JobIndexBackendSupport.ATTR_CLEANUP_MANIFEST_COMPLETE, AttributeValue.fromBool(true));
+    Map<String, AttributeValue> locked = new HashMap<>(canonical);
+    locked.put(ATTR_VERSION, AttributeValue.fromN("2"));
+    locked.put(
+        JobIndexBackendSupport.ATTR_CLEANUP_DELETE_IN_PROGRESS, AttributeValue.fromBool(true));
+    locked.put(
+        JobIndexBackendSupport.ATTR_CLEANUP_LEGACY_SCAN_REQUIRED, AttributeValue.fromBool(true));
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.getItem(any(GetItemRequest.class)))
+        .thenReturn(
+            GetItemResponse.builder().item(marker).build(),
+            GetItemResponse.builder().item(canonical).build());
+    when(dynamoDb.updateItem(any(UpdateItemRequest.class)))
+        .thenReturn(UpdateItemResponse.builder().attributes(locked).build());
+    when(dynamoDb.scan(any(ScanRequest.class)))
+        .thenThrow(new RuntimeException("transient scan failure"));
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.legacyCleanupManifestMaxBytes = 1;
+    backend.bind(() -> dynamoDb, TABLE);
+
+    var session =
+        backend.beginJobCleanup(
+            new CanonicalPointerSnapshot(CANONICAL_KEY, blob, 1L),
+            new ReconcileJobIndexCleanupManifest(List.of(parentKey), List.of()));
+
+    assertTrue(session.isEmpty());
+    ArgumentCaptor<UpdateItemRequest> update = ArgumentCaptor.forClass(UpdateItemRequest.class);
+    verify(dynamoDb).updateItem(update.capture());
+    assertTrue(update.getValue().updateExpression().contains("#scan = :true"));
+    assertFalse(update.getValue().expressionAttributeNames().containsKey("#idx"));
+    verify(dynamoDb).scan(any(ScanRequest.class));
+  }
+
+  @Test
   void legacyCleanupPromotionFailureSwitchesToResumableScan() {
     String blob = "inline:reconcile-job:e30";
     Map<String, AttributeValue> marker =

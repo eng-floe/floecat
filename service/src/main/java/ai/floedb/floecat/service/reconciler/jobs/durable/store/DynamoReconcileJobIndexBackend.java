@@ -422,8 +422,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       scanRequired = true;
     }
     boolean boundedManifestValid =
-        validCleanupManifest(boundedManifest)
-            && (!hasLegacySets || manifestWithinMigrationLimit(boundedManifest));
+        validCleanupManifest(boundedManifest) && manifestWithinMigrationLimit(boundedManifest);
     if (!boundedManifestValid && !legacyScanDrained) {
       scanRequired = true;
     }

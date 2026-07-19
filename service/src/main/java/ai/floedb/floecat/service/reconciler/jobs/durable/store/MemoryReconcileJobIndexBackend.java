@@ -261,6 +261,23 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         return Optional.empty();
       }
     }
+    if (!cleanupLocks.containsKey(expected.canonicalPointerKey())) {
+      var canonicalPointer = pointerStore.get(expected.canonicalPointerKey()).orElse(null);
+      if (canonicalPointer == null
+          || canonicalPointer.getVersion() != current.version()
+          || !java.util.Objects.equals(canonicalPointer.getBlobUri(), current.blobUri())) {
+        return Optional.empty();
+      }
+      long lockedVersion = current.version() + 1L;
+      if (!pointerStore.compareAndSet(
+          expected.canonicalPointerKey(),
+          current.version(),
+          canonicalPointer.toBuilder().setVersion(lockedVersion).build())) {
+        return Optional.empty();
+      }
+      current =
+          new JobIndexEntrySnapshot(current.pointerKey(), current.blobUri(), lockedVersion, true);
+    }
     cleanupManifests.put(expected.canonicalPointerKey(), manifest);
     cleanupLocks.put(expected.canonicalPointerKey(), current.version());
     return Optional.of(

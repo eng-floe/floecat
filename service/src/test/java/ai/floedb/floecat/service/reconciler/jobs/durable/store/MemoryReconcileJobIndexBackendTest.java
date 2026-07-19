@@ -94,7 +94,10 @@ class MemoryReconcileJobIndexBackendTest {
             ReconcileJobIndexCleanupManifest.EMPTY);
 
     assertTrue(session.isPresent());
-    assertTrue(backend.loadIndexEntry(canonicalKey).orElseThrow().cleanupLocked());
+    assertEquals(before.version() + 1L, session.orElseThrow().snapshot().version());
+    JobIndexEntrySnapshot locked = backend.loadIndexEntry(canonicalKey).orElseThrow();
+    assertEquals(before.version() + 1L, locked.version());
+    assertTrue(locked.cleanupLocked());
     var listed = backend.listCanonicalEntries(accountId, 10, "");
     assertEquals(1, listed.entries().size());
     assertTrue(listed.entries().getFirst().cleanupLocked());
