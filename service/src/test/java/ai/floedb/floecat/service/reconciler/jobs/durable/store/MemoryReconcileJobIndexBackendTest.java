@@ -44,8 +44,7 @@ class MemoryReconcileJobIndexBackendTest {
         assertThrows(IllegalArgumentException.class, () -> backend.compareAndSetBatch(batch));
 
     assertEquals(
-        "Unsupported reconcile job index version check key: " + lookupKey,
-        thrown.getMessage());
+        "Unsupported reconcile job index version check key: " + lookupKey, thrown.getMessage());
   }
 
   @Test
@@ -193,11 +192,7 @@ class MemoryReconcileJobIndexBackendTest {
             new ReconcileJobIndexStore.JobIndexWriteBatch(
                 List.of(
                     new ReconcileJobIndexStore.JobIndexUpsert(
-                        canonicalKey,
-                        0L,
-                        blob,
-                        PointerReferenceKind.PRK_INLINE_JSON,
-                        malformed)),
+                        canonicalKey, 0L, blob, PointerReferenceKind.PRK_INLINE_JSON, malformed)),
                 ReconcileJobIndexStore.ReadyQueueMutation.empty())));
     assertTrue(
         pointers.compareAndSet(
