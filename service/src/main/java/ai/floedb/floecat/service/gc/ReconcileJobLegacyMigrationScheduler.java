@@ -149,6 +149,11 @@ public class ReconcileJobLegacyMigrationScheduler {
         inFlight,
         currentTimeMillis.getAsLong(),
         leaseDurationMs)) {
+      recordCheckpointRejected(
+          ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
+          "pre-slice",
+          lease.fence(),
+          leaseDurationMs);
       return;
     }
 
@@ -159,6 +164,7 @@ public class ReconcileJobLegacyMigrationScheduler {
     int passChanged =
         add(stored.changed(), add(result.manifestsUpdated(), result.indexesBackfilled()));
     String nextToken = blankToEmpty(result.nextToken());
+    String previousToken = blankToEmpty(stored.pageToken());
     metrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "cleanup-scanned"));
     metrics.recordCollection(
         result.manifestsUpdated(), Tag.of(TagKey.RESULT, "cleanup-manifests-updated"));
@@ -167,6 +173,11 @@ public class ReconcileJobLegacyMigrationScheduler {
     metrics.recordCollection(result.unresolvable(), Tag.of(TagKey.RESULT, "cleanup-unresolvable"));
     metrics.recordCollection(result.conflicted(), Tag.of(TagKey.RESULT, "cleanup-conflicted"));
     metrics.recordCollection(result.retryable(), Tag.of(TagKey.RESULT, "cleanup-retryable"));
+    if (!nextToken.isBlank() && nextToken.equals(previousToken)) {
+      metrics.recordError(1, Tag.of(TagKey.RESULT, "cleanup-non-advancing-token"));
+      LOG.warnf(
+          "reconcile job legacy cleanup migration returned a non-advancing page token; canonical GC remains gated until migration progress resumes");
+    }
     boolean passEnded = nextToken.isBlank();
     boolean quietPass = passEnded && passRetryable == 0 && passChanged == 0;
     var checkpoint =
@@ -183,6 +194,11 @@ public class ReconcileJobLegacyMigrationScheduler {
             currentTimeMillis.getAsLong(),
             leaseDurationMs);
     if (!checkpointed) {
+      recordCheckpointRejected(
+          ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
+          "post-slice",
+          lease.fence(),
+          leaseDurationMs);
       return;
     }
     if (quietPass) {
@@ -200,8 +216,9 @@ public class ReconcileJobLegacyMigrationScheduler {
       return;
     }
     if (passRetryable > 0) {
+      metrics.recordError(1, Tag.of(TagKey.RESULT, "cleanup-blocked-retryable"));
       LOG.warnf(
-          "reconcile job legacy cleanup migration pass will retry retryable=%d conflicted=%d",
+          "reconcile job legacy cleanup migration pass will retry retryable=%d conflicted=%d; canonical GC remains gated until a quiet pass completes",
           passRetryable, passConflicted);
     } else if (passChanged > 0) {
       LOG.infof(
@@ -273,6 +290,11 @@ public class ReconcileJobLegacyMigrationScheduler {
         inFlight,
         currentTimeMillis.getAsLong(),
         leaseDurationMs)) {
+      recordCheckpointRejected(
+          ReconcileJobIndexBackend.LegacyMigration.LOOKUP,
+          "pre-slice",
+          lease.fence(),
+          leaseDurationMs);
       return;
     }
 
@@ -301,6 +323,11 @@ public class ReconcileJobLegacyMigrationScheduler {
             currentTimeMillis.getAsLong(),
             leaseDurationMs);
     if (!checkpointed) {
+      recordCheckpointRejected(
+          ReconcileJobIndexBackend.LegacyMigration.LOOKUP,
+          "post-slice",
+          lease.fence(),
+          leaseDurationMs);
       return;
     }
     if (quietPass) {
@@ -321,6 +348,20 @@ public class ReconcileJobLegacyMigrationScheduler {
     LOG.warnf(
         "reconcile job legacy lookup migration completed with residual conflicts=%d; affected legacy rows require operator review",
         conflicts);
+  }
+
+  private void recordCheckpointRejected(
+      ReconcileJobIndexBackend.LegacyMigration migration,
+      String phase,
+      long fence,
+      long leaseDurationMs) {
+    String migrationName =
+        migration == ReconcileJobIndexBackend.LegacyMigration.CLEANUP ? "cleanup" : "lookup";
+    metrics.recordError(
+        1, Tag.of(TagKey.RESULT, migrationName + "-" + phase + "-checkpoint-rejected"));
+    LOG.warnf(
+        "reconcile job legacy %s migration %s checkpoint was rejected owner=%s fence=%d lease-duration-ms=%d; migration work will be retried; if this repeats, increase the lease duration or reduce the migration page size",
+        migrationName, phase, ownerId, fence, leaseDurationMs);
   }
 
   private static int add(int left, int right) {

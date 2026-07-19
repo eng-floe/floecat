@@ -17,8 +17,12 @@
 package ai.floedb.floecat.service.gc;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import ai.floedb.floecat.telemetry.TestObservability;
 import java.time.Duration;
 import java.util.ArrayDeque;
@@ -88,6 +92,32 @@ class ReconcileJobLegacyMigrationSchedulerTest {
 
     assertEquals(3, gc.cleanupMigrationCalls);
     assertEquals(1, gc.cleanupCompletionCalls);
+  }
+
+  @Test
+  void retryableCleanupPassRecordsBlockedErrorMetric() {
+    RecordingGc gc = new RecordingGc();
+    gc.completed.add(ReconcileJobIndexBackend.LegacyMigration.LOOKUP);
+    gc.cleanupResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 0, 0, 0, 1, ""));
+    ReconcileJobLegacyMigrationScheduler scheduler = scheduler(gc);
+
+    scheduler.tick();
+
+    assertErrorResult(scheduler, "cleanup-blocked-retryable");
+  }
+
+  @Test
+  void nonAdvancingCleanupTokenRecordsStalledErrorMetric() {
+    RecordingGc gc = new RecordingGc();
+    gc.completed.add(ReconcileJobIndexBackend.LegacyMigration.LOOKUP);
+    gc.cleanupResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 0, 0, 0, 0, "page-1"));
+    gc.cleanupResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 0, 0, 0, 0, "page-1"));
+    ReconcileJobLegacyMigrationScheduler scheduler = scheduler(gc);
+
+    scheduler.tick();
+    scheduler.tick();
+
+    assertErrorResult(scheduler, "cleanup-non-advancing-token");
   }
 
   @Test
@@ -219,6 +249,7 @@ class ReconcileJobLegacyMigrationSchedulerTest {
     scheduler.tick();
     assertEquals(1, gc.cleanupMigrationCalls);
     assertEquals(0, gc.cleanupCompletionCalls);
+    assertErrorResult(scheduler, "cleanup-post-slice-checkpoint-rejected");
 
     scheduler.tick();
     assertEquals(2, gc.cleanupMigrationCalls);
@@ -227,6 +258,15 @@ class ReconcileJobLegacyMigrationSchedulerTest {
     scheduler.tick();
     assertEquals(3, gc.cleanupMigrationCalls);
     assertEquals(1, gc.cleanupCompletionCalls);
+  }
+
+  private static void assertErrorResult(
+      ReconcileJobLegacyMigrationScheduler scheduler, String result) {
+    TestObservability observability = (TestObservability) scheduler.observability;
+    assertTrue(
+        observability.counterTagHistory(Telemetry.Metrics.GC_ERRORS).stream()
+            .flatMap(List::stream)
+            .anyMatch(tag -> tag.equals(Tag.of(TagKey.RESULT, result))));
   }
 
   private static ReconcileJobLegacyMigrationScheduler scheduler(RecordingGc gc) {
