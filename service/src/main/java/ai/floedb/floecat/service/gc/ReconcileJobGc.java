@@ -906,10 +906,17 @@ public class ReconcileJobGc {
     appendPointerDeleteIfPresent(
         pointerDeletes,
         Keys.reconcileCanonicalQuarantinePointer(accountId, hashValue(canonical.pointerKey())));
+    String projectionPointerKey = Keys.reconcileJobProjectionPointer(accountId, jobId);
+    appendPointerDeleteIfPresent(pointerDeletes, projectionPointerKey);
+    ReconcileJobIndexCleanupManifest cleanupManifest =
+        jobIndexBackend.loadCleanupManifest(canonical.pointerKey());
+    for (String pointerKey : cleanupManifest.pointerKeys()) {
+      if (!projectionPointerKey.equals(pointerKey)) {
+        appendPointerDeleteIfPresent(pointerDeletes, pointerKey);
+      }
+    }
     JsonNode record = readRecordByReference(canonical.blobUri());
-    if (record != null) {
-      appendPointerDeleteIfPresent(
-          pointerDeletes, Keys.reconcileJobProjectionPointer(accountId, jobId));
+    if (record != null && cleanupManifest.pointerKeys().isEmpty()) {
       if (text(record, "parentJobId").isBlank()) {
         appendPointerDeleteIfPresent(
             pointerDeletes,

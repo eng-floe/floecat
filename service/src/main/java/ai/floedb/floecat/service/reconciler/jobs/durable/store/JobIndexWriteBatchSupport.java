@@ -65,7 +65,9 @@ public final class JobIndexWriteBatchSupport {
                           "missing pointer reference kind for " + upsert.pointerKey());
                 }));
       } else if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
-        ops.add(new CasDelete(delete.pointerKey(), delete.expectedVersion()));
+        if (!delete.allowAbsent() || loadStoredPointer.apply(delete.pointerKey()).isPresent()) {
+          ops.add(new CasDelete(delete.pointerKey(), delete.expectedVersion()));
+        }
       } else if (write instanceof ReconcileJobIndexStore.JobIndexCheck check) {
         ops.add(new CasCheck(check.pointerKey(), check.expectedVersion()));
       } else if (write instanceof ReconcileJobIndexStore.JobIndexCheckAbsent check) {

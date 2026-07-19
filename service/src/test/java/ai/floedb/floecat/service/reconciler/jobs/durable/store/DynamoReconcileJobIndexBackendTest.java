@@ -754,6 +754,31 @@ class DynamoReconcileJobIndexBackendTest {
   }
 
   @Test
+  void cleanupOwnedReferenceDeleteAllowsAlreadyAbsentRow() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
+        .thenReturn(TransactWriteItemsResponse.builder().build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+    String dedupeKey = Keys.reconcileDedupePointer(ACCOUNT_ID, "hash-cleanup");
+
+    assertTrue(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexDelete(
+                        dedupeKey, 1L, CANONICAL_KEY, "", false, true)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+
+    ArgumentCaptor<TransactWriteItemsRequest> captor =
+        ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
+    verify(dynamoDb).transactWriteItems(captor.capture());
+    assertEquals(
+        "attribute_not_exists(#pk) OR (#v = :expected AND #ref = :reference)",
+        captor.getValue().transactItems().getFirst().delete().conditionExpression());
+  }
+
+  @Test
   void physicalWriteItemCountCountsEachPointerMutationOnce() {
     var batch =
         new ReconcileJobIndexStore.JobIndexWriteBatch(
@@ -822,6 +847,7 @@ class DynamoReconcileJobIndexBackendTest {
   @Test
   void canonicalUpsertStoresCleanupManifestOnCanonicalRow() {
     String readyKey = Keys.reconcileReadyPointerByDue(1L, ACCOUNT_ID, "lane", JOB_ID);
+    String projectionKey = Keys.reconcileJobProjectionPointer(ACCOUNT_ID, JOB_ID);
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
     when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
         .thenReturn(TransactWriteItemsResponse.builder().build());
@@ -847,7 +873,9 @@ class DynamoReconcileJobIndexBackendTest {
                         JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS,
                         AttributeValue.fromL(List.of(AttributeValue.fromS(LOOKUP_KEY))),
                         JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS,
-                        AttributeValue.fromL(List.of(AttributeValue.fromS(readyKey)))))
+                        AttributeValue.fromL(List.of(AttributeValue.fromS(readyKey))),
+                        JobIndexBackendSupport.ATTR_CLEANUP_POINTER_KEYS,
+                        AttributeValue.fromL(List.of(AttributeValue.fromS(projectionKey)))))
                 .build());
     DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
     backend.bind(() -> dynamoDb, TABLE);
@@ -862,7 +890,7 @@ class DynamoReconcileJobIndexBackendTest {
                         "inline:reconcile-job:e30",
                         PointerReferenceKind.PRK_INLINE_JSON,
                         new ReconcileJobIndexCleanupManifest(
-                            List.of(LOOKUP_KEY), List.of(readyKey)))),
+                            List.of(LOOKUP_KEY), List.of(readyKey), List.of(projectionKey)))),
                 ReconcileJobIndexStore.ReadyQueueMutation.empty()));
     var manifest = backend.loadCleanupManifest(CANONICAL_KEY);
 
@@ -877,9 +905,13 @@ class DynamoReconcileJobIndexBackendTest {
     assertEquals(
         readyKey,
         item.get(JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS).l().getFirst().s());
+    assertEquals(
+        projectionKey,
+        item.get(JobIndexBackendSupport.ATTR_CLEANUP_POINTER_KEYS).l().getFirst().s());
     assertTrue(item.get(JobIndexBackendSupport.ATTR_CLEANUP_MANIFEST_COMPLETE).bool());
     assertEquals(List.of(LOOKUP_KEY), manifest.indexPointerKeys());
     assertEquals(List.of(readyKey), manifest.readyPointerKeys());
+    assertEquals(List.of(projectionKey), manifest.pointerKeys());
     verify(dynamoDb, never()).scan(any(ScanRequest.class));
   }
 

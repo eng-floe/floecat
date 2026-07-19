@@ -555,7 +555,8 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               lookupKey,
               delete.expectedVersion(),
               delete.expectedCanonicalPointerKey(),
-              delete.expectedLookupStoragePartitionKey()));
+              delete.expectedLookupStoragePartitionKey(),
+              delete.allowAbsent()));
       return;
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(delete.pointerKey());
@@ -727,7 +728,16 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               Map.entry("#job", JobIndexBackendSupport.ATTR_JOB_ID),
               Map.entry("#idx", JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS),
               Map.entry("#ready", JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS),
-              Map.entry("#lock", JobIndexBackendSupport.ATTR_CLEANUP_DELETE_IN_PROGRESS));
+              Map.entry("#ptr", JobIndexBackendSupport.ATTR_CLEANUP_POINTER_KEYS),
+              Map.entry("#lock", JobIndexBackendSupport.ATTR_CLEANUP_DELETE_IN_PROGRESS),
+              Map.entry("#complete", JobIndexBackendSupport.ATTR_CLEANUP_MANIFEST_COMPLETE),
+              Map.entry("#scan", JobIndexBackendSupport.ATTR_CLEANUP_LEGACY_SCAN_REQUIRED),
+              Map.entry("#cursor", JobIndexBackendSupport.ATTR_CLEANUP_LEGACY_SCAN_CURSOR),
+              Map.entry("#drained", JobIndexBackendSupport.ATTR_CLEANUP_LEGACY_SCAN_DRAINED),
+              Map.entry(
+                  "#legacyIdx", JobIndexBackendSupport.ATTR_CLEANUP_LEGACY_INDEX_POINTER_KEYS),
+              Map.entry(
+                  "#legacyReady", JobIndexBackendSupport.ATTR_CLEANUP_LEGACY_READY_POINTER_KEYS));
       Map<String, AttributeValue> values = new HashMap<>();
       values.put(":kind", AttributeValue.fromS(JobIndexBackendSupport.KIND_CANONICAL_JOB));
       values.put(":expected", AttributeValue.fromN(Long.toString(upsert.expectedVersion())));
@@ -738,6 +748,8 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
       values.put(":job", AttributeValue.fromS(key.jobSegment()));
       values.put(":idx", stringListValue(upsert.cleanupManifest().indexPointerKeys()));
       values.put(":ready", stringListValue(upsert.cleanupManifest().readyPointerKeys()));
+      values.put(":ptr", stringListValue(upsert.cleanupManifest().pointerKeys()));
+      values.put(":true", AttributeValue.fromBool(true));
       return TransactWriteItem.builder()
           .update(
               Update.builder()
@@ -750,7 +762,9 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
                           AttributeValue.fromS(JobIndexBackendSupport.canonicalSortKey(key))))
                   .updateExpression(
                       "SET #kind = :kind, #v = :next, #pointer = :pointer, #blob = :blob, "
-                          + "#account = :account, #job = :job, #idx = :idx, #ready = :ready")
+                          + "#account = :account, #job = :job, #idx = :idx, #ready = :ready, "
+                          + "#ptr = :ptr, #complete = :true "
+                          + "REMOVE #scan, #cursor, #drained, #legacyIdx, #legacyReady")
                   .conditionExpression("#v = :expected AND attribute_not_exists(#lock)")
                   .expressionAttributeNames(names)
                   .expressionAttributeValues(values)
@@ -777,6 +791,10 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
         item,
         JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS,
         upsert.cleanupManifest().readyPointerKeys());
+    putStringList(
+        item,
+        JobIndexBackendSupport.ATTR_CLEANUP_POINTER_KEYS,
+        upsert.cleanupManifest().pointerKeys());
     return buildPut(item, upsert.expectedVersion());
   }
 
@@ -859,6 +877,15 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
     if (delete.expectedCanonicalPointerKey().isBlank()) {
       return buildDelete(partitionKey, sortKey, delete.expectedVersion());
     }
+    String condition = "#v = :expected AND #owner = :owner";
+    Map<String, String> names =
+        new HashMap<>(
+            Map.of(
+                "#v", ATTR_VERSION, "#owner", JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
+    if (delete.allowAbsent()) {
+      condition = "attribute_not_exists(#pk) OR (" + condition + ")";
+      names.put("#pk", ATTR_PARTITION_KEY);
+    }
     return TransactWriteItem.builder()
         .delete(
             Delete.builder()
@@ -867,13 +894,8 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
                     Map.of(
                         ATTR_PARTITION_KEY, AttributeValue.fromS(partitionKey),
                         ATTR_SORT_KEY, AttributeValue.fromS(sortKey)))
-                .conditionExpression("#v = :expected AND #owner = :owner")
-                .expressionAttributeNames(
-                    Map.of(
-                        "#v",
-                        ATTR_VERSION,
-                        "#owner",
-                        JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY))
+                .conditionExpression(condition)
+                .expressionAttributeNames(names)
                 .expressionAttributeValues(
                     Map.of(
                         ":expected", AttributeValue.fromN(Long.toString(delete.expectedVersion())),

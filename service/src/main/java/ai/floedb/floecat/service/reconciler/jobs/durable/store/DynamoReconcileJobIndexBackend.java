@@ -1225,7 +1225,8 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       }
     }
     return manifest.readyPointerKeys().stream()
-        .allMatch(pointerKey -> ReadyQueueBackendSupport.toReadyQueueRow(pointerKey) != null);
+            .allMatch(pointerKey -> ReadyQueueBackendSupport.toReadyQueueRow(pointerKey) != null)
+        && manifest.pointerKeys().stream().allMatch(JobIndexBackendSupport::validCleanupPointerKey);
   }
 
   private void drainOwnedCleanupScanPage(
@@ -1833,7 +1834,8 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         right == null ? ReconcileJobIndexCleanupManifest.EMPTY : right;
     return new ReconcileJobIndexCleanupManifest(
         concat(first.indexPointerKeys(), second.indexPointerKeys()),
-        concat(first.readyPointerKeys(), second.readyPointerKeys()));
+        concat(first.readyPointerKeys(), second.readyPointerKeys()),
+        concat(first.pointerKeys(), second.pointerKeys()));
   }
 
   private enum LegacyCleanupMergeOutcome {
@@ -2310,7 +2312,8 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
           lookupKey,
           delete.expectedVersion(),
           delete.expectedCanonicalPointerKey(),
-          delete.expectedLookupStoragePartitionKey());
+          delete.expectedLookupStoragePartitionKey(),
+          delete.allowAbsent());
     }
     var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(delete.pointerKey());
     if (canonicalKey != null) {
@@ -2478,6 +2481,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
               Map.entry("#job", JobIndexBackendSupport.ATTR_JOB_ID),
               Map.entry("#idx", JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS),
               Map.entry("#ready", JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS),
+              Map.entry("#ptr", JobIndexBackendSupport.ATTR_CLEANUP_POINTER_KEYS),
               Map.entry("#lock", JobIndexBackendSupport.ATTR_CLEANUP_DELETE_IN_PROGRESS),
               Map.entry("#complete", JobIndexBackendSupport.ATTR_CLEANUP_MANIFEST_COMPLETE),
               Map.entry("#scan", JobIndexBackendSupport.ATTR_CLEANUP_LEGACY_SCAN_REQUIRED),
@@ -2497,6 +2501,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       values.put(":job", AttributeValue.fromS(key.jobSegment()));
       values.put(":idx", stringListValue(upsert.cleanupManifest().indexPointerKeys()));
       values.put(":ready", stringListValue(upsert.cleanupManifest().readyPointerKeys()));
+      values.put(":ptr", stringListValue(upsert.cleanupManifest().pointerKeys()));
       values.put(":true", AttributeValue.fromBool(true));
       return TransactWriteItem.builder()
           .update(
@@ -2510,7 +2515,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
                           AttributeValue.fromS(JobIndexBackendSupport.canonicalSortKey(key))))
                   .updateExpression(
                       "SET #kind = :kind, #v = :next, #pointer = :pointer, #blob = :blob, "
-                          + "#account = :account, #job = :job, #idx = :idx, #ready = :ready, "
+                          + "#account = :account, #job = :job, #idx = :idx, #ready = :ready, #ptr = :ptr, "
                           + "#complete = :true REMOVE #scan, #cursor, #drained, #legacyIdx, #legacyReady")
                   .conditionExpression("#v = :expected AND attribute_not_exists(#lock)")
                   .expressionAttributeNames(names)
@@ -2538,6 +2543,10 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         item,
         JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS,
         upsert.cleanupManifest().readyPointerKeys());
+    putStringList(
+        item,
+        JobIndexBackendSupport.ATTR_CLEANUP_POINTER_KEYS,
+        upsert.cleanupManifest().pointerKeys());
     return buildPut(item, upsert.expectedVersion());
   }
 
@@ -2712,6 +2721,24 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       long expectedVersion,
       String referenceAttribute,
       String expectedReference) {
+    return buildDeleteWithReference(
+        partitionKey, sortKey, expectedVersion, referenceAttribute, expectedReference, false);
+  }
+
+  private TransactWriteItem buildDeleteWithReference(
+      String partitionKey,
+      String sortKey,
+      long expectedVersion,
+      String referenceAttribute,
+      String expectedReference,
+      boolean allowAbsent) {
+    String condition = "#v = :expected AND #ref = :reference";
+    Map<String, String> names =
+        new HashMap<>(Map.of("#v", ATTR_VERSION, "#ref", referenceAttribute));
+    if (allowAbsent) {
+      condition = "attribute_not_exists(#pk) OR (" + condition + ")";
+      names.put("#pk", ATTR_PARTITION_KEY);
+    }
     return TransactWriteItem.builder()
         .delete(
             Delete.builder()
@@ -2720,8 +2747,8 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
                     Map.of(
                         ATTR_PARTITION_KEY, AttributeValue.fromS(partitionKey),
                         ATTR_SORT_KEY, AttributeValue.fromS(sortKey)))
-                .conditionExpression("#v = :expected AND #ref = :reference")
-                .expressionAttributeNames(Map.of("#v", ATTR_VERSION, "#ref", referenceAttribute))
+                .conditionExpression(condition)
+                .expressionAttributeNames(names)
                 .expressionAttributeValues(
                     Map.of(
                         ":expected", AttributeValue.fromN(Long.toString(expectedVersion)),
@@ -2740,7 +2767,8 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         sortKey,
         delete.expectedVersion(),
         JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY,
-        delete.expectedCanonicalPointerKey());
+        delete.expectedCanonicalPointerKey(),
+        delete.allowAbsent());
   }
 
   private JobIndexBackendSupport.CanonicalJobKey parseCanonicalPrefix(String prefix) {
@@ -2838,7 +2866,8 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       Map<String, AttributeValue> item) {
     return new ReconcileJobIndexCleanupManifest(
         stringListAttr(item, JobIndexBackendSupport.ATTR_CLEANUP_INDEX_POINTER_KEYS),
-        stringListAttr(item, JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS));
+        stringListAttr(item, JobIndexBackendSupport.ATTR_CLEANUP_READY_POINTER_KEYS),
+        stringListAttr(item, JobIndexBackendSupport.ATTR_CLEANUP_POINTER_KEYS));
   }
 
   private static ReconcileJobIndexCleanupManifest legacyCleanupManifest(
@@ -2857,6 +2886,12 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       }
     }
     for (String pointerKey : manifest.readyPointerKeys()) {
+      bytes += pointerKey.getBytes(StandardCharsets.UTF_8).length + 32L;
+      if (bytes > Math.max(1, legacyCleanupManifestMaxBytes)) {
+        return false;
+      }
+    }
+    for (String pointerKey : manifest.pointerKeys()) {
       bytes += pointerKey.getBytes(StandardCharsets.UTF_8).length + 32L;
       if (bytes > Math.max(1, legacyCleanupManifestMaxBytes)) {
         return false;

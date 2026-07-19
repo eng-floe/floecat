@@ -138,6 +138,7 @@ class DynamoReconcileLeaseBackendUnitTest {
         .thenReturn(TransactWriteItemsResponse.builder().build());
     DynamoReconcileLeaseBackend backend = new DynamoReconcileLeaseBackend();
     backend.bind(() -> dynamoDb, TABLE);
+    String projectionKey = Keys.reconcileJobProjectionPointer(ACCOUNT_ID, JOB_ID);
 
     boolean committed =
         backend.compareAndSetBatch(
@@ -148,7 +149,8 @@ class DynamoReconcileLeaseBackendUnitTest {
                         1L,
                         "inline:reconcile-job:e30",
                         PointerReferenceKind.PRK_INLINE_JSON,
-                        new ReconcileJobIndexCleanupManifest(List.of(LOOKUP_KEY), List.of()))),
+                        new ReconcileJobIndexCleanupManifest(
+                            List.of(LOOKUP_KEY), List.of(), List.of(projectionKey)))),
                 ReconcileJobIndexStore.ReadyQueueMutation.empty()),
             ReconcileLeaseBackend.LeaseWriteBatch.empty());
 
@@ -158,10 +160,43 @@ class DynamoReconcileLeaseBackendUnitTest {
     verify(dynamoDb).transactWriteItems(captor.capture());
     var update = captor.getValue().transactItems().getFirst().update();
     assertEquals(LOOKUP_KEY, update.expressionAttributeValues().get(":idx").l().getFirst().s());
+    assertEquals(projectionKey, update.expressionAttributeValues().get(":ptr").l().getFirst().s());
+    assertTrue(update.expressionAttributeValues().get(":true").bool());
+    assertTrue(update.updateExpression().contains("#complete = :true"));
+    assertTrue(
+        update
+            .updateExpression()
+            .contains("REMOVE #scan, #cursor, #drained, #legacyIdx, #legacyReady"));
     assertEquals(
         JobIndexBackendSupport.ATTR_CLEANUP_DELETE_IN_PROGRESS,
         update.expressionAttributeNames().get("#lock"));
     assertEquals("#v = :expected AND attribute_not_exists(#lock)", update.conditionExpression());
+  }
+
+  @Test
+  void cleanupOwnedReferenceDeleteAllowsAlreadyAbsentRow() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
+        .thenReturn(TransactWriteItemsResponse.builder().build());
+    DynamoReconcileLeaseBackend backend = new DynamoReconcileLeaseBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+    String dedupeKey = Keys.reconcileDedupePointer(ACCOUNT_ID, "hash-cleanup");
+
+    assertTrue(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexDelete(
+                        dedupeKey, 1L, CANONICAL_KEY, "", false, true)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty()),
+            ReconcileLeaseBackend.LeaseWriteBatch.empty()));
+
+    ArgumentCaptor<TransactWriteItemsRequest> captor =
+        ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
+    verify(dynamoDb).transactWriteItems(captor.capture());
+    assertEquals(
+        "attribute_not_exists(#pk) OR (#v = :expected AND #owner = :owner)",
+        captor.getValue().transactItems().getFirst().delete().conditionExpression());
   }
 
   @Test

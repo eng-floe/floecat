@@ -99,6 +99,9 @@ class NativeReconcileJobIndexStorePointerSetTest {
     }
 
     JobIndexEntrySnapshot canonical = backend.loadIndexEntry(canonicalKey).orElseThrow();
+    assertEquals(
+        List.of(Keys.reconcileJobProjectionPointer(ACCOUNT_ID, JOB_ID)),
+        backend.loadCleanupManifest(canonicalKey).pointerKeys());
     ReconcileJobIndexStore.JobIndexWriteBatch deleteBatch =
         store.buildJobDeleteBatch(
             new CanonicalPointerSnapshot(
@@ -115,6 +118,35 @@ class NativeReconcileJobIndexStorePointerSetTest {
     for (String pointerKey : expectedIndexes) {
       assertTrue(backend.loadIndexEntry(pointerKey).isEmpty(), pointerKey);
     }
+  }
+
+  @Test
+  void rootJobManifestIncludesProjectionAndBothSummaryPointers() {
+    StoredReconcileJob record = record("JS_SUCCEEDED");
+    record.parentJobId = "";
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, JOB_ID);
+    String sortableToken = String.format("%019d-%s", Long.MAX_VALUE - record.createdAtMs, JOB_ID);
+
+    ReconcileJobIndexStore.JobIndexWriteBatch batch =
+        store.buildJobIndexWriteBatch(
+            new CanonicalPointerSnapshot(canonicalKey, "inline:reconcile-job:e30", 1L),
+            null,
+            record);
+
+    ReconcileJobIndexStore.JobIndexUpsert canonicalUpsert =
+        batch.writes().stream()
+            .filter(ReconcileJobIndexStore.JobIndexUpsert.class::isInstance)
+            .map(ReconcileJobIndexStore.JobIndexUpsert.class::cast)
+            .filter(upsert -> canonicalKey.equals(upsert.pointerKey()))
+            .findFirst()
+            .orElseThrow();
+    assertEquals(
+        List.of(
+            Keys.reconcileJobProjectionPointer(ACCOUNT_ID, JOB_ID),
+            Keys.reconcileRootJobSummaryByAccountPointer(ACCOUNT_ID, sortableToken),
+            Keys.reconcileRootJobSummaryByConnectorPointer(
+                ACCOUNT_ID, CONNECTOR_ID, sortableToken)),
+        canonicalUpsert.cleanupManifest().pointerKeys());
   }
 
   @Test
@@ -296,7 +328,13 @@ class NativeReconcileJobIndexStorePointerSetTest {
                     canonical.pointerKey(), canonical.blobUri(), canonical.version()),
                 record("JS_SUCCEEDED"),
                 record("JS_FAILED"))));
-    for (int i = 0; i < phases.size(); i++) {
+    assertTrue(
+        backend.compareAndSetBatch(
+            phases.getFirst().indexBatch(), phases.getFirst().extraPointerOps()));
+    assertTrue(
+        backend.compareAndSetBatch(
+            phases.getFirst().indexBatch(), phases.getFirst().extraPointerOps()));
+    for (int i = 1; i < phases.size(); i++) {
       assertTrue(
           backend.compareAndSetBatch(phases.get(i).indexBatch(), phases.get(i).extraPointerOps()));
       if (i + 1 < phases.size()) {

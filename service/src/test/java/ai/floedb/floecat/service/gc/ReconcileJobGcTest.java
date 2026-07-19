@@ -363,6 +363,54 @@ class ReconcileJobGcTest {
   }
 
   @Test
+  void claimedCleanupDeletesManifestPointersWhenCanonicalBlobIsUnreadable() {
+    String jobId = "job-claimed-unreadable";
+    long createdAtMs = 123L;
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    String sortableToken = String.format("%019d-%s", Long.MAX_VALUE - createdAtMs, jobId);
+    String projectionKey = Keys.reconcileJobProjectionPointer(ACCOUNT_ID, jobId);
+    String accountSummaryKey =
+        Keys.reconcileRootJobSummaryByAccountPointer(ACCOUNT_ID, sortableToken);
+    String connectorSummaryKey =
+        Keys.reconcileRootJobSummaryByConnectorPointer(ACCOUNT_ID, CONNECTOR_ID, sortableToken);
+    putPointer(projectionKey, "projection");
+    putPointer(accountSummaryKey, "unreadable-summary");
+    putPointer(connectorSummaryKey, "unreadable-summary");
+    assertTrue(
+        jobIndexBackend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                java.util.List.of(
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        canonicalKey,
+                        0L,
+                        "unreadable-job-state",
+                        PointerReferenceKind.PRK_INLINE_JSON,
+                        new ReconcileJobIndexCleanupManifest(
+                            java.util.List.of(),
+                            java.util.List.of(),
+                            java.util.List.of(
+                                projectionKey, accountSummaryKey, connectorSummaryKey)))),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+    JobIndexEntrySnapshot canonical = jobIndexBackend.loadIndexEntry(canonicalKey).orElseThrow();
+    assertFalse(
+        gc.jobIndexStore
+            .buildJobDeleteBatch(
+                new CanonicalPointerSnapshot(
+                    canonical.pointerKey(), canonical.blobUri(), canonical.version()))
+            .writes()
+            .isEmpty());
+    assertTrue(jobIndexBackend.loadIndexEntry(canonicalKey).orElseThrow().cleanupLocked());
+
+    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(1, result.expired());
+    assertTrue(jobIndexBackend.loadIndexEntry(canonicalKey).isEmpty());
+    assertTrue(pointers.get(projectionKey).isEmpty());
+    assertTrue(pointers.get(accountSummaryKey).isEmpty());
+    assertTrue(pointers.get(connectorSummaryKey).isEmpty());
+  }
+
+  @Test
   void accountSliceDoesNotPinPageWhenClaimedCleanupPreparationMustRetry() {
     PreparationFailingLockedMemoryBackend failingBackend =
         new PreparationFailingLockedMemoryBackend();

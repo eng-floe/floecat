@@ -180,6 +180,9 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete
             && !delete.expectedCanonicalPointerKey().isBlank()) {
           JobIndexEntrySnapshot existing = loadIndexEntry(delete.pointerKey()).orElse(null);
+          if (existing == null && delete.allowAbsent()) {
+            continue;
+          }
           if (existing == null
               || !delete.expectedCanonicalPointerKey().equals(existing.blobUri())) {
             return false;
@@ -385,15 +388,18 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       ReconcileJobIndexCleanupManifest left, ReconcileJobIndexCleanupManifest right) {
     java.util.ArrayList<String> indexKeys = new java.util.ArrayList<>();
     java.util.ArrayList<String> readyKeys = new java.util.ArrayList<>();
+    java.util.ArrayList<String> pointerKeys = new java.util.ArrayList<>();
     if (left != null) {
       indexKeys.addAll(left.indexPointerKeys());
       readyKeys.addAll(left.readyPointerKeys());
+      pointerKeys.addAll(left.pointerKeys());
     }
     if (right != null) {
       indexKeys.addAll(right.indexPointerKeys());
       readyKeys.addAll(right.readyPointerKeys());
+      pointerKeys.addAll(right.pointerKeys());
     }
-    return new ReconcileJobIndexCleanupManifest(indexKeys, readyKeys);
+    return new ReconcileJobIndexCleanupManifest(indexKeys, readyKeys, pointerKeys);
   }
 
   private static boolean validCleanupManifest(ReconcileJobIndexCleanupManifest manifest) {
@@ -409,6 +415,7 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       }
     }
     return manifest.readyPointerKeys().stream()
-        .allMatch(pointerKey -> ReadyQueueBackendSupport.toReadyQueueRow(pointerKey) != null);
+            .allMatch(pointerKey -> ReadyQueueBackendSupport.toReadyQueueRow(pointerKey) != null)
+        && manifest.pointerKeys().stream().allMatch(JobIndexBackendSupport::validCleanupPointerKey);
   }
 }

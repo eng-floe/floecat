@@ -20,17 +20,23 @@ import java.util.LinkedHashSet;
 import java.util.List;
 
 public record ReconcileJobIndexCleanupManifest(
-    List<String> indexPointerKeys, List<String> readyPointerKeys) {
+    List<String> indexPointerKeys, List<String> readyPointerKeys, List<String> pointerKeys) {
   public static final ReconcileJobIndexCleanupManifest EMPTY =
-      new ReconcileJobIndexCleanupManifest(List.of(), List.of());
+      new ReconcileJobIndexCleanupManifest(List.of(), List.of(), List.of());
+
+  public ReconcileJobIndexCleanupManifest(
+      List<String> indexPointerKeys, List<String> readyPointerKeys) {
+    this(indexPointerKeys, readyPointerKeys, List.of());
+  }
 
   public ReconcileJobIndexCleanupManifest {
     indexPointerKeys = copyDistinct(indexPointerKeys);
     readyPointerKeys = copyDistinct(readyPointerKeys);
+    pointerKeys = copyDistinct(pointerKeys);
   }
 
   public boolean isEmpty() {
-    return indexPointerKeys.isEmpty() && readyPointerKeys.isEmpty();
+    return indexPointerKeys.isEmpty() && readyPointerKeys.isEmpty() && pointerKeys.isEmpty();
   }
 
   private static List<String> copyDistinct(List<String> values) {

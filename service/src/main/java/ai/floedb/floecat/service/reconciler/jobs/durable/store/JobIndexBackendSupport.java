@@ -39,6 +39,7 @@ final class JobIndexBackendSupport {
   static final String ATTR_BLOB_URI = "blob_uri";
   static final String ATTR_CLEANUP_INDEX_POINTER_KEYS = "cleanup_index_pointer_keys";
   static final String ATTR_CLEANUP_READY_POINTER_KEYS = "cleanup_ready_pointer_keys";
+  static final String ATTR_CLEANUP_POINTER_KEYS = "cleanup_pointer_keys";
   static final String ATTR_CLEANUP_LEGACY_INDEX_POINTER_KEYS = "cleanup_legacy_index_pointer_keys";
   static final String ATTR_CLEANUP_LEGACY_READY_POINTER_KEYS = "cleanup_legacy_ready_pointer_keys";
   static final String ATTR_CLEANUP_MANIFEST_COMPLETE = "cleanup_manifest_complete";
@@ -83,6 +84,15 @@ final class JobIndexBackendSupport {
       accountScopedMarker(Keys.reconcileDedupePointerPrefix(ACCOUNT_SEGMENT_PLACEHOLDER));
 
   private JobIndexBackendSupport() {}
+
+  static boolean validCleanupPointerKey(String pointerKey) {
+    if (pointerKey == null || !pointerKey.startsWith("/accounts/")) {
+      return false;
+    }
+    return pointerKey.contains("/reconcile/jobs/projections/by-id/")
+        || pointerKey.contains("/reconcile/jobs/root-summaries/by-account/")
+        || pointerKey.contains("/reconcile/jobs/root-summaries/by-connector/");
+  }
 
   static CanonicalJobKey parseCanonicalJobKey(String pointerKey) {
     String normalized = stripLeadingSlash(pointerKey);

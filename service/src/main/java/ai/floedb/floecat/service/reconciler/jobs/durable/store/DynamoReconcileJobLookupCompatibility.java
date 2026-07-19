@@ -47,7 +47,8 @@ final class DynamoReconcileJobLookupCompatibility {
       JobIndexBackendSupport.LookupKey lookupKey,
       long expectedVersion,
       String expectedCanonicalPointerKey,
-      String expectedStoragePartitionKey) {
+      String expectedStoragePartitionKey,
+      boolean allowAbsent) {
     if (expectedCanonicalPointerKey == null || expectedCanonicalPointerKey.isBlank()) {
       throw new IllegalArgumentException("lookup deletes require an expected canonical owner");
     }
@@ -66,7 +67,8 @@ final class DynamoReconcileJobLookupCompatibility {
         .map(
             key ->
                 expectedStoragePartitionKey.equals(key.partitionKey())
-                    ? deleteOwned(table, key, expectedVersion, expectedCanonicalPointerKey)
+                    ? deleteOwned(
+                        table, key, expectedVersion, expectedCanonicalPointerKey, allowAbsent)
                     : checkAbsentOrNotOwned(table, key, expectedCanonicalPointerKey))
         .toList();
   }
@@ -88,15 +90,23 @@ final class DynamoReconcileJobLookupCompatibility {
       String table,
       JobIndexBackendSupport.LookupStorageKey key,
       long expectedVersion,
-      String expectedCanonicalPointerKey) {
+      String expectedCanonicalPointerKey,
+      boolean allowAbsent) {
+    String condition = "#v = :expected AND #owner = :owner";
+    java.util.HashMap<String, String> names =
+        new java.util.HashMap<>(
+            Map.of("#v", ATTR_VERSION, "#owner", JobIndexBackendSupport.ATTR_BLOB_URI));
+    if (allowAbsent) {
+      condition = "attribute_not_exists(#pk) OR (" + condition + ")";
+      names.put("#pk", ATTR_PARTITION_KEY);
+    }
     return TransactWriteItem.builder()
         .delete(
             Delete.builder()
                 .tableName(table)
                 .key(dynamoKey(key))
-                .conditionExpression("#v = :expected AND #owner = :owner")
-                .expressionAttributeNames(
-                    Map.of("#v", ATTR_VERSION, "#owner", JobIndexBackendSupport.ATTR_BLOB_URI))
+                .conditionExpression(condition)
+                .expressionAttributeNames(names)
                 .expressionAttributeValues(
                     Map.of(
                         ":expected", AttributeValue.fromN(Long.toString(expectedVersion)),

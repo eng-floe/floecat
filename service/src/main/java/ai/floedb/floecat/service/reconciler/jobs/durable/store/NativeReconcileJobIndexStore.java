@@ -609,9 +609,9 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     List<JobIndexWriteOp> deletes = new ArrayList<>();
     deletes.add(
         new JobIndexDelete(
-            canonicalPointerKey, lockedSnapshot.version(), "", "", session.cleanupLocked()));
+            canonicalPointerKey, lockedSnapshot.version(), "", "", session.cleanupLocked(), false));
     for (String pointerKey : manifest.indexPointerKeys()) {
-      appendOwnedDelete(deletes, pointerKey, canonicalPointerKey);
+      appendOwnedDelete(deletes, pointerKey, canonicalPointerKey, true);
     }
     return new JobIndexWriteBatch(
         List.copyOf(deletes), new ReadyQueueMutation(List.of(), manifest.readyPointerKeys()));
@@ -998,6 +998,14 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
 
   private void appendOwnedDelete(
       List<JobIndexWriteOp> ops, String pointerKey, String canonicalPointerKey) {
+    appendOwnedDelete(ops, pointerKey, canonicalPointerKey, false);
+  }
+
+  private void appendOwnedDelete(
+      List<JobIndexWriteOp> ops,
+      String pointerKey,
+      String canonicalPointerKey,
+      boolean allowAbsent) {
     if (blank(pointerKey) || blank(canonicalPointerKey)) {
       return;
     }
@@ -1011,7 +1019,9 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
               pointerKey,
               existing.version(),
               canonicalPointerKey,
-              existing.lookupStoragePartitionKey()));
+              existing.lookupStoragePartitionKey(),
+              false,
+              allowAbsent));
     }
   }
 
@@ -1068,7 +1078,9 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
 
   private ReconcileJobIndexCleanupManifest cleanupManifest(StoredReconcileJob record) {
     return new ReconcileJobIndexCleanupManifest(
-        indexPointerKeysForCleanup(record), readyPointerKeysForCleanup(record));
+        indexPointerKeysForCleanup(record),
+        readyPointerKeysForCleanup(record),
+        pointerKeysForCleanup(record));
   }
 
   private ReconcileJobIndexCleanupManifest cleanupManifest(QueuedJobInsert insert) {
@@ -1083,7 +1095,34 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     indexKeys.add(insert.dedupePointerKey());
     indexKeys.removeIf(NativeReconcileJobIndexStore::blank);
     return new ReconcileJobIndexCleanupManifest(
-        List.copyOf(indexKeys), insert.readyKeys() == null ? List.of() : insert.readyKeys());
+        List.copyOf(indexKeys),
+        insert.readyKeys() == null ? List.of() : insert.readyKeys(),
+        pointerKeysForCleanup(insert.record()));
+  }
+
+  private List<String> pointerKeysForCleanup(StoredReconcileJob record) {
+    if (record == null || blank(record.accountId) || blank(record.jobId)) {
+      return List.of();
+    }
+    java.util.LinkedHashSet<String> pointerKeys = new java.util.LinkedHashSet<>();
+    pointerKeys.add(Keys.reconcileJobProjectionPointer(record.accountId, record.jobId));
+    if (blank(record.parentJobId)) {
+      String sortableJobToken = rootSummarySortableJobToken(record.createdAtMs, record.jobId);
+      pointerKeys.add(
+          Keys.reconcileRootJobSummaryByAccountPointer(record.accountId, sortableJobToken));
+      if (!blank(record.connectorId)) {
+        pointerKeys.add(
+            Keys.reconcileRootJobSummaryByConnectorPointer(
+                record.accountId, record.connectorId, sortableJobToken));
+      }
+    }
+    return List.copyOf(pointerKeys);
+  }
+
+  private static String rootSummarySortableJobToken(long createdAtMs, String jobId) {
+    long created = Math.max(0L, createdAtMs);
+    long reversedCreated = Long.MAX_VALUE - created;
+    return String.format("%019d-%s", reversedCreated, jobId);
   }
 
   private List<String> indexPointerKeysForCleanup(StoredReconcileJob record) {

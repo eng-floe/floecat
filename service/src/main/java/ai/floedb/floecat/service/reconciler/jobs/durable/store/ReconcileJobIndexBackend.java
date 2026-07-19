@@ -155,7 +155,10 @@ public interface ReconcileJobIndexBackend {
     ReconcileJobIndexCleanupManifest manifest =
         new ReconcileJobIndexCleanupManifest(
             concat(stored.indexPointerKeys(), fallbackManifest, true),
-            concat(stored.readyPointerKeys(), fallbackManifest, false));
+            concat(stored.readyPointerKeys(), fallbackManifest, false),
+            concat(
+                stored.pointerKeys(),
+                fallbackManifest == null ? List.of() : fallbackManifest.pointerKeys()));
     return manifest.isEmpty()
         ? Optional.empty()
         : Optional.of(new JobCleanupSession(expected, manifest, false));
@@ -215,6 +218,19 @@ public interface ReconcileJobIndexBackend {
       merged.addAll(stored);
     }
     merged.addAll(fallback);
+    return merged;
+  }
+
+  private static List<String> concat(List<String> left, List<String> right) {
+    java.util.ArrayList<String> merged =
+        new java.util.ArrayList<>(
+            (left == null ? 0 : left.size()) + (right == null ? 0 : right.size()));
+    if (left != null) {
+      merged.addAll(left);
+    }
+    if (right != null) {
+      merged.addAll(right);
+    }
     return merged;
   }
 }
