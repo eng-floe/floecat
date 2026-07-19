@@ -701,14 +701,6 @@ public class ReconcileJobGc {
             new CanonicalPointerSnapshot(
                 canonical.pointerKey(), canonical.blobUri(), canonical.version()));
     if (deleteBatch.writes().isEmpty()) {
-      // Dynamo does not perform per-job reverse-reference scans. Retain unreadable legacy rows
-      // until the bulk migration has proven every manifest complete and persisted its marker.
-      if (!jobIndexBackend.legacyCleanupMigrationComplete()) {
-        LOG.debugf(
-            "Retaining unreadable legacy reconcile job while awaiting cleanup-manifest migration accountId=%s jobId=%s canonicalKey=%s",
-            accountId, jobId, canonical.pointerKey());
-        return null;
-      }
       // Non-Dynamo backends can reconstruct legacy references without a table scan.
       ReconcileJobIndexCleanupManifest discovered =
           jobIndexBackend.discoverLegacyCleanupManifest(canonical.pointerKey());

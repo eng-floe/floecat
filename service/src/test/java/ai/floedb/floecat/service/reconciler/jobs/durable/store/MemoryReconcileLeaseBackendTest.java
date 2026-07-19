@@ -22,7 +22,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -70,6 +72,35 @@ class MemoryReconcileLeaseBackendTest {
     assertTrue(jobIndexBackend.loadCleanupManifest(CANONICAL_KEY).isEmpty());
   }
 
+  @Test
+  void leaseRecordConditionIsIncludedInAtomicPointerBatch() {
+    RecordingPointerStore pointers = new RecordingPointerStore();
+    String leaseKey = LeaseBackendSupport.leasePointerKey(ACCOUNT_ID, JOB_ID);
+    assertTrue(
+        pointers.compareAndSet(
+            leaseKey, 0L, PointerReferences.inlineJsonPointer(leaseKey, "inline:lease:e30", 1L)));
+    MemoryReconcileJobIndexBackend jobIndexBackend = new MemoryReconcileJobIndexBackend(pointers);
+    MemoryReconcileLeaseBackend leaseBackend =
+        new MemoryReconcileLeaseBackend(pointers, jobIndexBackend);
+
+    assertTrue(
+        leaseBackend.compareAndSetBatch(
+            ReconcileJobIndexStore.JobIndexWriteBatch.empty(),
+            new ReconcileLeaseBackend.LeaseWriteBatch(
+                List.of(
+                    new ReconcileLeaseBackend.LeaseRecordCondition(ACCOUNT_ID, JOB_ID, 1L),
+                    new ReconcileLeaseBackend.LeaseOwnerUpsert(
+                        "/lease-owner/test", 0L, CANONICAL_KEY)))));
+
+    assertTrue(
+        pointers.lastOps.stream()
+            .anyMatch(
+                op ->
+                    op instanceof PointerStore.CasCheck check
+                        && leaseKey.equals(check.key())
+                        && check.expectedVersion() == 1L));
+  }
+
   private static ReconcileJobIndexStore.JobIndexWriteBatch canonicalUpsert(
       long expectedVersion, ReconcileJobIndexCleanupManifest manifest) {
     return new ReconcileJobIndexStore.JobIndexWriteBatch(
@@ -81,5 +112,15 @@ class MemoryReconcileLeaseBackendTest {
                 PointerReferenceKind.PRK_INLINE_JSON,
                 manifest)),
         ReconcileJobIndexStore.ReadyQueueMutation.empty());
+  }
+
+  private static final class RecordingPointerStore extends InMemoryPointerStore {
+    private List<PointerStore.CasOp> lastOps = List.of();
+
+    @Override
+    public boolean compareAndSetBatch(List<PointerStore.CasOp> ops) {
+      lastOps = List.copyOf(ops);
+      return super.compareAndSetBatch(ops);
+    }
   }
 }

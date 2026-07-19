@@ -875,11 +875,6 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
             Map.entry(":quiet", AttributeValue.fromBool(true)));
     String quietCondition =
         "#owner = :owner AND #fence = :fence AND #expires >= :now AND #quiet = :quiet AND #changed = :zero AND #retryable = :zero";
-    if (migration == LegacyMigration.CLEANUP) {
-      checkNames.put("#unresolvable", ATTR_MIGRATION_UNRESOLVABLE);
-      checkNames.put("#conflicted", ATTR_MIGRATION_CONFLICTED);
-      quietCondition += " AND #unresolvable = :zero AND #conflicted = :zero";
-    }
     final String completionCondition = quietCondition;
 
     Map<String, AttributeValue> marker = new HashMap<>();
@@ -1214,13 +1209,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       return false;
     }
     for (String pointerKey : manifest.indexPointerKeys()) {
-      if (JobIndexBackendSupport.parseLookupKey(pointerKey) == null
-          && JobIndexBackendSupport.parseDedupeKey(pointerKey) == null
-          && JobIndexBackendSupport.parseParentKey(pointerKey) == null
-          && JobIndexBackendSupport.parseConnectorKey(pointerKey) == null
-          && JobIndexBackendSupport.parseGlobalStateKey(pointerKey) == null
-          && JobIndexBackendSupport.parseAccountStateKey(pointerKey) == null
-          && JobIndexBackendSupport.parseConnectorStateKey(pointerKey) == null) {
+      if (!JobIndexBackendSupport.validCleanupIndexPointerKey(pointerKey)) {
         return false;
       }
     }

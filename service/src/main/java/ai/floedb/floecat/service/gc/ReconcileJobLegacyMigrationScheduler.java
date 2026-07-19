@@ -68,7 +68,11 @@ public class ReconcileJobLegacyMigrationScheduler {
     final ReconcileJobGc gc;
     try {
       gc = reconcileJobGc.get();
-    } catch (Throwable ignored) {
+    } catch (Throwable t) {
+      if (metrics != null) {
+        metrics.recordError(1, Tag.of(TagKey.RESULT, "gc-resolution-failed"));
+      }
+      LOG.warnf(t, "reconcile job legacy migration could not resolve reconcile job GC");
       return;
     }
 
@@ -121,6 +125,9 @@ public class ReconcileJobLegacyMigrationScheduler {
               ownerId,
               lease.fence(),
               currentTimeMillis.getAsLong());
+      if (cleanupComplete) {
+        recordCleanupResiduals(stored.unresolvable(), stored.conflicted());
+      }
       return;
     }
 
@@ -161,12 +168,7 @@ public class ReconcileJobLegacyMigrationScheduler {
     metrics.recordCollection(result.conflicted(), Tag.of(TagKey.RESULT, "cleanup-conflicted"));
     metrics.recordCollection(result.retryable(), Tag.of(TagKey.RESULT, "cleanup-retryable"));
     boolean passEnded = nextToken.isBlank();
-    boolean quietPass =
-        passEnded
-            && passUnresolvable == 0
-            && passRetryable == 0
-            && passConflicted == 0
-            && passChanged == 0;
+    boolean quietPass = passEnded && passRetryable == 0 && passChanged == 0;
     var checkpoint =
         passEnded && !quietPass
             ? ReconcileJobIndexBackend.LegacyMigrationProgress.empty()
@@ -190,22 +192,14 @@ public class ReconcileJobLegacyMigrationScheduler {
               ownerId,
               lease.fence(),
               currentTimeMillis.getAsLong());
+      if (cleanupComplete) {
+        recordCleanupResiduals(passUnresolvable, passConflicted);
+      }
     }
     if (!passEnded) {
       return;
     }
-    if (passUnresolvable > 0) {
-      metrics.recordCollection(
-          passUnresolvable, Tag.of(TagKey.RESULT, "cleanup-blocked-unresolvable"));
-      LOG.warnf(
-          "reconcile job legacy cleanup migration completion blocked by unresolvable rows=%d; affected rows require operator review",
-          passUnresolvable);
-    } else if (passConflicted > 0) {
-      metrics.recordCollection(passConflicted, Tag.of(TagKey.RESULT, "cleanup-blocked-conflicted"));
-      LOG.warnf(
-          "reconcile job legacy cleanup migration completion blocked by conflicts=%d; affected legacy rows require operator review",
-          passConflicted);
-    } else if (passRetryable > 0) {
+    if (passRetryable > 0) {
       LOG.warnf(
           "reconcile job legacy cleanup migration pass will retry retryable=%d conflicted=%d",
           passRetryable, passConflicted);
@@ -213,6 +207,22 @@ public class ReconcileJobLegacyMigrationScheduler {
       LOG.infof(
           "reconcile job legacy cleanup migration changed rows=%d; running a quiet verification pass",
           passChanged);
+    }
+  }
+
+  private void recordCleanupResiduals(int unresolvable, int conflicted) {
+    if (unresolvable > 0) {
+      metrics.recordCollection(
+          unresolvable, Tag.of(TagKey.RESULT, "cleanup-completed-unresolvable"));
+      LOG.warnf(
+          "reconcile job legacy cleanup migration completed with unresolvable rows=%d; affected rows require operator review",
+          unresolvable);
+    }
+    if (conflicted > 0) {
+      metrics.recordCollection(conflicted, Tag.of(TagKey.RESULT, "cleanup-completed-conflicted"));
+      LOG.warnf(
+          "reconcile job legacy cleanup migration completed with conflicts=%d; affected legacy rows require operator review",
+          conflicted);
     }
   }
 

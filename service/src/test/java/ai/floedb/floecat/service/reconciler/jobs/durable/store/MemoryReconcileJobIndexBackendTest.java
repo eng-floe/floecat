@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -105,7 +106,7 @@ class MemoryReconcileJobIndexBackendTest {
             replacement.fence(),
             1_151L));
 
-    var quiet = new ReconcileJobIndexBackend.LegacyMigrationProgress("", 0, 0, 0, 0, true);
+    var quiet = new ReconcileJobIndexBackend.LegacyMigrationProgress("", 0, 4, 5, 0, true);
     assertTrue(
         backend.checkpointLegacyMigration(
             ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
@@ -126,5 +127,30 @@ class MemoryReconcileJobIndexBackendTest {
             .acquireLegacyMigrationLease(
                 ReconcileJobIndexBackend.LegacyMigration.CLEANUP, "third", 1_300L, 100L)
             .isEmpty());
+  }
+
+  @Test
+  void legacyCleanupDiscoveryExcludesLeasePointers() {
+    String accountId = "acct-1";
+    String jobId = "job-1";
+    String canonicalKey = Keys.reconcileJobPointerById(accountId, jobId);
+    String parentKey = Keys.reconcileJobByParentPointer(accountId, "parent-1", jobId);
+    String leaseExpiryKey = Keys.reconcileJobLeaseExpiryPointer(1_000L, accountId, jobId);
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    assertTrue(
+        pointers.compareAndSet(
+            parentKey, 0L, PointerReferences.pointerKeyPointer(parentKey, canonicalKey, 1L)));
+    assertTrue(
+        pointers.compareAndSet(
+            leaseExpiryKey,
+            0L,
+            PointerReferences.pointerKeyPointer(leaseExpiryKey, canonicalKey, 1L)));
+    MemoryReconcileJobIndexBackend backend = new MemoryReconcileJobIndexBackend(pointers);
+
+    ReconcileJobIndexCleanupManifest discovered =
+        backend.discoverLegacyCleanupManifest(canonicalKey);
+
+    assertTrue(discovered.indexPointerKeys().contains(parentKey));
+    assertFalse(discovered.indexPointerKeys().contains(leaseExpiryKey));
   }
 }

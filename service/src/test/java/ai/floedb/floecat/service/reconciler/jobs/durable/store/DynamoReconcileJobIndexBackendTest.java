@@ -638,7 +638,8 @@ class DynamoReconcileJobIndexBackendTest {
     assertEquals(
         "legacy-cleanup-manifest-v2-progress", checkpointDelete.key().get(ATTR_SORT_KEY).s());
     assertTrue(checkpointDelete.conditionExpression().contains("#quiet = :quiet"));
-    assertTrue(checkpointDelete.conditionExpression().contains("#unresolvable = :zero"));
+    assertFalse(checkpointDelete.conditionExpression().contains("#unresolvable"));
+    assertFalse(checkpointDelete.conditionExpression().contains("#conflicted"));
     assertEquals("owner-1", checkpointDelete.expressionAttributeValues().get(":owner").s());
     assertEquals("9", checkpointDelete.expressionAttributeValues().get(":fence").n());
     assertEquals("legacy-cleanup-manifest-v2", items.get(1).put().item().get(ATTR_SORT_KEY).s());

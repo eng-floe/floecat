@@ -125,9 +125,7 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         || state.leaseExpiresAtMs < nowMs
         || !state.progress.quietPassComplete()
         || state.progress.changed() != 0
-        || state.progress.retryable() != 0
-        || (migration == LegacyMigration.CLEANUP
-            && (state.progress.unresolvable() != 0 || state.progress.conflicted() != 0))) {
+        || state.progress.retryable() != 0) {
       return false;
     }
     completedLegacyMigrations.add(migration);
@@ -291,7 +289,8 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         }
         if (pointer.getKey().startsWith(Keys.reconcileReadyPointerPrefix())) {
           readyKeys.add(pointer.getKey());
-        } else if (!canonicalPointerKey.equals(pointer.getKey())) {
+        } else if (!canonicalPointerKey.equals(pointer.getKey())
+            && JobIndexBackendSupport.validCleanupIndexPointerKey(pointer.getKey())) {
           indexKeys.add(pointer.getKey());
         }
       }
@@ -404,13 +403,7 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
 
   private static boolean validCleanupManifest(ReconcileJobIndexCleanupManifest manifest) {
     for (String pointerKey : manifest.indexPointerKeys()) {
-      if (JobIndexBackendSupport.parseLookupKey(pointerKey) == null
-          && JobIndexBackendSupport.parseDedupeKey(pointerKey) == null
-          && JobIndexBackendSupport.parseParentKey(pointerKey) == null
-          && JobIndexBackendSupport.parseConnectorKey(pointerKey) == null
-          && JobIndexBackendSupport.parseGlobalStateKey(pointerKey) == null
-          && JobIndexBackendSupport.parseAccountStateKey(pointerKey) == null
-          && JobIndexBackendSupport.parseConnectorStateKey(pointerKey) == null) {
+      if (!JobIndexBackendSupport.validCleanupIndexPointerKey(pointerKey)) {
         return false;
       }
     }

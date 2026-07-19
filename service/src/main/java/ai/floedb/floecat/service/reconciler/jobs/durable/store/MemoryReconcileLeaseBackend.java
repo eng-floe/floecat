@@ -19,6 +19,8 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore.CasCheck;
+import ai.floedb.floecat.storage.spi.PointerStore.CasCheckAbsent;
 import ai.floedb.floecat.storage.spi.PointerStore.CasDelete;
 import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
 import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
@@ -97,16 +99,12 @@ public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
     if (leaseBatch != null) {
       for (LeaseWriteOp write : leaseBatch.writes()) {
         if (write instanceof LeaseRecordCondition condition) {
-          var current =
-              pointerStore.get(
-                  LeaseBackendSupport.leasePointerKey(condition.accountId(), condition.jobId()));
+          String key =
+              LeaseBackendSupport.leasePointerKey(condition.accountId(), condition.jobId());
           if (condition.expectedVersion() == 0L) {
-            if (current.isPresent()) {
-              return false;
-            }
-          } else if (current.isEmpty()
-              || current.get().getVersion() != condition.expectedVersion()) {
-            return false;
+            ops.add(new CasCheckAbsent(key));
+          } else {
+            ops.add(new CasCheck(key, condition.expectedVersion()));
           }
         } else if (write instanceof LeaseRecordUpsert upsert) {
           String key = LeaseBackendSupport.leasePointerKey(upsert.accountId(), upsert.jobId());

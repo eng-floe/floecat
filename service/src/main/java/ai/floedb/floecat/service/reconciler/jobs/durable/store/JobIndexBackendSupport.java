@@ -94,6 +94,16 @@ final class JobIndexBackendSupport {
         || pointerKey.contains("/reconcile/jobs/root-summaries/by-connector/");
   }
 
+  static boolean validCleanupIndexPointerKey(String pointerKey) {
+    return parseLookupKey(pointerKey) != null
+        || parseDedupeKey(pointerKey) != null
+        || parseParentKey(pointerKey) != null
+        || parseConnectorKey(pointerKey) != null
+        || parseGlobalStateKey(pointerKey) != null
+        || parseAccountStateKey(pointerKey) != null
+        || parseConnectorStateKey(pointerKey) != null;
+  }
+
   static CanonicalJobKey parseCanonicalJobKey(String pointerKey) {
     String normalized = stripLeadingSlash(pointerKey);
     if (!normalized.startsWith(ACCOUNT_ROOT_PREFIX)) {

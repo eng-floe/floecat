@@ -91,7 +91,7 @@ class ReconcileJobLegacyMigrationSchedulerTest {
   }
 
   @Test
-  void cleanupMigrationDoesNotCompleteWhileConflictsRemain() {
+  void cleanupMigrationCompletesAfterConflictOnlyVerificationPass() {
     RecordingGc gc = new RecordingGc();
     gc.cleanupResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 2, 0, 3, 0, ""));
     gc.cleanupResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 0, 0, 3, 0, ""));
@@ -101,11 +101,11 @@ class ReconcileJobLegacyMigrationSchedulerTest {
     scheduler.tick();
 
     assertEquals(2, gc.cleanupMigrationCalls);
-    assertEquals(0, gc.cleanupCompletionCalls);
+    assertEquals(1, gc.cleanupCompletionCalls);
   }
 
   @Test
-  void cleanupMigrationDoesNotCompleteWithUnresolvableRows() {
+  void cleanupMigrationCompletesAfterUnresolvableOnlyVerificationPass() {
     RecordingGc gc = new RecordingGc();
     gc.cleanupResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 2, 3, 0, 0, ""));
     gc.cleanupResults.add(new ReconcileJobGc.CleanupMigrationResult(10, 0, 3, 0, 0, ""));
@@ -115,7 +115,7 @@ class ReconcileJobLegacyMigrationSchedulerTest {
     scheduler.tick();
 
     assertEquals(2, gc.cleanupMigrationCalls);
-    assertEquals(0, gc.cleanupCompletionCalls);
+    assertEquals(1, gc.cleanupCompletionCalls);
   }
 
   @Test
@@ -357,9 +357,7 @@ class ReconcileJobLegacyMigrationSchedulerTest {
           || state.leaseExpiresAtMs < nowMs
           || !state.progress.quietPassComplete()
           || state.progress.changed() != 0
-          || state.progress.retryable() != 0
-          || (migration == ReconcileJobIndexBackend.LegacyMigration.CLEANUP
-              && (state.progress.unresolvable() != 0 || state.progress.conflicted() != 0))) {
+          || state.progress.retryable() != 0) {
         return false;
       }
       if (migration == ReconcileJobIndexBackend.LegacyMigration.CLEANUP) {
