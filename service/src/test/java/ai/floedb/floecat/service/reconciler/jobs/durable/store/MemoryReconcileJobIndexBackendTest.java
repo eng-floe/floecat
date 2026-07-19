@@ -25,10 +25,31 @@ import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class MemoryReconcileJobIndexBackendTest {
+
+  @Test
+  void rejectsTransactionOverDynamoPhysicalItemLimit() {
+    MemoryReconcileJobIndexBackend backend =
+        new MemoryReconcileJobIndexBackend(new InMemoryPointerStore());
+    List<ReconcileJobIndexStore.JobIndexWriteOp> writes = new ArrayList<>();
+    for (int index = 0; index < 51; index++) {
+      writes.add(
+          new ReconcileJobIndexStore.JobIndexCheckAbsent(
+              Keys.reconcileJobLookupPointerById("job-" + index)));
+    }
+    var batch =
+        new ReconcileJobIndexStore.JobIndexWriteBatch(
+            List.copyOf(writes), ReconcileJobIndexStore.ReadyQueueMutation.empty());
+
+    IllegalArgumentException thrown =
+        assertThrows(IllegalArgumentException.class, () -> backend.compareAndSetBatch(batch));
+
+    assertEquals("DynamoDB transaction exceeds 100 items: 102", thrown.getMessage());
+  }
 
   @Test
   void rejectsVersionCheckForNonCanonicalKey() {

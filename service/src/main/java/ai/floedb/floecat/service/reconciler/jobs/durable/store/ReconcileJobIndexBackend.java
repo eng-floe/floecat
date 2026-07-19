@@ -102,16 +102,8 @@ public interface ReconcileJobIndexBackend {
     return new LegacyLookupMigrationPage(0, 0, 0, 0, "");
   }
 
-  default boolean completeLegacyLookupMigration() {
-    return true;
-  }
-
   default LegacyCleanupMigrationPage migrateLegacyCleanupManifests(int limit, String pageToken) {
     return new LegacyCleanupMigrationPage(0, 0, 0, 0, 0, "");
-  }
-
-  default boolean completeLegacyCleanupMigration() {
-    return true;
   }
 
   /** Acquires or renews exclusive migration ownership and returns the durable pass checkpoint. */

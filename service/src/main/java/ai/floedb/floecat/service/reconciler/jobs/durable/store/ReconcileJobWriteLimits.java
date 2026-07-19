@@ -20,4 +20,11 @@ final class ReconcileJobWriteLimits {
   static final int MAX_TRANSACTION_ITEMS = 100;
 
   private ReconcileJobWriteLimits() {}
+
+  static void requireWithinTransactionLimit(int itemCount) {
+    if (itemCount > MAX_TRANSACTION_ITEMS) {
+      throw new IllegalArgumentException(
+          "DynamoDB transaction exceeds " + MAX_TRANSACTION_ITEMS + " items: " + itemCount);
+    }
+  }
 }

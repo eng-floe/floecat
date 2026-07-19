@@ -48,7 +48,6 @@ import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedExce
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.GetItemResponse;
-import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
 import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
@@ -459,12 +458,21 @@ class DynamoReconcileJobIndexBackendTest {
     DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
     backend.bind(() -> dynamoDb, TABLE);
 
-    assertTrue(backend.completeLegacyLookupMigration());
+    assertTrue(
+        backend.completeLegacyMigration(
+            ReconcileJobIndexBackend.LegacyMigration.LOOKUP, "owner-1", 7L, 1_000L));
 
-    ArgumentCaptor<PutItemRequest> captor = ArgumentCaptor.forClass(PutItemRequest.class);
-    verify(dynamoDb).putItem(captor.capture());
-    assertEquals("reconcile-job-maintenance", captor.getValue().item().get(ATTR_PARTITION_KEY).s());
-    assertEquals("legacy-lookup-v1", captor.getValue().item().get(ATTR_SORT_KEY).s());
+    ArgumentCaptor<TransactWriteItemsRequest> captor =
+        ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
+    verify(dynamoDb).transactWriteItems(captor.capture());
+    var items = captor.getValue().transactItems();
+    assertEquals(2, items.size());
+    assertEquals(
+        "owner-1", items.getFirst().delete().expressionAttributeValues().get(":owner").s());
+    assertEquals("7", items.getFirst().delete().expressionAttributeValues().get(":fence").n());
+    assertEquals(
+        "reconcile-job-maintenance", items.get(1).put().item().get(ATTR_PARTITION_KEY).s());
+    assertEquals("legacy-lookup-v1", items.get(1).put().item().get(ATTR_SORT_KEY).s());
   }
 
   @Test
@@ -2076,7 +2084,9 @@ class DynamoReconcileJobIndexBackendTest {
     backend.bind(() -> dynamoDb, TABLE);
 
     assertTrue(backend.loadCleanupManifest(CANONICAL_KEY).isEmpty());
-    assertTrue(backend.completeLegacyCleanupMigration());
+    assertTrue(
+        backend.completeLegacyMigration(
+            ReconcileJobIndexBackend.LegacyMigration.CLEANUP, "owner-1", 7L, 1_000L));
     assertEquals(
         List.of(LOOKUP_KEY), backend.loadCleanupManifest(CANONICAL_KEY).indexPointerKeys());
   }

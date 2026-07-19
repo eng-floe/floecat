@@ -1272,12 +1272,14 @@ public final class Keys {
   }
 
   public static String reconcileJobLeasePointerById(String accountId, String jobId) {
+    String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
-    return reconcileJobLeasePointerByIdPrefix(accountId) + encode(jid);
+    return reconcileJobLeasePointerByIdPrefix(tid) + jid;
   }
 
   public static String reconcileJobLeasePointerByIdPrefix(String accountId) {
-    return accountRootPrefix(accountId) + "reconcile/job-leases/by-id/";
+    String tid = req("account_id", accountId);
+    return accountRootPrefix() + tid + "/reconcile/job-leases/by-id/";
   }
 
   public static String reconcileJobLeaseExpiryPointerPrefix() {

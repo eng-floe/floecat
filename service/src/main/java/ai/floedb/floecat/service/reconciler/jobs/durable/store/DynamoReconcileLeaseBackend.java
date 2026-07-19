@@ -233,13 +233,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
         }
       }
     }
-    if (tx.size() > ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS) {
-      throw new IllegalArgumentException(
-          "DynamoDB transaction exceeds "
-              + ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS
-              + " items: "
-              + tx.size());
-    }
+    ReconcileJobWriteLimits.requireWithinTransactionLimit(tx.size());
     try {
       dynamoCaller.callVoid(
           dynamoDbClientManager,

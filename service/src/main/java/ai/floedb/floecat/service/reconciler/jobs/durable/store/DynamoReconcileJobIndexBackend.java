@@ -44,7 +44,6 @@ import software.amazon.awssdk.services.dynamodb.model.Delete;
 import software.amazon.awssdk.services.dynamodb.model.DeleteItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.Put;
-import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
 import software.amazon.awssdk.services.dynamodb.model.ReturnValue;
 import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
@@ -208,27 +207,6 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     }
     return new LegacyLookupMigrationPage(
         page.entries().size(), migrated, conflicted, retryable, page.nextPageToken());
-  }
-
-  @Override
-  public boolean completeLegacyLookupMigration() {
-    if (legacyMigrationComplete(LegacyMigration.LOOKUP)) {
-      return true;
-    }
-    Map<String, AttributeValue> item = new HashMap<>();
-    item.put(ATTR_PARTITION_KEY, AttributeValue.fromS(LEGACY_CLEANUP_MARKER_PARTITION));
-    item.put(ATTR_SORT_KEY, AttributeValue.fromS(LEGACY_LOOKUP_MARKER_SORT));
-    item.put(ATTR_KIND, AttributeValue.fromS(KIND_LEGACY_LOOKUP_MARKER));
-    try {
-      dynamoCaller.callVoid(
-          dynamoDbClientManager,
-          client -> client.putItem(PutItemRequest.builder().tableName(table).item(item).build()));
-      legacyLookupMigrationMarkedComplete = true;
-      cleanupLegacyMigrationProgress(LegacyMigration.LOOKUP);
-      return true;
-    } catch (RuntimeException ignored) {
-      return false;
-    }
   }
 
   @Override
@@ -684,27 +662,6 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         retryable,
         nextToken,
         List.copyOf(canonicalPointerKeys));
-  }
-
-  @Override
-  public boolean completeLegacyCleanupMigration() {
-    if (legacyMigrationComplete(LegacyMigration.CLEANUP)) {
-      return true;
-    }
-    Map<String, AttributeValue> item = new HashMap<>();
-    item.put(ATTR_PARTITION_KEY, AttributeValue.fromS(LEGACY_CLEANUP_MARKER_PARTITION));
-    item.put(ATTR_SORT_KEY, AttributeValue.fromS(LEGACY_CLEANUP_MARKER_SORT));
-    item.put(ATTR_KIND, AttributeValue.fromS(KIND_LEGACY_CLEANUP_MARKER));
-    try {
-      dynamoCaller.callVoid(
-          dynamoDbClientManager,
-          client -> client.putItem(PutItemRequest.builder().tableName(table).item(item).build()));
-      legacyCleanupMigrationMarkedComplete = true;
-      cleanupLegacyMigrationProgress(LegacyMigration.CLEANUP);
-      return true;
-    } catch (RuntimeException ignored) {
-      return false;
-    }
   }
 
   @Override
@@ -1891,13 +1848,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         tx.add(buildGenericPointerCheckAbsent(check.key()));
       }
     }
-    if (tx.size() > ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS) {
-      throw new IllegalArgumentException(
-          "DynamoDB transaction exceeds "
-              + ReconcileJobWriteLimits.MAX_TRANSACTION_ITEMS
-              + " items: "
-              + tx.size());
-    }
+    ReconcileJobWriteLimits.requireWithinTransactionLimit(tx.size());
     try {
       dynamoCaller.callVoid(
           dynamoDbClientManager,

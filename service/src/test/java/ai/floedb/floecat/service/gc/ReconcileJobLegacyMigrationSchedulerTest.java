@@ -278,22 +278,11 @@ class ReconcileJobLegacyMigrationSchedulerTest {
     }
 
     @Override
-    public boolean completeLegacyCleanupMigration() {
-      cleanupCompletionCalls++;
-      return true;
-    }
-
-    @Override
     public LookupMigrationResult runLegacyLookupMigrationSlice(String pageToken) {
       lookupMigrationCalls++;
       return lookupResults.isEmpty()
           ? new LookupMigrationResult(0, 0, 0, 0, "")
           : lookupResults.removeFirst();
-    }
-
-    @Override
-    public boolean completeLegacyLookupMigration() {
-      return true;
     }
 
     @Override

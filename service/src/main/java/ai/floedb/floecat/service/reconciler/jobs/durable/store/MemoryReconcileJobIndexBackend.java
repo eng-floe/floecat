@@ -139,20 +139,6 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   }
 
   @Override
-  public synchronized boolean completeLegacyLookupMigration() {
-    completedLegacyMigrations.add(LegacyMigration.LOOKUP);
-    legacyMigrationStates.remove(LegacyMigration.LOOKUP);
-    return true;
-  }
-
-  @Override
-  public synchronized boolean completeLegacyCleanupMigration() {
-    completedLegacyMigrations.add(LegacyMigration.CLEANUP);
-    legacyMigrationStates.remove(LegacyMigration.CLEANUP);
-    return true;
-  }
-
-  @Override
   public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
     return compareAndSetBatch(batch, List.of());
   }
@@ -160,6 +146,10 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   @Override
   public synchronized boolean compareAndSetBatch(
       ReconcileJobIndexStore.JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
+    int transactionItems =
+        NativeReconcileJobIndexStore.physicalWriteItemCount(batch)
+            + (extraPointerOps == null ? 0 : extraPointerOps.size());
+    ReconcileJobWriteLimits.requireWithinTransactionLimit(transactionItems);
     if (batch != null) {
       for (ReconcileJobIndexStore.JobIndexWriteOp write : batch.writes()) {
         if (write instanceof ReconcileJobIndexStore.JobIndexUpsert upsert

@@ -34,6 +34,16 @@ class MemoryReconcileLeaseBackendTest {
   private static final String CANONICAL_KEY = Keys.reconcileJobPointerById(ACCOUNT_ID, JOB_ID);
 
   @Test
+  void leaseRecordKeyPreservesAndParsesLegacyRawSegments() {
+    String pointerKey = LeaseBackendSupport.leasePointerKey("acct+legacy", "job%legacy");
+
+    assertEquals("/accounts/acct+legacy/reconcile/job-leases/by-id/job%legacy", pointerKey);
+    var parsed = LeaseBackendSupport.parseLeasePointerKey(pointerKey);
+    assertEquals("acct+legacy", parsed.accountSegment());
+    assertEquals("job%legacy", parsed.jobSegment());
+  }
+
+  @Test
   void leaseTransactionUpdatesCanonicalCleanupManifestThroughJobIndexBackend() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     MemoryReconcileJobIndexBackend jobIndexBackend = new MemoryReconcileJobIndexBackend(pointers);

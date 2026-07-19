@@ -149,10 +149,6 @@ public class ReconcileJobGc {
         page.nextPageToken());
   }
 
-  public boolean completeLegacyCleanupMigration() {
-    return jobIndexBackend.completeLegacyCleanupMigration();
-  }
-
   public LookupMigrationResult runLegacyLookupMigrationSlice(String pageTokenIn) {
     int pageSize =
         ConfigProvider.getConfig()
@@ -164,10 +160,6 @@ public class ReconcileJobGc {
             Math.max(1, pageSize), pageTokenIn == null ? "" : pageTokenIn);
     return new LookupMigrationResult(
         page.scanned(), page.migrated(), page.conflicted(), page.retryable(), page.nextPageToken());
-  }
-
-  public boolean completeLegacyLookupMigration() {
-    return jobIndexBackend.completeLegacyLookupMigration();
   }
 
   public Optional<ReconcileJobIndexBackend.LegacyMigrationLease> acquireLegacyMigrationLease(
