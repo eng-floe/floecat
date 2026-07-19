@@ -168,6 +168,10 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
           return false;
         }
         if (write instanceof ReconcileJobIndexStore.JobIndexCheck check) {
+          if (JobIndexBackendSupport.parseCanonicalJobKey(check.pointerKey()) == null) {
+            throw new IllegalArgumentException(
+                "Unsupported reconcile job index version check key: " + check.pointerKey());
+          }
           JobIndexEntrySnapshot existing = loadIndexEntry(check.pointerKey()).orElse(null);
           if (existing == null
               || existing.version() != check.expectedVersion()
@@ -239,7 +243,8 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   @Override
   public synchronized Optional<JobCleanupSession> beginJobCleanup(
       CanonicalPointerSnapshot expected, ReconcileJobIndexCleanupManifest fallbackManifest) {
-    if (expected == null || expected.canonicalPointerKey() == null) {
+    if (expected == null
+        || JobIndexBackendSupport.parseCanonicalJobKey(expected.canonicalPointerKey()) == null) {
       return Optional.empty();
     }
     JobIndexEntrySnapshot current = loadIndexEntry(expected.canonicalPointerKey()).orElse(null);
@@ -256,7 +261,15 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
             expected.canonicalPointerKey(), ReconcileJobIndexCleanupManifest.EMPTY);
     ReconcileJobIndexCleanupManifest manifest = mergeManifests(stored, fallbackManifest);
     if (manifest.isEmpty() || !validCleanupManifest(manifest)) {
-      return Optional.empty();
+      ReconcileJobIndexCleanupManifest discovered =
+          discoverLegacyCleanupManifest(expected.canonicalPointerKey());
+      manifest =
+          validCleanupManifest(fallbackManifest)
+              ? mergeManifests(discovered, fallbackManifest)
+              : discovered;
+      if (manifest.isEmpty() || !validCleanupManifest(manifest)) {
+        return Optional.empty();
+      }
     }
     cleanupManifests.put(expected.canonicalPointerKey(), manifest);
     cleanupLocks.put(expected.canonicalPointerKey(), current.version());
@@ -402,6 +415,9 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   }
 
   private static boolean validCleanupManifest(ReconcileJobIndexCleanupManifest manifest) {
+    if (manifest == null) {
+      return false;
+    }
     for (String pointerKey : manifest.indexPointerKeys()) {
       if (!JobIndexBackendSupport.validCleanupIndexPointerKey(pointerKey)) {
         return false;
