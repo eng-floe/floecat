@@ -16,11 +16,13 @@
 package ai.floedb.floecat.service.repo.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
+import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -239,5 +241,42 @@ class SnapshotManifestsTest {
     var s1 = entry(1, 1_000, false);
     BlobRef head = SnapshotManifests.upsert(roots, TABLE, null, s1);
     assertTrue(SnapshotManifests.latestQueryableCurrent(roots, head, s1).isEmpty());
+  }
+
+  private static String fingerprint(String schemaJson) {
+    return SnapshotManifests.schemaFingerprint(Snapshot.newBuilder().setSchemaJson(schemaJson).build());
+  }
+
+  /* Canonicalization: a client that re-serializes an UNCHANGED schema with different object-key
+   * order or whitespace must still share the fingerprint, or a data-only ingest would churn the
+   * possession token every write and the warm path would silently die for that table. */
+  @Test
+  void schemaFingerprintIsStableAcrossKeyOrderAndWhitespace() {
+    String a = "{\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"x\",\"type\":\"long\"}]}";
+    String reordered = "{\"fields\":[{\"type\":\"long\",\"name\":\"x\",\"id\":1}],\"type\":\"struct\"}";
+    String spaced = "{  \"type\" : \"struct\" ,\n  \"fields\" : [ { \"id\":1, \"name\":\"x\", \"type\":\"long\" } ] }";
+    assertEquals(fingerprint(a), fingerprint(reordered), "object-key order must not move the fingerprint");
+    assertEquals(fingerprint(a), fingerprint(spaced), "whitespace must not move the fingerprint");
+  }
+
+  /* But COLUMN order is semantic — reordering the fields array is a different schema. */
+  @Test
+  void schemaFingerprintRespectsColumnOrder() {
+    String xy = "{\"fields\":[{\"id\":1,\"name\":\"x\"},{\"id\":2,\"name\":\"y\"}]}";
+    String yx = "{\"fields\":[{\"id\":2,\"name\":\"y\"},{\"id\":1,\"name\":\"x\"}]}";
+    assertNotEquals(fingerprint(xy), fingerprint(yx), "array (column) order is preserved");
+  }
+
+  /* A real schema change (a new column) moves it; non-JSON falls back to the raw string, stably. */
+  @Test
+  void schemaFingerprintMovesOnSchemaChangeAndToleratesNonJson() {
+    String base = "{\"fields\":[{\"id\":1,\"name\":\"x\"}]}";
+    String added = "{\"fields\":[{\"id\":1,\"name\":\"x\"},{\"id\":2,\"name\":\"y\"}]}";
+    assertNotEquals(fingerprint(base), fingerprint(added));
+    assertEquals(fingerprint("not-json"), fingerprint("not-json"), "non-JSON hashes stably via the raw fallback");
+    assertEquals(
+        SnapshotManifests.SCHEMA_FINGERPRINT_DEFINITION_DEFAULT,
+        SnapshotManifests.schemaFingerprint(Snapshot.newBuilder().build()),
+        "blank schema_json uses the definition-default sentinel");
   }
 }

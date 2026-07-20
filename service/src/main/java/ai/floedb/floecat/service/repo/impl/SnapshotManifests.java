@@ -21,11 +21,17 @@ import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestPage;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import com.fasterxml.jackson.core.JacksonException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TreeSet;
 import java.util.function.Consumer;
 
 /**
@@ -56,19 +62,62 @@ public final class SnapshotManifests {
 
   private SnapshotManifests() {}
 
+  private static final ObjectMapper FINGERPRINT_JSON = new ObjectMapper();
+
   /**
    * Content fingerprint of a snapshot's READ SCHEMA, stamped on its manifest entry at write time
-   * (see {@code SnapshotManifestEntry.schema_fingerprint}). Two snapshots with byte-identical
-   * schema_json share a fingerprint, so a data-only ingest does not move it; a snapshot-backed
-   * schema change does. Formatting-only churn in schema_json moves the fingerprint too — that
-   * degrades to a cold (full-payload) resolution, never a stale schema.
+   * (see {@code SnapshotManifestEntry.schema_fingerprint}). Two snapshots with the same logical
+   * read schema share a fingerprint, so a data-only ingest does not move it; a snapshot-backed
+   * schema change does.
+   *
+   * <p>The fingerprint is over a CANONICALIZED form of schema_json, not the raw bytes: the value is
+   * stored verbatim as the ingesting client supplied it, and a client that re-serializes an
+   * unchanged schema with different object-key order or whitespace on each ingest would otherwise
+   * churn the fingerprint every ingest — silently degrading the warm path to cold-on-every-ingest
+   * (never stale, just never warm). Canonicalization sorts object keys and drops insignificant
+   * whitespace while PRESERVING array order (column order is semantic). schema_json that does not
+   * parse as JSON falls back to the raw string — still never stale, just not churn-resilient for
+   * that input.
    */
   public static String schemaFingerprint(ai.floedb.floecat.catalog.rpc.Snapshot snapshot) {
     String schemaJson = snapshot.getSchemaJson();
     if (schemaJson.isBlank()) {
       return SCHEMA_FINGERPRINT_DEFINITION_DEFAULT;
     }
-    return ai.floedb.floecat.types.Hashing.sha256Hex(schemaJson);
+    return ai.floedb.floecat.types.Hashing.sha256Hex(canonicalizeSchemaJson(schemaJson));
+  }
+
+  /**
+   * Re-serialize JSON with object keys sorted and array order preserved, so a logically-identical
+   * schema hashes the same regardless of the producer's key ordering or whitespace. Scalars are
+   * left exactly as parsed (no number/string reformatting). Non-JSON input returns unchanged.
+   */
+  private static String canonicalizeSchemaJson(String json) {
+    try {
+      return FINGERPRINT_JSON.writeValueAsString(canonicalize(FINGERPRINT_JSON.readTree(json)));
+    } catch (JacksonException e) {
+      return json;
+    }
+  }
+
+  private static JsonNode canonicalize(JsonNode node) {
+    if (node.isObject()) {
+      ObjectNode sorted = FINGERPRINT_JSON.createObjectNode();
+      TreeSet<String> names = new TreeSet<>();
+      node.fieldNames().forEachRemaining(names::add);
+      for (String name : names) {
+        sorted.set(name, canonicalize(node.get(name)));
+      }
+      return sorted;
+    }
+    if (node.isArray()) {
+      ArrayNode ordered = FINGERPRINT_JSON.createArrayNode();
+      for (JsonNode element : node) {
+        ordered.add(canonicalize(element)); // preserve order: column position is semantic
+      }
+      return ordered;
+    }
+    return node;
   }
 
   /** One walk context over a fixed head, with a content-addressed page cache. */
