@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -32,6 +33,8 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
+import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationTableMetadata;
 import java.time.Instant;
@@ -39,6 +42,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBase {
@@ -315,5 +319,54 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
           .containsEntry(
               "metadata-location", "s3://bucket/table/metadata/00001-committed.metadata.json");
     }
+  }
+
+  @Test
+  void snapshotPlanningClosesActiveConnectorWhenPreOpenBackendLookupFails() {
+    Connector connector =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setState(ConnectorState.CS_ACTIVE)
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setUri("s3://bucket/table/metadata/00001.metadata.json")
+            .putProperties("iceberg.source", "filesystem")
+            .build();
+    AtomicBoolean closed = new AtomicBoolean();
+    ServerSideStorageConfigResolver storageResolver = mock(ServerSideStorageConfigResolver.class);
+    service.serverSideStorageConfigResolver = storageResolver;
+    when(storageResolver.resolveManagedWithAuthorization(
+            any(), any(), any(), any(), any(), eq(connector), any(ConnectorConfig.class)))
+        .thenAnswer(
+            invocation ->
+                new ServerSideStorageConfigResolver.ResolvedConnectorConfig(
+                    invocation.getArgument(6), () -> closed.set(true)));
+    service.backend =
+        new DefaultBackend() {
+          @Override
+          public Connector lookupConnector(ReconcileContext ctx, ResourceId requestedConnectorId) {
+            return connector;
+          }
+
+          @Override
+          public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId tableId) {
+            throw new IllegalStateException("lookup failed");
+          }
+        };
+
+    assertThatThrownBy(
+            () ->
+                service.planSnapshotTasks(
+                    principal,
+                    connectorId,
+                    false,
+                    ReconcileScope.empty(),
+                    ReconcileTableTask.of("src", "orders", "table-1", "orders"),
+                    ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
+                    "token",
+                    "job-1",
+                    "lease-1"))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage("lookup failed");
+    assertThat(closed).isTrue();
   }
 }
