@@ -355,7 +355,7 @@ public final class GrpcErrors {
   private static final Pattern WHITESPACE = Pattern.compile("\\s+");
   private static final Pattern SENSITIVE_LOG_VALUE =
       Pattern.compile(
-          "(?i)(access[._-]?key(?:[._-]?id)?|secret[._-]?access[._-]?key|session[._-]?token|authorization|password|credential)(\\s*[:=]\\s*)([^,;\\s}\\]]+)");
+          "(?i)(access[._-]?key(?:[._-]?id)?|secret[._-]?access[._-]?key|session[._-]?token|authorization|password|credential)(\\s*[:=]\\s*)([^,;\\r\\n}\\]]+)");
   private static final String ELISION_PREFIX = " ...[";
   private static final String ELISION_SUFFIX = " chars elided]... ";
 

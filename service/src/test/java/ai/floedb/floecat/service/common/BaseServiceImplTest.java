@@ -60,8 +60,8 @@ class BaseServiceImplTest {
   void sanitizesUnexpectedFailureForStackTraceLogging() {
     IllegalStateException root =
         new IllegalStateException(
-            "AWS failure access_key_id=AKIA_TEST secret-access-key=super-secret "
-                + "session_token=token-value request="
+            "AWS failure access_key_id=AKIA_TEST; secret-access-key=super-secret; "
+                + "session_token=token-value; Authorization: Bearer jwt-token; request="
                 + "X".repeat(2_000));
     RuntimeException failure = new RuntimeException("outer failure", root);
 
@@ -72,8 +72,10 @@ class BaseServiceImplTest {
     assertTrue(logged.getCause().getMessage().contains("access_key_id=[REDACTED]"));
     assertTrue(logged.getCause().getMessage().contains("secret-access-key=[REDACTED]"));
     assertTrue(logged.getCause().getMessage().contains("session_token=[REDACTED]"));
+    assertTrue(logged.getCause().getMessage().contains("Authorization: [REDACTED]"));
     assertFalse(logged.getCause().getMessage().contains("AKIA_TEST"));
     assertFalse(logged.getCause().getMessage().contains("super-secret"));
+    assertFalse(logged.getCause().getMessage().contains("jwt-token"));
     assertTrue(logged.getCause().getMessage().length() < 700);
   }
 

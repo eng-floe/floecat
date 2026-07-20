@@ -75,8 +75,6 @@ class QueuedReconcileWorkerSupport {
   private static final Logger LOG = Logger.getLogger(QueuedReconcileWorkerSupport.class);
   private static final BooleanSupplier NO_CANCEL = () -> false;
   private static final ProgressListener NO_PROGRESS = (ts, tc, vs, vc, e, sp, stp, m) -> {};
-  private static final String STORAGE_AUTHORITY_MISSING = "storage.authority.missing";
-  private static final String QUERY_SNAPSHOT_NOT_FINALIZED = "query.snapshot.not.finalized";
 
   @FunctionalInterface
   interface ProgressListener {
@@ -1549,48 +1547,11 @@ class QueuedReconcileWorkerSupport {
   }
 
   static ExecutionResult.RetryDisposition retryDispositionOf(Exception error) {
-    if (error instanceof ReconcileFailureException failure) {
-      return failure.retryDisposition();
-    }
-    StatusRuntimeException statusError = grpcStatusError(error);
-    if (statusError != null && statusError.getStatus().getCode() == Status.Code.INVALID_ARGUMENT) {
-      return ExecutionResult.RetryDisposition.TERMINAL;
-    }
-    if (statusError != null
-        && statusError.getStatus().getCode() == Status.Code.FAILED_PRECONDITION
-        && STORAGE_AUTHORITY_MISSING.equals(floecatMessageKey(statusError))) {
-      return ExecutionResult.RetryDisposition.TERMINAL;
-    }
-    return ExecutionResult.RetryDisposition.RETRYABLE;
+    return ReconcileFailureClassifier.retryDisposition(error);
   }
 
   static ExecutionResult.RetryClass retryClassOf(Exception error) {
-    if (error instanceof ReconcileFailureException failure) {
-      return failure.retryClass();
-    }
-    StatusRuntimeException statusError = grpcStatusError(error);
-    if (statusError != null
-        && retryDispositionOf(error) == ExecutionResult.RetryDisposition.TERMINAL) {
-      return ExecutionResult.RetryClass.NONE;
-    }
-    if (statusError != null
-        && statusError.getStatus().getCode() == Status.Code.FAILED_PRECONDITION
-        && QUERY_SNAPSHOT_NOT_FINALIZED.equals(floecatMessageKey(statusError))) {
-      return ExecutionResult.RetryClass.DEPENDENCY_NOT_READY;
-    }
-    return ExecutionResult.RetryClass.TRANSIENT_ERROR;
-  }
-
-  private static StatusRuntimeException grpcStatusError(Throwable error) {
-    var seen = new HashSet<Throwable>();
-    Throwable current = error;
-    while (current != null && seen.add(current)) {
-      if (current instanceof StatusRuntimeException statusError) {
-        return statusError;
-      }
-      current = current.getCause();
-    }
-    return null;
+    return ReconcileFailureClassifier.retryClass(error);
   }
 
   Optional<Snapshot> buildSnapshot(
@@ -1803,11 +1764,6 @@ class QueuedReconcileWorkerSupport {
     }
     String rootMessage = detail.getParamsOrDefault("root_message", "");
     return rootMessage.isBlank() ? null : rootMessage;
-  }
-
-  private static String floecatMessageKey(StatusRuntimeException error) {
-    Error detail = floecatError(error);
-    return detail == null ? "" : detail.getMessageKey();
   }
 
   private static Error floecatError(StatusRuntimeException error) {
