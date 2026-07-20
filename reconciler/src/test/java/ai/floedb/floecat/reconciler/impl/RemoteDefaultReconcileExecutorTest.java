@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -39,6 +40,71 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 class RemoteDefaultReconcileExecutorTest {
+
+  @Test
+  void executeTableSubmitsTerminalFailureWithRenderedDetail() {
+    ReconcilerService reconcilerService = mock(ReconcilerService.class);
+    QueuedReconcileWorkerSupport queuedWorkerSupport = mock(QueuedReconcileWorkerSupport.class);
+    RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
+    ReconcileWorkerAuthProvider authProvider = accountId -> java.util.Optional.empty();
+    var executor =
+        new RemoteDefaultReconcileExecutor(
+            reconcilerService, queuedWorkerSupport, workerClient, authProvider, true);
+    ReconcileJobStore.LeasedJob lease = tableLease("job-missing-authority", "acct-a");
+    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
+    String message =
+        "grpc=FAILED_PRECONDITION desc=Credential vending was requested but no storage credential authority is configured for this table";
+    ReconcileExecutor.ExecutionResult failure =
+        ReconcileExecutor.ExecutionResult.failure(
+            1,
+            0,
+            1,
+            0,
+            0,
+            ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
+            ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
+            ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+            message,
+            new IllegalStateException(message));
+
+    when(workerClient.getPlanTableInput(remoteLease))
+        .thenReturn(planTablePayload(lease, connectorId("acct-a")));
+    when(queuedWorkerSupport.executePlannedTable(
+            any(),
+            eq(connectorId("acct-a")),
+            eq(false),
+            any(),
+            any(),
+            eq(ReconcilerService.CaptureMode.METADATA_ONLY),
+            eq(null),
+            any(),
+            any()))
+        .thenReturn(new QueuedReconcileWorkerSupport.TableExecutionResult(failure, List.of()));
+    when(workerClient.submitPlanTableFailure(
+            remoteLease,
+            ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
+            ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
+            ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+            message))
+        .thenReturn(true);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertEquals(message, result.message);
+    assertEquals(
+        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL, result.retryDisposition);
+    assertEquals(ReconcileExecutor.ExecutionResult.RetryClass.NONE, result.retryClass);
+    verify(workerClient)
+        .submitPlanTableFailure(
+            remoteLease,
+            ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
+            ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
+            ReconcileExecutor.ExecutionResult.RetryClass.NONE,
+            message);
+  }
 
   @Test
   void executeTableDoesNotLeakWorkerAuthorizationAcrossAccounts() {

@@ -936,29 +936,11 @@ public class RemoteReconcileExecutorPoller {
 
   private static ReconcileExecutor.ExecutionResult.RetryDisposition retryDispositionOf(
       Throwable t) {
-    var seen = new java.util.HashSet<Throwable>();
-    Throwable cur = t;
-    while (cur != null && !seen.contains(cur)) {
-      if (cur instanceof ReconcileFailureException rfe) {
-        return rfe.retryDisposition();
-      }
-      seen.add(cur);
-      cur = cur.getCause();
-    }
-    return ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE;
+    return ReconcileFailureClassifier.retryDisposition(t);
   }
 
   private static ReconcileExecutor.ExecutionResult.RetryClass retryClassOf(Throwable t) {
-    var seen = new java.util.HashSet<Throwable>();
-    Throwable cur = t;
-    while (cur != null && !seen.contains(cur)) {
-      if (cur instanceof ReconcileFailureException rfe) {
-        return rfe.retryClass();
-      }
-      seen.add(cur);
-      cur = cur.getCause();
-    }
-    return ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR;
+    return ReconcileFailureClassifier.retryClass(t);
   }
 
   private static ReconcileExecutor.ExecutionResult.JobOutcome classify(

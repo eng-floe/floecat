@@ -302,6 +302,12 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                   StorageAuthorityResolver.resolveBest(
                           authorities, credentialScope.authorityLookupLocationPrefix())
                       .orElse(null);
+              if (authority == null) {
+                throw GrpcErrors.preconditionFailed(
+                    correlationId(),
+                    GeneratedErrorMessages.MessageKey.STORAGE_AUTHORITY_MISSING,
+                    Map.of());
+              }
               validateAuthorityCoversSessionScope(
                   authority, credentialScope.sessionScopeLocations());
               return resolver.buildResponse(

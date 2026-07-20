@@ -22,6 +22,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
+import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -48,7 +49,9 @@ import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
 import ai.floedb.floecat.reconciler.spi.SnapshotHelpers;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.protobuf.StatusProto;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
@@ -1521,6 +1524,7 @@ class QueuedReconcileWorkerSupport {
           result.statsProcessed,
           failureKindOf(result.error),
           retryDispositionOf(result.error),
+          retryClassOf(result.error),
           result.message(),
           result.error);
     }
@@ -1542,11 +1546,12 @@ class QueuedReconcileWorkerSupport {
     return ExecutionResult.FailureKind.INTERNAL;
   }
 
-  private static ExecutionResult.RetryDisposition retryDispositionOf(Exception error) {
-    if (error instanceof ReconcileFailureException failure) {
-      return failure.retryDisposition();
-    }
-    return ExecutionResult.RetryDisposition.RETRYABLE;
+  static ExecutionResult.RetryDisposition retryDispositionOf(Exception error) {
+    return ReconcileFailureClassifier.retryDisposition(error);
+  }
+
+  static ExecutionResult.RetryClass retryClassOf(Exception error) {
+    return ReconcileFailureClassifier.retryClass(error);
   }
 
   Optional<Snapshot> buildSnapshot(
@@ -1708,7 +1713,7 @@ class QueuedReconcileWorkerSupport {
     }
   }
 
-  private static String rootCauseMessage(Throwable t) {
+  static String rootCauseMessage(Throwable t) {
     if (t == null) {
       return "unknown error";
     }
@@ -1726,7 +1731,10 @@ class QueuedReconcileWorkerSupport {
   private static String renderThrowable(Throwable t) {
     if (t instanceof StatusRuntimeException sre) {
       var status = sre.getStatus();
-      String desc = status.getDescription();
+      String desc = floecatRootMessage(sre);
+      if (desc == null || desc.isBlank()) {
+        desc = status.getDescription();
+      }
       if (desc == null || desc.isBlank()) {
         desc = sre.getMessage();
       }
@@ -1741,6 +1749,38 @@ class QueuedReconcileWorkerSupport {
       return className;
     }
     return className + ": " + message;
+  }
+
+  private static String floecatRootMessage(StatusRuntimeException error) {
+    Status.Code code = error.getStatus().getCode();
+    if (code != Status.Code.INVALID_ARGUMENT
+        && code != Status.Code.FAILED_PRECONDITION
+        && code != Status.Code.NOT_FOUND) {
+      return null;
+    }
+    Error detail = floecatError(error);
+    if (detail == null) {
+      return null;
+    }
+    String rootMessage = detail.getParamsOrDefault("root_message", "");
+    return rootMessage.isBlank() ? null : rootMessage;
+  }
+
+  private static Error floecatError(StatusRuntimeException error) {
+    com.google.rpc.Status richStatus = StatusProto.fromThrowable(error);
+    if (richStatus == null) {
+      return null;
+    }
+    for (com.google.protobuf.Any detail : richStatus.getDetailsList()) {
+      if (detail.is(Error.class)) {
+        try {
+          return detail.unpack(Error.class);
+        } catch (com.google.protobuf.InvalidProtocolBufferException ignored) {
+          // Fall back to the ordinary gRPC status for malformed or foreign details.
+        }
+      }
+    }
+    return null;
   }
 
   private static final class ReconcileCancelledException extends RuntimeException {

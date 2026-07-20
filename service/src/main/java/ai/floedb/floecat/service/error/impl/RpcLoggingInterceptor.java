@@ -132,8 +132,9 @@ public class RpcLoggingInterceptor implements ServerInterceptor, Prioritized {
     String params =
         floecatError == null || floecatError.getParamsMap().isEmpty()
             ? ""
-            : floecatError.getParamsMap().toString();
-    String statusMessage = statusProto == null ? "" : statusProto.getMessage();
+            : GrpcErrors.sanitizeLogDetail(floecatError.getParamsMap().toString());
+    String statusMessage =
+        statusProto == null ? "" : GrpcErrors.sanitizeLogDetail(statusProto.getMessage());
 
     String logMessage =
         "rpc method="
@@ -157,7 +158,7 @@ public class RpcLoggingInterceptor implements ServerInterceptor, Prioritized {
 
     boolean floecatMessageLogged = false;
     if (!status.isOk() && floecatError != null && !floecatError.getMessage().isBlank()) {
-      logMessage += " floecat_message=" + floecatError.getMessage();
+      logMessage += " floecat_message=" + GrpcErrors.sanitizeLogDetail(floecatError.getMessage());
       floecatMessageLogged = true;
     }
 

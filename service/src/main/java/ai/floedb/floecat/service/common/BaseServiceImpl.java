@@ -59,6 +59,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -73,8 +74,11 @@ import java.util.function.BiConsumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 
 public abstract class BaseServiceImpl {
+  private static final Logger LOG = Logger.getLogger(BaseServiceImpl.class);
+
   @Inject PrincipalProvider principal;
 
   protected final Clock clock = Clock.systemUTC();
@@ -190,7 +194,54 @@ public abstract class BaseServiceImpl {
   }
 
   protected <T> Uni<T> mapFailures(Uni<T> u, String corrId) {
-    return u.onFailure().transform(t -> toStatus(t, corrId));
+    return u.onFailure()
+        .transform(
+            t -> {
+              StatusRuntimeException mapped = toStatus(t, corrId);
+              if (mapped.getStatus().getCode() == Status.Code.INTERNAL) {
+                LOG.error(
+                    "Unexpected service failure correlation_id=" + safeCorrelationId(corrId),
+                    sanitizedThrowableForLogging(t));
+              }
+              return mapped;
+            });
+  }
+
+  private static String safeCorrelationId(String correlationId) {
+    return correlationId == null || correlationId.isBlank()
+        ? "-"
+        : GrpcErrors.clampDetail(correlationId);
+  }
+
+  static Throwable sanitizedThrowableForLogging(Throwable failure) {
+    return sanitizedThrowableForLogging(failure, new IdentityHashMap<>());
+  }
+
+  private static Throwable sanitizedThrowableForLogging(
+      Throwable failure, IdentityHashMap<Throwable, Throwable> seen) {
+    if (failure == null) {
+      return new LoggedFailureException("unknown failure");
+    }
+    Throwable existing = seen.get(failure);
+    if (existing != null) {
+      return existing;
+    }
+    String detail = GrpcErrors.sanitizeLogDetail(failure.getMessage());
+    String message = failure.getClass().getName() + (detail.isBlank() ? "" : ": " + detail);
+    LoggedFailureException sanitized = new LoggedFailureException(message);
+    sanitized.setStackTrace(failure.getStackTrace());
+    seen.put(failure, sanitized);
+    Throwable cause = failure.getCause();
+    if (cause != null && cause != failure) {
+      sanitized.initCause(sanitizedThrowableForLogging(cause, seen));
+    }
+    return sanitized;
+  }
+
+  private static final class LoggedFailureException extends RuntimeException {
+    private LoggedFailureException(String message) {
+      super(message);
+    }
   }
 
   protected StatusRuntimeException toStatus(Throwable t, String corrId) {

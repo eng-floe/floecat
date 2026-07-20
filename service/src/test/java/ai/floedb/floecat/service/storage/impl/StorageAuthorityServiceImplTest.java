@@ -30,6 +30,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.common.rpc.Error;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -62,6 +64,7 @@ import ai.floedb.floecat.storage.secrets.SecretsManager;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
+import io.grpc.protobuf.StatusProto;
 import java.lang.reflect.Field;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
@@ -419,7 +422,7 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
-  void resolveForAccountLocationFailsForNoAuthority() {
+  void resolveForAccountLocationFailsForNoAuthority() throws Exception {
     when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
 
     var ex =
@@ -436,7 +439,18 @@ class StorageAuthorityServiceImplTest {
                     .await()
                     .indefinitely());
 
-    assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
+    assertEquals(
+        "Credential vending was requested but no storage credential authority is configured for this table.",
+        ex.getStatus().getDescription());
+    Error detail =
+        StatusProto.fromThrowable(ex).getDetailsList().stream()
+            .filter(any -> any.is(Error.class))
+            .findFirst()
+            .orElseThrow()
+            .unpack(Error.class);
+    assertEquals(ErrorCode.MC_PRECONDITION_FAILED, detail.getCode());
+    assertEquals("storage.authority.missing", detail.getMessageKey());
   }
 
   @Test

@@ -17,6 +17,8 @@
 package ai.floedb.floecat.service.common;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.ErrorCode;
@@ -52,6 +54,29 @@ class BaseServiceImplTest {
             .orElseThrow();
     assertEquals(CORRELATION_ID, err.getCorrelationId());
     assertEquals(ErrorCode.MC_NOT_FOUND, err.getCode());
+  }
+
+  @Test
+  void sanitizesUnexpectedFailureForStackTraceLogging() {
+    IllegalStateException root =
+        new IllegalStateException(
+            "AWS failure access_key_id=AKIA_TEST; secret-access-key=super-secret; "
+                + "session_token=token-value; Authorization: Bearer jwt-token; request="
+                + "X".repeat(2_000));
+    RuntimeException failure = new RuntimeException("outer failure", root);
+
+    Throwable logged = BaseServiceImpl.sanitizedThrowableForLogging(failure);
+
+    assertEquals(failure.getStackTrace()[0], logged.getStackTrace()[0]);
+    assertTrue(logged.getMessage().contains("java.lang.RuntimeException: outer failure"));
+    assertTrue(logged.getCause().getMessage().contains("access_key_id=[REDACTED]"));
+    assertTrue(logged.getCause().getMessage().contains("secret-access-key=[REDACTED]"));
+    assertTrue(logged.getCause().getMessage().contains("session_token=[REDACTED]"));
+    assertTrue(logged.getCause().getMessage().contains("Authorization: [REDACTED]"));
+    assertFalse(logged.getCause().getMessage().contains("AKIA_TEST"));
+    assertFalse(logged.getCause().getMessage().contains("super-secret"));
+    assertFalse(logged.getCause().getMessage().contains("jwt-token"));
+    assertTrue(logged.getCause().getMessage().length() < 700);
   }
 
   private static final class TestServiceImpl extends BaseServiceImpl {
