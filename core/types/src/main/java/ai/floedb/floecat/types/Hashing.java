@@ -18,13 +18,19 @@ package ai.floedb.floecat.types;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Objects;
 
 /** Shared hashing helpers for cross-module stable digest generation. */
 public final class Hashing {
   private Hashing() {}
 
-  /** Stable hex SHA-256 of a string's UTF-8 bytes. */
+  /**
+   * Stable hex SHA-256 of a string's UTF-8 bytes. The argument must be non-null: this hashes cache
+   * keys and identity tokens, where coercing null to "" would silently collide a "missing" input
+   * with a genuinely-empty one. Callers that mean "empty" must pass "".
+   */
   public static String sha256Hex(String value) {
+    Objects.requireNonNull(value, "sha256Hex value must not be null");
     return sha256Hex(value.getBytes(StandardCharsets.UTF_8));
   }
 
