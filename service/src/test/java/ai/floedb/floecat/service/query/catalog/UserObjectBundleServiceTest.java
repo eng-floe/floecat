@@ -1011,9 +1011,17 @@ class UserObjectBundleServiceTest {
     // must still be unique per relation, or a client that cached one would be
     // served the other's schema identity-only under the shared version.
     ResourceId sysA =
-        ResourceId.newBuilder().setAccountId("sys").setId("SYS_A").setKind(ResourceKind.RK_TABLE).build();
+        ResourceId.newBuilder()
+            .setAccountId("sys")
+            .setId("SYS_A")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
     ResourceId sysB =
-        ResourceId.newBuilder().setAccountId("sys").setId("SYS_B").setKind(ResourceKind.RK_TABLE).build();
+        ResourceId.newBuilder()
+            .setAccountId("sys")
+            .setId("SYS_B")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
     overlay.registerRelation(
         sysA,
         storageSystemTableNode(sysA, "sys://a", "k"),
@@ -1026,8 +1034,7 @@ class UserObjectBundleServiceTest {
         NameRef.newBuilder().setCatalog("sys").setName("sys_b").build());
 
     List<UserObjectsBundleChunk> chunks =
-        service
-            .stream(
+        service.stream(
                 "cid",
                 ctx,
                 List.of(

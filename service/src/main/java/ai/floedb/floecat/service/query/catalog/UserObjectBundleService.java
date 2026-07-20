@@ -554,10 +554,17 @@ public class UserObjectBundleService {
     // changes on catalog upgrade). Note it does NOT cover a system table's service-resolved
     // Flight/storage endpoint (configuredEndpointForKey), which is static Quarkus deployment config
     // — a change to it requires a redeploy, which resets client caches, so a caller cannot route to
-    // a stale endpoint across the change. If endpoint config ever becomes hot-reloadable, fold it in.
+    // a stale endpoint across the change. If endpoint config ever becomes hot-reloadable, fold it
+    // in.
     ResourceId relId = relation.relationId();
     String keyMaterial =
-        relId.getAccountId() + '\0' + relId.getId() + '\0' + relId.getKindValue() + '\0' + cacheIdentity;
+        relId.getAccountId()
+            + '\0'
+            + relId.getId()
+            + '\0'
+            + relId.getKindValue()
+            + '\0'
+            + cacheIdentity;
     return Optional.of(
         RelationPinIdentity.newBuilder()
             .setTableBlobVersion(Hashing.sha256Hex(keyMaterial))
@@ -571,7 +578,10 @@ public class UserObjectBundleService {
    * advertises and the token the gate compares can never drift.
    */
   private Optional<RelationPinIdentity> scopedPinIdentity(
-      String correlationId, ResolvedRelation relation, QueryContext queryContext, EngineContext ctx) {
+      String correlationId,
+      ResolvedRelation relation,
+      QueryContext queryContext,
+      EngineContext ctx) {
     return pinIdentityFor(correlationId, relation, queryContext)
         .map(
             id ->
@@ -581,15 +591,16 @@ public class UserObjectBundleService {
   }
 
   /**
-   * The possession token a caching client advertises (GetUserObjectsRequest.known_table_blob_versions)
-   * and the identity-only gate matches on. It must identify the WITHHELD PAYLOAD, not merely the
-   * content version: withheld columns carry engine-keyed payload (decorateColumns /
-   * hasRequiredEnginePayload), so a bare content version would let a client that shares one catalog
-   * cache across engines — or that spans an engine-version or decorator upgrade — advertise a
-   * version decorated for engine A, be served identity-only under engine B, and reuse engine-A
-   * decoration for an engine-B query. The requesting engine is already on the wire (EngineContext),
-   * so we fold it in server-side at both mint sites; the client stays engine-agnostic and
-   * correctness no longer depends on it keying its own cache by engine.
+   * The possession token a caching client advertises
+   * (GetUserObjectsRequest.known_table_blob_versions) and the identity-only gate matches on. It
+   * must identify the WITHHELD PAYLOAD, not merely the content version: withheld columns carry
+   * engine-keyed payload (decorateColumns / hasRequiredEnginePayload), so a bare content version
+   * would let a client that shares one catalog cache across engines — or that spans an
+   * engine-version or decorator upgrade — advertise a version decorated for engine A, be served
+   * identity-only under engine B, and reuse engine-A decoration for an engine-B query. The
+   * requesting engine is already on the wire (EngineContext), so we fold it in server-side at both
+   * mint sites; the client stays engine-agnostic and correctness no longer depends on it keying its
+   * own cache by engine.
    *
    * <p>When decoration is not in play ({@code !decorationRequired}) the payload is fully determined
    * by the content version, so the token IS the content version — byte-identical to the unscoped
@@ -890,8 +901,10 @@ public class UserObjectBundleService {
     // and this stamp, so a cache miss under a populated hint set does not hash the relation twice.
     //
     // Caveat for system tables: a slim reply omits the endpoint metadata, and for a config-resolved
-    // endpoint (configuredEndpointForKey) that value is NOT covered by the token — see pinIdentityFor.
-    // Identity-only reuse of such a table therefore assumes its Flight endpoint config is deploy-time
+    // endpoint (configuredEndpointForKey) that value is NOT covered by the token — see
+    // pinIdentityFor.
+    // Identity-only reuse of such a table therefore assumes its Flight endpoint config is
+    // deploy-time
     // fixed; if it ever becomes hot-reloadable, fold the resolved endpoint into the token there.
     if (servesFullSchema(relation.candidate())
         && relationDecorationSucceeded
