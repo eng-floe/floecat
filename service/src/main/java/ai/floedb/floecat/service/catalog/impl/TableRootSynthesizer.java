@@ -172,7 +172,9 @@ public class TableRootSynthesizer {
     SnapshotManifestEntry.Builder entry =
         SnapshotManifestEntry.newBuilder()
             .setSnapshotId(snapshot.getSnapshotId())
-            .setSnapshotRef(BlobRefs.refFrom(snapMeta));
+            .setSnapshotRef(BlobRefs.refFrom(snapMeta))
+            .setSchemaFingerprint(
+                ai.floedb.floecat.service.repo.impl.SnapshotManifests.schemaFingerprint(snapshot));
     if (snapshot.hasUpstreamCreatedAt()) {
       entry.setUpstreamCreatedAt(snapshot.getUpstreamCreatedAt());
     }

@@ -57,6 +57,18 @@ public final class SnapshotTestSupport {
         .build();
   }
 
+  /**
+   * A blob-backed pin whose manifest entry carried a read-schema fingerprint (see
+   * SnapshotManifestEntry.schema_fingerprint). Two pins at different snapshots with the SAME
+   * fingerprint model a data-only ingest; different fingerprints model a snapshot-backed schema
+   * change. The no-fingerprint {@link #blobBackedPin} models a legacy pre-fingerprint entry.
+   */
+  public static TablePin blobBackedPin(ResourceId tableId, long snapshotId, String schemaFingerprint) {
+    return blobBackedPin(tableId, snapshotId).toBuilder()
+        .setSchemaFingerprint(schemaFingerprint)
+        .build();
+  }
+
   /** The relation-pin set resolution stores on a query context, from blob-backed pins. */
   public static RelationPinSet relationPins(TablePin... pins) {
     RelationPinSet.Builder set = RelationPinSet.newBuilder();

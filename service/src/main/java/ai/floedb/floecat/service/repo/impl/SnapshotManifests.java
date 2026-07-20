@@ -46,7 +46,30 @@ public final class SnapshotManifests {
   /** Bounds a page so the common reads (current, recent AS_OF) touch one blob. */
   public static final int PAGE_ENTRY_BOUND = 256;
 
+  /**
+   * Sentinel fingerprint for a snapshot whose schema_json is blank: the read schema is then the
+   * table definition's default, already covered by the root's definition ref, so every such
+   * snapshot shares one constant fingerprint. Distinct from "" (a legacy entry written before the
+   * field existed), which readers treat as unknown and fall back on.
+   */
+  public static final String SCHEMA_FINGERPRINT_DEFINITION_DEFAULT = "definition-default";
+
   private SnapshotManifests() {}
+
+  /**
+   * Content fingerprint of a snapshot's READ SCHEMA, stamped on its manifest entry at write time
+   * (see {@code SnapshotManifestEntry.schema_fingerprint}). Two snapshots with byte-identical
+   * schema_json share a fingerprint, so a data-only ingest does not move it; a snapshot-backed
+   * schema change does. Formatting-only churn in schema_json moves the fingerprint too — that
+   * degrades to a cold (full-payload) resolution, never a stale schema.
+   */
+  public static String schemaFingerprint(ai.floedb.floecat.catalog.rpc.Snapshot snapshot) {
+    String schemaJson = snapshot.getSchemaJson();
+    if (schemaJson.isBlank()) {
+      return SCHEMA_FINGERPRINT_DEFINITION_DEFAULT;
+    }
+    return ai.floedb.floecat.types.Hashing.sha256Hex(schemaJson);
+  }
 
   /** One walk context over a fixed head, with a content-addressed page cache. */
   public static Chain chain(TableRootRepository roots, ResourceId tableId, BlobRef head) {

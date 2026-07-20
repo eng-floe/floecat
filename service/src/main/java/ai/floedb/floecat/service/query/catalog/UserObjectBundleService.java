@@ -526,7 +526,7 @@ public class UserObjectBundleService {
    * storage authority, and (with an empty constraints ref) states the
    * deterministic truth that no constraints bundle exists for them.
    */
-  private Optional<RelationPinIdentity> pinIdentityFor(
+  private Optional<PinIdentitySource> pinIdentityFor(
       String correlationId, ResolvedRelation relation, QueryContext queryContext) {
     // Only a USER table carries a per-query snapshot pin; route it through the pin's identity.
     // Views AND system tables have no query pin, so they take the derived content token below —
@@ -538,7 +538,7 @@ public class UserObjectBundleService {
         && relation.node().origin() == GraphNodeOrigin.USER) {
       return queryContext
           .findTablePin(relation.relationId(), correlationId)
-          .map(QueryPins::identity);
+          .map(pin -> new PinIdentitySource(QueryPins.identity(pin), schemaScope(pin)));
     }
     String cacheIdentity = relation.node().cacheIdentity();
     if (cacheIdentity == null || cacheIdentity.isBlank()) {
@@ -578,10 +578,33 @@ public class UserObjectBundleService {
     // (there is no snapshot to describe). The in-repo planner does exactly this — it reads only
     // table_blob_version, constraints_ref_version, and snapshot_id off pin_identity and never
     // branches on pin_kind (see RPC_parsing.cpp) — so the present-but-defaulted fields are inert.
+    // No schema scope either: the content hash above IS the schema identity.
     return Optional.of(
-        RelationPinIdentity.newBuilder()
-            .setTableBlobVersion(Hashing.sha256Hex(keyMaterial.toString()))
-            .build());
+        new PinIdentitySource(
+            RelationPinIdentity.newBuilder()
+                .setTableBlobVersion(Hashing.sha256Hex(keyMaterial.toString()))
+                .build(),
+            ""));
+  }
+
+  /**
+   * A wire-facing pin identity plus the server-side schema-scope material its possession token
+   * folds in. The scope stays OFF the identity (RelationPinIdentity is planner-facing; the
+   * fingerprint is internal pin state) — this pair is how it travels from pinIdentityFor to
+   * possessionToken without widening the wire message.
+   */
+  private record PinIdentitySource(RelationPinIdentity identity, String schemaScope) {}
+
+  /**
+   * The schema-scope material a table pin contributes to the possession token: the read-schema
+   * fingerprint stamped on the pinned manifest entry, or — for pins built from pre-fingerprint
+   * entries — the snapshot blob version (correct but coarser: it also moves on data-only ingests,
+   * so legacy entries run cold on ingest until their next snapshot write stamps a fingerprint).
+   */
+  private static String schemaScope(ai.floedb.floecat.query.rpc.TablePin pin) {
+    return pin.getSchemaFingerprint().isBlank()
+        ? pin.getSnapshotBlobVersion()
+        : pin.getSchemaFingerprint();
   }
 
   /**
@@ -638,7 +661,13 @@ public class UserObjectBundleService {
       QueryContext queryContext,
       EngineContext ctx) {
     return pinIdentityFor(correlationId, relation, queryContext)
-        .map(id -> id.toBuilder().setTableBlobVersion(possessionToken(id, ctx)).build());
+        .map(
+            src ->
+                src.identity().toBuilder()
+                    .setTableBlobVersion(
+                        possessionToken(
+                            src.identity().getTableBlobVersion(), src.schemaScope(), ctx))
+                    .build());
   }
 
   /**
@@ -653,35 +682,33 @@ public class UserObjectBundleService {
    * mint sites; the client stays engine-agnostic and correctness no longer depends on it keying its
    * own cache by engine.
    *
-   * <p>The token folds in the pinned SNAPSHOT blob version, because the served column schema is
-   * read from the snapshot (schema-on-read) and CreateSnapshot/UpdateSnapshot can change that
-   * schema WITHOUT moving the definition ref (table_blob_version). A definition-only token would
-   * therefore let a client that holds an old schema be served identity-only for a NEW schema and
-   * reuse stale columns/types. snapshot_blob_version moves whenever the snapshot does — a strict
-   * superset of schema changes, so never stale — but it is coarser than the schema: it also moves
-   * on data-only ingests (a new snapshot with an unchanged schema), so a hot-ingest table refetches
-   * its full (unchanged) schema each query instead of a slim identity-only reply. It does NOT move
-   * on stats-generation or constraints writes (separate manifest refs), so the schema stays warm
-   * across those. Recovering warmth across ingests needs a schema-scoped ref on the snapshot
-   * manifest entry (follow-up); until then this is correct and never serves a stale schema. Views
-   * and system relations have no snapshot pin, so their token is unaffected by this scope.
+   * <p>The token folds in a SCHEMA scope ({@code schemaScope}), because the served column schema is
+   * read from the pinned snapshot (schema-on-read) and CreateSnapshot/UpdateSnapshot can change
+   * that schema WITHOUT moving the definition ref (table_blob_version). A definition-only token
+   * would therefore let a client that holds an old schema be served identity-only for a NEW schema
+   * and reuse stale columns/types. The scope is the read-schema fingerprint stamped on the pinned
+   * manifest entry (SnapshotManifestEntry.schema_fingerprint): identical read schemas share it, so
+   * a data-only ingest keeps the token — and the client's schema — warm, while a snapshot-backed
+   * schema change moves it. Pins built from pre-fingerprint manifest entries fall back to the
+   * snapshot blob version (see {@link #schemaScope}): still never stale, just cold on every ingest
+   * until the table's next snapshot write stamps a fingerprint. Views and system relations pass an
+   * empty scope — their content hash is already the schema identity.
    *
    * <p>{@code decorationEpoch} additionally invalidates cached decoration when the decorator's
    * behavior changes without moving the engine version. When there is nothing to fold in — no
-   * snapshot scope (views/system) AND no engine decoration — the token IS the content version,
+   * schema scope (views/system) AND no engine decoration — the token IS the content version,
    * byte-identical to the unscoped behavior.
    */
-  private String possessionToken(RelationPinIdentity id, EngineContext ctx) {
-    String contentVersion = id.getTableBlobVersion();
+  private String possessionToken(String contentVersion, String schemaScope, EngineContext ctx) {
     if (contentVersion == null || contentVersion.isBlank()) {
       return contentVersion;
     }
-    String snapshotScope = safe(id.getSnapshotBlobVersion());
+    String scope = safe(schemaScope);
     boolean decorate = decorationRequired(ctx);
-    if (snapshotScope.isBlank() && !decorate) {
+    if (scope.isBlank() && !decorate) {
       return contentVersion;
     }
-    StringBuilder material = new StringBuilder(contentVersion).append('\0').append(snapshotScope);
+    StringBuilder material = new StringBuilder(contentVersion).append('\0').append(scope);
     if (decorate) {
       material
           .append('\0')

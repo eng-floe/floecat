@@ -339,6 +339,16 @@ class UserObjectBundleServiceTest {
   }
 
   private QueryContext pinnedAt(ResourceId table, long snapshotId) {
+    return pinnedWith(SnapshotTestSupport.blobBackedPin(table, snapshotId), snapshotId);
+  }
+
+  private QueryContext pinnedAt(ResourceId table, long snapshotId, String schemaFingerprint) {
+    return pinnedWith(
+        SnapshotTestSupport.blobBackedPin(table, snapshotId, schemaFingerprint), snapshotId);
+  }
+
+  private QueryContext pinnedWith(
+      ai.floedb.floecat.query.rpc.TablePin pin, long snapshotId) {
     return QueryContext.builder()
         .queryId("q-" + snapshotId)
         .principal(
@@ -347,15 +357,51 @@ class UserObjectBundleServiceTest {
                 .setSubject("tester")
                 .setCorrelationId("cid")
                 .build())
-        .relationPins(
-            SnapshotTestSupport.relationPins(SnapshotTestSupport.blobBackedPin(table, snapshotId))
-                .toByteArray())
+        .relationPins(SnapshotTestSupport.relationPins(pin).toByteArray())
         .createdAtMs(1)
         .expiresAtMs(1000)
         .state(QueryContext.State.ACTIVE)
         .version(1)
         .queryDefaultCatalogId(DEFAULT_CATALOG)
         .build();
+  }
+
+  @Test
+  void dataOnlyIngestKeepsThePossessionTokenAndSchemaWarm() {
+    // Two pins at DIFFERENT snapshots (an ingest moved the snapshot) whose manifest entries carry
+    // the SAME read-schema fingerprint: the served schema is unchanged, so the possession token
+    // must be stable — this is what keeps a hot-ingest table's schema warm across ingests.
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    QueryContext ctx1 = pinnedAt(TABLE_A, 123L, "schema-v1");
+    queryStore.seed(ctx1);
+    String token1 = firstRelation(ctx1, candidate, Set.of()).getPinIdentity().getTableBlobVersion();
+    assertThat(token1).isNotEmpty();
+
+    QueryContext ctx2 = pinnedAt(TABLE_A, 456L, "schema-v1");
+    queryStore.seed(ctx2);
+    RelationInfo warm = firstRelation(ctx2, candidate, Set.of(token1));
+    assertThat(warm.getPinIdentity().getTableBlobVersion())
+        .as("a data-only ingest (same read schema) keeps the possession token stable")
+        .isEqualTo(token1);
+    assertThat(warm.getColumnsCount())
+        .as("the client's proof of possession is honored identity-only across the ingest")
+        .isZero();
+    assertThat(warm.getPinIdentity().getSnapshotId())
+        .as("the slim reply still carries the NEW pin's data identity")
+        .isEqualTo(456L);
+
+    // A snapshot that CHANGED the read schema moves the fingerprint and with it the token.
+    QueryContext ctx3 = pinnedAt(TABLE_A, 789L, "schema-v2");
+    queryStore.seed(ctx3);
+    RelationInfo changed = firstRelation(ctx3, candidate, Set.of(token1));
+    assertThat(changed.getPinIdentity().getTableBlobVersion()).isNotEqualTo(token1);
+    assertThat(changed.getColumnsCount())
+        .as("a schema-changing snapshot must not be served identity-only under the old token")
+        .isPositive();
   }
 
   private RelationInfo firstRelation(

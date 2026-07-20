@@ -87,6 +87,18 @@ message SnapshotManifestEntry {
 
   /** Upstream commit time; drives AS_OF resolution and current-advance order. */
   google.protobuf.Timestamp upstream_created_at = 5;
+
+  /**
+   * Content fingerprint of this snapshot's READ SCHEMA: sha256 of the snapshot's schema_json, or a
+   * constant sentinel when schema_json is blank (the served schema is then the table definition's
+   * default, already covered by the root's definition ref). Two snapshots with identical read
+   * schemas share a fingerprint, so a data-only ingest does not move it — this is what lets a
+   * caching client's schema stay warm across ingests while a snapshot-backed schema CHANGE still
+   * moves the possession token (see RelationPinIdentity.table_blob_version). Empty on entries
+   * written before this field existed; readers fall back to snapshot_ref.version (correct, but
+   * cold on every ingest).
+   */
+  string schema_fingerprint = 6;
 }
 
 /**

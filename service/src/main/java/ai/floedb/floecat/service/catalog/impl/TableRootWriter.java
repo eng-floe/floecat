@@ -86,7 +86,9 @@ public class TableRootWriter {
     SnapshotManifestEntry.Builder entry =
         SnapshotManifestEntry.newBuilder()
             .setSnapshotId(candidate.getSnapshotId())
-            .setSnapshotRef(snapshotRef);
+            .setSnapshotRef(snapshotRef)
+            .setSchemaFingerprint(
+                ai.floedb.floecat.service.repo.impl.SnapshotManifests.schemaFingerprint(candidate));
     if (candidate.hasUpstreamCreatedAt()) {
       entry.setUpstreamCreatedAt(candidate.getUpstreamCreatedAt());
     }
@@ -280,8 +282,14 @@ public class TableRootWriter {
         SnapshotManifestEntry.newBuilder().setSnapshotId(snapshotId).setSnapshotRef(snapshotRef);
     snapshots
         .getById(tableId, snapshotId)
-        .filter(Snapshot::hasUpstreamCreatedAt)
-        .ifPresent(s -> builder.setUpstreamCreatedAt(s.getUpstreamCreatedAt()));
+        .ifPresent(
+            s -> {
+              if (s.hasUpstreamCreatedAt()) {
+                builder.setUpstreamCreatedAt(s.getUpstreamCreatedAt());
+              }
+              builder.setSchemaFingerprint(
+                  ai.floedb.floecat.service.repo.impl.SnapshotManifests.schemaFingerprint(s));
+            });
     // Attach the finalized aux refs the same way TableRootSynthesizer.entryFor does. A resync
     // creates a fresh entry (no prior entry for preserveAuxRefs to copy from), so without this a
     // finalized snapshot would land WITHOUT its stats_generation_ref — invisible under the gate —
