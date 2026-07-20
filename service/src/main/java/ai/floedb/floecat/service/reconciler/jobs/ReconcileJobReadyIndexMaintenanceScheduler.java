@@ -31,7 +31,7 @@ public class ReconcileJobReadyIndexMaintenanceScheduler {
   @Inject DurableReconcileJobStore jobs;
 
   @Scheduled(
-      every = "{floecat.reconciler.job-store.ready-index-maintenance.tick-every:1m}",
+      every = "{floecat.reconciler.job-store.ready-index-maintenance.tick-every:1s}",
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
       skipExecutionIf = ReconcileJobGcScheduler.DisabledOrStopping.class)
   void tick() {

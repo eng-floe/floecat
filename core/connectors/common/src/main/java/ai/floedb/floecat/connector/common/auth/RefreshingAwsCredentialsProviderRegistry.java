@@ -171,6 +171,8 @@ public final class RefreshingAwsCredentialsProviderRegistry {
             try {
               ResolvedStorageCredentials refreshed =
                   Objects.requireNonNull(refresher.get(), "refresher returned null");
+              // Validate convertibility before publishing; retain still-valid prior credentials
+              // when a refresh returns malformed values.
               toAwsCredentials(refreshed);
               current = refreshed;
               LOG.log(
