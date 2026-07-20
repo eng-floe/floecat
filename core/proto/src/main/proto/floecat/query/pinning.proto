@@ -133,6 +133,15 @@ message TablePin {
    * stores that do not track generations (the scan then serves live state). Server-side only.
    */
   string stats_generation_ref_uri = 16;
+
+  /**
+   * Read-schema fingerprint copied from the pinned root's manifest entry at construction (see
+   * SnapshotManifestEntry.schema_fingerprint). Feeds the possession token so a data-only ingest
+   * (new snapshot, unchanged read schema) keeps a caching client's schema warm while a
+   * snapshot-backed schema change still moves the token. Empty for pins built from pre-fingerprint
+   * manifest entries; the token then falls back to snapshot_blob_version. Server-side only.
+   */
+  string schema_fingerprint = 17;
 }
 
 /**
@@ -178,7 +187,52 @@ message RelationPinIdentity {
   /** Kind of the pin this identity describes. */
   PinKind pin_kind = 2;
 
-  /** Immutable version of the pinned table metadata blob. */
+  /**
+   * Cache/provenance token whose MEANING depends on the emitting path:
+   *
+   *   - On a GetUserObjects bundle (RelationInfo.pin_identity) it is the opaque, payload-scoped
+   *     POSSESSION TOKEN: a caching client keys the relation by it and serves it warm across
+   *     queries, and the slim identity-only reply is gated on it
+   *     (GetUserObjectsRequest.known_table_blob_versions). The server mints it and the client only
+   *     stores and echoes it, so the derivation may change without a wire break — treat it as
+   *     opaque. Derivation and contracts below.
+   *   - On the query-pin paths (BeginQueryResponse.relation_pins, GetQuerySchema) it is the RAW
+   *     table DEFINITION blob version (TablePin.table_blob_version) — real per-touch provenance,
+   *     NOT a minted cache key. A value read from these paths MUST NOT be fed into
+   *     known_table_blob_versions: the bundle path recomputes a hashed token, so the raw value can
+   *     never match (a silent, permanent cache miss — fail-safe, but the optimization is dead).
+   *
+   * Possession-token derivation (bundle path only): the served payload is the column schema (read
+   * schema-on-read from the pinned snapshot) plus any engine-specific column decoration, so the
+   * token folds in the table definition blob version AND the pinned read-schema fingerprint
+   * (SnapshotManifestEntry.schema_fingerprint; pre-fingerprint entries fall back to the snapshot
+   * blob version), plus — when the server emits engine-specific decoration — the requesting engine
+   * (kind, version) and a decorator epoch. When there is nothing to fold (no snapshot pin —
+   * views/system relations — AND no decoration) the token is exactly the definition blob version.
+   * Folding the engine keeps reuse sound across engines/decorator upgrades: a version decorated for
+   * engine A cannot be reused, identity-only, under engine B.
+   *
+   * Soundness rests on three contracts:
+   *   1. Any change to the served column schema moves the token. The schema is read from the
+   *      snapshot blob, and a snapshot schema change (CreateSnapshot/UpdateSnapshot) need NOT move
+   *      the definition ref — so the token folds in the read-schema fingerprint, which moves
+   *      exactly when the snapshot's schema_json does. A data-only ingest (new snapshot, unchanged
+   *      read schema) therefore keeps the token — and a caching client's schema — warm; so do
+   *      stats-generation and constraints writes (separate manifest refs). Pins from
+   *      pre-fingerprint manifest entries fall back to the snapshot blob version: a superset of
+   *      schema changes — never stale, just cold on every ingest until the table's next snapshot
+   *      write stamps a fingerprint.
+   *   2. Any change to the engine decoration of the served columns moves the token — via the engine
+   *      identity and decorator epoch folded in above.
+   *   3. A non-blank token denotes the FULL column set. The server stamps a non-blank token only on
+   *      full-schema (wants_all_columns) responses; a projected or decoration-incomplete reply still
+   *      carries pin_identity for provenance but with this field blank, so "I hold version V" means
+   *      "I hold V's complete schema" and projection stays a client-local operation.
+   *
+   * Distinct from the pin's DATA identity: pin_fingerprint deliberately excludes table_blob_version,
+   * and the internal TablePin.table_blob_version stays the raw definition version for pin equality
+   * and validation — only the bundle-path cache key is payload-scoped.
+   */
   string table_blob_version = 3;
 
   /** The resolved concrete snapshot id. */

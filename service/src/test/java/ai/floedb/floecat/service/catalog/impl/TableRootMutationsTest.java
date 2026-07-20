@@ -112,11 +112,16 @@ class TableRootMutationsTest {
   void inPlaceUpdatePreservesAuxRefsAndKeepsCurrency() {
     commit(
         TableRootMutations.upsertSnapshot(
-            roots, TABLE, entry(7, 1_000), ref("s3://t/def.pb"), true));
+            roots,
+            TABLE,
+            entry(7, 1_000).toBuilder().setSchemaFingerprint("fp-7").build(),
+            ref("s3://t/def.pb"),
+            true));
     commit(TableRootMutations.setStatsGeneration(roots, TABLE, 7, ref("s3://t/gen-1.pb"), 7L));
     commit(TableRootMutations.setConstraints(roots, TABLE, 7, ref("s3://t/constraints-1.pb")));
 
-    // The in-place snapshot update carries a new snapshot blob but no aux refs of its own.
+    // The in-place snapshot update carries a new snapshot blob but no aux refs (and no schema
+    // fingerprint) of its own — none may be dropped by the partial rewrite.
     TableRoot updated =
         commit(
             TableRootMutations.upsertSnapshot(
@@ -131,6 +136,7 @@ class TableRootMutationsTest {
     assertEquals("s3://t/gen-1.pb", e.getStatsGenerationRef().getUri(), "stats ref preserved");
     assertEquals(
         "s3://t/constraints-1.pb", e.getConstraintsRef().getUri(), "constraints ref preserved");
+    assertEquals("fp-7", e.getSchemaFingerprint(), "schema fingerprint preserved");
     assertEquals(7L, updated.getCurrentSnapshotId(), "same-id update keeps currency");
   }
 

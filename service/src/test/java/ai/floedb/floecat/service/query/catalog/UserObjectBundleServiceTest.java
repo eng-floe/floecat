@@ -270,6 +270,365 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void knownVersionGetsIdentityOnlyResponse() {
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    // First resolution: full payload, and the identity to prove possession of.
+    RelationInfo full =
+        service.stream("cid", ctx, List.of(candidate))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely()
+            .get(1)
+            .getResolutions()
+            .getItems(0)
+            .getRelation();
+    assertThat(full.getColumnsCount()).isPositive();
+    String version = full.getPinIdentity().getTableBlobVersion();
+    assertThat(version).isNotEmpty();
+
+    // Proving possession omits the payload: identity returns, columns do not.
+    RelationInfo slim =
+        service.stream("cid", ctx, List.of(candidate), Set.of(version))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely()
+            .get(1)
+            .getResolutions()
+            .getItems(0)
+            .getRelation();
+    assertThat(slim.hasPinIdentity()).isTrue();
+    assertThat(slim.getPinIdentity().getTableBlobVersion()).isEqualTo(version);
+    assertThat(slim.getColumnsCount()).isZero();
+    assertThat(slim.getName().getName()).isEqualTo(full.getName().getName());
+  }
+
+  @Test
+  void snapshotSchemaChangeMovesThePossessionToken() {
+    // Same table, same definition ref (blobBackedPin fixes table_blob_version), but two different
+    // pinned snapshots (etag-s123 vs etag-s456): the shape of a CreateSnapshot/UpdateSnapshot that
+    // changes the read schema (schema-on-read from the snapshot) without moving the definition ref.
+    // The possession token must move with the snapshot, or a client holding the old snapshot's
+    // token would be served identity-only for the new schema and reuse stale columns/types.
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    String token123 =
+        firstRelation(ctx, candidate, Set.of()).getPinIdentity().getTableBlobVersion();
+    assertThat(token123).isNotEmpty();
+
+    QueryContext ctx456 = pinnedAt(TABLE_A, 456L);
+    queryStore.seed(ctx456);
+    RelationInfo full456 = firstRelation(ctx456, candidate, Set.of());
+    assertThat(full456.getColumnsCount()).isPositive();
+    assertThat(full456.getPinIdentity().getTableBlobVersion())
+        .as("a new snapshot (new read schema, same definition ref) must move the possession token")
+        .isNotEqualTo(token123);
+
+    // Advertising the OLD snapshot's token under the new pin must NOT be honored identity-only.
+    RelationInfo underStaleToken = firstRelation(ctx456, candidate, Set.of(token123));
+    assertThat(underStaleToken.getColumnsCount())
+        .as("a stale possession token must not gate an identity-only reply for the new schema")
+        .isPositive();
+  }
+
+  private QueryContext pinnedAt(ResourceId table, long snapshotId) {
+    return pinnedWith(SnapshotTestSupport.blobBackedPin(table, snapshotId), snapshotId);
+  }
+
+  private QueryContext pinnedAt(ResourceId table, long snapshotId, String schemaFingerprint) {
+    return pinnedWith(
+        SnapshotTestSupport.blobBackedPin(table, snapshotId, schemaFingerprint), snapshotId);
+  }
+
+  private QueryContext pinnedWith(ai.floedb.floecat.query.rpc.TablePin pin, long snapshotId) {
+    return QueryContext.builder()
+        .queryId("q-" + snapshotId)
+        .principal(
+            PrincipalContext.newBuilder()
+                .setAccountId("acct")
+                .setSubject("tester")
+                .setCorrelationId("cid")
+                .build())
+        .relationPins(SnapshotTestSupport.relationPins(pin).toByteArray())
+        .createdAtMs(1)
+        .expiresAtMs(1000)
+        .state(QueryContext.State.ACTIVE)
+        .version(1)
+        .queryDefaultCatalogId(DEFAULT_CATALOG)
+        .build();
+  }
+
+  @Test
+  void dataOnlyIngestKeepsThePossessionTokenAndSchemaWarm() {
+    // Two pins at DIFFERENT snapshots (an ingest moved the snapshot) whose manifest entries carry
+    // the SAME read-schema fingerprint: the served schema is unchanged, so the possession token
+    // must be stable — this is what keeps a hot-ingest table's schema warm across ingests.
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    QueryContext ctx1 = pinnedAt(TABLE_A, 123L, "schema-v1");
+    queryStore.seed(ctx1);
+    String token1 = firstRelation(ctx1, candidate, Set.of()).getPinIdentity().getTableBlobVersion();
+    assertThat(token1).isNotEmpty();
+
+    QueryContext ctx2 = pinnedAt(TABLE_A, 456L, "schema-v1");
+    queryStore.seed(ctx2);
+    RelationInfo warm = firstRelation(ctx2, candidate, Set.of(token1));
+    assertThat(warm.getPinIdentity().getTableBlobVersion())
+        .as("a data-only ingest (same read schema) keeps the possession token stable")
+        .isEqualTo(token1);
+    assertThat(warm.getColumnsCount())
+        .as("the client's proof of possession is honored identity-only across the ingest")
+        .isZero();
+    assertThat(warm.getPinIdentity().getSnapshotId())
+        .as("the slim reply still carries the NEW pin's data identity")
+        .isEqualTo(456L);
+
+    // A snapshot that CHANGED the read schema moves the fingerprint and with it the token.
+    QueryContext ctx3 = pinnedAt(TABLE_A, 789L, "schema-v2");
+    queryStore.seed(ctx3);
+    RelationInfo changed = firstRelation(ctx3, candidate, Set.of(token1));
+    assertThat(changed.getPinIdentity().getTableBlobVersion()).isNotEqualTo(token1);
+    assertThat(changed.getColumnsCount())
+        .as("a schema-changing snapshot must not be served identity-only under the old token")
+        .isPositive();
+  }
+
+  private RelationInfo firstRelation(
+      QueryContext context, TableReferenceCandidate candidate, Set<String> known) {
+    return service.stream("cid", context, List.of(candidate), known)
+        .collect()
+        .asList()
+        .await()
+        .indefinitely()
+        .get(1)
+        .getResolutions()
+        .getItems(0)
+        .getRelation();
+  }
+
+  @Test
+  void identityOnlyPossessionIsScopedToTheRequestingEngine() {
+    // With engine-specific decoration in play the withheld columns are engine-keyed, so a version
+    // proved under one engine must NOT be honored identity-only under another — otherwise a client
+    // sharing one cache across engines would reuse engine-A decoration for an engine-B query.
+    AtomicInteger decorations = new AtomicInteger();
+    EngineMetadataDecoratorProvider provider =
+        c -> Optional.of(new CountingDecorator(decorations, true, false));
+    UserObjectBundleService decorated =
+        new UserObjectBundleService(
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            provider,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
+            .build();
+    EngineContext engineA = EngineContext.of("pg", "16.0");
+    EngineContext engineB = EngineContext.of("pg", "17.0");
+
+    // Full payload under engine A; capture the possession token it mints.
+    RelationInfo fullA = firstRelationUnderEngine(decorated, candidate, Set.of(), engineA);
+    String tokenA = fullA.getPinIdentity().getTableBlobVersion();
+    assertThat(fullA.getColumnsCount()).isPositive();
+    assertThat(tokenA).isNotEmpty();
+
+    // Same engine, advertising tokenA: served identity-only (control — the token still works).
+    RelationInfo slimSame = firstRelationUnderEngine(decorated, candidate, Set.of(tokenA), engineA);
+    assertThat(slimSame.getColumnsCount()).isZero();
+    assertThat(slimSame.getPinIdentity().getTableBlobVersion()).isEqualTo(tokenA);
+
+    // Different engine, advertising engine-A's token: NOT honored — full payload, distinct token.
+    RelationInfo fullB = firstRelationUnderEngine(decorated, candidate, Set.of(tokenA), engineB);
+    assertThat(fullB.getColumnsCount()).isPositive();
+    assertThat(fullB.getPinIdentity().getTableBlobVersion()).isNotEqualTo(tokenA);
+  }
+
+  private RelationInfo firstRelationUnderEngine(
+      UserObjectBundleService svc,
+      TableReferenceCandidate candidate,
+      Set<String> known,
+      EngineContext engine) {
+    Context context =
+        Context.current().withValue(InboundContextInterceptor.ENGINE_CONTEXT_KEY, engine);
+    Context previous = context.attach();
+    try {
+      return svc.stream("cid", ctx, List.of(candidate), known)
+          .collect()
+          .asList()
+          .await()
+          .indefinitely()
+          .get(1)
+          .getResolutions()
+          .getItems(0)
+          .getRelation();
+    } finally {
+      context.detach(previous);
+    }
+  }
+
+  @Test
+  void failedColumnDecorationIsNotStampedAsCacheable() {
+    // A full payload whose columns FAILED decoration (engine payload missing) is incomplete, so it
+    // must not carry the possession token — otherwise a client caches it, is served identity-only
+    // later, and reuses the incomplete payload, locking in a transient failure instead of
+    // re-fetching until decoration succeeds.
+    EngineMetadataDecoratorProvider missingPayload =
+        c -> Optional.of(new CountingDecorator(new AtomicInteger(), false, false));
+    UserObjectBundleService failing =
+        new UserObjectBundleService(
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            missingPayload,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
+            .build();
+    EngineContext engine = EngineContext.of("pg", "16.0");
+
+    RelationInfo failed = firstRelationUnderEngine(failing, candidate, Set.of(), engine);
+    assertThat(failed.getColumnsList())
+        .allMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_FAILED);
+    // The data identity survives; only the possession token is withheld, so the incomplete payload
+    // is never cacheable while provenance is still reported.
+    assertThat(failed.hasPinIdentity()).isTrue();
+    assertThat(failed.getPinIdentity().getPinFingerprint()).isNotEmpty();
+    assertThat(failed.getPinIdentity().getTableBlobVersion()).isEmpty();
+
+    // Control: when decoration succeeds, the same full response IS stamped and cacheable.
+    EngineMetadataDecoratorProvider okPayload =
+        c -> Optional.of(new CountingDecorator(new AtomicInteger(), true, false));
+    UserObjectBundleService succeeding =
+        new UserObjectBundleService(
+            overlay,
+            resolver,
+            queryStore,
+            statsFactory,
+            okPayload,
+            engineContextProvider,
+            true,
+            "localhost",
+            47470,
+            false,
+            "test");
+    RelationInfo ok = firstRelationUnderEngine(succeeding, candidate, Set.of(), engine);
+    assertThat(ok.getColumnsList()).allMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_OK);
+    assertThat(ok.hasPinIdentity()).isTrue();
+    assertThat(ok.getPinIdentity().getTableBlobVersion())
+        .as("a fully-decorated full payload carries the possession token")
+        .isNotEmpty();
+  }
+
+  @Test
+  void projectedResponsePreservesIdentityButBlanksThePossessionToken() {
+    // A two-column table so a single-column projection is a genuine strict subset.
+    overlay.registerTable(
+        TABLE_A,
+        List.of(
+            SchemaColumn.newBuilder().setName("id_a").setNullable(true).build(),
+            SchemaColumn.newBuilder().setName("payload_a").setNullable(true).build()),
+        NameRef.newBuilder().setCatalog("cat").setName("a").build());
+
+    // A full request first: it carries the version token and the complete column set.
+    TableReferenceCandidate full =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+    RelationInfo fullRel =
+        service.stream("cid", ctx, List.of(full))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely()
+            .get(1)
+            .getResolutions()
+            .getItems(0)
+            .getRelation();
+    assertThat(fullRel.hasPinIdentity()).isTrue();
+    assertThat(fullRel.getColumnsCount()).isGreaterThan(1);
+    String oneColumn = fullRel.getColumns(0).getColumnName();
+
+    // A projected request for a single column: the payload is a subset, so it must NOT carry a
+    // version token — caching it under the version would let a later request be starved of the
+    // columns this response omitted.
+    TableReferenceCandidate projected =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .addInitialColumns(oneColumn)
+            .build();
+    RelationInfo projRel =
+        service.stream("cid", ctx, List.of(projected))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely()
+            .get(1)
+            .getResolutions()
+            .getItems(0)
+            .getRelation();
+    assertThat(projRel.getColumnsCount()).isLessThan(fullRel.getColumnsCount());
+    // The DATA identity survives — callers rely on pin_fingerprint / snapshot id / provenance even
+    // for a projected relation, and dropping it conflated two concerns.
+    assertThat(projRel.hasPinIdentity())
+        .as("the pin identity (data provenance) is preserved on a projected relation")
+        .isTrue();
+    assertThat(projRel.getPinIdentity().getPinFingerprint()).isNotEmpty();
+    // Only the possession token is payload-scoped: blanked, so a projected (partial) payload can
+    // never advertise "I hold every column".
+    assertThat(projRel.getPinIdentity().getTableBlobVersion())
+        .as("a projected payload is not cacheable as the full-schema version")
+        .isEmpty();
+  }
+
+  @Test
+  void unknownVersionStillGetsTheFullPayload() {
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    // A stale hint (DDL happened since) must never suppress the payload.
+    RelationInfo relation =
+        service.stream("cid", ctx, List.of(candidate), Set.of("some-superseded-version"))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely()
+            .get(1)
+            .getResolutions()
+            .getItems(0)
+            .getRelation();
+    assertThat(relation.getColumnsCount()).isPositive();
+  }
+
+  @Test
   void statsAvailableWhenPinAddedDuringBundle() {
     QueryContext noPinCtx =
         QueryContext.builder()
@@ -765,6 +1124,65 @@ class UserObjectBundleServiceTest {
     } finally {
       restoreProperties(previousValues);
     }
+  }
+
+  @Test
+  void systemTablesSharingACatalogVersionGetDistinctPinIdentities() {
+    // SystemNodeRegistry hands every system table in a catalog the same
+    // fingerprint-derived version, and SystemTableNode does not override
+    // GraphNode.cacheIdentity() — so two system tables share their cacheIdentity
+    // ("1" here, from the fixture's version=1L). The derived pin-identity token
+    // must still be unique per relation, or a client that cached one would be
+    // served the other's schema identity-only under the shared version.
+    ResourceId sysA =
+        ResourceId.newBuilder()
+            .setAccountId("sys")
+            .setId("SYS_A")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    ResourceId sysB =
+        ResourceId.newBuilder()
+            .setAccountId("sys")
+            .setId("SYS_B")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    overlay.registerRelation(
+        sysA,
+        storageSystemTableNode(sysA, "sys://a", "k"),
+        UserObjectBundleTestSupport.schemaFor("a"),
+        NameRef.newBuilder().setCatalog("sys").setName("sys_a").build());
+    overlay.registerRelation(
+        sysB,
+        storageSystemTableNode(sysB, "sys://b", "k"),
+        UserObjectBundleTestSupport.schemaFor("b"),
+        NameRef.newBuilder().setCatalog("sys").setName("sys_b").build());
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream(
+                "cid",
+                ctx,
+                List.of(
+                    TableReferenceCandidate.newBuilder()
+                        .addCandidates(QueryInput.newBuilder().setTableId(sysA))
+                        .build(),
+                    TableReferenceCandidate.newBuilder()
+                        .addCandidates(QueryInput.newBuilder().setTableId(sysB))
+                        .build()))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely();
+
+    Map<ResourceId, String> tokenById = new java.util.HashMap<>();
+    chunks.get(1).getResolutions().getItemsList().stream()
+        .map(RelationResolution::getRelation)
+        .forEach(r -> tokenById.put(r.getRelationId(), r.getPinIdentity().getTableBlobVersion()));
+
+    assertThat(tokenById.get(sysA)).isNotBlank();
+    assertThat(tokenById.get(sysB)).isNotBlank();
+    assertThat(tokenById.get(sysA))
+        .as("two system tables sharing a catalog version must not collide on table_blob_version")
+        .isNotEqualTo(tokenById.get(sysB));
   }
 
   @Test

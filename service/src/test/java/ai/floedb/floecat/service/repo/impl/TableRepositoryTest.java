@@ -26,6 +26,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -249,6 +250,27 @@ class TableRepositoryTest {
     var claimed = tableRepo.relationNameClaim(account, catalogId, namespaceId, "invoices");
     assertTrue(claimed.isPresent(), "new name's claim must be reserved by the rename");
     assertEquals(tableId.getId(), claimed.get().getId());
+  }
+
+  @Test
+  void renameProducesANewTableBlobVersion() {
+    ResourceId tableId = createTable("sales", "us", "orders");
+    MutationMeta before = tableRepo.metaForSafe(tableId);
+
+    Table renamed =
+        tableRepo.getById(tableId).orElseThrow().toBuilder().setDisplayName("invoices").build();
+    assertTrue(tableRepo.update(renamed, before.getPointerVersion()));
+
+    /* The signal the whole warm-cache model leans on: any table change —
+     * rename included — rewrites the content-addressed table blob, so its
+     * identity (blob uri / version) moves and cached records for the old
+     * identity become unreachable. A future rename path that stopped bumping
+     * it would silently poison every content-keyed cache. */
+    MutationMeta after = tableRepo.metaForSafe(tableId);
+    assertTrue(after.getPointerVersion() > before.getPointerVersion());
+    assertTrue(
+        !after.getBlobUri().equals(before.getBlobUri()),
+        "rename must move the table blob identity");
   }
 
   @Test
