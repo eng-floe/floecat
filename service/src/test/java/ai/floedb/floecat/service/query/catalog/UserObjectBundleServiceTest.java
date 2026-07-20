@@ -309,6 +309,69 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void snapshotSchemaChangeMovesThePossessionToken() {
+    // Same table, same definition ref (blobBackedPin fixes table_blob_version), but two different
+    // pinned snapshots (etag-s123 vs etag-s456): the shape of a CreateSnapshot/UpdateSnapshot that
+    // changes the read schema (schema-on-read from the snapshot) without moving the definition ref.
+    // The possession token must move with the snapshot, or a client holding the old snapshot's
+    // token would be served identity-only for the new schema and reuse stale columns/types.
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    String token123 = firstRelation(ctx, candidate, Set.of()).getPinIdentity().getTableBlobVersion();
+    assertThat(token123).isNotEmpty();
+
+    QueryContext ctx456 = pinnedAt(TABLE_A, 456L);
+    queryStore.seed(ctx456);
+    RelationInfo full456 = firstRelation(ctx456, candidate, Set.of());
+    assertThat(full456.getColumnsCount()).isPositive();
+    assertThat(full456.getPinIdentity().getTableBlobVersion())
+        .as("a new snapshot (new read schema, same definition ref) must move the possession token")
+        .isNotEqualTo(token123);
+
+    // Advertising the OLD snapshot's token under the new pin must NOT be honored identity-only.
+    RelationInfo underStaleToken = firstRelation(ctx456, candidate, Set.of(token123));
+    assertThat(underStaleToken.getColumnsCount())
+        .as("a stale possession token must not gate an identity-only reply for the new schema")
+        .isPositive();
+  }
+
+  private QueryContext pinnedAt(ResourceId table, long snapshotId) {
+    return QueryContext.builder()
+        .queryId("q-" + snapshotId)
+        .principal(
+            PrincipalContext.newBuilder()
+                .setAccountId("acct")
+                .setSubject("tester")
+                .setCorrelationId("cid")
+                .build())
+        .relationPins(
+            SnapshotTestSupport.relationPins(SnapshotTestSupport.blobBackedPin(table, snapshotId))
+                .toByteArray())
+        .createdAtMs(1)
+        .expiresAtMs(1000)
+        .state(QueryContext.State.ACTIVE)
+        .version(1)
+        .queryDefaultCatalogId(DEFAULT_CATALOG)
+        .build();
+  }
+
+  private RelationInfo firstRelation(
+      QueryContext context, TableReferenceCandidate candidate, Set<String> known) {
+    return service.stream("cid", context, List.of(candidate), known)
+        .collect()
+        .asList()
+        .await()
+        .indefinitely()
+        .get(1)
+        .getResolutions()
+        .getItems(0)
+        .getRelation();
+  }
+
+  @Test
   void identityOnlyPossessionIsScopedToTheRequestingEngine() {
     // With engine-specific decoration in play the withheld columns are engine-keyed, so a version
     // proved under one engine must NOT be honored identity-only under another — otherwise a client
@@ -407,7 +470,11 @@ class UserObjectBundleServiceTest {
     RelationInfo failed = firstRelationUnderEngine(failing, candidate, Set.of(), engine);
     assertThat(failed.getColumnsList())
         .allMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_FAILED);
-    assertThat(failed.hasPinIdentity()).isFalse();
+    // The data identity survives; only the possession token is withheld, so the incomplete payload
+    // is never cacheable while provenance is still reported.
+    assertThat(failed.hasPinIdentity()).isTrue();
+    assertThat(failed.getPinIdentity().getPinFingerprint()).isNotEmpty();
+    assertThat(failed.getPinIdentity().getTableBlobVersion()).isEmpty();
 
     // Control: when decoration succeeds, the same full response IS stamped and cacheable.
     EngineMetadataDecoratorProvider okPayload =
@@ -428,10 +495,13 @@ class UserObjectBundleServiceTest {
     RelationInfo ok = firstRelationUnderEngine(succeeding, candidate, Set.of(), engine);
     assertThat(ok.getColumnsList()).allMatch(c -> c.getStatus() == ColumnStatus.COLUMN_STATUS_OK);
     assertThat(ok.hasPinIdentity()).isTrue();
+    assertThat(ok.getPinIdentity().getTableBlobVersion())
+        .as("a fully-decorated full payload carries the possession token")
+        .isNotEmpty();
   }
 
   @Test
-  void projectedResponseCarriesNoPinIdentitySoItIsNotCacheable() {
+  void projectedResponsePreservesIdentityButBlanksThePossessionToken() {
     // A two-column table so a single-column projection is a genuine strict subset.
     overlay.registerTable(
         TABLE_A,
@@ -478,9 +548,17 @@ class UserObjectBundleServiceTest {
             .getItems(0)
             .getRelation();
     assertThat(projRel.getColumnsCount()).isLessThan(fullRel.getColumnsCount());
+    // The DATA identity survives — callers rely on pin_fingerprint / snapshot id / provenance even
+    // for a projected relation, and dropping it conflated two concerns.
     assertThat(projRel.hasPinIdentity())
-        .as("a projected (partial) payload must not be cacheable as the full-schema version")
-        .isFalse();
+        .as("the pin identity (data provenance) is preserved on a projected relation")
+        .isTrue();
+    assertThat(projRel.getPinIdentity().getPinFingerprint()).isNotEmpty();
+    // Only the possession token is payload-scoped: blanked, so a projected (partial) payload can
+    // never advertise "I hold every column".
+    assertThat(projRel.getPinIdentity().getTableBlobVersion())
+        .as("a projected payload is not cacheable as the full-schema version")
+        .isEmpty();
   }
 
   @Test

@@ -551,24 +551,67 @@ public class UserObjectBundleService {
     // cacheIdentity alone would collide across all system tables — a client that cached one would
     // be served another identity-only under the shared token and reuse the wrong schema. Mixing the
     // id in makes the token unique per relation while still moving with engine content (the version
-    // changes on catalog upgrade). Note it does NOT cover a system table's service-resolved
-    // Flight/storage endpoint (configuredEndpointForKey), which is static Quarkus deployment config
-    // — a change to it requires a redeploy, which resets client caches, so a caller cannot route to
-    // a stale endpoint across the change. If endpoint config ever becomes hot-reloadable, fold it
-    // in.
+    // changes on catalog upgrade). It also folds in a system table's resolved EXECUTION metadata
+    // (backend kind + the resolved Flight/storage endpoint) — an identity-only reply omits that
+    // metadata, and a config-resolved endpoint (configuredEndpointForKey) can change without moving
+    // cacheIdentity. A floecat redeploy does NOT reset an external caching client, so without this
+    // the client would match the token, get no endpoint, and route to the stale one. The exact
+    // value served is resolved once in resolveSystemExecution and reused here, so the token can
+    // never drift from what buildRelation stamps.
     ResourceId relId = relation.relationId();
-    String keyMaterial =
-        relId.getAccountId()
-            + '\0'
-            + relId.getId()
-            + '\0'
-            + relId.getKindValue()
-            + '\0'
-            + cacheIdentity;
+    StringBuilder keyMaterial =
+        new StringBuilder()
+            .append(relId.getAccountId())
+            .append('\0')
+            .append(relId.getId())
+            .append('\0')
+            .append(relId.getKindValue())
+            .append('\0')
+            .append(cacheIdentity);
+    if (relation.node() instanceof SystemTableNode systemTableNode) {
+      keyMaterial.append('\0').append(resolveSystemExecution(systemTableNode).tokenMaterial());
+    }
     return Optional.of(
         RelationPinIdentity.newBuilder()
-            .setTableBlobVersion(Hashing.sha256Hex(keyMaterial))
+            .setTableBlobVersion(Hashing.sha256Hex(keyMaterial.toString()))
             .build());
+  }
+
+  /**
+   * A system table's resolved execution metadata: the backend kind plus the concrete endpoint the
+   * bundle serves (a Flight endpoint, whether built-in, node-declared, or config-resolved, or a
+   * storage-path fallback). Resolved in ONE place so buildRelation (which stamps these fields) and
+   * pinIdentityFor (which folds them into the possession token) can never disagree — the token must
+   * cover exactly the routing an identity-only reply omits.
+   */
+  private record SystemExecution(String backendKind, FlightEndpointRef flightEndpoint, String storagePath) {
+    String tokenMaterial() {
+      return backendKind
+          + '\0'
+          + (flightEndpoint != null ? flightEndpoint.toString() : "")
+          + '\0'
+          + storagePath;
+    }
+  }
+
+  private SystemExecution resolveSystemExecution(SystemTableNode node) {
+    String backendKind = String.valueOf(node.backendKind());
+    if (node instanceof SystemTableNode.FloeCatSystemTableNode) {
+      return new SystemExecution(backendKind, floecatFlightEndpoint, "");
+    }
+    if (node instanceof SystemTableNode.StorageSystemTableNode storage) {
+      if (storage.flightEndpoint() != null) {
+        return new SystemExecution(backendKind, storage.flightEndpoint(), "");
+      }
+      Optional<FlightEndpointRef> configured = configuredEndpointForKey(storage.storageEndpointKey());
+      if (configured.isPresent()) {
+        return new SystemExecution(backendKind, configured.get(), "");
+      }
+      if (!storage.storagePath().isBlank()) {
+        return new SystemExecution(backendKind, null, storage.storagePath());
+      }
+    }
+    return new SystemExecution(backendKind, null, "");
   }
 
   /**
@@ -583,11 +626,7 @@ public class UserObjectBundleService {
       QueryContext queryContext,
       EngineContext ctx) {
     return pinIdentityFor(correlationId, relation, queryContext)
-        .map(
-            id ->
-                id.toBuilder()
-                    .setTableBlobVersion(possessionToken(id.getTableBlobVersion(), ctx))
-                    .build());
+        .map(id -> id.toBuilder().setTableBlobVersion(possessionToken(id, ctx)).build());
   }
 
   /**
@@ -602,25 +641,45 @@ public class UserObjectBundleService {
    * mint sites; the client stays engine-agnostic and correctness no longer depends on it keying its
    * own cache by engine.
    *
-   * <p>When decoration is not in play ({@code !decorationRequired}) the payload is fully determined
-   * by the content version, so the token IS the content version — byte-identical to the unscoped
-   * behavior, so no cache fragmentation and no change for single-engine or decoration-off
-   * deployments. {@code decorationEpoch} additionally invalidates cached decoration when the
-   * decorator's behavior changes without moving the engine version.
+   * <p>The token folds in the pinned SNAPSHOT blob version, because the served column schema is
+   * read from the snapshot (schema-on-read) and CreateSnapshot/UpdateSnapshot can change that
+   * schema WITHOUT moving the definition ref (table_blob_version). A definition-only token would
+   * therefore let a client that holds an old schema be served identity-only for a NEW schema and
+   * reuse stale columns/types. snapshot_blob_version moves whenever the snapshot does — a strict
+   * superset of schema changes, so never stale — but it is coarser than the schema: it also moves
+   * on data-only ingests (a new snapshot with an unchanged schema), so a hot-ingest table refetches
+   * its full (unchanged) schema each query instead of a slim identity-only reply. It does NOT move
+   * on stats-generation or constraints writes (separate manifest refs), so the schema stays warm
+   * across those. Recovering warmth across ingests needs a schema-scoped ref on the snapshot
+   * manifest entry (follow-up); until then this is correct and never serves a stale schema. Views
+   * and system relations have no snapshot pin, so their token is unaffected by this scope.
+   *
+   * <p>{@code decorationEpoch} additionally invalidates cached decoration when the decorator's
+   * behavior changes without moving the engine version. When there is nothing to fold in — no
+   * snapshot scope (views/system) AND no engine decoration — the token IS the content version,
+   * byte-identical to the unscoped behavior.
    */
-  private String possessionToken(String contentVersion, EngineContext ctx) {
-    if (contentVersion == null || contentVersion.isBlank() || !decorationRequired(ctx)) {
+  private String possessionToken(RelationPinIdentity id, EngineContext ctx) {
+    String contentVersion = id.getTableBlobVersion();
+    if (contentVersion == null || contentVersion.isBlank()) {
       return contentVersion;
     }
-    String material =
-        contentVersion
-            + '\0'
-            + safe(ctx.normalizedKind())
-            + '\0'
-            + safe(ctx.normalizedVersion())
-            + '\0'
-            + decorationEpoch;
-    return Hashing.sha256Hex(material);
+    String snapshotScope = safe(id.getSnapshotBlobVersion());
+    boolean decorate = decorationRequired(ctx);
+    if (snapshotScope.isBlank() && !decorate) {
+      return contentVersion;
+    }
+    StringBuilder material = new StringBuilder(contentVersion).append('\0').append(snapshotScope);
+    if (decorate) {
+      material
+          .append('\0')
+          .append(safe(ctx.normalizedKind()))
+          .append('\0')
+          .append(safe(ctx.normalizedVersion()))
+          .append('\0')
+          .append(decorationEpoch);
+    }
+    return Hashing.sha256Hex(material.toString());
   }
 
   /*
@@ -726,21 +785,14 @@ public class UserObjectBundleService {
      * path fallback. ENGINE tables never set an endpoint.
      */
     if (relation.node() instanceof SystemTableNode systemTableNode) {
+      // Resolve once through the shared helper so the served routing and the token that covers it
+      // (pinIdentityFor) are computed from the same logic and cannot drift.
+      SystemExecution exec = resolveSystemExecution(systemTableNode);
       builder.setBackendKind(systemTableNode.backendKind());
-      if (systemTableNode instanceof SystemTableNode.FloeCatSystemTableNode) {
-        builder.setFlightEndpoint(floecatFlightEndpoint);
-      } else if (systemTableNode instanceof SystemTableNode.StorageSystemTableNode storage) {
-        if (storage.flightEndpoint() != null) {
-          builder.setFlightEndpoint(storage.flightEndpoint());
-        } else {
-          Optional<FlightEndpointRef> configuredEndpoint =
-              configuredEndpointForKey(storage.storageEndpointKey());
-          if (configuredEndpoint.isPresent()) {
-            builder.setFlightEndpoint(configuredEndpoint.get());
-          } else if (!storage.storagePath().isBlank()) {
-            builder.setStoragePath(storage.storagePath());
-          }
-        }
+      if (exec.flightEndpoint() != null) {
+        builder.setFlightEndpoint(exec.flightEndpoint());
+      } else if (!exec.storagePath().isBlank()) {
+        builder.setStoragePath(exec.storagePath());
       }
     }
 
@@ -763,6 +815,13 @@ public class UserObjectBundleService {
     Optional<EngineMetadataDecorator> decorator = currentDecorator(ctx);
     RelationDecoration relationDecoration = null;
     boolean relationDecorationSucceeded = true;
+    // Per-phase payload-decoration success, tracked separately from
+    // relationDecorationSucceeded (which gates hint commits below). The possession-token stamp
+    // needs EVERY payload phase to have succeeded — a view or completion failure leaves the served
+    // payload incomplete, and stamping a token for it would lock that incomplete payload into a
+    // caching client until it happened to re-miss, instead of self-healing on the next query.
+    boolean viewDecorationSucceeded = true;
+    boolean completeRelationSucceeded = true;
     long relationDecorationBeforeNanos = timings.decorationTotalNanos();
 
     if (decorationRequired && decorator.isPresent()) {
@@ -808,6 +867,7 @@ public class UserObjectBundleService {
             timings.addDecorateViewNanos(System.nanoTime() - decorateViewStartNs);
           }
         } catch (RuntimeException e) {
+          viewDecorationSucceeded = false;
           LOG.debugf(
               e,
               "Decorator threw while decorating view %s (engine=%s)",
@@ -860,6 +920,7 @@ public class UserObjectBundleService {
               decorationTimingNanos(relationDecoration, COLUMN_HINT_PERSIST_NANOS_KEY));
         }
       } catch (RuntimeException e) {
+        completeRelationSucceeded = false;
         LOG.debugf(
             e,
             "Decorator threw while completing relation %s (engine=%s)",
@@ -884,35 +945,38 @@ public class UserObjectBundleService {
           relationDecorationNanos / 1_000_000.0);
     }
 
-    // Stamp the opaque payload cache token — AFTER decoration, so it reflects the payload actually
-    // served. A caching client that holds this token is later served identity-only and reuses its
-    // cached payload verbatim, so only stamp when that payload is complete and cacheable:
-    //   - full schema: a projected subset must never advertise "I hold every column", or a later
-    //     request would be starved of columns it never received;
-    //   - decoration fully succeeded: no column ended up FAILED and the relation decoration did not
-    //     throw. FAILED columns still ride the wire (name/type present, engine payload missing), so
-    //     the client legitimately holds them and would advertise the token — locking a transient
-    //     decoration failure into its cache for the whole lifetime instead of self-healing on the
-    //     next query. This is the same caution commitColumnHints applies to persisting hints;
-    //   - non-blank token: a blank version can never prove possession (the match path rejects it),
-    //     and every blank-etag relation would otherwise collide on the empty key.
+    // Stamp the pin identity. Two distinct concerns share the message and must NOT share a gate:
+    //
+    //   - The DATA identity (pin_fingerprint, snapshot id, AS-OF provenance, constraints_ref_version)
+    //     is a property of the pinned relation, not of the served payload shape. Callers rely on it
+    //     to tell a current pin from a historical one and to skip the constraints RPC, so it is
+    //     stamped UNCONDITIONALLY whenever the relation is pinned — including on projected or
+    //     decoration-incomplete replies, which previously lost it entirely.
+    //
+    //   - The possession token (table_blob_version) is payload-scoped: a client that advertises it
+    //     is later served identity-only and reuses its cached payload verbatim. It is kept only when
+    //     the served payload is complete and cacheable, and blanked otherwise:
+    //       * full schema — a projected subset must never advertise "I hold every column", or a
+    //         later request would be starved of columns it never received;
+    //       * every payload-decoration phase succeeded (relation, view, completion) and no column
+    //         ended up FAILED — else a transient decoration failure would lock into a caching
+    //         client instead of self-healing next query;
+    //       * non-blank — a blank version can never prove possession (the match path rejects it).
     //
     // scopedIdentity is computed once by the caller and threaded into both the identity-only match
     // and this stamp, so a cache miss under a populated hint set does not hash the relation twice.
-    //
-    // Caveat for system tables: a slim reply omits the endpoint metadata, and for a config-resolved
-    // endpoint (configuredEndpointForKey) that value is NOT covered by the token — see
-    // pinIdentityFor.
-    // Identity-only reuse of such a table therefore assumes its Flight endpoint config is
-    // deploy-time
-    // fixed; if it ever becomes hot-reloadable, fold the resolved endpoint into the token there.
-    if (servesFullSchema(relation.candidate())
-        && relationDecorationSucceeded
-        && countColumnsWithStatus(columnResults, ColumnStatus.COLUMN_STATUS_FAILED) == 0) {
-      scopedIdentity
-          .filter(id -> !id.getTableBlobVersion().isBlank())
-          .ifPresent(builder::setPinIdentity);
-    }
+    boolean payloadCacheable =
+        servesFullSchema(relation.candidate())
+            && relationDecorationSucceeded
+            && viewDecorationSucceeded
+            && completeRelationSucceeded
+            && countColumnsWithStatus(columnResults, ColumnStatus.COLUMN_STATUS_FAILED) == 0;
+    scopedIdentity.ifPresent(
+        id ->
+            builder.setPinIdentity(
+                payloadCacheable && !id.getTableBlobVersion().isBlank()
+                    ? id
+                    : id.toBuilder().clearTableBlobVersion().build()));
 
     builder.addAllColumns(columnResults);
     return builder.build();
@@ -1772,15 +1836,15 @@ public class UserObjectBundleService {
         if (liveCtx == null) {
           liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
         }
-        // Compute the engine-scoped payload token at most once per relation: the identity-only
-        // match consults it when the client sent hints, and the full-payload stamp reuses it — so a
-        // cache miss under a populated hint set does not hash the relation twice. Skip it only when
-        // neither consumer can use it (no hints AND a projected response, which never stamps).
+        // Compute the pin identity at most once per relation: the identity-only match consults it
+        // when the client sent hints, and the stamp reuses it — so a cache miss under a populated
+        // hint set does not hash the relation twice. Computed for EVERY pinned relation (not only
+        // full-schema ones), because the stamp now preserves the data identity even on a projected
+        // reply — it merely blanks the possession token there. The extra work for a projected,
+        // hint-less reply is one pin read plus a hash, off the warm path.
         Optional<RelationPinIdentity> scopedIdentity =
-            (!knownBlobVersions.isEmpty() || servesFullSchema(found.relation().candidate()))
-                ? scopedPinIdentity(
-                    correlationId, found.relation(), liveCtx, resolutionContext.engineContext())
-                : Optional.empty();
+            scopedPinIdentity(
+                correlationId, found.relation(), liveCtx, resolutionContext.engineContext());
         /* Identity-only fast path: never cached — the info cache must only
          * ever hold full payloads, or a later request that did NOT prove
          * possession would be served a payload-less relation. */
