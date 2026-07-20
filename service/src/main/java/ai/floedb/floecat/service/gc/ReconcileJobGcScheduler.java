@@ -168,7 +168,8 @@ public class ReconcileJobGcScheduler {
     gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "tick"));
 
     final long maxTickMillis =
-        cfg.getOptionalValue("floecat.gc.reconcile-jobs.max-tick-millis", Long.class).orElse(4000L);
+        cfg.getOptionalValue("floecat.gc.reconcile-jobs.max-tick-millis", Long.class)
+            .orElse(30_000L);
     final int accountsPageSize =
         cfg.getOptionalValue("floecat.gc.reconcile-jobs.accounts-page-size", Integer.class)
             .orElse(200);
@@ -296,7 +297,8 @@ public class ReconcileJobGcScheduler {
           "reconcile job gc tick summary accounts=%d readyScanned=%d readyDeleted=%d"
               + " readyQuarantined=%d accountScanned=%d expired=%d ptrDeleted=%d blobDeleted=%d"
               + " dedupeDeleted=%d readyPointerDeleted=%d quarantined=%d accountPageIndex=%d"
-              + " accountPageSize=%d accountTokenPresent=%s activeAccountTokens=%d durationMs=%d",
+              + " accountPageSize=%d accountTokenPresent=%s activeAccountTokens=%d"
+              + " durationMs=%d",
           accountsProcessed,
           readyScanned,
           readyDeleted,

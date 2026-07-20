@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -32,6 +33,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJo
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobExecutionLoader;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileLeaseStateCodec;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.CanonicalPointerSnapshot;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.NativeReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
@@ -226,13 +228,22 @@ class ReconcileMaintenanceServicesTest {
         .thenReturn(repairMutationBatch);
     when(jobIndexStore.listStoredJobsInState("JS_QUEUED", 128, ""))
         .thenReturn(new ReconcileJobIndexStore.StoredJobPage(queued, ""));
+    NativeReconcileJobIndexStore batching = new NativeReconcileJobIndexStore();
+    when(jobIndexStore.maxWriteItemsPerBatch()).thenReturn(batching.maxWriteItemsPerBatch());
+    when(jobIndexStore.writeItemCount(any(), anyList()))
+        .thenAnswer(
+            invocation ->
+                batching.writeItemCount(invocation.getArgument(0), invocation.getArgument(1)));
+    when(jobIndexStore.combineWriteBatches(anyList()))
+        .thenAnswer(invocation -> batching.combineWriteBatches(invocation.getArgument(0)));
+    when(jobIndexStore.chunkJobWritePlans(anyList()))
+        .thenAnswer(invocation -> batching.chunkJobWritePlans(invocation.getArgument(0)));
     List<Integer> chunkSizes = new ArrayList<>();
-    when(jobIndexStore.commitReadyQueueRepairBatch(anyList(), anyList()))
+    when(jobIndexStore.compareAndSetBatchWithPointerOps(any(), anyList()))
         .thenAnswer(
             invocation -> {
-              List<?> mutations = invocation.getArgument(0);
-              List<?> writes = invocation.getArgument(1);
-              chunkSizes.add((mutations.size() * 4) + writes.size());
+              chunkSizes.add(
+                  batching.writeItemCount(invocation.getArgument(0), invocation.getArgument(1)));
               return true;
             });
 
@@ -263,7 +274,7 @@ class ReconcileMaintenanceServicesTest {
 
     service.runReadyIndexMaintenanceOnce(1_000L);
 
-    verify(jobIndexStore, never()).commitReadyQueueRepairBatch(anyList(), anyList());
+    verify(jobIndexStore, never()).chunkJobWritePlans(anyList());
   }
 
   @Test

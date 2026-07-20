@@ -54,6 +54,22 @@ class ReconcileJobGcSchedulerTest {
     assertEquals(List.of("acct-a", "acct-b"), gc.accountIds);
   }
 
+  @Test
+  void accountGcDoesNotWaitForLegacyCleanupMigration() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a")), List.of());
+    RecordingGc gc = new RecordingGc();
+    ReconcileJobGcScheduler scheduler = new ReconcileJobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.reconcileJobGc = () -> gc;
+    scheduler.observability = new TestObservability();
+    scheduler.initMeters();
+
+    scheduler.tick();
+    assertEquals(List.of("acct-a"), gc.accountIds);
+  }
+
   private static Account account(String accountId) {
     return Account.newBuilder()
         .setResourceId(

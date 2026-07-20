@@ -22,13 +22,26 @@ import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Singleton
 @IfBuildProperty(name = "floecat.kv", stringValue = "memory")
 public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend {
   private PointerStore pointerStore;
+  private final Map<String, ReconcileJobIndexCleanupManifest> cleanupManifests =
+      new ConcurrentHashMap<>();
+  private final Map<String, Long> cleanupLocks = new ConcurrentHashMap<>();
+  private final Map<LegacyMigration, LegacyMigrationState> legacyMigrationStates =
+      new EnumMap<>(LegacyMigration.class);
+  private final Set<LegacyMigration> completedLegacyMigrations =
+      EnumSet.noneOf(LegacyMigration.class);
+  private long legacyMigrationFence;
 
   @Inject
   public MemoryReconcileJobIndexBackend(PointerStore pointerStore) {
@@ -48,7 +61,81 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         .map(
             pointer ->
                 new JobIndexEntrySnapshot(
-                    pointer.getKey(), pointer.getBlobUri(), pointer.getVersion()));
+                    pointer.getKey(),
+                    pointer.getBlobUri(),
+                    pointer.getVersion(),
+                    cleanupLocks.containsKey(pointer.getKey())));
+  }
+
+  @Override
+  public synchronized Optional<LegacyMigrationLease> acquireLegacyMigrationLease(
+      LegacyMigration migration, String ownerId, long nowMs, long leaseDurationMs) {
+    if (migration == null
+        || ownerId == null
+        || ownerId.isBlank()
+        || completedLegacyMigrations.contains(migration)) {
+      return Optional.empty();
+    }
+    LegacyMigrationState state =
+        legacyMigrationStates.computeIfAbsent(migration, ignored -> new LegacyMigrationState());
+    if (state.ownerId != null && !state.ownerId.equals(ownerId) && state.leaseExpiresAtMs > nowMs) {
+      return Optional.empty();
+    }
+    legacyMigrationFence =
+        legacyMigrationFence == Long.MAX_VALUE ? Long.MAX_VALUE : legacyMigrationFence + 1L;
+    state.ownerId = ownerId;
+    state.fence = legacyMigrationFence;
+    state.leaseExpiresAtMs = leaseExpiresAt(nowMs, Math.max(1L, leaseDurationMs));
+    return Optional.of(new LegacyMigrationLease(state.fence, state.progress));
+  }
+
+  @Override
+  public synchronized boolean checkpointLegacyMigration(
+      LegacyMigration migration,
+      String ownerId,
+      long fence,
+      LegacyMigrationProgress progress,
+      long nowMs,
+      long leaseDurationMs) {
+    LegacyMigrationState state = legacyMigrationStates.get(migration);
+    if (state == null
+        || ownerId == null
+        || !ownerId.equals(state.ownerId)
+        || fence != state.fence
+        || state.leaseExpiresAtMs < nowMs
+        || progress == null) {
+      return false;
+    }
+    state.progress = normalize(progress);
+    state.leaseExpiresAtMs = leaseExpiresAt(nowMs, Math.max(1L, leaseDurationMs));
+    return true;
+  }
+
+  @Override
+  public synchronized boolean completeLegacyMigration(
+      LegacyMigration migration, String ownerId, long fence, long nowMs) {
+    if (completedLegacyMigrations.contains(migration)) {
+      return true;
+    }
+    LegacyMigrationState state = legacyMigrationStates.get(migration);
+    if (state == null
+        || ownerId == null
+        || !ownerId.equals(state.ownerId)
+        || fence != state.fence
+        || state.leaseExpiresAtMs < nowMs
+        || !state.progress.quietPassComplete()
+        || state.progress.changed() != 0
+        || state.progress.retryable() != 0) {
+      return false;
+    }
+    completedLegacyMigrations.add(migration);
+    legacyMigrationStates.remove(migration);
+    return true;
+  }
+
+  @Override
+  public synchronized boolean legacyMigrationComplete(LegacyMigration migration) {
+    return migration != null && completedLegacyMigrations.contains(migration);
   }
 
   @Override
@@ -57,8 +144,50 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   }
 
   @Override
-  public boolean compareAndSetBatch(
+  public synchronized boolean compareAndSetBatch(
       ReconcileJobIndexStore.JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
+    int transactionItems =
+        NativeReconcileJobIndexStore.physicalWriteItemCount(batch)
+            + (extraPointerOps == null ? 0 : extraPointerOps.size());
+    ReconcileJobWriteLimits.requireWithinTransactionLimit(transactionItems);
+    if (batch != null) {
+      for (ReconcileJobIndexStore.JobIndexWriteOp write : batch.writes()) {
+        if (write instanceof ReconcileJobIndexStore.JobIndexUpsert upsert
+            && JobIndexBackendSupport.parseCanonicalJobKey(upsert.pointerKey()) != null
+            && cleanupLocks.containsKey(upsert.pointerKey())) {
+          return false;
+        }
+        if (write instanceof ReconcileJobIndexStore.JobIndexCheck check) {
+          if (JobIndexBackendSupport.parseCanonicalJobKey(check.pointerKey()) == null) {
+            throw new IllegalArgumentException(
+                "Unsupported reconcile job index version check key: " + check.pointerKey());
+          }
+          JobIndexEntrySnapshot existing = loadIndexEntry(check.pointerKey()).orElse(null);
+          if (existing == null
+              || existing.version() != check.expectedVersion()
+              || (check.requireCleanupLock() && !cleanupLocks.containsKey(check.pointerKey()))) {
+            return false;
+          }
+        }
+        if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete
+            && !delete.expectedCanonicalPointerKey().isBlank()) {
+          JobIndexEntrySnapshot existing = loadIndexEntry(delete.pointerKey()).orElse(null);
+          if (existing == null && delete.allowAbsent()) {
+            continue;
+          }
+          if (existing == null
+              || !delete.expectedCanonicalPointerKey().equals(existing.blobUri())) {
+            return false;
+          }
+        }
+        if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete
+            && JobIndexBackendSupport.parseCanonicalJobKey(delete.pointerKey()) != null
+            && delete.requireCleanupLock()
+            && !cleanupLocks.containsKey(delete.pointerKey())) {
+          return false;
+        }
+      }
+    }
     List<PointerStore.CasOp> ops =
         new ArrayList<>(
             JobIndexWriteBatchSupport.toCasOps(
@@ -79,7 +208,115 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     if (!committed) {
       return false;
     }
+    if (batch != null) {
+      for (ReconcileJobIndexStore.JobIndexWriteOp write : batch.writes()) {
+        if (write instanceof ReconcileJobIndexStore.JobIndexUpsert upsert
+            && JobIndexBackendSupport.parseCanonicalJobKey(upsert.pointerKey()) != null) {
+          cleanupManifests.put(upsert.pointerKey(), upsert.cleanupManifest());
+        } else if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete
+            && JobIndexBackendSupport.parseCanonicalJobKey(delete.pointerKey()) != null) {
+          cleanupManifests.remove(delete.pointerKey());
+          cleanupLocks.remove(delete.pointerKey());
+        }
+      }
+    }
     return true;
+  }
+
+  @Override
+  public synchronized ReconcileJobIndexCleanupManifest loadCleanupManifest(
+      String canonicalPointerKey) {
+    return cleanupManifests.getOrDefault(
+        canonicalPointerKey, ReconcileJobIndexCleanupManifest.EMPTY);
+  }
+
+  @Override
+  public synchronized Optional<JobCleanupSession> beginJobCleanup(
+      CanonicalPointerSnapshot expected, ReconcileJobIndexCleanupManifest fallbackManifest) {
+    if (expected == null
+        || JobIndexBackendSupport.parseCanonicalJobKey(expected.canonicalPointerKey()) == null) {
+      return Optional.empty();
+    }
+    JobIndexEntrySnapshot current = loadIndexEntry(expected.canonicalPointerKey()).orElse(null);
+    if (current == null
+        || current.version() != expected.version()
+        || !java.util.Objects.equals(current.blobUri(), expected.blobUri())) {
+      Long lockedVersion = cleanupLocks.get(expected.canonicalPointerKey());
+      if (current == null || lockedVersion == null || current.version() != lockedVersion) {
+        return Optional.empty();
+      }
+    }
+    ReconcileJobIndexCleanupManifest stored =
+        cleanupManifests.getOrDefault(
+            expected.canonicalPointerKey(), ReconcileJobIndexCleanupManifest.EMPTY);
+    ReconcileJobIndexCleanupManifest manifest = mergeManifests(stored, fallbackManifest);
+    if (manifest.isEmpty() || !validCleanupManifest(manifest)) {
+      ReconcileJobIndexCleanupManifest discovered =
+          discoverLegacyCleanupManifest(expected.canonicalPointerKey());
+      manifest =
+          validCleanupManifest(fallbackManifest)
+              ? mergeManifests(discovered, fallbackManifest)
+              : discovered;
+      if (manifest.isEmpty() || !validCleanupManifest(manifest)) {
+        return Optional.empty();
+      }
+    }
+    if (!cleanupLocks.containsKey(expected.canonicalPointerKey())) {
+      var canonicalPointer = pointerStore.get(expected.canonicalPointerKey()).orElse(null);
+      if (canonicalPointer == null
+          || canonicalPointer.getVersion() != current.version()
+          || !java.util.Objects.equals(canonicalPointer.getBlobUri(), current.blobUri())) {
+        return Optional.empty();
+      }
+      long lockedVersion = current.version() + 1L;
+      if (!pointerStore.compareAndSet(
+          expected.canonicalPointerKey(),
+          current.version(),
+          canonicalPointer.toBuilder().setVersion(lockedVersion).build())) {
+        return Optional.empty();
+      }
+      current =
+          new JobIndexEntrySnapshot(current.pointerKey(), current.blobUri(), lockedVersion, true);
+    }
+    cleanupManifests.put(expected.canonicalPointerKey(), manifest);
+    cleanupLocks.put(expected.canonicalPointerKey(), current.version());
+    return Optional.of(
+        new JobCleanupSession(
+            new CanonicalPointerSnapshot(
+                current.pointerKey(), current.blobUri(), current.version()),
+            manifest,
+            true));
+  }
+
+  @Override
+  public ReconcileJobIndexCleanupManifest discoverLegacyCleanupManifest(
+      String canonicalPointerKey) {
+    if (canonicalPointerKey == null || canonicalPointerKey.isBlank()) {
+      return ReconcileJobIndexCleanupManifest.EMPTY;
+    }
+    java.util.LinkedHashSet<String> indexKeys = new java.util.LinkedHashSet<>();
+    java.util.LinkedHashSet<String> readyKeys = new java.util.LinkedHashSet<>();
+    var canonicalKey = JobIndexBackendSupport.parseCanonicalJobKey(canonicalPointerKey);
+    if (canonicalKey != null) {
+      indexKeys.add(Keys.reconcileJobLookupPointerByIdPrefix() + canonicalKey.jobSegment());
+    }
+    String token = "";
+    do {
+      StringBuilder next = new StringBuilder();
+      for (var pointer : pointerStore.listPointersByPrefix("/", 500, token, next)) {
+        if (!canonicalPointerKey.equals(pointer.getBlobUri())) {
+          continue;
+        }
+        if (pointer.getKey().startsWith(Keys.reconcileReadyPointerPrefix())) {
+          readyKeys.add(pointer.getKey());
+        } else if (!canonicalPointerKey.equals(pointer.getKey())
+            && JobIndexBackendSupport.validCleanupIndexPointerKey(pointer.getKey())) {
+          indexKeys.add(pointer.getKey());
+        }
+      }
+      token = next.toString();
+    } while (!token.isBlank());
+    return new ReconcileJobIndexCleanupManifest(List.copyOf(indexKeys), List.copyOf(readyKeys));
   }
 
   @Override
@@ -127,52 +364,6 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
         pageToken);
   }
 
-  @Override
-  public boolean purgeEntriesByCanonicalReference(String canonicalPointerKey) {
-    if (pointerStore == null || blank(canonicalPointerKey)) {
-      return false;
-    }
-    List<JobIndexEntrySnapshot> matches = matchingCanonicalReferences(canonicalPointerKey);
-    boolean deleted = false;
-    for (JobIndexEntrySnapshot entry : matches) {
-      deleted |=
-          pointerStore.compareAndSetBatch(
-              List.of(new PointerStore.CasDelete(entry.pointerKey(), entry.version())));
-    }
-    return deleted;
-  }
-
-  @Override
-  public boolean purgeEntriesByCanonicalReference(
-      String canonicalPointerKey, long expectedVersion, String expectedBlobUri) {
-    if (pointerStore == null || blank(canonicalPointerKey)) {
-      return false;
-    }
-    var canonical = loadIndexEntry(canonicalPointerKey).orElse(null);
-    if (canonical == null
-        || canonical.version() != expectedVersion
-        || !java.util.Objects.equals(canonical.blobUri(), expectedBlobUri)) {
-      return false;
-    }
-    java.util.LinkedHashMap<String, PointerStore.CasDelete> deletes =
-        new java.util.LinkedHashMap<>();
-    for (JobIndexEntrySnapshot entry : matchingCanonicalReferences(canonicalPointerKey)) {
-      deletes.putIfAbsent(
-          entry.pointerKey(), new PointerStore.CasDelete(entry.pointerKey(), entry.version()));
-    }
-    List<PointerStore.CasOp> ops = new ArrayList<>();
-    ops.addAll(deletes.values());
-    return !ops.isEmpty() && pointerStore.compareAndSetBatch(ops);
-  }
-
-  private List<JobIndexEntrySnapshot> matchingCanonicalReferences(String canonicalPointerKey) {
-    List<JobIndexEntrySnapshot> matches = new ArrayList<>();
-    collectMatches(matches, Keys.reconcileJobLookupPointerByIdPrefix(), canonicalPointerKey);
-    collectMatches(matches, "/accounts/by-id/reconcile/jobs/by-state/", canonicalPointerKey);
-    collectMatches(matches, "/accounts/", canonicalPointerKey);
-    return matches;
-  }
-
   private JobIndexQueryPage listPointers(String prefix, int limit, String pageToken) {
     StringBuilder nextPageToken = new StringBuilder();
     List<JobIndexEntrySnapshot> entries =
@@ -180,39 +371,67 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
             .map(
                 pointer ->
                     new JobIndexEntrySnapshot(
-                        pointer.getKey(), pointer.getBlobUri(), pointer.getVersion()))
+                        pointer.getKey(),
+                        pointer.getBlobUri(),
+                        pointer.getVersion(),
+                        cleanupLocks.containsKey(pointer.getKey())))
             .toList();
     return new JobIndexQueryPage(entries, nextPageToken.toString());
   }
 
-  private void collectMatches(
-      List<JobIndexEntrySnapshot> matches, String prefix, String canonicalPointerKey) {
-    String token = "";
-    while (true) {
-      StringBuilder nextPageToken = new StringBuilder();
-      List<JobIndexEntrySnapshot> page =
-          pointerStore.listPointersByPrefix(prefix, 256, token, nextPageToken).stream()
-              .map(
-                  pointer ->
-                      new JobIndexEntrySnapshot(
-                          pointer.getKey(), pointer.getBlobUri(), pointer.getVersion()))
-              .filter(entry -> referencesCanonical(entry, canonicalPointerKey))
-              .toList();
-      matches.addAll(page);
-      token = nextPageToken.toString();
-      if (token.isBlank()) {
-        return;
+  private static final class LegacyMigrationState {
+    private String ownerId;
+    private long fence;
+    private long leaseExpiresAtMs;
+    private LegacyMigrationProgress progress = LegacyMigrationProgress.empty();
+  }
+
+  private static LegacyMigrationProgress normalize(LegacyMigrationProgress progress) {
+    return new LegacyMigrationProgress(
+        progress.pageToken(),
+        Math.max(0, progress.changed()),
+        Math.max(0, progress.unresolvable()),
+        Math.max(0, progress.conflicted()),
+        Math.max(0, progress.retryable()),
+        progress.quietPassComplete());
+  }
+
+  private static long leaseExpiresAt(long nowMs, long leaseDurationMs) {
+    if (leaseDurationMs > 0L && nowMs > Long.MAX_VALUE - leaseDurationMs) {
+      return Long.MAX_VALUE;
+    }
+    return nowMs + leaseDurationMs;
+  }
+
+  private static ReconcileJobIndexCleanupManifest mergeManifests(
+      ReconcileJobIndexCleanupManifest left, ReconcileJobIndexCleanupManifest right) {
+    java.util.ArrayList<String> indexKeys = new java.util.ArrayList<>();
+    java.util.ArrayList<String> readyKeys = new java.util.ArrayList<>();
+    java.util.ArrayList<String> pointerKeys = new java.util.ArrayList<>();
+    if (left != null) {
+      indexKeys.addAll(left.indexPointerKeys());
+      readyKeys.addAll(left.readyPointerKeys());
+      pointerKeys.addAll(left.pointerKeys());
+    }
+    if (right != null) {
+      indexKeys.addAll(right.indexPointerKeys());
+      readyKeys.addAll(right.readyPointerKeys());
+      pointerKeys.addAll(right.pointerKeys());
+    }
+    return new ReconcileJobIndexCleanupManifest(indexKeys, readyKeys, pointerKeys);
+  }
+
+  private static boolean validCleanupManifest(ReconcileJobIndexCleanupManifest manifest) {
+    if (manifest == null) {
+      return false;
+    }
+    for (String pointerKey : manifest.indexPointerKeys()) {
+      if (!JobIndexBackendSupport.validCleanupIndexPointerKey(pointerKey)) {
+        return false;
       }
     }
-  }
-
-  private boolean referencesCanonical(JobIndexEntrySnapshot entry, String canonicalPointerKey) {
-    return entry != null
-        && (canonicalPointerKey.equals(entry.pointerKey())
-            || canonicalPointerKey.equals(entry.blobUri()));
-  }
-
-  private static boolean blank(String value) {
-    return value == null || value.isBlank();
+    return manifest.readyPointerKeys().stream()
+            .allMatch(pointerKey -> ReadyQueueBackendSupport.toReadyQueueRow(pointerKey) != null)
+        && manifest.pointerKeys().stream().allMatch(JobIndexBackendSupport::validCleanupPointerKey);
   }
 }

@@ -55,6 +55,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJo
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileLeaseBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileReadyQueueBackend;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexBackend;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexCleanupManifest;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -74,6 +75,7 @@ import io.quarkus.test.junit.TestProfile;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -701,7 +703,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void bulkEnqueueAndApplyLeaseOutcomeCommitsParentAfterChunkRetryDedupesChildren() {
+  void bulkEnqueueAndApplyLeaseOutcomeCommitsParentBeforeChunkRetryDedupesChildren() {
     InMemoryPointerStore pointerStore = new InMemoryPointerStore();
     MemoryReconcileJobIndexBackend delegateBackend = new MemoryReconcileJobIndexBackend();
     delegateBackend.bind(pointerStore);
@@ -740,7 +742,16 @@ class DurableReconcileJobStoreTest {
                         ""))
             .toList();
 
+    AtomicBoolean parentCommittedBeforeChildChunkFailure = new AtomicBoolean(false);
     failingBackend.failOnArmedCall(2);
+    failingBackend.onFailedCompareAndSetBatch(
+        () -> {
+          StoredReconcileJob committedParent =
+              readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+          parentCommittedBeforeChildChunkFailure.set(
+              "JS_WAITING".equals(committedParent.state)
+                  && committedParent.expectedDirectChildren == childSpecs.size());
+        });
     boolean accepted =
         store.bulkEnqueueAndApplyLeaseOutcome(
             childSpecs,
@@ -759,10 +770,171 @@ class DurableReconcileJobStoreTest {
 
     assertTrue(accepted);
     assertTrue(failingBackend.armedCalls() > 1);
+    assertTrue(parentCommittedBeforeChildChunkFailure.get());
     StoredReconcileJob parentRecord =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
     assertEquals("JS_WAITING", parentRecord.state);
     assertEquals(24L, parentRecord.expectedDirectChildren);
+    assertEquals(24, store.childJobs(ACCOUNT_ID, connectorJobId).size());
+  }
+
+  @Test
+  void plannerOutcomeReplaySurvivesLeaseCleanupAndRejectsDifferentChildSet() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    MemoryReconcileJobIndexBackend delegateBackend = new MemoryReconcileJobIndexBackend();
+    delegateBackend.bind(pointerStore);
+    FailingCompareAndSetBatchBackend failingBackend =
+        new FailingCompareAndSetBatchBackend(delegateBackend);
+    store = newIsolatedInMemoryStore(pointerStore, new InMemoryBlobStore(), failingBackend);
+    configureLeaseRenewGraceMs(0L);
+
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 100L, "executor-connector");
+    List<ReconcileJobStore.BulkEnqueueSpec> childSpecs =
+        java.util.stream.IntStream.range(0, 24)
+            .mapToObj(
+                i ->
+                    ReconcileJobStore.BulkEnqueueSpec.of(
+                        ACCOUNT_ID,
+                        CONNECTOR_ID,
+                        false,
+                        CaptureMode.METADATA_AND_CAPTURE,
+                        ReconcileScope.of(List.of(), "table-" + i),
+                        ReconcileJobKind.PLAN_TABLE,
+                        ReconcileTableTask.of("db", "orders_" + i, "table-" + i, "orders_" + i),
+                        ReconcileViewTask.empty(),
+                        ReconcileSnapshotTask.empty(),
+                        ReconcileFileGroupTask.empty(),
+                        ReconcileExecutionPolicy.defaults(),
+                        connectorJobId,
+                        ""))
+            .toList();
+
+    failingBackend.throwOnArmedCall(2);
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            store.bulkEnqueueAndApplyLeaseOutcome(
+                childSpecs,
+                connectorJobId,
+                connectorLease.leaseEpoch,
+                ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+                200L,
+                "Planned 24 table job(s)",
+                24L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L));
+
+    StoredReconcileJob partiallyCommittedParent =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+    assertEquals("JS_WAITING", partiallyCommittedParent.state);
+    assertFalse(partiallyCommittedParent.plannerOutcomeFingerprint.isBlank());
+    assertEquals(connectorLease.leaseEpoch, partiallyCommittedParent.plannerOutcomeLeaseEpoch);
+    assertTrue(store.childJobs(ACCOUNT_ID, connectorJobId).size() < childSpecs.size());
+
+    ReconcileJob committedChild = store.childJobs(ACCOUNT_ID, connectorJobId).getFirst();
+    var committedChildLease = leaseJob(committedChild.jobId);
+    store.markRunning(committedChild.jobId, committedChildLease.leaseEpoch, 150L, "executor-table");
+    store.markSucceeded(
+        committedChild.jobId, committedChildLease.leaseEpoch, 175L, 1L, 1L, 0L, 0L, 0L, 0L);
+
+    reclaimExpiredLease(connectorJobId);
+    assertEquals(
+        "JS_QUEUED",
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId)).state);
+    var repairLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, repairLease.leaseEpoch, 180L, "executor-repair");
+    int partiallyCommittedChildCount = store.childJobs(ACCOUNT_ID, connectorJobId).size();
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            store.bulkEnqueueAndApplyLeaseOutcome(
+                List.of(),
+                connectorJobId,
+                repairLease.leaseEpoch,
+                ReconcileJobStore.CompletionKind.SUCCEEDED,
+                200L,
+                "Planned 0 table job(s)",
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L));
+    StoredReconcileJob parentAfterEmptyReplay =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+    assertEquals("JS_RUNNING", parentAfterEmptyReplay.state);
+    assertEquals(
+        partiallyCommittedParent.plannerOutcomeFingerprint,
+        parentAfterEmptyReplay.plannerOutcomeFingerprint);
+    assertEquals(childSpecs.size(), parentAfterEmptyReplay.expectedDirectChildren);
+    assertEquals(partiallyCommittedChildCount, store.childJobs(ACCOUNT_ID, connectorJobId).size());
+
+    assertTrue(
+        store.bulkEnqueueAndApplyLeaseOutcome(
+            childSpecs,
+            connectorJobId,
+            repairLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            201L,
+            "Planned 24 table job(s)",
+            24L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
+    assertEquals(24, store.childJobs(ACCOUNT_ID, connectorJobId).size());
+    assertTrue(
+        store.getCompletionLeaseView(connectorJobId, repairLease.leaseEpoch, true).isPresent());
+
+    List<ReconcileJobStore.BulkEnqueueSpec> differentChildSpecs =
+        new ArrayList<>(childSpecs.subList(0, childSpecs.size() - 1));
+    differentChildSpecs.add(
+        ReconcileJobStore.BulkEnqueueSpec.of(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "replacement-table"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "replacement", "replacement-table", "replacement"),
+            ReconcileViewTask.empty(),
+            ReconcileSnapshotTask.empty(),
+            ReconcileFileGroupTask.empty(),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            ""));
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            store.bulkEnqueueAndApplyLeaseOutcome(
+                differentChildSpecs,
+                connectorJobId,
+                repairLease.leaseEpoch,
+                ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+                202L,
+                "Planned 24 table job(s)",
+                24L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L,
+                0L));
     assertEquals(24, store.childJobs(ACCOUNT_ID, connectorJobId).size());
   }
 
@@ -5128,7 +5300,7 @@ class DurableReconcileJobStoreTest {
     isolatedStore.mapper = new ObjectMapper();
     isolatedStore.config = ConfigProvider.getConfig();
     isolatedStore.jobIndexBackend = jobIndexBackend;
-    isolatedStore.leaseBackend = new MemoryReconcileLeaseBackend(pointerStore);
+    isolatedStore.leaseBackend = new MemoryReconcileLeaseBackend();
     isolatedStore.readyQueueBackend = new MemoryReconcileReadyQueueBackend(pointerStore);
     isolatedStore.init();
     return isolatedStore;
@@ -5364,6 +5536,7 @@ class DurableReconcileJobStoreTest {
     private final ReconcileJobIndexBackend delegate;
     private final AtomicInteger armedCalls = new AtomicInteger();
     private volatile int failOnCall = -1;
+    private volatile int throwOnCall = -1;
     private volatile boolean failed;
     private volatile Runnable onFailedCompareAndSetBatch = () -> {};
 
@@ -5375,6 +5548,11 @@ class DurableReconcileJobStoreTest {
       armedCalls.set(0);
       failOnCall = Math.max(1, callNumber);
       failed = false;
+    }
+
+    void throwOnArmedCall(int callNumber) {
+      armedCalls.set(0);
+      throwOnCall = Math.max(1, callNumber);
     }
 
     int armedCalls() {
@@ -5391,17 +5569,33 @@ class DurableReconcileJobStoreTest {
     }
 
     @Override
+    public ReconcileJobIndexCleanupManifest loadCleanupManifest(String canonicalPointerKey) {
+      return delegate.loadCleanupManifest(canonicalPointerKey);
+    }
+
+    @Override
     public boolean compareAndSetBatch(
         ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore
                 .JobIndexWriteBatch
             batch) {
+      return compareAndSetBatch(batch, java.util.List.of());
+    }
+
+    @Override
+    public boolean compareAndSetBatch(
+        ReconcileJobIndexStore.JobIndexWriteBatch batch,
+        java.util.List<PointerStore.CasOp> extraPointerOps) {
       int call = armedCalls.incrementAndGet();
+      if (throwOnCall > 0 && call == throwOnCall) {
+        throwOnCall = -1;
+        throw new IllegalStateException("injected compare-and-set failure");
+      }
       if (!failed && failOnCall > 0 && call == failOnCall) {
         failed = true;
         onFailedCompareAndSetBatch.run();
         return false;
       }
-      return delegate.compareAndSetBatch(batch);
+      return delegate.compareAndSetBatch(batch, extraPointerOps);
     }
 
     @Override
@@ -5441,11 +5635,6 @@ class DurableReconcileJobStoreTest {
     public JobIndexQueryPage listConnectorStateEntries(
         String accountId, String connectorId, String state, int limit, String pageToken) {
       return delegate.listConnectorStateEntries(accountId, connectorId, state, limit, pageToken);
-    }
-
-    @Override
-    public boolean purgeEntriesByCanonicalReference(String canonicalPointerKey) {
-      return delegate.purgeEntriesByCanonicalReference(canonicalPointerKey);
     }
   }
 
@@ -5468,9 +5657,21 @@ class DurableReconcileJobStoreTest {
     }
 
     @Override
+    public ReconcileJobIndexCleanupManifest loadCleanupManifest(String canonicalPointerKey) {
+      return delegate.loadCleanupManifest(canonicalPointerKey);
+    }
+
+    @Override
     public boolean compareAndSetBatch(ReconcileJobIndexStore.JobIndexWriteBatch batch) {
+      return compareAndSetBatch(batch, java.util.List.of());
+    }
+
+    @Override
+    public boolean compareAndSetBatch(
+        ReconcileJobIndexStore.JobIndexWriteBatch batch,
+        java.util.List<PointerStore.CasOp> extraPointerOps) {
       beforeCompareAndSetBatch.accept(batch);
-      return delegate.compareAndSetBatch(batch);
+      return delegate.compareAndSetBatch(batch, extraPointerOps);
     }
 
     @Override
@@ -5510,11 +5711,6 @@ class DurableReconcileJobStoreTest {
     public JobIndexQueryPage listConnectorStateEntries(
         String accountId, String connectorId, String state, int limit, String pageToken) {
       return delegate.listConnectorStateEntries(accountId, connectorId, state, limit, pageToken);
-    }
-
-    @Override
-    public boolean purgeEntriesByCanonicalReference(String canonicalPointerKey) {
-      return delegate.purgeEntriesByCanonicalReference(canonicalPointerKey);
     }
   }
 

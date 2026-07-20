@@ -1289,9 +1289,8 @@ class LeasedPlannerWorkerServiceTest {
 
   @Test
   void persistPlanConnectorSuccessReturnsFalseWhenLeaseOutcomeRejected() {
-    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
-    when(jobs.getLeaseView("job-1"))
-        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_CONNECTOR)));
+    when(jobs.getCompletionLeaseView("job-1", "lease-1", true))
+        .thenReturn(java.util.Optional.of(connectorCompletionLease()));
     when(jobs.bulkEnqueueAndApplyLeaseOutcome(
             any(),
             eq("job-1"),
@@ -1327,9 +1326,8 @@ class LeasedPlannerWorkerServiceTest {
 
   @Test
   void persistPlanConnectorSuccessBulkEnqueuesUnpinnedTableAndViewChildren() {
-    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
-    when(jobs.getLeaseView("job-1"))
-        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_CONNECTOR)));
+    when(jobs.getCompletionLeaseView("job-1", "lease-1", true))
+        .thenReturn(java.util.Optional.of(connectorCompletionLease()));
     when(jobs.bulkEnqueueAndApplyLeaseOutcome(
             any(),
             eq("job-1"),
@@ -1405,9 +1403,8 @@ class LeasedPlannerWorkerServiceTest {
   void persistPlanConnectorSuccessCancelsDeletedConnectorWithoutChildFanout() {
     service.connectorRepo = connectorRepo;
     when(connectorRepo.existsById(any())).thenReturn(false);
-    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
-    when(jobs.getLeaseView("job-1"))
-        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_CONNECTOR)));
+    when(jobs.getCompletionLeaseView("job-1", "lease-1", true))
+        .thenReturn(java.util.Optional.of(connectorCompletionLease()));
     when(jobs.applyLeaseOutcome(
             any(), any(), any(), anyLong(), any(), anyLong(), anyLong(), anyLong(), anyLong(),
             anyLong(), anyLong(), anyLong()))
@@ -1451,9 +1448,8 @@ class LeasedPlannerWorkerServiceTest {
   void persistPlanConnectorSuccessReturnsFalseWhenDeleteCancelDoesNotCommit() {
     service.connectorRepo = connectorRepo;
     when(connectorRepo.existsById(any())).thenReturn(false);
-    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
-    when(jobs.getLeaseView("job-1"))
-        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_CONNECTOR)));
+    when(jobs.getCompletionLeaseView("job-1", "lease-1", true))
+        .thenReturn(java.util.Optional.of(connectorCompletionLease()));
     when(jobs.applyLeaseOutcome(
             any(), any(), any(), anyLong(), any(), anyLong(), anyLong(), anyLong(), anyLong(),
             anyLong(), anyLong(), anyLong()))
@@ -1560,6 +1556,20 @@ class LeasedPlannerWorkerServiceTest {
         ReconcileSnapshotTask.empty(),
         ReconcileFileGroupTask.empty(),
         "parent-1");
+  }
+
+  private static ReconcileJobStore.LeasedJob connectorCompletionLease() {
+    return new ReconcileJobStore.LeasedJob(
+        "job-1",
+        "acct",
+        "connector-1",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.defaults(),
+        "lease-1",
+        "remote-executor",
+        "remote_snapshot_planner_worker");
   }
 
   private void stagePlanSnapshotChunk(

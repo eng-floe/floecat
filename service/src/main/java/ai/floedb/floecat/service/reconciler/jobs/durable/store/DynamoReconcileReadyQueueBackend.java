@@ -20,6 +20,7 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_PARTITION_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.enterprise.inject.Instance;
@@ -273,10 +274,15 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
     if (normalized.isBlank()) {
       return null;
     }
-    if (normalized.startsWith("accounts/by-id/") || normalized.startsWith("accounts/by-name/")) {
+    String accountByIdPrefix =
+        ReadyQueueBackendSupport.stripLeadingSlash(Keys.accountPointerByIdPrefix());
+    String accountByNamePrefix =
+        ReadyQueueBackendSupport.stripLeadingSlash(Keys.accountPointerByNamePrefix());
+    String accountRootPrefix = ReadyQueueBackendSupport.stripLeadingSlash(Keys.accountRootPrefix());
+    if (normalized.startsWith(accountByIdPrefix) || normalized.startsWith(accountByNamePrefix)) {
       return new DynamoPointerKey(GLOBAL_POINTER_PARTITION_KEY, normalized);
     }
-    if (!normalized.startsWith("accounts/")) {
+    if (!normalized.startsWith(accountRootPrefix)) {
       return null;
     }
     int firstSlash = normalized.indexOf('/');
@@ -286,7 +292,7 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
     }
     String accountId = normalized.substring(firstSlash + 1, secondSlash);
     String remainder = normalized.substring(secondSlash + 1);
-    return new DynamoPointerKey("accounts/" + accountId, remainder);
+    return new DynamoPointerKey(accountRootPrefix + accountId, remainder);
   }
 
   private static String stringAttr(Map<String, AttributeValue> item, String name) {

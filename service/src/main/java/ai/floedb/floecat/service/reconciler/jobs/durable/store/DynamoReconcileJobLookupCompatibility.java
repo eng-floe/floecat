@@ -1,0 +1,146 @@
+/*
+ * Copyright 2026 Yellowbrick Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.floedb.floecat.service.reconciler.jobs.durable.store;
+
+import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_PARTITION_KEY;
+import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
+import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
+
+import java.util.List;
+import java.util.Map;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.ConditionCheck;
+import software.amazon.awssdk.services.dynamodb.model.Delete;
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
+
+final class DynamoReconcileJobLookupCompatibility {
+  private DynamoReconcileJobLookupCompatibility() {}
+
+  static TransactWriteItem legacyCheckAbsent(
+      String table, JobIndexBackendSupport.LookupKey lookupKey) {
+    return checkAbsent(table, JobIndexBackendSupport.legacyLookupStorageKey(lookupKey));
+  }
+
+  static List<TransactWriteItem> checkAbsent(
+      String table, JobIndexBackendSupport.LookupKey lookupKey) {
+    return JobIndexBackendSupport.lookupReadStorageKeys(lookupKey).stream()
+        .map(key -> checkAbsent(table, key))
+        .toList();
+  }
+
+  static List<TransactWriteItem> ownedDeletes(
+      String table,
+      JobIndexBackendSupport.LookupKey lookupKey,
+      long expectedVersion,
+      String expectedCanonicalPointerKey,
+      String expectedStoragePartitionKey,
+      boolean allowAbsent) {
+    if (expectedCanonicalPointerKey == null || expectedCanonicalPointerKey.isBlank()) {
+      throw new IllegalArgumentException("lookup deletes require an expected canonical owner");
+    }
+    if (expectedStoragePartitionKey == null || expectedStoragePartitionKey.isBlank()) {
+      throw new IllegalArgumentException("lookup deletes require an observed storage partition");
+    }
+    boolean knownStoragePartition =
+        JobIndexBackendSupport.lookupReadStorageKeys(lookupKey).stream()
+            .anyMatch(key -> expectedStoragePartitionKey.equals(key.partitionKey()));
+    if (!knownStoragePartition) {
+      throw new IllegalArgumentException(
+          "lookup delete has an unknown observed storage partition: "
+              + expectedStoragePartitionKey);
+    }
+    return JobIndexBackendSupport.lookupReadStorageKeys(lookupKey).stream()
+        .map(
+            key ->
+                expectedStoragePartitionKey.equals(key.partitionKey())
+                    ? deleteOwned(
+                        table, key, expectedVersion, expectedCanonicalPointerKey, allowAbsent)
+                    : checkAbsentOrNotOwned(table, key, expectedCanonicalPointerKey))
+        .toList();
+  }
+
+  private static TransactWriteItem checkAbsent(
+      String table, JobIndexBackendSupport.LookupStorageKey key) {
+    return TransactWriteItem.builder()
+        .conditionCheck(
+            ConditionCheck.builder()
+                .tableName(table)
+                .key(dynamoKey(key))
+                .conditionExpression("attribute_not_exists(#pk)")
+                .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
+                .build())
+        .build();
+  }
+
+  private static TransactWriteItem deleteOwned(
+      String table,
+      JobIndexBackendSupport.LookupStorageKey key,
+      long expectedVersion,
+      String expectedCanonicalPointerKey,
+      boolean allowAbsent) {
+    String condition = "#v = :expected AND #owner = :owner";
+    java.util.HashMap<String, String> names =
+        new java.util.HashMap<>(
+            Map.of("#v", ATTR_VERSION, "#owner", JobIndexBackendSupport.ATTR_BLOB_URI));
+    if (allowAbsent) {
+      condition = "attribute_not_exists(#pk) OR (" + condition + ")";
+      names.put("#pk", ATTR_PARTITION_KEY);
+    }
+    return TransactWriteItem.builder()
+        .delete(
+            Delete.builder()
+                .tableName(table)
+                .key(dynamoKey(key))
+                .conditionExpression(condition)
+                .expressionAttributeNames(names)
+                .expressionAttributeValues(
+                    Map.of(
+                        ":expected", AttributeValue.fromN(Long.toString(expectedVersion)),
+                        ":owner", AttributeValue.fromS(expectedCanonicalPointerKey)))
+                .build())
+        .build();
+  }
+
+  private static TransactWriteItem checkAbsentOrNotOwned(
+      String table,
+      JobIndexBackendSupport.LookupStorageKey key,
+      String expectedCanonicalPointerKey) {
+    return TransactWriteItem.builder()
+        .conditionCheck(
+            ConditionCheck.builder()
+                .tableName(table)
+                .key(dynamoKey(key))
+                .conditionExpression(
+                    "attribute_not_exists(#pk) OR attribute_not_exists(#owner) OR #owner <> :owner")
+                .expressionAttributeNames(
+                    Map.of(
+                        "#pk", ATTR_PARTITION_KEY, "#owner", JobIndexBackendSupport.ATTR_BLOB_URI))
+                .expressionAttributeValues(
+                    Map.of(":owner", AttributeValue.fromS(expectedCanonicalPointerKey)))
+                .build())
+        .build();
+  }
+
+  private static Map<String, AttributeValue> dynamoKey(
+      JobIndexBackendSupport.LookupStorageKey key) {
+    return Map.of(
+        ATTR_PARTITION_KEY,
+        AttributeValue.fromS(key.partitionKey()),
+        ATTR_SORT_KEY,
+        AttributeValue.fromS(key.sortKey()));
+  }
+}

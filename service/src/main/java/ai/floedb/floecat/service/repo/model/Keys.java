@@ -59,6 +59,13 @@ public final class Keys {
     return v;
   }
 
+  private static long reqPositive(String name, long v) {
+    if (v <= 0) {
+      throw new IllegalArgumentException("key arg '" + name + "' must be > 0");
+    }
+    return v;
+  }
+
   private static List<String> reqPath(String name, List<String> segs) {
     if (segs == null || segs.isEmpty()) {
       throw new IllegalArgumentException("key arg '" + name + "' is null/empty");
@@ -112,9 +119,17 @@ public final class Keys {
     return "/accounts/by-id/";
   }
 
+  public static String accountRootPrefix() {
+    return "/accounts/";
+  }
+
+  public static boolean isReservedAccountDirectorySegment(String segment) {
+    return "by-id".equals(segment) || "by-name".equals(segment);
+  }
+
   public static String accountRootPrefix(String accountId) {
     String tid = req("account_id", accountId);
-    return "/accounts/" + encode(tid) + "/";
+    return accountRootPrefix() + encode(tid) + "/";
   }
 
   public static String accountBlobPrefix(String accountId) {
@@ -1259,7 +1274,30 @@ public final class Keys {
   public static String reconcileJobLeasePointerById(String accountId, String jobId) {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
-    return "/accounts/" + encode(tid) + "/reconcile/job-leases/by-id/" + encode(jid);
+    return reconcileJobLeasePointerByIdPrefix(tid) + jid;
+  }
+
+  public static String reconcileJobLeasePointerByIdPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return accountRootPrefix() + tid + "/reconcile/job-leases/by-id/";
+  }
+
+  public static String reconcileJobLeaseExpiryPointerPrefix() {
+    return "/accounts/by-id/reconcile/job-leases/by-expiry/";
+  }
+
+  public static String reconcileJobLeaseExpiryPointer(
+      long expiresAtMs, String accountId, String jobId) {
+    long expiresAt = reqPositive("expires_at_ms", expiresAtMs);
+    return reconcileJobLeaseExpiryPointerPrefix()
+        + String.format("%019d", expiresAt)
+        + reconcileJobLeaseExpiryPointerSuffix(accountId, jobId);
+  }
+
+  public static String reconcileJobLeaseExpiryPointerSuffix(String accountId, String jobId) {
+    String tid = req("account_id", accountId);
+    String jid = req("job_id", jobId);
+    return "/accounts/" + tid + "/jobs/" + jid;
   }
 
   public static String reconcileJobResultBlobUri(String accountId, String jobId, String suffix) {

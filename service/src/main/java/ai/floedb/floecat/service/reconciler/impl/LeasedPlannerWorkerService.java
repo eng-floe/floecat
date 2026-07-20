@@ -126,7 +126,7 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
       List<PlannedTableJob> tableJobs,
       List<PlannedViewJob> viewJobs) {
     ReconcileJobStore.LeasedJob lease =
-        requireLeasedJob(
+        requireCompletionLease(
             principalContext.getCorrelationId(),
             jobId,
             leaseEpoch,

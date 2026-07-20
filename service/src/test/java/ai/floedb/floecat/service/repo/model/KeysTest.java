@@ -67,6 +67,21 @@ class KeysTest {
   }
 
   @Test
+  void reconcileLeaseExpiryKeyPreservesLegacyRawAccountAndJobIds() {
+    assertEquals(
+        "/accounts/by-id/reconcile/job-leases/by-expiry/0000000000000000007"
+            + "/accounts/acct+legacy/jobs/job%legacy",
+        Keys.reconcileJobLeaseExpiryPointer(7L, "acct+legacy", "job%legacy"));
+  }
+
+  @Test
+  void reconcileLeaseKeyPreservesLegacyRawAccountAndJobIds() {
+    assertEquals(
+        "/accounts/acct+legacy/reconcile/job-leases/by-id/job%legacy",
+        Keys.reconcileJobLeasePointerById("acct+legacy", "job%legacy"));
+  }
+
+  @Test
   void snapshotIndexSidecarBlobUriUsesPathSafeEncoding() {
     assertEquals(
         "/accounts/acct%20id/tables/table%20id/index-sidecars/0000000000000000007/file%3As3%3A%2F%2Fb%2Fp%2Fa%20rquet/deadbeef.parquet",
