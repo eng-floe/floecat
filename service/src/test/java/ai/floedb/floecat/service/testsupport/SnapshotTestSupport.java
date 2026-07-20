@@ -63,7 +63,8 @@ public final class SnapshotTestSupport {
    * fingerprint model a data-only ingest; different fingerprints model a snapshot-backed schema
    * change. The no-fingerprint {@link #blobBackedPin} models a legacy pre-fingerprint entry.
    */
-  public static TablePin blobBackedPin(ResourceId tableId, long snapshotId, String schemaFingerprint) {
+  public static TablePin blobBackedPin(
+      ResourceId tableId, long snapshotId, String schemaFingerprint) {
     return blobBackedPin(tableId, snapshotId).toBuilder()
         .setSchemaFingerprint(schemaFingerprint)
         .build();

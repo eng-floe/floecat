@@ -555,7 +555,8 @@ public class UserObjectBundleService {
     // (backend kind + the resolved Flight/storage endpoint) — an identity-only reply omits that
     // metadata, and a config-resolved endpoint (configuredEndpointForKey) can change without moving
     // cacheIdentity. A floecat redeploy does NOT reset an external caching client, so without this
-    // the client would match the token, get no endpoint, and route to the stale one. The endpoint is
+    // the client would match the token, get no endpoint, and route to the stale one. The endpoint
+    // is
     // resolved through resolveSystemExecution — the same helper buildRelation uses to stamp it — so
     // the token cannot drift from the served routing.
     ResourceId relId = relation.relationId();
@@ -614,7 +615,8 @@ public class UserObjectBundleService {
    * pinIdentityFor (which folds them into the possession token) can never disagree — the token must
    * cover exactly the routing an identity-only reply omits.
    */
-  private record SystemExecution(String backendKind, FlightEndpointRef flightEndpoint, String storagePath) {
+  private record SystemExecution(
+      String backendKind, FlightEndpointRef flightEndpoint, String storagePath) {
     String tokenMaterial() {
       // Build from the endpoint's explicit, contractual fields (host/port/tls) rather than
       // FlightEndpointRef.toString(): protobuf documents Message.toString() as non-contractual and
@@ -623,7 +625,11 @@ public class UserObjectBundleService {
       // not routing identity. The token then moves exactly when the routing it covers moves.
       String endpoint =
           flightEndpoint != null
-              ? flightEndpoint.getHost() + ':' + flightEndpoint.getPort() + ':' + flightEndpoint.getTls()
+              ? flightEndpoint.getHost()
+                  + ':'
+                  + flightEndpoint.getPort()
+                  + ':'
+                  + flightEndpoint.getTls()
               : "";
       return backendKind + '\0' + endpoint + '\0' + storagePath;
     }
@@ -638,7 +644,8 @@ public class UserObjectBundleService {
       if (storage.flightEndpoint() != null) {
         return new SystemExecution(backendKind, storage.flightEndpoint(), "");
       }
-      Optional<FlightEndpointRef> configured = configuredEndpointForKey(storage.storageEndpointKey());
+      Optional<FlightEndpointRef> configured =
+          configuredEndpointForKey(storage.storageEndpointKey());
       if (configured.isPresent()) {
         return new SystemExecution(backendKind, configured.get(), "");
       }
@@ -995,14 +1002,16 @@ public class UserObjectBundleService {
 
     // Stamp the pin identity. Two distinct concerns share the message and must NOT share a gate:
     //
-    //   - The DATA identity (pin_fingerprint, snapshot id, AS-OF provenance, constraints_ref_version)
+    //   - The DATA identity (pin_fingerprint, snapshot id, AS-OF provenance,
+    // constraints_ref_version)
     //     is a property of the pinned relation, not of the served payload shape. Callers rely on it
     //     to tell a current pin from a historical one and to skip the constraints RPC, so it is
     //     stamped UNCONDITIONALLY whenever the relation is pinned — including on projected or
     //     decoration-incomplete replies, which previously lost it entirely.
     //
     //   - The possession token (table_blob_version) is payload-scoped: a client that advertises it
-    //     is later served identity-only and reuses its cached payload verbatim. It is kept only when
+    //     is later served identity-only and reuses its cached payload verbatim. It is kept only
+    // when
     //     the served payload is complete and cacheable, and blanked otherwise:
     //       * full schema — a projected subset must never advertise "I hold every column", or a
     //         later request would be starved of columns it never received;
@@ -1053,7 +1062,8 @@ public class UserObjectBundleService {
     return nonNegativeLongAttribute(relationDecoration, attributeKey);
   }
 
-  private static long decorationCounter(RelationDecoration relationDecoration, String attributeKey) {
+  private static long decorationCounter(
+      RelationDecoration relationDecoration, String attributeKey) {
     return nonNegativeLongAttribute(relationDecoration, attributeKey);
   }
 

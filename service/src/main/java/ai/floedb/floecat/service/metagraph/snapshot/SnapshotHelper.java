@@ -323,7 +323,8 @@ public class SnapshotHelper {
             .setSnapshotBlobUri(entry.getSnapshotRef().getUri())
             .setSnapshotBlobVersion(entry.getSnapshotRef().getVersion())
             // Read-schema fingerprint for the possession token; empty on pre-fingerprint manifest
-            // entries (the token then falls back to snapshot_blob_version — correct, cold on ingest).
+            // entries (the token then falls back to snapshot_blob_version — correct, cold on
+            // ingest).
             .setSchemaFingerprint(entry.getSchemaFingerprint());
     if (entry.hasConstraintsRef()) {
       pin.setConstraintsRefUri(entry.getConstraintsRef().getUri())

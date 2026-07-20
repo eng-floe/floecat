@@ -320,7 +320,8 @@ class UserObjectBundleServiceTest {
             .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
             .build();
 
-    String token123 = firstRelation(ctx, candidate, Set.of()).getPinIdentity().getTableBlobVersion();
+    String token123 =
+        firstRelation(ctx, candidate, Set.of()).getPinIdentity().getTableBlobVersion();
     assertThat(token123).isNotEmpty();
 
     QueryContext ctx456 = pinnedAt(TABLE_A, 456L);
@@ -347,8 +348,7 @@ class UserObjectBundleServiceTest {
         SnapshotTestSupport.blobBackedPin(table, snapshotId, schemaFingerprint), snapshotId);
   }
 
-  private QueryContext pinnedWith(
-      ai.floedb.floecat.query.rpc.TablePin pin, long snapshotId) {
+  private QueryContext pinnedWith(ai.floedb.floecat.query.rpc.TablePin pin, long snapshotId) {
     return QueryContext.builder()
         .queryId("q-" + snapshotId)
         .principal(

@@ -244,7 +244,8 @@ class SnapshotManifestsTest {
   }
 
   private static String fingerprint(String schemaJson) {
-    return SnapshotManifests.schemaFingerprint(Snapshot.newBuilder().setSchemaJson(schemaJson).build());
+    return SnapshotManifests.schemaFingerprint(
+        Snapshot.newBuilder().setSchemaJson(schemaJson).build());
   }
 
   /* Canonicalization: a client that re-serializes an UNCHANGED schema with different object-key
@@ -253,9 +254,12 @@ class SnapshotManifestsTest {
   @Test
   void schemaFingerprintIsStableAcrossKeyOrderAndWhitespace() {
     String a = "{\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"x\",\"type\":\"long\"}]}";
-    String reordered = "{\"fields\":[{\"type\":\"long\",\"name\":\"x\",\"id\":1}],\"type\":\"struct\"}";
-    String spaced = "{  \"type\" : \"struct\" ,\n  \"fields\" : [ { \"id\":1, \"name\":\"x\", \"type\":\"long\" } ] }";
-    assertEquals(fingerprint(a), fingerprint(reordered), "object-key order must not move the fingerprint");
+    String reordered =
+        "{\"fields\":[{\"type\":\"long\",\"name\":\"x\",\"id\":1}],\"type\":\"struct\"}";
+    String spaced =
+        "{  \"type\" : \"struct\" ,\n  \"fields\" : [ { \"id\":1, \"name\":\"x\", \"type\":\"long\" } ] }";
+    assertEquals(
+        fingerprint(a), fingerprint(reordered), "object-key order must not move the fingerprint");
     assertEquals(fingerprint(a), fingerprint(spaced), "whitespace must not move the fingerprint");
   }
 
@@ -273,7 +277,10 @@ class SnapshotManifestsTest {
     String base = "{\"fields\":[{\"id\":1,\"name\":\"x\"}]}";
     String added = "{\"fields\":[{\"id\":1,\"name\":\"x\"},{\"id\":2,\"name\":\"y\"}]}";
     assertNotEquals(fingerprint(base), fingerprint(added));
-    assertEquals(fingerprint("not-json"), fingerprint("not-json"), "non-JSON hashes stably via the raw fallback");
+    assertEquals(
+        fingerprint("not-json"),
+        fingerprint("not-json"),
+        "non-JSON hashes stably via the raw fallback");
     assertEquals(
         SnapshotManifests.SCHEMA_FINGERPRINT_DEFINITION_DEFAULT,
         SnapshotManifests.schemaFingerprint(Snapshot.newBuilder().build()),
