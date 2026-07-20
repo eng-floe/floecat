@@ -1690,7 +1690,9 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             scope,
             ReconcileTableTask.of("src_cat.src_ns", "tbl", tableId.getId(), "tbl"),
             ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
-            null);
+            null,
+            "test-job",
+            "test-lease");
 
     assertThat(backend.capturedKnownSnapshotIds).isEmpty();
     assertThat(tasks)
@@ -1764,7 +1766,9 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             scope,
             ReconcileTableTask.of("src_cat.src_ns", "tbl", tableId.getId(), "tbl"),
             ReconcilerService.CaptureMode.CAPTURE_ONLY,
-            null);
+            null,
+            "test-job",
+            "test-lease");
 
     assertThat(tasks)
         .containsExactly(ReconcileSnapshotTask.of(tableId.getId(), 42L, "src_cat.src_ns", "tbl"));
@@ -1843,7 +1847,9 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             scope,
             ReconcileTableTask.of("src_cat.src_ns", "tbl", tableId.getId(), "tbl"),
             ReconcilerService.CaptureMode.CAPTURE_ONLY,
-            null);
+            null,
+            "test-job",
+            "test-lease");
 
     assertThat(tasks)
         .containsExactly(ReconcileSnapshotTask.of(tableId.getId(), 42L, "src_cat.src_ns", "tbl"));
@@ -1919,7 +1925,9 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             scope,
             ReconcileTableTask.of("src_cat.src_ns", "tbl", tableId.getId(), "tbl"),
             ReconcilerService.CaptureMode.CAPTURE_ONLY,
-            null);
+            null,
+            "test-job",
+            "test-lease");
 
     assertThat(tasks)
         .containsExactly(ReconcileSnapshotTask.of(tableId.getId(), 42L, "src_cat.src_ns", "tbl"));
@@ -2013,7 +2021,9 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             scope,
             ReconcileTableTask.of("src_cat.src_ns", "tbl", tableId.getId(), "tbl"),
             ReconcilerService.CaptureMode.CAPTURE_ONLY,
-            null);
+            null,
+            "test-job",
+            "test-lease");
 
     assertThat(tasks)
         .containsExactly(
@@ -2093,7 +2103,9 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             scope,
             ReconcileTableTask.of("src_cat.src_ns", "tbl", tableId.getId(), "tbl"),
             ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
-            null);
+            null,
+            "test-job",
+            "test-lease");
 
     assertThat(tasks)
         .containsExactly(ReconcileSnapshotTask.of(tableId.getId(), 42L, "src_cat.src_ns", "tbl"));
@@ -2203,7 +2215,9 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             scope,
             ReconcileTableTask.of("src_cat.src_ns", "tbl", tableId.getId(), "tbl"),
             ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
-            null);
+            null,
+            "test-job",
+            "test-lease");
 
     assertThat(tasks)
         .containsExactly(ReconcileSnapshotTask.of(tableId.getId(), 42L, "src_cat.src_ns", "tbl"));
@@ -4022,6 +4036,8 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 tableTask,
                 captureMode,
                 bearerToken,
+                "test-job",
+                "test-lease",
                 cancelRequested,
                 progress)
             .result();

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
 import ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
@@ -90,6 +91,7 @@ public class ServerSideStorageConfigResolver {
         Optional.empty(),
         Optional.empty(),
         Optional.empty(),
+        Optional.empty(),
         connector,
         config,
         false);
@@ -103,24 +105,7 @@ public class ServerSideStorageConfigResolver {
         ctx.flatMap(ReconcileContext::executionJobId),
         ctx.flatMap(ReconcileContext::executionLeaseEpoch),
         Optional.empty(),
-        connector,
-        config,
-        false);
-  }
-
-  public ConnectorConfig resolveWithAuthorization(
-      Optional<String> authorizationToken,
-      Optional<String> executionJobId,
-      Optional<String> executionLeaseEpoch,
-      Optional<String> storageLocation,
-      Connector connector,
-      ConnectorConfig config) {
-    return resolve(
         Optional.empty(),
-        authorizationToken,
-        executionJobId,
-        executionLeaseEpoch,
-        storageLocation,
         connector,
         config,
         false);
@@ -131,6 +116,7 @@ public class ServerSideStorageConfigResolver {
       Optional<String> executionJobId,
       Optional<String> executionLeaseEpoch,
       Optional<String> storageLocation,
+      Optional<ResourceId> tableId,
       Connector connector,
       ConnectorConfig config) {
     return resolveManaged(
@@ -139,6 +125,7 @@ public class ServerSideStorageConfigResolver {
         executionJobId,
         executionLeaseEpoch,
         storageLocation,
+        tableId,
         connector,
         config);
   }
@@ -149,6 +136,7 @@ public class ServerSideStorageConfigResolver {
       Optional<String> executionJobId,
       Optional<String> executionLeaseEpoch,
       Optional<String> storageLocation,
+      Optional<ResourceId> tableId,
       Connector connector,
       ConnectorConfig config) {
     ConnectorConfig resolved =
@@ -158,6 +146,7 @@ public class ServerSideStorageConfigResolver {
             executionJobId,
             executionLeaseEpoch,
             storageLocation,
+            tableId,
             connector,
             config,
             true);
@@ -179,6 +168,7 @@ public class ServerSideStorageConfigResolver {
       Optional<String> executionJobId,
       Optional<String> executionLeaseEpoch,
       Optional<String> storageLocation,
+      Optional<ResourceId> tableId,
       Connector connector,
       ConnectorConfig config,
       boolean refreshableExecutionCredentials) {
@@ -199,6 +189,7 @@ public class ServerSideStorageConfigResolver {
                   resolveRequest(
                       connector.getResourceId().getAccountId(),
                       locationPrefix,
+                      tableId,
                       executionJobId,
                       executionLeaseEpoch));
       if (response == null) {
@@ -218,6 +209,7 @@ public class ServerSideStorageConfigResolver {
                       authorizationToken,
                       connector.getResourceId().getAccountId(),
                       locationPrefix,
+                      tableId,
                       executionJobId,
                       executionLeaseEpoch));
       return merged.equals(config.options())
@@ -238,6 +230,7 @@ public class ServerSideStorageConfigResolver {
                 resolveRequest(
                     connector.getResourceId().getAccountId(),
                     locationPrefix,
+                    tableId,
                     executionJobId,
                     executionLeaseEpoch));
     if (response == null) {
@@ -257,6 +250,7 @@ public class ServerSideStorageConfigResolver {
                     authorizationToken,
                     connector.getResourceId().getAccountId(),
                     locationPrefix,
+                    tableId,
                     executionJobId,
                     executionLeaseEpoch));
     ConnectorConfig resolved =
@@ -270,6 +264,7 @@ public class ServerSideStorageConfigResolver {
   private static VendStorageCredentialsRequest resolveRequest(
       String accountId,
       String locationPrefix,
+      Optional<ResourceId> tableId,
       Optional<String> executionJobId,
       Optional<String> executionLeaseEpoch) {
     VendStorageCredentialsRequest.Builder request =
@@ -277,6 +272,9 @@ public class ServerSideStorageConfigResolver {
             .setAccountId(accountId)
             .setLocationPrefix(locationPrefix)
             .setUsage(StorageCredentialUsage.SCU_SERVER);
+    if (tableId != null && tableId.isPresent()) {
+      request.setTableId(tableId.orElseThrow());
+    }
     if (executionJobId.isPresent() ^ executionLeaseEpoch.isPresent()) {
       throw new IllegalArgumentException(
           "executionJobId and executionLeaseEpoch must both be present together");
@@ -356,12 +354,14 @@ public class ServerSideStorageConfigResolver {
       Optional<String> authorizationToken,
       String accountId,
       String locationPrefix,
+      Optional<ResourceId> tableId,
       Optional<String> executionJobId,
       Optional<String> executionLeaseEpoch) {
     ResolveStorageAuthorityResponse response =
         withHeaders(storageAuthorities, correlationId, authorizationToken)
             .vendStorageCredentials(
-                resolveRequest(accountId, locationPrefix, executionJobId, executionLeaseEpoch));
+                resolveRequest(
+                    accountId, locationPrefix, tableId, executionJobId, executionLeaseEpoch));
     return resolvedStorageCredentials(response)
         .filter(ServerSideStorageConfigResolver::isRefreshableExecutionCredential)
         .orElseThrow(

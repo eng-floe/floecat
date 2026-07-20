@@ -113,7 +113,8 @@ public class ReconcilerService {
     SourceSelector source = active.source();
     DestinationTarget dest = active.destination();
 
-    try (FloecatConnector connector = connectorOpener.open(active.resolvedConfig())) {
+    try (active;
+        FloecatConnector connector = connectorOpener.open(active.resolvedConfig())) {
       if (scope.hasTableFilter()) {
         return List.of(
             planStrictTableTask(ctx, connectorId, scope.destinationTableId(), connector));
@@ -211,7 +212,8 @@ public class ReconcilerService {
 
     ActiveConnector active = activeConnectorForResult(ctx, connectorId);
 
-    try (FloecatConnector connector = connectorOpener.open(active.resolvedConfig())) {
+    try (active;
+        FloecatConnector connector = connectorOpener.open(active.resolvedConfig())) {
       if (scope.hasViewFilter()) {
         return List.of(planStrictViewTask(ctx, connectorId, scope.destinationViewId(), connector));
       }
@@ -269,7 +271,9 @@ public class ReconcilerService {
       ReconcileScope scopeIn,
       ReconcileTableTask tableTask,
       CaptureMode captureMode,
-      String bearerToken) {
+      String bearerToken,
+      String executionJobId,
+      String executionLeaseEpoch) {
     ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
     ReconcileTableTask effectiveTask = tableTask == null ? ReconcileTableTask.empty() : tableTask;
     if (effectiveTask.isEmpty()
@@ -280,7 +284,12 @@ public class ReconcilerService {
       return List.of();
     }
 
-    ReconcileContext ctx = buildContext(principal, Optional.ofNullable(bearerToken));
+    ReconcileContext ctx =
+        buildContext(
+            principal,
+            Optional.ofNullable(bearerToken),
+            Optional.ofNullable(executionJobId),
+            Optional.ofNullable(executionLeaseEpoch));
     ActiveConnector active = activeConnectorForResult(ctx, connectorId);
     ResourceId tableId =
         ResourceId.newBuilder()
@@ -332,8 +341,9 @@ public class ReconcilerService {
             : targetSnapshotIds;
     boolean enumerationFullRescan = captureOnly || fullRescan;
 
-    ConnectorConfig tableConfig = tableScopedResolvedConfig(ctx, active, tableId);
-    try (FloecatConnector connector = connectorOpener.open(tableConfig)) {
+    try (active;
+        var tableConfig = tableScopedResolvedConfig(ctx, active, tableId);
+        FloecatConnector connector = connectorOpener.open(tableConfig.config())) {
       List<FloecatConnector.SnapshotBundle> bundles =
           connector.enumerateSnapshots(
               effectiveTask.sourceNamespace(),
@@ -1193,12 +1203,13 @@ public class ReconcilerService {
       throw new IllegalStateException("Connector not ACTIVE: " + connectorId.getId());
     }
     ConnectorConfig config = ConnectorConfigMapper.fromProto(connector);
-    ConnectorConfig resolved =
-        resolveServerSideStorage(
+    ServerSideStorageConfigResolver.ResolvedConnectorConfig resolved =
+        resolveManagedServerSideStorage(
             ctx,
             connector,
             resolveCredentials(config, connector.getAuth(), connectorId),
-            sourceStorageLocation(config));
+            sourceStorageLocation(config),
+            Optional.empty());
     return new ActiveConnector(
         connector,
         connector.hasSource() ? connector.getSource() : SourceSelector.getDefaultInstance(),
@@ -1222,20 +1233,22 @@ public class ReconcilerService {
     return activeConnector(ctx, connector, connectorId);
   }
 
-  ConnectorConfig tableScopedResolvedConfig(
+  ServerSideStorageConfigResolver.ResolvedConnectorConfig tableScopedResolvedConfig(
       ReconcileContext ctx, ActiveConnector active, ResourceId tableId) {
     if (active == null || tableId == null || tableId.getId().isBlank()) {
-      return active == null ? null : active.resolvedConfig();
+      return new ServerSideStorageConfigResolver.ResolvedConnectorConfig(
+          active == null ? null : active.resolvedConfig(), () -> {});
     }
     DestinationTableMetadata metadata = requiredTableMetadata(ctx, tableId);
-    ConnectorConfig resolved =
-        resolveServerSideStorage(
+    ServerSideStorageConfigResolver.ResolvedConnectorConfig resolved =
+        resolveManagedServerSideStorage(
             ctx,
             active.connector(),
             active.resolvedConfig(),
-            Optional.ofNullable(metadata.storageLocation())
-                .filter(location -> !location.isBlank()));
-    return withCommittedMetadataLocation(resolved, metadata);
+            Optional.ofNullable(metadata.storageLocation()).filter(location -> !location.isBlank()),
+            Optional.of(tableId));
+    ConnectorConfig committed = withCommittedMetadataLocation(resolved.config(), metadata);
+    return new ServerSideStorageConfigResolver.ResolvedConnectorConfig(committed, resolved::close);
   }
 
   private ConnectorConfig withCommittedMetadataLocation(
@@ -1257,6 +1270,14 @@ public class ReconcilerService {
   }
 
   ReconcileContext buildContext(PrincipalContext principal, Optional<String> bearerToken) {
+    return buildContext(principal, bearerToken, Optional.empty(), Optional.empty());
+  }
+
+  ReconcileContext buildContext(
+      PrincipalContext principal,
+      Optional<String> bearerToken,
+      Optional<String> executionJobId,
+      Optional<String> executionLeaseEpoch) {
     String correlationId = principal.getCorrelationId();
     if (correlationId == null || correlationId.isBlank()) {
       correlationId = UUID.randomUUID().toString();
@@ -1265,7 +1286,14 @@ public class ReconcilerService {
     if (source == null || source.isBlank()) {
       source = "reconciler-service";
     }
-    return new ReconcileContext(correlationId, principal, source, Instant.now(), bearerToken);
+    return new ReconcileContext(
+        correlationId,
+        principal,
+        source,
+        Instant.now(),
+        bearerToken,
+        executionJobId,
+        executionLeaseEpoch);
   }
 
   static Set<String> normalizeSelectors(List<String> in) {
@@ -1415,11 +1443,6 @@ public class ReconcilerService {
         .orElse(base);
   }
 
-  private ConnectorConfig resolveServerSideStorage(
-      ReconcileContext ctx, Connector connector, ConnectorConfig config) {
-    return resolveServerSideStorage(ctx, connector, config, Optional.empty());
-  }
-
   private Optional<String> sourceStorageLocation(ConnectorConfig config) {
     if (config == null) {
       return Optional.empty();
@@ -1440,19 +1463,21 @@ public class ReconcilerService {
     return Optional.empty();
   }
 
-  private ConnectorConfig resolveServerSideStorage(
+  private ServerSideStorageConfigResolver.ResolvedConnectorConfig resolveManagedServerSideStorage(
       ReconcileContext ctx,
       Connector connector,
       ConnectorConfig config,
-      Optional<String> storageLocation) {
+      Optional<String> storageLocation,
+      Optional<ResourceId> tableId) {
     if (serverSideStorageConfigResolver == null) {
-      return config;
+      return new ServerSideStorageConfigResolver.ResolvedConnectorConfig(config, () -> {});
     }
-    return serverSideStorageConfigResolver.resolveWithAuthorization(
+    return serverSideStorageConfigResolver.resolveManagedWithAuthorization(
         ctx.authorizationToken(),
         ctx.executionJobId(),
         ctx.executionLeaseEpoch(),
         storageLocation,
+        tableId,
         connector,
         config);
   }
@@ -1470,7 +1495,17 @@ public class ReconcilerService {
       SourceSelector source,
       DestinationTarget destination,
       ConnectorConfig config,
-      ConnectorConfig resolvedConfig) {}
+      ServerSideStorageConfigResolver.ResolvedConnectorConfig managedConfig)
+      implements AutoCloseable {
+    ConnectorConfig resolvedConfig() {
+      return managedConfig.config();
+    }
+
+    @Override
+    public void close() {
+      managedConfig.close();
+    }
+  }
 
   private record SourceBinding(String namespace, String name) {
     private SourceBinding {

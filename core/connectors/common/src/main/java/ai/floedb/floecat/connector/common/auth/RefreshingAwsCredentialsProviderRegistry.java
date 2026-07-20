@@ -24,11 +24,15 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 
 public final class RefreshingAwsCredentialsProviderRegistry {
+  private static final Logger LOG =
+      Logger.getLogger(RefreshingAwsCredentialsProviderRegistry.class.getName());
   public static final String OPTION_PROVIDER_ID = "floecat.aws.credentials-provider-id";
   public static final String PROPERTY_PROVIDER_ID = "floecat-provider-id";
   public static final String CLIENT_PROVIDER_CLASS =
@@ -165,7 +169,16 @@ public final class RefreshingAwsCredentialsProviderRegistry {
           now = Instant.now();
           if (shouldRefresh(snapshot, refreshSkew, now)) {
             try {
-              current = Objects.requireNonNull(refresher.get(), "refresher returned null");
+              ResolvedStorageCredentials refreshed =
+                  Objects.requireNonNull(refresher.get(), "refresher returned null");
+              toAwsCredentials(refreshed);
+              current = refreshed;
+              LOG.log(
+                  Level.INFO,
+                  "Refreshed AWS storage credentials; previousExpiresAt={0}, newExpiresAt={1}",
+                  new Object[] {
+                    snapshot == null ? null : snapshot.expiresAt(), refreshed.expiresAt()
+                  });
             } catch (RuntimeException e) {
               if (snapshot != null
                   && snapshot.expiresAt() != null

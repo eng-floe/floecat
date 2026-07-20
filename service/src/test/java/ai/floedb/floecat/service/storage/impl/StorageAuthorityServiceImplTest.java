@@ -392,6 +392,67 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
+  void resolveForDiscoveryTableUsesRequestTableBoundToLeasedSource() {
+    when(reconcileJobs.getLeaseView("job-1")).thenReturn(Optional.of(discoveryTableLeaseView()));
+
+    ResolveStorageAuthorityResponse response =
+        service
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
+                    .setTableId(TABLE_ID)
+                    .setLocationPrefix("s3://warehouse/orders/metadata/v1.json")
+                    .setUsage(StorageCredentialUsage.SCU_SERVER)
+                    .setExecutionBinding(
+                        ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                            .setReconcileLease(
+                                ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding.newBuilder()
+                                    .setJobId("job-1")
+                                    .setLeaseEpoch("lease-1")))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(AUTHORITY_ID, response.getAuthorityId());
+  }
+
+  @Test
+  void resolveForDiscoveryTableRejectsTableFromDifferentSource() {
+    when(reconcileJobs.getLeaseView("job-1")).thenReturn(Optional.of(discoveryTableLeaseView()));
+    when(tableRepo.getById(TABLE_ID))
+        .thenReturn(
+            Optional.of(
+                currentTable().toBuilder()
+                    .setUpstream(
+                        currentTable().getUpstream().toBuilder().setTableDisplayName("other"))
+                    .build()));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setTableId(TABLE_ID)
+                            .setLocationPrefix("s3://warehouse/orders/metadata/v1.json")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1")))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, error.getStatus().getCode());
+  }
+
+  @Test
   void
       resolveForAccountLocationAllowsStaticServerCredentialsForLeaseBoundExecutionWhenNotRequired() {
     ResolveStorageAuthorityResponse response =
@@ -659,6 +720,15 @@ class StorageAuthorityServiceImplTest {
     return ai.floedb.floecat.catalog.rpc.Table.newBuilder()
         .setResourceId(TABLE_ID)
         .putProperties("location", "s3://warehouse/orders")
+        .setUpstream(
+            ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder()
+                .setConnectorId(
+                    ResourceId.newBuilder()
+                        .setAccountId("acct")
+                        .setKind(ResourceKind.RK_CONNECTOR)
+                        .setId("conn-1"))
+                .addNamespacePath("src")
+                .setTableDisplayName("orders"))
         .build();
   }
 
@@ -717,6 +787,35 @@ class StorageAuthorityServiceImplTest {
 
   private static ReconcileJobStore.ReconcileJob activeLeaseView() {
     return activeLeaseView("job-1", "acct", "JS_RUNNING");
+  }
+
+  private static ReconcileJobStore.ReconcileJob discoveryTableLeaseView() {
+    return new ReconcileJobStore.ReconcileJob(
+        "job-1",
+        "acct",
+        "conn-1",
+        "JS_RUNNING",
+        "",
+        1L,
+        1L,
+        1L,
+        1L,
+        0L,
+        0L,
+        0L,
+        false,
+        ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
+        0L,
+        0L,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.defaults(),
+        "",
+        ReconcileJobKind.PLAN_TABLE,
+        ReconcileTableTask.discovery("src", "orders", "namespace-1", "orders"),
+        ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.empty(),
+        "");
   }
 
   private static ReconcileJobStore.ReconcileJob activeLeaseView(

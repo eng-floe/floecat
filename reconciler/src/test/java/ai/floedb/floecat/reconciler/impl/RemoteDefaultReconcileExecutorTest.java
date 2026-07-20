@@ -68,6 +68,8 @@ class RemoteDefaultReconcileExecutorTest {
             any(),
             eq(ReconcilerService.CaptureMode.METADATA_ONLY),
             eq("Bearer worker-token-acct-a"),
+            eq("job-1"),
+            eq("lease-job-1"),
             any(),
             any()))
         .thenReturn(
@@ -82,6 +84,8 @@ class RemoteDefaultReconcileExecutorTest {
             any(),
             eq(ReconcilerService.CaptureMode.METADATA_ONLY),
             eq("Bearer worker-token-acct-b"),
+            eq("job-2"),
+            eq("lease-job-2"),
             any(),
             any()))
         .thenReturn(
@@ -114,6 +118,8 @@ class RemoteDefaultReconcileExecutorTest {
             any(),
             eq(ReconcilerService.CaptureMode.METADATA_ONLY),
             eq("Bearer worker-token-acct-a"),
+            eq("job-1"),
+            eq("lease-job-1"),
             any(),
             any());
     verify(queuedWorkerSupport)
@@ -125,6 +131,8 @@ class RemoteDefaultReconcileExecutorTest {
             any(),
             eq(ReconcilerService.CaptureMode.METADATA_ONLY),
             eq("Bearer worker-token-acct-b"),
+            eq("job-2"),
+            eq("lease-job-2"),
             any(),
             any());
   }
@@ -151,6 +159,8 @@ class RemoteDefaultReconcileExecutorTest {
             any(),
             eq(ReconcilerService.CaptureMode.METADATA_ONLY),
             eq(null),
+            eq("job-precondition"),
+            eq("lease-job-precondition"),
             any(),
             any()))
         .thenReturn(
@@ -188,7 +198,15 @@ class RemoteDefaultReconcileExecutorTest {
     when(workerClient.getPlanViewInput(remoteLease))
         .thenReturn(planViewPayload(lease, connectorId("acct-a")));
     when(queuedWorkerSupport.prepareViewMutation(
-            any(), eq(connectorId("acct-a")), any(), any(), eq(null), any(), any()))
+            any(),
+            eq(connectorId("acct-a")),
+            any(),
+            any(),
+            eq(null),
+            eq("job-view-precondition"),
+            eq("lease-job-view-precondition"),
+            any(),
+            any()))
         .thenReturn(
             new QueuedReconcileWorkerSupport.PlannedViewMutationResult(
                 ReconcileExecutor.ExecutionResult.success(0, 0, 1, 0, 0, 0, 0, "ok"), null));

@@ -31,6 +31,8 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class ReconcileLeaseMaintenanceService {
+
+  private static final long SLOW_MAINTENANCE_LOG_THRESHOLD_MS = 30_000L;
   private static final Logger LOG = Logger.getLogger(ReconcileLeaseMaintenanceService.class);
 
   @FunctionalInterface
@@ -215,11 +217,31 @@ public class ReconcileLeaseMaintenanceService {
   private void logMaintenanceSummary(
       long startedAtMs, LeaseReclaimStats reclaimStats, ReadyPruneStats readyStats) {
     long elapsedMs = System.currentTimeMillis() - startedAtMs;
-    boolean active = reclaimStats.active() || readyStats.active() || elapsedMs > 500L;
-    if (!active) {
+    boolean noteworthy =
+        !reclaimStats.completed()
+            || reclaimStats.reclaimed() > 0
+            || !readyStats.completed()
+            || readyStats.pruned() > 0
+            || readyStats.blockedPruned() > 0
+            || elapsedMs >= SLOW_MAINTENANCE_LOG_THRESHOLD_MS;
+    if (!noteworthy) {
       LOG.debugf(
-          "runLeaseMaintenanceOnce total_ms=%d lease_reclaim_skipped=%s",
-          Long.valueOf(elapsedMs), Boolean.valueOf(reclaimStats.skipped()));
+          "runLeaseMaintenanceOnce total_ms=%d"
+              + " lease_reclaim_skipped=%s lease_reclaim_completed=%s lease_reclaim_pages=%d"
+              + " lease_reclaim_scanned=%d lease_reclaimed=%d"
+              + " ready_completed=%s ready_pages=%d ready_scanned=%d ready_pruned=%d"
+              + " ready_blocked_pruned=%d",
+          Long.valueOf(elapsedMs),
+          Boolean.valueOf(reclaimStats.skipped()),
+          Boolean.valueOf(reclaimStats.completed()),
+          Integer.valueOf(reclaimStats.pages()),
+          Integer.valueOf(reclaimStats.scanned()),
+          Integer.valueOf(reclaimStats.reclaimed()),
+          Boolean.valueOf(readyStats.completed()),
+          Integer.valueOf(readyStats.pages()),
+          Integer.valueOf(readyStats.scanned()),
+          Integer.valueOf(readyStats.pruned()),
+          Integer.valueOf(readyStats.blockedPruned()));
       return;
     }
     LOG.infof(

@@ -240,16 +240,17 @@ class ServerSideStorageConfigResolverTest {
                 "s3.endpoint", "http://localstack:4566"),
             new ConnectorConfig.Auth("oauth2", Map.of("token", "x"), Map.of()));
 
-    ConnectorConfig resolved =
-        resolver.resolveWithAuthorization(
+    try (var resolved =
+        resolver.resolveManagedWithAuthorization(
             java.util.Optional.empty(),
             java.util.Optional.empty(),
             java.util.Optional.empty(),
             java.util.Optional.of("s3://warehouse/ns/table"),
+            java.util.Optional.empty(),
             connector,
-            config);
-
-    assertEquals(config, resolved);
+            config)) {
+      assertEquals(config, resolved.config());
+    }
   }
 
   @Test
@@ -286,11 +287,12 @@ class ServerSideStorageConfigResolverTest {
     assertThrows(
         StatusRuntimeException.class,
         () ->
-            resolver.resolveWithAuthorization(
+            resolver.resolveManagedWithAuthorization(
                 java.util.Optional.empty(),
                 java.util.Optional.empty(),
                 java.util.Optional.empty(),
                 java.util.Optional.of("s3://warehouse/ns/table"),
+                java.util.Optional.empty(),
                 connector,
                 config));
   }
@@ -365,21 +367,22 @@ class ServerSideStorageConfigResolverTest {
             Map.of("delta.source", "unity"),
             new ConnectorConfig.Auth("none", Map.of(), Map.of()));
 
-    ConnectorConfig resolved =
-        resolver.resolveWithAuthorization(
+    try (var resolved =
+        resolver.resolveManagedWithAuthorization(
             java.util.Optional.empty(),
             java.util.Optional.empty(),
             java.util.Optional.empty(),
             java.util.Optional.of("s3://bucket/table"),
+            java.util.Optional.empty(),
             connector,
-            config);
-
-    assertEquals("http://localstack:4566", resolved.options().get("s3.endpoint"));
-    assertEquals("us-east-1", resolved.options().get("s3.region"));
-    assertEquals("true", resolved.options().get("s3.path-style-access"));
-    assertEquals("test-access", resolved.options().get("s3.access-key-id"));
-    assertEquals("test-secret", resolved.options().get("s3.secret-access-key"));
-    assertEquals("test-session", resolved.options().get("s3.session-token"));
+            config)) {
+      assertEquals("http://localstack:4566", resolved.config().options().get("s3.endpoint"));
+      assertEquals("us-east-1", resolved.config().options().get("s3.region"));
+      assertEquals("true", resolved.config().options().get("s3.path-style-access"));
+      assertEquals("test-access", resolved.config().options().get("s3.access-key-id"));
+      assertEquals("test-secret", resolved.config().options().get("s3.secret-access-key"));
+      assertEquals("test-session", resolved.config().options().get("s3.session-token"));
+    }
   }
 
   @Test
@@ -410,13 +413,22 @@ class ServerSideStorageConfigResolverTest {
             Map.of("delta.source", "unity"),
             new ConnectorConfig.Auth("none", Map.of(), Map.of()));
 
-    resolver.resolveWithAuthorization(
-        java.util.Optional.of("token"),
-        java.util.Optional.of("job-1"),
-        java.util.Optional.of("lease-1"),
-        java.util.Optional.of("s3://bucket/table"),
-        connector,
-        config);
+    try (var ignored =
+        resolver.resolveManagedWithAuthorization(
+            java.util.Optional.of("token"),
+            java.util.Optional.of("job-1"),
+            java.util.Optional.of("lease-1"),
+            java.util.Optional.of("s3://bucket/table"),
+            java.util.Optional.of(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_TABLE)
+                    .setId("table-1")
+                    .build()),
+            connector,
+            config)) {
+      // Keep the execution-scoped provider registered while inspecting the request.
+    }
 
     ArgumentCaptor<VendStorageCredentialsRequest> requestCaptor =
         ArgumentCaptor.forClass(VendStorageCredentialsRequest.class);
@@ -427,6 +439,7 @@ class ServerSideStorageConfigResolverTest {
     assertEquals(
         "lease-1",
         requestCaptor.getValue().getExecutionBinding().getReconcileLease().getLeaseEpoch());
+    assertEquals("table-1", requestCaptor.getValue().getTableId().getId());
   }
 
   @Test
@@ -475,6 +488,7 @@ class ServerSideStorageConfigResolverTest {
             java.util.Optional.of("job-1"),
             java.util.Optional.of("lease-1"),
             java.util.Optional.of("s3://bucket/table"),
+            java.util.Optional.empty(),
             connector,
             config)) {
       providerId =
@@ -538,6 +552,7 @@ class ServerSideStorageConfigResolverTest {
             java.util.Optional.of("job-1"),
             java.util.Optional.of("lease-1"),
             java.util.Optional.of("s3://bucket/table"),
+            java.util.Optional.empty(),
             connector,
             config)) {
       assertFalse(
@@ -592,6 +607,7 @@ class ServerSideStorageConfigResolverTest {
             java.util.Optional.of("job-1"),
             java.util.Optional.of("lease-1"),
             java.util.Optional.of("s3://bucket/table"),
+            java.util.Optional.empty(),
             connector,
             config)) {
       assertFalse(
@@ -659,6 +675,7 @@ class ServerSideStorageConfigResolverTest {
             java.util.Optional.of("job-1"),
             java.util.Optional.of("lease-1"),
             java.util.Optional.of("s3://bucket/table"),
+            java.util.Optional.empty(),
             connector,
             config)) {
       String providerId =
@@ -735,6 +752,7 @@ class ServerSideStorageConfigResolverTest {
             java.util.Optional.of("job-1"),
             java.util.Optional.of("lease-1"),
             java.util.Optional.of("s3://bucket/table"),
+            java.util.Optional.empty(),
             connector,
             config)) {
       String providerId =
@@ -879,11 +897,12 @@ class ServerSideStorageConfigResolverTest {
         assertThrows(
             IllegalArgumentException.class,
             () ->
-                resolver.resolveWithAuthorization(
+                resolver.resolveManagedWithAuthorization(
                     java.util.Optional.of("token"),
                     java.util.Optional.of("job-1"),
                     java.util.Optional.empty(),
                     java.util.Optional.of("s3://bucket/table"),
+                    java.util.Optional.empty(),
                     connector,
                     config));
     assertEquals(

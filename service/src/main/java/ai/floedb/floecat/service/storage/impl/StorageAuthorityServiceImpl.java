@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.MutationOps;
@@ -473,6 +474,9 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
       VendStorageCredentialsRequest request, ReconcileJobStore.ReconcileJob job) {
     String requestedLocationPrefix = validateExplicitLocation(request);
     CredentialScope scope = resolveLeaseScopedLocation(job);
+    if ((scope == null || scope.authorityLookupLocationPrefix() == null) && request.hasTableId()) {
+      scope = resolveDiscoveryTableLocation(request.getTableId(), job);
+    }
     if (scope == null || scope.authorityLookupLocationPrefix() == null) {
       throw io.grpc.Status.FAILED_PRECONDITION
           .withDescription("reconcile lease is not bound to a concrete storage location")
@@ -562,6 +566,31 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                     .setId(tableId)
                     .build()));
     return CredentialScope.forSingleLocation(locationPrefix);
+  }
+
+  private CredentialScope resolveDiscoveryTableLocation(
+      ResourceId requestedTableId, ReconcileJobStore.ReconcileJob job) {
+    if (job == null
+        || job.jobKind != ReconcileJobKind.PLAN_TABLE
+        || job.tableTask == null
+        || (job.tableTask.destinationTableId() != null
+            && !job.tableTask.destinationTableId().isBlank())) {
+      return null;
+    }
+    ResourceId tableId = scopedTableId(job.accountId, requestedTableId, correlationId());
+    Table table = loadVisibleTable(tableId);
+    if (!table.hasUpstream()
+        || !table.getUpstream().hasConnectorId()
+        || !job.connectorId.equals(table.getUpstream().getConnectorId().getId())
+        || !job.tableTask
+            .sourceNamespace()
+            .equals(String.join(".", table.getUpstream().getNamespacePathList()))
+        || !job.tableTask.sourceTable().equals(table.getUpstream().getTableDisplayName())) {
+      throw io.grpc.Status.PERMISSION_DENIED
+          .withDescription("requested table does not match the leased reconcile table")
+          .asRuntimeException();
+    }
+    return CredentialScope.forSingleLocation(resolveTableLocationPrefix(table));
   }
 
   private static boolean isWithinExecutionScope(

@@ -105,6 +105,8 @@ class QueuedReconcileWorkerSupport {
       ReconcileTableTask tableTask,
       CaptureMode captureMode,
       String bearerToken,
+      String executionJobId,
+      String executionLeaseEpoch,
       BooleanSupplier cancelRequested,
       ReconcileExecutor.ProgressListener progress) {
     ProgressListener progressListener = progress == null ? null : progress::onProgress;
@@ -117,6 +119,8 @@ class QueuedReconcileWorkerSupport {
             tableTask,
             captureMode,
             bearerToken,
+            executionJobId,
+            executionLeaseEpoch,
             cancelRequested,
             progressListener);
     return new TableExecutionResult(toExecutionResult(result), result.matchedTableIds());
@@ -128,6 +132,8 @@ class QueuedReconcileWorkerSupport {
       ReconcileScope scopeIn,
       ReconcileViewTask viewTask,
       String bearerToken,
+      String executionJobId,
+      String executionLeaseEpoch,
       BooleanSupplier cancelRequested,
       ReconcileExecutor.ProgressListener progress) {
     // Queue-only mutation preparation: discovery view work may create the destination namespace
@@ -157,6 +163,8 @@ class QueuedReconcileWorkerSupport {
             scope,
             effectiveViewTask,
             bearerToken,
+            executionJobId,
+            executionLeaseEpoch,
             cancelRequested,
             progressListener)
         : prepareStrictViewMutation(
@@ -165,6 +173,8 @@ class QueuedReconcileWorkerSupport {
             scope,
             effectiveViewTask,
             bearerToken,
+            executionJobId,
+            executionLeaseEpoch,
             cancelRequested,
             progressListener);
   }
@@ -177,6 +187,8 @@ class QueuedReconcileWorkerSupport {
       ReconcileTableTask tableTask,
       CaptureMode captureMode,
       String bearerToken,
+      String executionJobId,
+      String executionLeaseEpoch,
       BooleanSupplier cancelRequested,
       ProgressListener progress) {
     ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
@@ -207,6 +219,8 @@ class QueuedReconcileWorkerSupport {
             effectiveTableTask,
             captureMode,
             bearerToken,
+            executionJobId,
+            executionLeaseEpoch,
             cancelRequested,
             progress)
         : reconcileSingleTableTask(
@@ -217,6 +231,8 @@ class QueuedReconcileWorkerSupport {
             effectiveTableTask,
             captureMode,
             bearerToken,
+            executionJobId,
+            executionLeaseEpoch,
             cancelRequested,
             progress);
   }
@@ -227,6 +243,8 @@ class QueuedReconcileWorkerSupport {
       ReconcileScope scope,
       ReconcileViewTask viewTask,
       String bearerToken,
+      String executionJobId,
+      String executionLeaseEpoch,
       BooleanSupplier cancelRequested,
       ProgressListener progress) {
     if (viewTask.destinationViewId().isBlank()) {
@@ -278,7 +296,11 @@ class QueuedReconcileWorkerSupport {
     }
 
     ReconcileContext ctx =
-        reconcilerService.buildContext(principal, Optional.ofNullable(bearerToken));
+        reconcilerService.buildContext(
+            principal,
+            Optional.ofNullable(bearerToken),
+            Optional.ofNullable(executionJobId),
+            Optional.ofNullable(executionLeaseEpoch));
     BooleanSupplier cancelCheck = cancelRequested == null ? NO_CANCEL : cancelRequested;
     ProgressListener progressOut = progress == null ? NO_PROGRESS : progress;
 
@@ -303,11 +325,13 @@ class QueuedReconcileWorkerSupport {
                       new IllegalArgumentException(
                           "Destination view id does not exist: " + viewTask.destinationViewId()));
     } catch (Exception e) {
+      active.close();
       return new PlannedViewMutationResult(
           toExecutionResult(new Result(0, 0, 0, 0, 1, 0, 0, e)), null);
     }
     if (destinationViewMetadata.namespaceId() == null
         || destinationViewMetadata.namespaceId().getId().isBlank()) {
+      active.close();
       return new PlannedViewMutationResult(
           toExecutionResult(
               new Result(
@@ -325,6 +349,7 @@ class QueuedReconcileWorkerSupport {
     }
     if (destinationViewMetadata.catalogId() == null
         || destinationViewMetadata.catalogId().getId().isBlank()) {
+      active.close();
       return new PlannedViewMutationResult(
           toExecutionResult(
               new Result(
@@ -341,8 +366,9 @@ class QueuedReconcileWorkerSupport {
           null);
     }
 
-    try (FloecatConnector connector =
-        reconcilerService.connectorOpener.open(active.resolvedConfig())) {
+    try (active;
+        FloecatConnector connector =
+            reconcilerService.connectorOpener.open(active.resolvedConfig())) {
       ensureNotCancelled(cancelCheck);
       FloecatConnector.ViewDescriptor view =
           connector
@@ -414,6 +440,8 @@ class QueuedReconcileWorkerSupport {
       ReconcileScope scope,
       ReconcileViewTask viewTask,
       String bearerToken,
+      String executionJobId,
+      String executionLeaseEpoch,
       BooleanSupplier cancelRequested,
       ProgressListener progress) {
     if (viewTask.sourceNamespace().isBlank() || viewTask.sourceView().isBlank()) {
@@ -448,7 +476,11 @@ class QueuedReconcileWorkerSupport {
     }
 
     ReconcileContext ctx =
-        reconcilerService.buildContext(principal, Optional.ofNullable(bearerToken));
+        reconcilerService.buildContext(
+            principal,
+            Optional.ofNullable(bearerToken),
+            Optional.ofNullable(executionJobId),
+            Optional.ofNullable(executionLeaseEpoch));
     BooleanSupplier cancelCheck = cancelRequested == null ? NO_CANCEL : cancelRequested;
     ProgressListener progressOut = progress == null ? NO_PROGRESS : progress;
 
@@ -468,6 +500,7 @@ class QueuedReconcileWorkerSupport {
             active.destination(),
             viewTask.destinationNamespaceId());
     if (!scope.matchesNamespaceId(destNamespaceId.getId())) {
+      active.close();
       return new PlannedViewMutationResult(
           toExecutionResult(
               new Result(
@@ -491,8 +524,9 @@ class QueuedReconcileWorkerSupport {
             ? viewTask.sourceView()
             : viewTask.destinationViewDisplayName();
 
-    try (FloecatConnector connector =
-        reconcilerService.connectorOpener.open(active.resolvedConfig())) {
+    try (active;
+        FloecatConnector connector =
+            reconcilerService.connectorOpener.open(active.resolvedConfig())) {
       ensureNotCancelled(cancelCheck);
       FloecatConnector.ViewDescriptor view =
           connector
@@ -561,6 +595,8 @@ class QueuedReconcileWorkerSupport {
       ReconcileTableTask tableTask,
       CaptureMode captureMode,
       String bearerToken,
+      String executionJobId,
+      String executionLeaseEpoch,
       BooleanSupplier cancelRequested,
       ProgressListener progress) {
     ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
@@ -571,7 +607,11 @@ class QueuedReconcileWorkerSupport {
     }
 
     ReconcileContext ctx =
-        reconcilerService.buildContext(principal, Optional.ofNullable(bearerToken));
+        reconcilerService.buildContext(
+            principal,
+            Optional.ofNullable(bearerToken),
+            Optional.ofNullable(executionJobId),
+            Optional.ofNullable(executionLeaseEpoch));
     BooleanSupplier cancelCheck = cancelRequested == null ? NO_CANCEL : cancelRequested;
     ProgressListener progressOut = progress == null ? NO_PROGRESS : progress;
 
@@ -596,9 +636,11 @@ class QueuedReconcileWorkerSupport {
                           "Destination table id does not exist: "
                               + tableTask.destinationTableId()));
     } catch (Exception e) {
+      active.close();
       return new Result(0, 0, 0, 0, 1, 0, 0, e);
     }
     if (tableMetadata.namespaceId() == null || tableMetadata.namespaceId().getId().isBlank()) {
+      active.close();
       return new Result(
           0,
           0,
@@ -641,8 +683,9 @@ class QueuedReconcileWorkerSupport {
             ? tableTask.destinationTableDisplayName()
             : tableMetadata.displayName();
 
-    try (FloecatConnector connector =
-        reconcilerService.connectorOpener.open(active.resolvedConfig())) {
+    try (active;
+        FloecatConnector connector =
+            reconcilerService.connectorOpener.open(active.resolvedConfig())) {
       boolean includeCoreMetadata =
           ReconcilerService.includesMetadata(captureMode)
               && !ReconcilerService.isCaptureOnlyConnector(active.connector());
@@ -751,6 +794,8 @@ class QueuedReconcileWorkerSupport {
       ReconcileTableTask tableTask,
       CaptureMode captureMode,
       String bearerToken,
+      String executionJobId,
+      String executionLeaseEpoch,
       BooleanSupplier cancelRequested,
       ProgressListener progress) {
     ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
@@ -762,7 +807,11 @@ class QueuedReconcileWorkerSupport {
     }
 
     ReconcileContext ctx =
-        reconcilerService.buildContext(principal, Optional.ofNullable(bearerToken));
+        reconcilerService.buildContext(
+            principal,
+            Optional.ofNullable(bearerToken),
+            Optional.ofNullable(executionJobId),
+            Optional.ofNullable(executionLeaseEpoch));
     BooleanSupplier cancelCheck = cancelRequested == null ? NO_CANCEL : cancelRequested;
     ProgressListener progressOut = progress == null ? NO_PROGRESS : progress;
 
@@ -781,6 +830,7 @@ class QueuedReconcileWorkerSupport {
             active.destination(),
             tableTask.destinationNamespaceId());
     if (!scope.matchesNamespaceId(destNamespaceId.getId())) {
+      active.close();
       return new Result(
           0,
           0,
@@ -822,8 +872,9 @@ class QueuedReconcileWorkerSupport {
               message);
         };
 
-    try (FloecatConnector connector =
-        reconcilerService.connectorOpener.open(active.resolvedConfig())) {
+    try (active;
+        FloecatConnector connector =
+            reconcilerService.connectorOpener.open(active.resolvedConfig())) {
       ResourceId destCatalogId = active.destination().getCatalogId();
       Set<String> defaultColumnSelectors =
           ReconcilerService.normalizeSelectors(active.source().getColumnsList());
@@ -983,9 +1034,6 @@ class QueuedReconcileWorkerSupport {
     if (!scope.acceptsTable(table.destinationNamespaceId().getId(), tableId.getId())) {
       return TableExecutionOutcome.skipped();
     }
-    ConnectorConfig tableScopedConfig =
-        reconcilerService.tableScopedResolvedConfig(ctx, active, tableId);
-
     Map<String, Map<Long, List<ReconcileScope.ScopedCaptureRequest>>> scopedCaptureRequestsByTable =
         ReconcilerService.indexScopedCaptureRequestsByTableScope(
             scope.destinationCaptureRequests());
@@ -1037,15 +1085,39 @@ class QueuedReconcileWorkerSupport {
             defaultColumnSelectors);
 
     MetadataPassOutcome outcome;
-    if (tableScopedConfig != null && !tableScopedConfig.equals(active.resolvedConfig())) {
-      try (FloecatConnector tableScopedConnector =
-          reconcilerService.connectorOpener.open(tableScopedConfig)) {
+    try (var tableScoped = reconcilerService.tableScopedResolvedConfig(ctx, active, tableId)) {
+      ConnectorConfig tableScopedConfig = tableScoped.config();
+      if (tableScopedConfig != null && !tableScopedConfig.equals(active.resolvedConfig())) {
+        try (FloecatConnector tableScopedConnector =
+            reconcilerService.connectorOpener.open(tableScopedConfig)) {
+          outcome =
+              processMetadataPass(
+                  ctx,
+                  scope,
+                  tableId,
+                  tableScopedConnector,
+                  table.sourceNamespace(),
+                  table.sourceTable(),
+                  fullRescan,
+                  includeCoreMetadata,
+                  knownSnapshotIds,
+                  enumerationKnownSnapshotIds,
+                  targetSnapshotIds,
+                  cancelRequested,
+                  progress,
+                  tablesScannedBase + tablesScanned,
+                  tablesChangedBase,
+                  errors,
+                  snapshotsProcessedBase,
+                  statsProcessedBase);
+        }
+      } else {
         outcome =
             processMetadataPass(
                 ctx,
                 scope,
                 tableId,
-                tableScopedConnector,
+                connector,
                 table.sourceNamespace(),
                 table.sourceTable(),
                 fullRescan,
@@ -1061,27 +1133,6 @@ class QueuedReconcileWorkerSupport {
                 snapshotsProcessedBase,
                 statsProcessedBase);
       }
-    } else {
-      outcome =
-          processMetadataPass(
-              ctx,
-              scope,
-              tableId,
-              connector,
-              table.sourceNamespace(),
-              table.sourceTable(),
-              fullRescan,
-              includeCoreMetadata,
-              knownSnapshotIds,
-              enumerationKnownSnapshotIds,
-              targetSnapshotIds,
-              cancelRequested,
-              progress,
-              tablesScannedBase + tablesScanned,
-              tablesChangedBase,
-              errors,
-              snapshotsProcessedBase,
-              statsProcessedBase);
     }
     long snapshotsProcessed = outcome.ingestCounts().snapshotsProcessed;
     long statsProcessed = 0L;

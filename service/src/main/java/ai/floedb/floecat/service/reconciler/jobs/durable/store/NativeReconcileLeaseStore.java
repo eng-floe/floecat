@@ -1213,10 +1213,6 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
             newExpiresAtMs,
             millisUntilExpiryBeforeRenew == null ? Long.MIN_VALUE : millisUntilExpiryBeforeRenew,
             renewLatencyMs);
-    if (Objects.equals(ReconcileJobKind.EXEC_FILE_GROUP.name(), jobKind)) {
-      LOG.info(message);
-      return;
-    }
     LOG.debug(message);
   }
 

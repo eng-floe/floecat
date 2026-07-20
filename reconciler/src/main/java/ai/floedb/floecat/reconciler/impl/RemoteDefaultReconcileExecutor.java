@@ -148,6 +148,8 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
             payload.tableTask(),
             payload.captureMode(),
             workerAuthorizationHeader(lease.accountId),
+            lease.jobId,
+            lease.leaseEpoch,
             context.shouldStop(),
             progressListener);
     ExecutionResult result = tableExecution.result();
@@ -209,7 +211,8 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
     List<ReconcileSnapshotTask> snapshotTasks;
     try {
       snapshotTasks =
-          snapshotTasksForSuccessfulPlan(principal, connectorId, payload, tableExecution);
+          snapshotTasksForSuccessfulPlan(
+              principal, connectorId, payload, tableExecution, remoteLease);
     } catch (Exception e) {
       Exception classified =
           e instanceof ReconcileFailureException failure
@@ -309,6 +312,8 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
             payload.scope(),
             payload.viewTask(),
             workerAuthorizationHeader(remoteLease.lease().accountId),
+            remoteLease.lease().jobId,
+            remoteLease.lease().leaseEpoch,
             context.shouldStop(),
             progressListener);
     ExecutionResult result = planned.result();
@@ -391,7 +396,8 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
       PrincipalContext principal,
       ResourceId connectorId,
       StandalonePlanTablePayload payload,
-      QueuedReconcileWorkerSupport.TableExecutionResult tableExecution) {
+      QueuedReconcileWorkerSupport.TableExecutionResult tableExecution,
+      RemoteLeasedJob remoteLease) {
     if (payload.captureMode() == ReconcilerService.CaptureMode.METADATA_ONLY) {
       return List.of();
     }
@@ -410,7 +416,9 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
         scope,
         task,
         payload.captureMode(),
-        workerAuthorizationHeader(principal.getAccountId()));
+        workerAuthorizationHeader(principal.getAccountId()),
+        remoteLease.lease().jobId,
+        remoteLease.lease().leaseEpoch);
   }
 
   private String workerAuthorizationHeader(String accountId) {

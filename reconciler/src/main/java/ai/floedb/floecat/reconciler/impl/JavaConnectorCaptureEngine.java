@@ -123,6 +123,7 @@ public class JavaConnectorCaptureEngine implements CaptureEngine {
         request.executionJobId(),
         request.executionLeaseEpoch(),
         request.storageLocation(),
+        Optional.ofNullable(request.tableId()),
         connector,
         resolved);
   }
