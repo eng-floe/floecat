@@ -1030,7 +1030,13 @@ public class UserObjectBundleService {
     return builder.build();
   }
 
-  private static long decorationTimingNanos(
+  /**
+   * A non-negative {@code long} decoration attribute ({@code 0} when absent, non-numeric, or
+   * negative). The extraction/clamping lives here once; {@link #decorationTimingNanos} and {@link
+   * #decorationCounter} are named wrappers that keep the intent (a nanos timing vs. a warm-hit
+   * count) legible at their call sites.
+   */
+  private static long nonNegativeLongAttribute(
       RelationDecoration relationDecoration, String attributeKey) {
     if (relationDecoration == null || attributeKey == null || attributeKey.isBlank()) {
       return 0L;
@@ -1042,16 +1048,13 @@ public class UserObjectBundleService {
     return Math.max(0L, number.longValue());
   }
 
-  private static long decorationCounter(
+  private static long decorationTimingNanos(
       RelationDecoration relationDecoration, String attributeKey) {
-    if (relationDecoration == null || attributeKey == null || attributeKey.isBlank()) {
-      return 0L;
-    }
-    Object value = relationDecoration.attribute(attributeKey);
-    if (!(value instanceof Number number)) {
-      return 0L;
-    }
-    return Math.max(0L, number.longValue());
+    return nonNegativeLongAttribute(relationDecoration, attributeKey);
+  }
+
+  private static long decorationCounter(RelationDecoration relationDecoration, String attributeKey) {
+    return nonNegativeLongAttribute(relationDecoration, attributeKey);
   }
 
   private Optional<FlightEndpointRef> configuredEndpointForKey(String endpointKey) {
