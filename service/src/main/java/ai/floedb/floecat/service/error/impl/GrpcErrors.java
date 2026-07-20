@@ -353,6 +353,9 @@ public final class GrpcErrors {
 
   private static final int DEFAULT_MAX_DETAIL_CHARS = 512;
   private static final Pattern WHITESPACE = Pattern.compile("\\s+");
+  private static final Pattern SENSITIVE_LOG_VALUE =
+      Pattern.compile(
+          "(?i)(access[._-]?key(?:[._-]?id)?|secret[._-]?access[._-]?key|session[._-]?token|authorization|password|credential)(\\s*[:=]\\s*)([^,;\\s}\\]]+)");
   private static final String ELISION_PREFIX = " ...[";
   private static final String ELISION_SUFFIX = " chars elided]... ";
 
@@ -397,7 +400,7 @@ public final class GrpcErrors {
    * embedded dump, so a head-only truncation would discard it. The elision marker is counted
    * against the cap, so the returned string never exceeds {@code max}.
    */
-  static String clampDetail(String raw) {
+  public static String clampDetail(String raw) {
     if (raw == null) {
       return "";
     }
@@ -422,6 +425,14 @@ public final class GrpcErrors {
     int dropped = collapsed.length() - budget;
     String elision = ELISION_PREFIX + dropped + ELISION_SUFFIX;
     return collapsed.substring(0, head) + elision + collapsed.substring(collapsed.length() - tail);
+  }
+
+  public static String sanitizeLogDetail(String raw) {
+    if (raw == null || raw.isBlank()) {
+      return "";
+    }
+    String redacted = SENSITIVE_LOG_VALUE.matcher(raw).replaceAll("$1$2[REDACTED]");
+    return clampDetail(redacted);
   }
 
   private static void annotateCause(Map<String, String> params, Throwable t) {
