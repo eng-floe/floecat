@@ -1201,6 +1201,9 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
       long newExpiresAtMs,
       Long millisUntilExpiryBeforeRenew,
       long renewLatencyMs) {
+    if (!LOG.isDebugEnabled()) {
+      return;
+    }
     String jobKind = resolveJobKindForLeaseLog(accountId, jobId);
     String message =
         String.format(

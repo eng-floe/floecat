@@ -272,7 +272,7 @@ public class ServerSideStorageConfigResolver {
             .setAccountId(accountId)
             .setLocationPrefix(locationPrefix)
             .setUsage(StorageCredentialUsage.SCU_SERVER);
-    if (tableId != null && tableId.isPresent()) {
+    if (tableId.isPresent()) {
       request.setTableId(tableId.orElseThrow());
     }
     if (executionJobId.isPresent() ^ executionLeaseEpoch.isPresent()) {
