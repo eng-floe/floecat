@@ -555,9 +555,9 @@ public class UserObjectBundleService {
     // (backend kind + the resolved Flight/storage endpoint) — an identity-only reply omits that
     // metadata, and a config-resolved endpoint (configuredEndpointForKey) can change without moving
     // cacheIdentity. A floecat redeploy does NOT reset an external caching client, so without this
-    // the client would match the token, get no endpoint, and route to the stale one. The exact
-    // value served is resolved once in resolveSystemExecution and reused here, so the token can
-    // never drift from what buildRelation stamps.
+    // the client would match the token, get no endpoint, and route to the stale one. The endpoint is
+    // resolved through resolveSystemExecution — the same helper buildRelation uses to stamp it — so
+    // the token cannot drift from the served routing.
     ResourceId relId = relation.relationId();
     StringBuilder keyMaterial =
         new StringBuilder()
@@ -571,6 +571,13 @@ public class UserObjectBundleService {
     if (relation.node() instanceof SystemTableNode systemTableNode) {
       keyMaterial.append('\0').append(resolveSystemExecution(systemTableNode).tokenMaterial());
     }
+    // A CONTENT-derived identity: only table_blob_version is meaningful. A view or system relation
+    // has no query snapshot pin, so snapshot_id, pin_kind, pin_fingerprint, and constraints_ref
+    // stay unset (0 / UNSPECIFIED / empty) — deliberately, not as a placeholder. Consumers must key
+    // such a relation on table_blob_version alone and MUST NOT read the snapshot-pin fields off it
+    // (there is no snapshot to describe). The in-repo planner does exactly this — it reads only
+    // table_blob_version, constraints_ref_version, and snapshot_id off pin_identity and never
+    // branches on pin_kind (see RPC_parsing.cpp) — so the present-but-defaulted fields are inert.
     return Optional.of(
         RelationPinIdentity.newBuilder()
             .setTableBlobVersion(Hashing.sha256Hex(keyMaterial.toString()))
@@ -701,7 +708,8 @@ public class UserObjectBundleService {
       ResolvedRelation relation,
       Optional<RelationPinIdentity> scopedIdentity,
       StatsProvider statsProvider,
-      Set<String> knownBlobVersions) {
+      Set<String> knownBlobVersions,
+      TimingAccumulator timings) {
     // The token is the engine-scoped payload token (scopedIdentity), not the bare content version,
     // so a client that proved possession under a different engine cannot be served identity-only.
     // A blank version can never prove possession: a user table whose definition blob had no etag
@@ -715,7 +723,13 @@ public class UserObjectBundleService {
       return null;
     }
     RelationInfo.Builder slim = baseRelationInfo(relation).setPinIdentity(scopedIdentity.get());
+    // Time the stats lookup exactly as the full path does (buildRelation): the slim path still hits
+    // the stats provider, which can block on its latency budget. Without this, once the
+    // conditional-request feature is doing its job a large fraction of resolutions would contribute
+    // zero to statsLookup telemetry and the slow-RPC threshold.
+    long statsLookupStartNs = System.nanoTime();
     attachTableStats(slim, relation.relationId(), statsProvider);
+    timings.addStatsLookupNanos(System.nanoTime() - statsLookupStartNs);
     return slim.build();
   }
 
@@ -790,8 +804,10 @@ public class UserObjectBundleService {
      * path fallback. ENGINE tables never set an endpoint.
      */
     if (relation.node() instanceof SystemTableNode systemTableNode) {
-      // Resolve once through the shared helper so the served routing and the token that covers it
-      // (pinIdentityFor) are computed from the same logic and cannot drift.
+      // Resolve through the shared helper — the SAME implementation pinIdentityFor uses to fold
+      // routing into the token — so the served routing and the token that covers it cannot drift.
+      // It is invoked independently at each site (a cheap in-memory config lookup), not memoized
+      // across them; both resolve deterministically from the same node, so they always agree.
       SystemExecution exec = resolveSystemExecution(systemTableNode);
       builder.setBackendKind(systemTableNode.backendKind());
       if (exec.flightEndpoint() != null) {
@@ -1854,8 +1870,15 @@ public class UserObjectBundleService {
          * ever hold full payloads, or a later request that did NOT prove
          * possession would be served a payload-less relation. */
         RelationInfo slim =
-            identityOnlyOrNull(found.relation(), scopedIdentity, statsProvider, knownBlobVersions);
+            identityOnlyOrNull(
+                found.relation(), scopedIdentity, statsProvider, knownBlobVersions, timings);
         if (slim != null) {
+          // Account the slim path symmetric with the full path below: its stats time already landed
+          // in timings via identityOnlyOrNull; fold the remaining (identity-build) time into
+          // relationBuildNanos so identity-only resolutions are not invisible to the summary event.
+          long buildNanos = System.nanoTime() - buildStartNs;
+          long statsDeltaNanos = timings.statsLookupNanos() - statsBeforeNanos;
+          relationBuildNanos += Math.max(0L, buildNanos - statsDeltaNanos);
           resolutions.add(
               RelationResolution.newBuilder()
                   .setInputIndex(found.inputIndex())
