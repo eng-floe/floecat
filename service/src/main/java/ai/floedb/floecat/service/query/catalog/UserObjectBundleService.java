@@ -586,11 +586,16 @@ public class UserObjectBundleService {
    */
   private record SystemExecution(String backendKind, FlightEndpointRef flightEndpoint, String storagePath) {
     String tokenMaterial() {
-      return backendKind
-          + '\0'
-          + (flightEndpoint != null ? flightEndpoint.toString() : "")
-          + '\0'
-          + storagePath;
+      // Build from the endpoint's explicit, contractual fields (host/port/tls) rather than
+      // FlightEndpointRef.toString(): protobuf documents Message.toString() as non-contractual and
+      // subject to change, and this token is persisted by clients and matched across queries. The
+      // reserved `ticket` field is deliberately excluded — workers must not inspect it, and it is
+      // not routing identity. The token then moves exactly when the routing it covers moves.
+      String endpoint =
+          flightEndpoint != null
+              ? flightEndpoint.getHost() + ':' + flightEndpoint.getPort() + ':' + flightEndpoint.getTls()
+              : "";
+      return backendKind + '\0' + endpoint + '\0' + storagePath;
     }
   }
 
