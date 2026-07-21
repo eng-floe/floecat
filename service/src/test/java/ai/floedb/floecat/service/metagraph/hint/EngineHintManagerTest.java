@@ -31,7 +31,6 @@ import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.telemetry.TestObservability;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -88,8 +87,7 @@ class EngineHintManagerTest {
             .build();
     return new UserTableNode(
         tableId,
-        version,
-        Instant.now(),
+        "blob://test/v" + version,
         catalogId,
         namespaceId,
         "tbl",

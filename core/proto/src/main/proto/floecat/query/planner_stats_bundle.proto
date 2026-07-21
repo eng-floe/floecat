@@ -83,8 +83,10 @@ message TableStatsRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
 
   /**
-   * Snapshot override: when set, fetch stats at this snapshot instead of the query_id-pinned one.
-   * When absent, the query_id pin governs snapshot selection.
+   * Optional restatement of the query's pinned snapshot. The query_id pin is authoritative and
+   * governs snapshot selection (stats and correctness constraints are read only at the pinned
+   * snapshot); when set, this must equal the pinned snapshot. A value that differs from the pin is
+   * rejected as a query consistency error rather than redirecting reads to a different snapshot.
    */
   optional int64 snapshot_id = 2;
 
@@ -387,7 +389,19 @@ message ReturnedStat {
 
 message TargetStatsResult {
   ai.floedb.floecat.common.ResourceId table_id = 1;
+
+  /**
+   * Snapshot the returned stats were actually captured at. On a stale hit (stale_ok fallback) this
+   * is the fallback snapshot, which may differ from pinned_snapshot_id.
+   */
   int64 snapshot_id = 2;
+
+  /**
+   * Snapshot the query pinned for this table, when the table is pinned. Paired with snapshot_id so
+   * the planner can tell whether the served stats are behind the pinned snapshot (stale) without
+   * having to remember what it requested. Unset when the table has no pin (e.g. pin-missing error).
+   */
+  optional int64 pinned_snapshot_id = 12;
 
   /**
    * Echoes back the requested StatsTarget for correlation.
@@ -420,6 +434,14 @@ message TargetStatsResult {
 message TableConstraintsResult {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   BundleResultStatus status = 2;
+
+  /**
+   * Content-hash version of the constraints bundle these constraints were served from — the
+   * pinned root entry's constraints ref version, matching RelationPinIdentity. Lets a caller
+   * cache the bundle and later confirm a warm hit without refetching. Empty when no bundle exists
+   * (status != FOUND) or the provider does not track it (system relations).
+   */
+  string constraints_ref_version = 3;
 
   /** Present when status == FOUND. */
   repeated ai.floedb.floecat.catalog.ConstraintDefinition constraints = 10;

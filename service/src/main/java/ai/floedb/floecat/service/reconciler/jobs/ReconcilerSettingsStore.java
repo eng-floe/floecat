@@ -24,16 +24,23 @@ import org.eclipse.microprofile.config.ConfigProvider;
 
 @ApplicationScoped
 public class ReconcilerSettingsStore {
+  private static final long DEFAULT_FINISHED_JOB_RETENTION_MS = Duration.ofHours(24).toMillis();
+
   private volatile boolean autoEnabled = true;
   private volatile long defaultIntervalMs = Duration.ofMinutes(10).toMillis();
   private volatile ReconcileMode defaultMode = ReconcileMode.RM_INCREMENTAL;
-  private volatile long finishedJobRetentionMs = Duration.ofDays(7).toMillis();
+  private volatile long finishedJobRetentionMs = DEFAULT_FINISHED_JOB_RETENTION_MS;
+  private volatile AccountTagFilter accountTagFilter = new AccountTagFilter.PassAll();
 
   @PostConstruct
   void init() {
     var cfg = ConfigProvider.getConfig();
     autoEnabled =
         cfg.getOptionalValue("floecat.reconciler.auto.enabled", Boolean.class).orElse(true);
+    accountTagFilter =
+        AccountTagFilter.parse(
+            cfg.getOptionalValue("floecat.reconciler.auto.account-tag-filter", String.class)
+                .orElse(""));
     defaultIntervalMs =
         cfg.getOptionalValue("floecat.reconciler.default-interval", Duration.class)
             .map(Duration::toMillis)
@@ -54,9 +61,9 @@ public class ReconcilerSettingsStore {
     }
     finishedJobRetentionMs =
         cfg.getOptionalValue("floecat.gc.reconcile-jobs.retention-ms", Long.class)
-            .orElse(Duration.ofDays(7).toMillis());
+            .orElse(DEFAULT_FINISHED_JOB_RETENTION_MS);
     if (finishedJobRetentionMs <= 0L) {
-      finishedJobRetentionMs = Duration.ofDays(7).toMillis();
+      finishedJobRetentionMs = DEFAULT_FINISHED_JOB_RETENTION_MS;
     }
   }
 
@@ -70,6 +77,10 @@ public class ReconcilerSettingsStore {
 
   public ReconcileMode defaultMode() {
     return defaultMode;
+  }
+
+  public AccountTagFilter accountTagFilter() {
+    return accountTagFilter;
   }
 
   public long finishedJobRetentionMs() {

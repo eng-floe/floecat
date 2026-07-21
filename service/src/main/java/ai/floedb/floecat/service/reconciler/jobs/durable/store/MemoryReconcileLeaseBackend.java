@@ -19,6 +19,8 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore.CasCheck;
+import ai.floedb.floecat.storage.spi.PointerStore.CasCheckAbsent;
 import ai.floedb.floecat.storage.spi.PointerStore.CasDelete;
 import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
 import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
@@ -33,16 +35,20 @@ import java.util.Optional;
 @IfBuildProperty(name = "floecat.kv", stringValue = "memory")
 public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
   private PointerStore pointerStore;
+  private ReconcileJobIndexBackend jobIndexBackend;
 
   @Inject
-  public MemoryReconcileLeaseBackend(PointerStore pointerStore) {
+  public MemoryReconcileLeaseBackend(
+      PointerStore pointerStore, ReconcileJobIndexBackend jobIndexBackend) {
     this.pointerStore = pointerStore;
+    this.jobIndexBackend = jobIndexBackend;
   }
 
   public MemoryReconcileLeaseBackend() {}
 
-  public void bind(PointerStore pointerStore) {
+  public void bind(PointerStore pointerStore, ReconcileJobIndexBackend jobIndexBackend) {
     this.pointerStore = pointerStore;
+    this.jobIndexBackend = jobIndexBackend;
   }
 
   @Override
@@ -87,34 +93,18 @@ public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
   }
 
   @Override
-  public boolean compareAndSetBatch(
+  public synchronized boolean compareAndSetBatch(
       ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch, LeaseWriteBatch leaseBatch) {
-    List<CasOp> ops =
-        new ArrayList<>(
-            JobIndexWriteBatchSupport.toCasOps(
-                jobIndexBatch,
-                key ->
-                    pointerStore
-                        .get(key)
-                        .map(
-                            pointer ->
-                                new JobIndexEntrySnapshot(
-                                    pointer.getKey(),
-                                    pointer.getBlobUri(),
-                                    pointer.getVersion()))));
+    List<CasOp> ops = new ArrayList<>();
     if (leaseBatch != null) {
       for (LeaseWriteOp write : leaseBatch.writes()) {
         if (write instanceof LeaseRecordCondition condition) {
-          var current =
-              pointerStore.get(
-                  LeaseBackendSupport.leasePointerKey(condition.accountId(), condition.jobId()));
+          String key =
+              LeaseBackendSupport.leasePointerKey(condition.accountId(), condition.jobId());
           if (condition.expectedVersion() == 0L) {
-            if (current.isPresent()) {
-              return false;
-            }
-          } else if (current.isEmpty()
-              || current.get().getVersion() != condition.expectedVersion()) {
-            return false;
+            ops.add(new CasCheckAbsent(key));
+          } else {
+            ops.add(new CasCheck(key, condition.expectedVersion()));
           }
         } else if (write instanceof LeaseRecordUpsert upsert) {
           String key = LeaseBackendSupport.leasePointerKey(upsert.accountId(), upsert.jobId());
@@ -162,6 +152,9 @@ public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
         }
       }
     }
-    return pointerStore.compareAndSetBatch(ops);
+    if (jobIndexBackend == null) {
+      throw new IllegalStateException("memory reconcile job index backend is not bound");
+    }
+    return jobIndexBackend.compareAndSetBatch(jobIndexBatch, ops);
   }
 }

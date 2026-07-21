@@ -36,14 +36,11 @@ import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.metagraph.model.GraphNode;
-import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
-import ai.floedb.floecat.metagraph.model.NamespaceNode;
-import ai.floedb.floecat.metagraph.model.TableNode;
-import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceTables;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -53,10 +50,9 @@ import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
-import ai.floedb.floecat.service.repo.impl.CatalogRepository;
-import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
@@ -68,11 +64,8 @@ import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
-import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.jboss.logging.Logger;
@@ -80,8 +73,6 @@ import org.jboss.logging.Logger;
 @GrpcService
 public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
-  @Inject CatalogRepository catalogRepo;
-  @Inject NamespaceRepository namespaceRepo;
   @Inject TableRepository tableRepo;
   @Inject SnapshotRepository snapshotRepo;
   @Inject PrincipalProvider principal;
@@ -91,6 +82,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject TopologyGraph topology;
   @Inject MarkerStore markerStore;
   @Inject PointerStore pointerStore;
+  @Inject TableRootWriter rootWriter;
+  @Inject TableRootRepository tableRoots;
   @Inject EngineHintSchemaCleaner hintCleaner;
   @Inject CatalogOverlay overlay;
 
@@ -111,105 +104,14 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
           "upstream.partition_keys",
           "upstream.column_id_algorithm");
 
-  private static final String TBL_TOKEN_PREFIX = "tbl:";
   private static final Logger LOG = Logger.getLogger(TableService.class);
 
-  private void ensureTableWritable(ResourceId tableId, String corr) {
-    CatalogOverlayGuards.requireWritableTableNode(overlay, tableId, corr);
+  private CatalogSurfaceTables catalogSurfaceTables() {
+    return new CatalogSurfaceTables(tableRepo, overlay);
   }
 
-  private void enforceWritableTableNode(GraphNode node, ResourceId tableId, String corr) {
-    if (node instanceof UserTableNode) {
-      return;
-    }
-
-    // System tables are immutable; return PERMISSION_DENIED when we can prove it's SYSTEM.
-    if (node != null && node.origin() == GraphNodeOrigin.SYSTEM) {
-      throw GrpcErrors.permissionDenied(
-          corr, SYSTEM_OBJECT_IMMUTABLE, Map.of("id", tableId.getId(), "kind", "table"));
-    }
-
-    // Preserve semantics for other non-user nodes.
-    throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
-  }
-
-  private void ensureTableWritableForDelete(ResourceId tableId, String corr, boolean callerCares) {
-    GraphNode node = resolveTableNode(tableId, corr, callerCares);
-
-    // if bestEffort and overlay failed / unresolved → allow repo-based best-effort delete
-    if (node == null) return;
-
-    enforceWritableTableNode(node, tableId, corr);
-  }
-
-  private GraphNode resolveTableNode(ResourceId tableId, String corr, boolean throwOnError) {
-    if (throwOnError) {
-      return CatalogOverlayGuards.requireVisibleTableNode(overlay, tableId, corr);
-    }
-    if (tableId == null) {
-      throw GrpcErrors.notFound(corr, TABLE, Map.of("id", "<missing_table_id>"));
-    }
-    ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", corr);
-
-    try {
-      return overlay.resolve(tableId).orElse(null);
-    } catch (RuntimeException e) {
-      if (throwOnError) {
-        throw e;
-      }
-      return null;
-    }
-  }
-
-  private GraphNode requireVisibleTableNode(ResourceId tableId, String corr) {
-    return CatalogOverlayGuards.requireVisibleTableNode(overlay, tableId, corr);
-  }
-
-  private Table tableFromOverlayNodeOrRepo(GraphNode node, ResourceId tableId, String corr) {
-    if (!(node instanceof TableNode tn)) {
-      throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
-    }
-
-    if (tn.origin() == GraphNodeOrigin.SYSTEM) {
-      return tn.toTableProtoTable();
-    }
-
-    // USER (and any other future non-system): keep repo behavior
-    return tableRepo
-        .getById(tableId)
-        .orElseThrow(() -> GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
-  }
-
-  // Relative key for SYSTEM paging. Since ListTables is scoped to a namespace, leaf display name is
-  // enough.
-  // Normalize to match user table naming behavior.
-  private String relativeTableKey(TableNode tn) {
-    if (tn == null) return "";
-    String name = tn.displayName();
-    if (name == null) name = "";
-    return normalizeName(name);
-  }
-
-  private static String encodeTblToken(String resumeAfterRel) {
-    // allow an "empty" service token to mean "start SYSTEM phase"
-    if (resumeAfterRel == null) resumeAfterRel = "";
-    if (resumeAfterRel.isBlank()) {
-      return TBL_TOKEN_PREFIX; // "tbl:" only
-    }
-    return TBL_TOKEN_PREFIX
-        + Base64.getUrlEncoder()
-            .withoutPadding()
-            .encodeToString(resumeAfterRel.getBytes(StandardCharsets.UTF_8));
-  }
-
-  private static String decodeTblToken(String token) {
-    if (token == null || token.isBlank() || !token.startsWith(TBL_TOKEN_PREFIX)) return "";
-    if (token.length() == TBL_TOKEN_PREFIX.length()) {
-      return ""; // "tbl:" means "start SYSTEM phase"
-    }
-    var s = token.substring(TBL_TOKEN_PREFIX.length());
-    var bytes = Base64.getUrlDecoder().decode(s);
-    return new String(bytes, StandardCharsets.UTF_8);
+  private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
+    return new CatalogSurfaceWritePolicy(overlay);
   }
 
   @Override
@@ -222,130 +124,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var pc = principal.get();
                   authz.require(pc, "table.read");
 
-                  var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
-                  final int want = Math.max(1, pageIn.limit);
-
-                  var namespaceId = request.getNamespaceId();
-                  ensureKind(
-                      namespaceId, ResourceKind.RK_NAMESPACE, "namespace_id", correlationId());
-
-                  // Overlay is source of truth for visibility (USER + SYSTEM)
-                  NamespaceNode nsNode =
-                      CatalogOverlayGuards.requireVisibleNamespaceNode(
-                          overlay, namespaceId, correlationId());
-                  ResourceId catalogId = nsNode.catalogId();
-
-                  final boolean isServiceToken =
-                      pageIn.token != null && pageIn.token.startsWith(TBL_TOKEN_PREFIX);
-                  final String resumeAfterRel = isServiceToken ? decodeTblToken(pageIn.token) : "";
-
-                  // Repo cursor only if we're not already in SYSTEM phase
-                  String repoCursor = isServiceToken ? "" : pageIn.token;
-
-                  var out = new java.util.ArrayList<Table>(want);
-                  String lastEmittedRel = "";
-
-                  //  Phase 1: repo-backed paging (user tables only)
-                  String repoNext = "";
-                  if (nsNode.origin() != GraphNodeOrigin.SYSTEM && !isServiceToken) {
-                    var next = new StringBuilder();
-                    final List<Table> scanned;
-                    try {
-                      scanned =
-                          tableRepo.list(
-                              pc.getAccountId(),
-                              catalogId.getId(),
-                              namespaceId.getId(),
-                              want,
-                              repoCursor,
-                              next);
-                    } catch (IllegalArgumentException badToken) {
-                      throw GrpcErrors.invalidArgument(
-                          correlationId(), PAGE_TOKEN_INVALID, Map.of("page_token", repoCursor));
-                    }
-
-                    out.addAll(scanned);
-                    repoNext = next.toString(); // blank => repo exhausted
-                  } else {
-                    // SYSTEM namespace OR we're already in SYSTEM phase:
-                    // treat repo as exhausted for listTables()
-                    repoNext = "";
-                  }
-
-                  //  Phase 2: append SYSTEM tables once repo is exhausted
-                  // Overlay has no paging: we implement an in-memory "resume after rel" like
-                  // namespaces.
-                  int sysCount = 0;
-                  List<TableNode> sysNodes = List.of(); // only materialize when needed
-
-                  final boolean repoExhausted = repoNext.isBlank();
-                  if (repoExhausted) {
-                    // Always need sysCount for totalSize.
-                    // Only need to materialize + sort if we're going to emit.
-                    var rels =
-                        overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
-                            .filter(TableNode.class::isInstance)
-                            .map(TableNode.class::cast)
-                            .toList();
-
-                    sysCount = rels.size();
-
-                    if (out.size() < want && sysCount > 0) {
-                      sysNodes = rels;
-
-                      record SysItem(TableNode node, String rel) {}
-
-                      var sysItems =
-                          sysNodes.stream()
-                              .map(tn -> new SysItem(tn, relativeTableKey(tn)))
-                              .filter(it -> it.rel() != null && !it.rel().isBlank())
-                              .sorted(java.util.Comparator.comparing(SysItem::rel))
-                              .toList();
-
-                      for (var it : sysItems) {
-                        if (!resumeAfterRel.isBlank() && it.rel().compareTo(resumeAfterRel) <= 0) {
-                          continue;
-                        }
-                        if (out.size() >= want) {
-                          break;
-                        }
-                        out.add(it.node().toTableProtoBuilder().setCatalogId(catalogId).build());
-                        lastEmittedRel = it.rel();
-                      }
-                    }
-                  } else {
-                    // Repo not exhausted: still need sysCount for totalSize, but avoid sorting.
-                    sysCount =
-                        (int)
-                            overlay.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
-                                .filter(TableNode.class::isInstance)
-                                .count();
-                  }
-
-                  //  nextToken
-                  // If repo still has more, return repo token.
-                  // Else if we filled the page and there may be SYSTEM continuation, return service
-                  // token.
-                  String nextToken = repoNext;
-
-                  if (nextToken.isBlank() && out.size() == want && sysCount > 0) {
-                    // Continue in SYSTEM phase.
-                    // lastEmittedRel may be blank if we haven't emitted any SYSTEM yet (bridge
-                    // case):
-                    // encodeTblToken("") => "tbl:" which means "start SYSTEM phase"
-                    nextToken = encodeTblToken(lastEmittedRel);
-                  }
-
-                  // totalSize
-                  int repoCount =
-                      (nsNode.origin() == GraphNodeOrigin.SYSTEM)
-                          ? 0
-                          : tableRepo.count(
-                              pc.getAccountId(), catalogId.getId(), namespaceId.getId());
-
-                  var page = MutationOps.pageOut(nextToken, repoCount + sysCount);
-
-                  return ListTablesResponse.newBuilder().addAllTables(out).setPage(page).build();
+                  return catalogSurfaceTables()
+                      .listTables(request, pc.getAccountId(), pc.getCorrelationId());
                 }),
             correlationId())
         .onFailure()
@@ -364,15 +144,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var principalContext = principal.get();
                   authz.require(principalContext, "table.read");
 
-                  GraphNode node = requireVisibleTableNode(request.getTableId(), correlationId());
-                  Table table =
-                      tableFromOverlayNodeOrRepo(node, request.getTableId(), correlationId());
-                  MutationMeta meta =
-                      node.origin() == GraphNodeOrigin.SYSTEM
-                          ? MutationMeta.getDefaultInstance()
-                          : tableRepo.metaForSafe(request.getTableId());
-
-                  return GetTableResponse.newBuilder().setTable(table).setMeta(meta).build();
+                  return catalogSurfaceTables()
+                      .getTable(request, principalContext.getCorrelationId());
                 }),
             correlationId())
         .onFailure()
@@ -393,39 +166,14 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var corr = pc.getCorrelationId();
                   authz.require(pc, "table.write");
 
-                  ensureKind(
-                      request.getSpec().getCatalogId(),
-                      ResourceKind.RK_CATALOG,
-                      "spec.catalog_id",
-                      corr);
-                  ensureKind(
-                      request.getSpec().getNamespaceId(),
-                      ResourceKind.RK_NAMESPACE,
-                      "spec.namespace_id",
-                      corr);
-
-                  // Overlay is the source of truth for visibility (SYSTEM + user).
+                  var writePolicy = catalogSurfaceWritePolicy();
                   var catId = request.getSpec().getCatalogId();
-                  var catalog =
-                      CatalogOverlayGuards.requireVisibleCatalogNode(overlay, catId, corr);
-                  CatalogOverlayGuards.rejectSystemCatalogMutation(catalog.id(), corr);
-
-                  // Namespace must be visible and writable (SYSTEM namespaces are immutable).
+                  writePolicy.requireWritableCatalog(catId, "spec.catalog_id", corr);
                   var nsNode =
-                      CatalogOverlayGuards.requireWritableNamespaceNode(
-                          overlay, request.getSpec().getNamespaceId(), corr);
-
-                  if (nsNode.catalogId() == null
-                      || !nsNode.catalogId().getId().equals(catId.getId())) {
-                    throw GrpcErrors.invalidArgument(
-                        corr,
-                        NAMESPACE_CATALOG_MISMATCH,
-                        Map.of(
-                            "namespace_id", nsNode.id().getId(),
-                            "namespace.catalog_id",
-                                nsNode.catalogId() == null ? "" : nsNode.catalogId().getId(),
-                            "catalog_id", catId.getId()));
-                  }
+                      writePolicy.requireWritableNamespace(
+                          request.getSpec().getNamespaceId(), "spec.namespace_id", corr);
+                  writePolicy.requireNamespaceInCatalog(
+                      nsNode, request.getSpec().getNamespaceId(), catId, corr);
 
                   var tsNow = nowTs();
 
@@ -490,6 +238,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     metadataGraph.invalidate(tableResourceId);
                     topology.evictRelationRefs(table.getNamespaceId());
                     var meta = tableRepo.metaForSafe(tableResourceId);
+                    commitDefinitionToRoot(tableResourceId, meta);
                     return CreateTableResponse.newBuilder().setTable(table).setMeta(meta).build();
                   }
 
@@ -546,6 +295,11 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                   this::correlationId,
                                   Table::parseFrom));
 
+                  // Parity with the non-idempotent path: record the definition on the root at
+                  // create time. Idempotent (the committer no-ops when the ref already matches), so
+                  // it is safe on both a genuine create and an idempotent replay, and it saves the
+                  // first reader a lazy root synthesis.
+                  commitDefinitionToRoot(result.body.getResourceId(), result.meta);
                   return CreateTableResponse.newBuilder()
                       .setTable(result.body)
                       .setMeta(result.meta)
@@ -570,7 +324,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   authz.require(pctx, "table.write");
 
                   var tableId = request.getTableId();
-                  ensureTableWritable(tableId, corr);
+                  catalogSurfaceWritePolicy().requireWritableTable(tableId, corr);
 
                   var current =
                       tableRepo
@@ -602,6 +356,12 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                   GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
 
                   var desired = applyTableSpecPatch(current, spec, mask, corr);
+                  var writePolicy = catalogSurfaceWritePolicy();
+                  var desiredNamespace =
+                      writePolicy.requireWritableNamespace(
+                          desired.getNamespaceId(), "namespace_id", corr);
+                  writePolicy.requireNamespaceInCatalog(
+                      desiredNamespace, desired.getNamespaceId(), desired.getCatalogId(), corr);
                   if (hintCleaner.shouldClearHints(mask)) {
                     Table.Builder builder = desired.toBuilder();
                     hintCleaner.cleanTableHints(builder, mask, current, builder.build());
@@ -667,6 +427,10 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   var outMeta = tableRepo.metaForSafe(tableId);
                   var latest = tableRepo.getById(tableId).orElse(desired);
 
+                  // The table blob changed (e.g. schema DDL) without a new snapshot: republish the
+                  // coherent current pair last so a CURRENT pin sees the new table blob.
+                  commitDefinitionToRoot(tableId, outMeta);
+
                   return UpdateTableResponse.newBuilder().setTable(latest).setMeta(outMeta).build();
                 }),
             correlationId())
@@ -689,7 +453,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
                   var tableId = request.getTableId();
                   boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
-                  ensureTableWritableForDelete(tableId, correlationId, callerCares);
+                  catalogSurfaceWritePolicy()
+                      .requireWritableTableForDelete(tableId, correlationId, callerCares);
 
                   Table existing = null;
                   try {
@@ -823,15 +588,14 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
     boolean catalogChanged = false;
     boolean namespaceChanged = false;
+    var writePolicy = catalogSurfaceWritePolicy();
 
     if (maskTargets(mask, "catalog_id")) {
       if (!spec.hasCatalogId()) {
         throw GrpcErrors.invalidArgument(corr, CATALOG_ID_CANNOT_CLEAR, Map.of());
       }
       var catId = spec.getCatalogId();
-      ensureKind(catId, ResourceKind.RK_CATALOG, "spec.catalog_id", corr);
-      var catalog = CatalogOverlayGuards.requireVisibleCatalogNode(overlay, catId, corr);
-      CatalogOverlayGuards.rejectSystemCatalogMutation(catalog.id(), corr);
+      writePolicy.requireWritableCatalog(catId, "spec.catalog_id", corr);
       b.setCatalogId(catId);
       catalogChanged = true;
     }
@@ -841,37 +605,18 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
         throw GrpcErrors.invalidArgument(corr, NAMESPACE_ID_CANNOT_CLEAR, Map.of());
       }
       var nsId = spec.getNamespaceId();
-      ensureKind(nsId, ResourceKind.RK_NAMESPACE, "spec.namespace_id", corr);
-      var ns = CatalogOverlayGuards.requireWritableNamespaceNode(overlay, nsId, corr);
+      var ns = writePolicy.requireWritableNamespace(nsId, "spec.namespace_id", corr);
 
       var effectiveCatalogId = catalogChanged ? b.getCatalogId() : current.getCatalogId();
-      var nsCatalogId = ns.catalogId();
-      if (nsCatalogId == null || !nsCatalogId.getId().equals(effectiveCatalogId.getId())) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            NAMESPACE_CATALOG_MISMATCH,
-            Map.of(
-                "namespace_id", nsId.getId(),
-                "namespace.catalog_id", nsCatalogId == null ? "" : nsCatalogId.getId(),
-                "catalog_id", effectiveCatalogId.getId()));
-      }
+      writePolicy.requireNamespaceInCatalog(ns, nsId, effectiveCatalogId, corr);
       b.setNamespaceId(nsId);
       namespaceChanged = true;
     }
 
     if (catalogChanged && !namespaceChanged) {
       var effectiveCatalogId = b.getCatalogId();
-      var ns = CatalogOverlayGuards.requireWritableNamespaceNode(overlay, b.getNamespaceId(), corr);
-      var nsCatalogId = ns.catalogId();
-      if (nsCatalogId == null || !nsCatalogId.getId().equals(effectiveCatalogId.getId())) {
-        throw GrpcErrors.invalidArgument(
-            corr,
-            NAMESPACE_CATALOG_MISMATCH,
-            Map.of(
-                "namespace_id", b.getNamespaceId().getId(),
-                "namespace.catalog_id", nsCatalogId == null ? "" : nsCatalogId.getId(),
-                "catalog_id", effectiveCatalogId.getId()));
-      }
+      var ns = writePolicy.requireWritableNamespace(b.getNamespaceId(), "namespace_id", corr);
+      writePolicy.requireNamespaceInCatalog(ns, b.getNamespaceId(), effectiveCatalogId, corr);
     }
 
     var currentUp = current.getUpstream();
@@ -1060,5 +805,18 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   private void purgeSnapshotsAndStats(ResourceId tableId) {
     String prefix = Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId());
     pointerStore.deleteByPrefix(prefix);
+    // The table-root pointer lives outside the snapshot prefix; left behind it would shadow the
+    // initial state of a table later recreated with the same id. Its blobs are reclaimed by
+    // CasBlobGc once the table drops out of the live set. Routed through the repository so the
+    // root-pointer cache drops its entry with the pointer (same-process read-your-writes).
+    tableRoots.purgeRoot(tableId);
+  }
+
+  /** Record the table's (possibly new) immutable definition blob on its root. */
+  private void commitDefinitionToRoot(
+      ResourceId tableId, ai.floedb.floecat.common.rpc.MutationMeta meta) {
+    if (rootWriter != null) {
+      rootWriter.commitDefinition(tableId, meta);
+    }
   }
 }

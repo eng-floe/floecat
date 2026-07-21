@@ -21,7 +21,7 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
-import java.time.Instant;
+import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -31,11 +31,22 @@ public final class TestNodes {
 
   private TestNodes() {}
 
+  /** Engine system-table node for tests exercising system-object write guards. */
+  public static SystemTableNode systemTableNode(ResourceId tableId) {
+    var namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId(tableId.getAccountId())
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("sys_ns_" + tableId.getId())
+            .build();
+    return new SystemTableNode.EngineSystemTableNode(
+        tableId, 1L, "engine", "system_table", namespaceId, List.of(), null, null);
+  }
+
   public static UserTableNode tableNode(ResourceId tableId, String schemaJson) {
     return new UserTableNode(
         tableId,
-        1L,
-        Instant.EPOCH,
+        "blob://test/v1",
         rid(tableId.getAccountId(), "cat-" + tableId.getId()),
         rid(tableId.getAccountId(), "ns-" + tableId.getId()),
         tableId.getId(),

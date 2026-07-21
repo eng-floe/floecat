@@ -16,64 +16,39 @@
 
 package ai.floedb.floecat.storage.aws;
 
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.concurrent.atomic.AtomicReference;
-import org.jboss.logging.Logger;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.function.Function;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 
 @ApplicationScoped
 public class DynamoDbAsyncClientManager {
 
-  private static final Logger LOG = Logger.getLogger(DynamoDbAsyncClientManager.class);
-
   @Inject AwsClients awsClients;
 
-  private final AtomicReference<DynamoDbAsyncClient> current = new AtomicReference<>();
+  private final RefreshingAwsClient<DynamoDbAsyncClient> client =
+      RefreshingAwsClient.withResourceFactory(
+          "DynamoDB async", () -> awsClients.newDynamoDbAsyncClientResource());
 
   public DynamoDbAsyncClient current() {
-    DynamoDbAsyncClient existing = current.get();
-    if (existing != null) {
-      return existing;
-    }
-
-    DynamoDbAsyncClient next = awsClients.newDynamoDbAsyncClient();
-    if (current.compareAndSet(null, next)) {
-      return next;
-    }
-
-    next.close();
-    return current.get();
+    return client.current();
   }
 
-  public void refreshAfterFailure(Throwable failure) {
-    if (!ClosedAwsClientDetector.isConnectionPoolShutdown(failure)) {
-      return;
-    }
+  public <R> R call(Function<DynamoDbAsyncClient, R> operation) {
+    return client.callUnchecked(operation);
+  }
 
-    DynamoDbAsyncClient previous = current.get();
-    DynamoDbAsyncClient next = awsClients.newDynamoDbAsyncClient();
-    if (current.compareAndSet(previous, next)) {
-      closeQuietly(previous);
-      LOG.warn("Refreshed DynamoDB async client after closed connection pool");
-    } else {
-      next.close();
-    }
+  public <R> CompletableFuture<R> callAsync(
+      Function<DynamoDbAsyncClient, ? extends CompletionStage<R>> operation) {
+    return client.callAsync(operation);
   }
 
   @PreDestroy
   void close() {
-    closeQuietly(current.getAndSet(null));
-  }
-
-  private static void closeQuietly(DynamoDbAsyncClient client) {
-    if (client == null) {
-      return;
-    }
-    try {
-      client.close();
-    } catch (RuntimeException ignored) {
-    }
+    client.close();
   }
 }

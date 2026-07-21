@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.NamespaceKey;
 import ai.floedb.floecat.service.repo.model.Schemas;
@@ -39,9 +40,16 @@ import java.util.Set;
 public class NamespaceRepository {
 
   private final GenericResourceRepository<Namespace, NamespaceKey> repo;
+  private final PointerStore pointerStore;
+
+  public NamespaceRepository(PointerStore pointerStore, BlobStore blobStore) {
+    this(pointerStore, blobStore, null);
+  }
 
   @Inject
-  public NamespaceRepository(PointerStore pointerStore, BlobStore blobStore) {
+  public NamespaceRepository(
+      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+    this.pointerStore = pointerStore;
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -49,7 +57,8 @@ public class NamespaceRepository {
             Schemas.NAMESPACE,
             Namespace::parseFrom,
             Namespace::toByteArray,
-            "application/x-protobuf");
+            "application/x-protobuf",
+            blobCache);
   }
 
   public void create(Namespace namespace) {
@@ -96,6 +105,16 @@ public class NamespaceRepository {
   public int count(String accountId, String catalogId, List<String> parentSegmentsOrEmpty) {
     String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
     return repo.countByPrefix(prefix);
+  }
+
+  /**
+   * Page token resuming a {@link #list} scan immediately after the namespace at {@code fullPath}.
+   * Lets callers that post-filter scanned rows continue exactly after the last row they emitted
+   * instead of after the whole over-fetched batch.
+   */
+  public String listTokenAfter(String accountId, String catalogId, List<String> fullPath) {
+    return pointerStore.pageTokenAfterKey(
+        Keys.namespacePointerByPath(accountId, catalogId, fullPath));
   }
 
   public List<ResourceId> listIds(String accountId, String catalogId) {
@@ -193,5 +212,21 @@ public class NamespaceRepository {
   public MutationMeta metaForSafe(ResourceId namespaceResourceId) {
     return repo.metaForSafe(
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
+  }
+
+  /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
+  public MutationMeta pointerMetaForSafe(ResourceId namespaceResourceId) {
+    return repo.pointerMetaForSafe(
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
+  }
+
+  /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
+  public Optional<Namespace> getByBlobUri(String blobUri) {
+    return repo.getByBlobUri(blobUri);
+  }
+
+  /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
+  public Optional<Namespace> getByBlobUriLive(String blobUri) {
+    return repo.getByBlobUriLive(blobUri);
   }
 }

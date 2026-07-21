@@ -1,0 +1,131 @@
+/*
+ * Copyright 2026 Yellowbrick Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.floedb.floecat.storage.aws;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import ai.floedb.floecat.aws.RefreshingAwsClient;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.List;
+import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.services.s3.S3Client;
+
+class S3ClientManagerTest {
+
+  @Test
+  void call_replaces_client_on_connection_pool_shutdown() {
+    FakeAwsClients clients = new FakeAwsClients();
+    S3ClientManager manager = new S3ClientManager();
+    manager.awsClients = clients;
+
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            manager.call(
+                client -> {
+                  throw new IllegalStateException("Connection pool shut down");
+                }));
+    S3Client first = clients.handles.get(0).client;
+
+    S3Client second = manager.current();
+    assertNotSame(first, second);
+    assertEquals(2, clients.handles.size());
+    assertTrue(clients.handles.get(0).closed);
+    assertTrue(clients.handles.get(0).resourceClosed);
+    assertFalse(clients.handles.get(1).closed);
+    assertFalse(clients.handles.get(1).resourceClosed);
+  }
+
+  @Test
+  void call_does_not_replace_client_on_unrelated_failure() {
+    FakeAwsClients clients = new FakeAwsClients();
+    S3ClientManager manager = new S3ClientManager();
+    manager.awsClients = clients;
+
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            manager.call(
+                client -> {
+                  throw new IllegalStateException("throttled");
+                }));
+    S3Client first = clients.handles.get(0).client;
+
+    assertSame(first, manager.current());
+    assertEquals(1, clients.handles.size());
+    assertFalse(clients.handles.get(0).closed);
+    assertFalse(clients.handles.get(0).resourceClosed);
+  }
+
+  @Test
+  void current_after_close_throws_without_recreating_client() {
+    FakeAwsClients clients = new FakeAwsClients();
+    S3ClientManager manager = new S3ClientManager();
+    manager.awsClients = clients;
+
+    S3Client first = manager.current();
+    manager.close();
+
+    IllegalStateException thrown = assertThrows(IllegalStateException.class, manager::current);
+
+    assertEquals("S3 client is shut down", thrown.getMessage());
+    assertEquals(1, clients.handles.size());
+    assertTrue(clients.handles.get(0).closed);
+    assertTrue(clients.handles.get(0).resourceClosed);
+    assertSame(first, clients.handles.get(0).client);
+  }
+
+  private static final class FakeAwsClients extends AwsClients {
+    private final List<ClientHandle> handles = new ArrayList<>();
+
+    @Override
+    public RefreshingAwsClient.ClientResource<S3Client> newS3ClientResource() {
+      ClientHandle handle = new ClientHandle();
+      handles.add(handle);
+      return RefreshingAwsClient.clientResource(
+          handle.client, (AutoCloseable) () -> handle.resourceClosed = true);
+    }
+  }
+
+  private static final class ClientHandle implements InvocationHandler {
+    private final S3Client client =
+        (S3Client)
+            Proxy.newProxyInstance(
+                S3Client.class.getClassLoader(), new Class<?>[] {S3Client.class}, this);
+
+    private boolean closed;
+    private boolean resourceClosed;
+
+    @Override
+    public Object invoke(Object proxy, Method method, Object[] args) {
+      return switch (method.getName()) {
+        case "close" -> {
+          closed = true;
+          yield null;
+        }
+        case "serviceName" -> "test";
+        case "toString" -> "fake-s3-client";
+        case "hashCode" -> System.identityHashCode(proxy);
+        case "equals" -> proxy == args[0];
+        default -> null;
+      };
+    }
+  }
+}

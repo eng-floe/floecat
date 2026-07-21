@@ -23,7 +23,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.scanner.utils.ScannerTestOverlay;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -65,8 +64,7 @@ class SystemObjectScanContextTest {
     GraphNode node =
         new UserTableNode(
             ResourceId.getDefaultInstance(),
-            0L,
-            Instant.EPOCH,
+            "blob://test/v0",
             ResourceId.getDefaultInstance(),
             ResourceId.getDefaultInstance(),
             "t",
@@ -100,8 +98,7 @@ class SystemObjectScanContextTest {
     GraphNode node =
         new UserTableNode(
             ResourceId.getDefaultInstance(),
-            0L,
-            Instant.EPOCH,
+            "blob://test/v0",
             ResourceId.getDefaultInstance(),
             ResourceId.getDefaultInstance(),
             "t",
@@ -159,8 +156,7 @@ class SystemObjectScanContextTest {
     UserTableNode t =
         new UserTableNode(
             ResourceId.getDefaultInstance(),
-            0L,
-            Instant.EPOCH,
+            "blob://test/v0",
             ResourceId.getDefaultInstance(),
             ResourceId.getDefaultInstance(),
             "t",
@@ -194,8 +190,7 @@ class SystemObjectScanContextTest {
     ViewNode v =
         new ViewNode(
             ResourceId.getDefaultInstance(),
-            0L,
-            Instant.EPOCH,
+            "blob://test/v0",
             ResourceId.getDefaultInstance(),
             ResourceId.getDefaultInstance(),
             "v",
@@ -228,8 +223,7 @@ class SystemObjectScanContextTest {
     NamespaceNode n =
         new NamespaceNode(
             ResourceId.getDefaultInstance(),
-            0L,
-            Instant.EPOCH,
+            "blob://test/v0",
             ResourceId.getDefaultInstance(),
             List.of("public"), // pathSegments
             "n",

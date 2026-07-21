@@ -18,8 +18,12 @@ package ai.floedb.floecat.service.storage.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -33,9 +37,17 @@ import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.core.exception.SdkClientException;
+import software.amazon.awssdk.services.sts.StsClient;
+import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
+import software.amazon.awssdk.services.sts.model.AssumeRoleResponse;
+import software.amazon.awssdk.services.sts.model.Credentials;
 
 class StorageAuthorityResolverTest {
   private StorageAuthorityResolver resolver;
@@ -226,6 +238,53 @@ class StorageAuthorityResolverTest {
     assertEquals(
         Instant.parse("2026-06-19T12:00:00Z").getEpochSecond(),
         response.getStorageCredentials(0).getExpiresAt().getSeconds());
+  }
+
+  @Test
+  void ambientAssumeRoleRebuildsCredentialsProviderWhenStsClientIsRefreshed() {
+    StsClient failedClient = mock(StsClient.class);
+    StsClient refreshedClient = mock(StsClient.class);
+    when(failedClient.assumeRole(any(AssumeRoleRequest.class)))
+        .thenThrow(SdkClientException.builder().message("Connection pool shut down").build());
+    when(refreshedClient.assumeRole(any(AssumeRoleRequest.class)))
+        .thenReturn(
+            AssumeRoleResponse.builder()
+                .credentials(
+                    Credentials.builder()
+                        .accessKeyId("temp-akid")
+                        .secretAccessKey("temp-secret")
+                        .sessionToken("temp-token")
+                        .expiration(Instant.parse("2026-06-19T12:00:00Z"))
+                        .build())
+                .build());
+
+    AtomicInteger clientBuilds = new AtomicInteger();
+    ArrayList<AwsCredentialsProvider> providers = new ArrayList<>();
+    StorageAuthorityResolver assumeRoleResolver =
+        new StorageAuthorityResolver() {
+          @Override
+          AwsCredentialsProvider ambientCredentialsProvider() {
+            return mock(AwsCredentialsProvider.class);
+          }
+
+          @Override
+          StsClient buildStsClient(StorageAuthority authority, AwsCredentialsProvider provider) {
+            providers.add(provider);
+            return clientBuilds.getAndIncrement() == 0 ? failedClient : refreshedClient;
+          }
+        };
+
+    ResolvedStorageCredentials credentials =
+        assumeRoleResolver.assumeRoleFromAmbientSource(
+            authority().toBuilder()
+                .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+                .build(),
+            java.util.List.of("s3://warehouse/orders"));
+
+    assertEquals("temp-akid", credentials.accessKeyId());
+    assertEquals(2, clientBuilds.get());
+    assertEquals(2, providers.size());
+    assertNotSame(providers.get(0), providers.get(1));
   }
 
   @Test

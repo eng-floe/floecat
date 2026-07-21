@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -28,9 +29,9 @@ import software.amazon.awssdk.services.glue.model.GetTableRequest;
 import software.amazon.awssdk.services.glue.model.GetTablesRequest;
 
 final class GlueDeltaCatalog implements AutoCloseable {
-  private final GlueClient glue;
+  private final RefreshingAwsClient<GlueClient> glue;
 
-  GlueDeltaCatalog(GlueClient glue) {
+  GlueDeltaCatalog(RefreshingAwsClient<GlueClient> glue) {
     this.glue = glue;
   }
 
@@ -39,7 +40,7 @@ final class GlueDeltaCatalog implements AutoCloseable {
     String token = null;
     do {
       var request = GetDatabasesRequest.builder().nextToken(token).maxResults(100).build();
-      var response = glue.getDatabases(request);
+      var response = glue.callUnchecked(client -> client.getDatabases(request));
       for (Database db : response.databaseList()) {
         String name = db.name();
         if (name != null && !name.isBlank() && databaseHasDelta(name)) {
@@ -65,7 +66,7 @@ final class GlueDeltaCatalog implements AutoCloseable {
               .nextToken(token)
               .maxResults(100)
               .build();
-      var response = glue.getTables(request);
+      var response = glue.callUnchecked(client -> client.getTables(request));
       for (var table : response.tableList()) {
         if (isDeltaTable(table.parameters())) {
           out.add(table.name());
@@ -79,7 +80,10 @@ final class GlueDeltaCatalog implements AutoCloseable {
 
   String storageLocation(String namespace, String tableName) {
     var response =
-        glue.getTable(GetTableRequest.builder().databaseName(namespace).name(tableName).build());
+        glue.callUnchecked(
+            client ->
+                client.getTable(
+                    GetTableRequest.builder().databaseName(namespace).name(tableName).build()));
     var table = response.table();
     if (!isDeltaTable(table.parameters())) {
       throw new IllegalStateException("Glue table is not DELTA: " + namespace + "." + tableName);
@@ -96,7 +100,10 @@ final class GlueDeltaCatalog implements AutoCloseable {
 
   Map<String, String> tableParameters(String namespace, String tableName) {
     var response =
-        glue.getTable(GetTableRequest.builder().databaseName(namespace).name(tableName).build());
+        glue.callUnchecked(
+            client ->
+                client.getTable(
+                    GetTableRequest.builder().databaseName(namespace).name(tableName).build()));
     var table = response.table();
     if (table == null || table.parameters() == null) {
       return Map.of();
@@ -117,7 +124,7 @@ final class GlueDeltaCatalog implements AutoCloseable {
     do {
       var request =
           GetTablesRequest.builder().databaseName(database).nextToken(token).maxResults(50).build();
-      var response = glue.getTables(request);
+      var response = glue.callUnchecked(client -> client.getTables(request));
       for (var table : response.tableList()) {
         if (isDeltaTable(table.parameters())) {
           return true;

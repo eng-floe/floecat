@@ -34,7 +34,6 @@ import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.util.SignatureUtil;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 import java.util.*;
 
 public final class BuiltinTestSupport {
@@ -85,17 +84,7 @@ public final class BuiltinTestSupport {
     ResourceId fnId = SystemNodeRegistry.resourceId(engine, ResourceKind.RK_FUNCTION, signature);
 
     return new FunctionNode(
-        fnId,
-        1L,
-        Instant.EPOCH,
-        "16.0",
-        namespaceId,
-        fn.getName(),
-        argIds,
-        retId,
-        false,
-        false,
-        Map.of());
+        fnId, 1L, "16.0", namespaceId, fn.getName(), argIds, retId, false, false, Map.of());
   }
 
   // --- Build operator nodes -----------------------------------------------
@@ -110,7 +99,6 @@ public final class BuiltinTestSupport {
         SystemNodeRegistry.resourceId(
             engine, ResourceKind.RK_OPERATOR, SignatureUtil.operatorSignature(opDef)),
         1L,
-        Instant.EPOCH,
         engine,
         name,
         SystemNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, nr(left)),
@@ -133,7 +121,6 @@ public final class BuiltinTestSupport {
         SystemNodeRegistry.resourceId(
             engine, ResourceKind.RK_CAST, SignatureUtil.castSignature(castDef)),
         1L,
-        Instant.EPOCH,
         engine,
         SystemNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, nr(srcType)),
         SystemNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, nr(dstType)),
@@ -147,7 +134,6 @@ public final class BuiltinTestSupport {
     return new TypeNode(
         SystemNodeRegistry.resourceId(engine, ResourceKind.RK_TYPE, nr(name)),
         1L,
-        Instant.EPOCH,
         engine,
         namespaceIdForQualifiedName(engine, name),
         leafName(name),
@@ -197,13 +183,7 @@ public final class BuiltinTestSupport {
   public static CollationNode collationNode(String engine, String name, String locale) {
     SystemCollationDef collationDef = new SystemCollationDef(nr(name), locale, List.of());
     return new CollationNode(
-        SystemNodeRegistry.resourceId(engine, collationDef),
-        1L,
-        Instant.EPOCH,
-        engine,
-        name,
-        locale,
-        Map.of());
+        SystemNodeRegistry.resourceId(engine, collationDef), 1L, engine, name, locale, Map.of());
   }
 
   // --- Build aggregate nodes ----------------------------------------------
@@ -225,7 +205,6 @@ public final class BuiltinTestSupport {
         SystemNodeRegistry.resourceId(
             engine, ResourceKind.RK_AGGREGATE, SignatureUtil.aggregateSignature(aggDef)),
         1L,
-        Instant.EPOCH,
         engine,
         name,
         argIds,

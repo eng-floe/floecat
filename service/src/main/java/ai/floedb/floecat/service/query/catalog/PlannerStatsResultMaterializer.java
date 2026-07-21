@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.query.catalog;
 
 import ai.floedb.floecat.catalog.rpc.Ndv;
+import ai.floedb.floecat.catalog.rpc.NdvOrBuilder;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.SketchPayload;
 import ai.floedb.floecat.catalog.rpc.SketchRole;
@@ -105,8 +106,13 @@ final class PlannerStatsResultMaterializer {
           ndvBuilder.addSketches(sketch);
         }
       }
-      if (returnScalar || ndvBuilder.getSketchesCount() > 0) {
+      if (hasEstimate(ndvBuilder) || ndvBuilder.getSketchesCount() > 0) {
         scalarBuilder.setNdv(ndvBuilder.build());
+      } else {
+        // An enrichment-fabricated envelope (sketch carrier with no estimate) whose sketches were
+        // all filtered out carries nothing servable — drop it rather than emit hasNdv() with
+        // neither mode nor payloads (hasEstimate is the shared mode gate).
+        scalarBuilder.clearNdv();
       }
     }
     if (!returnScalar
@@ -204,6 +210,56 @@ final class PlannerStatsResultMaterializer {
     return out.setStatus(StatsResultStatus.STATS_RESULT_HIT_COMPLETE)
         .setBytes(returnedSketch.getSerializedSize())
         .build();
+  }
+
+  /**
+   * True when the NDV envelope carries an actual estimate — its exact/approx mode oneof is set.
+   *
+   * <p>The single mode gate for NDV envelopes, per the CONTRACT note on {@code Ndv} in stats.proto:
+   * the mode oneof MAY be unset while sketches are present (e.g. an envelope fabricated by
+   * stats-generation enrichment purely to carry a superseded generation's sketch forward), so
+   * {@code hasNdv()} alone must never be read as "has an estimate" — that turns "NDV absent" into a
+   * bogus zero estimate.
+   */
+  static boolean hasEstimate(NdvOrBuilder ndv) {
+    return ndv.hasExact() || ndv.hasApprox();
+  }
+
+  /**
+   * True when {@code record} can serve every stat {@code need} requests: the scalar header when
+   * {@code STAT_ROLE_SCALAR} is requested, and a payload matching each requested sketch role and
+   * type.
+   *
+   * <p>This is the planner-aware completeness rule behind generation fallback: a record that merely
+   * EXISTS in the pinned generation is not a complete hit — a scalar-only record must not satisfy a
+   * quantile need, or resolution would stop at a record the planner can only consume downgraded.
+   * Lives next to {@link #findMatchingSketch} so resolution and serving judge capability with the
+   * same rule and can never disagree.
+   *
+   * <p>Presence-only: a sketch that exists but exceeds the request's byte budget still satisfies —
+   * budget omission is a serving-policy decision, not a data gap another generation could fill.
+   */
+  static boolean satisfiesNeed(TargetStatsRecord record, PlannerStatsTargetNeed need) {
+    for (PlannerStatsStatRequest requested : need.requestedStats()) {
+      if (requested.omittedByPolicy()) {
+        // Served as OMITTED_BY_BUDGET regardless of what the record carries.
+        continue;
+      }
+      if (requested.role() == StatRole.STAT_ROLE_SCALAR) {
+        if (!record.hasScalar()) {
+          return false;
+        }
+        continue;
+      }
+      if (!requested.requestsSketchPayload()) {
+        // Unsupported role: served as ERROR; no generation can improve it.
+        continue;
+      }
+      if (findMatchingSketch(record, requested) == null) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private static SketchPayload findMatchingSketch(

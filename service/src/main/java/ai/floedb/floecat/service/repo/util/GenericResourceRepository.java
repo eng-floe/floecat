@@ -16,14 +16,18 @@
 
 package ai.floedb.floecat.service.repo.util;
 
+import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.ResourceKey;
 import ai.floedb.floecat.service.repo.model.ResourceSchema;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import com.google.protobuf.Timestamp;
@@ -52,16 +56,85 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType) {
-    super(pointerStore, blobStore, parser, toBytes, contentType);
+    this(pointerStore, blobStore, schema, parser, toBytes, contentType, null);
+  }
+
+  public GenericResourceRepository(
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      ResourceSchema<T, K> schema,
+      ProtoParser<T> parser,
+      Function<T, byte[]> toBytes,
+      String contentType,
+      ImmutableBlobCache blobCache) {
+    super(pointerStore, blobStore, parser, toBytes, contentType, blobCache);
     this.schema = Objects.requireNonNull(schema, "schema");
+  }
+
+  @Override
+  protected boolean blobsImmutable() {
+    // CAS schemas write a NEW content-addressed URI per content; the bytes at a URI never change,
+    // so decoded values are safe to serve from the process-wide immutable cache. Non-CAS schemas
+    // overwrite a stable URI in place and must never be cached by URI.
+    return schema.casBlobs;
   }
 
   public Optional<T> getByKey(K key) {
     return observeRepository("get_by_key", () -> getByKeyUnobserved(key));
   }
 
+  /**
+   * Graph-hydration primitive: fetches and parses a resource directly by blob URI, skipping the
+   * pointer read, for callers that already resolved a <em>fresh</em> pointer (see {@code
+   * NodeLoader#load}). Returns empty when the blob is absent so the caller can fall back to a
+   * pointer read.
+   *
+   * <p>This reads by content and ignores the current pointer, so it is <b>only</b> safe for
+   * hydration and only exposed by the relation/scope repositories NodeLoader uses (catalog,
+   * namespace, table, view). It deliberately lives here rather than on {@link
+   * BaseResourceRepository} so repositories with GC or lifecycle semantics tied to pointer state do
+   * not inherit a "read regardless of the pointer" primitive.
+   */
+  public Optional<T> getByBlobUri(String blobUri) {
+    if (blobUri == null || blobUri.isBlank()) {
+      return Optional.empty();
+    }
+    if (blobCacheable()) {
+      // CONTENT-only read: a resident decode may outlive the durable blob, so an empty result
+      // means absent but a present result does NOT prove the blob still exists. Callers whose
+      // emptiness doubles as a liveness/integrity check must use getByBlobUriLive.
+      return blobCache.get(blobUri, this::loadAndParseBlob);
+    }
+    return loadAndParseBlob(blobUri);
+  }
+
+  /**
+   * Cache-bypassing variant of {@link #getByBlobUri} for reads whose EMPTINESS is load-bearing —
+   * integrity detectors like {@code PinValidator.requirePinned*}, where a missing pinned blob must
+   * fail loudly rather than be masked by a still-resident decode.
+   */
+  public Optional<T> getByBlobUriLive(String blobUri) {
+    if (blobUri == null || blobUri.isBlank()) {
+      return Optional.empty();
+    }
+    return loadAndParseBlob(blobUri);
+  }
+
   public boolean existsByKey(K key) {
     return observeRepository("exists_by_key", () -> existsByKeyUnobserved(key));
+  }
+
+  /**
+   * The version (etag) of the immutable blob at {@code blobUri}, or {@code null} if no blob is
+   * there, using a HEAD (no body fetch, no parse). Lets a validator confirm a pinned blob is both
+   * present and the exact version captured at pin time in a single O(1) probe.
+   */
+  public String blobEtag(String blobUri) {
+    if (blobUri == null || blobUri.isBlank()) {
+      return null;
+    }
+    return observeRepository(
+        "blob_etag", () -> blobStore.head(blobUri).map(BlobHeader::getEtag).orElse(null));
   }
 
   private Optional<T> getByKeyUnobserved(K key) {
@@ -70,6 +143,25 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
   private boolean existsByKeyUnobserved(K key) {
     return pointerStore.get(schema.canonicalPointerForKey.apply(key)).isPresent();
+  }
+
+  /**
+   * Structural backstop for system-object immutability: rejects any create/update/delete whose
+   * target resolves to a system-owned id, for schemas that opt in via {@link
+   * ResourceSchema#withSystemGuard}. The surface-layer {@code CatalogSurfaceWritePolicy} is the
+   * primary gate (with user-facing errors and overlay-based writability checks); this ensures that
+   * a write path which skips or forgets that policy still cannot persist a mutation against a
+   * system object. Schemas that can never be system-owned leave the hook null and pay nothing.
+   */
+  private void guardSystemObject(K key) {
+    if (schema.resourceIdFromKey == null) {
+      return;
+    }
+    ResourceId id = schema.resourceIdFromKey.apply(key);
+    if (SystemResourceIdGenerator.isSystemId(id)) {
+      throw new SystemObjectImmutableException(
+          "refusing to mutate system " + schema.resourceName + " " + id.getId());
+    }
   }
 
   /**
@@ -96,6 +188,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         "create",
         () -> {
           K key = schema.keyFromValue.apply(value);
+          guardSystemObject(key);
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           String blobUri = schema.blobUriForKey.apply(key);
 
@@ -121,6 +214,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
 
           if (pointerStore.compareAndSetBatch(ops)) {
+            healCanonicalBlobIfMissing(blobUri, value);
             return;
           }
 
@@ -198,6 +292,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         "create_if_absent",
         () -> {
           K key = schema.keyFromValue.apply(value);
+          guardSystemObject(key);
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           String blobUri = schema.blobUriForKey.apply(key);
           boolean blobExistedBefore = blobStore.head(blobUri).isPresent();
@@ -220,6 +315,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
 
           if (pointerStore.compareAndSetBatch(ops)) {
+            healCanonicalBlobIfMissing(blobUri, value);
             return true;
           }
           return classifyCreateIfAbsentConflict(
@@ -334,6 +430,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         "update",
         () -> {
           K key = schema.keyFromValue.apply(updatedValue);
+          guardSystemObject(key);
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           String blobUri = schema.blobUriForKey.apply(key);
 
@@ -428,10 +525,33 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
 
           if (pointerStore.compareAndSetBatch(ops)) {
+            healCanonicalBlobIfMissing(blobUri, updatedValue);
             return true;
           }
           return classifyUpdateConflict(canonicalPointer, expectedCanonicalVersion, blobUri, toAdd);
         });
+  }
+
+  /**
+   * Post-commit backstop for the CAS-GC mark/CAS race (eng-floe/core#1904): if a concurrent sweep
+   * deleted the (re-referenced) canonical blob between this call's writeBlob and its pointer batch
+   * commit, re-PUT it — the writer still holds the bytes, so the residual race becomes a transient
+   * blip instead of a permanent dangling pointer, and a pre-existing dangling heals on the next
+   * write. One cheap HEAD per committed write. Best-effort: the pointers HAVE committed, so a heal
+   * failure must not fail the call; the warn is the GC-race detection signal.
+   */
+  private void healCanonicalBlobIfMissing(String blobUri, T value) {
+    try {
+      if (blobStore.head(blobUri).isPresent()) {
+        return;
+      }
+      log.warnf(
+          "canonical %s blob %s missing after pointer commit; re-writing (gc-race heal)",
+          schema.resourceName, blobUri);
+      writeBlob(blobUri, value);
+    } catch (RuntimeException e) {
+      log.errorf(e, "failed to heal canonical blob %s after pointer commit", blobUri);
+    }
   }
 
   private boolean classifyUpdateConflict(
@@ -459,6 +579,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return observeRepository(
         "delete",
         () -> {
+          guardSystemObject(key);
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           var canonicalPtr = pointerStore.get(canonicalPointer).orElse(null);
           if (canonicalPtr == null) {
@@ -500,6 +621,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return observeRepository(
         "delete_with_precondition",
         () -> {
+          guardSystemObject(key);
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           String blobUri = resolveBlobUriForDelete(key, canonicalPointer);
           Optional<T> current;
@@ -580,7 +702,8 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
                                   + schema.resourceName
                                   + ": "
                                   + canonicalPointer));
-          return readMetaOrDefault(canonicalPointer, pointer.getBlobUri(), nowTs);
+          return readMetaOrDefault(
+              Optional.of(pointer), canonicalPointer, pointer.getBlobUri(), nowTs);
         });
   }
 
@@ -603,17 +726,42 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
                 .setUpdatedAt(nowTs)
                 .build();
           }
-          String blobUri;
-          if (schema.casBlobs) {
-            blobUri =
-                (ptrOpt.isPresent() && ptrOpt.get().getBlobUri() != null)
-                    ? ptrOpt.get().getBlobUri()
-                    : "";
-          } else {
-            blobUri = schema.blobUriForKey.apply(key);
-          }
-          return readMetaOrDefault(canonical, blobUri, nowTs);
+          String blobUri = blobUriFor(key, ptrOpt);
+          return readMetaOrDefault(ptrOpt, canonical, blobUri, nowTs);
         });
+  }
+
+  /**
+   * Pointer-only mutation meta: one pointer read, no blob HEAD, blank etag. For consumers that only
+   * need the pointer version and key (e.g. metadata-graph cache keys and node hydration) — callers
+   * returning meta to RPC clients must keep using {@link #metaForSafe}, whose etag feeds
+   * precondition checks.
+   */
+  public MutationMeta pointerMetaForSafe(K key) {
+    return observeRepository(
+        "pointer_meta_for_safe",
+        () -> {
+          Timestamp nowTs = Timestamps.fromMillis(clock.millis());
+          String canonical = schema.canonicalPointerForKey.apply(key);
+          var ptrOpt = pointerStore.get(canonical);
+          String blobUri = blobUriFor(key, ptrOpt);
+          return MutationMeta.newBuilder()
+              .setPointerKey(canonical)
+              .setBlobUri(blobUri)
+              .setPointerVersion(ptrOpt.map(Pointer::getVersion).orElse(0L))
+              .setEtag("")
+              .setUpdatedAt(nowTs)
+              .build();
+        });
+  }
+
+  private String blobUriFor(K key, Optional<Pointer> ptrOpt) {
+    if (schema.casBlobs) {
+      return (ptrOpt.isPresent() && ptrOpt.get().getBlobUri() != null)
+          ? ptrOpt.get().getBlobUri()
+          : "";
+    }
+    return schema.blobUriForKey.apply(key);
   }
 
   private String resolveBlobUriForDelete(K key, String canonicalPointer) {

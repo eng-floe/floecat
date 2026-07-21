@@ -1,0 +1,114 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+package ai.floedb.floecat.catalog;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.catalog.rpc";
+
+import "floecat/common/common.proto";
+import "google/protobuf/timestamp.proto";
+
+/**
+ * Reference to one immutable, content-addressed blob. The version is the blob's
+ * content hash / etag; existence at this version is the only validation a
+ * reader needs.
+ */
+message BlobRef {
+  string uri = 1;
+  string version = 2;
+}
+
+/**
+ * TableRoot is the single immutable object that IS a table's state at one
+ * commit: the definition, the current snapshot selection, and (through the
+ * manifest) every snapshot's blob, stats generation, and constraints bundle.
+ *
+ * Every table-state mutation — snapshot create/update/delete, stats generation
+ * publish, constraints write, DDL — writes new immutable sub-objects and then
+ * CASes the per-table root pointer to a new TableRoot. Readers pin one
+ * (root uri, version) pair and resolve everything through it, so coherence is
+ * a property of the object rather than a protocol across separately mutable
+ * pointer families.
+ */
+message TableRoot {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+
+  /** Monotonic per table; provenance/debugging only, never identity. */
+  int64 root_seq = 2;
+
+  /** The immutable table-definition blob (schema, properties, connector). */
+  BlobRef definition_ref = 3;
+
+  /**
+   * The current snapshot's id. Present only when the table has a current
+   * snapshot; snapshot id 0 is a valid id, so absence is presence-tracked,
+   * never a zero sentinel.
+   */
+  optional int64 current_snapshot_id = 4;
+
+  /**
+   * Head page of the snapshot manifest chain (newest entries first). Unset
+   * when the table has no snapshots.
+   */
+  BlobRef snapshot_manifest_ref = 5;
+
+  google.protobuf.Timestamp committed_at = 6;
+}
+
+/** One snapshot's complete state as of the owning root's commit. */
+message SnapshotManifestEntry {
+  int64 snapshot_id = 1;
+
+  /** The immutable snapshot metadata blob. */
+  BlobRef snapshot_ref = 2;
+
+  /**
+   * The active stats generation manifest for this snapshot, when stats exist.
+   * Per-target upserts write inside the generation without a root commit;
+   * only generation publication (replace-all) produces a new ref.
+   */
+  BlobRef stats_generation_ref = 3;
+
+  /** The constraints bundle for this snapshot, when one exists. */
+  BlobRef constraints_ref = 4;
+
+  /** Upstream commit time; drives AS_OF resolution and current-advance order. */
+  google.protobuf.Timestamp upstream_created_at = 5;
+
+  /**
+   * Content fingerprint of this snapshot's READ SCHEMA: sha256 of the snapshot's schema_json, or a
+   * constant sentinel when schema_json is blank (the served schema is then the table definition's
+   * default, already covered by the root's definition ref). Two snapshots with identical read
+   * schemas share a fingerprint, so a data-only ingest does not move it — this is what lets a
+   * caching client's schema stay warm across ingests while a snapshot-backed schema CHANGE still
+   * moves the possession token (see RelationPinIdentity.table_blob_version). Empty on entries
+   * written before this field existed; readers fall back to snapshot_ref.version (correct, but
+   * cold on every ingest).
+   */
+  string schema_fingerprint = 6;
+}
+
+/**
+ * A bounded, immutable page of manifest entries, newest first. A snapshot
+ * commit rewrites only the head page (or links a full head as prev), so the
+ * common reads — current snapshot, recent AS_OF — touch one page.
+ */
+message SnapshotManifestPage {
+  repeated SnapshotManifestEntry entries = 1;
+
+  /** The next-older page; unset on the oldest page. */
+  BlobRef prev_page_ref = 2;
+}

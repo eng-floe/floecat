@@ -76,6 +76,16 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   }
 
   @Override
+  public Set<String> supportedLanes() {
+    return Set.of();
+  }
+
+  @Override
+  public boolean supportsLane(String lane) {
+    return true;
+  }
+
+  @Override
   public boolean supports(ReconcileJobStore.LeasedJob lease) {
     return lease != null && lease.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE;
   }
@@ -145,8 +155,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       LOG.infof(
           "Skipping stale snapshot finalizer jobId=%s tableId=%s snapshotId=%d finalizedBy=%s",
           lease.jobId, snapshotTask.tableId(), snapshotTask.snapshotId(), finalized.finalizerJobId);
-      return ExecutionResult.obsolete(
-          0, 0, 0, 0, 0, 0, 0, ExecutionResult.FailureKind.NONE, message, null);
+      return ExecutionResult.success(0, 0, 0, 0, 0, 1, 0, message);
     }
     if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.DIRECT_STATS) {
       try {
@@ -341,7 +350,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
                 snapshotTask.snapshotId(),
                 aggregateKinds,
                 childState.completedGroupTasks());
-    if (aggregateKinds.isEmpty()) {
+    if (aggregateKinds.isEmpty() && !lease.fullRescan) {
       RuntimeException pointerFailure = advanceCurrentSnapshot(tableId, snapshotTask, lease);
       if (pointerFailure != null) {
         return currentSnapshotAdvanceFailure(snapshotTask, pointerFailure);
@@ -356,7 +365,14 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           0,
           "Skipped snapshot finalization " + snapshotTask.snapshotId() + " (no aggregate outputs)");
     }
-    persistence.persistStats(aggregateStats);
+    long statsProcessed =
+        lease.fullRescan
+            ? persistence.publishFileGroupStatsGeneration(
+                tableId,
+                snapshotTask.snapshotId(),
+                LeasedFileGroupExecutionService.statsGenerationId(lease),
+                aggregateStats)
+            : persistence.persistStats(aggregateStats);
     RuntimeException pointerFailure = advanceCurrentSnapshot(tableId, snapshotTask, lease);
     if (pointerFailure != null) {
       return currentSnapshotAdvanceFailure(snapshotTask, pointerFailure);
@@ -368,7 +384,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
         0,
         0,
         1,
-        aggregateStats.size(),
+        statsProcessed,
         "Finalized snapshot capture " + snapshotTask.snapshotId());
   }
 
@@ -379,6 +395,9 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     }
     String corr = lease == null || lease.jobId == null ? "" : lease.jobId;
     try {
+      // A reconcile pass may re-finalize a snapshot that is already current; the advance is a
+      // pointer no-op then, but it still re-commits the snapshot's root entry — the periodic
+      // self-heal that converges a root a failed commit left behind.
       currentSnapshotPointerService.maybeAdvance(tableId, snapshotTask.snapshotId(), corr);
       return null;
     } catch (RuntimeException e) {

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.compat;
 
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import ai.floedb.floecat.catalog.rpc.PartitionSpecInfo;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -61,6 +62,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
+import java.util.function.Supplier;
 import java.util.stream.StreamSupport;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.DataFile;
@@ -448,7 +450,7 @@ public class DeltaManifestMaterializer {
   protected DeltaEngineContext newDeltaEngineContext(
       SourceTableAccess sourceAccess, String tableRoot) {
     if (tableRoot != null && tableRoot.toLowerCase(Locale.ROOT).startsWith("s3://")) {
-      S3Client s3 =
+      RefreshingAwsClient<S3Client> s3 =
           buildS3Client(sourceAccess == null ? Map.of() : sourceAccess.fileIoProperties());
       return new DeltaEngineContext(DefaultEngine.create(new S3FileSystemClient(s3)), s3);
     }
@@ -1023,22 +1025,33 @@ public class DeltaManifestMaterializer {
     }
   }
 
-  private S3Client buildS3Client(Map<String, String> props) {
+  private RefreshingAwsClient<S3Client> buildS3Client(Map<String, String> props) {
     Map<String, String> sourceProps = props == null ? Map.of() : props;
     Region region = Region.of(resolveOption(sourceProps, "s3.region", "aws.region", "us-east-1"));
     boolean pathStyle =
         Boolean.parseBoolean(resolveOption(sourceProps, "s3.path-style-access", "false"));
-    software.amazon.awssdk.services.s3.S3ClientBuilder builder =
-        S3Client.builder()
-            .region(region)
-            .serviceConfiguration(
-                S3Configuration.builder().pathStyleAccessEnabled(pathStyle).build())
-            .credentialsProvider(resolveCredentials(sourceProps));
+    Supplier<AwsCredentialsProvider> credentials = () -> resolveCredentials(sourceProps);
     String endpoint = resolveOption(sourceProps, "s3.endpoint", null);
-    if (endpoint != null && !endpoint.isBlank()) {
-      builder.endpointOverride(URI.create(endpoint));
-    }
-    return builder.build();
+    return RefreshingAwsClient.withResourceFactory(
+        () -> {
+          AwsCredentialsProvider provider = credentials.get();
+          software.amazon.awssdk.services.s3.S3ClientBuilder builder =
+              S3Client.builder()
+                  .region(region)
+                  .serviceConfiguration(
+                      S3Configuration.builder().pathStyleAccessEnabled(pathStyle).build())
+                  .credentialsProvider(provider);
+          try {
+            if (endpoint != null && !endpoint.isBlank()) {
+              builder.endpointOverride(URI.create(endpoint));
+            }
+            return RefreshingAwsClient.clientResource(
+                builder.build(), RefreshingAwsClient.closeableResource(provider));
+          } catch (RuntimeException | Error e) {
+            RefreshingAwsClient.closeQuietly(RefreshingAwsClient.closeableResource(provider));
+            throw e;
+          }
+        });
   }
 
   private AwsCredentialsProvider resolveCredentials(Map<String, String> props) {
@@ -1321,9 +1334,9 @@ public class DeltaManifestMaterializer {
 
   private static final class S3FileSystemClient
       implements io.delta.kernel.defaults.engine.fileio.FileIO {
-    private final S3Client s3;
+    private final RefreshingAwsClient<S3Client> s3;
 
-    private S3FileSystemClient(S3Client s3) {
+    private S3FileSystemClient(RefreshingAwsClient<S3Client> s3) {
       this.s3 = s3;
     }
 
@@ -1373,7 +1386,9 @@ public class DeltaManifestMaterializer {
       String key = uri.getPath().startsWith("/") ? uri.getPath().substring(1) : uri.getPath();
       try {
         HeadObjectResponse head =
-            s3.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build());
+            s3.call(
+                client ->
+                    client.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build()));
         return FileStatus.of(path, head.contentLength(), Instant.now().toEpochMilli());
       } catch (S3Exception e) {
         if (e.statusCode() == 404) {
@@ -1399,7 +1414,10 @@ public class DeltaManifestMaterializer {
       FileStatus probedFirstStatus;
       try {
         HeadObjectResponse head =
-            s3.headObject(HeadObjectRequest.builder().bucket(bucket).key(startKey).build());
+            s3.call(
+                client ->
+                    client.headObject(
+                        HeadObjectRequest.builder().bucket(bucket).key(startKey).build()));
         probedFirstStatus =
             FileStatus.of(
                 filePath,
@@ -1486,7 +1504,8 @@ public class DeltaManifestMaterializer {
           if (continuationToken != null) {
             request = request.continuationToken(continuationToken);
           }
-          ListObjectsV2Response response = s3.listObjectsV2(request.build());
+          ListObjectsV2Request built = request.build();
+          ListObjectsV2Response response = s3.callUnchecked(client -> client.listObjectsV2(built));
           continuationToken = response.isTruncated() ? response.nextContinuationToken() : null;
           List<S3Object> objects = response.contents();
           pageIter = (objects == null ? Collections.<S3Object>emptyList() : objects).iterator();
@@ -1512,7 +1531,9 @@ public class DeltaManifestMaterializer {
       String bucket = uri.getHost();
       String key = uri.getPath().startsWith("/") ? uri.getPath().substring(1) : uri.getPath();
       try {
-        s3.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build());
+        s3.callUnchecked(
+            client ->
+                client.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build()));
         return false;
       } catch (S3Exception e) {
         if (e.statusCode() == 404) {
@@ -1525,13 +1546,13 @@ public class DeltaManifestMaterializer {
 
   private static final class S3InputFile
       implements io.delta.kernel.defaults.engine.fileio.InputFile {
-    private final S3Client s3;
+    private final RefreshingAwsClient<S3Client> s3;
     private final String resolvedPath;
     private final String bucket;
     private final String key;
     private final long length;
 
-    private S3InputFile(S3Client s3, String resolvedPath) {
+    private S3InputFile(RefreshingAwsClient<S3Client> s3, String resolvedPath) {
       this.s3 = s3;
       this.resolvedPath = resolvedPath;
       URI uri = URI.create(resolvedPath);
@@ -1623,7 +1644,7 @@ public class DeltaManifestMaterializer {
   private static final class S3RangeReader {
     private static final int DEFAULT_CHUNK_SIZE = 16 * 1024 * 1024;
 
-    private final S3Client s3;
+    private final RefreshingAwsClient<S3Client> s3;
     private final String bucket;
     private final String key;
     private final long fileLength;
@@ -1632,21 +1653,29 @@ public class DeltaManifestMaterializer {
     private int bufferLength = 0;
     private boolean closed = false;
 
-    private S3RangeReader(S3Client s3, String bucket, String key) throws IOException {
+    private S3RangeReader(RefreshingAwsClient<S3Client> s3, String bucket, String key)
+        throws IOException {
       this(s3, bucket, key, DEFAULT_CHUNK_SIZE);
     }
 
-    private S3RangeReader(S3Client s3, String bucket, String key, long fileLength)
+    private S3RangeReader(
+        RefreshingAwsClient<S3Client> s3, String bucket, String key, long fileLength)
         throws IOException {
       this(s3, bucket, key, DEFAULT_CHUNK_SIZE, fileLength);
     }
 
-    private S3RangeReader(S3Client s3, String bucket, String key, int chunkSize)
+    private S3RangeReader(
+        RefreshingAwsClient<S3Client> s3, String bucket, String key, int chunkSize)
         throws IOException {
       this(s3, bucket, key, chunkSize, null);
     }
 
-    private S3RangeReader(S3Client s3, String bucket, String key, int chunkSize, Long knownLength)
+    private S3RangeReader(
+        RefreshingAwsClient<S3Client> s3,
+        String bucket,
+        String key,
+        int chunkSize,
+        Long knownLength)
         throws IOException {
       this.s3 = s3;
       this.bucket = bucket;
@@ -1657,7 +1686,10 @@ public class DeltaManifestMaterializer {
       } else {
         try {
           HeadObjectResponse head =
-              s3.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build());
+              s3.call(
+                  client ->
+                      client.headObject(
+                          HeadObjectRequest.builder().bucket(bucket).key(key).build()));
           this.fileLength = head.contentLength();
         } catch (S3Exception e) {
           throw new IOException("Failed to get S3 object length for " + bucket + "/" + key, e);
@@ -1712,19 +1744,26 @@ public class DeltaManifestMaterializer {
         return;
       }
       String range = "bytes=" + start + "-" + end;
-      try (var object =
-          s3.getObject(
-              software.amazon.awssdk.services.s3.model.GetObjectRequest.builder()
-                  .bucket(bucket)
-                  .key(key)
-                  .range(range)
-                  .build())) {
-        int offset = 0;
-        int read;
-        while (offset < buffer.length
-            && (read = object.read(buffer, offset, buffer.length - offset)) > 0) {
-          offset += read;
-        }
+      try {
+        int offset =
+            s3.call(
+                client -> {
+                  try (var object =
+                      client.getObject(
+                          software.amazon.awssdk.services.s3.model.GetObjectRequest.builder()
+                              .bucket(bucket)
+                              .key(key)
+                              .range(range)
+                              .build())) {
+                    int bytesRead = 0;
+                    int read;
+                    while (bytesRead < buffer.length
+                        && (read = object.read(buffer, bytesRead, buffer.length - bytesRead)) > 0) {
+                      bytesRead += read;
+                    }
+                    return bytesRead;
+                  }
+                });
         bufferStart = start;
         bufferLength = offset;
       } catch (S3Exception e) {

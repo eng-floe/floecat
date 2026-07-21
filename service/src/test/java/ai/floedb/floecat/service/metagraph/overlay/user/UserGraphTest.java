@@ -36,13 +36,20 @@ import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.query.rpc.PinKind;
+import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
+import ai.floedb.floecat.service.catalog.impl.TableRootMutations;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.testsupport.FakeCatalogRepository;
 import ai.floedb.floecat.service.testsupport.FakeNamespaceRepository;
 import ai.floedb.floecat.service.testsupport.FakeTableRepository;
 import ai.floedb.floecat.service.testsupport.FakeViewRepository;
 import ai.floedb.floecat.service.testsupport.SecurityTestSupport.FakePrincipalProvider;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
+import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
+import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
@@ -66,6 +73,8 @@ class UserGraphTest {
   FakePrincipalProvider principalProvider;
   UserGraph graph;
   TestObservability observability;
+  TableRootRepository tableRootRepository;
+  TableRootCommitter rootCommitter;
 
   @BeforeEach
   void setUp() {
@@ -77,6 +86,9 @@ class UserGraphTest {
 
     observability = new TestObservability();
     principalProvider = new FakePrincipalProvider("account");
+    tableRootRepository =
+        new TableRootRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    rootCommitter = new TableRootCommitter(tableRootRepository);
     graph =
         new UserGraph(
             catalogRepository,
@@ -84,6 +96,7 @@ class UserGraphTest {
             snapshotRepository,
             tableRepository,
             viewRepository,
+            tableRootRepository,
             observability,
             principalProvider,
             1024L,
@@ -166,7 +179,7 @@ class UserGraphTest {
     ResourceId namespaceId = rid("account", "ns", ResourceKind.RK_NAMESPACE);
     ResourceId tableId = rid("account", "tbl", ResourceKind.RK_TABLE);
 
-    MutationMeta meta = mutationMeta(7L, Instant.parse("2024-01-01T00:00:00Z"));
+    MutationMeta meta = blobMeta(7L, "s3://bucket/sales/v7.pb");
     Table table =
         Table.newBuilder()
             .setResourceId(tableId)
@@ -189,13 +202,17 @@ class UserGraphTest {
 
     assertThat(first).isPresent();
     assertThat(second).containsSame(first.get());
-    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(1);
+    // Hot path: cached meta names the content key, so the second resolve does neither a pointer
+    // read nor a blob hydration.
+    assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(1);
     assertThat(tableRepository.metaForSafeCount(tableId)).isEqualTo(1);
 
     graph.invalidate(tableId);
     Optional<UserTableNode> third = graph.table(tableId);
     assertThat(third).isPresent();
-    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(2);
+    // Invalidate drops only the meta pointer: hydration re-reads the pointer once, but the node
+    // is content-keyed by blob URI, so the unchanged blob is not re-hydrated.
+    assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(1);
     assertThat(tableRepository.metaForSafeCount(tableId)).isEqualTo(2);
   }
 
@@ -210,32 +227,46 @@ class UserGraphTest {
     graph.table(accountOne.tableId());
     graph.table(accountTwo.tableId());
 
-    assertThat(tableRepository.getByIdCount(accountOne.tableId())).isEqualTo(1);
-    assertThat(tableRepository.getByIdCount(accountTwo.tableId())).isEqualTo(1);
+    // Content keys are full blob URIs, so accounts can never collide; each table hydrates once.
+    assertThat(tableRepository.getByBlobUriCount(accountOne.tableId())).isEqualTo(1);
+    assertThat(tableRepository.getByBlobUriCount(accountTwo.tableId())).isEqualTo(1);
+    assertThat(graph.table(accountOne.tableId()).orElseThrow().displayName())
+        .isEqualTo("cached-one");
+    assertThat(graph.table(accountTwo.tableId()).orElseThrow().displayName())
+        .isEqualTo("cached-two");
   }
 
   @Test
-  void invalidateRemovesAllCachedPointerVersions() {
+  void invalidateDropsMetaWhileNodesStayContentKeyed() {
     var ids = seedTable("multi-version", "{}");
     ResourceId tableId = ids.tableId();
+    String uriA = seedBlobUri("account", "multi-version");
 
     graph.table(tableId);
-    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(1);
+    assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(1);
+    assertThat(tableRepository.metaForSafeCount(tableId)).isEqualTo(1);
 
-    tableRepository.putMeta(tableId, mutationMeta(2L, Instant.parse("2024-06-01T00:00:00Z")));
+    // Pointer moves to a blob the fake does not index: the loader must NOT drift to a by-id read
+    // — the old rescue built a node from fresh content stamped with the stale URI, permanently
+    // poisoning the content-keyed cache. A live pointer naming a missing blob is a dangling
+    // pointer: corruption, surfaced loud — never absence.
+    tableRepository.putMeta(tableId, blobMeta(2L, uriA + ".moved"));
+    graph.invalidate(tableId);
+    assertThatThrownBy(() -> graph.table(tableId))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class);
+    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(0);
+
+    // Pointer returns to the original blob: the content-keyed node entry is still valid, so no
+    // rehydration happens — only the fresh pointer read.
+    tableRepository.putMeta(tableId, blobMeta(3L, uriA));
     graph.invalidate(tableId);
     graph.table(tableId);
-    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(2);
-
-    tableRepository.putMeta(tableId, mutationMeta(1L, Instant.parse("2024-06-02T00:00:00Z")));
-    graph.invalidate(tableId);
-    graph.table(tableId);
-    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(3);
-
-    tableRepository.putMeta(tableId, mutationMeta(2L, Instant.parse("2024-06-03T00:00:00Z")));
-    graph.invalidate(tableId);
-    graph.table(tableId);
-    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(4);
+    assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(1);
+    // Never a by-id read: the loader only ever builds from the blob a meta names. The counts are
+    // one hydration live read, one failed-resolve read + its coherent-fallback re-read, and one
+    // return-to-original read.
+    assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(0);
+    assertThat(tableRepository.metaForSafeCount(tableId)).isEqualTo(4);
   }
 
   @Test
@@ -247,6 +278,7 @@ class UserGraphTest {
             snapshotRepository,
             tableRepository,
             viewRepository,
+            tableRootRepository,
             observability,
             principalProvider,
             42L, // cache size
@@ -274,6 +306,7 @@ class UserGraphTest {
             snapshotRepository,
             tableRepository,
             viewRepository,
+            tableRootRepository,
             observability,
             principalProvider,
             0L, // cache size (disabled)
@@ -282,6 +315,46 @@ class UserGraphTest {
     var ids = seedTable("disabled-cache", "{}");
     instrumentedGraph.table(ids.tableId());
     assertThat(observability.timerValues(Telemetry.Metrics.CACHE_LATENCY)).isEmpty();
+  }
+
+  @Test
+  void resolveHydratesFromAFreshPointerNotAStaleCachedMeta() {
+    // Node cache disabled + meta cache enabled: every resolve reaches the hydration path while the
+    // meta cache stays warm — the exact condition under which a stale cached meta (a per-process
+    // cache with no cross-instance invalidation) could hydrate an old-but-still-readable blob.
+    UserGraph g =
+        new UserGraph(
+            catalogRepository,
+            namespaceRepository,
+            snapshotRepository,
+            tableRepository,
+            viewRepository,
+            tableRootRepository,
+            observability,
+            principalProvider,
+            0L, // node cache disabled
+            null);
+
+    ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
+    ResourceId namespaceId = rid("account", "ns", ResourceKind.RK_NAMESPACE);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("account")
+            .setId("table-stale")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    tableRepository.put(
+        tableWithSchema(tableId, catalogId, namespaceId, "{\"v\":1}"), blobMeta(1L, "blob/v1"));
+    assertThat(schemaOf(g, tableId)).contains("\"v\":1");
+
+    // Cross-instance-style update: the pointer now names blob/v2, but blob/v1 is still readable and
+    // this instance's meta cache still holds v1. Hydration must read the fresh pointer, not trust
+    // the cached meta's blob URI.
+    tableRepository.put(
+        tableWithSchema(tableId, catalogId, namespaceId, "{\"v\":2}"), blobMeta(2L, "blob/v2"));
+
+    assertThat(schemaOf(g, tableId)).contains("\"v\":2");
   }
 
   @Test
@@ -381,13 +454,14 @@ class UserGraphTest {
   }
 
   @Test
-  void resolveNameThrowsWhenAmbiguous() {
-    seedTable("ambiguous", "{}");
-    seedView("ambiguous");
-    NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("ambiguous").build();
+  void resolveNameReturnsTableWhenDuplicateRelationNamesExist() {
+    var ids = seedTable("duplicate", "{}");
+    seedView("duplicate");
+    NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("duplicate").build();
 
-    assertThatThrownBy(() -> graph.resolveName("corr", ref))
-        .isInstanceOf(StatusRuntimeException.class);
+    Optional<ResourceId> resolved = graph.resolveName("corr", ref);
+
+    assertThat(resolved).contains(ids.tableId());
   }
 
   @Test
@@ -478,51 +552,103 @@ class UserGraphTest {
   }
 
   @Test
-  void resolveReturnsEmptyWhenRepoHasNoResource() {
+  void resolveFailsLoudWhenThePointerDanglesOnAMissingBlob() {
     ResourceId viewId = rid("account", "view", ResourceKind.RK_VIEW);
     MutationMeta meta = mutationMeta(1L, Instant.parse("2024-02-01T00:00:00Z"));
     viewRepository.putMeta(viewId, meta);
 
-    Optional<ViewNode> node = graph.view(viewId);
-    assertThat(node).isEmpty();
+    // A pointer exists but nobody can load the blob it names: corruption, not "does not exist" —
+    // reporting absence would mask data loss and invite re-creating over the corrupt resource.
+    assertThatThrownBy(() -> graph.view(viewId))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class);
   }
 
   @Test
-  void snapshotPinUsesOverrides() {
+  void tablePinUsesOverrides() {
+    // UserGraph delegates to SnapshotHelper, which resolves pins through the table root; seed the
+    // table blob, the snapshot, and the root entry the resolution follows.
     ResourceId tableId = rid("account", "tbl-override", ResourceKind.RK_TABLE);
-    SnapshotRef override = SnapshotRef.newBuilder().setSnapshotId(42).build();
+    tableRepository.putMeta(tableId, blobMeta(1L, "s3://tbl-override/table.pb"));
+    snapshotRepository.put(
+        tableId,
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(42)
+            .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(50))
+            .build());
+    commitRootEntry(tableId, 42, 50, "s3://tbl-override/table.pb");
 
-    SnapshotPin pin = graph.snapshotPinFor("corr", tableId, override, Optional.empty());
-
+    TablePin pin =
+        graph.tablePinFor(
+            "corr", tableId, SnapshotRef.newBuilder().setSnapshotId(42).build(), Optional.empty());
+    assertThat(pin.getPinKind()).isEqualTo(PinKind.PIN_KIND_SNAPSHOT_ID);
     assertThat(pin.getSnapshotId()).isEqualTo(42);
+    assertThat(pin.getTableBlobUri()).isEqualTo("s3://tbl-override/table.pb");
+    assertThat(pin.getSnapshotBlobUri()).isEqualTo("s3://tbl-override/snap-42.pb");
 
     Timestamp ts = Timestamp.newBuilder().setSeconds(123).build();
-    SnapshotRef asOf = SnapshotRef.newBuilder().setAsOf(ts).build();
-    SnapshotPin pinTs = graph.snapshotPinFor("corr", tableId, asOf, Optional.empty());
-    assertThat(pinTs.hasAsOf()).isTrue();
-    assertThat(pinTs.getAsOf()).isEqualTo(ts);
+    TablePin pinTs =
+        graph.tablePinFor(
+            "corr", tableId, SnapshotRef.newBuilder().setAsOf(ts).build(), Optional.empty());
+    assertThat(pinTs.getPinKind()).isEqualTo(PinKind.PIN_KIND_AS_OF);
+    assertThat(pinTs.getOriginalAsOf()).isEqualTo(ts);
+    assertThat(pinTs.getSnapshotId()).isEqualTo(42); // predecessor at or before the timestamp
   }
 
   @Test
-  void snapshotPinUsesDefaultAndCurrent() {
+  void tablePinUsesDefaultAndCurrent() {
     ResourceId tableId = rid("account", "tbl-default", ResourceKind.RK_TABLE);
+    tableRepository.putMeta(tableId, blobMeta(1L, "s3://tbl-default/table.pb"));
     Timestamp defaultTs = Timestamp.newBuilder().setSeconds(456).build();
 
-    SnapshotPin defaultPin = graph.snapshotPinFor("corr", tableId, null, Optional.of(defaultTs));
-    assertThat(defaultPin.hasAsOf()).isTrue();
-    assertThat(defaultPin.getAsOf()).isEqualTo(defaultTs);
+    // AS_OF default resolves once to the predecessor entry on the root manifest.
+    snapshotRepository.put(
+        tableId,
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(100)
+            .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(200))
+            .build());
+    commitRootEntry(tableId, 100, 200, "s3://tbl-default/table.pb");
+    TablePin defaultPin = graph.tablePinFor("corr", tableId, null, Optional.of(defaultTs));
+    assertThat(defaultPin.getPinKind()).isEqualTo(PinKind.PIN_KIND_AS_OF);
+    assertThat(defaultPin.getOriginalAsOf()).isEqualTo(defaultTs);
+    assertThat(defaultPin.getSnapshotId()).isEqualTo(100);
 
-    Snapshot snapshot =
+    // CURRENT (no override, no default) pins the root's current snapshot (the advance rule moved
+    // currency to the newer entry when it was committed).
+    snapshotRepository.put(
+        tableId,
         Snapshot.newBuilder()
             .setTableId(tableId)
             .setSnapshotId(9999L)
-            .setSchemaJson("{}")
-            .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(123))
-            .build();
-    snapshotRepository.put(tableId, snapshot);
-
-    SnapshotPin current = graph.snapshotPinFor("corr", tableId, null, Optional.empty());
+            .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(300))
+            .build());
+    commitRootEntry(tableId, 9999, 300, "s3://tbl-default/table.pb");
+    TablePin current = graph.tablePinFor("corr", tableId, null, Optional.empty());
+    assertThat(current.getPinKind()).isEqualTo(PinKind.PIN_KIND_CURRENT);
     assertThat(current.getSnapshotId()).isEqualTo(9999);
+    assertThat(current.getTableBlobUri()).isEqualTo("s3://tbl-default/table.pb");
+  }
+
+  /** Commit a snapshot's manifest entry onto the table root, refs matching the fakes' identity. */
+  private void commitRootEntry(
+      ResourceId tableId, long snapshotId, long upstreamSeconds, String tableBlobUri) {
+    rootCommitter.commit(
+        tableId,
+        TableRootMutations.upsertSnapshot(
+            tableRootRepository,
+            tableId,
+            ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
+                .setSnapshotId(snapshotId)
+                .setSnapshotRef(
+                    ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
+                        .setUri("s3://" + tableId.getId() + "/snap-" + snapshotId + ".pb")
+                        .setVersion("etag-s" + snapshotId))
+                .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(upstreamSeconds))
+                .build(),
+            ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(tableBlobUri).build(),
+            true));
   }
 
   @Test
@@ -607,7 +733,7 @@ class UserGraphTest {
   }
 
   @Test
-  void resolveNameFailsWhenAmbiguous() {
+  void resolveNameReturnsTableWhenDuplicateRelationNamesExistInRepositories() {
     NameRef ref = NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("obj").build();
     Catalog catalog =
         Catalog.newBuilder()
@@ -650,8 +776,9 @@ class UserGraphTest {
             .build();
     viewRepository.put(view, mutationMeta(1L, Instant.now()));
 
-    assertThatThrownBy(() -> graph.resolveName("corr", ref))
-        .isInstanceOf(StatusRuntimeException.class);
+    Optional<ResourceId> resolved = graph.resolveName("corr", ref);
+
+    assertThat(resolved).contains(table.getResourceId());
   }
 
   @Test
@@ -823,7 +950,48 @@ class UserGraphTest {
             .setSeconds(updatedAt.getEpochSecond())
             .setNanos(updatedAt.getNano())
             .build();
-    return MutationMeta.newBuilder().setPointerVersion(version).setUpdatedAt(ts).build();
+    // Prod pointer metas always name a blob; the loader builds nodes ONLY from the blob the meta
+    // names (no by-id rescue), so a blank blobUri would be an unrealistic fixture. URIs are
+    // content-addressed in prod — distinct entities never share one — so the fixture must mint a
+    // unique URI per meta or the content-keyed node cache would (correctly!) collide them.
+    return MutationMeta.newBuilder()
+        .setPointerVersion(version)
+        .setUpdatedAt(ts)
+        .setBlobUri("blob://test/v" + version + "-" + META_URIS.incrementAndGet())
+        .build();
+  }
+
+  private static final java.util.concurrent.atomic.AtomicInteger META_URIS =
+      new java.util.concurrent.atomic.AtomicInteger();
+
+  private static MutationMeta blobMeta(long version, String blobUri) {
+    return MutationMeta.newBuilder()
+        .setPointerVersion(version)
+        .setBlobUri(blobUri)
+        .setUpdatedAt(Timestamp.newBuilder().setSeconds(version).build())
+        .build();
+  }
+
+  private static Table tableWithSchema(
+      ResourceId tableId, ResourceId catalogId, ResourceId namespaceId, String schemaJson) {
+    return Table.newBuilder()
+        .setResourceId(tableId)
+        .setCatalogId(catalogId)
+        .setNamespaceId(namespaceId)
+        .setDisplayName("orders")
+        .setSchemaJson(schemaJson)
+        .setUpstream(
+            UpstreamRef.newBuilder()
+                .setFormat(TableFormat.TF_ICEBERG)
+                .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
+                .setUri("s3://x")
+                .build())
+        .build();
+  }
+
+  private static String schemaOf(UserGraph g, ResourceId tableId) {
+    UserTableNode node = g.table(tableId).orElseThrow();
+    return g.schemaJsonFor("corr", node, null);
   }
 
   private static ResourceId rid(String account, String id, ResourceKind kind) {
@@ -879,8 +1047,13 @@ class UserGraphTest {
                     .setUri("s3://x")
                     .build())
             .build(),
-        mutationMeta(1L, Instant.now()));
+        blobMeta(1L, seedBlobUri(accountId, tableName)));
     return new TableIds(catalogId, namespaceId, tableId);
+  }
+
+  /** Deterministic per-table blob URI so seeded tables have unique content identities. */
+  private static String seedBlobUri(String accountId, String tableName) {
+    return "s3://" + accountId + "/" + tableName + "/v1.pb";
   }
 
   private ResourceId seedView(String name) {

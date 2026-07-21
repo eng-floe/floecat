@@ -56,6 +56,7 @@ import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanConnectorResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanViewResultRequest;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanViewResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.MessageLite;
@@ -94,6 +95,8 @@ class GrpcRemoteReconcileExecutorClient
   // service side, so they need a lower target than finalize-result chunks.
   private static final int FILE_GROUP_RESULT_CHUNK_TARGET_BYTES = 128 * 1024;
   private static final int SNAPSHOT_FINALIZE_RESULT_CHUNK_TARGET_BYTES = 512 * 1024;
+  private static final int PLAN_CHILD_JOB_CHUNK_TARGET_BYTES = 128 * 1024;
+  private static final int DEFAULT_PLAN_TABLE_CHILD_JOB_CHUNK_MAX_COUNT = 8;
 
   private final Optional<String> workerAuthHeaderName;
   private final boolean workerAuthRequired;
@@ -108,6 +111,7 @@ class GrpcRemoteReconcileExecutorClient
   private final long workerControlKeepAliveTimeMs;
   private final long workerControlKeepAliveTimeoutMs;
   private final boolean workerControlKeepAliveWithoutCalls;
+  private final int planTableChildJobChunkMaxCount;
   private final Object workerControlLock = new Object();
   private volatile ManagedChannel workerControlChannel;
   private volatile ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub
@@ -136,15 +140,15 @@ class GrpcRemoteReconcileExecutorClient
           int workerControlMaxInboundMessageSize,
       @ConfigProperty(
               name = "floecat.reconciler.worker-control.grpc.deadline-ms",
-              defaultValue = "10000")
+              defaultValue = "120000")
           long workerControlDefaultDeadlineMs,
       @ConfigProperty(
               name = "floecat.reconciler.worker-control.grpc.lease-deadline-ms",
-              defaultValue = "5000")
+              defaultValue = "120000")
           long workerControlLeaseDeadlineMs,
       @ConfigProperty(
               name = "floecat.reconciler.worker-control.grpc.mutation-deadline-ms",
-              defaultValue = "30000")
+              defaultValue = "120000")
           long workerControlMutationDeadlineMs,
       @ConfigProperty(
               name = "floecat.reconciler.worker-control.grpc.keep-alive-time-ms",
@@ -158,6 +162,10 @@ class GrpcRemoteReconcileExecutorClient
               name = "floecat.reconciler.worker-control.grpc.keep-alive-without-calls",
               defaultValue = "false")
           boolean workerControlKeepAliveWithoutCalls,
+      @ConfigProperty(
+              name = "floecat.reconciler.worker-control.plan-table-child-job-chunk-max-count",
+              defaultValue = "8")
+          int planTableChildJobChunkMaxCount,
       ReconcileWorkerAuthProvider reconcileWorkerAuthProvider) {
     this(
         sessionHeaderName,
@@ -174,6 +182,7 @@ class GrpcRemoteReconcileExecutorClient
         workerControlKeepAliveTimeMs,
         workerControlKeepAliveTimeoutMs,
         workerControlKeepAliveWithoutCalls,
+        planTableChildJobChunkMaxCount,
         reconcileWorkerAuthProvider,
         true);
   }
@@ -189,12 +198,13 @@ class GrpcRemoteReconcileExecutorClient
         9100,
         true,
         0,
-        10_000L,
-        5_000L,
-        30_000L,
+        120_000L,
+        120_000L,
+        120_000L,
         30_000L,
         10_000L,
         false,
+        DEFAULT_PLAN_TABLE_CHILD_JOB_CHUNK_MAX_COUNT,
         reconcileWorkerAuthProvider,
         true);
   }
@@ -212,12 +222,13 @@ class GrpcRemoteReconcileExecutorClient
         9100,
         true,
         0,
-        10_000L,
-        5_000L,
-        30_000L,
+        120_000L,
+        120_000L,
+        120_000L,
         30_000L,
         10_000L,
         false,
+        DEFAULT_PLAN_TABLE_CHILD_JOB_CHUNK_MAX_COUNT,
         reconcileWorkerAuthProvider,
         true);
   }
@@ -236,12 +247,13 @@ class GrpcRemoteReconcileExecutorClient
         workerControlPort,
         true,
         0,
-        10_000L,
-        5_000L,
-        30_000L,
+        120_000L,
+        120_000L,
+        120_000L,
         30_000L,
         10_000L,
         false,
+        DEFAULT_PLAN_TABLE_CHILD_JOB_CHUNK_MAX_COUNT,
         reconcileWorkerAuthProvider,
         true);
   }
@@ -261,6 +273,7 @@ class GrpcRemoteReconcileExecutorClient
       long workerControlKeepAliveTimeMs,
       long workerControlKeepAliveTimeoutMs,
       boolean workerControlKeepAliveWithoutCalls,
+      int planTableChildJobChunkMaxCount,
       ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
       boolean ignored) {
     this.workerAuthHeaderName =
@@ -281,6 +294,7 @@ class GrpcRemoteReconcileExecutorClient
     this.workerControlKeepAliveTimeMs = Math.max(1_000L, workerControlKeepAliveTimeMs);
     this.workerControlKeepAliveTimeoutMs = Math.max(1_000L, workerControlKeepAliveTimeoutMs);
     this.workerControlKeepAliveWithoutCalls = workerControlKeepAliveWithoutCalls;
+    this.planTableChildJobChunkMaxCount = Math.max(1, planTableChildJobChunkMaxCount);
   }
 
   @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
@@ -490,18 +504,22 @@ class GrpcRemoteReconcileExecutorClient
               .setViewTask(toProtoViewTask(viewJob.viewTask()))
               .build());
     }
-    return invokeWorkerControlMutationOnce(
-        "submitLeasedPlanConnectorResult",
-        correlationId(lease),
-        lease.lease().accountId,
-        stub ->
-            stub.submitLeasedPlanConnectorResult(
-                    SubmitLeasedPlanConnectorResultRequest.newBuilder()
-                        .setJobId(lease.lease().jobId)
-                        .setLeaseEpoch(lease.lease().leaseEpoch)
-                        .setSuccess(success.build())
-                        .build())
-                .getAccepted());
+    try {
+      return invokeWorkerControlMutationOnce(
+          "submitLeasedPlanConnectorResult",
+          correlationId(lease),
+          lease.lease().accountId,
+          stub ->
+              stub.submitLeasedPlanConnectorResult(
+                      SubmitLeasedPlanConnectorResultRequest.newBuilder()
+                          .setJobId(lease.lease().jobId)
+                          .setLeaseEpoch(lease.lease().leaseEpoch)
+                          .setSuccess(success.build())
+                          .build())
+                  .getAccepted());
+    } catch (RuntimeException error) {
+      throw leasePreconditionOrOriginal("submitLeasedPlanConnectorResult", error);
+    }
   }
 
   public boolean submitPlanConnectorFailure(
@@ -510,24 +528,28 @@ class GrpcRemoteReconcileExecutorClient
       ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
       ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       String message) {
-    return invokeWorkerControlMutationOnce(
-        "submitLeasedPlanConnectorResult",
-        correlationId(lease),
-        lease.lease().accountId,
-        stub ->
-            stub.submitLeasedPlanConnectorResult(
-                    SubmitLeasedPlanConnectorResultRequest.newBuilder()
-                        .setJobId(lease.lease().jobId)
-                        .setLeaseEpoch(lease.lease().leaseEpoch)
-                        .setFailure(
-                            SubmitLeasedPlanConnectorResultRequest.Failure.newBuilder()
-                                .setMessage(message == null ? "" : message)
-                                .setFailureKind(toProtoFailureKind(failureKind))
-                                .setRetryDisposition(toProtoRetryDisposition(retryDisposition))
-                                .setRetryClass(toProtoRetryClass(retryClass))
-                                .build())
-                        .build())
-                .getAccepted());
+    try {
+      return invokeWorkerControlMutationOnce(
+          "submitLeasedPlanConnectorResult",
+          correlationId(lease),
+          lease.lease().accountId,
+          stub ->
+              stub.submitLeasedPlanConnectorResult(
+                      SubmitLeasedPlanConnectorResultRequest.newBuilder()
+                          .setJobId(lease.lease().jobId)
+                          .setLeaseEpoch(lease.lease().leaseEpoch)
+                          .setFailure(
+                              SubmitLeasedPlanConnectorResultRequest.Failure.newBuilder()
+                                  .setMessage(message == null ? "" : message)
+                                  .setFailureKind(toProtoFailureKind(failureKind))
+                                  .setRetryDisposition(toProtoRetryDisposition(retryDisposition))
+                                  .setRetryClass(toProtoRetryClass(retryClass))
+                                  .build())
+                          .build())
+                  .getAccepted());
+    } catch (RuntimeException error) {
+      throw leasePreconditionOrOriginal("submitLeasedPlanConnectorResult", error);
+    }
   }
 
   public StandalonePlanTablePayload getPlanTableInput(RemoteLeasedJob lease) {
@@ -562,36 +584,75 @@ class GrpcRemoteReconcileExecutorClient
       long errors,
       long snapshotsProcessed,
       long statsProcessed) {
+    List<ai.floedb.floecat.reconciler.rpc.PlannedSnapshotPlanJob> protoSnapshotJobs =
+        new ArrayList<>();
+    for (PlannedSnapshotJob snapshotJob :
+        snapshotJobs == null ? List.<PlannedSnapshotJob>of() : snapshotJobs) {
+      if (snapshotJob == null || snapshotJob.snapshotTask() == null) {
+        continue;
+      }
+      protoSnapshotJobs.add(
+          ai.floedb.floecat.reconciler.rpc.PlannedSnapshotPlanJob.newBuilder()
+              .setScope(toProtoScope(snapshotJob.scope(), lease.lease()))
+              .setSnapshotTask(toProtoSnapshotTask(snapshotJob.snapshotTask()))
+              .build());
+    }
+    List<List<ai.floedb.floecat.reconciler.rpc.PlannedSnapshotPlanJob>> chunks =
+        chunksBySerializedSizeAndCount(
+            protoSnapshotJobs, PLAN_CHILD_JOB_CHUNK_TARGET_BYTES, planTableChildJobChunkMaxCount);
+    try {
+      for (int chunkIndex = 0; chunkIndex < chunks.size(); chunkIndex++) {
+        int submittedChunkIndex = chunkIndex;
+        List<ai.floedb.floecat.reconciler.rpc.PlannedSnapshotPlanJob> chunk =
+            chunks.get(chunkIndex);
+        boolean accepted =
+            invokeWorkerControlMutationOnce(
+                "submitLeasedPlanTableResult",
+                correlationId(lease),
+                lease.lease().accountId,
+                stub ->
+                    stub.submitLeasedPlanTableResult(
+                            SubmitLeasedPlanTableResultRequest.newBuilder()
+                                .setJobId(lease.lease().jobId)
+                                .setLeaseEpoch(lease.lease().leaseEpoch)
+                                .setChunk(
+                                    SubmitLeasedPlanTableResultRequest.Chunk.newBuilder()
+                                        .setChunkIndex(submittedChunkIndex)
+                                        .addAllSnapshotJobs(chunk)
+                                        .build())
+                                .build())
+                        .getAccepted());
+        if (!accepted) {
+          return false;
+        }
+      }
+    } catch (RuntimeException error) {
+      throw leasePreconditionOrOriginal("submitLeasedPlanTableResult", error);
+    }
     SubmitLeasedPlanTableResultRequest.Success.Builder success =
         SubmitLeasedPlanTableResultRequest.Success.newBuilder()
             .setTablesScanned(tablesScanned)
             .setTablesChanged(tablesChanged)
             .setErrors(errors)
             .setSnapshotsProcessed(snapshotsProcessed)
-            .setStatsProcessed(statsProcessed);
-    for (PlannedSnapshotJob snapshotJob :
-        snapshotJobs == null ? List.<PlannedSnapshotJob>of() : snapshotJobs) {
-      if (snapshotJob == null || snapshotJob.snapshotTask() == null) {
-        continue;
-      }
-      success.addSnapshotJobs(
-          ai.floedb.floecat.reconciler.rpc.PlannedSnapshotPlanJob.newBuilder()
-              .setScope(toProtoScope(snapshotJob.scope(), lease.lease()))
-              .setSnapshotTask(toProtoSnapshotTask(snapshotJob.snapshotTask()))
-              .build());
+            .setStatsProcessed(statsProcessed)
+            .setChunkCount(chunks.size());
+    try {
+      return invokeWorkerControlMutationOnce(
+          "submitLeasedPlanTableResult",
+          correlationId(lease),
+          lease.lease().accountId,
+          stub ->
+              stub.submitLeasedPlanTableResult(
+                      SubmitLeasedPlanTableResultRequest.newBuilder()
+                          .setJobId(lease.lease().jobId)
+                          .setLeaseEpoch(lease.lease().leaseEpoch)
+                          .setSuccess(success.build())
+                          .build())
+                  .getAccepted());
+    } catch (RuntimeException error) {
+      throw leasePreconditionOrOriginal("submitLeasedPlanTableResult", error);
     }
-    return invokeWorkerControlMutationOnce(
-        "submitLeasedPlanTableResult",
-        correlationId(lease),
-        lease.lease().accountId,
-        stub ->
-            stub.submitLeasedPlanTableResult(
-                    SubmitLeasedPlanTableResultRequest.newBuilder()
-                        .setJobId(lease.lease().jobId)
-                        .setLeaseEpoch(lease.lease().leaseEpoch)
-                        .setSuccess(success.build())
-                        .build())
-                .getAccepted());
   }
 
   public boolean submitPlanTableFailure(
@@ -600,24 +661,28 @@ class GrpcRemoteReconcileExecutorClient
       ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
       ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       String message) {
-    return invokeWorkerControlMutationOnce(
-        "submitLeasedPlanTableResult",
-        correlationId(lease),
-        lease.lease().accountId,
-        stub ->
-            stub.submitLeasedPlanTableResult(
-                    SubmitLeasedPlanTableResultRequest.newBuilder()
-                        .setJobId(lease.lease().jobId)
-                        .setLeaseEpoch(lease.lease().leaseEpoch)
-                        .setFailure(
-                            SubmitLeasedPlanTableResultRequest.Failure.newBuilder()
-                                .setMessage(message == null ? "" : message)
-                                .setFailureKind(toProtoFailureKind(failureKind))
-                                .setRetryDisposition(toProtoRetryDisposition(retryDisposition))
-                                .setRetryClass(toProtoRetryClass(retryClass))
-                                .build())
-                        .build())
-                .getAccepted());
+    try {
+      return invokeWorkerControlMutationOnce(
+          "submitLeasedPlanTableResult",
+          correlationId(lease),
+          lease.lease().accountId,
+          stub ->
+              stub.submitLeasedPlanTableResult(
+                      SubmitLeasedPlanTableResultRequest.newBuilder()
+                          .setJobId(lease.lease().jobId)
+                          .setLeaseEpoch(lease.lease().leaseEpoch)
+                          .setFailure(
+                              SubmitLeasedPlanTableResultRequest.Failure.newBuilder()
+                                  .setMessage(message == null ? "" : message)
+                                  .setFailureKind(toProtoFailureKind(failureKind))
+                                  .setRetryDisposition(toProtoRetryDisposition(retryDisposition))
+                                  .setRetryClass(toProtoRetryClass(retryClass))
+                                  .build())
+                          .build())
+                  .getAccepted());
+    } catch (RuntimeException error) {
+      throw leasePreconditionOrOriginal("submitLeasedPlanTableResult", error);
+    }
   }
 
   public StandalonePlanViewPayload getPlanViewInput(RemoteLeasedJob lease) {
@@ -660,18 +725,23 @@ class GrpcRemoteReconcileExecutorClient
               .setIdempotencyKey(mutation.idempotencyKey() == null ? "" : mutation.idempotencyKey())
               .build());
     }
-    var response =
-        invokeWorkerControlMutationOnce(
-            "submitLeasedPlanViewResult",
-            correlationId(lease),
-            lease.lease().accountId,
-            stub ->
-                stub.submitLeasedPlanViewResult(
-                    SubmitLeasedPlanViewResultRequest.newBuilder()
-                        .setJobId(lease.lease().jobId)
-                        .setLeaseEpoch(lease.lease().leaseEpoch)
-                        .setSuccess(success.build())
-                        .build()));
+    SubmitLeasedPlanViewResultResponse response;
+    try {
+      response =
+          invokeWorkerControlMutationOnce(
+              "submitLeasedPlanViewResult",
+              correlationId(lease),
+              lease.lease().accountId,
+              stub ->
+                  stub.submitLeasedPlanViewResult(
+                      SubmitLeasedPlanViewResultRequest.newBuilder()
+                          .setJobId(lease.lease().jobId)
+                          .setLeaseEpoch(lease.lease().leaseEpoch)
+                          .setSuccess(success.build())
+                          .build()));
+    } catch (RuntimeException error) {
+      throw leasePreconditionOrOriginal("submitLeasedPlanViewResult", error);
+    }
     return new RemotePlannerWorkerClient.PlanViewSubmitResult(
         response.getAccepted(), response.getViewsChanged());
   }
@@ -682,24 +752,28 @@ class GrpcRemoteReconcileExecutorClient
       ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
       ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       String message) {
-    return invokeWorkerControlMutationOnce(
-        "submitLeasedPlanViewResult",
-        correlationId(lease),
-        lease.lease().accountId,
-        stub ->
-            stub.submitLeasedPlanViewResult(
-                    SubmitLeasedPlanViewResultRequest.newBuilder()
-                        .setJobId(lease.lease().jobId)
-                        .setLeaseEpoch(lease.lease().leaseEpoch)
-                        .setFailure(
-                            SubmitLeasedPlanViewResultRequest.Failure.newBuilder()
-                                .setMessage(message == null ? "" : message)
-                                .setFailureKind(toProtoFailureKind(failureKind))
-                                .setRetryDisposition(toProtoRetryDisposition(retryDisposition))
-                                .setRetryClass(toProtoRetryClass(retryClass))
-                                .build())
-                        .build())
-                .getAccepted());
+    try {
+      return invokeWorkerControlMutationOnce(
+          "submitLeasedPlanViewResult",
+          correlationId(lease),
+          lease.lease().accountId,
+          stub ->
+              stub.submitLeasedPlanViewResult(
+                      SubmitLeasedPlanViewResultRequest.newBuilder()
+                          .setJobId(lease.lease().jobId)
+                          .setLeaseEpoch(lease.lease().leaseEpoch)
+                          .setFailure(
+                              SubmitLeasedPlanViewResultRequest.Failure.newBuilder()
+                                  .setMessage(message == null ? "" : message)
+                                  .setFailureKind(toProtoFailureKind(failureKind))
+                                  .setRetryDisposition(toProtoRetryDisposition(retryDisposition))
+                                  .setRetryClass(toProtoRetryClass(retryClass))
+                                  .build())
+                          .build())
+                  .getAccepted());
+    } catch (RuntimeException error) {
+      throw leasePreconditionOrOriginal("submitLeasedPlanViewResult", error);
+    }
   }
 
   public StandalonePlanSnapshotPayload getPlanSnapshotInput(RemoteLeasedJob lease) {
@@ -739,21 +813,76 @@ class GrpcRemoteReconcileExecutorClient
                 lease.lease().accountId, lease.lease().jobId, effectiveSnapshotTask, directStats)
             : snapshotPlanBlobStore.persistPlan(
                 lease.lease().accountId, lease.lease().jobId, effectiveSnapshotTask, fileGroupJobs);
+    List<List<ai.floedb.floecat.reconciler.rpc.PlannedFileGroupPlanJob>> chunks = List.of();
+    if (persistedSnapshotTask.completionMode()
+        == ReconcileSnapshotTask.CompletionMode.FILE_GROUPS) {
+      List<ai.floedb.floecat.reconciler.rpc.PlannedFileGroupPlanJob> protoFileGroupJobs =
+          new ArrayList<>();
+      for (PlannedFileGroupJob fileGroupJob :
+          fileGroupJobs == null ? List.<PlannedFileGroupJob>of() : fileGroupJobs) {
+        if (fileGroupJob == null || fileGroupJob.fileGroupTask() == null) {
+          continue;
+        }
+        protoFileGroupJobs.add(
+            ai.floedb.floecat.reconciler.rpc.PlannedFileGroupPlanJob.newBuilder()
+                .setScope(toProtoScope(fileGroupJob.scope(), lease.lease()))
+                .setFileGroupTask(toProtoFileGroupTask(fileGroupJob.fileGroupTask()))
+                .build());
+      }
+      try {
+        chunks = chunksBySerializedSize(protoFileGroupJobs, PLAN_CHILD_JOB_CHUNK_TARGET_BYTES);
+        for (int chunkIndex = 0; chunkIndex < chunks.size(); chunkIndex++) {
+          int submittedChunkIndex = chunkIndex;
+          List<ai.floedb.floecat.reconciler.rpc.PlannedFileGroupPlanJob> chunk =
+              chunks.get(chunkIndex);
+          boolean accepted =
+              invokeWorkerControlMutationOnce(
+                  "submitLeasedPlanSnapshotResult",
+                  correlationId(lease),
+                  lease.lease().accountId,
+                  stub ->
+                      stub.submitLeasedPlanSnapshotResult(
+                              SubmitLeasedPlanSnapshotResultRequest.newBuilder()
+                                  .setJobId(lease.lease().jobId)
+                                  .setLeaseEpoch(lease.lease().leaseEpoch)
+                                  .setChunk(
+                                      SubmitLeasedPlanSnapshotResultRequest.Chunk.newBuilder()
+                                          .setSnapshotTask(
+                                              toProtoSnapshotTask(persistedSnapshotTask))
+                                          .setChunkIndex(submittedChunkIndex)
+                                          .addAllFileGroupJobs(chunk)
+                                          .build())
+                                  .build())
+                          .getAccepted());
+          if (!accepted) {
+            return false;
+          }
+        }
+      } catch (RuntimeException error) {
+        throw leasePreconditionOrOriginal("submitLeasedPlanSnapshotResult", error);
+      }
+    }
     SubmitLeasedPlanSnapshotResultRequest.Success.Builder success =
         SubmitLeasedPlanSnapshotResultRequest.Success.newBuilder();
-    success.setSnapshotTask(toProtoSnapshotTask(persistedSnapshotTask));
-    return invokeWorkerControlMutationOnce(
-        "submitLeasedPlanSnapshotResult",
-        correlationId(lease),
-        lease.lease().accountId,
-        stub ->
-            stub.submitLeasedPlanSnapshotResult(
-                    SubmitLeasedPlanSnapshotResultRequest.newBuilder()
-                        .setJobId(lease.lease().jobId)
-                        .setLeaseEpoch(lease.lease().leaseEpoch)
-                        .setSuccess(success.build())
-                        .build())
-                .getAccepted());
+    success
+        .setSnapshotTask(toProtoSnapshotTask(persistedSnapshotTask))
+        .setChunkCount(chunks.size());
+    try {
+      return invokeWorkerControlMutationOnce(
+          "submitLeasedPlanSnapshotResult",
+          correlationId(lease),
+          lease.lease().accountId,
+          stub ->
+              stub.submitLeasedPlanSnapshotResult(
+                      SubmitLeasedPlanSnapshotResultRequest.newBuilder()
+                          .setJobId(lease.lease().jobId)
+                          .setLeaseEpoch(lease.lease().leaseEpoch)
+                          .setSuccess(success.build())
+                          .build())
+                  .getAccepted());
+    } catch (RuntimeException error) {
+      throw leasePreconditionOrOriginal("submitLeasedPlanSnapshotResult", error);
+    }
   }
 
   public boolean submitPlanSnapshotFailure(
@@ -762,24 +891,28 @@ class GrpcRemoteReconcileExecutorClient
       ReconcileExecutor.ExecutionResult.RetryDisposition retryDisposition,
       ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       String message) {
-    return invokeWorkerControlMutationOnce(
-        "submitLeasedPlanSnapshotResult",
-        correlationId(lease),
-        lease.lease().accountId,
-        stub ->
-            stub.submitLeasedPlanSnapshotResult(
-                    SubmitLeasedPlanSnapshotResultRequest.newBuilder()
-                        .setJobId(lease.lease().jobId)
-                        .setLeaseEpoch(lease.lease().leaseEpoch)
-                        .setFailure(
-                            SubmitLeasedPlanSnapshotResultRequest.Failure.newBuilder()
-                                .setMessage(message == null ? "" : message)
-                                .setFailureKind(toProtoFailureKind(failureKind))
-                                .setRetryDisposition(toProtoRetryDisposition(retryDisposition))
-                                .setRetryClass(toProtoRetryClass(retryClass))
-                                .build())
-                        .build())
-                .getAccepted());
+    try {
+      return invokeWorkerControlMutationOnce(
+          "submitLeasedPlanSnapshotResult",
+          correlationId(lease),
+          lease.lease().accountId,
+          stub ->
+              stub.submitLeasedPlanSnapshotResult(
+                      SubmitLeasedPlanSnapshotResultRequest.newBuilder()
+                          .setJobId(lease.lease().jobId)
+                          .setLeaseEpoch(lease.lease().leaseEpoch)
+                          .setFailure(
+                              SubmitLeasedPlanSnapshotResultRequest.Failure.newBuilder()
+                                  .setMessage(message == null ? "" : message)
+                                  .setFailureKind(toProtoFailureKind(failureKind))
+                                  .setRetryDisposition(toProtoRetryDisposition(retryDisposition))
+                                  .setRetryClass(toProtoRetryClass(retryClass))
+                                  .build())
+                          .build())
+                  .getAccepted());
+    } catch (RuntimeException error) {
+      throw leasePreconditionOrOriginal("submitLeasedPlanSnapshotResult", error);
+    }
   }
 
   public StandaloneFileGroupExecutionPayload getExecution(RemoteLeasedJob lease) {
@@ -1088,8 +1221,49 @@ class GrpcRemoteReconcileExecutorClient
     return List.copyOf(out);
   }
 
+  private static <T extends MessageLite> List<List<T>> chunksBySerializedSize(
+      List<T> items, int targetBytes) {
+    return chunksBySerializedSizeAndCount(items, targetBytes, Integer.MAX_VALUE);
+  }
+
+  private static <T extends MessageLite> List<List<T>> chunksBySerializedSizeAndCount(
+      List<T> items, int targetBytes, int maxCount) {
+    List<List<T>> out = new ArrayList<>();
+    List<T> current = new ArrayList<>();
+    int currentBytes = 0;
+    int effectiveTargetBytes = Math.max(1, targetBytes);
+    int effectiveMaxCount = Math.max(1, maxCount);
+    for (T item : items == null ? List.<T>of() : items) {
+      if (item == null) {
+        continue;
+      }
+      int itemBytes = estimatedChunkItemBytes(item);
+      if (!current.isEmpty()
+          && (currentBytes + itemBytes > effectiveTargetBytes
+              || current.size() >= effectiveMaxCount)) {
+        out.add(List.copyOf(current));
+        current = new ArrayList<>();
+        currentBytes = 0;
+      }
+      current.add(item);
+      currentBytes += itemBytes;
+    }
+    if (!current.isEmpty()) {
+      out.add(List.copyOf(current));
+    }
+    return List.copyOf(out);
+  }
+
   private static int estimatedChunkItemBytes(MessageLite message) {
     return Math.max(1, message.getSerializedSize()) + 32;
+  }
+
+  private static RuntimeException leasePreconditionOrOriginal(
+      String operation, RuntimeException error) {
+    if (ReconcileLeaseGrpcStatus.isLeasePreconditionFailure(error)) {
+      return new RemoteLeasePreconditionFailedException(operation, error);
+    }
+    return error;
   }
 
   @Override
@@ -1852,14 +2026,14 @@ class GrpcRemoteReconcileExecutorClient
   }
 
   private void attachWorkerAuthorization(Metadata metadata, String accountId) {
+    if (!workerAuthRequired) {
+      return;
+    }
     if (workerAuthHeaderName.isEmpty()) {
       return;
     }
     Optional<String> authorization = reconcileWorkerAuthProvider.authorizationHeader(accountId);
     if (authorization.isEmpty()) {
-      if (!workerAuthRequired) {
-        return;
-      }
       throw new IllegalStateException(
           "Reconcile worker authorization header is required but no worker auth configuration is available");
     }

@@ -17,6 +17,8 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.storage.spi.PointerStore.CasCheck;
+import ai.floedb.floecat.storage.spi.PointerStore.CasCheckAbsent;
 import ai.floedb.floecat.storage.spi.PointerStore.CasDelete;
 import ai.floedb.floecat.storage.spi.PointerStore.CasOp;
 import ai.floedb.floecat.storage.spi.PointerStore.CasUpsert;
@@ -35,6 +37,9 @@ public final class JobIndexWriteBatchSupport {
   public static List<CasOp> toCasOps(
       ReconcileJobIndexStore.JobIndexWriteBatch batch,
       Function<String, Optional<JobIndexEntrySnapshot>> loadStoredPointer) {
+    if (batch == null) {
+      return List.of();
+    }
     List<CasOp> ops = new ArrayList<>(batch.writes().size());
     for (ReconcileJobIndexStore.JobIndexWriteOp write : batch.writes()) {
       if (write instanceof ReconcileJobIndexStore.JobIndexUpsert upsert) {
@@ -60,7 +65,13 @@ public final class JobIndexWriteBatchSupport {
                           "missing pointer reference kind for " + upsert.pointerKey());
                 }));
       } else if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
-        ops.add(new CasDelete(delete.pointerKey(), delete.expectedVersion()));
+        if (!delete.allowAbsent() || loadStoredPointer.apply(delete.pointerKey()).isPresent()) {
+          ops.add(new CasDelete(delete.pointerKey(), delete.expectedVersion()));
+        }
+      } else if (write instanceof ReconcileJobIndexStore.JobIndexCheck check) {
+        ops.add(new CasCheck(check.pointerKey(), check.expectedVersion()));
+      } else if (write instanceof ReconcileJobIndexStore.JobIndexCheckAbsent check) {
+        ops.add(new CasCheckAbsent(check.pointerKey()));
       }
     }
     for (ReconcileJobIndexStore.ReadyQueueWrite readyUpsert : batch.readyMutation().upserts()) {

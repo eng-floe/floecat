@@ -72,7 +72,11 @@ public class StoredReconcileJob {
   public long completedFiles;
   public long failedFiles;
   public long expectedDirectChildren;
+  public String plannerOutcomeFingerprint;
+  public String plannerOutcomeLeaseEpoch;
   public boolean childrenFinalized;
+  public String statsCleanupState;
+  public long statsCleanupUpdatedAtMs;
   public long projectionRequestedGeneration;
   public long projectionAppliedGeneration;
   public int attempt;
@@ -81,6 +85,7 @@ public class StoredReconcileJob {
   public String laneKey;
   public String dedupeKeyHash;
   public String readyPointerKey;
+  public int readyIndexVersion;
   public String connectorIndexPointerKey;
   public String canonicalPointerKey;
   public long createdAtMs;

@@ -81,6 +81,30 @@ class TableMetadataBuilderTest {
   }
 
   @Test
+  void fromCatalogDropsStoredMainRefWhenCurrentSnapshotIsNotVisible() {
+    Snapshot current = Snapshot.newBuilder().setSnapshotId(100L).setSequenceNumber(100L).build();
+    Table table = Table.newBuilder().setDisplayName("orders").build();
+    Map<String, String> props = new LinkedHashMap<>();
+    props.put(
+        RefPropertyUtil.PROPERTY_KEY,
+        "{\"main\":{\"snapshot-id\":100,\"type\":\"branch\"},"
+            + "\"audit\":{\"snapshot-id\":100,\"type\":\"tag\"}}");
+
+    TableMetadataView metadata =
+        TableMetadataBuilder.fromCatalog(
+            "orders",
+            table,
+            props,
+            List.of(current),
+            "s3://warehouse/orders/metadata/00001-current.metadata.json",
+            null);
+
+    assertNull(metadata.currentSnapshotId());
+    assertFalse(metadata.refs().containsKey("main"));
+    assertEquals(100L, ((Map<?, ?>) metadata.refs().get("audit")).get("snapshot-id"));
+  }
+
+  @Test
   void fromCatalogOmitsInternalStorageProperties() {
     Table table = Table.newBuilder().setDisplayName("orders").build();
     Map<String, String> props = new LinkedHashMap<>();

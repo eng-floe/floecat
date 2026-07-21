@@ -69,6 +69,11 @@ public final class UserRepositoryTestSupport {
     public MutationMeta metaForSafe(ResourceId id) {
       throw new StorageNotFoundException("unused");
     }
+
+    @Override
+    public MutationMeta pointerMetaForSafe(ResourceId id) {
+      return metaForSafe(id);
+    }
   }
 
   public static final class FakeNamespaceRepository extends NamespaceRepository {
@@ -121,6 +126,11 @@ public final class UserRepositoryTestSupport {
     @Override
     public MutationMeta metaForSafe(ResourceId id) {
       throw new StorageNotFoundException("unused");
+    }
+
+    @Override
+    public MutationMeta pointerMetaForSafe(ResourceId id) {
+      return metaForSafe(id);
     }
   }
 
@@ -193,6 +203,11 @@ public final class UserRepositoryTestSupport {
     @Override
     public MutationMeta metaForSafe(ResourceId id) {
       throw new StorageNotFoundException("unused");
+    }
+
+    @Override
+    public MutationMeta pointerMetaForSafe(ResourceId id) {
+      return metaForSafe(id);
     }
 
     private int startIndexForToken(List<Table> sorted, String pageToken) {
@@ -277,6 +292,11 @@ public final class UserRepositoryTestSupport {
     @Override
     public MutationMeta metaForSafe(ResourceId id) {
       throw new StorageNotFoundException("unused");
+    }
+
+    @Override
+    public MutationMeta pointerMetaForSafe(ResourceId id) {
+      return metaForSafe(id);
     }
 
     private int startIndexForToken(List<View> sorted, String pageToken) {

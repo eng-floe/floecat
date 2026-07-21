@@ -151,6 +151,262 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
   }
 
   @Test
+  void streamConstraintsServesAnUnpinnedSystemRelationThroughTheProvider() {
+    // A system relation is provider-backed and carries no snapshot pin. It must resolve through the
+    // routed provider, not short-circuit to pin.missing on the empty snapshot (a USER table with no
+    // pin still fails pin.missing — see the provider returning empty for it).
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    QueryContext ctx = queryContextWithPin("query-constraints-system", 498L); // pins TABLE only
+    store.seed(ctx);
+
+    ResourceId systemTable =
+        ResourceId.newBuilder()
+            .setAccountId(TABLE.getAccountId())
+            .setId("information_schema.table_constraints")
+            .setKind(TABLE.getKind())
+            .build();
+    ConstraintDefinition pkSystem =
+        constraint("pk_system", ConstraintType.CT_PRIMARY_KEY, List.of(1L));
+    ConstraintProvider provider =
+        new ConstraintProvider() {
+          @Override
+          public Optional<ConstraintSetView> constraints(
+              ResourceId relationId, OptionalLong snapshotId) {
+            // System relation: served regardless of the absent pin/snapshot. A user table with no
+            // pin yields empty here, so it still resolves as pin.missing.
+            if (relationId.equals(systemTable)) {
+              return Optional.of(newConstraintSet(systemTable, List.of(pkSystem)));
+            }
+            return Optional.empty();
+          }
+        };
+    PlannerStatsBundleService service =
+        createService(
+            repository,
+            store,
+            provider,
+            /* chunkSize= */ 5,
+            /* maxTables= */ 5,
+            /* maxTargets= */ 10);
+
+    FetchTableConstraintsRequest request =
+        FetchTableConstraintsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTableIds(systemTable)
+            .build();
+
+    List<TableConstraintsResult> results =
+        flattenConstraintChunks(
+            service
+                .streamConstraints("corr", ctx, request)
+                .collect()
+                .asList()
+                .await()
+                .indefinitely());
+    assertEquals(1, results.size());
+    assertEquals(
+        BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND,
+        results.get(0).getStatus(),
+        "an unpinned system relation resolves through the provider, not pin.missing");
+    assertEquals("pk_system", results.get(0).getConstraints(0).getName());
+  }
+
+  @Test
+  void streamConstraintsEchoesTheServedBundleVersion() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    QueryContext ctx = queryContextWithPin("query-constraints-version", 498L);
+    store.seed(ctx);
+
+    ConstraintDefinition pkUsers =
+        constraint("pk_users_version", ConstraintType.CT_PRIMARY_KEY, List.of(1L));
+    ConstraintProvider provider =
+        new ConstraintProvider() {
+          @Override
+          public Optional<ConstraintSetView> constraints(
+              ResourceId relationId, OptionalLong snapshotId) {
+            if (relationId.equals(TABLE)
+                && snapshotId.isPresent()
+                && snapshotId.getAsLong() == 498L) {
+              return Optional.of(newConstraintSet(TABLE, List.of(pkUsers), /* version= */ 77L));
+            }
+            return Optional.empty();
+          }
+        };
+    PlannerStatsBundleService service =
+        createService(
+            repository,
+            store,
+            provider,
+            /* chunkSize= */ 5,
+            /* maxTables= */ 1,
+            /* maxTargets= */ 10);
+
+    FetchTableConstraintsRequest request =
+        FetchTableConstraintsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTableIds(TABLE)
+            .build();
+
+    List<TableConstraintsResult> results =
+        flattenConstraintChunks(
+            service
+                .streamConstraints("corr", ctx, request)
+                .collect()
+                .asList()
+                .await()
+                .indefinitely());
+    assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND, results.get(0).getStatus());
+    // A provider-served bundle (a pin without a frozen ref — the system-relation path) carries no
+    // pinned ref version to echo.
+    assertEquals("", results.get(0).getConstraintsRefVersion());
+  }
+
+  @Test
+  void streamConstraintsServesThePinnedBundleByRefDespiteALaterWrite() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    var constraintRepo =
+        new ai.floedb.floecat.service.repo.impl.ConstraintRepository(
+            new ai.floedb.floecat.storage.memory.InMemoryPointerStore(),
+            new ai.floedb.floecat.storage.memory.InMemoryBlobStore());
+    ConstraintDefinition pk = constraint("pk_pinned", ConstraintType.CT_PRIMARY_KEY, List.of(1L));
+    constraintRepo.putSnapshotConstraints(
+        TABLE,
+        498L,
+        ai.floedb.floecat.catalog.rpc.SnapshotConstraints.newBuilder().addConstraints(pk).build());
+    var pinnedMeta = constraintRepo.metaForSafe(TABLE, 498L);
+    QueryContext ctx =
+        queryContextWithConstraintRef(
+            "query-constraints-pinned-ref", 498L, pinnedMeta.getBlobUri(), pinnedMeta.getEtag());
+    store.seed(ctx);
+
+    // An in-place constraints write lands AFTER the pin: the live bundle now differs, but the
+    // pinned query keeps serving the exact bundle its root referenced — deterministic for the
+    // query's lifetime, no drift gate needed.
+    ConstraintDefinition uq = constraint("uq_post_pin", ConstraintType.CT_UNIQUE, List.of(2L));
+    constraintRepo.putSnapshotConstraints(
+        TABLE,
+        498L,
+        ai.floedb.floecat.catalog.rpc.SnapshotConstraints.newBuilder().addConstraints(uq).build());
+
+    PlannerStatsBundleService service =
+        createService(
+            repository,
+            store,
+            ConstraintProvider.NONE,
+            constraintRepo,
+            /* chunkSize= */ 5,
+            /* maxTables= */ 1,
+            /* maxTargets= */ 10);
+
+    List<TableConstraintsResult> results = streamConstraintsFor(service, ctx);
+    assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND, results.get(0).getStatus());
+    assertEquals(1, results.get(0).getConstraintsCount());
+    assertEquals("pk_pinned", results.get(0).getConstraints(0).getName());
+    // The pinned ref version is echoed so the result matches the pin identity.
+    assertEquals(pinnedMeta.getEtag(), results.get(0).getConstraintsRefVersion());
+  }
+
+  @Test
+  void streamConstraintsStaysAbsentWhenABundleAppearsAfterAPinThatHadNone() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    var constraintRepo =
+        new ai.floedb.floecat.service.repo.impl.ConstraintRepository(
+            new ai.floedb.floecat.storage.memory.InMemoryPointerStore(),
+            new ai.floedb.floecat.storage.memory.InMemoryBlobStore());
+    // The pin froze NO constraints ref (no bundle existed at pin time). A bundle created by a
+    // concurrent ALTER after the pin must not be served, or the query could do join elimination
+    // on a constraint that did not exist when it pinned.
+    QueryContext ctx = queryContextWithPin("query-constraints-post-pin", 498L);
+    store.seed(ctx);
+    ConstraintDefinition pk = constraint("pk_post_pin", ConstraintType.CT_PRIMARY_KEY, List.of(1L));
+    constraintRepo.putSnapshotConstraints(
+        TABLE,
+        498L,
+        ai.floedb.floecat.catalog.rpc.SnapshotConstraints.newBuilder().addConstraints(pk).build());
+
+    PlannerStatsBundleService service =
+        createService(
+            repository,
+            store,
+            ConstraintProvider.NONE,
+            constraintRepo,
+            /* chunkSize= */ 5,
+            /* maxTables= */ 1,
+            /* maxTargets= */ 10);
+
+    List<TableConstraintsResult> results = streamConstraintsFor(service, ctx);
+    assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_NOT_FOUND, results.get(0).getStatus());
+    assertEquals(0, results.get(0).getConstraintsList().size());
+    assertEquals("absent_at_pin", results.get(0).getFailure().getDetailsOrDefault("reason", ""));
+  }
+
+  @Test
+  void streamConstraintsFailsLoudlyWhenThePinnedBundleBlobIsGone() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    var constraintRepo =
+        new ai.floedb.floecat.service.repo.impl.ConstraintRepository(
+            new ai.floedb.floecat.storage.memory.InMemoryPointerStore(),
+            new ai.floedb.floecat.storage.memory.InMemoryBlobStore());
+    // The pin names a bundle blob that is not retrievable: pinned blobs are GC-rooted for the
+    // query's lifetime, so this is a catalog-integrity error, never a silent fallback to live
+    // state.
+    QueryContext ctx =
+        queryContextWithConstraintRef(
+            "query-constraints-gone-ref", 498L, "s3://tbl/constraints-gone.pb", "etag-x");
+    store.seed(ctx);
+
+    PlannerStatsBundleService service =
+        createService(
+            repository,
+            store,
+            ConstraintProvider.NONE,
+            constraintRepo,
+            /* chunkSize= */ 5,
+            /* maxTables= */ 1,
+            /* maxTargets= */ 10);
+
+    List<TableConstraintsResult> results = streamConstraintsFor(service, ctx);
+    assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR, results.get(0).getStatus());
+  }
+
+  private static ConstraintProvider versionedProvider(
+      long snapshotId, List<ConstraintDefinition> constraints, long version) {
+    return new ConstraintProvider() {
+      @Override
+      public Optional<ConstraintSetView> constraints(
+          ResourceId relationId, OptionalLong requestedSnapshotId) {
+        if (relationId.equals(TABLE)
+            && requestedSnapshotId.isPresent()
+            && requestedSnapshotId.getAsLong() == snapshotId) {
+          return Optional.of(newConstraintSet(TABLE, constraints, version));
+        }
+        return Optional.empty();
+      }
+    };
+  }
+
+  private static List<TableConstraintsResult> streamConstraintsFor(
+      PlannerStatsBundleService service, QueryContext ctx) {
+    FetchTableConstraintsRequest request =
+        FetchTableConstraintsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTableIds(TABLE)
+            .build();
+    return flattenConstraintChunks(
+        service.streamConstraints("corr", ctx, request).collect().asList().await().indefinitely());
+  }
+
+  @Test
   void streamConstraintsRejectsBlankTableId() {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();

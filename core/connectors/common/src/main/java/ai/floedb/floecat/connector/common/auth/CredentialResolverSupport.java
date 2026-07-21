@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.common.auth;
 
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
@@ -42,6 +43,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sts.StsClient;
@@ -298,7 +300,7 @@ public final class CredentialResolverSupport {
       AuthCredentials.AwsWebIdentity web, Map<String, String> properties) {
     var req = buildAssumeRoleWithWebIdentityRequest(web, properties);
 
-    try (var sts = StsClient.builder().build()) {
+    try (var sts = new RefreshingAwsClient<>(() -> StsClient.builder().build())) {
       return assumeRoleWithWebIdentity(req, sts);
     }
   }
@@ -353,6 +355,13 @@ public final class CredentialResolverSupport {
     return resp.credentials();
   }
 
+  static Credentials assumeRoleWithWebIdentity(
+      AssumeRoleWithWebIdentityRequest req, RefreshingAwsClient<StsClient> sts) {
+    AssumeRoleWithWebIdentityResponse resp =
+        sts.callUnchecked(client -> client.assumeRoleWithWebIdentity(req));
+    return resp.credentials();
+  }
+
   private static void applyAwsCredentials(Map<String, String> options, Credentials creds) {
     if (creds == null) {
       throw new IllegalStateException("AWS STS did not return credentials");
@@ -382,14 +391,30 @@ public final class CredentialResolverSupport {
             option(properties, "client.region"),
             firstNonBlank(option(properties, "s3.region"), option(properties, "aws.region")));
 
-    var builder = StsClient.builder().credentialsProvider(DefaultCredentialsProvider.create());
+    try (var sts =
+        RefreshingAwsClient.withResourceFactory(
+            () -> {
+              var provider = DefaultCredentialsProvider.builder().build();
+              try {
+                return RefreshingAwsClient.clientResource(
+                    buildAmbientCredentialsStsClient(region, provider),
+                    RefreshingAwsClient.closeableResource(provider));
+              } catch (RuntimeException | Error e) {
+                RefreshingAwsClient.closeQuietly(RefreshingAwsClient.closeableResource(provider));
+                throw e;
+              }
+            })) {
+      return assumeRole(req, sts);
+    }
+  }
+
+  private static StsClient buildAmbientCredentialsStsClient(
+      String region, AwsCredentialsProvider provider) {
+    var builder = StsClient.builder().credentialsProvider(provider);
     if (region != null) {
       builder.region(Region.of(region));
     }
-
-    try (var sts = builder.build()) {
-      return assumeRole(req, sts);
-    }
+    return builder.build();
   }
 
   static AssumeRoleRequest buildAssumeRoleRequest(AuthCredentials.AwsAssumeRole ar) {
@@ -406,6 +431,11 @@ public final class CredentialResolverSupport {
 
   static Credentials assumeRole(AssumeRoleRequest req, StsClient sts) {
     AssumeRoleResponse resp = sts.assumeRole(req);
+    return resp.credentials();
+  }
+
+  static Credentials assumeRole(AssumeRoleRequest req, RefreshingAwsClient<StsClient> sts) {
+    AssumeRoleResponse resp = sts.callUnchecked(client -> client.assumeRole(req));
     return resp.credentials();
   }
 

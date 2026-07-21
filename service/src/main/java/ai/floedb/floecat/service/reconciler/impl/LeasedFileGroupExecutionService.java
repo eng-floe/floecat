@@ -21,6 +21,7 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.PutIndexArtifactItem;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.MutationMeta;
@@ -37,6 +38,7 @@ import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.reconciler.impl.FileGroupExecutionSupport;
+import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -69,8 +71,10 @@ import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -184,7 +188,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     if (snapshotRepo != null) {
       location =
           snapshotRepo
-              .getCurrentSnapshot(table.getResourceId())
+              .latestRegisteredSnapshot(table.getResourceId())
               .map(SnapshotRepository::metadataLocation)
               .map(LeasedFileGroupExecutionService::deriveTableRootLocation)
               .orElse("");
@@ -276,13 +280,17 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                             () -> {
                               long creatorStartNanos = System.nanoTime();
                               long snapshotId = plannedTask.snapshotId();
-                              persistTargetStats(
-                                  principalContext,
-                                  tableId,
-                                  snapshotId,
-                                  requiredResultId,
-                                  fileStats,
-                                  metrics);
+                              if (lease.fullRescan) {
+                                validateFileStats(tableId, snapshotId, fileStats);
+                              } else {
+                                persistTargetStats(
+                                    principalContext,
+                                    tableId,
+                                    snapshotId,
+                                    requiredResultId,
+                                    fileStats,
+                                    metrics);
+                              }
                               persistIndexArtifacts(
                                   principalContext,
                                   tableId,
@@ -382,15 +390,38 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                                   chunk ->
                                       partialAggregateRecords(chunk.getStatsRecordsList()).stream())
                               .toList();
+                      List<TargetStatsRecord> fileStats =
+                          stagedChunks.stream()
+                              .flatMap(
+                                  chunk ->
+                                      fileScopedStatsRecords(chunk.getStatsRecordsList()).stream())
+                              .toList();
                       List<TargetStatsRecord> mergedPartialAggregates =
                           mergedPartialAggregates(
                               tableId, latestTask.snapshotId(), latestTask, partialAggregates);
-                      jobs.persistFileGroupResult(
-                          lease.jobId,
-                          lease.leaseEpoch,
+                      if (lease.fullRescan) {
+                        persistDraftFileGroupStats(lease, tableId, latestTask, fileStats);
+                      }
+                      ReconcileFileGroupTask persistedTask =
                           latestTask
                               .withFileResults(validatedFileResults)
-                              .withPartialAggregateRecords(mergedPartialAggregates));
+                              .withPartialAggregateRecords(mergedPartialAggregates);
+                      jobs.persistFileGroupResult(lease.jobId, lease.leaseEpoch, persistedTask);
+                      boolean accepted =
+                          jobs.applyLeaseOutcome(
+                              lease.jobId,
+                              lease.leaseEpoch,
+                              ReconcileJobStore.CompletionKind.SUCCEEDED,
+                              System.currentTimeMillis(),
+                              "Executed file group " + latestTask.groupId(),
+                              0L,
+                              0L,
+                              0L,
+                              0L,
+                              0L,
+                              0L,
+                              fileGroupStatsProcessed(persistedTask));
+                      requireAcceptedLeaseOutcome(accepted, lease.jobId);
                       return new IdempotencyGuard.CreateResult<>(
                           SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
                               .setAccepted(true)
@@ -405,6 +436,23 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                     SubmitLeasedFileGroupExecutionResultResponse::parseFrom))
         .body
         .getAccepted();
+  }
+
+  private static void requireAcceptedLeaseOutcome(boolean accepted, String jobId) {
+    if (!accepted) {
+      throw ReconcileLeaseGrpcStatus.leasePreconditionFailed(
+          "reconcile lease is no longer valid for job " + jobId);
+    }
+  }
+
+  private static long fileGroupStatsProcessed(ReconcileFileGroupTask fileGroupTask) {
+    if (fileGroupTask == null || fileGroupTask.fileResults() == null) {
+      return 0L;
+    }
+    return fileGroupTask.fileResults().stream()
+        .filter(java.util.Objects::nonNull)
+        .mapToLong(ReconcileFileResult::statsProcessed)
+        .sum();
   }
 
   public boolean persistFailure(
@@ -472,12 +520,57 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       return;
     }
     long batchStartNanos = System.nanoTime();
-    statsStore.putTargetStatsBatch(tableId, snapshotId, nonNullStats);
-    statsOrchestrator.invalidateStatsCache(tableId, snapshotId, nonNullStats);
+    List<TargetStatsRecord> created =
+        statsStore.putTargetStatsBatchIfAbsent(tableId, snapshotId, nonNullStats);
+    if (!created.isEmpty()) {
+      statsOrchestrator.invalidateStatsCache(tableId, snapshotId, created);
+    }
+    metrics.statsItemCount += created.size();
     long batchNanos = System.nanoTime() - batchStartNanos;
     metrics.statsNanos += batchNanos;
     metrics.statsStorePutNanos += batchNanos;
-    metrics.statsItemCount += nonNullStats.size();
+  }
+
+  private void persistDraftFileGroupStats(
+      ReconcileJobStore.LeasedJob lease,
+      ResourceId tableId,
+      ReconcileFileGroupTask plannedTask,
+      List<TargetStatsRecord> fileStats) {
+    long snapshotId = plannedTask.snapshotId();
+    List<TargetStatsRecord> nonNullStats = validateFileStats(tableId, snapshotId, fileStats);
+    Set<String> plannedPaths = new LinkedHashSet<>(plannedTask.filePaths());
+    for (TargetStatsRecord record : nonNullStats) {
+      if (!plannedPaths.contains(record.getFile().getFilePath())) {
+        throw new IllegalArgumentException("file-group stats include an unplanned file");
+      }
+    }
+    List<StatsTarget> targetsToReplace =
+        plannedTask.filePaths().stream().map(path -> StatsTargetIdentity.fileTarget(path)).toList();
+    statsStore.replaceTargetStatsInGeneration(
+        tableId, snapshotId, statsGenerationId(lease), targetsToReplace, nonNullStats);
+  }
+
+  private static List<TargetStatsRecord> validateFileStats(
+      ResourceId tableId, long snapshotId, List<TargetStatsRecord> fileStats) {
+    List<TargetStatsRecord> nonNullStats = nonNullStatsRecords(fileStats);
+    for (TargetStatsRecord record : nonNullStats) {
+      if (!record.hasFile() || !record.hasTarget()) {
+        throw new IllegalArgumentException("file-group stats must be file-target records");
+      }
+      if (!tableId.equals(record.getTableId()) || record.getSnapshotId() != snapshotId) {
+        throw new IllegalArgumentException("file-group stats do not match file-group task");
+      }
+    }
+    return nonNullStats;
+  }
+
+  static String statsGenerationId(ReconcileJobStore.LeasedJob lease) {
+    String parentJobId = lease == null || lease.parentJobId == null ? "" : lease.parentJobId.trim();
+    if (parentJobId.isBlank()) {
+      throw new IllegalArgumentException(
+          "parent reconcile job id is required for stats generation");
+    }
+    return "full-rescan-" + parentJobId;
   }
 
   private void persistIndexArtifacts(

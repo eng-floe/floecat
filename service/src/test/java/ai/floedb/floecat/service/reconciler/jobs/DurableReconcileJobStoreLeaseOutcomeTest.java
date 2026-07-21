@@ -32,8 +32,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.service.it.profiles.ReconcileJobStoreControlPlaneProfile;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.NativeReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileLeaseStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory.InMemoryReconcileReadyQueueStore;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -116,20 +116,20 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
               .DynamoReconcileJobIndexBackend();
       ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileJobIndexBackend)
               store.jobIndexBackend)
-          .bind(sharedDynamoDbClient, store.kvTable);
+          .bind(() -> sharedDynamoDbClient, store.kvTable);
       store.leaseBackend =
           new ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend();
       ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileLeaseBackend)
               store.leaseBackend)
-          .bind(sharedDynamoDbClient, store.kvTable);
+          .bind(() -> sharedDynamoDbClient, store.kvTable);
       store.readyQueueBackend =
           new ai.floedb.floecat.service.reconciler.jobs.durable.store
               .DynamoReconcileReadyQueueBackend();
       ((ai.floedb.floecat.service.reconciler.jobs.durable.store.DynamoReconcileReadyQueueBackend)
               store.readyQueueBackend)
-          .bind(sharedDynamoDbClient, store.kvTable);
+          .bind(() -> sharedDynamoDbClient, store.kvTable);
     } else {
-      store.jobIndexStore = new InMemoryReconcileJobIndexStore();
+      store.jobIndexStore = new NativeReconcileJobIndexStore();
       store.leaseStore = new InMemoryReconcileLeaseStore();
       store.readyQueueStore = new InMemoryReconcileReadyQueueStore();
     }
@@ -435,7 +435,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   }
 
   @Test
-  void applyLeaseOutcomeRejectsDifferentDuplicateTerminalPayload() {
+  void applyLeaseOutcomeTreatsDuplicateSucceededCompletionAsIdempotentWhenStoredProgressMatches() {
     String jobId = enqueueRoot();
     ReconcileJobStore.LeasedJob lease = leaseJob(jobId);
 
@@ -454,7 +454,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
             0L,
             0L));
 
-    assertFalse(
+    assertTrue(
         store.applyLeaseOutcome(
             jobId,
             lease.leaseEpoch,

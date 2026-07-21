@@ -35,11 +35,11 @@ import ai.floedb.floecat.query.rpc.QueryService;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.query.rpc.RenewQueryRequest;
 import ai.floedb.floecat.query.rpc.RenewQueryResponse;
-import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -155,10 +155,10 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
 
                   var metadata =
                       metadataAssembler.assemble(
-                          correlationId, request.getInputsList(), asOfDefault, catalogId);
+                          queryId, correlationId, request.getInputsList(), asOfDefault, catalogId);
 
                   byte[] expansionBytes = metadata.expansionMap().toByteArray();
-                  byte[] snapshotBytes = metadata.snapshotSet().toByteArray();
+                  byte[] relationPinBytes = metadata.relationPinSet().toByteArray();
                   byte[] obligationsBytes = metadata.obligationsBytes();
 
                   var ctx =
@@ -166,27 +166,46 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           queryId,
                           pc,
                           expansionBytes,
-                          snapshotBytes,
+                          relationPinBytes,
                           obligationsBytes,
                           asOfDefaultBytes,
                           ttlMs,
                           1L,
                           catalogId);
 
+                  // The resolved pin blobs are already transient GC roots (the resolver registered
+                  // them at construction, protected through resolution and until this commit), so
+                  // storing the context — a durable GC root — needs no lease here.
+                  // Always branch on the insert result: putIfAbsent converts this context's pins
+                  // from transient resolving roots to durable ones (dropResolvingPinsRootedBy)
+                  // ONLY when it actually inserts. A silently-ignored no-op insert would serve a
+                  // context whose pins were never rooted — so surface it either way.
                   boolean clientProvidedId = request.hasQueryId();
-                  boolean inserted;
-                  if (clientProvidedId) {
-                    inserted = queryStore.putIfAbsent(ctx);
-                  } else {
-                    queryStore.put(ctx);
-                    inserted = true;
-                  }
-                  if (clientProvidedId && !inserted) {
-                    throw GrpcErrors.alreadyExists(
+                  boolean inserted = queryStore.putIfAbsent(ctx);
+                  if (!inserted) {
+                    // A context already owns this query id (an incumbent). Do NOT try to release
+                    // this rejected context's resolving-pin roots: they were registered under the
+                    // shared query id and unioned into the incumbent's resolving entry, so dropping
+                    // them by URI would also unroot blobs the incumbent may still be resolving — a
+                    // GC sweep in that window could then delete a live blob. The rejected
+                    // registration is already bounded (the map is size-capped, and the entry is
+                    // released by the incumbent's own commit or the fail-safe grace), so leaving it
+                    // in place is the safe choice.
+                    if (clientProvidedId) {
+                      throw GrpcErrors.alreadyExists(
+                          correlationId,
+                          ALREADY_EXISTS,
+                          Map.of("resource", "query", "name", queryId),
+                          new IllegalStateException("query_id already exists: " + queryId));
+                    }
+                    // A server-generated query id collided — effectively impossible, but never
+                    // serve a context that was not the one that rooted its pins.
+                    throw GrpcErrors.internal(
                         correlationId,
-                        ALREADY_EXISTS,
-                        Map.of("resource", "query", "name", queryId),
-                        new IllegalStateException("query_id already exists: " + queryId));
+                        null,
+                        null,
+                        new IllegalStateException(
+                            "server-generated query id collided: " + queryId));
                   }
 
                   // Build descriptor
@@ -200,6 +219,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           .setSnapshots(metadata.snapshotSet())
                           .setExpansion(metadata.expansionMap())
                           .addAllObligations(metadata.obligations())
+                          .addAllRelationPins(QueryPins.identities(metadata.relationPinSet()))
                           .build();
 
                   return BeginQueryResponse.newBuilder().setQuery(descriptor).build();
@@ -312,13 +332,13 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           .setCreatedAt(ts(ctx.getCreatedAtMs()))
                           .setExpiresAt(ts(ctx.getExpiresAtMs()));
 
-                  if (ctx.getSnapshotSet() != null) {
-                    try {
-                      builder.setSnapshots(SnapshotSet.parseFrom(ctx.getSnapshotSet()));
-                    } catch (InvalidProtocolBufferException e) {
-                      throw GrpcErrors.internal(
-                          correlationId, QUERY_SNAPSHOT_PARSE_FAILED, Map.of("query_id", queryId));
-                    }
+                  if (ctx.getRelationPins() != null) {
+                    // Expose both descriptor views of the stored pins: the snapshot-selector
+                    // projection and the opaque per-relation identities BeginQuery advertises, so a
+                    // caller that polls GetQuery keeps the cache/change-detection contract.
+                    var pins = ctx.parseRelationPins(correlationId);
+                    builder.setSnapshots(QueryPins.toSnapshotSet(pins));
+                    builder.addAllRelationPins(QueryPins.identities(pins));
                   }
 
                   if (ctx.getExpansionMap() != null) {

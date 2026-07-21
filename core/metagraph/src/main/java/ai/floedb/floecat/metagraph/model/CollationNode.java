@@ -17,14 +17,12 @@
 package ai.floedb.floecat.metagraph.model;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import java.time.Instant;
 import java.util.Map;
 
 /** Relation node describing a builtin collation. */
 public record CollationNode(
     ResourceId id,
     long version,
-    Instant metadataUpdatedAt,
     String engineVersion,
     String displayName,
     String locale,

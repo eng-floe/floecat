@@ -43,7 +43,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
-import ai.floedb.floecat.service.catalog.impl.CatalogOverlayGuards;
+import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
@@ -77,8 +78,20 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject CatalogOverlay overlay;
+  @Inject TableRootWriter rootWriter;
 
   private static final Logger LOG = Logger.getLogger(TableConstraintsServiceImpl.class);
+
+  /** Record the snapshot's (possibly new or removed) constraints bundle on the table root. */
+  private void commitConstraintsToRoot(ResourceId tableId, long snapshotId) {
+    if (rootWriter != null) {
+      rootWriter.commitConstraints(tableId, snapshotId);
+    }
+  }
+
+  private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
+    return new CatalogSurfaceWritePolicy(overlay);
+  }
 
   /** Returns snapshot-scoped constraints for one table snapshot. */
   @Override
@@ -188,6 +201,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                     boolean changed =
                         constraints.putSnapshotConstraints(
                             request.getTableId(), request.getSnapshotId(), normalized);
+                    commitConstraintsToRoot(request.getTableId(), request.getSnapshotId());
                     var meta =
                         constraints.metaFor(request.getTableId(), request.getSnapshotId(), tsNow);
                     return PutTableConstraintsResponse.newBuilder()
@@ -211,6 +225,8 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                                             request.getTableId(),
                                             request.getSnapshotId(),
                                             normalized);
+                                    commitConstraintsToRoot(
+                                        request.getTableId(), request.getSnapshotId());
                                     return new IdempotencyGuard.CreateResult<>(
                                         PutTableConstraintsResponse.newBuilder()
                                             .setConstraints(normalized)
@@ -339,9 +355,22 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                   ensureTableWritable(tableId);
 
                   var meta = constraints.metaForSafe(tableId, snapshotId);
+                  // deleteSnapshotConstraints removes only the (table, snapshot) pointers — the
+                  // constraints bundle is a content-addressed CAS blob, so the blob itself is NOT
+                  // deleted here. A query that pinned this snapshot reads the bundle by its frozen
+                  // blob URI (getByBlobUri), independent of the pointer, and reference-aware
+                  // CasBlobGc reclaims the blob only once no live pin holds it — so removing the
+                  // pointer cannot break a pinned reader.
                   if (!constraints.deleteSnapshotConstraints(tableId, snapshotId)) {
+                    // Already gone — either a double-delete or a prior attempt that deleted the
+                    // pointer then failed its root commit and is retrying. Clear the root ref
+                    // idempotently before reporting not-found, so a pinned-ref never outlives the
+                    // pointer it points at (new pins would copy a stale ref; root-chain GC would
+                    // anchor the retired blob).
+                    commitConstraintsToRoot(tableId, snapshotId);
                     throw constraintsBundleNotFound(tableId, snapshotId);
                   }
+                  commitConstraintsToRoot(tableId, snapshotId);
 
                   return DeleteTableConstraintsResponse.newBuilder().setMeta(meta).build();
                 }),
@@ -508,6 +537,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
         }
         SnapshotConstraints created = mutator.apply(SnapshotConstraints.newBuilder().build());
         if (constraints.createSnapshotConstraintsIfAbsent(tableId, snapshotId, created)) {
+          commitConstraintsToRoot(tableId, snapshotId);
           return constraints.getSnapshotConstraints(tableId, snapshotId).orElse(created);
         }
         continue;
@@ -520,6 +550,11 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
 
       SnapshotConstraints next = mutator.apply(current);
       if (ConstraintNormalizer.normalize(next).equals(ConstraintNormalizer.normalize(current))) {
+        // No change THIS attempt — but a prior attempt may have applied the mutation and then
+        // failed its root commit, leaving the root ref stale. Convergence is idempotent (it reads
+        // the live bundle meta; a matching ref no-ops in the committer), so attempt it on this
+        // exit path too rather than short-circuiting before the root catches up.
+        commitConstraintsToRoot(tableId, snapshotId);
         return current;
       }
       try {
@@ -527,6 +562,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
             constraints.updateSnapshotConstraints(
                 tableId, snapshotId, next, currentMeta.getPointerVersion());
         if (updated) {
+          commitConstraintsToRoot(tableId, snapshotId);
           return constraints.getSnapshotConstraints(tableId, snapshotId).orElse(next);
         }
       } catch (BaseResourceRepository.NotFoundException ignore) {
@@ -719,16 +755,19 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
 
   /** Ensures the request table is visible through overlay resolution (user or system). */
   private void ensureTableVisible(ResourceId tableId) {
-    CatalogOverlayGuards.requireVisibleTableNode(overlay, tableId, correlationId());
+    var writePolicy = catalogSurfaceWritePolicy();
+    writePolicy.requireVisibleTable(tableId, correlationId());
   }
 
   /** Ensures the request table is mutable; system tables are immutable and rejected. */
   private void ensureTableWritable(ResourceId tableId) {
-    CatalogOverlayGuards.requireWritableTableNode(overlay, tableId, correlationId());
+    var writePolicy = catalogSurfaceWritePolicy();
+    writePolicy.requireWritableTable(tableId, correlationId());
   }
 
   private String writableTableCatalogName(ResourceId tableId) {
-    var table = CatalogOverlayGuards.requireWritableTableNode(overlay, tableId, correlationId());
+    var writePolicy = catalogSurfaceWritePolicy();
+    var table = writePolicy.requireWritableTable(tableId, correlationId());
     if (!(table instanceof UserTableNode userTable)) {
       return "";
     }

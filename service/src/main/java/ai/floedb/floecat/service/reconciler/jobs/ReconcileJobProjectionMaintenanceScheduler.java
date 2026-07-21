@@ -31,7 +31,7 @@ public class ReconcileJobProjectionMaintenanceScheduler {
   @Inject DurableReconcileJobStore jobs;
 
   @Scheduled(
-      every = "{floecat.reconciler.job-store.projection-maintenance.tick-every:1s}",
+      every = "{floecat.reconciler.job-store.projection-maintenance.tick-every:5s}",
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
       skipExecutionIf = ReconcileJobGcScheduler.DisabledOrStopping.class)
   void tick() {
@@ -48,7 +48,7 @@ public class ReconcileJobProjectionMaintenanceScheduler {
         config
             .getOptionalValue(
                 "floecat.reconciler.job-store.projection-maintenance.max-tick-millis", Long.class)
-            .orElse(1000L);
+            .orElse(30_000L);
     try {
       jobs.runProjectionMaintenanceOnce(maxTickMillis);
     } catch (RuntimeException e) {

@@ -81,6 +81,22 @@ class InMemoryReconcileJobStoreTest {
   }
 
   @Test
+  void enqueueDoesNotDedupeWhileMatchingJobIsCancelling() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String first = store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, scope);
+    var lease = store.leaseNext().orElseThrow();
+    store.markRunning(first, lease.leaseEpoch, System.currentTimeMillis(), "executor-1");
+    store.cancel("acct", first, "stop");
+
+    String second = store.enqueue("acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, scope);
+
+    assertNotEquals(first, second);
+    assertEquals("JS_CANCELLING", store.get(first).orElseThrow().state);
+  }
+
+  @Test
   void enqueueDoesNotDedupeAfterMatchingJobFails() {
     String maxAttemptsKey = "floecat.reconciler.job-store.max-attempts";
     String previousMaxAttempts = System.getProperty(maxAttemptsKey);

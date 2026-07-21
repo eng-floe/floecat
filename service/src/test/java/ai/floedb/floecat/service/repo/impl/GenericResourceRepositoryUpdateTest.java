@@ -140,4 +140,36 @@ class GenericResourceRepositoryUpdateTest {
     assertThatThrownBy(() -> repo.update(account("acct-missing", "alpha", ""), 1L))
         .isInstanceOf(BaseResourceRepository.NotFoundException.class);
   }
+
+  @Test
+  void update_rewritesTheCanonicalBlobWhenGcSweptItBeforeTheCommit() {
+    // CAS-GC race backstop (eng-floe/core#1904): a concurrent sweep can delete the re-referenced,
+    // identical-content canonical blob after this update's writeBlob but before its pointer batch
+    // commits. The committed update must detect the hole and re-PUT the bytes it still holds —
+    // turning a would-be permanent dangling pointer into a transient blip.
+    boolean[] armed = {false};
+    String[] sweptBlob = {null};
+    var racingPtr =
+        new InMemoryPointerStore() {
+          @Override
+          public boolean compareAndSetBatch(
+              java.util.List<ai.floedb.floecat.storage.spi.PointerStore.CasOp> ops) {
+            if (armed[0]) {
+              armed[0] = false;
+              blobs.delete(sweptBlob[0]); // the GC sweep lands just before the commit
+            }
+            return super.compareAndSetBatch(ops);
+          }
+        };
+    var repo = new AccountRepository(racingPtr, blobs);
+    repo.create(account("acct-1", "alpha", "v1"));
+    sweptBlob[0] = racingPtr.get(Keys.accountPointerById("acct-1")).orElseThrow().getBlobUri();
+    armed[0] = true;
+
+    // Identical content: same content-addressed blob URI — the oscillating-rewrite shape.
+    assertThat(repo.update(account("acct-1", "alpha", "v1"), 1L)).isTrue();
+
+    assertThat(blobs.head(sweptBlob[0])).as("the canonical blob was healed").isPresent();
+    assertThat(repo.getById(id("acct-1"))).as("the pointer resolves — no dangling").isPresent();
+  }
 }

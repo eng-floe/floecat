@@ -40,6 +40,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
@@ -221,6 +222,60 @@ public class DynamoDbKvStoreTest {
   }
 
   @Test
+  void get_refreshes_client_and_retries_once_after_closed_pool() {
+    FakeDynamoDbHandler staleHandler = new FakeDynamoDbHandler();
+    RuntimeException closedPool = new RuntimeException("Connection pool shut down");
+    CompletableFuture<GetItemResponse> failed = new CompletableFuture<>();
+    failed.completeExceptionally(closedPool);
+    staleHandler.setPendingGetFuture(failed);
+    DynamoDbAsyncClient staleClient = clientFor(staleHandler);
+
+    FakeDynamoDbHandler refreshedHandler = new FakeDynamoDbHandler();
+    refreshedHandler.items.put(
+        "pk|sk",
+        Map.of(
+            KvAttributes.ATTR_PARTITION_KEY, AttributeValue.builder().s("pk").build(),
+            KvAttributes.ATTR_SORT_KEY, AttributeValue.builder().s("sk").build(),
+            KvAttributes.ATTR_KIND, AttributeValue.builder().s("K").build(),
+            KvAttributes.ATTR_VALUE,
+                AttributeValue.fromB(software.amazon.awssdk.core.SdkBytes.fromUtf8String("v")),
+            KvAttributes.ATTR_VERSION, AttributeValue.builder().n("3").build()));
+    DynamoDbAsyncClient refreshedClient = clientFor(refreshedHandler);
+
+    AtomicInteger created = new AtomicInteger();
+    ai.floedb.floecat.aws.RefreshingAwsClient<DynamoDbAsyncClient> refreshingClient =
+        new ai.floedb.floecat.aws.RefreshingAwsClient<>(
+            "DynamoDB async", () -> created.getAndIncrement() == 0 ? staleClient : refreshedClient);
+    DynamoDbKvStore store =
+        new DynamoDbKvStore(
+            refreshingClient::callAsync, refreshingClient::callUnchecked, staleHandler.tableName);
+
+    KvStore.Record got = store.get(key("pk", "sk")).await().indefinitely().orElseThrow();
+
+    assertEquals(2, created.get());
+    assertEquals(3L, got.version());
+    assertEquals("pk", got.key().partitionKey());
+    assertEquals("sk", got.key().sortKey());
+  }
+
+  @Test
+  void get_fixed_client_rethrows_closed_pool_without_retry() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    RuntimeException closedPool = new RuntimeException("Connection pool shut down");
+    CompletableFuture<GetItemResponse> failed = new CompletableFuture<>();
+    failed.completeExceptionally(closedPool);
+    handler.setPendingGetFuture(failed);
+    DynamoDbKvStore store = newStore(handler);
+
+    RuntimeException thrown =
+        assertThrows(
+            RuntimeException.class, () -> store.get(key("pk", "sk")).await().indefinitely());
+
+    assertSame(closedPool, thrown);
+    assertEquals(1, handler.getItemCalls);
+  }
+
+  @Test
   void get_subscription_cancel_cancels_underlying_future() {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     DynamoDbKvStore store = newStore(handler);
@@ -230,6 +285,26 @@ public class DynamoDbKvStoreTest {
 
     var subscription = store.get(key("pk", "sk")).subscribe().with(_ -> {}, _ -> {});
     subscription.cancel();
+
+    assertTrue(pending.isCancelled());
+  }
+
+  @Test
+  void get_subscription_cancel_cancels_manager_wrapped_future() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    CompletableFuture<GetItemResponse> pending = new CompletableFuture<>();
+    handler.setPendingGetFuture(pending);
+
+    try (ai.floedb.floecat.aws.RefreshingAwsClient<DynamoDbAsyncClient> refreshingClient =
+        new ai.floedb.floecat.aws.RefreshingAwsClient<>(
+            "DynamoDB async", () -> clientFor(handler))) {
+      DynamoDbKvStore store =
+          new DynamoDbKvStore(
+              refreshingClient::callAsync, refreshingClient::callUnchecked, handler.tableName);
+
+      var subscription = store.get(key("pk", "sk")).subscribe().with(_ -> {}, _ -> {});
+      subscription.cancel();
+    }
 
     assertTrue(pending.isCancelled());
   }
@@ -665,13 +740,17 @@ public class DynamoDbKvStoreTest {
   }
 
   private static DynamoDbKvStore newStore(FakeDynamoDbHandler handler) {
+    return new DynamoDbKvStore(clientFor(handler), handler.tableName);
+  }
+
+  private static DynamoDbAsyncClient clientFor(FakeDynamoDbHandler handler) {
     DynamoDbAsyncClient client =
         (DynamoDbAsyncClient)
             Proxy.newProxyInstance(
                 DynamoDbAsyncClient.class.getClassLoader(),
                 new Class<?>[] {DynamoDbAsyncClient.class},
                 handler);
-    return new DynamoDbKvStore(client, handler.tableName);
+    return client;
   }
 
   private static void put(DynamoDbKvStore store, String pk, String sk, long version) {
@@ -709,6 +788,7 @@ public class DynamoDbKvStoreTest {
     private int createTableCalls;
     private int deleteTableCalls;
     private int unprocessedCount;
+    private int getItemCalls;
     private CompletableFuture<GetItemResponse> pendingGetFuture;
 
     private void setQueryResponses(List<QueryResponse> responses) {
@@ -808,6 +888,7 @@ public class DynamoDbKvStoreTest {
     }
 
     private CompletableFuture<GetItemResponse> handleGetItem(GetItemRequest req) {
+      getItemCalls++;
       if (pendingGetFuture != null) {
         var future = pendingGetFuture;
         pendingGetFuture = null;

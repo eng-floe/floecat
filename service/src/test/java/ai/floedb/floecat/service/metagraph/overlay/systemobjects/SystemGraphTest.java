@@ -44,7 +44,6 @@ import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -265,8 +264,7 @@ class SystemGraphTest {
     NamespaceNode namespaceNode =
         new NamespaceNode(
             namespaceId,
-            1,
-            Instant.EPOCH,
+            "blob://test/v1",
             catalogId,
             List.of("pg_catalog"),
             "pg_catalog",
@@ -279,7 +277,6 @@ class SystemGraphTest {
             SystemNodeRegistry.resourceId(
                 engineKind, ResourceKind.RK_FUNCTION, NameRefUtil.name("pg_catalog", "short_name")),
             1,
-            Instant.EPOCH,
             engineVersion,
             namespaceId,
             "short_name",

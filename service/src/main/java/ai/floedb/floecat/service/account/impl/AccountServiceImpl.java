@@ -50,6 +50,7 @@ import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -77,6 +78,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   @Inject CatalogRepository catalogRepo;
   @Inject NamespaceRepository namespaceRepo;
   @Inject TableRepository tableRepo;
+  @Inject TableRootRepository tableRootRepo;
   @Inject ConnectorRepository connectorRepo;
   @Inject ViewRepository viewRepo;
   @Inject PrincipalProvider principal;
@@ -87,7 +89,8 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   @Inject PointerStore pointerStore;
   @Inject DefaultCredentialResolver credentialResolver;
 
-  private static final Set<String> ACCOUNT_MUTABLE_PATHS = Set.of("display_name", "description");
+  private static final Set<String> ACCOUNT_MUTABLE_PATHS =
+      Set.of("display_name", "description", "tags");
 
   private static final Logger LOG = Logger.getLogger(AccountService.class);
   private static final Logger CLEANUP_LOG = Logger.getLogger(AccountServiceImpl.class);
@@ -192,6 +195,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                           .setDisplayName(normName)
                           .setDescription(spec.getDescription())
                           .setCreatedAt(tsNow)
+                          .putAllTags(spec.getTagsMap())
                           .build();
 
                   if (idempotencyKey == null) {
@@ -590,6 +594,16 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
         "account_delete_cleanup_snapshot_prefix account_id=%s table_id=%s",
         tableId.getAccountId(), tableId.getId());
     pointerStore.deleteByPrefix(Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId()));
+    // Through the repository, not a bare pointer-store delete: the root-pointer cache must drop
+    // its entry with the pointer (same-process read-your-writes).
+    tableRootRepo.purgeRoot(tableId);
+    // The root-resync re-drive marker lives under /accounts/{a}/root-resyncs/by-table/, outside the
+    // per-table /tables/{t}/ subtree the prefixes above cover. Delete it here so a failed
+    // post-commit
+    // resync on a transaction-only table does not survive account deletion as a durable orphan (its
+    // only other reaper, TransactionGc.redrivePendingRootResyncs, never runs for a deleted
+    // account).
+    pointerStore.delete(Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId()));
     summary.snapshotPrefixesDeleted++;
   }
 
@@ -657,6 +671,10 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
       }
     }
 
+    if (maskTargets(mask, "tags")) {
+      b.clearTags().putAllTags(spec.getTagsMap());
+    }
+
     return b.build();
   }
 
@@ -681,6 +699,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     return new Canonicalizer()
         .scalar("name", normalizeName(s.getDisplayName()))
         .scalar("description", s.getDescription())
+        .map("tags", s.getTagsMap())
         .bytes();
   }
 
@@ -688,6 +707,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     return AccountSpec.newBuilder()
         .setDisplayName(normalizeName(account.getDisplayName()))
         .setDescription(account.getDescription())
+        .putAllTags(account.getTagsMap())
         .build();
   }
 }

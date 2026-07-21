@@ -115,6 +115,9 @@ message BlobHeader {
   google.protobuf.Timestamp created_at = 5;
   google.protobuf.Timestamp last_modified_at = 6;
   repeated Tag tags = 7;
+  // Store-assigned version of the blob observed by this header (S3 object versionId), used for
+  // version-targeted deletes; empty when the store has no versioning.
+  string version_id = 8;
 }
 
 message Tag {

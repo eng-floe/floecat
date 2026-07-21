@@ -28,6 +28,7 @@ public final class Keys {
   public static final String SEG_TABLE = "/table/";
   public static final String SEG_SNAPSHOTS = "/snapshots/";
   public static final String SEG_SNAPSHOT = "/snapshot/";
+  public static final String SEG_TABLE_ROOT = "/root/";
   public static final String SEG_COMPAT = "/compat/";
   public static final String SEG_VIEW = "/view/";
   public static final String SEG_CONNECTOR = "/connector/";
@@ -54,6 +55,13 @@ public final class Keys {
   private static long reqNonNegative(String name, long v) {
     if (v < 0) {
       throw new IllegalArgumentException("key arg '" + name + "' must be >= 0");
+    }
+    return v;
+  }
+
+  private static long reqPositive(String name, long v) {
+    if (v <= 0) {
+      throw new IllegalArgumentException("key arg '" + name + "' must be > 0");
     }
     return v;
   }
@@ -111,9 +119,17 @@ public final class Keys {
     return "/accounts/by-id/";
   }
 
+  public static String accountRootPrefix() {
+    return "/accounts/";
+  }
+
+  public static boolean isReservedAccountDirectorySegment(String segment) {
+    return "by-id".equals(segment) || "by-name".equals(segment);
+  }
+
   public static String accountRootPrefix(String accountId) {
     String tid = req("account_id", accountId);
-    return "/accounts/" + encode(tid) + "/";
+    return accountRootPrefix() + encode(tid) + "/";
   }
 
   public static String accountBlobPrefix(String accountId) {
@@ -398,6 +414,29 @@ public final class Keys {
         + "/tables/by-name/";
   }
 
+  /**
+   * Shared, kind-agnostic relation-name claim pointer. Both tables and views reserve this pointer
+   * for their (namespace, name), so a table and a view can never hold the same name in a namespace:
+   * whichever is created second loses the atomic reservation. This is the source of truth for
+   * cross-kind name uniqueness; the kind-specific {@code .../tables|views/by-name/} pointers remain
+   * the lookup/listing indexes.
+   */
+  public static String relationPointerByName(
+      String accountId, String catalogId, String namespaceId, String relationName) {
+    String tid = req("account_id", accountId);
+    String cid = req("catalog_id", catalogId);
+    String nid = req("namespace_id", namespaceId);
+    String name = req("relation_name", relationName);
+    return "/accounts/"
+        + encode(tid)
+        + "/catalogs/"
+        + encode(cid)
+        + "/namespaces/"
+        + encode(nid)
+        + "/relations/by-name/"
+        + encode(name);
+  }
+
   public static String tableBlobUri(String accountId, String tableId, String sha256) {
     String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
@@ -443,6 +482,31 @@ public final class Keys {
         "/accounts/%s/tables/%s/snapshots/current/%s.pb", encode(tid), encode(tbid), encode(sha));
   }
 
+  /** The single CAS'd pointer to a table's current immutable {@code TableRoot}. */
+  public static String tableRootByTable(String accountId, String tableId) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    return String.format("/accounts/%s/tables/%s/root/current", encode(tid), encode(tbid));
+  }
+
+  /** Content-addressed {@code TableRoot} blob (one per table commit). */
+  public static String tableRootBlobUri(String accountId, String tableId, String sha256) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/tables/%s/root/%s.pb", encode(tid), encode(tbid), encode(sha));
+  }
+
+  /** Content-addressed snapshot-manifest page blob referenced from a {@code TableRoot}. */
+  public static String snapshotManifestBlobUri(String accountId, String tableId, String sha256) {
+    String tid = req("account_id", accountId);
+    String tbid = req("table_id", tableId);
+    String sha = req("sha256", sha256);
+    return String.format(
+        "/accounts/%s/tables/%s/root/manifest/%s.pb", encode(tid), encode(tbid), encode(sha));
+  }
+
   public static String snapshotPointerByTime(
       String accountId, String tableId, long snapshotId, long upstreamCreatedAtMs) {
     String tid = req("account_id", accountId);
@@ -460,6 +524,21 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String tbid = req("table_id", tableId);
     return String.format("/accounts/%s/tables/%s/snapshots/by-time/", encode(tid), encode(tbid));
+  }
+
+  /**
+   * Recover the snapshot id from a by-time pointer key produced by {@link #snapshotPointerByTime}.
+   * The trailing segment is the inverted snapshot id ({@code MAX_VALUE - snapshot_id}); this lets
+   * an indexed by-time seek resolve the predecessor's id without fetching or parsing its blob.
+   */
+  public static long snapshotIdFromByTimeKey(String byTimeKey) {
+    String key = req("by_time_key", byTimeKey);
+    int dash = key.lastIndexOf('-');
+    if (dash < 0 || dash + 1 >= key.length()) {
+      throw new IllegalArgumentException("not a by-time snapshot key: " + byTimeKey);
+    }
+    long invertedSnapshotId = Long.parseLong(key.substring(dash + 1));
+    return Long.MAX_VALUE - invertedSnapshotId;
   }
 
   public static String snapshotBlobUri(
@@ -599,6 +678,14 @@ public final class Keys {
       String accountId, String tableId, long snapshotId, String generationId) {
     return snapshotTargetStatsGenerationDirectoryPointer(
         accountId, tableId, snapshotId, generationId);
+  }
+
+  public static String snapshotTargetStatsGenerationLifecyclePointer(
+      String accountId, String tableId, long snapshotId, String generationId) {
+    String generation = req("generation_id", generationId);
+    return snapshotTargetStatsGenerationRootPointer(accountId, tableId, snapshotId)
+        + encode(generation)
+        + "/lifecycle";
   }
 
   public static String snapshotTargetColumnStatsGenerationPrefix(
@@ -995,6 +1082,16 @@ public final class Keys {
     return reconcileDirtyParentPointerPrefix() + encode(tid) + "/" + encode(pid);
   }
 
+  public static String reconcileCancellationCleanupPointerPrefix() {
+    return "/accounts/by-id/reconcile/jobs/cancellation-cleanup/";
+  }
+
+  public static String reconcileCancellationCleanupPointer(String accountId, String rootJobId) {
+    String tid = req("account_id", accountId);
+    String jid = req("root_job_id", rootJobId);
+    return reconcileCancellationCleanupPointerPrefix() + encode(tid) + "/" + encode(jid);
+  }
+
   public static String reconcileJobProjectionPointer(String accountId, String jobId) {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
@@ -1043,6 +1140,23 @@ public final class Keys {
         + "/reconcile/jobs/root-summaries/by-connector/"
         + encode(cid)
         + "/";
+  }
+
+  public static String reconcileRootJobSummaryByConnectorAccountPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/root-summaries/by-connector/";
+  }
+
+  public static String reconcileCanonicalQuarantinePointer(
+      String accountId, String canonicalKeyHash) {
+    String tid = req("account_id", accountId);
+    String hash = req("canonical_key_hash", canonicalKeyHash);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-quarantine/canonical/" + encode(hash);
+  }
+
+  public static String reconcileCanonicalQuarantinePointerPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-quarantine/canonical/";
   }
 
   public static String reconcileJobByParentPointer(
@@ -1160,7 +1274,30 @@ public final class Keys {
   public static String reconcileJobLeasePointerById(String accountId, String jobId) {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
-    return "/accounts/" + encode(tid) + "/reconcile/job-leases/by-id/" + encode(jid);
+    return reconcileJobLeasePointerByIdPrefix(tid) + jid;
+  }
+
+  public static String reconcileJobLeasePointerByIdPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return accountRootPrefix() + tid + "/reconcile/job-leases/by-id/";
+  }
+
+  public static String reconcileJobLeaseExpiryPointerPrefix() {
+    return "/accounts/by-id/reconcile/job-leases/by-expiry/";
+  }
+
+  public static String reconcileJobLeaseExpiryPointer(
+      long expiresAtMs, String accountId, String jobId) {
+    long expiresAt = reqPositive("expires_at_ms", expiresAtMs);
+    return reconcileJobLeaseExpiryPointerPrefix()
+        + String.format("%019d", expiresAt)
+        + reconcileJobLeaseExpiryPointerSuffix(accountId, jobId);
+  }
+
+  public static String reconcileJobLeaseExpiryPointerSuffix(String accountId, String jobId) {
+    String tid = req("account_id", accountId);
+    String jid = req("job_id", jobId);
+    return "/accounts/" + tid + "/jobs/" + jid;
   }
 
   public static String reconcileJobResultBlobUri(String accountId, String jobId, String suffix) {
@@ -1309,6 +1446,72 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/reconcile/jobs/" + encode(jid) + "/";
   }
 
+  /**
+   * Recovers the table id from ANY snapshot-scoped pointer key ({@code
+   * /accounts/{a}/tables/{t}/snapshots/...} — by-id, by-time, current, stats), or {@code null} when
+   * the key has another shape. Used so a transaction touching any snapshot pointer schedules a root
+   * resync, not only the current-snapshot pointer.
+   */
+  public static String tableIdFromSnapshotPointerKey(String pointerKey) {
+    if (pointerKey == null) {
+      return null;
+    }
+    int start = pointerKey.indexOf("/tables/");
+    int end = pointerKey.indexOf("/snapshots/");
+    if (start < 0 || end <= start + "/tables/".length()) {
+      return null;
+    }
+    String encoded = pointerKey.substring(start + "/tables/".length(), end);
+    return encoded.isBlank() ? null : percentDecode(encoded);
+  }
+
+  /**
+   * Parses a per-target stats-generation pointer key produced by {@link
+   * #snapshotTargetStatsGenerationPointer} into its (snapshot id, generation id), or {@code null}
+   * when the key has another shape.
+   */
+  public static GenerationKey generationFromTargetPointerKey(String pointerKey) {
+    if (pointerKey == null) {
+      return null;
+    }
+    String marker = "/stats/target-generations/";
+    int at = pointerKey.indexOf(marker);
+    if (at < 0) {
+      return null;
+    }
+    int sidStart = pointerKey.lastIndexOf('/', at - 1) + 1;
+    long snapshotId;
+    try {
+      snapshotId = Long.parseLong(pointerKey.substring(sidStart, at));
+    } catch (RuntimeException e) {
+      return null;
+    }
+    int genStart = at + marker.length();
+    int genEnd = pointerKey.indexOf('/', genStart);
+    if (genEnd < 0) {
+      return null;
+    }
+    return new GenerationKey(snapshotId, pointerKey.substring(genStart, genEnd));
+  }
+
+  /** One stats generation's identity within a table, as encoded in its pointer keys. */
+  public record GenerationKey(long snapshotId, String generationId) {}
+
+  // ===== Root resync re-drive =====
+
+  /**
+   * Durable marker: this table's post-transaction root resync failed and awaits re-drive by the
+   * periodic transaction GC. A table only ever touched by REST transactions has no other writer to
+   * converge its root, so the failure must leave a durable trace.
+   */
+  public static String rootResyncPendingPointer(String accountId, String tableId) {
+    return rootResyncPendingPrefix(accountId) + encode(req("table_id", tableId));
+  }
+
+  public static String rootResyncPendingPrefix(String accountId) {
+    return "/accounts/" + encode(req("account_id", accountId)) + "/root-resyncs/by-table/";
+  }
+
   // ===== Markers =====
 
   public static String catalogChildrenMarker(String accountId, String catalogId) {
@@ -1349,6 +1552,123 @@ public final class Keys {
       }
     }
     return "";
+  }
+
+  /**
+   * The pointer key that owns a content-addressed blob, derived from the blob key's shape, or
+   * {@code null} when no single owning pointer is derivable. Accepts keys with or without the
+   * leading slash (blob LISTs return them unslashed). Used by {@code CasBlobGc} to re-check, right
+   * before deleting a candidate, that no pointer CAS re-targeted it after the mark phase.
+   *
+   * <p>Not derivable — {@code null} — for:
+   *
+   * <ul>
+   *   <li>root manifest pages ({@code .../root/manifest/<sha>.pb}): referenced by the {@code
+   *       TableRoot} blob's content, not by any pointer;
+   *   <li>the snapshot-id-less per-target stats records ({@code
+   *       .../target-stats/<target>/<sha>.pb}) and file stats ({@code
+   *       .../file-stats/<path>/<sha>.pb}): their owning pointers live under {@code
+   *       .../snapshots/<snapshot_id>/stats/...} and the snapshot id is not part of the blob key.
+   *       Note the generation-scoped target-stats shape ({@code
+   *       .../target-stats/<snapshot_id>/generations/<gen>/<target>/<sha>.pb}) DOES carry the
+   *       snapshot id and IS derivable — it takes the inline recheck path below, not this null
+   *       branch.
+   * </ul>
+   */
+  public static String ownerPointerKeyForBlob(String blobKey) {
+    if (blobKey == null || blobKey.isEmpty()) {
+      return null;
+    }
+    String key = blobKey.startsWith("/") ? blobKey.substring(1) : blobKey;
+    String[] seg = key.split("/", -1);
+    if (seg.length < 4 || !"accounts".equals(seg[0])) {
+      return null;
+    }
+    try {
+      return ownerPointerKeyForSegments(seg);
+    } catch (IllegalArgumentException e) {
+      // A malformed key (blank segment, ...) has no derivable owner; the caller falls back to
+      // treating the blob as unowned, exactly as before this mapping existed.
+      return null;
+    }
+  }
+
+  private static String ownerPointerKeyForSegments(String[] seg) {
+    String account = percentDecode(seg[1]);
+    return switch (seg[2]) {
+      case "account" -> seg.length == 4 ? accountPointerById(account) : null;
+      case "catalogs" ->
+          seg.length == 6 && "catalog".equals(seg[4])
+              ? catalogPointerById(account, percentDecode(seg[3]))
+              : null;
+      case "namespaces" ->
+          seg.length == 6 && "namespace".equals(seg[4])
+              ? namespacePointerById(account, percentDecode(seg[3]))
+              : null;
+      case "views" ->
+          seg.length == 6 && "view".equals(seg[4])
+              ? viewPointerById(account, percentDecode(seg[3]))
+              : null;
+      case "connectors" ->
+          seg.length == 6 && "connector".equals(seg[4])
+              ? connectorPointerById(account, percentDecode(seg[3]))
+              : null;
+      case "tables" -> seg.length >= 6 ? tableBlobOwner(account, seg) : null;
+      default -> null;
+    };
+  }
+
+  private static String tableBlobOwner(String account, String[] seg) {
+    String table = percentDecode(seg[3]);
+    switch (seg[4]) {
+      case "table":
+        return seg.length == 6 ? tablePointerById(account, table) : null;
+      case "root":
+        // root/<sha>.pb is owned by the current-root pointer; root/manifest/<sha>.pb pages are
+        // referenced only from root blob content — no owning pointer.
+        return seg.length == 6 ? tableRootByTable(account, table) : null;
+      case "snapshots":
+        {
+          // snapshots/<snapshot_id>/snapshot/<sha>.pb
+          Long sid = seg.length == 8 && "snapshot".equals(seg[6]) ? parseSnapshotId(seg[5]) : null;
+          return sid == null ? null : snapshotPointerById(account, table, sid);
+        }
+      case "constraints":
+        {
+          // constraints/<snapshot_id>/<sha>.pb
+          Long sid = seg.length == 7 ? parseSnapshotId(seg[5]) : null;
+          return sid == null ? null : snapshotConstraintsPointer(account, table, sid);
+        }
+      case "target-stats":
+        {
+          // target-stats/<snapshot_id>/manifests/<generation>.pb -> the active-generation pointer;
+          // target-stats/<snapshot_id>/generations/<gen>/<target>/<sha>.pb -> per-record pointer;
+          // target-stats/<target>/<sha>.pb carries no snapshot id -> not derivable.
+          Long sid = parseSnapshotId(seg[5]);
+          if (sid == null) {
+            return null;
+          }
+          if (seg.length == 8 && "manifests".equals(seg[6])) {
+            return snapshotTargetStatsManifestPointer(account, table, sid);
+          }
+          if (seg.length == 10 && "generations".equals(seg[6])) {
+            return snapshotTargetStatsGenerationPointer(
+                account, table, sid, percentDecode(seg[7]), percentDecode(seg[8]));
+          }
+          return null;
+        }
+      default:
+        return null;
+    }
+  }
+
+  private static Long parseSnapshotId(String segment) {
+    try {
+      long sid = Long.parseLong(segment);
+      return sid < 0 ? null : sid;
+    } catch (NumberFormatException e) {
+      return null;
+    }
   }
 
   /**

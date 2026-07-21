@@ -17,7 +17,6 @@
 package ai.floedb.floecat.metagraph.model;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -25,13 +24,15 @@ import java.util.Optional;
 /**
  * Immutable view of a catalog resource.
  *
+ * <p>The node is a pure derivation of the catalog blob at {@code blobUri}: identical blob content
+ * always produces an identical node, so {@code blobUri} is its content-stable cache identity.
+ *
  * <p>Catalog nodes primarily act as anchors for namespace/table traversal, so the model keeps their
  * metadata intentionally small.
  */
 public record CatalogNode(
     ResourceId id,
-    long version,
-    Instant metadataUpdatedAt,
+    String blobUri,
     String displayName,
     Map<String, String> properties,
     Optional<String> connectorId,
@@ -47,6 +48,17 @@ public record CatalogNode(
     namespaceIds =
         namespaceIds == null ? Optional.empty() : namespaceIds.map(list -> List.copyOf(list));
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
+  }
+
+  /** User nodes are content-keyed by {@link #blobUri()}; the pointer version is not retained. */
+  @Override
+  public long version() {
+    return 0L;
+  }
+
+  @Override
+  public String cacheIdentity() {
+    return blobUri;
   }
 
   @Override

@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import com.google.protobuf.Timestamp;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -36,6 +37,27 @@ import java.util.Optional;
  * implementation needs to read or write persisted stats.
  */
 public interface StatsStore {
+  enum UnpublishedGenerationDeleteResult {
+    DELETED,
+    NOT_DELETABLE_PUBLISHED,
+    RETRYABLE_IN_PROGRESS
+  }
+
+  /**
+   * Signals that a frozen generation token cannot be resolved before any target-specific read.
+   * Callers may handle this once for the whole generation-scoped batch rather than isolating
+   * individual targets. Retryable storage failures must retain their retryable exception type.
+   */
+  final class GenerationUnavailableException extends RuntimeException {
+    public GenerationUnavailableException(String message) {
+      super(message);
+    }
+
+    public GenerationUnavailableException(String message, Throwable cause) {
+      super(message, cause);
+    }
+  }
+
   /** Upserts a target stats record. */
   void putTargetStats(TargetStatsRecord value);
 
@@ -60,6 +82,29 @@ public interface StatsStore {
    * equal or conflicting record already owns the target key.
    */
   boolean putTargetStatsIfAbsent(TargetStatsRecord value);
+
+  /**
+   * Creates target stats records only when each exact table/snapshot/target key is absent.
+   *
+   * <p>Returns the records that were actually created. Existing equal or conflicting target keys
+   * are skipped.
+   */
+  default List<TargetStatsRecord> putTargetStatsBatchIfAbsent(
+      ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {
+    List<TargetStatsRecord> created = new ArrayList<>();
+    for (TargetStatsRecord record : records == null ? List.<TargetStatsRecord>of() : records) {
+      if (record == null) {
+        continue;
+      }
+      if (!tableId.equals(record.getTableId()) || record.getSnapshotId() != snapshotId) {
+        throw new IllegalArgumentException("target stats do not match table snapshot");
+      }
+      if (putTargetStatsIfAbsent(record)) {
+        created.add(record);
+      }
+    }
+    return List.copyOf(created);
+  }
 
   /** Returns the target stats record for the exact table/snapshot/target key, if present. */
   Optional<TargetStatsRecord> getTargetStats(
@@ -118,6 +163,34 @@ public interface StatsStore {
     return Collections.unmodifiableMap(out);
   }
 
+  /**
+   * Returns the target stats record for the exact table/snapshot/target key within the frozen stats
+   * generation named by {@code generationToken}. Stores that do not track generations serve the
+   * live exact-snapshot record.
+   */
+  default Optional<TargetStatsRecord> getTargetStatsInGeneration(
+      ResourceId tableId, long snapshotId, String generationToken, StatsTarget target) {
+    return getTargetStats(tableId, snapshotId, target);
+  }
+
+  /**
+   * Batch variant of {@link #getTargetStatsInGeneration}. Tracking stores must read the immutable
+   * keyspace named by {@code generationToken}, not the live active generation for the snapshot.
+   */
+  default Map<String, Optional<TargetStatsRecord>> getTargetStatsBatchInGeneration(
+      ResourceId tableId, long snapshotId, String generationToken, List<StatsTarget> targets) {
+    if (targets == null || targets.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, Optional<TargetStatsRecord>> out = new LinkedHashMap<>(targets.size());
+    for (StatsTarget target : targets) {
+      out.put(
+          StatsTargetIdentity.storageId(target),
+          getTargetStatsInGeneration(tableId, snapshotId, generationToken, target));
+    }
+    return Collections.unmodifiableMap(out);
+  }
+
   /** Deletes the exact table/snapshot/target record and returns true iff a record was deleted. */
   boolean deleteTargetStats(ResourceId tableId, long snapshotId, StatsTarget target);
 
@@ -133,6 +206,94 @@ public interface StatsStore {
       Optional<StatsTargetType> targetType,
       int limit,
       String pageToken);
+
+  /**
+   * Whether this store tracks stats generations at all. When {@code false}, {@link
+   * #activeStatsGeneration} is meaningless (always empty) and readers skip generation checks
+   * entirely. When {@code true}, an empty {@link #activeStatsGeneration} result means specifically
+   * "this snapshot has no stats generation yet" — a real, comparable state, distinct from "the
+   * store cannot say" — so readers must still compare it page to page (a generation appearing
+   * mid-pagination is a change like any other).
+   */
+  default boolean tracksStatsGenerations() {
+    return false;
+  }
+
+  /**
+   * Opaque token identifying the currently-active stats generation for a table snapshot, if the
+   * store tracks generations (see {@link #tracksStatsGenerations}). {@link
+   * #replaceAllStatsForSnapshot} and {@link #deleteAllStatsForSnapshot} change the token;
+   * per-record upserts within a generation do not have to. A multi-page reader captures the token
+   * (or its absence) before its first page and compares before consuming each page, so a
+   * mid-pagination replacement — or a first generation appearing under a scan that started with
+   * none — is detected instead of silently mixing pages from different generations.
+   */
+  default Optional<String> activeStatsGeneration(ResourceId tableId, long snapshotId) {
+    return Optional.empty();
+  }
+
+  /**
+   * Like {@link #listTargetStats}, but reads within the specific generation named by {@code
+   * generationToken} — a token previously returned by {@link #activeStatsGeneration} — instead of
+   * resolving the live active generation. A reader that froze its generation at first touch keeps a
+   * deterministic view of that immutable keyspace while newer generations publish (superseded
+   * generations are retained until GC finds them unreferenced). Stores that do not track
+   * generations serve the live state; the token is meaningless to them. A tracking store must fail
+   * loudly when the token's generation is gone rather than falling back to the live one.
+   */
+  default StatsStorePage listTargetStatsInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationToken,
+      Optional<StatsTargetType> targetType,
+      int limit,
+      String pageToken) {
+    return listTargetStats(tableId, snapshotId, targetType, limit, pageToken);
+  }
+
+  /**
+   * Replaces target-scoped records inside an unpublished generation.
+   *
+   * <p>{@code targetsToReplace} defines the target keys owned by the writer. Implementations delete
+   * those target keys from {@code generationId}, then write {@code records} into that same
+   * generation. The generation must not become visible to normal readers until {@link
+   * #publishStatsGeneration(ResourceId, long, String, List)} succeeds.
+   */
+  default void replaceTargetStatsInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<StatsTarget> targetsToReplace,
+      List<TargetStatsRecord> records) {
+    throw new UnsupportedOperationException("unpublished stats generations are not supported");
+  }
+
+  /**
+   * Publishes an unpublished generation as the active stats generation for a table snapshot.
+   *
+   * <p>{@code finalRecords} are written into the generation immediately before publication; callers
+   * use this for records produced during finalization, such as aggregate stats.
+   */
+  default void publishStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<TargetStatsRecord> finalRecords) {
+    throw new UnsupportedOperationException("unpublished stats generations are not supported");
+  }
+
+  /**
+   * Deletes an unpublished stats generation.
+   *
+   * <p>Implementations must not delete a generation that has already been published as the active
+   * generation. {@link UnpublishedGenerationDeleteResult#RETRYABLE_IN_PROGRESS} means the
+   * generation is not conclusively published, but a writer may still be publishing it; callers must
+   * not treat that result as durable cleanup completion.
+   */
+  default UnpublishedGenerationDeleteResult deleteUnpublishedStatsGeneration(
+      ResourceId tableId, long snapshotId, String generationId) {
+    return UnpublishedGenerationDeleteResult.NOT_DELETABLE_PUBLISHED;
+  }
 
   /**
    * Counts target stats records for a table snapshot with optional target-type filtering.

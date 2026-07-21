@@ -44,6 +44,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -74,13 +75,18 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
   @Inject SnapshotRepository snapshotRepo;
   @Inject TableRepository tableRepo;
-  @Inject StatsStore statsStore;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject CatalogOverlay overlay;
   @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
   @Inject StatsOrchestrator statsOrchestrator;
+
+  // Retained as a collaborator so DeleteSnapshot's contract — that it does NOT physically tear down
+  // a snapshot's stats generations, which pinned queries still read — is unit-assertable. Physical
+  // reclamation is reference-aware CasBlobGc's job once no live pin holds the generation.
+  @Inject StatsStore statsStore;
+  @Inject TableRootWriter rootWriter;
 
   private static final Logger LOG = Logger.getLogger(SnapshotService.class);
 
@@ -90,6 +96,13 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
       return;
     }
     currentSnapshotPointerService.maybeAdvance(tableId, candidate, corr);
+  }
+
+  /** Drop the deleted snapshot's entry from the table root. */
+  private void removeSnapshotFromRoot(ResourceId tableId, long snapshotId) {
+    if (rootWriter != null) {
+      rootWriter.removeSnapshot(tableId, snapshotId);
+    }
   }
 
   private void ensureTableVisible(ResourceId tableId, String corr) {
@@ -111,6 +124,10 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
     if (!(node instanceof TableNode)) {
       throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
     }
+  }
+
+  private void ensureTableWritable(ResourceId tableId, String corr) {
+    new CatalogSurfaceWritePolicy(overlay).requireWritableTable(tableId, corr);
   }
 
   private String schemaJsonForTable(String corr, ResourceId tableId) {
@@ -216,9 +233,13 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                         throw GrpcErrors.invalidArgument(
                             correlationId(), SNAPSHOT_SPECIAL_MISSING, Map.of());
                       }
+                      // Catalog GetSnapshot(SS_CURRENT) reports the committed logical current so
+                      // protocol gateways can materialize standards-compliant metadata. Query
+                      // planning must resolve through TablePin/SnapshotHelper, where the finalize
+                      // gate turns committed-but-unfinalized current into "not query-visible".
                       snap =
                           snapshotRepo
-                              .getCurrentSnapshot(tableId)
+                              .getCommittedCurrentSnapshot(tableId)
                               .orElseThrow(
                                   () ->
                                       GrpcErrors.notFound(
@@ -266,9 +287,11 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   var tableId = request.getTableId();
                   ensureTableVisible(tableId, correlationId());
 
+                  // Catalog RPC current reports the committed current selection. Query planning
+                  // uses TablePin resolution, which separately enforces snapshot readiness.
                   var response = GetCurrentSnapshotPointerResponse.newBuilder();
                   snapshotRepo
-                      .getCurrentSnapshotPointer(tableId)
+                      .getCommittedCurrentSnapshotPointer(tableId)
                       .ifPresent(response::setCurrentSnapshotPointer);
                   return response.build();
                 }),
@@ -293,7 +316,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   authz.require(pc, "table.write");
 
                   var tableId = request.getSpec().getTableId();
-                  ensureTableVisible(tableId, corr);
+                  ensureTableWritable(tableId, corr);
 
                   var tsNow = nowTs();
 
@@ -440,7 +463,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
                   var tableId = request.getTableId();
                   long snapshotId = request.getSnapshotId();
-                  ensureTableVisible(tableId, correlationId);
+                  ensureTableWritable(tableId, correlationId);
 
                   MutationMeta meta;
                   try {
@@ -450,8 +473,14 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                       throw GrpcErrors.notFound(
                           correlationId, SNAPSHOT, Map.of("id", Long.toString(snapshotId)));
                     }
-                    statsStore.deleteAllStatsForSnapshot(tableId, snapshotId);
                     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+                    // Converge the root on THIS path too: the by-id pointer is gone (either a
+                    // client double-delete, or a prior attempt that deleted the pointer then failed
+                    // its root commit and is retrying here). removeSnapshotFromRoot is idempotent —
+                    // a no-op when the entry is already absent — so every exit path of
+                    // DeleteSnapshot leaves the root free of the deleted snapshot, and a still-
+                    // failing commit surfaces as a retryable error rather than a false success.
+                    removeSnapshotFromRoot(tableId, snapshotId);
                     return DeleteSnapshotResponse.newBuilder().build();
                   }
 
@@ -471,8 +500,17 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
 
-                    statsStore.deleteAllStatsForSnapshot(tableId, snapshotId);
                     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+                    // Do NOT eagerly tear down the snapshot's stats generations here. A query that
+                    // pinned this snapshot froze its stats_generation_ref and reads pages through
+                    // that frozen manifest for the query's lifetime; a whole-prefix delete would
+                    // pull the manifest out from under an active pinned scan (it fails loudly).
+                    // removeSnapshotFromRoot drops the entry so no new pin references the
+                    // generation;
+                    // reference-aware CasBlobGc then reclaims it once no live pin holds it — the
+                    // same
+                    // retention path superseded generations already take.
+                    removeSnapshotFromRoot(tableId, snapshotId);
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
                     throw GrpcErrors.preconditionFailed(
@@ -528,7 +566,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                     PersistedSecretPropertyValidator.validateNoGeneralMetadataSecretKeys(
                         spec.getSummaryMap(), corr, "spec.summary");
                   }
-                  ensureTableVisible(tableId, corr);
+                  ensureTableWritable(tableId, corr);
 
                   var meta = snapshotRepo.metaFor(tableId, snapshotId);
                   enforcePreconditions(corr, meta, request.getPrecondition());
@@ -595,6 +633,9 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   }
 
                   var outMeta = snapshotRepo.metaForSafe(tableId, snapshotId);
+                  // The snapshot blob was just rewritten in place: the advance funnel re-upserts
+                  // this
+                  // is the current snapshot, even when the pointer id does not move.
                   maybeAdvanceCurrentSnapshot(tableId, desired, corr);
 
                   return UpdateSnapshotResponse.newBuilder()

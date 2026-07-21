@@ -18,8 +18,6 @@ package ai.floedb.floecat.service.catalog.impl;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -28,13 +26,11 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.MutationMeta;
-import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
@@ -42,14 +38,13 @@ import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
-import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.testsupport.TestPrincipals;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
@@ -57,7 +52,6 @@ import ai.floedb.floecat.types.ManagedTableProperties;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -102,55 +96,8 @@ class TableServiceImplSystemTableTest {
     svc.metadataGraph = metadataGraph;
 
     // Minimal principal + authz behavior
-    var pc = mock(PrincipalContext.class);
-    when(principal.get()).thenReturn(pc);
-    when(pc.getCorrelationId()).thenReturn("corr");
-    when(pc.getAccountId()).thenReturn("acct");
-    doNothing().when(authz).require(any(), anyString());
+    var pc = TestPrincipals.stubPrincipal(principal, authz);
     when(hintCleaner.shouldClearHints(any())).thenReturn(false);
-  }
-
-  @Test
-  void getTable_systemTable_usesOverlay_notRepo() {
-    ResourceId sysTableId =
-        ResourceId.newBuilder()
-            .setAccountId("acct")
-            .setKind(ResourceKind.RK_TABLE)
-            .setId("sys_tbl_1")
-            .build();
-
-    ResourceId nsId =
-        ResourceId.newBuilder()
-            .setAccountId("acct")
-            .setKind(ResourceKind.RK_NAMESPACE)
-            .setId("sys_ns_1")
-            .build();
-
-    SystemTableNode node =
-        new SystemTableNode.GenericSystemTableNode(
-            sysTableId,
-            1L,
-            Instant.now(),
-            "engine-v",
-            "system_table",
-            nsId,
-            List.of(SchemaColumn.newBuilder().setName("c1").build()),
-            null,
-            null,
-            TableBackendKind.TABLE_BACKEND_KIND_ENGINE);
-
-    overlay.addNode(node);
-
-    var resp =
-        svc.getTable(GetTableRequest.newBuilder().setTableId(sysTableId).build())
-            .await()
-            .indefinitely();
-
-    assertEquals(sysTableId, resp.getTable().getResourceId());
-    assertEquals("system_table", resp.getTable().getDisplayName());
-    assertEquals(nsId, resp.getTable().getNamespaceId());
-
-    verifyNoInteractions(tableRepo);
   }
 
   @Test
@@ -171,7 +118,7 @@ class TableServiceImplSystemTableTest {
 
     SystemTableNode node =
         new SystemTableNode.EngineSystemTableNode(
-            sysTableId, 1L, Instant.now(), "engine-v", "engine_sys", nsId, List.of(), null, null);
+            sysTableId, 1L, "engine-v", "engine_sys", nsId, List.of(), null, null);
 
     overlay.addNode(node);
 
@@ -207,15 +154,7 @@ class TableServiceImplSystemTableTest {
     // Any SystemTableNode will do; origin() is SYSTEM.
     SystemTableNode node =
         new SystemTableNode.EngineSystemTableNode(
-            sysTableId,
-            1L,
-            Instant.now(),
-            "engine-v",
-            "engine_sys_pc",
-            nsId,
-            List.of(),
-            null,
-            null);
+            sysTableId, 1L, "engine-v", "engine_sys_pc", nsId, List.of(), null, null);
 
     overlay.addNode(node);
 
@@ -257,7 +196,7 @@ class TableServiceImplSystemTableTest {
 
     SystemTableNode node =
         new SystemTableNode.EngineSystemTableNode(
-            sysTableId, 1L, Instant.now(), "engine-v", "engine_sys", nsId, List.of(), null, null);
+            sysTableId, 1L, "engine-v", "engine_sys", nsId, List.of(), null, null);
 
     overlay.addNode(node);
 
@@ -299,8 +238,7 @@ class TableServiceImplSystemTableTest {
     overlay.addNode(
         new CatalogNode(
             systemCatalogId,
-            1L,
-            Instant.now(),
+            "blob://test/v1",
             "engine",
             Map.of(),
             Optional.empty(),
@@ -310,8 +248,7 @@ class TableServiceImplSystemTableTest {
     overlay.addNode(
         new NamespaceNode(
             namespaceId,
-            1L,
-            Instant.now(),
+            "blob://test/v1",
             userCatalogId,
             List.of(),
             "public",
@@ -371,8 +308,7 @@ class TableServiceImplSystemTableTest {
     overlay.addNode(
         new NamespaceNode(
             namespaceId,
-            1L,
-            Instant.now(),
+            "blob://test/v1",
             userCatalogId,
             List.of(),
             "public",
@@ -422,8 +358,7 @@ class TableServiceImplSystemTableTest {
       ResourceId tableId, ResourceId catalogId, ResourceId namespaceId) {
     return new UserTableNode(
         tableId,
-        1L,
-        Instant.now(),
+        "blob://test/v1",
         catalogId,
         namespaceId,
         "orders",

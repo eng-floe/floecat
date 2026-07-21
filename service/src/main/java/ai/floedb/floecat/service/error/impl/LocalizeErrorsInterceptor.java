@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.error.impl;
 
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.service.common.GrpcInterceptorPriorities;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import com.google.protobuf.Any;
 import com.google.rpc.Status;
@@ -28,15 +29,14 @@ import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.grpc.protobuf.StatusProto;
 import io.quarkus.grpc.GlobalInterceptor;
-import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.spi.Prioritized;
 import java.util.Locale;
 import java.util.Optional;
 
 @GlobalInterceptor
 @ApplicationScoped
-@Priority(10)
-public class LocalizeErrorsInterceptor implements ServerInterceptor {
+public class LocalizeErrorsInterceptor implements ServerInterceptor, Prioritized {
   private static final Metadata.Key<String> ACCEPT_LANGUAGE =
       Metadata.Key.of("accept-language", Metadata.ASCII_STRING_MARSHALLER);
 
@@ -122,5 +122,11 @@ public class LocalizeErrorsInterceptor implements ServerInterceptor {
     }
 
     return "en";
+  }
+
+  /** Higher = outer; see {@link GrpcInterceptorPriorities}. */
+  @Override
+  public int getPriority() {
+    return GrpcInterceptorPriorities.LOCALIZE_ERRORS;
   }
 }

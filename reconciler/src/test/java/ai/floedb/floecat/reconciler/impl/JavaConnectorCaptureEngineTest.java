@@ -159,19 +159,12 @@ class JavaConnectorCaptureEngineTest {
             "s3://warehouse/table",
             java.util.Map.of(),
             new ConnectorConfig.Auth("none", java.util.Map.of(), java.util.Map.of()));
-    when(storageResolver.resolveWithAuthorization(
-            eq(Optional.of("worker-token")),
-            eq(Optional.of("job-1")),
-            eq(Optional.of("lease-1")),
-            eq(Optional.empty()),
-            eq(SOURCE_CONNECTOR),
-            any()))
-        .thenReturn(resolvedConfig);
     when(storageResolver.resolveManagedWithAuthorization(
             eq(Optional.of("worker-token")),
             eq(Optional.of("job-1")),
             eq(Optional.of("lease-1")),
             eq(Optional.empty()),
+            eq(Optional.of(ResourceId.newBuilder().setAccountId("acct").setId("table-1").build())),
             eq(SOURCE_CONNECTOR),
             any()))
         .thenReturn(
@@ -208,6 +201,7 @@ class JavaConnectorCaptureEngineTest {
             eq(Optional.of("job-1")),
             eq(Optional.of("lease-1")),
             eq(Optional.empty()),
+            eq(Optional.of(tableId)),
             eq(SOURCE_CONNECTOR),
             any());
   }

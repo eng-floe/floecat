@@ -24,6 +24,7 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -79,6 +80,7 @@ public class RemoteReconcileExecutorPoller {
   private final AtomicBoolean polling = new AtomicBoolean(false);
   private final AtomicBoolean repollRequested = new AtomicBoolean(false);
   private final AtomicInteger inFlight = new AtomicInteger(0);
+  private final AtomicInteger leaseExecutorCursor = new AtomicInteger(0);
   private volatile WorkerMode workerMode = WorkerMode.LOCAL;
   private volatile int maxParallelism = DEFAULT_MAX_PARALLELISM;
   private volatile ExecutorService workers;
@@ -108,8 +110,20 @@ public class RemoteReconcileExecutorPoller {
   @Scheduled(
       every = "{reconciler.pollEvery:1s}",
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
-  void pollOnce() {
+  public void pollOnce() {
     requestDrain();
+  }
+
+  public void drainAndAwaitIdle(long maxMillis) throws InterruptedException {
+    long startedAtMs = System.currentTimeMillis();
+    long deadlineMs = maxMillis <= 0L ? startedAtMs : startedAtMs + Math.max(1L, maxMillis);
+    requestDrain();
+    while (polling.get() || inFlight.get() > 0 || repollRequested.get()) {
+      if (System.currentTimeMillis() > deadlineMs) {
+        return;
+      }
+      Thread.sleep(25L);
+    }
   }
 
   private void requestDrain() {
@@ -146,33 +160,66 @@ public class RemoteReconcileExecutorPoller {
   }
 
   private Optional<LeaseAssignment> leaseNextAssignment() {
-    ReconcileJobStore.LeaseRequest request = remoteLeaseRequest();
-    Optional<RemoteLeasedJob> lease;
-    try {
-      lease = client.lease(request, workerLeaseSource());
-    } catch (RuntimeException e) {
-      if (shouldIgnoreStartupUnavailable(e)) {
-        LOG.debugf(
-            "Skipping local reconcile poll cycle until gRPC server is ready: %s", e.getMessage());
+    var executors = executorRegistry.orderedExecutors();
+    if (executors.isEmpty()) {
+      return Optional.empty();
+    }
+    for (int attempt = 0; attempt < executors.size(); attempt++) {
+      Optional<ReconcileExecutor> requestedExecutor = nextLeaseExecutor(executors);
+      if (requestedExecutor.isEmpty()) {
         return Optional.empty();
       }
-      throw e;
+      ReconcileJobStore.LeaseRequest request =
+          executorRegistry.leaseRequestFor(requestedExecutor.get());
+      Optional<RemoteLeasedJob> lease;
+      try {
+        lease = client.lease(request, workerLeaseSource());
+      } catch (RuntimeException e) {
+        if (shouldIgnoreStartupUnavailable(e)) {
+          LOG.debugf(
+              "Skipping local reconcile poll cycle until gRPC server is ready: %s", e.getMessage());
+          return Optional.empty();
+        }
+        throw e;
+      }
+      if (lease.isEmpty()) {
+        continue;
+      }
+      if (executorCanRun(requestedExecutor.get(), lease.get().lease())) {
+        return Optional.of(new LeaseAssignment(requestedExecutor.get(), lease.get()));
+      }
+      Optional<ReconcileExecutor> executor = executorRegistry.executorFor(lease.get().lease());
+      if (executor.isEmpty()) {
+        LOG.warnf(
+            "Leased reconcile job jobId=%s kind=%s but no eligible executor matched locally",
+            lease.get().lease().jobId, lease.get().lease().jobKind);
+        continue;
+      }
+      return Optional.of(new LeaseAssignment(executor.get(), lease.get()));
     }
-    if (lease.isEmpty()) {
-      return Optional.empty();
-    }
-    Optional<ReconcileExecutor> executor = executorRegistry.executorFor(lease.get().lease());
-    if (executor.isEmpty()) {
-      LOG.warnf(
-          "Leased reconcile job jobId=%s kind=%s but no eligible executor matched locally",
-          lease.get().lease().jobId, lease.get().lease().jobKind);
-      return Optional.empty();
-    }
-    return Optional.of(new LeaseAssignment(executor.get(), lease.get()));
+    return Optional.empty();
   }
 
-  private ReconcileJobStore.LeaseRequest remoteLeaseRequest() {
-    return executorRegistry.leaseRequest();
+  private Optional<ReconcileExecutor> nextLeaseExecutor(List<ReconcileExecutor> executors) {
+    if (executors.isEmpty()) {
+      return Optional.empty();
+    }
+    int index = Math.floorMod(leaseExecutorCursor.getAndIncrement(), executors.size());
+    return Optional.of(executors.get(index));
+  }
+
+  private boolean executorCanRun(ReconcileExecutor executor, ReconcileJobStore.LeasedJob lease) {
+    if (executor == null || lease == null) {
+      return false;
+    }
+    String pinnedExecutorId = lease.pinnedExecutorId == null ? "" : lease.pinnedExecutorId.trim();
+    if (!pinnedExecutorId.isBlank() && !pinnedExecutorId.equals(executor.id())) {
+      return false;
+    }
+    return executor.supportsJobKind(lease.jobKind)
+        && executor.supportsExecutionClass(lease.executionPolicy.executionClass())
+        && executor.supportsLane(lease.laneKey)
+        && executor.supports(lease);
   }
 
   private boolean reserveWorkerSlot() {
@@ -217,7 +264,14 @@ public class RemoteReconcileExecutorPoller {
                 return;
               }
               ranLease = true;
+              LOG.infof(
+                  "Leased remote reconcile job jobId=%s kind=%s executor=%s",
+                  assignment.get().lease().lease().jobId,
+                  assignment.get().lease().lease().jobKind,
+                  assignment.get().executor().id());
               runLease(assignment.get());
+            } catch (RuntimeException e) {
+              LOG.errorf(e, "Remote reconcile worker task failed before outcome submission");
             } finally {
               releaseWorkerSlot(ranLease);
             }
@@ -229,9 +283,14 @@ public class RemoteReconcileExecutorPoller {
   }
 
   private void releaseWorkerSlot(boolean requestDrain) {
-    inFlight.decrementAndGet();
     ExecutorService executor = workers;
-    if (requestDrain && workerMode.runsWorkers() && executor != null && !executor.isShutdown()) {
+    boolean shouldRequestDrain =
+        requestDrain && workerMode.runsWorkers() && executor != null && !executor.isShutdown();
+    if (shouldRequestDrain) {
+      repollRequested.set(true);
+    }
+    inFlight.decrementAndGet();
+    if (shouldRequestDrain) {
       requestDrain();
     }
   }
@@ -246,7 +305,7 @@ public class RemoteReconcileExecutorPoller {
             1_000L,
             config
                 .getOptionalValue("floecat.reconciler.job-store.lease-ms", Long.class)
-                .orElse(30_000L));
+                .orElse(120_000L));
     long suggestedHeartbeatMs =
         Math.max(
             MIN_LEASE_HEARTBEAT_MS,
@@ -533,6 +592,16 @@ public class RemoteReconcileExecutorPoller {
         stopHeartbeatsForHandledCompletion(completionStarted, heartbeatExecutor);
         LOG.infof(
             "Remote reconcile job outcome account=%s connector=%s executor=%s result=succeeded duration_ms=%d",
+            lease.accountId,
+            lease.connectorId,
+            executor.id(),
+            Math.max(0L, System.currentTimeMillis() - started));
+        return;
+      }
+      if (result.cancelled && completionStarted.get()) {
+        stopHeartbeatsForHandledCompletion(completionStarted, heartbeatExecutor);
+        LOG.infof(
+            "Remote reconcile job no longer completable after cancellation account=%s connector=%s executor=%s duration_ms=%d",
             lease.accountId,
             lease.connectorId,
             executor.id(),

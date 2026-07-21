@@ -17,6 +17,9 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -38,6 +41,7 @@ public class TransactionGc {
 
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
+  @Inject TableRootWriter rootWriter;
 
   public record Result(int scanned, int deleted, int intentsDeleted) {}
 
@@ -55,6 +59,25 @@ public class TransactionGc {
     int scanned = 0;
     int deleted = 0;
     int intentsDeleted = 0;
+
+    // Re-drive pending root resyncs FIRST: this pass is the convergence guarantee for
+    // transactions-only tables, and running it after the (potentially deadline-consuming)
+    // transaction scan let a high-write account starve it indefinitely. Cleanup of old
+    // transactions can wait for the next pass; a divergent root should not.
+    //
+    // Guarded: a transient marker-store fault (listPointersByPrefix / compareAndDelete over the
+    // resync-pending prefix) must not abort the tick before the transaction scan runs — that would
+    // let one account's marker-store blip block every account's transaction and intent cleanup.
+    // Individual resync failures are already absorbed inside the loop; this only catches a fault in
+    // the pagination itself. The divergent root simply waits for the next pass.
+    try {
+      redrivePendingRootResyncs(accountId, pageSize, deadlineMs);
+    } catch (RuntimeException e) {
+      LOG.warnf(
+          e,
+          "root resync re-drive failed for account %s; continuing with transaction scan",
+          accountId);
+    }
 
     String prefix = Keys.transactionPointerByIdPrefix(accountId);
     String token = "";
@@ -93,9 +116,61 @@ public class TransactionGc {
     return new Result(scanned, deleted, intentsDeleted);
   }
 
+  /**
+   * Re-drives root resyncs whose original post-transaction attempt was absorbed. The transaction
+   * was durable, so the failure left a {@link Keys#rootResyncPendingPointer} marker; a table only
+   * ever touched by REST transactions has no other writer to converge its root, making this pass
+   * the convergence guarantee. The marker is cleared only after a successful resync.
+   */
+  private void redrivePendingRootResyncs(String accountId, int pageSize, long deadlineMs) {
+    String prefix = Keys.rootResyncPendingPrefix(accountId);
+    String token = "";
+    StringBuilder next = new StringBuilder();
+    do {
+      if (System.currentTimeMillis() > deadlineMs) {
+        return;
+      }
+      List<Pointer> rows = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
+      for (Pointer p : rows) {
+        String tableId = markerSuffix(prefix, p.getKey());
+        if (tableId == null || tableId.isBlank()) {
+          continue;
+        }
+        var rid =
+            ResourceId.newBuilder()
+                .setAccountId(accountId)
+                .setId(tableId)
+                .setKind(ResourceKind.RK_TABLE)
+                .build();
+        if (rootWriter.resyncFromCommittedState(rid)) {
+          pointerStore.compareAndDelete(p.getKey(), p.getVersion());
+        } else {
+          LOG.debugf("root resync re-drive still failing for table %s", tableId);
+        }
+      }
+      token = next.toString();
+      next.setLength(0);
+    } while (!token.isEmpty());
+  }
+
+  private static String markerSuffix(String prefix, String fullKey) {
+    if (fullKey == null || !fullKey.startsWith(prefix)) {
+      return null;
+    }
+    String suffix = fullKey.substring(prefix.length());
+    return suffix.isBlank() ? null : URLDecoder.decode(suffix, StandardCharsets.UTF_8);
+  }
+
   private boolean shouldCollect(String accountId, Transaction txn, long nowMs, long minAgeMs) {
     if (txn.getState() == TransactionState.TS_ABORTED) {
-      return true;
+      // Terminal, but honor the same read-after-write grace as every other terminal state so a
+      // just-aborted txn stays observable as ABORTED rather than vanishing the same tick. A
+      // no-TTL abort has no expiry to anchor the window, so it collects immediately as before.
+      if (!txn.hasExpiresAt()) {
+        return true;
+      }
+      long exp = com.google.protobuf.util.Timestamps.toMillis(txn.getExpiresAt());
+      return exp + minAgeMs <= nowMs;
     }
     if (txn.getState() == TransactionState.TS_APPLYING) {
       // In-flight apply phase is not eligible for TTL-based collection.

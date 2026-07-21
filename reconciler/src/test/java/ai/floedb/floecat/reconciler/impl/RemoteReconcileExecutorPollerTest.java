@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -34,6 +35,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -126,8 +128,11 @@ class RemoteReconcileExecutorPollerTest {
   }
 
   @Test
-  void pollOnceReleasesWorkerSlotWhenLeaseRpcThrows() {
+  void pollOnceReleasesWorkerSlotWhenLeaseRpcThrows() throws Exception {
     RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    CountDownLatch firstLeaseAttempted = new CountDownLatch(1);
+    CountDownLatch secondLeaseAttempted = new CountDownLatch(1);
+    AtomicInteger leaseAttempts = new AtomicInteger(0);
     ReconcileExecutor executor =
         new ReconcileExecutor() {
           @Override
@@ -156,14 +161,27 @@ class RemoteReconcileExecutorPollerTest {
     poller.init();
 
     when(client.lease(any(), eq("local-poller")))
-        .thenThrow(new RuntimeException("lease failed"))
-        .thenReturn(java.util.Optional.empty());
+        .thenAnswer(
+            ignored -> {
+              if (leaseAttempts.incrementAndGet() == 1) {
+                firstLeaseAttempted.countDown();
+                throw new RuntimeException("lease failed");
+              }
+              secondLeaseAttempted.countDown();
+              return java.util.Optional.empty();
+            });
 
     poller.pollOnce();
-    verify(client, org.mockito.Mockito.timeout(5_000L)).lease(any(), eq("local-poller"));
-    poller.pollOnce();
+    assertTrue(firstLeaseAttempted.await(5, TimeUnit.SECONDS));
 
-    verify(client, org.mockito.Mockito.timeout(5_000L).times(2)).lease(any(), eq("local-poller"));
+    long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+    do {
+      poller.pollOnce();
+      if (secondLeaseAttempted.await(25L, TimeUnit.MILLISECONDS)) {
+        return;
+      }
+    } while (System.nanoTime() < deadlineNanos);
+    assertTrue(secondLeaseAttempted.await(1, TimeUnit.SECONDS));
   }
 
   @Test
@@ -465,40 +483,54 @@ class RemoteReconcileExecutorPollerTest {
   }
 
   @Test
-  void pollOnceLeasesAcrossAggregateRemoteCapabilities() throws Exception {
+  void pollOnceLeasesThroughExecutorScopedRemoteCapabilities() throws Exception {
     RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
     CountDownLatch completed = new CountDownLatch(1);
     ReconcileExecutor plannerExecutor =
         remoteExecutor(
             "planner",
+            Set.of(ReconcileJobKind.PLAN_CONNECTOR),
             context -> ReconcileExecutor.ExecutionResult.success(0, 0, 0, 0, 0, "planner"));
     ReconcileExecutor fileGroupExecutor =
         remoteExecutor(
             "file-group",
+            Set.of(ReconcileJobKind.EXEC_FILE_GROUP),
             context -> ReconcileExecutor.ExecutionResult.success(0, 0, 0, 0, 0, "file-group"));
 
     poller = new RemoteReconcileExecutorPoller();
     poller.client = client;
     poller.executorRegistry =
         new ReconcileExecutorRegistry(List.of(plannerExecutor, fileGroupExecutor));
-    poller.config = ConfigProvider.getConfig();
+    Config pollerConfig = mock(Config.class);
+    when(pollerConfig.getOptionalValue(eq("reconciler.max-parallelism"), eq(Integer.class)))
+        .thenReturn(java.util.Optional.of(2));
+    when(pollerConfig.getOptionalValue(anyString(), eq(Long.class)))
+        .thenReturn(java.util.Optional.empty());
+    poller.config = pollerConfig;
     poller.workerModeValue = "local";
     poller.init();
 
     RemoteLeasedJob fileGroupLease = leasedJob("job-3", ReconcileJobKind.EXEC_FILE_GROUP);
+    AtomicInteger fileGroupLeaseAttempts = new AtomicInteger();
 
     when(client.lease(
             argThat(
                 request ->
                     request != null
-                        && request.jobKinds.contains(ReconcileJobKind.PLAN_CONNECTOR)
-                        && request.jobKinds.contains(ReconcileJobKind.EXEC_FILE_GROUP)
-                        && request.executorIds.contains("planner")
-                        && request.executorIds.contains("file-group")),
+                        && request.jobKinds.equals(Set.of(ReconcileJobKind.PLAN_CONNECTOR))
+                        && request.executorIds.equals(Set.of("planner"))),
+            eq("local-poller")))
+        .thenReturn(java.util.Optional.empty());
+    when(client.lease(
+            argThat(
+                request ->
+                    request != null
+                        && request.jobKinds.equals(Set.of(ReconcileJobKind.EXEC_FILE_GROUP))
+                        && request.executorIds.equals(Set.of("file-group"))),
             eq("local-poller")))
         .thenAnswer(
             invocation -> {
-              return completed.getCount() > 0
+              return fileGroupLeaseAttempts.getAndIncrement() == 0
                   ? java.util.Optional.of(fileGroupLease)
                   : java.util.Optional.empty();
             });
@@ -1342,10 +1374,34 @@ class RemoteReconcileExecutorPollerTest {
       java.util.function.Function<
               ReconcileExecutor.ExecutionContext, ReconcileExecutor.ExecutionResult>
           fn) {
+    return remoteExecutor(id, java.util.EnumSet.allOf(ReconcileJobKind.class), fn);
+  }
+
+  private static ReconcileExecutor remoteExecutor(
+      String id,
+      Set<ReconcileJobKind> jobKinds,
+      java.util.function.Function<
+              ReconcileExecutor.ExecutionContext, ReconcileExecutor.ExecutionResult>
+          fn) {
     return new ReconcileExecutor() {
       @Override
       public String id() {
         return id;
+      }
+
+      @Override
+      public Set<ReconcileJobKind> supportedJobKinds() {
+        return jobKinds;
+      }
+
+      @Override
+      public Set<String> supportedLanes() {
+        return Set.of();
+      }
+
+      @Override
+      public boolean supportsLane(String lane) {
+        return true;
       }
 
       @Override

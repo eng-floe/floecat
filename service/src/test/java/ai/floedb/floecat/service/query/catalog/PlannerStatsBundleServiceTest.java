@@ -29,6 +29,9 @@ import ai.floedb.floecat.catalog.rpc.SketchPayload;
 import ai.floedb.floecat.catalog.rpc.SketchRole;
 import ai.floedb.floecat.catalog.rpc.StatsCompleteness;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
 import ai.floedb.floecat.query.rpc.RequestedStat;
 import ai.floedb.floecat.query.rpc.ReturnedStat;
@@ -88,6 +91,64 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     assertEquals(1L, end.getRequestedTargets());
     assertEquals(1L, end.getReturnedTargets());
     assertEquals(0L, end.getNotFoundTargets());
+  }
+
+  @Test
+  void legacyUnspecifiedKindRequestDefaultsToTableIdentity() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createService(
+            repository, store, /* chunkSize= */ 10, /* maxTables= */ 10, /* maxTargets= */ 10);
+    QueryContext ctx = queryContextWithPin("query-legacy-kind", 100L);
+    store.seed(ctx);
+
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 100L, 1L, sampleStats(TABLE, 100L, 1L), null));
+
+    ResourceId legacyTableId = TABLE.toBuilder().setKind(ResourceKind.RK_UNSPECIFIED).build();
+    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), legacyTableId, List.of(1L));
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+
+    List<TargetStatsResult> results = flatten(chunks);
+    assertEquals(1, results.size());
+    assertEquals(StatsResultStatus.STATS_RESULT_HIT_COMPLETE, results.get(0).getStatus());
+    assertEquals(ResourceKind.RK_TABLE, results.get(0).getTableId().getKind());
+
+    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(1L, end.getReturnedTargets());
+    assertEquals(0L, end.getErrorTargets());
+  }
+
+  @Test
+  void explicitViewKindDoesNotMatchTablePin() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createService(
+            repository, store, /* chunkSize= */ 10, /* maxTables= */ 10, /* maxTargets= */ 10);
+    QueryContext ctx = queryContextWithPin("query-view-kind", 100L);
+    store.seed(ctx);
+
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 100L, 1L, sampleStats(TABLE, 100L, 1L), null));
+
+    ResourceId viewId = TABLE.toBuilder().setKind(ResourceKind.RK_VIEW).build();
+    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), viewId, List.of(1L));
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+
+    List<TargetStatsResult> results = flatten(chunks);
+    assertEquals(1, results.size());
+    assertEquals(StatsResultStatus.STATS_RESULT_ERROR, results.get(0).getStatus());
+    assertEquals("planner_stats.pin.missing", results.get(0).getFailure().getCode());
+
+    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(0L, end.getReturnedTargets());
+    assertEquals(1L, end.getErrorTargets());
   }
 
   @Test
@@ -544,6 +605,55 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
   }
 
   /**
+   * Stats are served from the query's pinned snapshot, not from whatever other snapshots happen to
+   * have stats in storage. Guards the downstream-consumes-the-pin contract for the stats path.
+   */
+  @Test
+  void statsResolvedAtPinnedSnapshotNotOtherSnapshots() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createService(
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 10, /* maxTargets= */ 10);
+    long pinnedSnapshot = 500L;
+    long otherSnapshot = 999L;
+    // Distinct stats exist at both snapshots; only the pinned snapshot's stats must be served.
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE,
+            pinnedSnapshot,
+            42L,
+            ScalarStats.newBuilder().setRowCount(111L).putProperties("column_id", "42").build(),
+            null));
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE,
+            otherSnapshot,
+            42L,
+            ScalarStats.newBuilder().setRowCount(222L).putProperties("column_id", "42").build(),
+            null));
+    QueryContext ctx = queryContextWithPin("query-pinned-snap", pinnedSnapshot);
+    store.seed(ctx);
+    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(42L));
+
+    List<TargetStatsResult> results =
+        flatten(
+            service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely());
+
+    TargetStatsResult hit =
+        results.stream()
+            .filter(r -> r.getStatus() == StatsResultStatus.STATS_RESULT_HIT_COMPLETE)
+            .findFirst()
+            .orElseThrow();
+    assertEquals(pinnedSnapshot, hit.getSnapshotId());
+    assertEquals(111L, hit.getStats().getScalar().getRowCount());
+    // The response echoes the query's pinned snapshot so the planner can detect staleness.
+    assertTrue(hit.hasPinnedSnapshotId());
+    assertEquals(pinnedSnapshot, hit.getPinnedSnapshotId());
+  }
+
+  /**
    * A ScalarStats row that exists in storage with only required row_count must still be returned as
    * FOUND — not NOT_FOUND. Sparse connectors may omit optional metrics while still reporting the
    * enclosing row count.
@@ -897,7 +1007,7 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
   }
 
   @Test
-  void snapshotIdOverride_fetchesStatsFromSpecifiedSnapshot() {
+  void snapshotIdRestatingPinServesFromPinnedSnapshot() {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
     StatsRepository repository = createRepository();
@@ -906,33 +1016,67 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
             repository, store, /* chunkSize= */ 5, /* maxTables= */ 5, /* maxTargets= */ 10);
 
     long pinnedSnapshotId = 500L;
-    long overrideSnapshotId = 490L;
-
-    // Put stats at the override snapshot (490) but not at the pinned snapshot (500).
     repository.putTargetStats(
         TargetStatsRecords.columnRecord(
-            TABLE, overrideSnapshotId, 1L, sampleStats(TABLE, overrideSnapshotId, 1L), null));
+            TABLE, pinnedSnapshotId, 1L, sampleStats(TABLE, pinnedSnapshotId, 1L), null));
 
-    QueryContext ctx = queryContextWithPin("snap-override", pinnedSnapshotId);
+    QueryContext ctx = queryContextWithPin("snap-restate", pinnedSnapshotId);
     store.seed(ctx);
 
-    // Request with explicit snapshot_id=490 — must return stats from that snapshot,
-    // not fail with NOT_FOUND (which is what the pinned snapshot 500 would produce).
+    // A request snapshot_id equal to the pinned snapshot is a harmless restatement.
     FetchTargetStatsRequest request =
         FetchTargetStatsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
-            .addTables(tableRequestWithSnapshot(TABLE, List.of(1L), overrideSnapshotId))
+            .addTables(tableRequestWithSnapshot(TABLE, List.of(1L), pinnedSnapshotId))
             .build();
-    List<TargetStatsBundleChunk> chunks =
-        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
-
-    List<TargetStatsResult> results = flatten(chunks);
+    List<TargetStatsResult> results =
+        flatten(
+            service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely());
     assertEquals(1, results.size());
-    assertEquals(
-        StatsResultStatus.STATS_RESULT_HIT_COMPLETE,
-        results.get(0).getStatus(),
-        "snapshot_id override must serve stats from snapshot 490");
-    assertEquals(overrideSnapshotId, results.get(0).getSnapshotId());
+    assertEquals(StatsResultStatus.STATS_RESULT_HIT_COMPLETE, results.get(0).getStatus());
+    assertEquals(pinnedSnapshotId, results.get(0).getSnapshotId());
+  }
+
+  @Test
+  void snapshotIdDivergingFromPinFailsAsConsistencyError() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createService(
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 5, /* maxTargets= */ 10);
+
+    long pinnedSnapshotId = 500L;
+    long divergentSnapshotId = 490L;
+    // Stats exist at the divergent snapshot, but the pin is authoritative — the request must NOT be
+    // able to redirect reads there (this is what would let correctness constraints drift).
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE, divergentSnapshotId, 1L, sampleStats(TABLE, divergentSnapshotId, 1L), null));
+
+    QueryContext ctx = queryContextWithPin("snap-diverge", pinnedSnapshotId);
+    store.seed(ctx);
+
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTables(tableRequestWithSnapshot(TABLE, List.of(1L), divergentSnapshotId))
+            .build();
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .streamTargets("corr", ctx, request)
+                    .collect()
+                    .asList()
+                    .await()
+                    .indefinitely());
+    // A divergent request snapshot is a query-consistency error, not a generic failure: assert the
+    // FAILED_PRECONDITION status that QUERY_TABLE_PIN_CONFLICT maps to, so a regression to
+    // INVALID_ARGUMENT/INTERNAL (or a dropped conflict) is caught.
+    assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
   }
 
   @Test
@@ -980,10 +1124,172 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
         results.get(0).getStatus(),
         "stale stats at snapshot 480 must be returned with HIT_STALE status");
     assertEquals(480L, results.get(0).getSnapshotId(), "returned snapshot must be 480 (stale)");
+    // The divergent pinned-snapshot stamp is the whole reason the field exists: served 480, pin
+    // 481.
+    assertEquals(
+        481L,
+        results.get(0).getPinnedSnapshotId(),
+        "result must stamp the pinned snapshot (481) so the planner sees the served stats are stale");
 
     TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
     assertEquals(1L, end.getStaleTargets(), "one stale target must be counted in end chunk");
     assertEquals(0L, end.getNotFoundTargets(), "no NOT_FOUND — stale hit found before sync");
+  }
+
+  @Test
+  void realPlannerLookupReadsTheStatsGenerationFrozenOnThePin() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createServiceWithRealLookup(
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 5, /* maxTargets= */ 10);
+
+    long snapshotId = 482L;
+    // Pinned generation: col1 = 10.
+    publishColumn(
+        repository,
+        snapshotId,
+        1L,
+        ScalarStats.newBuilder().setDisplayName("col1").setRowCount(10L).build());
+    String pinnedGeneration = repository.activeStatsGeneration(TABLE, snapshotId).orElseThrow();
+
+    // A newer generation for the same snapshot: col1 = 20.
+    publishColumn(
+        repository,
+        snapshotId,
+        1L,
+        ScalarStats.newBuilder().setDisplayName("col1").setRowCount(20L).build());
+
+    QueryContext ctx =
+        queryContextWithStatsGenerationRef(
+            "real-orchestrator-pinned-generation", snapshotId, pinnedGeneration);
+    store.seed(ctx);
+
+    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(1L));
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+
+    // The plan reads the generation frozen on the pin (10), not the newer live one (20) — stable
+    // and
+    // reproducible for a given pin.
+    List<TargetStatsResult> results = flatten(chunks);
+    assertEquals(1, results.size(), "one column must produce a result");
+    assertEquals(StatsResultStatus.STATS_RESULT_HIT_COMPLETE, results.get(0).getStatus());
+    assertEquals(10L, results.get(0).getStats().getScalar().getRowCount());
+    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(1L, end.getReturnedTargets());
+    assertEquals(0L, end.getNotFoundTargets());
+  }
+
+  @Test
+  void realPlannerLookupFillsFromNewestWhenPinnedLacksTarget() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createServiceWithRealLookup(
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 5, /* maxTargets= */ 10);
+
+    long snapshotId = 482L;
+    // Pinned generation carries only col2 — it never had col1.
+    publishColumn(
+        repository,
+        snapshotId,
+        2L,
+        ScalarStats.newBuilder().setDisplayName("col2").setRowCount(99L).build());
+    String pinnedGeneration = repository.activeStatsGeneration(TABLE, snapshotId).orElseThrow();
+
+    // The newest generation carries col1 = 20.
+    publishColumn(
+        repository,
+        snapshotId,
+        1L,
+        ScalarStats.newBuilder().setDisplayName("col1").setRowCount(20L).build());
+
+    QueryContext ctx =
+        queryContextWithStatsGenerationRef(
+            "real-orchestrator-newest-fill", snapshotId, pinnedGeneration);
+    store.seed(ctx);
+
+    FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(1L));
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+
+    // The pinned generation lacks col1, so the newest generation fills it instead of NOT_FOUND.
+    List<TargetStatsResult> results = flatten(chunks);
+    assertEquals(1, results.size(), "one column must produce a result");
+    assertEquals(StatsResultStatus.STATS_RESULT_HIT_COMPLETE, results.get(0).getStatus());
+    assertEquals(20L, results.get(0).getStats().getScalar().getRowCount());
+    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(1L, end.getReturnedTargets());
+    assertEquals(0L, end.getNotFoundTargets());
+  }
+
+  @Test
+  void realPlannerLookupFillsFromNewestWhenPinnedRecordLacksRequestedSketch() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createServiceWithRealLookup(
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 5, /* maxTargets= */ 10);
+
+    long snapshotId = 483L;
+    // Pinned generation carries col1 scalar-only: it EXISTS, but cannot serve a sketch need.
+    publishColumn(
+        repository,
+        snapshotId,
+        1L,
+        ScalarStats.newBuilder().setDisplayName("col1").setRowCount(10L).build());
+    String pinnedGeneration = repository.activeStatsGeneration(TABLE, snapshotId).orElseThrow();
+
+    // The newest generation of the SAME snapshot was enriched with the theta sketch.
+    SketchPayload sketch =
+        SketchPayload.newBuilder()
+            .setRole(SketchRole.SKETCH_ROLE_NDV)
+            .setSketchType(THETA_SKETCH_TYPE)
+            .setData(ByteString.copyFromUtf8("sketch-bytes"))
+            .setCompleteness(StatsCompleteness.SC_COMPLETE)
+            .build();
+    publishColumn(
+        repository,
+        snapshotId,
+        1L,
+        ScalarStats.newBuilder()
+            .setDisplayName("col1")
+            .setRowCount(10L)
+            .setNdv(Ndv.newBuilder().setExact(10L).addSketches(sketch))
+            .addSketches(sketch)
+            .build());
+
+    QueryContext ctx =
+        queryContextWithStatsGenerationRef(
+            "real-orchestrator-completeness-fill", snapshotId, pinnedGeneration);
+    store.seed(ctx);
+
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTables(
+                ai.floedb.floecat.query.rpc.TableStatsRequest.newBuilder()
+                    .setTableId(TABLE)
+                    .addTargets(sketchNeed(1L, 1)))
+            .build();
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+
+    // The pinned record exists but is scalar-only: "exists" alone must not be a hit for a sketch
+    // need. Resolution falls to the newest generation and serves the sketch — complete, not
+    // downgraded.
+    List<TargetStatsResult> results = flatten(chunks);
+    assertEquals(1, results.size(), "one column must produce a result");
+    assertEquals(StatsResultStatus.STATS_RESULT_HIT_COMPLETE, results.get(0).getStatus());
+    assertEquals(1, results.get(0).getStats().getScalar().getSketchesCount());
+    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(1L, end.getReturnedTargets());
+    assertEquals(0L, end.getNotFoundTargets());
+    assertEquals(0L, end.getPartialTargets());
   }
 
   @Test
@@ -1007,6 +1313,7 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     assertEquals(1, results.size());
     assertEquals(StatsResultStatus.STATS_RESULT_HIT_STALE, results.get(0).getStatus());
     assertEquals(460L, results.get(0).getSnapshotId());
+    assertEquals(461L, results.get(0).getPinnedSnapshotId(), "served 460 is stale against pin 461");
     TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
     assertEquals(1L, end.getReturnedTargets());
     assertEquals(1L, end.getStaleTargets());
@@ -1042,6 +1349,15 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     assertEquals(0L, end.getReturnedTargets());
     assertEquals(0L, end.getStaleTargets());
     assertEquals(1L, end.getNotFoundTargets());
+  }
+
+  /** Publishes one column record as a full replacement (a new live generation) of the snapshot. */
+  private static void publishColumn(
+      StatsRepository repository, long snapshotId, long columnId, ScalarStats scalar) {
+    repository.replaceAllStatsForSnapshot(
+        TABLE,
+        snapshotId,
+        List.of(TargetStatsRecords.columnRecord(TABLE, snapshotId, columnId, scalar, null)));
   }
 
   private static TargetStatsNeed sketchNeed(long columnId, int priority) {
@@ -1185,5 +1501,114 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     assertEquals(1, results.size());
     // staleOk=true with no stale stats → NOT_FOUND (not an error)
     assertEquals(StatsResultStatus.STATS_RESULT_NOT_FOUND, results.get(0).getStatus());
+  }
+
+  /**
+   * End-to-end pipeline guard: file records with producer-owned sketches, through BOTH rollup
+   * stages exactly as a full rescan runs them, published as a generation, pinned, and served back
+   * to a planner-shaped request. Every recent stats regression (dropped quantile/tuple payloads,
+   * generation misses) crossed one of these seams while each seam's own unit tests stayed green —
+   * this test fails if any seam loses the payload again.
+   */
+  @Test
+  void fullRescanPipelineServesProducerSketchesEndToEnd() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service =
+        createServiceWithRealLookup(
+            repository, store, /* chunkSize= */ 5, /* maxTables= */ 5, /* maxTargets= */ 10);
+
+    long snapshotId = 484L;
+    ai.floedb.floecat.catalog.rpc.SketchPayload tdigest =
+        ai.floedb.floecat.catalog.rpc.SketchPayload.newBuilder()
+            .setRole(SketchRole.SKETCH_ROLE_QUANTILES)
+            .setSketchType("apache-datasketches-tdigest-v1")
+            .setData(ByteString.copyFromUtf8("pipeline-quantile-bytes"))
+            .setCompleteness(StatsCompleteness.SC_COMPLETE)
+            .build();
+    ScalarStats fileScalar =
+        ScalarStats.newBuilder()
+            .setDisplayName("l_quantity")
+            .setLogicalType("BIGINT")
+            .setRowCount(120L)
+            .setNullCount(0L)
+            .setAvgWidthBytes(8)
+            .addSketches(tdigest)
+            .build();
+    TargetStatsRecord fileRecord =
+        TargetStatsRecord.newBuilder()
+            .setTableId(TABLE)
+            .setSnapshotId(snapshotId)
+            .setFile(
+                ai.floedb.floecat.catalog.rpc.FileTargetStats.newBuilder()
+                    .setTableId(TABLE)
+                    .setSnapshotId(snapshotId)
+                    .setFilePath("s3://bucket/pipeline/file-1.parquet")
+                    .setRowCount(120L)
+                    .addColumns(
+                        ai.floedb.floecat.catalog.rpc.FileColumnStats.newBuilder()
+                            .setColumnId(5L)
+                            .setScalar(fileScalar)))
+            .build();
+
+    // The full-rescan sequence: file records → per-group partials → merged snapshot records →
+    // published generation.
+    var kinds =
+        java.util.Set.of(
+            ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.TABLE,
+            ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.COLUMN);
+    List<TargetStatsRecord> partials =
+        ai.floedb.floecat.reconciler.impl.FileGroupTargetStatsRollup
+            .partialAggregatesFromFileRecords(TABLE, snapshotId, kinds, List.of(fileRecord));
+    List<TargetStatsRecord> finals =
+        ai.floedb.floecat.reconciler.impl.FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(
+            TABLE, snapshotId, kinds, partials);
+    repository.replaceAllStatsForSnapshot(TABLE, snapshotId, finals);
+
+    // Serve through the pinned-generation path a real query uses.
+    String pinnedGeneration = repository.activeStatsGeneration(TABLE, snapshotId).orElseThrow();
+    QueryContext ctx =
+        queryContextWithStatsGenerationRef("query-pipeline-e2e", snapshotId, pinnedGeneration);
+    store.seed(ctx);
+
+    FetchTargetStatsRequest request =
+        FetchTargetStatsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTables(
+                ai.floedb.floecat.query.rpc.TableStatsRequest.newBuilder()
+                    .setTableId(TABLE)
+                    .addTargets(
+                        TargetStatsNeed.newBuilder()
+                            .setTarget(
+                                StatsTarget.newBuilder()
+                                    .setColumn(ColumnStatsTarget.newBuilder().setColumnId(5L)))
+                            .setPriority(1)
+                            .addRequestedStats(
+                                RequestedStat.newBuilder()
+                                    .setRole(StatRole.STAT_ROLE_SCALAR)
+                                    .setPriority(1))
+                            .addRequestedStats(
+                                RequestedStat.newBuilder()
+                                    .setRole(StatRole.STAT_ROLE_QUANTILES)
+                                    .setSketchType("apache-datasketches-tdigest-v1")
+                                    .setPriority(2))))
+            .build();
+    List<TargetStatsBundleChunk> chunks =
+        service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely();
+
+    List<TargetStatsResult> results = flatten(chunks);
+    assertEquals(1, results.size(), "one column must produce a result");
+    assertEquals(StatsResultStatus.STATS_RESULT_HIT_COMPLETE, results.get(0).getStatus());
+    ScalarStats served = results.get(0).getStats().getScalar();
+    assertEquals(120L, served.getRowCount());
+    assertEquals(1, served.getSketchesCount());
+    // The payload must arrive byte-identical: never merged, never re-encoded, never dropped.
+    assertEquals("pipeline-quantile-bytes", served.getSketches(0).getData().toStringUtf8());
+    assertEquals(SketchRole.SKETCH_ROLE_QUANTILES, served.getSketches(0).getRole());
+    TargetStatsBundleEnd end = chunks.get(chunks.size() - 1).getEnd();
+    assertEquals(1L, end.getReturnedTargets());
+    assertEquals(0L, end.getNotFoundTargets());
+    assertEquals(0L, end.getPartialTargets());
   }
 }

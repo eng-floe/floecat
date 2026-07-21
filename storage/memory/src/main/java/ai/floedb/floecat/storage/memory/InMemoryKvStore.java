@@ -91,10 +91,24 @@ public final class InMemoryKvStore implements KvStore {
           break;
         }
       }
-      if (index < 0) {
+      if (index >= 0) {
+        start = index + 1;
+      } else if (skPrefix.isEmpty() || token.startsWith(skPrefix)) {
+        // The token names a position inside this keyspace whose row has since been deleted.
+        // Resume at the insertion point, matching DynamoDB's positional exclusiveStartKey
+        // semantics. With a non-blank prefix, a token outside it is rejected as malformed below;
+        // a blank prefix scans the whole partition, so there is no keyspace boundary to reject
+        // against and any decodable token is a valid position (decodeToken already rejects tokens
+        // that are not valid base64).
+        int insertion = 0;
+        while (insertion < matching.size()
+            && matching.get(insertion).key().sortKey().compareTo(token) <= 0) {
+          insertion++;
+        }
+        start = insertion;
+      } else {
         throw new IllegalArgumentException("Bad page token");
       }
-      start = index + 1;
     }
 
     if (start >= matching.size()) {
@@ -108,6 +122,12 @@ public final class InMemoryKvStore implements KvStore {
             ? Optional.of(encodeToken(items.get(items.size() - 1).key().sortKey()))
             : Optional.empty();
     return Uni.createFrom().item(new Page(List.copyOf(items), nextToken));
+  }
+
+  @Override
+  public String pageTokenAfterKey(Key key) {
+    // Same encoding as end-of-page tokens: base64 of the sort key to resume after.
+    return encodeToken(key.sortKey());
   }
 
   @Override
@@ -192,6 +212,12 @@ public final class InMemoryKvStore implements KvStore {
   }
 
   private static String encodeToken(String sortKey) {
+    if (sortKey.isEmpty()) {
+      // base64("") is "", which is this codebase's "no more pages" sentinel: an empty sort key
+      // would emit a token indistinguishable from "done" and silently truncate pagination. No key
+      // uses an empty sort key today, so fail loud rather than produce an ambiguous token.
+      throw new IllegalArgumentException("cannot encode a page token for an empty sort key");
+    }
     return Base64.getUrlEncoder()
         .withoutPadding()
         .encodeToString(sortKey.getBytes(StandardCharsets.UTF_8));

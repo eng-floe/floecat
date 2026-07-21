@@ -24,7 +24,6 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.*;
 
-import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -38,7 +37,7 @@ import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.utils.EngineContext;
@@ -49,9 +48,6 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
 import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import io.grpc.StatusRuntimeException;
-import io.grpc.protobuf.StatusProto;
-import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -168,11 +164,6 @@ class MetaGraphTest {
           }
 
           @Override
-          public Instant metadataUpdatedAt() {
-            return Instant.now();
-          }
-
-          @Override
           public GraphNodeKind kind() {
             return GraphNodeKind.TABLE;
           }
@@ -216,18 +207,18 @@ class MetaGraphTest {
   }
 
   @Test
-  void snapshotPinFor_system_returnsNull() {
-    SnapshotPin pin = meta.snapshotPinFor("c", sysTable, null, Optional.empty());
+  void tablePinFor_system_returnsNull() {
+    TablePin pin = meta.tablePinFor("c", sysTable, null, Optional.empty());
 
     assertThat(pin).isNull();
   }
 
   @Test
-  void snapshotPinFor_user_delegates() {
-    SnapshotPin expected = SnapshotPin.newBuilder().build();
-    when(user.snapshotPinFor(any(), any(), any(), any())).thenReturn(expected);
+  void tablePinFor_user_delegates() {
+    TablePin expected = TablePin.newBuilder().build();
+    when(user.tablePinFor(any(), any(), any(), any())).thenReturn(expected);
 
-    SnapshotPin pin = meta.snapshotPinFor("c", usrTable, null, Optional.empty());
+    TablePin pin = meta.tablePinFor("c", usrTable, null, Optional.empty());
 
     assertThat(pin).isEqualTo(expected);
   }
@@ -244,28 +235,14 @@ class MetaGraphTest {
   }
 
   @Test
-  void resolveTable_throwsWhenBothSystemAndUserMatch() {
+  void resolveTable_returnsSystemMatchWithoutUserProbe() {
     NameRef ref = NameRef.newBuilder().setName("t").build();
     when(system.resolveTable(ref, context)).thenReturn(Optional.of(sysTable));
-    when(user.resolveTable("c", ref)).thenReturn(Optional.of(usrTable));
 
-    assertThatThrownBy(() -> meta.resolveTable("c", ref)).isInstanceOf(RuntimeException.class);
-  }
+    Optional<ResourceId> resolved = meta.resolveTable("c", ref);
 
-  private String firstErrorKey(StatusRuntimeException ex) {
-    com.google.rpc.Status status = StatusProto.fromThrowable(ex);
-    return status.getDetailsList().stream()
-        .filter(detail -> detail.is(Error.class))
-        .map(
-            detail -> {
-              try {
-                return detail.unpack(Error.class).getMessageKey();
-              } catch (Exception e) {
-                throw new AssertionError("unable to unpack error detail", e);
-              }
-            })
-        .findFirst()
-        .orElse("");
+    assertThat(resolved).contains(sysTable);
+    verify(user, never()).resolveTable("c", ref);
   }
 
   private UserGraph.ResolveResult userResolveResult(
@@ -298,7 +275,7 @@ class MetaGraphTest {
 
     UserGraph.ResolveResult userResult =
         userResolveResult(1, "user-token", new CatalogOverlay.QualifiedRelation(userRef, userId));
-    when(user.resolveTables(eq("cid"), anyList(), eq(2), eq(""))).thenReturn(userResult);
+    when(user.resolveTables(eq("cid"), anyList(), eq(1), eq(""))).thenReturn(userResult);
 
     CatalogOverlay.ResolveResult merged =
         meta.batchResolveTables("cid", List.of(systemRef, userRef), 2, "");
@@ -311,23 +288,19 @@ class MetaGraphTest {
   }
 
   @Test
-  void resolveTables_list_throwsOnAmbiguousName() {
-    NameRef ref = NameRef.newBuilder().setCatalog("examples").setName("collide").build();
-    NameRef alias = NameRef.newBuilder().setCatalog("examples").setName("alias").build();
+  void resolveTables_list_skipsUserLookupForSystemName() {
+    NameRef ref = NameRef.newBuilder().setCatalog("examples").setName("system_table").build();
 
     when(system.resolveTable(any(NameRef.class), eq(context))).thenReturn(Optional.of(sysTable));
-    when(system.tableName(sysTable, context)).thenReturn(Optional.of(alias));
+    when(system.tableName(sysTable, context))
+        .thenReturn(
+            Optional.of(NameRef.newBuilder().setCatalog("engine").setName("system_table").build()));
 
-    UserGraph.ResolveResult userResult =
-        userResolveResult(1, "", new CatalogOverlay.QualifiedRelation(alias, usrTable));
-    when(user.resolveTables(eq("cid"), anyList(), eq(1), eq(""))).thenReturn(userResult);
+    CatalogOverlay.ResolveResult resolved = meta.batchResolveTables("cid", List.of(ref), 1, "");
 
-    assertThatThrownBy(() -> meta.batchResolveTables("cid", List.of(ref), 1, ""))
-        .isInstanceOf(StatusRuntimeException.class)
-        .satisfies(
-            ex ->
-                assertThat(firstErrorKey((StatusRuntimeException) ex))
-                    .contains("query.input.ambiguous"));
+    assertThat(resolved.relations()).hasSize(1);
+    assertThat(resolved.relations().get(0).resourceId()).isEqualTo(sysTable);
+    verify(user, never()).resolveTables(any(), anyList(), anyInt(), any());
   }
 
   @Test
@@ -343,43 +316,7 @@ class MetaGraphTest {
     when(system.resolveNamespace(any(NameRef.class), eq(context)))
         .thenReturn(Optional.of(namespaceId));
 
-    TableNode systemNode =
-        new TableNode() {
-          @Override
-          public ResourceId namespaceId() {
-            return namespaceId;
-          }
-
-          @Override
-          public String displayName() {
-            return "sys_t";
-          }
-
-          @Override
-          public ResourceId id() {
-            return sysTable;
-          }
-
-          @Override
-          public long version() {
-            return 1;
-          }
-
-          @Override
-          public Instant metadataUpdatedAt() {
-            return Instant.EPOCH;
-          }
-
-          @Override
-          public GraphNodeOrigin origin() {
-            return GraphNodeOrigin.SYSTEM;
-          }
-
-          @Override
-          public Map<EngineHintKey, EngineHint> engineHints() {
-            return Map.of();
-          }
-        };
+    TableNode systemNode = prefixSystemTable(sysTable, namespaceId, "sys_t");
 
     when(system.listRelationsInNamespace(ResourceId.getDefaultInstance(), namespaceId, context))
         .thenReturn(List.of(systemNode));
@@ -394,7 +331,7 @@ class MetaGraphTest {
             new CatalogOverlay.QualifiedRelation(
                 NameRef.newBuilder().setCatalog("examples").addPath("ns").setName("user_t").build(),
                 usrTable));
-    when(user.resolveTables(eq("cid"), eq(prefix), eq(50), eq(""))).thenReturn(userResult);
+    when(user.resolveTables(eq("cid"), eq(prefix), eq(49), eq(""))).thenReturn(userResult);
 
     CatalogOverlay.ResolveResult merged = meta.listTablesByPrefix("cid", prefix, 50, "");
 
@@ -416,43 +353,7 @@ class MetaGraphTest {
     when(system.resolveNamespace(any(NameRef.class), eq(context)))
         .thenReturn(Optional.of(namespaceId));
 
-    TableNode systemNode =
-        new TableNode() {
-          @Override
-          public ResourceId namespaceId() {
-            return namespaceId;
-          }
-
-          @Override
-          public String displayName() {
-            return "system_table";
-          }
-
-          @Override
-          public ResourceId id() {
-            return sysTable;
-          }
-
-          @Override
-          public long version() {
-            return 1;
-          }
-
-          @Override
-          public Instant metadataUpdatedAt() {
-            return Instant.EPOCH;
-          }
-
-          @Override
-          public GraphNodeOrigin origin() {
-            return GraphNodeOrigin.SYSTEM;
-          }
-
-          @Override
-          public Map<EngineHintKey, EngineHint> engineHints() {
-            return Map.of();
-          }
-        };
+    TableNode systemNode = prefixSystemTable(sysTable, namespaceId, "system_table");
 
     when(system.listRelationsInNamespace(ResourceId.getDefaultInstance(), namespaceId, context))
         .thenReturn(List.of(systemNode));
@@ -460,7 +361,7 @@ class MetaGraphTest {
         .thenReturn(
             Optional.of(NameRef.newBuilder().setCatalog("engine").setName("system_table").build()));
 
-    when(user.resolveTables(eq("cid"), eq(prefix), eq(50), eq("")))
+    when(user.resolveTables(eq("cid"), eq(prefix), eq(49), eq("")))
         .thenReturn(
             new UserGraph.ResolveResult(
                 new FullyQualifiedResolver.ResolveResult(List.of(), 0, "")));
@@ -469,6 +370,309 @@ class MetaGraphTest {
 
     assertThat(merged.relations()).hasSize(1);
     assertThat(merged.relations().get(0).resourceId()).isEqualTo(sysTable);
+  }
+
+  @Test
+  void listTablesByPrefix_systemFillingPageDoesNotSkipUserRows() {
+    // Regression: when system rows fill the page, the user graph must not be consulted for rows
+    // (its cursor would advance past a row the page drops). The user row must surface on the next
+    // page, fetched from a blank cursor.
+    NameRef prefix =
+        NameRef.newBuilder().setCatalog("examples").addPath("information_schema").build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("sys-ns")
+            .build();
+    when(system.resolveNamespace(any(NameRef.class), eq(context)))
+        .thenReturn(Optional.of(namespaceId));
+    when(system.listRelationsInNamespace(ResourceId.getDefaultInstance(), namespaceId, context))
+        .thenReturn(List.of(prefixSystemTable(sysTable, namespaceId, "system_table")));
+    when(system.tableName(sysTable, context))
+        .thenReturn(
+            Optional.of(NameRef.newBuilder().setCatalog("engine").setName("system_table").build()));
+
+    UserGraph.ResolveResult userResult =
+        userResolveResult(
+            1,
+            "",
+            new CatalogOverlay.QualifiedRelation(
+                NameRef.newBuilder().setCatalog("examples").addPath("ns").setName("user_t").build(),
+                usrTable));
+    when(user.resolveTables(eq("cid"), eq(prefix), eq(1), eq(""))).thenReturn(userResult);
+    when(user.countTablesByPrefix(eq("cid"), eq(prefix))).thenReturn(1);
+
+    CatalogOverlay.ResolveResult firstPage = meta.listTablesByPrefix("cid", prefix, 1, "");
+
+    assertThat(firstPage.relations()).hasSize(1);
+    assertThat(firstPage.relations().get(0).resourceId()).isEqualTo(sysTable);
+    assertThat(firstPage.totalSize()).isEqualTo(2);
+
+    CatalogOverlay.ResolveResult secondPage =
+        meta.listTablesByPrefix("cid", prefix, 1, firstPage.nextToken());
+
+    assertThat(secondPage.relations()).hasSize(1);
+    assertThat(secondPage.relations().get(0).resourceId()).isEqualTo(usrTable);
+    assertThat(secondPage.totalSize()).isEqualTo(2);
+    // The boundary page's total now uses the count-only path (no discarded one-row probe); only the
+    // second page fetches rows, from a blank cursor.
+    verify(user, times(1)).resolveTables(eq("cid"), eq(prefix), eq(1), eq(""));
+    verify(user).countTablesByPrefix(eq("cid"), eq(prefix));
+  }
+
+  @Test
+  void listTablesByPrefix_systemExactlyFillsPageWithNoUserRows_emitsNoToken() {
+    // Regression: system rows exactly fill the page and there are no user rows. The handoff must
+    // not advertise a user-phase page that would come back empty.
+    NameRef prefix =
+        NameRef.newBuilder().setCatalog("examples").addPath("information_schema").build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("sys-ns")
+            .build();
+    when(system.resolveNamespace(any(NameRef.class), eq(context)))
+        .thenReturn(Optional.of(namespaceId));
+    when(system.listRelationsInNamespace(ResourceId.getDefaultInstance(), namespaceId, context))
+        .thenReturn(List.of(prefixSystemTable(sysTable, namespaceId, "system_table")));
+    when(system.tableName(sysTable, context))
+        .thenReturn(
+            Optional.of(NameRef.newBuilder().setCatalog("engine").setName("system_table").build()));
+    when(user.countTablesByPrefix(eq("cid"), eq(prefix))).thenReturn(0);
+
+    CatalogOverlay.ResolveResult page = meta.listTablesByPrefix("cid", prefix, 1, "");
+
+    assertThat(page.relations()).hasSize(1);
+    assertThat(page.relations().get(0).resourceId()).isEqualTo(sysTable);
+    assertThat(page.totalSize()).isEqualTo(1);
+    assertThat(page.nextToken()).isEmpty();
+    // No user-phase row fetch — there is nothing to continue into.
+    verify(user, never()).resolveTables(eq("cid"), eq(prefix), eq(1), eq(""));
+  }
+
+  @Test
+  void listTablesByPrefix_pagesThroughSystemOverflowWithoutLoss() {
+    // Regression: system rows beyond the page size were dropped (system was collected first-page
+    // only, capped at the page size). They must flow across pages via the system-phase token.
+    NameRef prefix =
+        NameRef.newBuilder().setCatalog("examples").addPath("information_schema").build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("sys-ns")
+            .build();
+    ResourceId sysTableB =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("sys-t-b")
+            .build();
+    when(system.resolveNamespace(any(NameRef.class), eq(context)))
+        .thenReturn(Optional.of(namespaceId));
+    when(system.listRelationsInNamespace(ResourceId.getDefaultInstance(), namespaceId, context))
+        .thenReturn(
+            List.of(
+                prefixSystemTable(sysTableB, namespaceId, "b_sys"),
+                prefixSystemTable(sysTable, namespaceId, "a_sys")));
+    when(system.tableName(sysTable, context))
+        .thenReturn(
+            Optional.of(NameRef.newBuilder().setCatalog("engine").setName("a_sys").build()));
+    when(system.tableName(sysTableB, context))
+        .thenReturn(
+            Optional.of(NameRef.newBuilder().setCatalog("engine").setName("b_sys").build()));
+    when(user.resolveTables(eq("cid"), eq(prefix), eq(1), eq("")))
+        .thenReturn(
+            new UserGraph.ResolveResult(
+                new FullyQualifiedResolver.ResolveResult(List.of(), 0, "")));
+
+    var collected = new java.util.ArrayList<ResourceId>();
+    String token = "";
+    for (int guard = 0; guard < 10 && collected.size() < 2; guard++) {
+      CatalogOverlay.ResolveResult page = meta.listTablesByPrefix("cid", prefix, 1, token);
+      page.relations().forEach(rel -> collected.add(rel.resourceId()));
+      assertThat(page.totalSize()).isEqualTo(2);
+      token = page.nextToken();
+      if (token.isBlank()) {
+        break;
+      }
+    }
+
+    // Sorted by canonical name: a_sys then b_sys, no gaps, no duplicates.
+    assertThat(collected).containsExactly(sysTable, sysTableB);
+  }
+
+  @Test
+  void listTablesByPrefix_mixedPageEmitsSystemThenUserWithUserCursor() {
+    NameRef prefix =
+        NameRef.newBuilder().setCatalog("examples").addPath("information_schema").build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("sys-ns")
+            .build();
+    when(system.resolveNamespace(any(NameRef.class), eq(context)))
+        .thenReturn(Optional.of(namespaceId));
+    when(system.listRelationsInNamespace(ResourceId.getDefaultInstance(), namespaceId, context))
+        .thenReturn(List.of(prefixSystemTable(sysTable, namespaceId, "system_table")));
+    when(system.tableName(sysTable, context))
+        .thenReturn(
+            Optional.of(NameRef.newBuilder().setCatalog("engine").setName("system_table").build()));
+
+    ResourceId userTableB =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("usr-b")
+            .build();
+    UserGraph.ResolveResult userResult =
+        userResolveResult(
+            5,
+            "more",
+            new CatalogOverlay.QualifiedRelation(
+                NameRef.newBuilder().setCatalog("examples").addPath("ns").setName("u1").build(),
+                usrTable),
+            new CatalogOverlay.QualifiedRelation(
+                NameRef.newBuilder().setCatalog("examples").addPath("ns").setName("u2").build(),
+                userTableB));
+    when(user.resolveTables(eq("cid"), eq(prefix), eq(2), eq(""))).thenReturn(userResult);
+
+    CatalogOverlay.ResolveResult page = meta.listTablesByPrefix("cid", prefix, 3, "");
+
+    assertThat(page.relations()).hasSize(3);
+    assertThat(page.relations().get(0).resourceId()).isEqualTo(sysTable);
+    assertThat(page.relations().get(1).resourceId()).isEqualTo(usrTable);
+    assertThat(page.relations().get(2).resourceId()).isEqualTo(userTableB);
+    // System row count + user total; continuation carries the user graph's cursor.
+    assertThat(page.totalSize()).isEqualTo(6);
+    assertThat(page.nextToken()).isEqualTo("u:more");
+  }
+
+  @Test
+  void listViewsByPrefix_systemFillingPageDoesNotSkipUserRows() {
+    NameRef prefix =
+        NameRef.newBuilder().setCatalog("examples").addPath("information_schema").build();
+    ResourceId namespaceId =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .setId("sys-ns")
+            .build();
+    ResourceId sysView =
+        ResourceId.newBuilder()
+            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
+            .setKind(ResourceKind.RK_VIEW)
+            .setId("sys-view")
+            .build();
+    ResourceId usrView =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_VIEW)
+            .setId("usr-view")
+            .build();
+    when(system.resolveNamespace(any(NameRef.class), eq(context)))
+        .thenReturn(Optional.of(namespaceId));
+    when(system.listRelationsInNamespace(ResourceId.getDefaultInstance(), namespaceId, context))
+        .thenReturn(List.of(prefixSystemView(sysView, namespaceId, "system_view")));
+    when(system.viewName(sysView, context))
+        .thenReturn(
+            Optional.of(NameRef.newBuilder().setCatalog("engine").setName("system_view").build()));
+
+    UserGraph.ResolveResult userResult =
+        userResolveResult(
+            1,
+            "",
+            new CatalogOverlay.QualifiedRelation(
+                NameRef.newBuilder().setCatalog("examples").addPath("ns").setName("uv").build(),
+                usrView));
+    when(user.resolveViews(eq("cid"), eq(prefix), eq(1), eq(""))).thenReturn(userResult);
+    when(user.countViewsByPrefix(eq("cid"), eq(prefix))).thenReturn(1);
+
+    CatalogOverlay.ResolveResult firstPage = meta.listViewsByPrefix("cid", prefix, 1, "");
+
+    assertThat(firstPage.relations()).hasSize(1);
+    assertThat(firstPage.relations().get(0).resourceId()).isEqualTo(sysView);
+    assertThat(firstPage.totalSize()).isEqualTo(2);
+
+    CatalogOverlay.ResolveResult secondPage =
+        meta.listViewsByPrefix("cid", prefix, 1, firstPage.nextToken());
+
+    assertThat(secondPage.relations()).hasSize(1);
+    assertThat(secondPage.relations().get(0).resourceId()).isEqualTo(usrView);
+    // The boundary page's total now uses the count-only path (no discarded one-row probe); only the
+    // second page fetches rows, from a blank cursor.
+    verify(user, times(1)).resolveViews(eq("cid"), eq(prefix), eq(1), eq(""));
+    verify(user).countViewsByPrefix(eq("cid"), eq(prefix));
+  }
+
+  @Test
+  void listTablesByPrefix_rejectsMalformedSystemToken() {
+    NameRef prefix =
+        NameRef.newBuilder().setCatalog("examples").addPath("information_schema").build();
+
+    assertThatThrownBy(() -> meta.listTablesByPrefix("cid", prefix, 1, "sys:%%%"))
+        .isInstanceOf(io.grpc.StatusRuntimeException.class)
+        .satisfies(
+            ex ->
+                assertThat(((io.grpc.StatusRuntimeException) ex).getStatus().getCode())
+                    .isEqualTo(io.grpc.Status.Code.INVALID_ARGUMENT));
+  }
+
+  private static ai.floedb.floecat.metagraph.model.ViewNode prefixSystemView(
+      ResourceId id, ResourceId namespaceId, String name) {
+    return new ai.floedb.floecat.metagraph.model.ViewNode(
+        id,
+        "blob://test/v1",
+        ResourceId.getDefaultInstance(),
+        namespaceId,
+        name,
+        "select 1",
+        "sql",
+        List.of(),
+        List.of(),
+        List.of(),
+        GraphNodeOrigin.SYSTEM,
+        Map.of(),
+        Optional.empty(),
+        Map.of(),
+        Map.of());
+  }
+
+  private static TableNode prefixSystemTable(ResourceId id, ResourceId namespaceId, String name) {
+    return new TableNode() {
+      @Override
+      public ResourceId namespaceId() {
+        return namespaceId;
+      }
+
+      @Override
+      public String displayName() {
+        return name;
+      }
+
+      @Override
+      public ResourceId id() {
+        return id;
+      }
+
+      @Override
+      public long version() {
+        return 1;
+      }
+
+      @Override
+      public GraphNodeOrigin origin() {
+        return GraphNodeOrigin.SYSTEM;
+      }
+
+      @Override
+      public Map<EngineHintKey, EngineHint> engineHints() {
+        return Map.of();
+      }
+    };
   }
 
   @Test
@@ -548,8 +752,7 @@ class MetaGraphTest {
     NamespaceNode systemNamespace =
         new NamespaceNode(
             systemNamespaceId,
-            1,
-            Instant.EPOCH,
+            "blob://test/v1",
             catalogId,
             List.of("information_schema"),
             "tables",

@@ -16,64 +16,31 @@
 
 package ai.floedb.floecat.storage.aws;
 
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.concurrent.atomic.AtomicReference;
-import org.jboss.logging.Logger;
+import java.util.function.Function;
 import software.amazon.awssdk.services.s3.S3Client;
 
 @ApplicationScoped
 public class S3ClientManager {
 
-  private static final Logger LOG = Logger.getLogger(S3ClientManager.class);
-
   @Inject AwsClients awsClients;
 
-  private final AtomicReference<S3Client> current = new AtomicReference<>();
+  private final RefreshingAwsClient<S3Client> client =
+      RefreshingAwsClient.withResourceFactory("S3", () -> awsClients.newS3ClientResource());
 
   public S3Client current() {
-    S3Client existing = current.get();
-    if (existing != null) {
-      return existing;
-    }
-
-    S3Client next = awsClients.newS3Client();
-    if (current.compareAndSet(null, next)) {
-      return next;
-    }
-
-    next.close();
-    return current.get();
+    return client.current();
   }
 
-  public void refreshAfterFailure(Throwable failure) {
-    if (!ClosedAwsClientDetector.isConnectionPoolShutdown(failure)) {
-      return;
-    }
-
-    S3Client previous = current.get();
-    S3Client next = awsClients.newS3Client();
-    if (current.compareAndSet(previous, next)) {
-      closeQuietly(previous);
-      LOG.warn("Refreshed S3 client after closed connection pool");
-    } else {
-      next.close();
-    }
+  public <R> R call(Function<S3Client, R> operation) {
+    return client.callUnchecked(operation);
   }
 
   @PreDestroy
   void close() {
-    closeQuietly(current.getAndSet(null));
-  }
-
-  private static void closeQuietly(S3Client client) {
-    if (client == null) {
-      return;
-    }
-    try {
-      client.close();
-    } catch (RuntimeException ignored) {
-    }
+    client.close();
   }
 }

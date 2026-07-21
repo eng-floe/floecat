@@ -194,6 +194,55 @@ public final class ServiceMetrics {
             "",
             CONTRACT,
             "service");
+    public static final MetricId LEASE_NEXT_LATENCY =
+        new MetricId(
+            "floecat.service.reconcile.lease_next.latency",
+            MetricType.TIMER,
+            "ms",
+            CONTRACT,
+            "service");
+    public static final MetricId LEASE_NEXT_CANDIDATES =
+        new MetricId(
+            "floecat.service.reconcile.lease_next.candidates",
+            MetricType.SUMMARY,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId LEASE_NEXT_SCANS =
+        new MetricId(
+            "floecat.service.reconcile.lease_next.scans",
+            MetricType.SUMMARY,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId LEASE_NEXT_OUTCOMES =
+        new MetricId(
+            "floecat.service.reconcile.lease_next.outcomes.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId LEASE_NEXT_SKIPS =
+        new MetricId(
+            "floecat.service.reconcile.lease_next.skips.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId LEASE_SCAN_PERMITS_IN_USE =
+        new MetricId(
+            "floecat.service.reconcile.lease_scan.permits.in_use",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId LEASE_SCAN_PERMITS_AVAILABLE =
+        new MetricId(
+            "floecat.service.reconcile.lease_scan.permits.available",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
   }
 
   public static final class Stats {
@@ -234,5 +283,98 @@ public final class ServiceMetrics {
     public static final MetricId SYNC_LATENCY =
         new MetricId(
             "floecat.service.stats.sync.latency", MetricType.TIMER, "ms", CONTRACT, "service");
+
+    /**
+     * Per-target planner lookup outcomes, tagged {@code result=<outcome>} with the ladder rung that
+     * served (or failed) each target: cache/pinned/newest-fill/partial/stale/captured/
+     * pending/failed. Answers "which rung is serving planner stats" without log archaeology.
+     */
+    public static final MetricId PLANNER_LOOKUP_OUTCOMES_TOTAL =
+        new MetricId(
+            "floecat.service.stats.planner_lookup_outcomes.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+  }
+
+  /** CAS blob-GC backlog health: the signals that answer "is GC falling behind?". */
+  public static final class Gc {
+    private Gc() {}
+
+    /**
+     * Accounts whose delete phase was skipped ("poisoned") in the last tick because a root-chain
+     * walk could not complete. A persistently non-zero value means an account's garbage is
+     * accumulating until the corrupt chain is repaired.
+     */
+    public static final MetricId CAS_POISONED_ACCOUNTS =
+        new MetricId(
+            "floecat.service.gc.cas.poisoned_accounts", MetricType.GAUGE, "", CONTRACT, "service");
+
+    /**
+     * Accounts whose sweep was skipped in the last tick because the blob store cannot delete by
+     * immutable version (on S3: bucket versioning not Enabled, or s3:GetBucketVersioning denied).
+     * Fail-closed is safe but collects NOTHING — a persistently non-zero value means the bucket or
+     * IAM policy is misconfigured and garbage is accumulating.
+     */
+    public static final MetricId CAS_DELETE_UNSUPPORTED_ACCOUNTS =
+        new MetricId(
+            "floecat.service.gc.cas.delete_unsupported_accounts",
+            MetricType.GAUGE,
+            "",
+            CONTRACT,
+            "service");
+
+    /**
+     * Age in milliseconds of the LEAST-recently cleanly-swept account — the direct "GC is N behind"
+     * signal. It climbs when an account is poisoned or is starved by the per-tick deadline, and
+     * resets as each account completes a clean sweep.
+     */
+    public static final MetricId CAS_OLDEST_SWEEP_AGE =
+        new MetricId(
+            "floecat.service.gc.cas.oldest_sweep_age", MetricType.GAUGE, "ms", CONTRACT, "service");
+
+    public static final MetricId RECONCILE_JOB_ACCOUNTS_LAST_TICK =
+        new MetricId(
+            "floecat.service.gc.reconcile_jobs.accounts.last_tick",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId RECONCILE_JOB_ACCOUNT_PAGE_INDEX =
+        new MetricId(
+            "floecat.service.gc.reconcile_jobs.account_page.index",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId RECONCILE_JOB_ACCOUNT_PAGE_SIZE =
+        new MetricId(
+            "floecat.service.gc.reconcile_jobs.account_page.size",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId RECONCILE_JOB_ACTIVE_ACCOUNT_TOKENS =
+        new MetricId(
+            "floecat.service.gc.reconcile_jobs.account_tokens.active",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId RECONCILE_JOB_QUARANTINED_LAST_TICK =
+        new MetricId(
+            "floecat.service.gc.reconcile_jobs.quarantined.last_tick",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId RECONCILE_JOB_DELETED_LAST_TICK =
+        new MetricId(
+            "floecat.service.gc.reconcile_jobs.deleted.last_tick",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
   }
 }

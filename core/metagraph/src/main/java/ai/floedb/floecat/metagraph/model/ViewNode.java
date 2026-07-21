@@ -20,13 +20,15 @@ import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 /**
  * Immutable view node encapsulating SQL definition and dependency references.
+ *
+ * <p>The node is a pure derivation of the view blob at {@code blobUri}: identical blob content
+ * always produces an identical node, so {@code blobUri} is its content-stable cache identity.
  *
  * <p>{@code baseRelations} holds the fully-qualified names of relations this view directly depends
  * on, expressed as {@link NameRef} objects so that resolution can be performed directly via {@code
@@ -36,8 +38,7 @@ import java.util.Optional;
  */
 public record ViewNode(
     ResourceId id,
-    long version,
-    Instant metadataUpdatedAt,
+    String blobUri,
     ResourceId catalogId,
     ResourceId namespaceId,
     String displayName,
@@ -65,8 +66,7 @@ public record ViewNode(
 
   public ViewNode(
       ResourceId id,
-      long version,
-      Instant metadataUpdatedAt,
+      String blobUri,
       ResourceId catalogId,
       ResourceId namespaceId,
       String displayName,
@@ -82,8 +82,7 @@ public record ViewNode(
       Map<EngineHintKey, EngineHint> engineHints) {
     this(
         id,
-        version,
-        metadataUpdatedAt,
+        blobUri,
         catalogId,
         namespaceId,
         displayName,
@@ -102,6 +101,17 @@ public record ViewNode(
         owner,
         columnHints,
         engineHints);
+  }
+
+  /** User nodes are content-keyed by {@link #blobUri()}; the pointer version is not retained. */
+  @Override
+  public long version() {
+    return 0L;
+  }
+
+  @Override
+  public String cacheIdentity() {
+    return blobUri;
   }
 
   public String sql() {

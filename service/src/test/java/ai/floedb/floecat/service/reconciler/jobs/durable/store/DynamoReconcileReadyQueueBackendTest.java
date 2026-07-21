@@ -21,16 +21,21 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend.ReadyQueueSlice;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore.LeaseScanStats;
+import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
+import jakarta.enterprise.inject.Instance;
+import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.core.exception.ApiCallAttemptTimeoutException;
 import software.amazon.awssdk.core.exception.ApiCallTimeoutException;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
+import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 
 class DynamoReconcileReadyQueueBackendTest {
 
@@ -38,8 +43,8 @@ class DynamoReconcileReadyQueueBackendTest {
   void scanReadySliceNormalizesApiCallTimeoutAsLeaseScanAbort() {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
     when(dynamoDb.query(any(QueryRequest.class))).thenThrow(ApiCallTimeoutException.create(25L));
-    DynamoReconcileReadyQueueBackend backend =
-        new DynamoReconcileReadyQueueBackend(dynamoDb, "floecat_pointers");
+    DynamoReconcileReadyQueueBackend backend = new DynamoReconcileReadyQueueBackend();
+    backend.bind(() -> dynamoDb, "floecat_pointers");
     LeaseScanStats stats = new LeaseScanStats();
     stats.deadlineAtMs = System.currentTimeMillis() + 5_000L;
 
@@ -58,12 +63,45 @@ class DynamoReconcileReadyQueueBackendTest {
   }
 
   @Test
+  void scanReadySliceRefreshesManagerClientAndRetriesAfterClosedPool() {
+    DynamoDbClient refreshedClient = mock(DynamoDbClient.class);
+    when(refreshedClient.query(any(QueryRequest.class)))
+        .thenReturn(QueryResponse.builder().build());
+
+    DynamoDbClientManager manager = mock(DynamoDbClientManager.class);
+    when(manager.call(any()))
+        .thenAnswer(
+            invocation -> {
+              @SuppressWarnings("unchecked")
+              Function<DynamoDbClient, QueryResponse> operation = invocation.getArgument(0);
+              return operation.apply(refreshedClient);
+            });
+    @SuppressWarnings("unchecked")
+    Instance<DynamoDbClientManager> managerInstance = mock(Instance.class);
+    when(managerInstance.isResolvable()).thenReturn(true);
+    when(managerInstance.get()).thenReturn(manager);
+
+    DynamoReconcileReadyQueueBackend backend = new DynamoReconcileReadyQueueBackend();
+    backend.dynamoDbClientManager = managerInstance;
+    LeaseScanStats stats = new LeaseScanStats();
+    stats.deadlineAtMs = System.currentTimeMillis() + 5_000L;
+
+    var page =
+        backend.scanReadySlice(
+            new ReadyQueueSlice(ReconcileReadyQueueStore.ReadyIndexType.GLOBAL, ""), 16, "", stats);
+
+    assertTrue(page.entries().isEmpty());
+    verify(manager).call(any());
+    verify(refreshedClient).query(any(QueryRequest.class));
+  }
+
+  @Test
   void loadCanonicalSnapshotNormalizesAttemptTimeoutAsLeaseScanAbort() {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
     when(dynamoDb.getItem(any(GetItemRequest.class)))
         .thenThrow(ApiCallAttemptTimeoutException.create(25L));
-    DynamoReconcileReadyQueueBackend backend =
-        new DynamoReconcileReadyQueueBackend(dynamoDb, "floecat_pointers");
+    DynamoReconcileReadyQueueBackend backend = new DynamoReconcileReadyQueueBackend();
+    backend.bind(() -> dynamoDb, "floecat_pointers");
     LeaseScanStats stats = new LeaseScanStats();
     stats.deadlineAtMs = System.currentTimeMillis() + 5_000L;
 

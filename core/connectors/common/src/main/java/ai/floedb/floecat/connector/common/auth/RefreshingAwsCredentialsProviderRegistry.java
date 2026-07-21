@@ -24,11 +24,15 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 
 public final class RefreshingAwsCredentialsProviderRegistry {
+  private static final Logger LOG =
+      Logger.getLogger(RefreshingAwsCredentialsProviderRegistry.class.getName());
   public static final String OPTION_PROVIDER_ID = "floecat.aws.credentials-provider-id";
   public static final String PROPERTY_PROVIDER_ID = "floecat-provider-id";
   public static final String CLIENT_PROVIDER_CLASS =
@@ -146,6 +150,7 @@ public final class RefreshingAwsCredentialsProviderRegistry {
     private final Supplier<ResolvedStorageCredentials> refresher;
     private final Duration refreshSkew;
     private volatile ResolvedStorageCredentials current;
+    private volatile TerminalCredentialRefreshException terminalFailure;
 
     private Entry(
         ResolvedStorageCredentials initialCredentials,
@@ -157,16 +162,39 @@ public final class RefreshingAwsCredentialsProviderRegistry {
     }
 
     private AwsCredentials resolveCredentials() {
+      TerminalCredentialRefreshException terminal = terminalFailure;
+      if (terminal != null) {
+        throw terminal;
+      }
       ResolvedStorageCredentials snapshot = current;
       Instant now = Instant.now();
       if (shouldRefresh(snapshot, refreshSkew, now)) {
         synchronized (this) {
+          terminal = terminalFailure;
+          if (terminal != null) {
+            throw terminal;
+          }
           snapshot = current;
           now = Instant.now();
           if (shouldRefresh(snapshot, refreshSkew, now)) {
             try {
-              current = Objects.requireNonNull(refresher.get(), "refresher returned null");
+              ResolvedStorageCredentials refreshed =
+                  Objects.requireNonNull(refresher.get(), "refresher returned null");
+              // Validate convertibility before publishing; retain still-valid prior credentials
+              // when a refresh returns malformed values.
+              toAwsCredentials(refreshed);
+              current = refreshed;
+              LOG.log(
+                  Level.INFO,
+                  "Refreshed AWS storage credentials; previousExpiresAt={0}, newExpiresAt={1}",
+                  new Object[] {
+                    snapshot == null ? null : snapshot.expiresAt(), refreshed.expiresAt()
+                  });
             } catch (RuntimeException e) {
+              if (e instanceof TerminalCredentialRefreshException terminalRefresh) {
+                terminalFailure = terminalRefresh;
+                throw terminalRefresh;
+              }
               if (snapshot != null
                   && snapshot.expiresAt() != null
                   && now.isBefore(snapshot.expiresAt())) {

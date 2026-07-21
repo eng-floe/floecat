@@ -24,6 +24,27 @@ Two storage primitives underpin every service:
   `/accounts/{account_id}/catalogs/by-name/{name}` and
   `/accounts/{account_id}/tables/{table_id}/snapshots/by-id/{snapshot_id}`.
 
+### Table roots, query pinning, and snapshot visibility
+
+Per table, the two primitives compose into an immutable **`TableRoot`**: a content-addressed root
+blob referencing a chain of immutable snapshot-manifest pages, with a single CAS'd pointer per
+table naming the current root. Every writer publishes through `TableRootCommitter` — the single
+owner of every root mutation — which reads the current root, applies the caller's mutator, writes
+the new root blob, and CASes the pointer; a lost CAS re-runs the mutator against the winner's root
+so concurrent commits merge instead of clobbering.
+
+Queries read through **pins**: a `TablePin` copies the refs it needs (definition, snapshot,
+constraints, stats generation) out of one root at resolution time, so every later schema, scan,
+stats, and constraints read in that query is coherent by construction. Pinned blobs are GC-rooted
+for the query's lifetime — a pin protects its root's whole reference chain even after the current
+pointer moves past it.
+
+Snapshot visibility is gated at **read time** (`StatsVisibilityGate`): registration and resync
+advance the root's `current_snapshot_id` freely, but when the stats store tracks generations a
+manifest entry without its `stats_generation_ref` is not yet query-visible — a read or pin resolves
+to the newest finalized snapshot at or before it instead, so logical metadata can move current
+without exposing an unfinalized scan.
+
 The gRPC service (Quarkus) enforces tenancy, authorization, and idempotency while orchestrating
 connectors that ingest upstream metadata, reconciling it into the canonical blob/pointer stores, and
 serving execution-ready scan bundles.

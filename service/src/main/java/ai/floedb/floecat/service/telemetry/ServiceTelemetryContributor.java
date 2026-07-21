@@ -49,9 +49,20 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.MODE);
     Set<String> reconcileExecutionAllowed =
         Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.MODE, TagKey.REASON);
+    Set<String> reconcileLeaseResultRequired =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
+    Set<String> reconcileLeaseResultAllowed =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
+    Set<String> reconcileLeaseSkipRequired =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.REASON);
+    Set<String> reconcileLeaseSkipAllowed =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.REASON);
     Set<String> reconcileQueueRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> reconcileQueueAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    Set<String> gcRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    Set<String> gcAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> statsRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    Set<String> plannerStatsLookupTags = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
     Set<String> statsAllowed =
         Set.of(
             TagKey.COMPONENT,
@@ -254,6 +265,102 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         "Automatic reconcile planner enqueue decisions by mode.");
     add(
         defs,
+        ServiceMetrics.Reconcile.LEASE_NEXT_LATENCY,
+        reconcileLeaseResultRequired,
+        reconcileLeaseResultAllowed,
+        "Durable reconcile leaseNext latency by terminal outcome.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.LEASE_NEXT_CANDIDATES,
+        reconcileLeaseResultRequired,
+        reconcileLeaseResultAllowed,
+        "Number of ready-queue candidates examined by each durable reconcile leaseNext call.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.LEASE_NEXT_SCANS,
+        reconcileLeaseResultRequired,
+        reconcileLeaseResultAllowed,
+        "Number of ready-queue slice scans performed by each durable reconcile leaseNext call.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.LEASE_NEXT_OUTCOMES,
+        reconcileLeaseResultRequired,
+        reconcileLeaseResultAllowed,
+        "Durable reconcile leaseNext outcomes.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.LEASE_NEXT_SKIPS,
+        reconcileLeaseSkipRequired,
+        reconcileLeaseSkipAllowed,
+        "Ready-queue candidates skipped by durable reconcile leaseNext, grouped by reason.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.LEASE_SCAN_PERMITS_IN_USE,
+        reconcileQueueRequired,
+        reconcileQueueAllowed,
+        "Current number of durable reconcile lease scan permits in use.");
+    add(
+        defs,
+        ServiceMetrics.Reconcile.LEASE_SCAN_PERMITS_AVAILABLE,
+        reconcileQueueRequired,
+        reconcileQueueAllowed,
+        "Current number of durable reconcile lease scan permits available.");
+    add(
+        defs,
+        ServiceMetrics.Gc.CAS_POISONED_ACCOUNTS,
+        gcRequired,
+        gcAllowed,
+        "Accounts whose CAS GC delete phase was poisoned in the last tick.");
+    add(
+        defs,
+        ServiceMetrics.Gc.CAS_DELETE_UNSUPPORTED_ACCOUNTS,
+        gcRequired,
+        gcAllowed,
+        "Accounts whose CAS GC sweep was skipped because immutable version deletes are unsupported.");
+    add(
+        defs,
+        ServiceMetrics.Gc.CAS_OLDEST_SWEEP_AGE,
+        gcRequired,
+        gcAllowed,
+        "Age in milliseconds of the least-recently cleanly-swept CAS GC account.");
+    add(
+        defs,
+        ServiceMetrics.Gc.RECONCILE_JOB_ACCOUNTS_LAST_TICK,
+        gcRequired,
+        gcAllowed,
+        "Reconcile job GC accounts processed in the last completed tick.");
+    add(
+        defs,
+        ServiceMetrics.Gc.RECONCILE_JOB_ACCOUNT_PAGE_INDEX,
+        gcRequired,
+        gcAllowed,
+        "Current reconcile job GC index within the cached account page.");
+    add(
+        defs,
+        ServiceMetrics.Gc.RECONCILE_JOB_ACCOUNT_PAGE_SIZE,
+        gcRequired,
+        gcAllowed,
+        "Current reconcile job GC cached account page size.");
+    add(
+        defs,
+        ServiceMetrics.Gc.RECONCILE_JOB_ACTIVE_ACCOUNT_TOKENS,
+        gcRequired,
+        gcAllowed,
+        "Accounts with active reconcile job GC continuation tokens.");
+    add(
+        defs,
+        ServiceMetrics.Gc.RECONCILE_JOB_QUARANTINED_LAST_TICK,
+        gcRequired,
+        gcAllowed,
+        "Unreadable reconcile job GC payloads retained in the last completed tick.");
+    add(
+        defs,
+        ServiceMetrics.Gc.RECONCILE_JOB_DELETED_LAST_TICK,
+        gcRequired,
+        gcAllowed,
+        "Reconcile job GC pointer/blob deletes completed in the last completed tick.");
+    add(
+        defs,
         ServiceMetrics.Stats.BATCH_ITEMS_TOTAL,
         statsRequired,
         statsAllowed,
@@ -291,6 +398,12 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         statsAllowed,
         "Sync-first resolution outcomes by result (HIT, CAPTURED, PARTIAL, TIMEOUT, FAILED,"
             + " SKIPPED).");
+    add(
+        defs,
+        ServiceMetrics.Stats.PLANNER_LOOKUP_OUTCOMES_TOTAL,
+        plannerStatsLookupTags,
+        plannerStatsLookupTags,
+        "Planner stats lookup outcomes by the ladder rung that served or failed each target.");
     add(
         defs,
         ServiceMetrics.Stats.SYNC_LATENCY,

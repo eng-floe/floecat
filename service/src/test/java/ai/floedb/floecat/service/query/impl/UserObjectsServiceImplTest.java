@@ -62,7 +62,10 @@ class UserObjectsServiceImplTest {
     UserObjectBundleService mockBundles = Mockito.mock(UserObjectBundleService.class);
     Mockito.when(
             mockBundles.stream(
-                Mockito.anyString(), Mockito.any(QueryContext.class), Mockito.anyList()))
+                Mockito.anyString(),
+                Mockito.any(QueryContext.class),
+                Mockito.anyList(),
+                Mockito.anySet()))
         .thenAnswer(
             _ -> {
               // This runs inside grpcCtx.call/run — context should be set.
@@ -93,7 +96,7 @@ class UserObjectsServiceImplTest {
                     .setSubject("tester")
                     .addPermissions("catalog.read")
                     .build())
-            .snapshotSet(new byte[0])
+            .relationPins(new byte[0])
             .createdAtMs(1)
             .expiresAtMs(Long.MAX_VALUE)
             .state(QueryContext.State.ACTIVE)
@@ -159,7 +162,10 @@ class UserObjectsServiceImplTest {
     UserObjectBundleService mockBundles = Mockito.mock(UserObjectBundleService.class);
     Mockito.when(
             mockBundles.stream(
-                Mockito.anyString(), Mockito.any(QueryContext.class), Mockito.anyList()))
+                Mockito.anyString(),
+                Mockito.any(QueryContext.class),
+                Mockito.anyList(),
+                Mockito.anySet()))
         .thenReturn(
             Multi.createFrom()
                 .<UserObjectsBundleChunk>emitter(
@@ -183,7 +189,7 @@ class UserObjectsServiceImplTest {
                     .setSubject("tester")
                     .addPermissions("catalog.read")
                     .build())
-            .snapshotSet(new byte[0])
+            .relationPins(new byte[0])
             .createdAtMs(1)
             .expiresAtMs(Long.MAX_VALUE)
             .state(QueryContext.State.ACTIVE)

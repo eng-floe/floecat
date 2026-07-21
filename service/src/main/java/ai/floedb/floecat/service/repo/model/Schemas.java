@@ -26,8 +26,11 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.service.repo.util.ConstraintNormalizer;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -69,7 +72,9 @@ public final class Schemas {
                 return new CatalogKey(
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
-          .withCasBlobs();
+          .withCasBlobs()
+          .withSystemGuard(
+              key -> systemGuardId(key.accountId(), key.catalogId(), ResourceKind.RK_CATALOG));
 
   public static final ResourceSchema<StorageAuthority, StorageAuthorityKey> STORAGE_AUTHORITY =
       ResourceSchema.<StorageAuthority, StorageAuthorityKey>of(
@@ -107,7 +112,9 @@ public final class Schemas {
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
           .withCasBlobs()
-          .withPointerMeta(Namespace::getResourceId, Namespace::getDisplayName);
+          .withPointerMeta(Namespace::getResourceId, Namespace::getDisplayName)
+          .withSystemGuard(
+              key -> systemGuardId(key.accountId(), key.namespaceId(), ResourceKind.RK_NAMESPACE));
 
   public static final ResourceSchema<Table, TableKey> TABLE =
       ResourceSchema.<Table, TableKey>of(
@@ -121,6 +128,12 @@ public final class Schemas {
                           v.getResourceId().getAccountId(),
                           v.getCatalogId().getId(),
                           v.getNamespaceId().getId(),
+                          v.getDisplayName()),
+                      "relationName",
+                      Keys.relationPointerByName(
+                          v.getResourceId().getAccountId(),
+                          v.getCatalogId().getId(),
+                          v.getNamespaceId().getId(),
                           v.getDisplayName())),
               v -> {
                 var sha = Hashing.sha256Hex(v.toByteArray());
@@ -128,7 +141,9 @@ public final class Schemas {
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
           .withCasBlobs()
-          .withPointerMeta(Table::getResourceId, Table::getDisplayName);
+          .withPointerMeta(Table::getResourceId, Table::getDisplayName)
+          .withSystemGuard(
+              key -> systemGuardId(key.accountId(), key.tableId(), ResourceKind.RK_TABLE));
 
   public static final ResourceSchema<Snapshot, SnapshotKey> SNAPSHOT =
       ResourceSchema.<Snapshot, SnapshotKey>of(
@@ -155,9 +170,9 @@ public final class Schemas {
               })
           .withCasBlobs();
 
-  public static final ResourceSchema<CurrentSnapshotPointer, CurrentSnapshotPointerKey>
+  public static final ResourceSchema<CurrentSnapshotPointer, TableScopedPointerKey>
       CURRENT_SNAPSHOT_POINTER =
-          ResourceSchema.<CurrentSnapshotPointer, CurrentSnapshotPointerKey>of(
+          ResourceSchema.<CurrentSnapshotPointer, TableScopedPointerKey>of(
                   "current-snapshot-pointer",
                   key -> Keys.currentSnapshotPointerByTable(key.accountId(), key.tableId()),
                   key ->
@@ -166,10 +181,23 @@ public final class Schemas {
                   v -> Map.of(),
                   v -> {
                     var sha = Hashing.sha256Hex(v.toByteArray());
-                    return new CurrentSnapshotPointerKey(
+                    return new TableScopedPointerKey(
                         v.getTableId().getAccountId(), v.getTableId().getId(), sha);
                   })
               .withCasBlobs();
+
+  public static final ResourceSchema<TableRoot, TableScopedPointerKey> TABLE_ROOT =
+      ResourceSchema.<TableRoot, TableScopedPointerKey>of(
+              "table-root",
+              key -> Keys.tableRootByTable(key.accountId(), key.tableId()),
+              key -> Keys.tableRootBlobUri(key.accountId(), key.tableId(), key.sha256()),
+              v -> Map.of(),
+              v -> {
+                var sha = Hashing.sha256Hex(v.toByteArray());
+                return new TableScopedPointerKey(
+                    v.getTableId().getAccountId(), v.getTableId().getId(), sha);
+              })
+          .withCasBlobs();
 
   public static final ResourceSchema<TargetStatsRecord, TargetStatsKey> TARGET_STATS =
       ResourceSchema.<TargetStatsRecord, TargetStatsKey>of(
@@ -317,6 +345,12 @@ public final class Schemas {
                           v.getResourceId().getAccountId(),
                           v.getCatalogId().getId(),
                           v.getNamespaceId().getId(),
+                          v.getDisplayName()),
+                      "relationName",
+                      Keys.relationPointerByName(
+                          v.getResourceId().getAccountId(),
+                          v.getCatalogId().getId(),
+                          v.getNamespaceId().getId(),
                           v.getDisplayName())),
               v -> {
                 var sha = Hashing.sha256Hex(v.toByteArray());
@@ -324,7 +358,9 @@ public final class Schemas {
                     v.getResourceId().getAccountId(), v.getResourceId().getId(), sha);
               })
           .withCasBlobs()
-          .withPointerMeta(View::getResourceId, View::getDisplayName);
+          .withPointerMeta(View::getResourceId, View::getDisplayName)
+          .withSystemGuard(
+              key -> systemGuardId(key.accountId(), key.viewId(), ResourceKind.RK_VIEW));
 
   public static final ResourceSchema<Connector, ConnectorKey> CONNECTOR =
       ResourceSchema.<Connector, ConnectorKey>of(
@@ -371,4 +407,15 @@ public final class Schemas {
                     v.getAccountId(), v.getTxId(), v.getTargetPointerKey(), sha);
               })
           .withCasBlobs();
+
+  private Schemas() {}
+
+  /**
+   * Builds the ResourceId the repository write path inspects for a system marker. Only the id is
+   * load-bearing (SystemResourceIdGenerator.isSystemId reads the UUID); account and kind are set
+   * for correct diagnostics.
+   */
+  private static ResourceId systemGuardId(String accountId, String id, ResourceKind kind) {
+    return ResourceId.newBuilder().setAccountId(accountId).setId(id).setKind(kind).build();
+  }
 }

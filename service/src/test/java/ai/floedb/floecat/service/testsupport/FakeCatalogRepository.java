@@ -31,6 +31,8 @@ public final class FakeCatalogRepository extends CatalogRepository {
   private final Map<ResourceId, Catalog> entries = new HashMap<>();
   private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
   private final Map<ResourceId, Integer> gets = new HashMap<>();
+  // blobUri -> catalog, so the getByBlobUri hydration fast path is exercised.
+  private final Map<String, Catalog> byBlob = new HashMap<>();
 
   public FakeCatalogRepository() {
     super(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -39,6 +41,9 @@ public final class FakeCatalogRepository extends CatalogRepository {
   public void put(Catalog catalog, MutationMeta meta) {
     entries.put(catalog.getResourceId(), catalog);
     metas.put(catalog.getResourceId(), meta);
+    if (meta != null && meta.getBlobUri() != null && !meta.getBlobUri().isBlank()) {
+      byBlob.put(meta.getBlobUri(), catalog);
+    }
   }
 
   public void putMeta(ResourceId id, MutationMeta meta) {
@@ -49,6 +54,20 @@ public final class FakeCatalogRepository extends CatalogRepository {
   public Optional<Catalog> getById(ResourceId id) {
     gets.merge(id, 1, Integer::sum);
     return Optional.ofNullable(entries.get(id));
+  }
+
+  @Override
+  public Optional<Catalog> getByBlobUri(String blobUri) {
+    if (blobUri != null && byBlob.containsKey(blobUri)) {
+      return Optional.of(byBlob.get(blobUri));
+    }
+    return super.getByBlobUri(blobUri);
+  }
+
+  @Override
+  public Optional<Catalog> getByBlobUriLive(String blobUri) {
+    // The fake's in-memory map IS the live store; same lookup as the cached variant.
+    return getByBlobUri(blobUri);
   }
 
   @Override
@@ -68,6 +87,12 @@ public final class FakeCatalogRepository extends CatalogRepository {
       throw new StorageNotFoundException("missing catalog meta");
     }
     return meta;
+  }
+
+  @Override
+  public MutationMeta pointerMetaForSafe(ResourceId id) {
+    // The fake's meta map is the single source of truth for both meta variants.
+    return metaForSafe(id);
   }
 
   public int getByIdCount(ResourceId id) {

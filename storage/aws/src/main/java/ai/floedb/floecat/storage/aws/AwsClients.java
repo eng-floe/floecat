@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.storage.aws;
 
+import ai.floedb.floecat.aws.RefreshingAwsClient;
+import ai.floedb.floecat.aws.RefreshingAwsClient.ClientResource;
 import ai.floedb.floecat.storage.AwsCredentialsUnavailableException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
@@ -73,14 +75,29 @@ public class AwsClients {
   @Produces
   @Singleton
   DynamoDbClient dynamoDbClient() {
+    return newDynamoDbClient();
+  }
+
+  public DynamoDbClient newDynamoDbClient() {
+    return newDynamoDbClientResource().client();
+  }
+
+  public ClientResource<DynamoDbClient> newDynamoDbClientResource() {
+    AwsCredentialsProvider credentials = resolveCredentials();
     var builder =
         DynamoDbClient.builder()
             .region(region)
             .httpClient(UrlConnectionHttpClient.create())
-            .credentialsProvider(resolveCredentials())
+            .credentialsProvider(credentials)
             .overrideConfiguration(ClientOverrideConfiguration.builder().build());
     dynamoEndpoint.ifPresent(builder::endpointOverride);
-    return builder.build();
+    try {
+      return RefreshingAwsClient.clientResource(
+          builder.build(), RefreshingAwsClient.closeableResource(credentials));
+    } catch (RuntimeException | Error e) {
+      RefreshingAwsClient.closeQuietly(RefreshingAwsClient.closeableResource(credentials));
+      throw e;
+    }
   }
 
   @Produces
@@ -90,13 +107,24 @@ public class AwsClients {
   }
 
   public DynamoDbAsyncClient newDynamoDbAsyncClient() {
+    return newDynamoDbAsyncClientResource().client();
+  }
+
+  public ClientResource<DynamoDbAsyncClient> newDynamoDbAsyncClientResource() {
+    AwsCredentialsProvider credentials = resolveCredentials();
     var builder =
         DynamoDbAsyncClient.builder()
             .region(region)
-            .credentialsProvider(resolveCredentials())
+            .credentialsProvider(credentials)
             .overrideConfiguration(ClientOverrideConfiguration.builder().build());
     dynamoEndpoint.ifPresent(builder::endpointOverride);
-    return builder.build();
+    try {
+      return RefreshingAwsClient.clientResource(
+          builder.build(), RefreshingAwsClient.closeableResource(credentials));
+    } catch (RuntimeException | Error e) {
+      RefreshingAwsClient.closeQuietly(RefreshingAwsClient.closeableResource(credentials));
+      throw e;
+    }
   }
 
   @Produces
@@ -106,28 +134,61 @@ public class AwsClients {
   }
 
   public S3Client newS3Client() {
+    return newS3ClientResource().client();
+  }
+
+  public ClientResource<S3Client> newS3ClientResource() {
+    AwsCredentialsProvider credentials = resolveCredentials();
     var s3Cfg = S3Configuration.builder().pathStyleAccessEnabled(forcePathStyle).build();
     var builder =
         S3Client.builder()
             .region(region)
             .serviceConfiguration(s3Cfg)
             .httpClient(UrlConnectionHttpClient.create())
-            .credentialsProvider(resolveCredentials())
+            .credentialsProvider(credentials)
             .overrideConfiguration(ClientOverrideConfiguration.builder().build());
     s3Endpoint.ifPresent(builder::endpointOverride);
-    return builder.build();
+    try {
+      return RefreshingAwsClient.clientResource(
+          builder.build(), RefreshingAwsClient.closeableResource(credentials));
+    } catch (RuntimeException | Error e) {
+      RefreshingAwsClient.closeQuietly(RefreshingAwsClient.closeableResource(credentials));
+      throw e;
+    }
   }
 
   @Produces
   @Singleton
   public SecretsManagerClient secretsManagerClient() {
-    return secretsManagerClient(resolveCredentials());
+    return newSecretsManagerClientResource().client();
   }
 
   @Produces
   @Singleton
   public StsClient stsClient() {
-    return stsClient(resolveCredentials());
+    return newStsClientResource().client();
+  }
+
+  public ClientResource<SecretsManagerClient> newSecretsManagerClientResource() {
+    AwsCredentialsProvider credentials = resolveCredentials();
+    try {
+      return RefreshingAwsClient.clientResource(
+          secretsManagerClient(credentials), RefreshingAwsClient.closeableResource(credentials));
+    } catch (RuntimeException | Error e) {
+      RefreshingAwsClient.closeQuietly(RefreshingAwsClient.closeableResource(credentials));
+      throw e;
+    }
+  }
+
+  public ClientResource<StsClient> newStsClientResource() {
+    AwsCredentialsProvider credentials = resolveCredentials();
+    try {
+      return RefreshingAwsClient.clientResource(
+          stsClient(credentials), RefreshingAwsClient.closeableResource(credentials));
+    } catch (RuntimeException | Error e) {
+      RefreshingAwsClient.closeQuietly(RefreshingAwsClient.closeableResource(credentials));
+      throw e;
+    }
   }
 
   public SecretsManagerClient secretsManagerClient(AwsCredentialsProvider credentialsProvider) {

@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -28,6 +29,7 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.transaction.impl.TransactionIntentApplierSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import ai.floedb.floecat.transaction.rpc.TransactionState;
@@ -45,9 +47,7 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
+    var support = newSupport(pointers, blobs);
 
     List<TransactionIntent> intents = new ArrayList<>();
     for (int i = 0; i < 101; i++) {
@@ -72,9 +72,7 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
+    var support = newSupport(pointers, blobs);
 
     String targetKey = "/accounts/acct/custom/key-dup";
     TransactionIntent intentA =
@@ -109,9 +107,7 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
+    var support = newSupport(pointers, blobs);
 
     TransactionIntent intent =
         TransactionIntent.newBuilder()
@@ -138,16 +134,22 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
+    var support = newSupport(pointers, blobs);
 
     String blobUri = "s3://bucket/table-a";
     Table tablePayload =
         Table.newBuilder()
             .setResourceId(ResourceId.newBuilder().setAccountId("acct").setId("table-a"))
-            .setCatalogId(ResourceId.newBuilder().setAccountId("acct").setId("cat-1"))
-            .setNamespaceId(ResourceId.newBuilder().setAccountId("acct").setId("ns-1"))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("cat-1")
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("ns-1")
+                    .setKind(ResourceKind.RK_NAMESPACE))
             .setDisplayName("orders")
             .build();
     blobs.put(blobUri, tablePayload.toByteArray(), "application/x-protobuf");
@@ -169,14 +171,57 @@ class TransactionIntentApplierSupportTest {
   }
 
   @Test
+  void applyTransactionRejectsSystemTablePayloadBeforePointerOps() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = newSupport(pointers, blobs);
+
+    ResourceId systemTableId =
+        SystemNodeRegistry.resourceId("engine", ResourceKind.RK_TABLE, "information_schema.tables");
+    String blobUri = "s3://bucket/system-table";
+    Table tablePayload =
+        Table.newBuilder()
+            .setResourceId(systemTableId)
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("cat-1")
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("ns-1")
+                    .setKind(ResourceKind.RK_NAMESPACE))
+            .setDisplayName("tables")
+            .build();
+    blobs.put(blobUri, tablePayload.toByteArray(), "application/x-protobuf");
+
+    String pointerKey = Keys.tablePointerById(systemTableId.getAccountId(), systemTableId.getId());
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(systemTableId.getAccountId())
+            .setTxId("tx-1")
+            .setTargetPointerKey(pointerKey)
+            .setBlobUri(blobUri)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("SYSTEM_OBJECT_IMMUTABLE", outcome.errorCode());
+    assertTrue(pointers.get(pointerKey).isEmpty(), "system table pointer must not be written");
+  }
+
+  @Test
   void applyTransactionDeletesNonTablePointerWhenDeleteSentinelIsUsed() throws Exception {
     var pointers = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String targetKey = Keys.snapshotPointerById(accountId, "table-1", 7L);
@@ -206,9 +251,7 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String catalogId = "cat-1";
@@ -220,9 +263,21 @@ class TransactionIntentApplierSupportTest {
 
     Table table =
         Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setAccountId(accountId).setId(tableId))
-            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId(catalogId))
-            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId(namespaceId))
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(tableId)
+                    .setKind(ResourceKind.RK_TABLE))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
             .setDisplayName("orders")
             .build();
     blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
@@ -252,9 +307,7 @@ class TransactionIntentApplierSupportTest {
     var blobs = new InMemoryBlobStore();
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String catalogId = "cat-1";
@@ -264,9 +317,21 @@ class TransactionIntentApplierSupportTest {
 
     Table tableAOriginal =
         Table.newBuilder()
-            .setResourceId(ResourceId.newBuilder().setAccountId(accountId).setId(tableAId))
-            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId(catalogId))
-            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId(namespaceId))
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(tableAId)
+                    .setKind(ResourceKind.RK_TABLE))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
             .setDisplayName("orders-a")
             .build();
     String tableAOriginalBlob = "s3://bucket/table-a-original";
@@ -280,8 +345,16 @@ class TransactionIntentApplierSupportTest {
     Table tableB =
         Table.newBuilder()
             .setResourceId(ResourceId.newBuilder().setAccountId(accountId).setId(tableBId))
-            .setCatalogId(ResourceId.newBuilder().setAccountId(accountId).setId(catalogId))
-            .setNamespaceId(ResourceId.newBuilder().setAccountId(accountId).setId(namespaceId))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
             .setDisplayName(contestedName)
             .build();
     String tableBBlob = "s3://bucket/table-b";
@@ -325,9 +398,7 @@ class TransactionIntentApplierSupportTest {
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
     var txRepo = new TransactionRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -394,9 +465,7 @@ class TransactionIntentApplierSupportTest {
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
     var txRepo = new TransactionRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -460,9 +529,7 @@ class TransactionIntentApplierSupportTest {
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
     var txRepo = new TransactionRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -521,9 +588,7 @@ class TransactionIntentApplierSupportTest {
     var intentRepo = new TransactionIntentRepository(pointers, blobs);
     var txRepo = new TransactionRepository(pointers, blobs);
 
-    var support = new TransactionIntentApplierSupport();
-    inject(support, "pointerStore", pointers);
-    inject(support, "blobStore", blobs);
+    var support = newSupport(pointers, blobs);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -572,6 +637,207 @@ class TransactionIntentApplierSupportTest {
     assertEquals(1, intentRepo.listByTx(accountId, txId).size());
   }
 
+  @Test
+  void applyTransactionClaimsSharedRelationNamePointerOnCreate() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    String catalogId = "cat-1";
+    String namespaceId = "ns-1";
+    String tableId = "table-1";
+    String byIdKey = Keys.tablePointerById(accountId, tableId);
+    String relationKey = Keys.relationPointerByName(accountId, catalogId, namespaceId, "orders");
+
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(tableId)
+                    .setKind(ResourceKind.RK_TABLE))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
+            .setDisplayName("orders")
+            .build();
+    String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
+    blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(byIdKey)
+            .setBlobUri(blobUri)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertTrue(pointers.get(relationKey).isPresent(), "shared relation-name claim must be created");
+    assertEquals(tableId, pointers.get(relationKey).orElseThrow().getResourceId().getId());
+  }
+
+  @Test
+  void applyTransactionRejectsTableCreateWhenViewHoldsRelationName() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    String catalogId = "cat-1";
+    String namespaceId = "ns-1";
+    String relationKey = Keys.relationPointerByName(accountId, catalogId, namespaceId, "orders");
+
+    // A view already owns the shared relation-name claim for "orders".
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId("view-9")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    String viewBlob = "/accounts/acct/views/view-9/view/blob.pb";
+    pointers.compareAndSet(
+        relationKey,
+        0L,
+        PointerReferences.blobPointer(relationKey, viewBlob, 1L, viewId, "orders"));
+
+    String tableId = "table-1";
+    String byIdKey = Keys.tablePointerById(accountId, tableId);
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(tableId)
+                    .setKind(ResourceKind.RK_TABLE))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
+            .setDisplayName("orders")
+            .build();
+    String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
+    blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(byIdKey)
+            .setBlobUri(blobUri)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("RELATION_NAME_CONFLICT", outcome.errorCode());
+    assertTrue(
+        pointers.get(byIdKey).isEmpty(), "table by-id pointer must not be created on conflict");
+  }
+
+  @Test
+  void applyTransactionMovesRelationClaimOnRename() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    String catalogId = "cat-1";
+    String namespaceId = "ns-1";
+    ResourceId tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId("table-1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    String byIdKey = Keys.tablePointerById(accountId, tableRid.getId());
+    String oldNameKey = Keys.tablePointerByName(accountId, catalogId, namespaceId, "orders");
+    String oldClaimKey = Keys.relationPointerByName(accountId, catalogId, namespaceId, "orders");
+    String newNameKey = Keys.tablePointerByName(accountId, catalogId, namespaceId, "invoices");
+    String newClaimKey = Keys.relationPointerByName(accountId, catalogId, namespaceId, "invoices");
+
+    Table current =
+        Table.newBuilder()
+            .setResourceId(tableRid)
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
+            .setDisplayName("orders")
+            .build();
+    String currentBlob = "/accounts/acct/tables/table-1/table/current.pb";
+    blobs.put(currentBlob, current.toByteArray(), "application/x-protobuf");
+    pointers.compareAndSet(byIdKey, 0L, PointerReferences.blobPointer(byIdKey, currentBlob, 1L));
+    pointers.compareAndSet(
+        oldNameKey, 0L, PointerReferences.blobPointer(oldNameKey, currentBlob, 1L));
+    pointers.compareAndSet(
+        oldClaimKey,
+        0L,
+        PointerReferences.blobPointer(oldClaimKey, currentBlob, 1L, tableRid, "orders"));
+
+    Table renamed = current.toBuilder().setDisplayName("invoices").build();
+    String renamedBlob = "/accounts/acct/tables/table-1/table/renamed.pb";
+    blobs.put(renamedBlob, renamed.toByteArray(), "application/x-protobuf");
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(byIdKey)
+            .setBlobUri(renamedBlob)
+            .setExpectedVersion(1L)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertTrue(pointers.get(oldClaimKey).isEmpty(), "old name's claim must be released");
+    assertTrue(pointers.get(oldNameKey).isEmpty(), "old by-name pointer must be released");
+    assertTrue(pointers.get(newClaimKey).isPresent(), "new name's claim must be reserved");
+    assertEquals(tableRid.getId(), pointers.get(newClaimKey).orElseThrow().getResourceId().getId());
+    assertTrue(pointers.get(newNameKey).isPresent(), "new by-name pointer must be reserved");
+  }
+
+  private TransactionIntentApplierSupport newSupport(
+      InMemoryPointerStore pointerStore, InMemoryBlobStore blobStore) throws Exception {
+    var support = new TransactionIntentApplierSupport();
+    inject(support, "pointerStore", pointerStore);
+    inject(support, "blobStore", blobStore);
+    inject(support, "overlay", permissiveOverlay());
+    return support;
+  }
+
   private static Transaction readTransaction(InMemoryBlobStore blobs, String blobUri)
       throws Exception {
     return Transaction.parseFrom(blobs.get(blobUri));
@@ -594,6 +860,58 @@ class TransactionIntentApplierSupportTest {
       }
       return super.compareAndSetBatch(ops);
     }
+  }
+
+  /**
+   * Permissive overlay for the apply-time write-eligibility guard: resolves the acct/cat-1/ns-1/
+   * table-1 objects the table-payload tests use as writable user objects, so eligibility passes and
+   * each test exercises its actual pointer/claim assertion. (The guard now fails closed on a null
+   * overlay, so tests must supply one.)
+   */
+  private static ai.floedb.floecat.scanner.spi.CatalogOverlay permissiveOverlay() {
+    // Permit-all overlay: resolves any catalog/namespace/table id as a writable user object so the
+    // apply-time write-eligibility guard passes and each test exercises its actual pointer/claim
+    // assertion. (The guard now fails closed on a null overlay, so tests must supply one.) The
+    // synthesized namespace reports catalog "cat-1" to satisfy requireNamespaceInCatalog, matching
+    // the catalog id these table payloads use.
+    return new ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay() {
+      @Override
+      public java.util.Optional<ai.floedb.floecat.metagraph.model.GraphNode> resolve(
+          ResourceId id) {
+        return switch (id.getKind()) {
+          case RK_CATALOG ->
+              java.util.Optional.of(
+                  new ai.floedb.floecat.metagraph.model.CatalogNode(
+                      id,
+                      "blob://test/v1",
+                      id.getId(),
+                      java.util.Map.of(),
+                      java.util.Optional.empty(),
+                      java.util.Optional.empty(),
+                      java.util.Optional.empty(),
+                      java.util.Map.of()));
+          case RK_NAMESPACE ->
+              java.util.Optional.of(
+                  new ai.floedb.floecat.metagraph.model.NamespaceNode(
+                      id,
+                      "blob://test/v1",
+                      ResourceId.newBuilder()
+                          .setAccountId(id.getAccountId())
+                          .setId("cat-1")
+                          .setKind(ResourceKind.RK_CATALOG)
+                          .build(),
+                      java.util.List.of(),
+                      id.getId(),
+                      ai.floedb.floecat.metagraph.model.GraphNodeOrigin.USER,
+                      java.util.Map.of(),
+                      java.util.Map.of()));
+          case RK_TABLE ->
+              java.util.Optional.of(
+                  ai.floedb.floecat.service.testsupport.TestNodes.tableNode(id, "{}"));
+          default -> java.util.Optional.empty();
+        };
+      }
+    };
   }
 
   private static void inject(Object target, String field, Object value) throws Exception {

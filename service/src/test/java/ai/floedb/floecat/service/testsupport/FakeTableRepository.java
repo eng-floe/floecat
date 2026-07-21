@@ -35,6 +35,11 @@ public final class FakeTableRepository extends TableRepository {
   private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
   private final Map<ResourceId, Integer> gets = new HashMap<>();
   private final Map<ResourceId, Integer> metaGets = new HashMap<>();
+  private final Map<ResourceId, Integer> blobGets = new HashMap<>();
+  // blobUri -> table, so the getByBlobUri hydration fast path is actually exercised (put() does not
+  // touch the real blob store). Keeps old blobs addressable, mirroring CAS blobs outliving a
+  // pointer move.
+  private final Map<String, Table> byBlob = new HashMap<>();
 
   public FakeTableRepository() {
     super(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -43,13 +48,16 @@ public final class FakeTableRepository extends TableRepository {
   public void put(Table table, MutationMeta meta) {
     entries.put(table.getResourceId(), table);
     metas.put(table.getResourceId(), meta);
+    indexBlob(meta, table);
   }
 
   @Override
   public void create(Table table) {
     super.create(table);
     entries.put(table.getResourceId(), table);
-    metas.put(table.getResourceId(), super.metaForSafe(table.getResourceId()));
+    MutationMeta meta = super.metaForSafe(table.getResourceId());
+    metas.put(table.getResourceId(), meta);
+    indexBlob(meta, table);
   }
 
   @Override
@@ -57,9 +65,17 @@ public final class FakeTableRepository extends TableRepository {
     boolean updated = super.update(table, expectedPointerVersion);
     if (updated) {
       entries.put(table.getResourceId(), table);
-      metas.put(table.getResourceId(), super.metaForSafe(table.getResourceId()));
+      MutationMeta meta = super.metaForSafe(table.getResourceId());
+      metas.put(table.getResourceId(), meta);
+      indexBlob(meta, table);
     }
     return updated;
+  }
+
+  private void indexBlob(MutationMeta meta, Table table) {
+    if (meta != null && meta.getBlobUri() != null && !meta.getBlobUri().isBlank()) {
+      byBlob.put(meta.getBlobUri(), table);
+    }
   }
 
   public void putMeta(ResourceId id, MutationMeta meta) {
@@ -70,6 +86,42 @@ public final class FakeTableRepository extends TableRepository {
   public Optional<Table> getById(ResourceId id) {
     gets.merge(id, 1, Integer::sum);
     return Optional.ofNullable(entries.get(id));
+  }
+
+  @Override
+  public Optional<Table> getByBlobUri(String blobUri) {
+    if (blobUri != null && byBlob.containsKey(blobUri)) {
+      Table table = byBlob.get(blobUri);
+      blobGets.merge(table.getResourceId(), 1, Integer::sum);
+      return Optional.of(table);
+    }
+    return super.getByBlobUri(blobUri);
+  }
+
+  @Override
+  public Optional<Table> getByBlobUriLive(String blobUri) {
+    // The fake's in-memory map IS the live store; same lookup, same counter.
+    return getByBlobUri(blobUri);
+  }
+
+  @Override
+  public String blobEtag(String blobUri) {
+    if (blobUri == null || blobUri.isBlank()) {
+      return null;
+    }
+    // A blob is "present" if any seeded meta names it; return that meta's etag so version checks
+    // resolve against the same value put() / putMeta() recorded.
+    return metas.values().stream()
+        .filter(m -> blobUri.equals(m.getBlobUri()))
+        .map(MutationMeta::getEtag)
+        .findFirst()
+        .orElse(null);
+  }
+
+  @Override
+  public Optional<ResourceId> relationNameClaim(
+      String accountId, String catalogId, String namespaceId, String name) {
+    return getByName(accountId, catalogId, namespaceId, name).map(Table::getResourceId);
   }
 
   @Override
@@ -120,8 +172,19 @@ public final class FakeTableRepository extends TableRepository {
     return meta;
   }
 
+  @Override
+  public MutationMeta pointerMetaForSafe(ResourceId id) {
+    // The fake's meta map is the single source of truth for both meta variants.
+    return metaForSafe(id);
+  }
+
   public int getByIdCount(ResourceId id) {
     return gets.getOrDefault(id, 0);
+  }
+
+  /** Number of successful blob-direct hydrations for the table's seeded blobs. */
+  public int getByBlobUriCount(ResourceId id) {
+    return blobGets.getOrDefault(id, 0);
   }
 
   public int metaForSafeCount(ResourceId id) {

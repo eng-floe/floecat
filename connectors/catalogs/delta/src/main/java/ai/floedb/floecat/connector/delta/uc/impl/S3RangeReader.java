@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.connector.delta.uc.impl;
 
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import java.io.IOException;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
@@ -27,7 +28,7 @@ final class S3RangeReader {
 
   private static final int DEFAULT_CHUNK_SIZE = 16 * 1024 * 1024;
 
-  private final S3Client s3;
+  private final RefreshingAwsClient<S3Client> s3;
   private final String bucket;
   private final String key;
   private final long fileLength;
@@ -41,11 +42,12 @@ final class S3RangeReader {
   private long totalWindows = 0;
   private boolean closed = false;
 
-  S3RangeReader(S3Client s3, String bucket, String key) throws IOException {
+  S3RangeReader(RefreshingAwsClient<S3Client> s3, String bucket, String key) throws IOException {
     this(s3, bucket, key, DEFAULT_CHUNK_SIZE);
   }
 
-  S3RangeReader(S3Client s3, String bucket, String key, int chunkSize) throws IOException {
+  S3RangeReader(RefreshingAwsClient<S3Client> s3, String bucket, String key, int chunkSize)
+      throws IOException {
     this.s3 = s3;
     this.bucket = bucket;
     this.key = key;
@@ -53,7 +55,9 @@ final class S3RangeReader {
 
     try {
       HeadObjectResponse head =
-          s3.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build());
+          s3.call(
+              client ->
+                  client.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build()));
       this.fileLength = head.contentLength();
     } catch (S3Exception e) {
       throw new IOException("Failed to get S3 object length for " + bucket + "/" + key, e);
@@ -128,19 +132,31 @@ final class S3RangeReader {
     totalWindows++;
     totalGetRequests++;
 
-    try (var obj =
-        s3.getObject(
-            GetObjectRequest.builder().bucket(bucket).key(key).range(rangeHeader).build())) {
+    try {
+      int bytesRead =
+          s3.call(
+              client -> {
+                try (var obj =
+                    client.getObject(
+                        GetObjectRequest.builder()
+                            .bucket(bucket)
+                            .key(key)
+                            .range(rangeHeader)
+                            .build())) {
 
-      int off = 0;
-      int n;
-      while (off < buffer.length && (n = obj.read(buffer, off, buffer.length - off)) > 0) {
-        off += n;
-        totalBytesFetched += n;
-      }
+                  int off = 0;
+                  int n;
+                  while (off < buffer.length
+                      && (n = obj.read(buffer, off, buffer.length - off)) > 0) {
+                    off += n;
+                    totalBytesFetched += n;
+                  }
+                  return off;
+                }
+              });
 
       bufferStart = start;
-      bufferLength = off;
+      bufferLength = bytesRead;
     } catch (S3Exception e) {
       if (e.statusCode() == 416) {
         bufferLength = 0;

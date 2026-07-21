@@ -35,9 +35,7 @@ public final class SystemSchemaMapper {
             .setLogicalType(column.type().getName())
             .setNullable(column.nullable())
             .setOrdinal(column.ordinal());
-    if (column.hasId()) {
-      builder.setId(column.id());
-    }
+    builder.setId(column.hasId() ? column.id() : column.ordinal());
     return builder.build();
   }
 
@@ -45,7 +43,23 @@ public final class SystemSchemaMapper {
     if (columns == null || columns.isEmpty()) {
       return List.of();
     }
-    return columns.stream().map(SystemSchemaMapper::toSchemaColumn).toList();
+    List<SchemaColumn> mapped = columns.stream().map(SystemSchemaMapper::toSchemaColumn).toList();
+    // Explicit ids and ordinal-derived fallback ids share one positive integer space, so a
+    // relation mixing id-bearing and id-less columns could mint two columns with the same target
+    // id — and the planner keys stats targets on this id, so a collision silently serves one
+    // column's stats for another. Fail at registry build instead.
+    java.util.Set<Long> seen = new java.util.HashSet<>(mapped.size());
+    for (SchemaColumn column : mapped) {
+      if (!seen.add(column.getId())) {
+        throw new IllegalStateException(
+            "duplicate column id "
+                + column.getId()
+                + " in system relation schema (column '"
+                + column.getName()
+                + "'): explicit ids must not overlap ordinal-derived fallback ids");
+      }
+    }
+    return mapped;
   }
 
   private static SystemColumnDef fromSchemaColumn(SchemaColumn column, int ordinal) {

@@ -306,7 +306,7 @@ jobs:
           echo "/floecat/documentation/" > /tmp/docs-validation-paths.txt
 
           ./tools/ci/list-changed-files.sh \
-            | awk '/^(docs\/|mkdocs\.yml$)/ {print}' > /tmp/docs-changed-paths.txt
+            | awk '/^(docs\/|mkdocs\.yml$)/ && !/^docs\/_snippets\// {print}' > /tmp/docs-changed-paths.txt
           if [[ -s /tmp/docs-changed-paths.txt ]]; then
             {
               sed -nE 's#^docs/index\.md$#/floecat/documentation/#p' /tmp/docs-changed-paths.txt
@@ -402,6 +402,12 @@ jobs:
               --source /srv/jekyll \
               --destination /srv/output \
               --baseurl "${PREVIEW_BASEURL}"
+
+          docker run --rm \
+            --entrypoint chown \
+            -v "${PREVIEW_OUT}:/site-out" \
+            "${JEKYLL_PAGES_IMAGE}" \
+            -R "$(id -u):$(id -g)" /site-out
 
           ./tools/site/build-docs.sh --output-dir "${PREVIEW_OUT}/documentation"
 

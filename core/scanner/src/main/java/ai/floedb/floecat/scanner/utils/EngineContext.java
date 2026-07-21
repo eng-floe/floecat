@@ -138,4 +138,31 @@ public final class EngineContext {
   public boolean hasEngineHeaders() {
     return hasEngineKind;
   }
+
+  /**
+   * Value equality over the declared kind/version (the derived normalized fields and flag follow
+   * from them, but are included for safety since one constructor takes them verbatim). Needed so
+   * carriers can compare contexts by value — e.g. the write-once duplicated-context local's
+   * overwrite guard (eng-floe/floecat#361).
+   */
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (!(o instanceof EngineContext other)) {
+      return false;
+    }
+    return hasEngineKind == other.hasEngineKind
+        && engineKind.equals(other.engineKind)
+        && engineVersion.equals(other.engineVersion)
+        && normalizedKind.equals(other.normalizedKind)
+        && normalizedVersion.equals(other.normalizedVersion);
+  }
+
+  @Override
+  public int hashCode() {
+    return java.util.Objects.hash(
+        engineKind, engineVersion, normalizedKind, normalizedVersion, hasEngineKind);
+  }
 }

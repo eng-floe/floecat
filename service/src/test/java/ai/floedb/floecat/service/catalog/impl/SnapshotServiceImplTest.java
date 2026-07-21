@@ -20,6 +20,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
+import ai.floedb.floecat.catalog.rpc.DeleteSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
@@ -32,13 +33,18 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.statistics.StatsOrchestrator;
+import ai.floedb.floecat.service.testsupport.TestNodes;
+import ai.floedb.floecat.service.testsupport.TestPrincipals;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
@@ -120,11 +126,7 @@ class SnapshotServiceImplTest {
     when(svc.tableRepo.update(any(Table.class), eq(7L))).thenReturn(true);
 
     // principal/authz plumbing
-    var pc = mock(PrincipalContext.class);
-    when(svc.principal.get()).thenReturn(pc);
-    when(pc.getCorrelationId()).thenReturn("corr");
-    when(pc.getAccountId()).thenReturn("acct");
-    doNothing().when(svc.authz).require(any(), anyString());
+    var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 
     // snapshot repo behavior: no existing
     when(svc.snapshotRepo.getById(eq(tableId), anyLong())).thenReturn(Optional.empty());
@@ -146,6 +148,79 @@ class SnapshotServiceImplTest {
     verify(svc.snapshotRepo).create(cap.capture());
 
     assertEquals("{\"type\":\"struct\"}", cap.getValue().getSchemaJson());
+  }
+
+  @Test
+  void createSnapshotRejectsSystemTableBeforeSnapshotRepoWrite() {
+    var tableId = tableId("sys_snapshot_create");
+    var svc = serviceWithVisibleTable(tableId, TestNodes.systemTableNode(tableId));
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                svc.createSnapshot(
+                        CreateSnapshotRequest.newBuilder()
+                            .setSpec(
+                                SnapshotSpec.newBuilder()
+                                    .setTableId(tableId)
+                                    .setSnapshotId(123L)
+                                    .setSchemaJson("{}"))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+    verify(svc.snapshotRepo, never()).create(any(Snapshot.class));
+    verifyNoInteractions(svc.currentSnapshotPointerService);
+  }
+
+  @Test
+  void updateSnapshotRejectsSystemTableBeforeSnapshotRepoWrite() {
+    var tableId = tableId("sys_snapshot_update");
+    var svc = serviceWithVisibleTable(tableId, TestNodes.systemTableNode(tableId));
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                svc.updateSnapshot(
+                        UpdateSnapshotRequest.newBuilder()
+                            .setSpec(
+                                SnapshotSpec.newBuilder()
+                                    .setTableId(tableId)
+                                    .setSnapshotId(123L)
+                                    .setSchemaJson("{}"))
+                            .setUpdateMask(FieldMask.newBuilder().addPaths("schema_json"))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+    verify(svc.snapshotRepo, never()).update(any(Snapshot.class), anyLong());
+    verifyNoInteractions(svc.currentSnapshotPointerService);
+  }
+
+  @Test
+  void deleteSnapshotRejectsSystemTableBeforeSnapshotRepoWrite() {
+    var tableId = tableId("sys_snapshot_delete");
+    var svc = serviceWithVisibleTable(tableId, TestNodes.systemTableNode(tableId));
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                svc.deleteSnapshot(
+                        DeleteSnapshotRequest.newBuilder()
+                            .setTableId(tableId)
+                            .setSnapshotId(123L)
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+    verify(svc.snapshotRepo, never()).deleteWithPrecondition(any(), anyLong(), anyLong());
+    verifyNoInteractions(svc.statsStore);
   }
 
   @Test
@@ -175,11 +250,7 @@ class SnapshotServiceImplTest {
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(7L).build());
     when(svc.tableRepo.update(any(Table.class), eq(7L))).thenReturn(true);
 
-    var pc = mock(PrincipalContext.class);
-    when(svc.principal.get()).thenReturn(pc);
-    when(pc.getCorrelationId()).thenReturn("corr");
-    when(pc.getAccountId()).thenReturn("acct");
-    doNothing().when(svc.authz).require(any(), anyString());
+    var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 
     when(svc.snapshotRepo.getById(eq(tableId), anyLong())).thenReturn(Optional.empty());
     doNothing().when(svc.snapshotRepo).create(any(Snapshot.class));
@@ -231,11 +302,7 @@ class SnapshotServiceImplTest {
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(7L).build());
     when(svc.tableRepo.update(any(Table.class), eq(7L))).thenReturn(true);
 
-    var pc = mock(PrincipalContext.class);
-    when(svc.principal.get()).thenReturn(pc);
-    when(pc.getCorrelationId()).thenReturn("corr");
-    when(pc.getAccountId()).thenReturn("acct");
-    doNothing().when(svc.authz).require(any(), anyString());
+    var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 
     when(svc.snapshotRepo.getById(eq(tableId), eq(123L))).thenReturn(Optional.empty());
     doNothing().when(svc.snapshotRepo).create(any(Snapshot.class));
@@ -279,11 +346,7 @@ class SnapshotServiceImplTest {
     var tableRow = Table.newBuilder().setResourceId(tableId).build();
     when(svc.tableRepo.getById(eq(tableId))).thenReturn(Optional.of(tableRow));
 
-    var pc = mock(PrincipalContext.class);
-    when(svc.principal.get()).thenReturn(pc);
-    when(pc.getCorrelationId()).thenReturn("corr");
-    when(pc.getAccountId()).thenReturn("acct");
-    doNothing().when(svc.authz).require(any(), anyString());
+    var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 
     when(svc.snapshotRepo.getById(eq(tableId), eq(100L))).thenReturn(Optional.empty());
     when(svc.snapshotRepo.getById(eq(tableId), eq(200L)))
@@ -338,11 +401,7 @@ class SnapshotServiceImplTest {
     when(svc.tableRepo.getById(eq(tableId)))
         .thenReturn(Optional.of(Table.newBuilder().setResourceId(tableId).build()));
 
-    var pc = mock(PrincipalContext.class);
-    when(svc.principal.get()).thenReturn(pc);
-    when(pc.getCorrelationId()).thenReturn("corr");
-    when(pc.getAccountId()).thenReturn("acct");
-    doNothing().when(svc.authz).require(any(), anyString());
+    var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 
     when(svc.snapshotRepo.getById(eq(tableId), eq(123L))).thenReturn(Optional.empty());
     doNothing().when(svc.snapshotRepo).create(any(Snapshot.class));
@@ -485,6 +544,8 @@ class SnapshotServiceImplTest {
 
     svc.updateSnapshot(req).await().indefinitely();
 
+    // This update is a no-op (schema_json unchanged), so it takes the no-op branch and advances via
+    // plain maybeAdvance — nothing was rewritten, so there is no coherent pair to refresh.
     ArgumentCaptor<Snapshot> cap = ArgumentCaptor.forClass(Snapshot.class);
     verify(svc.currentSnapshotPointerService).maybeAdvance(eq(tableId), cap.capture(), eq("corr"));
     assertEquals(123L, cap.getValue().getSnapshotId());
@@ -610,5 +671,76 @@ class SnapshotServiceImplTest {
     svc.updateSnapshot(req).await().indefinitely();
 
     verify(svc.tableRepo, never()).update(any(Table.class), anyLong());
+  }
+
+  @Test
+  void deleteSnapshotOnAnAlreadyGoneSnapshotStillRemovesItFromTheRoot() {
+    // A retry after a prior attempt deleted the by-id pointer but failed its root commit: metaFor
+    // now throws NotFound. The root must STILL drop the entry — a stale root serves the deleted
+    // snapshot to CURRENT reads and new pins, and anchors its blob in root-chain GC.
+    var tableId = tableId("del-snap-converge");
+    var svc = serviceWithVisibleTable(tableId, TestNodes.tableNode(tableId, "{}"));
+    svc.statsOrchestrator = mock(StatsOrchestrator.class);
+    svc.rootWriter = mock(TableRootWriter.class);
+    when(svc.snapshotRepo.metaFor(tableId, 123L))
+        .thenThrow(new BaseResourceRepository.NotFoundException("gone"));
+
+    svc.deleteSnapshot(
+            DeleteSnapshotRequest.newBuilder().setTableId(tableId).setSnapshotId(123L).build())
+        .await()
+        .indefinitely();
+
+    verify(svc.rootWriter).removeSnapshot(tableId, 123L);
+    // The stats generations must NOT be torn down here — a query that pinned this snapshot still
+    // reads them through its frozen stats_generation_ref; reference-aware CasBlobGc reclaims them.
+    verify(svc.statsStore, never()).deleteAllStatsForSnapshot(tableId, 123L);
+  }
+
+  @Test
+  void deleteSnapshotRemovesItFromTheRootWithoutTearingDownPinnedStats() {
+    var tableId = tableId("del-snap-pinned-stats");
+    var svc = serviceWithVisibleTable(tableId, TestNodes.tableNode(tableId, "{}"));
+    svc.statsOrchestrator = mock(StatsOrchestrator.class);
+    svc.rootWriter = mock(TableRootWriter.class);
+    when(svc.snapshotRepo.metaFor(tableId, 123L))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(4L).build());
+    when(svc.snapshotRepo.deleteWithPrecondition(tableId, 123L, 4L)).thenReturn(true);
+
+    svc.deleteSnapshot(
+            DeleteSnapshotRequest.newBuilder().setTableId(tableId).setSnapshotId(123L).build())
+        .await()
+        .indefinitely();
+
+    verify(svc.rootWriter).removeSnapshot(tableId, 123L);
+    // The success path must defer stats reclamation to reference-aware CasBlobGc, never eagerly
+    // delete the generation blobs an active pinned scan still reads (it would fail loudly).
+    verify(svc.statsStore, never()).deleteAllStatsForSnapshot(tableId, 123L);
+  }
+
+  private static SnapshotServiceImpl serviceWithVisibleTable(ResourceId tableId, TableNode node) {
+    var svc = new SnapshotServiceImpl();
+
+    svc.snapshotRepo = mock(SnapshotRepository.class);
+    svc.tableRepo = mock(TableRepository.class);
+    svc.statsStore = mock(StatsStore.class);
+    svc.principal = mock(PrincipalProvider.class);
+    svc.authz = mock(Authorizer.class);
+    svc.idempotencyStore = mock(IdempotencyRepository.class);
+    svc.overlay = mock(CatalogOverlay.class);
+    svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
+
+    when(svc.overlay.resolve(eq(tableId))).thenReturn(Optional.of(node));
+
+    var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
+
+    return svc;
+  }
+
+  private static ResourceId tableId(String id) {
+    return ResourceId.newBuilder()
+        .setAccountId("acct")
+        .setKind(ResourceKind.RK_TABLE)
+        .setId(id)
+        .build();
   }
 }

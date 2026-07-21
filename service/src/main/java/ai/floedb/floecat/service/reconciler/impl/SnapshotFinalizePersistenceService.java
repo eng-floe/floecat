@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.impl.FileGroupTargetStatsRollup;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
@@ -32,38 +33,68 @@ import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 
 @ApplicationScoped
 public class SnapshotFinalizePersistenceService {
   @Inject StatsStore statsStore;
   @Inject StatsOrchestrator statsOrchestrator;
+  @Inject TableRootWriter rootWriter;
 
   public long replaceAllStatsForSnapshot(
       ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {
     List<TargetStatsRecord> canonical = canonicalize(records);
     statsStore.replaceAllStatsForSnapshot(tableId, snapshotId, canonical);
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+    commitGenerationToRoot(tableId, snapshotId);
     return canonical.size();
+  }
+
+  public long publishFileGroupStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<TargetStatsRecord> aggregateRecords) {
+    List<TargetStatsRecord> canonicalAggregates = canonicalize(aggregateRecords);
+    statsStore.publishStatsGeneration(tableId, snapshotId, generationId, canonicalAggregates);
+    statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+    commitGenerationToRoot(tableId, snapshotId);
+    return canonicalAggregates.size();
   }
 
   public boolean deleteAllStatsForSnapshot(ResourceId tableId, long snapshotId) {
     boolean deleted = statsStore.deleteAllStatsForSnapshot(tableId, snapshotId);
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+    commitGenerationToRoot(tableId, snapshotId);
     return deleted;
   }
 
   public long persistStats(List<TargetStatsRecord> records) {
     long processed = 0L;
     List<TargetStatsRecord> canonical = canonicalize(records);
+    LinkedHashSet<TableSnapshot> touched = new LinkedHashSet<>();
     for (TargetStatsRecord record : canonical) {
       statsStore.putTargetStats(record);
       statsOrchestrator.invalidateStatsCache(
           record.getTableId(), record.getSnapshotId(), record.getTarget());
+      touched.add(new TableSnapshot(record.getTableId(), record.getSnapshotId()));
       processed++;
     }
+    // The first put on a snapshot may have created its active generation; the commit no-ops when
+    // the root already carries the generation's ref.
+    for (TableSnapshot pair : touched) {
+      commitGenerationToRoot(pair.tableId(), pair.snapshotId());
+    }
     return processed;
+  }
+
+  private record TableSnapshot(ResourceId tableId, long snapshotId) {}
+
+  /** Record the snapshot's (possibly new or removed) active stats generation on the table root. */
+  private void commitGenerationToRoot(ResourceId tableId, long snapshotId) {
+    if (rootWriter != null) {
+      rootWriter.commitStatsGeneration(tableId, snapshotId);
+    }
   }
 
   public long persistEmptySnapshotCompletionMarker(
@@ -82,20 +113,32 @@ public class SnapshotFinalizePersistenceService {
       statsStore.replaceAllStatsForSnapshot(
           tableId, snapshotId, List.of(TargetStatsRecords.canonicalize(zeroMarker)));
       statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+      commitGenerationToRoot(tableId, snapshotId);
       return 1L;
     }
     if (statsStore
         .getTargetStats(tableId, snapshotId, StatsTargetIdentity.tableTarget())
         .isPresent()) {
+      // The empty generation already exists (a prior finalize attempt created it). Still commit it
+      // onto the root: a prior attempt may have created the marker but failed
+      // commitGenerationToRoot
+      // (transient CAS exhaustion), and the caller's advanceCurrentSnapshot only republishes when
+      // the current pointer MOVES — for an already-current empty snapshot it stays UNCHANGED, so
+      // nothing else would attach the stats_generation_ref and the snapshot would be permanently
+      // gated-invisible. commitGenerationToRoot is idempotent.
+      commitGenerationToRoot(tableId, snapshotId);
       return 0L;
     }
     if (statsStore.putTargetStatsIfAbsent(zeroMarker)) {
       statsOrchestrator.invalidateStatsCache(tableId, snapshotId, zeroMarker.getTarget());
+      commitGenerationToRoot(tableId, snapshotId);
       return 1L;
     }
     if (statsStore
         .getTargetStats(tableId, snapshotId, StatsTargetIdentity.tableTarget())
         .isPresent()) {
+      // Lost the create race to a concurrent attempt; ensure the generation is on the root anyway.
+      commitGenerationToRoot(tableId, snapshotId);
       return 0L;
     }
     throw new IllegalStateException(
@@ -103,31 +146,6 @@ public class SnapshotFinalizePersistenceService {
             + tableId.getId()
             + " snapshot "
             + snapshotId);
-  }
-
-  public List<TargetStatsRecord> listFileStats(ResourceId tableId, long snapshotId) {
-    List<TargetStatsRecord> out = new ArrayList<>();
-    String pageToken = "";
-    do {
-      StatsStore.StatsStorePage page =
-          statsStore.listTargetStats(
-              tableId, snapshotId, Optional.of(StatsTargetType.FILE), 256, pageToken);
-      out.addAll(page.records());
-      pageToken = page.nextPageToken();
-    } while (pageToken != null && !pageToken.isBlank());
-    return List.copyOf(out);
-  }
-
-  public List<TargetStatsRecord> listSnapshotStats(ResourceId tableId, long snapshotId) {
-    List<TargetStatsRecord> out = new ArrayList<>();
-    String pageToken = "";
-    do {
-      StatsStore.StatsStorePage page =
-          statsStore.listTargetStats(tableId, snapshotId, Optional.empty(), 256, pageToken);
-      out.addAll(page.records());
-      pageToken = page.nextPageToken();
-    } while (pageToken != null && !pageToken.isBlank());
-    return List.copyOf(out);
   }
 
   public List<TargetStatsRecord> buildAggregateStats(

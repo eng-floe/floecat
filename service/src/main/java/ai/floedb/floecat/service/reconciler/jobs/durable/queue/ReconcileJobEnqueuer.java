@@ -166,6 +166,16 @@ public class ReconcileJobEnqueuer {
         pending.add(entry);
       }
     }
+    if (ancestorMutationsBuilder != null
+        && results.stream()
+            .filter(java.util.Objects::nonNull)
+            .anyMatch(result -> !result.succeeded())) {
+      for (PendingBulkEnqueue entry : pending) {
+        rollbackFailedBulkEnqueue(entry);
+      }
+      throw new IllegalStateException(
+          "atomic planner enqueue preparation failed before parent outcome commit");
+    }
     if (pending.isEmpty()) {
       return new BulkEnqueueResult(results);
     }
@@ -378,7 +388,7 @@ public class ReconcileJobEnqueuer {
             dedupeKeyHash,
             now,
             readyPointerKeyForDue.apply(spec.accountId, laneKey, jobId, now),
-            "",
+            indexes.connectorIndexPointerKey(spec.accountId, spec.connectorId, now, jobId),
             definition,
             snapshotPlanBlobUri);
     if (effectiveJobKind == ReconcileJobKind.PLAN_SNAPSHOT) {
@@ -494,6 +504,7 @@ public class ReconcileJobEnqueuer {
     rec.laneKey = laneKey;
     rec.dedupeKeyHash = dedupeKeyHash;
     rec.readyPointerKey = readyPointerKey;
+    rec.readyIndexVersion = ReconcileReadyIndexMaintenanceService.CURRENT_READY_INDEX_VERSION;
     rec.connectorIndexPointerKey = connectorIndexPointerKey;
     rec.createdAtMs = now;
     rec.updatedAtMs = now;

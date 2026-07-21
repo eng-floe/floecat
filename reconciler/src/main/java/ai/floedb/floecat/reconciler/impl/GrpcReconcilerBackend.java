@@ -496,18 +496,6 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     }
     var spec = buildSnapshotSpec(snapshot);
     long snapshotId = snapshot.getSnapshotId();
-    Set<Long> knownSnapshotIds = existingSnapshotIds(ctx, tableId);
-    if (knownSnapshotIds.contains(snapshotId)) {
-      var mask = buildSnapshotUpdateMask(spec);
-      var update = UpdateSnapshotRequest.newBuilder().setSpec(spec).setUpdateMask(mask).build();
-      Optional<Snapshot> existing = fetchSnapshot(ctx, tableId, snapshotId);
-      if (existing.isPresent()
-          && SnapshotHelpers.equalsIgnoringIngested(snapshot, existing.get())) {
-        return;
-      }
-      snapshot(ctx).updateSnapshot(update);
-      return;
-    }
     try {
       snapshot(ctx).createSnapshot(CreateSnapshotRequest.newBuilder().setSpec(spec).build());
       return;
@@ -1585,15 +1573,17 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     }
     Connector connector = lookupConnector(ctx, sourceContext.get().connectorId());
     ResourceId connectorId = sourceContext.get().connectorId();
-    ConnectorConfig config =
-        resolveServerSideStorage(
+    ServerSideStorageConfigResolver.ResolvedConnectorConfig config =
+        resolveManagedServerSideStorage(
             ctx,
             connector,
             resolveCredentials(
                 ConnectorConfigMapper.fromProto(connector), connector.getAuth(), connectorId),
             Optional.of(sourceContext.get().storageLocation())
-                .filter(location -> !location.isBlank()));
-    try (FloecatConnector source = connectorOpener.open(config)) {
+                .filter(location -> !location.isBlank()),
+            Optional.of(tableId));
+    try (config;
+        FloecatConnector source = connectorOpener.open(config.config())) {
       return operation.apply(source, sourceContext.get());
     } catch (RuntimeException e) {
       if (isMissingObjectFailure(e)) {
@@ -1631,19 +1621,21 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         .orElse(base);
   }
 
-  private ConnectorConfig resolveServerSideStorage(
+  private ServerSideStorageConfigResolver.ResolvedConnectorConfig resolveManagedServerSideStorage(
       ReconcileContext ctx,
       Connector connector,
       ConnectorConfig config,
-      Optional<String> storageLocation) {
+      Optional<String> storageLocation,
+      Optional<ResourceId> tableId) {
     if (serverSideStorageConfigResolver == null) {
-      return config;
+      return new ServerSideStorageConfigResolver.ResolvedConnectorConfig(config, () -> {});
     }
-    return serverSideStorageConfigResolver.resolveWithAuthorization(
+    return serverSideStorageConfigResolver.resolveManagedWithAuthorization(
         ctx.authorizationToken(),
         ctx.executionJobId(),
         ctx.executionLeaseEpoch(),
         storageLocation,
+        tableId,
         connector,
         config);
   }

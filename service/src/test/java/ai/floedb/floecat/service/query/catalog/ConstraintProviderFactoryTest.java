@@ -145,6 +145,30 @@ class ConstraintProviderFactoryTest {
   }
 
   @Test
+  void userConstraintViewCarriesBundleVersion() {
+    CountingConstraintRepository repository = new CountingConstraintRepository();
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    TableRepository tables = new TableRepository(pointers, blobs);
+    SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, tables);
+    CatalogOverlay overlay = mock(CatalogOverlay.class);
+    when(overlay.resolve(USER_TABLE)).thenReturn(Optional.empty());
+
+    ConstraintProviderFactory factory =
+        ConstraintProviderFactory.forTesting(
+            repository, snapshots, overlay, ConstraintProvider.NONE);
+    repository.putSnapshotConstraints(USER_TABLE, 100L, constraints(USER_TABLE, 100L, "pk_v100"));
+
+    ConstraintProvider provider = factory.provider();
+    var view = provider.constraints(USER_TABLE, OptionalLong.of(100L)).orElseThrow();
+
+    // The view reports the constraint bundle's pointer version, so a caller can version-tag it.
+    long expected = repository.metaForSafe(USER_TABLE, 100L).getPointerVersion();
+    assertTrue(expected > 0, "a written bundle should have a positive pointer version");
+    assertEquals(expected, view.version());
+  }
+
+  @Test
   void routesSystemRelationsToSystemProvider() {
     CountingConstraintRepository repository = new CountingConstraintRepository();
     InMemoryPointerStore pointers = new InMemoryPointerStore();
@@ -177,7 +201,8 @@ class ConstraintProviderFactoryTest {
             return Optional.of(
                 ConstraintProviderFactory.constraintSetView(
                     ConstraintProviderFactoryTest.constraints(
-                        SYSTEM_TABLE, snapshotId, "system_static")));
+                        SYSTEM_TABLE, snapshotId, "system_static"),
+                    /* version= */ 0L));
           }
         };
 

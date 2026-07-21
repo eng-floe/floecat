@@ -137,26 +137,26 @@ class QueryServiceSchemaIT {
             .setName("orders")
             .build();
 
+    // A table pin is per-query and first-touch: one query cannot pin the same table at two
+    // different snapshots (that is a conflicting temporal intent). Each snapshot is therefore
+    // resolved in its own query, which still proves schema resolves per pinned snapshot.
+
     // ------------------------------
-    // BeginQuery (no inputs)
+    // Query A pins snapshot1 → schemaV1
     // ------------------------------
-    var begin =
+    var beginA =
         queries.beginQuery(
             BeginQueryRequest.newBuilder()
                 .setDefaultCatalogId(cat.getResourceId())
                 .setTtlSeconds(10)
                 .build());
+    String qidA = beginA.getQuery().getQueryId();
+    assertFalse(qidA.isBlank(), "BeginQuery must return queryId");
 
-    String qid = begin.getQuery().getQueryId();
-    assertFalse(qid.isBlank(), "BeginQuery must return queryId");
-
-    // ------------------------------
-    // DescribeInputs with snapshot1
-    // ------------------------------
     var resp1 =
         schemaSvc.describeInputs(
             DescribeInputsRequest.newBuilder()
-                .setQueryId(qid)
+                .setQueryId(qidA)
                 .addInputs(
                     QueryInput.newBuilder()
                         .setName(name)
@@ -165,14 +165,26 @@ class QueryServiceSchemaIT {
 
     assertEquals(1, resp1.getSchemasCount());
     assertEquals(1, resp1.getSchemas(0).getColumnsCount(), "snapshot1 schema should have 1 column");
+    // The response exposes one positional pin identity per input, resolved to the pinned snapshot.
+    assertEquals(1, resp1.getRelationPinsCount());
+    assertEquals(snap1.getSnapshotId(), resp1.getRelationPins(0).getSnapshotId());
+    assertFalse(resp1.getRelationPins(0).getPinFingerprint().isEmpty());
 
     // ------------------------------
-    // DescribeInputs with snapshot2
+    // Query B pins snapshot2 → schemaV2
     // ------------------------------
+    var beginB =
+        queries.beginQuery(
+            BeginQueryRequest.newBuilder()
+                .setDefaultCatalogId(cat.getResourceId())
+                .setTtlSeconds(10)
+                .build());
+    String qidB = beginB.getQuery().getQueryId();
+
     var resp2 =
         schemaSvc.describeInputs(
             DescribeInputsRequest.newBuilder()
-                .setQueryId(qid)
+                .setQueryId(qidB)
                 .addInputs(
                     QueryInput.newBuilder()
                         .setName(name)
@@ -188,6 +200,11 @@ class QueryServiceSchemaIT {
     assertTrue(
         resp2.getSchemas(0).getColumnsList().stream().anyMatch(c -> c.getName().equals("qty")),
         "schemaV2 must include column 'qty'");
+    assertEquals(1, resp2.getRelationPinsCount());
+    assertEquals(snap2.getSnapshotId(), resp2.getRelationPins(0).getSnapshotId());
+    // Different pinned snapshot ⇒ different opaque identity than query A's pin.
+    assertNotEquals(
+        resp1.getRelationPins(0).getPinFingerprint(), resp2.getRelationPins(0).getPinFingerprint());
   }
 
   @Test
@@ -298,5 +315,100 @@ class QueryServiceSchemaIT {
         1,
         resp.getSchemas(1).getColumnsCount(),
         "second schema is the view with its stored output columns");
+
+    // Pin identities are positional with schemas: the table input carries its pin identity, the
+    // view input carries the empty default (views pin their base tables, not themselves).
+    assertEquals(2, resp.getRelationPinsCount());
+    assertEquals(snap.getSnapshotId(), resp.getRelationPins(0).getSnapshotId());
+    assertFalse(resp.getRelationPins(0).getPinFingerprint().isEmpty());
+    assertTrue(
+        resp.getRelationPins(1).getPinFingerprint().isEmpty(),
+        "view position carries the empty default pin identity");
+  }
+
+  @Test
+  void describeInputsDescribesTheWinningPinWhenReReferencedAsCurrentInSameQuery() {
+    // Regression for the winner-vs-candidate fix: a table first-touched at an explicit snapshot,
+    // then re-referenced as CURRENT in the SAME query, must keep describing the first (winning) pin
+    // even though CURRENT would resolve to the newer snapshot. This is the exact divergence the
+    // separate-query test cannot exercise (there candidate == winner).
+    var cat = TestSupport.createCatalog(catalog, catalogPrefix + "winner", "");
+    var ns =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "sch", List.of("db"), "desc");
+
+    Schema schemaV1 = new Schema(Types.NestedField.required(1, "id", Types.LongType.get()));
+    Schema schemaV2 =
+        new Schema(
+            Types.NestedField.required(1, "id", Types.LongType.get()),
+            Types.NestedField.optional(2, "qty", Types.IntegerType.get()));
+
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "orders",
+            "s3://bucket/orders",
+            SchemaParser.toJson(schemaV1),
+            "desc");
+    var snap1 =
+        TestSupport.createSnapshot(
+            snapshot, tbl.getResourceId(), 1L, System.currentTimeMillis() - 10_000L);
+    table.updateTable(
+        UpdateTableRequest.newBuilder()
+            .setTableId(tbl.getResourceId())
+            .setSpec(
+                TableSpec.newBuilder()
+                    .setSchemaJson(SchemaParser.toJson(schemaV2))
+                    .setUpstream(tbl.getUpstream()))
+            .setUpdateMask(FieldMask.newBuilder().addPaths("schema_json").build())
+            .build());
+    var snap2 =
+        TestSupport.createSnapshot(
+            snapshot, tbl.getResourceId(), 2L, System.currentTimeMillis() - 5_000L);
+
+    var name =
+        NameRef.newBuilder()
+            .setCatalog(cat.getDisplayName())
+            .addPath("db")
+            .addPath("sch")
+            .setName("orders")
+            .build();
+
+    var begin =
+        queries.beginQuery(
+            BeginQueryRequest.newBuilder()
+                .setDefaultCatalogId(cat.getResourceId())
+                .setTtlSeconds(30)
+                .build());
+    String qid = begin.getQuery().getQueryId();
+
+    // First touch: pin explicitly at snapshot1 (schemaV1).
+    var resp1 =
+        schemaSvc.describeInputs(
+            DescribeInputsRequest.newBuilder()
+                .setQueryId(qid)
+                .addInputs(
+                    QueryInput.newBuilder()
+                        .setName(name)
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snap1.getSnapshotId())))
+                .build());
+    assertEquals(1, resp1.getSchemas(0).getColumnsCount());
+
+    // Re-reference the same table with no snapshot (CURRENT → would resolve to snapshot2/schemaV2),
+    // in the same query. First-touch wins, so it must still describe snapshot1/schemaV1.
+    var resp2 =
+        schemaSvc.describeInputs(
+            DescribeInputsRequest.newBuilder()
+                .setQueryId(qid)
+                .addInputs(QueryInput.newBuilder().setName(name))
+                .build());
+
+    assertEquals(
+        1,
+        resp2.getSchemas(0).getColumnsCount(),
+        "CURRENT re-reference must describe the winning snapshot1 pin, not current snapshot2");
+    assertEquals(snap1.getSnapshotId(), resp2.getRelationPins(0).getSnapshotId());
+    assertNotEquals(snap2.getSnapshotId(), resp2.getRelationPins(0).getSnapshotId());
   }
 }

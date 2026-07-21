@@ -16,7 +16,9 @@
 
 package ai.floedb.floecat.connector.common.auth;
 
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import java.util.Map;
+import java.util.function.Supplier;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
@@ -29,13 +31,26 @@ import software.amazon.awssdk.services.glue.GlueClient;
 public final class AwsGlueClientFactory {
   private AwsGlueClientFactory() {}
 
-  public static GlueClient create(Map<String, String> options, Map<String, String> authProps) {
+  public static RefreshingAwsClient<GlueClient> createRefreshing(
+      Map<String, String> options, Map<String, String> authProps) {
     String region = resolveRegion(options, "us-east-1");
-    var builder =
-        GlueClient.builder()
-            .region(Region.of(region))
-            .credentialsProvider(resolveCredentials(options, authProps));
-    return builder.build();
+    Supplier<AwsCredentialsProvider> credentials = credentialsProviderFactory(options, authProps);
+    return RefreshingAwsClient.withResourceFactory(
+        () -> {
+          AwsCredentialsProvider provider = credentials.get();
+          try {
+            GlueClient client =
+                GlueClient.builder()
+                    .region(Region.of(region))
+                    .credentialsProvider(provider)
+                    .build();
+            return RefreshingAwsClient.clientResource(
+                client, RefreshingAwsClient.closeableResource(provider));
+          } catch (RuntimeException | Error e) {
+            RefreshingAwsClient.closeQuietly(RefreshingAwsClient.closeableResource(provider));
+            throw e;
+          }
+        });
   }
 
   public static String resolveRegion(Map<String, String> options, String defaultRegion) {
@@ -60,6 +75,11 @@ public final class AwsGlueClientFactory {
     return value;
   }
 
+  static Supplier<AwsCredentialsProvider> credentialsProviderFactory(
+      Map<String, String> options, Map<String, String> authProps) {
+    return () -> resolveCredentials(options, authProps);
+  }
+
   private static AwsCredentialsProvider resolveCredentials(
       Map<String, String> options, Map<String, String> authProps) {
     String providerId =
@@ -79,6 +99,6 @@ public final class AwsGlueClientFactory {
     }
     return AwsProfileSupport.resolveProfileProvider(authProps)
         .<AwsCredentialsProvider>map(provider -> provider)
-        .orElseGet(DefaultCredentialsProvider::create);
+        .orElseGet(() -> DefaultCredentialsProvider.builder().build());
   }
 }

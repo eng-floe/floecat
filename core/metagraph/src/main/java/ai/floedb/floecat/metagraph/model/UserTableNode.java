@@ -20,7 +20,6 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -28,13 +27,15 @@ import java.util.Optional;
 /**
  * Immutable table node capturing logical schema and snapshot metadata.
  *
+ * <p>The node is a pure derivation of the table blob at {@code blobUri}: identical blob content
+ * always produces an identical node, so {@code blobUri} is its content-stable cache identity.
+ *
  * <p>The node purposefully limits heavyweight fields (resolved snapshot sets) to optional
  * references so the cache can keep large catalogs hot without unnecessary churn.
  */
 public record UserTableNode(
     ResourceId id,
-    long version,
-    Instant metadataUpdatedAt,
+    String blobUri,
     ResourceId catalogId,
     ResourceId namespaceId,
     String displayName,
@@ -60,6 +61,17 @@ public record UserTableNode(
     dependentViews = List.copyOf(dependentViews);
     engineHints = Map.copyOf(engineHints == null ? Map.of() : engineHints);
     columnHints = RelationNode.normalizeColumnHints(columnHints);
+  }
+
+  /** User nodes are content-keyed by {@link #blobUri()}; the pointer version is not retained. */
+  @Override
+  public long version() {
+    return 0L;
+  }
+
+  @Override
+  public String cacheIdentity() {
+    return blobUri;
   }
 
   @Override

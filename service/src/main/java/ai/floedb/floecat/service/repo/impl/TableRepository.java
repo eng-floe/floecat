@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TableKey;
@@ -40,8 +41,13 @@ public class TableRepository {
 
   private final GenericResourceRepository<Table, TableKey> repo;
 
-  @Inject
   public TableRepository(PointerStore pointerStore, BlobStore blobStore) {
+    this(pointerStore, blobStore, null);
+  }
+
+  @Inject
+  public TableRepository(
+      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -49,7 +55,8 @@ public class TableRepository {
             Schemas.TABLE,
             Table::parseFrom,
             Table::toByteArray,
-            "application/x-protobuf");
+            "application/x-protobuf",
+            blobCache);
   }
 
   public void create(Table table) {
@@ -109,6 +116,23 @@ public class TableRepository {
     return refs;
   }
 
+  /**
+   * Reads the shared, kind-agnostic relation-name claim ({@link Keys#relationPointerByName}) and
+   * returns the owning relation's id — kind {@code RK_TABLE} or {@code RK_VIEW} — in one pointer
+   * read, with no blob fetch. Tables and views both reserve this claim on create/rename, so a hit
+   * answers kind-agnostic name resolution outright. Empty when the claim is absent (rows created
+   * before the claim existed) or carries no owner; callers must then fall back to the kind-specific
+   * by-name probes.
+   */
+  public Optional<ResourceId> relationNameClaim(
+      String accountId, String catalogId, String namespaceId, String name) {
+    return repo.refByPointer(Keys.relationPointerByName(accountId, catalogId, namespaceId, name))
+        .map(p -> p.getResourceId())
+        .filter(rid -> !rid.getId().isEmpty())
+        .filter(
+            rid -> rid.getKind() == ResourceKind.RK_TABLE || rid.getKind() == ResourceKind.RK_VIEW);
+  }
+
   /** Reads exact by-name table pointers and returns refs without fetching blobs from S3. */
   public List<RelationRef> listRefsByName(
       String accountId, String catalogId, String namespaceId, Set<String> names) {
@@ -153,5 +177,29 @@ public class TableRepository {
 
   public MutationMeta metaForSafe(ResourceId tableResourceId) {
     return repo.metaForSafe(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
+  }
+
+  /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
+  public MutationMeta pointerMetaForSafe(ResourceId tableResourceId) {
+    return repo.pointerMetaForSafe(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
+  }
+
+  /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
+  public Optional<Table> getByBlobUri(String blobUri) {
+    return repo.getByBlobUri(blobUri);
+  }
+
+  /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
+  public Optional<Table> getByBlobUriLive(String blobUri) {
+    return repo.getByBlobUriLive(blobUri);
+  }
+
+  /**
+   * HEAD-only version (etag) of a table blob by URI (no body fetch, no parse), or {@code null} if
+   * no blob is there. Used to validate a pinned table blob is both present and the pinned version.
+   */
+  public String blobEtag(String blobUri) {
+    return repo.blobEtag(blobUri);
   }
 }

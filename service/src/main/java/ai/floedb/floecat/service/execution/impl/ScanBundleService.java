@@ -35,8 +35,11 @@ import ai.floedb.floecat.query.rpc.DeleteFile;
 import ai.floedb.floecat.query.rpc.DeleteFileBatch;
 import ai.floedb.floecat.query.rpc.DeleteRef;
 import ai.floedb.floecat.query.rpc.TableInfo;
+import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
 import ai.floedb.floecat.service.common.ScanPruningUtils;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.query.impl.ScanSession.DeleteFileMetadata;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -68,49 +71,106 @@ public class ScanBundleService {
   private final SnapshotRepository snapshots;
   private final StatsStore statsStore;
   private final ServerSideFileIoPropertiesResolver fileIoPropertiesResolver;
+  private final PinValidator pinValidator;
 
   @Inject
   public ScanBundleService(
       TableRepository tables,
       SnapshotRepository snapshots,
       StatsStore statsStore,
-      ServerSideFileIoPropertiesResolver fileIoPropertiesResolver) {
+      ServerSideFileIoPropertiesResolver fileIoPropertiesResolver,
+      PinValidator pinValidator) {
     this.tables = tables;
     this.snapshots = snapshots;
     this.statsStore = statsStore;
     this.fileIoPropertiesResolver = fileIoPropertiesResolver;
+    this.pinValidator = pinValidator;
   }
 
-  /** Loads table and snapshot metadata and builds the initial TableInfo for a scan handle. */
-  public InitData initScan(String correlationId, ResourceId tableId, long snapshotId) {
+  /**
+   * Loads the pinned table and snapshot blobs and builds the initial TableInfo for a scan handle.
+   *
+   * <p>Both reads are by the pin's immutable blob URIs, never the live pointers: table-scoped scan
+   * properties (storage/connector settings, credentials, metadata location, schema fallback)
+   * reflect the pinned state and do not drift with the current table pointer — a scan survives a
+   * drop/unpublish of the current table — and an in-place UpdateSnapshot repointing the (table,
+   * snapshot id) pointer to a new blob cannot drift the scan after the pin was validated. Every pin
+   * captures both blob identities at construction, so a missing blob here is a catalog-integrity
+   * failure, not a fallback case.
+   */
+  public InitData initScan(String correlationId, TablePin pin) {
+    ResourceId tableId = pin.getTableId();
+    long snapshotId = pin.getSnapshotId();
     long initStartedNanos = System.nanoTime();
     long tableStartedNanos = initStartedNanos;
+    // LIVE reads, not the decoded cache: requirePinned*'s contract is that a missing pinned blob
+    // fails as catalog-integrity corruption — a still-resident decode must not mask a swept blob,
+    // so these reads' emptiness has to reflect the store. Once per scan session, not per page.
     Table table =
-        tables
-            .getById(tableId)
-            .orElseThrow(
-                () -> GrpcErrors.notFound(correlationId, TABLE, Map.of("id", tableId.getId())));
+        pinValidator.requirePinnedTableBlob(
+            tables.getByBlobUriLive(pin.getTableBlobUri()), correlationId, tableId);
     StoreOperationSummary.nanos("table_load", System.nanoTime() - tableStartedNanos);
 
     long snapshotStartedNanos = System.nanoTime();
     Snapshot snapshot =
-        snapshots
-            .getById(tableId, snapshotId)
-            .orElseThrow(
-                () ->
-                    GrpcErrors.notFound(
-                        correlationId,
-                        SNAPSHOT,
-                        Map.of(
-                            "table_id",
-                            tableId.getId(),
-                            "snapshot_id",
-                            Long.toString(snapshotId))));
+        pinValidator.requirePinnedSnapshotBlob(
+            snapshots.getByBlobUriLive(pin.getSnapshotBlobUri()),
+            correlationId,
+            tableId,
+            snapshotId);
     StoreOperationSummary.nanos("snapshot_load", System.nanoTime() - snapshotStartedNanos);
 
     TableInfo info = buildTableInfo(table, snapshot, snapshotId);
+    // The scan streams its file list from the generation the PINNED root referenced, frozen on the
+    // pin at BeginQuery — NOT the live active generation. A re-stats/reconcile that published a new
+    // generation (and committed a new root) between BeginQuery and InitScan must not change what
+    // this pinned scan reads; retention plus the pin's root-chain GC roots keep the pinned
+    // generation readable for the query's life. "No generation" is a real frozen state
+    // (STATS_GENERATION_ABSENT — an empty scan, even if a first generation publishes mid-stream);
+    // a store that tracks no generations at all is null (reads serve live state). Under the gate a
+    // pinnable snapshot is always finalized, so the pin carries its ref.
+    String statsGeneration =
+        StatsVisibilityGate.gateOnFinalize(statsStore)
+            ? (pin.getStatsGenerationRefUri().isEmpty()
+                ? STATS_GENERATION_ABSENT
+                : pin.getStatsGenerationRefUri())
+            : null;
     StoreOperationSummary.nanos("scan_init", System.nanoTime() - initStartedNanos);
-    return new InitData(tableId, snapshotId, info);
+    return new InitData(tableId, snapshotId, statsGeneration, info);
+  }
+
+  /**
+   * Reserved token for "the snapshot had no stats generation when it was frozen". Real tokens are
+   * manifest blob URIs, never empty, so this cannot collide.
+   */
+  private static final String STATS_GENERATION_ABSENT = "";
+
+  /**
+   * One page of file stats from the generation the scan froze at initScan. A frozen "absent" serves
+   * nothing for the scan's lifetime — a first generation publishing mid-stream stays invisible,
+   * just as a replacement generation does. A store that tracks no generations (null frozen token)
+   * serves its live state; it cannot do better.
+   */
+  private StatsStore.StatsStorePage listFrozenFilePage(ScanSession session, String pageToken) {
+    String frozen = session.statsGeneration();
+    if (frozen == null) {
+      return statsStore.listTargetStats(
+          session.tableId(),
+          session.snapshotId(),
+          Optional.of(StatsTargetType.FILE),
+          FILE_STATS_PAGE_SIZE,
+          pageToken);
+    }
+    if (STATS_GENERATION_ABSENT.equals(frozen)) {
+      return new StatsStore.StatsStorePage(List.of(), "");
+    }
+    return statsStore.listTargetStatsInGeneration(
+        session.tableId(),
+        session.snapshotId(),
+        frozen,
+        Optional.of(StatsTargetType.FILE),
+        FILE_STATS_PAGE_SIZE,
+        pageToken);
   }
 
   /** Streams delete batches, caching metadata for potential retries before completion. */
@@ -188,13 +248,7 @@ public class ScanBundleService {
     // Byte heuristic uses on-disk size rather than actual serialized payload; prefer
     // targetBatchItems when include_column_stats means column metadata dominates the grpc frame.
     do {
-      var page =
-          statsStore.listTargetStats(
-              session.tableId(),
-              session.snapshotId(),
-              Optional.of(StatsTargetType.FILE),
-              FILE_STATS_PAGE_SIZE,
-              pageToken);
+      var page = listFrozenFilePage(session, pageToken);
       for (var record : page.records()) {
         if (!record.hasFile()) {
           continue;
@@ -236,13 +290,7 @@ public class ScanBundleService {
     long bytes = 0;
 
     do {
-      var page =
-          statsStore.listTargetStats(
-              session.tableId(),
-              session.snapshotId(),
-              Optional.of(StatsTargetType.FILE),
-              FILE_STATS_PAGE_SIZE,
-              pageToken);
+      var page = listFrozenFilePage(session, pageToken);
       for (var record : page.records()) {
         if (!record.hasFile()) {
           continue;
@@ -452,5 +500,6 @@ public class ScanBundleService {
     };
   }
 
-  public record InitData(ResourceId tableId, long snapshotId, TableInfo tableInfo) {}
+  public record InitData(
+      ResourceId tableId, long snapshotId, String statsGeneration, TableInfo tableInfo) {}
 }

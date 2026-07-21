@@ -16,11 +16,20 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
+import ai.floedb.floecat.service.repo.model.Keys;
+
 final class LeaseBackendSupport {
-  static final String LEASE_POINTER_PREFIX = "/accounts/";
-  static final String LEASE_POINTER_MARKER = "/reconcile/job-leases/by-id/";
-  static final String LEASE_EXPIRY_POINTER_PREFIX =
-      "/accounts/by-id/reconcile/job-leases/by-expiry/";
+  private static final String ACCOUNT_SEGMENT_PLACEHOLDER = "__account__";
+  private static final String JOB_SEGMENT_PLACEHOLDER = "__job__";
+  static final String LEASE_POINTER_PREFIX = Keys.accountRootPrefix();
+  static final String LEASE_POINTER_MARKER =
+      accountScopedMarker(Keys.reconcileJobLeasePointerByIdPrefix(ACCOUNT_SEGMENT_PLACEHOLDER));
+  static final String LEASE_EXPIRY_POINTER_PREFIX = Keys.reconcileJobLeaseExpiryPointerPrefix();
+  private static final String LEASE_EXPIRY_SUFFIX_MARKER =
+      Keys.reconcileJobLeaseExpiryPointerSuffix(
+          ACCOUNT_SEGMENT_PLACEHOLDER, JOB_SEGMENT_PLACEHOLDER);
+  private static final String LEASE_EXPIRY_JOBS_MARKER =
+      leaseExpiryJobsMarker(LEASE_EXPIRY_SUFFIX_MARKER);
   static final String LEASE_PARTITION_PREFIX = "reconcile-lease/";
   static final String LEASE_SORT_PREFIX = "job/";
   static final String LEASE_OWNER_PARTITION_PREFIX = "reconcile-lease-owner/";
@@ -37,16 +46,19 @@ final class LeaseBackendSupport {
 
   static LeasePointerKey parseLeasePointerKey(String pointerKey) {
     String normalized = stripLeadingSlash(pointerKey);
-    if (!normalized.startsWith("accounts/")) {
+    String normalizedPrefix = stripLeadingSlash(LEASE_POINTER_PREFIX);
+    if (!normalized.startsWith(normalizedPrefix)) {
       return null;
     }
-    int marker = normalized.indexOf("/reconcile/job-leases/by-id/");
+    int marker = normalized.indexOf(LEASE_POINTER_MARKER);
     if (marker < 0) {
       return null;
     }
-    String accountSegment = normalized.substring("accounts/".length(), marker);
-    String jobSegment = normalized.substring(marker + "/reconcile/job-leases/by-id/".length());
-    if (accountSegment.isBlank() || jobSegment.isBlank()) {
+    String accountSegment = normalized.substring(normalizedPrefix.length(), marker);
+    String jobSegment = normalized.substring(marker + LEASE_POINTER_MARKER.length());
+    if (accountSegment.isBlank()
+        || Keys.isReservedAccountDirectorySegment(accountSegment)
+        || jobSegment.isBlank()) {
       return null;
     }
     return new LeasePointerKey(pointerKey, accountSegment, jobSegment);
@@ -65,14 +77,16 @@ final class LeaseBackendSupport {
     }
     String expiryToken = remainder.substring(0, slash);
     String suffix = remainder.substring(slash);
-    String expectedPrefix = "/accounts/";
-    int jobsMarker = suffix.indexOf("/jobs/");
-    if (!suffix.startsWith(expectedPrefix) || jobsMarker < 0) {
+    int jobsMarker = suffix.indexOf(LEASE_EXPIRY_JOBS_MARKER);
+    if (!suffix.startsWith(Keys.accountRootPrefix()) || jobsMarker < 0) {
       return null;
     }
-    String accountSegment = suffix.substring(expectedPrefix.length(), jobsMarker);
-    String jobSegment = suffix.substring(jobsMarker + "/jobs/".length());
-    if (expiryToken.isBlank() || accountSegment.isBlank() || jobSegment.isBlank()) {
+    String accountSegment = suffix.substring(Keys.accountRootPrefix().length(), jobsMarker);
+    String jobSegment = suffix.substring(jobsMarker + LEASE_EXPIRY_JOBS_MARKER.length());
+    if (expiryToken.isBlank()
+        || accountSegment.isBlank()
+        || Keys.isReservedAccountDirectorySegment(accountSegment)
+        || jobSegment.isBlank()) {
       return null;
     }
     return new LeaseExpiryPointerKey(pointerKey, expiryToken, accountSegment, jobSegment);
@@ -87,14 +101,20 @@ final class LeaseBackendSupport {
   }
 
   static String leasePointerKey(String accountId, String jobId) {
-    return LEASE_POINTER_PREFIX
-        + (accountId == null ? "" : accountId)
-        + LEASE_POINTER_MARKER
-        + (jobId == null ? "" : jobId);
+    if (accountId == null || accountId.isBlank() || jobId == null || jobId.isBlank()) {
+      return "";
+    }
+    return Keys.reconcileJobLeasePointerById(accountId, jobId);
   }
 
   static String leaseExpirySortKey(LeaseExpiryPointerKey key) {
-    return key.expiryToken() + "/accounts/" + key.accountSegment() + "/jobs/" + key.jobSegment();
+    String normalized = stripLeadingSlash(key.pointerKey());
+    String normalizedPrefix = stripLeadingSlash(LEASE_EXPIRY_POINTER_PREFIX);
+    if (normalized.startsWith(normalizedPrefix)) {
+      return normalized.substring(normalizedPrefix.length());
+    }
+    return key.expiryToken()
+        + Keys.reconcileJobLeaseExpiryPointerSuffix(key.accountSegment(), key.jobSegment());
   }
 
   static String ownerPartitionKey(String ownerKey) {
@@ -133,6 +153,25 @@ final class LeaseBackendSupport {
 
   record LeaseExpiryPointerKey(
       String pointerKey, String expiryToken, String accountSegment, String jobSegment) {}
+
+  private static String accountScopedMarker(String keysPrefix) {
+    String normalized = stripLeadingSlash(keysPrefix);
+    String accountPrefix = stripLeadingSlash(Keys.accountRootPrefix(ACCOUNT_SEGMENT_PLACEHOLDER));
+    if (!normalized.startsWith(accountPrefix)) {
+      throw new IllegalArgumentException("not an account-scoped Keys prefix: " + keysPrefix);
+    }
+    return "/" + normalized.substring(accountPrefix.length());
+  }
+
+  private static String leaseExpiryJobsMarker(String suffixMarker) {
+    int accountPlaceholderIndex = suffixMarker.indexOf(ACCOUNT_SEGMENT_PLACEHOLDER);
+    int jobPlaceholderIndex = suffixMarker.indexOf(JOB_SEGMENT_PLACEHOLDER);
+    if (accountPlaceholderIndex < 0 || jobPlaceholderIndex < 0) {
+      throw new IllegalArgumentException("invalid lease expiry suffix marker: " + suffixMarker);
+    }
+    return suffixMarker.substring(
+        accountPlaceholderIndex + ACCOUNT_SEGMENT_PLACEHOLDER.length(), jobPlaceholderIndex);
+  }
 
   private static String stripLeadingSlash(String value) {
     if (value == null || value.isBlank()) {

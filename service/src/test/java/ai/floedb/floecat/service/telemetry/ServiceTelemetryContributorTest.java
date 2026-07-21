@@ -53,6 +53,22 @@ class ServiceTelemetryContributorTest {
     MetricDef plannerLatency =
         registry.metric(ServiceMetrics.Reconcile.PLANNER_TICK_LATENCY.name());
     MetricDef plannerEnqueue = registry.metric(ServiceMetrics.Reconcile.PLANNER_ENQUEUE.name());
+    MetricDef casPoisonedAccounts = registry.metric(ServiceMetrics.Gc.CAS_POISONED_ACCOUNTS.name());
+    MetricDef casDeleteUnsupportedAccounts =
+        registry.metric(ServiceMetrics.Gc.CAS_DELETE_UNSUPPORTED_ACCOUNTS.name());
+    MetricDef casOldestSweepAge = registry.metric(ServiceMetrics.Gc.CAS_OLDEST_SWEEP_AGE.name());
+    MetricDef reconcileGcAccounts =
+        registry.metric(ServiceMetrics.Gc.RECONCILE_JOB_ACCOUNTS_LAST_TICK.name());
+    MetricDef reconcileGcPageIndex =
+        registry.metric(ServiceMetrics.Gc.RECONCILE_JOB_ACCOUNT_PAGE_INDEX.name());
+    MetricDef reconcileGcPageSize =
+        registry.metric(ServiceMetrics.Gc.RECONCILE_JOB_ACCOUNT_PAGE_SIZE.name());
+    MetricDef reconcileGcTokens =
+        registry.metric(ServiceMetrics.Gc.RECONCILE_JOB_ACTIVE_ACCOUNT_TOKENS.name());
+    MetricDef reconcileGcQuarantined =
+        registry.metric(ServiceMetrics.Gc.RECONCILE_JOB_QUARANTINED_LAST_TICK.name());
+    MetricDef reconcileGcDeleted =
+        registry.metric(ServiceMetrics.Gc.RECONCILE_JOB_DELETED_LAST_TICK.name());
 
     assertThat(requests).isNotNull();
     assertThat(requests.requiredTags())
@@ -128,6 +144,27 @@ class ServiceTelemetryContributorTest {
     assertThat(plannerLatency.requiredTags()).isEqualTo(getJob.requiredTags());
     assertThat(plannerEnqueue.requiredTags()).isEqualTo(reconcileJobs.requiredTags());
 
+    assertThat(casPoisonedAccounts).isNotNull();
+    assertThat(casPoisonedAccounts.requiredTags())
+        .containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION);
+    assertThat(casPoisonedAccounts.allowedTags())
+        .containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION);
+    assertThat(casDeleteUnsupportedAccounts).isNotNull();
+    assertThat(casDeleteUnsupportedAccounts.requiredTags())
+        .isEqualTo(casPoisonedAccounts.requiredTags());
+    assertThat(casDeleteUnsupportedAccounts.allowedTags())
+        .isEqualTo(casPoisonedAccounts.allowedTags());
+    assertThat(casOldestSweepAge).isNotNull();
+    assertThat(casOldestSweepAge.requiredTags()).isEqualTo(casPoisonedAccounts.requiredTags());
+    assertThat(casOldestSweepAge.allowedTags()).isEqualTo(casPoisonedAccounts.allowedTags());
+    assertThat(reconcileGcAccounts).isNotNull();
+    assertThat(reconcileGcAccounts.requiredTags()).isEqualTo(casPoisonedAccounts.requiredTags());
+    assertThat(reconcileGcPageIndex.requiredTags()).isEqualTo(casPoisonedAccounts.requiredTags());
+    assertThat(reconcileGcPageSize.requiredTags()).isEqualTo(casPoisonedAccounts.requiredTags());
+    assertThat(reconcileGcTokens.requiredTags()).isEqualTo(casPoisonedAccounts.requiredTags());
+    assertThat(reconcileGcQuarantined.requiredTags()).isEqualTo(casPoisonedAccounts.requiredTags());
+    assertThat(reconcileGcDeleted.requiredTags()).isEqualTo(casPoisonedAccounts.requiredTags());
+
     // Ensure the new Flight metric IDs are all present in the registry.
     assertThat(registry.metrics().keySet())
         .containsAll(
@@ -159,7 +196,31 @@ class ServiceTelemetryContributorTest {
                 ServiceMetrics.Reconcile.QUEUE_OLDEST_AGE.name(),
                 ServiceMetrics.Reconcile.PLANNER_TICKS.name(),
                 ServiceMetrics.Reconcile.PLANNER_TICK_LATENCY.name(),
-                ServiceMetrics.Reconcile.PLANNER_ENQUEUE.name()));
+                ServiceMetrics.Reconcile.PLANNER_ENQUEUE.name(),
+                ServiceMetrics.Gc.CAS_POISONED_ACCOUNTS.name(),
+                ServiceMetrics.Gc.CAS_DELETE_UNSUPPORTED_ACCOUNTS.name(),
+                ServiceMetrics.Gc.CAS_OLDEST_SWEEP_AGE.name(),
+                ServiceMetrics.Gc.RECONCILE_JOB_ACCOUNTS_LAST_TICK.name(),
+                ServiceMetrics.Gc.RECONCILE_JOB_ACCOUNT_PAGE_INDEX.name(),
+                ServiceMetrics.Gc.RECONCILE_JOB_ACCOUNT_PAGE_SIZE.name(),
+                ServiceMetrics.Gc.RECONCILE_JOB_ACTIVE_ACCOUNT_TOKENS.name(),
+                ServiceMetrics.Gc.RECONCILE_JOB_QUARANTINED_LAST_TICK.name(),
+                ServiceMetrics.Gc.RECONCILE_JOB_DELETED_LAST_TICK.name()));
+  }
+
+  @Test
+  void registersPlannerLookupOutcomeMetricWithExpectedTags() {
+    TelemetryRegistry registry = new TelemetryRegistry();
+    registry.register(new ServiceTelemetryContributor());
+
+    MetricDef plannerLookup =
+        registry.metric(ServiceMetrics.Stats.PLANNER_LOOKUP_OUTCOMES_TOTAL.name());
+
+    assertThat(plannerLookup).isNotNull();
+    assertThat(plannerLookup.requiredTags())
+        .containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
+    assertThat(plannerLookup.allowedTags())
+        .containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
   }
 
   @Test

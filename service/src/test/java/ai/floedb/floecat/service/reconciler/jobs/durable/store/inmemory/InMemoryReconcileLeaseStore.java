@@ -44,8 +44,6 @@ import org.jboss.logging.Logger;
 /** Test-scope in-memory lease store with explicit lease-domain state. */
 public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
   private static final Logger LOG = Logger.getLogger(InMemoryReconcileLeaseStore.class);
-  private static final String LEASE_EXPIRY_POINTER_PREFIX =
-      "/accounts/by-id/reconcile/job-leases/by-expiry/";
   private static final long INVALID_ORDERED_POINTER_MS = -1L;
 
   private final InMemoryReconcileLeaseState state = new InMemoryReconcileLeaseState();
@@ -597,12 +595,7 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
     if (expiresAtMs <= 0L || blank(accountId) || blank(jobId)) {
       return "";
     }
-    return LEASE_EXPIRY_POINTER_PREFIX
-        + String.format("%019d", expiresAtMs)
-        + "/accounts/"
-        + accountId
-        + "/jobs/"
-        + jobId;
+    return Keys.reconcileJobLeaseExpiryPointer(expiresAtMs, accountId, jobId);
   }
 
   private void rollbackLeaseCanonicalOnHydrationFailure(
@@ -861,7 +854,11 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
   }
 
   private boolean requiresLaneLease(StoredReconcileJob record) {
-    return record != null && !blank(record.accountId) && !blank(record.laneKey);
+    return record != null
+        && record.jobKind() != ReconcileJobKind.EXEC_FILE_GROUP
+        && record.jobKind() != ReconcileJobKind.PLAN_SNAPSHOT
+        && !blank(record.accountId)
+        && !blank(record.laneKey);
   }
 
   private boolean requiresSnapshotLease(StoredReconcileJob record) {
@@ -983,16 +980,18 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
 
   private long parseLeaseExpiryMillis(String leaseExpiryPointerKey) {
     if (blank(leaseExpiryPointerKey)
-        || !leaseExpiryPointerKey.startsWith(LEASE_EXPIRY_POINTER_PREFIX)) {
+        || !leaseExpiryPointerKey.startsWith(Keys.reconcileJobLeaseExpiryPointerPrefix())) {
       return INVALID_ORDERED_POINTER_MS;
     }
-    int slash = leaseExpiryPointerKey.indexOf('/', LEASE_EXPIRY_POINTER_PREFIX.length());
+    int slash =
+        leaseExpiryPointerKey.indexOf('/', Keys.reconcileJobLeaseExpiryPointerPrefix().length());
     if (slash < 0) {
       return INVALID_ORDERED_POINTER_MS;
     }
     try {
       return Long.parseLong(
-          leaseExpiryPointerKey.substring(LEASE_EXPIRY_POINTER_PREFIX.length(), slash));
+          leaseExpiryPointerKey.substring(
+              Keys.reconcileJobLeaseExpiryPointerPrefix().length(), slash));
     } catch (NumberFormatException e) {
       return INVALID_ORDERED_POINTER_MS;
     }

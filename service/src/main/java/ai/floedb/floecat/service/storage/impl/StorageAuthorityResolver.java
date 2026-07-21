@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.storage.impl;
 
+import ai.floedb.floecat.aws.RefreshingAwsClient;
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
@@ -31,6 +32,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
@@ -184,27 +186,22 @@ public class StorageAuthorityResolver {
                     source.getSecretAccessKey(),
                     source.getSessionToken()));
 
-    return assumeRole(authority, provider, sessionScopeLocations);
+    return assumeRole(authority, () -> provider, sessionScopeLocations);
   }
 
   ResolvedStorageCredentials assumeRoleFromAmbientSource(
       StorageAuthority authority, List<String> sessionScopeLocations) {
-    return assumeRole(authority, ambientCredentialsProvider(), sessionScopeLocations);
+    return assumeRole(authority, this::ambientCredentialsProvider, sessionScopeLocations);
   }
 
   AwsCredentialsProvider ambientCredentialsProvider() {
-    return DefaultCredentialsProvider.create();
+    return DefaultCredentialsProvider.builder().build();
   }
 
   private ResolvedStorageCredentials assumeRole(
       StorageAuthority authority,
-      AwsCredentialsProvider provider,
+      Supplier<AwsCredentialsProvider> providerFactory,
       List<String> sessionScopeLocations) {
-    var builder = StsClient.builder().credentialsProvider(provider);
-    if (authority.hasRegion() && !authority.getRegion().isBlank()) {
-      builder.region(Region.of(authority.getRegion()));
-    }
-
     Integer duration = authority.hasDurationSeconds() ? authority.getDurationSeconds() : null;
     AssumeRoleRequest request =
         AssumeRoleRequest.builder()
@@ -221,14 +218,35 @@ public class StorageAuthorityResolver {
             .durationSeconds(duration != null && duration > 0 ? duration : null)
             .build();
 
-    try (StsClient sts = builder.build()) {
-      Credentials credentials = sts.assumeRole(request).credentials();
+    try (var sts =
+        RefreshingAwsClient.withResourceFactory(
+            () -> {
+              AwsCredentialsProvider provider = providerFactory.get();
+              try {
+                return RefreshingAwsClient.clientResource(
+                    buildStsClient(authority, provider),
+                    RefreshingAwsClient.closeableResource(provider));
+              } catch (RuntimeException | Error e) {
+                RefreshingAwsClient.closeQuietly(RefreshingAwsClient.closeableResource(provider));
+                throw e;
+              }
+            })) {
+      Credentials credentials =
+          sts.callUnchecked(client -> client.assumeRole(request)).credentials();
       return new ResolvedStorageCredentials(
           credentials.accessKeyId(),
           credentials.secretAccessKey(),
           credentials.sessionToken(),
           credentials.expiration());
     }
+  }
+
+  StsClient buildStsClient(StorageAuthority authority, AwsCredentialsProvider provider) {
+    var builder = StsClient.builder().credentialsProvider(provider);
+    if (authority.hasRegion() && !authority.getRegion().isBlank()) {
+      builder.region(Region.of(authority.getRegion()));
+    }
+    return builder.build();
   }
 
   static String scopedSessionPolicy(String locationPrefix) {

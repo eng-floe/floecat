@@ -21,9 +21,10 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.metagraph.cache.GraphCacheKey;
 import ai.floedb.floecat.metagraph.model.*;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
+import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.cache.GraphCacheManager;
@@ -31,12 +32,14 @@ import ai.floedb.floecat.service.metagraph.hint.EngineHintManager;
 import ai.floedb.floecat.service.metagraph.loader.NodeLoader;
 import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
-import ai.floedb.floecat.service.metagraph.resolver.NameResolver.ResolvedRelation;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
+import ai.floedb.floecat.service.query.PinValidator;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.telemetry.Observability;
@@ -66,12 +69,14 @@ public final class UserGraph {
   // ----------------------------------------------------------------------
 
   private final GraphCacheManager cache;
+  private final ImmutableBlobCache blobCache;
   private final NodeLoader nodes;
   private final NameResolver names;
   private final FullyQualifiedResolver fq;
   private final SnapshotHelper snapshots;
   private final EngineHintManager hints;
   private final PrincipalProvider principal;
+  private final PinValidator pinValidator;
 
   // ----------------------------------------------------------------------
   // Constructor
@@ -90,6 +95,8 @@ public final class UserGraph {
    * @param principal provider for current principal context
    * @param cacheMaxSize maximum size of the graph cache
    * @param engineHints manager for engine-specific hints
+   * @param blobCache process-wide decoded-blob cache holding derived nodes (null disables node
+   *     caching; resolution then always loads)
    */
   @Inject
   public UserGraph(
@@ -98,31 +105,42 @@ public final class UserGraph {
       SnapshotRepository snapshotRepo,
       TableRepository tableRepo,
       ViewRepository viewRepo,
+      TableRootRepository tableRootRepo,
+      TableRootCommitter rootCommitter,
       Observability observability,
       PrincipalProvider principal,
       @ConfigProperty(name = "floecat.metadata.graph.cache-max-size", defaultValue = "50000")
           long cacheMaxSize,
       @ConfigProperty(name = "floecat.metadata.graph.meta-cache-ttl-seconds", defaultValue = "2")
           long metaCacheTtlSeconds,
-      EngineHintManager engineHints) {
+      EngineHintManager engineHints,
+      ai.floedb.floecat.stats.spi.StatsStore statsStore,
+      ImmutableBlobCache blobCache,
+      PinValidator pinValidator) {
     this.cache =
         new GraphCacheManager(
             cacheMaxSize > 0, cacheMaxSize, Math.max(0L, metaCacheTtlSeconds), observability);
+    // cache-max-size=0 keeps its historical meaning — node caching OFF — independent of the
+    // process-wide blob cache (whose kill switch would also drop blob decodes and indexes).
+    this.blobCache = cacheMaxSize > 0 ? blobCache : null;
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
-    this.snapshots = new SnapshotHelper(snapshotRepo);
+    this.pinValidator = pinValidator;
+    this.snapshots =
+        new SnapshotHelper(snapshotRepo, tableRootRepo, rootCommitter, statsStore, pinValidator);
     this.hints = engineHints;
     this.principal = principal;
   }
 
-  /** TEST-ONLY constructor with explicit cache knobs. */
+  /** TEST-ONLY constructor with explicit cache knobs; no legacy-root synthesis. */
   public UserGraph(
       CatalogRepository catalogRepo,
       NamespaceRepository nsRepo,
       SnapshotRepository snapshotRepo,
       TableRepository tableRepo,
       ViewRepository viewRepo,
+      TableRootRepository tableRootRepo,
       Observability observability,
       PrincipalProvider principal,
       long cacheMaxSize,
@@ -133,20 +151,30 @@ public final class UserGraph {
         snapshotRepo,
         tableRepo,
         viewRepo,
+        tableRootRepo,
+        new TableRootCommitter(tableRootRepo),
         observability,
         principal,
         cacheMaxSize,
         2L,
-        engineHints);
+        engineHints,
+        null,
+        // Mirror the pre-fold node-cache knob: a positive max size enables node caching.
+        cacheMaxSize > 0
+            ? new ImmutableBlobCache(true, 64L * 1024 * 1024, Duration.ofMinutes(15))
+            : null,
+        // No pointer store in this wiring, so broken-root repair reporting is disabled.
+        new PinValidator(tableRootRepo, RootRepairRequests.disabled()));
   }
 
-  /** TEST-ONLY constructor */
+  /** TEST-ONLY constructor; no legacy-root synthesis. */
   public UserGraph(
       CatalogRepository catalogRepo,
       NamespaceRepository nsRepo,
       SnapshotRepository snapshotRepo,
       TableRepository tableRepo,
       ViewRepository viewRepo,
+      TableRootRepository tableRootRepo,
       Observability observability) {
     this(
         catalogRepo,
@@ -154,6 +182,8 @@ public final class UserGraph {
         snapshotRepo,
         tableRepo,
         viewRepo,
+        tableRootRepo,
+        new TableRootCommitter(tableRootRepo),
         observability,
         new PrincipalProvider() {
           @Override
@@ -163,9 +193,22 @@ public final class UserGraph {
         },
         1024L,
         2L,
-        null);
+        null,
+        null,
+        new ImmutableBlobCache(true, 64L * 1024 * 1024, Duration.ofMinutes(15)),
+        // No pointer store in this wiring, so broken-root repair reporting is disabled.
+        new PinValidator(tableRootRepo, RootRepairRequests.disabled()));
   }
 
+  // No writer-refresh here, deliberately (unlike the root-pointer cache): resolve() always
+  // re-reads a LIVE pointer before hydrating, so a stale reinserted meta can only short-circuit
+  // to an already-cached node at that blob — the TTL-bounded staleness this class documents,
+  // never stale content served as current. The version-guarded putMeta removes the pathological
+  // arbitrarily-late overwrite; a refresh read per DDL would buy nothing on top.
+  //
+  // Only the meta pointer needs invalidation. Node entries are content-keyed by blob URI in the
+  // process-wide ImmutableBlobCache: a blob's derived node is right forever, so DDL simply makes
+  // the fresh pointer name a different blob (and thus a different node entry).
   public void invalidate(ResourceId id) {
     cache.invalidate(id);
   }
@@ -256,25 +299,39 @@ public final class UserGraph {
    */
   public Optional<GraphNode> resolve(ResourceId id) {
 
-    // ----- Regular nodes (cached in graph) ------------------------------------
-    MutationMeta meta = cache.getMeta(id);
-    if (meta == null) {
-      Optional<MutationMeta> metaOpt = nodes.mutationMeta(id);
-      if (metaOpt.isEmpty()) {
-        return Optional.empty();
+    // ----- Hot path: cached meta names the content key for an already-derived node --------------
+    MutationMeta cachedMeta = cache.getMeta(id);
+    if (cachedMeta != null) {
+      GraphNode hit = cachedNode(cachedMeta.getBlobUri());
+      if (hit != null) {
+        return Optional.of(hit);
       }
-      meta = metaOpt.get();
-      cache.putMeta(id, meta);
     }
-    GraphCacheKey key = new GraphCacheKey(id, meta.getPointerVersion());
 
-    GraphNode cached = cache.get(id, key);
+    // ----- Hydration path: re-read a fresh pointer before loading -------------------------------
+    // The meta cache is a per-process Caffeine cache with no cross-instance invalidation, so a
+    // cached meta can name a superseded blob that is still readable (CAS blobs outlive the meta
+    // TTL). Hydrating from that stale blobUri would serve stale content as current. Only a freshly
+    // read pointer is safe to hand to load(); the meta cache is trusted solely to short-circuit to
+    // an already-cached node above.
+    Optional<MutationMeta> freshOpt = nodes.mutationMeta(id);
+    if (freshOpt.isEmpty()) {
+      return Optional.empty();
+    }
+    MutationMeta fresh = freshOpt.get();
+    cache.putMeta(id, fresh);
+
+    GraphNode cached = cachedNode(fresh.getBlobUri());
     if (cached != null) return Optional.of(cached);
 
     long loadStart = System.nanoTime();
     try {
-      Optional<GraphNode> loaded = nodes.load(id, meta);
-      loaded.ifPresent(node -> cache.put(id, key, node));
+      Optional<GraphNode> loaded = nodes.load(id, fresh);
+      // Key by the identity the node ACTUALLY carries, not the meta we passed in: load()'s
+      // swept-blob fallback may have built the node from a NEWER live meta, and storing that node
+      // under the stale URI would poison the never-invalidated content-keyed cache — the same
+      // mismatch the loader itself was fixed for, one seam up.
+      loaded.ifPresent(node -> putNode(node.cacheIdentity(), node));
       cache.recordLoad(Duration.ofNanos(System.nanoTime() - loadStart));
       return loaded;
     } catch (Throwable t) {
@@ -282,6 +339,38 @@ public final class UserGraph {
       cache.recordLoadFailure(duration, t);
       throw t;
     }
+  }
+
+  /**
+   * The cached derived node for the blob at {@code blobUri}, or {@code null} when node caching is
+   * off, the URI is blank (a meta that names no blob has no content identity), or the entry is
+   * absent.
+   *
+   * <p>Probe-then-build-then-put, deliberately NOT a loading get: nodes.load() decodes the source
+   * blob through this SAME cache (the repository getByBlobUri seam), and a nested compute inside a
+   * Caffeine compute is prohibited — a same-bin hash collision between the "#node" key and the blob
+   * key would throw "Recursive update" or livelock, nondeterministically. A duplicate concurrent
+   * build is harmless (the node is a pure function of the blob); the blob decode itself stays
+   * single-flight.
+   */
+  private GraphNode cachedNode(String blobUri) {
+    if (blobCache == null || !blobCache.enabled() || blobUri == null || blobUri.isBlank()) {
+      return null;
+    }
+    String key = nodeKey(blobUri);
+    return blobCache.probe(key);
+  }
+
+  private void putNode(String blobUri, GraphNode node) {
+    if (blobCache == null || !blobCache.enabled() || blobUri == null || blobUri.isBlank()) {
+      return;
+    }
+    blobCache.put(nodeKey(blobUri), node);
+  }
+
+  /** Derived-form key: the node built from the blob at {@code blobUri} (cf. "#index" entries). */
+  private static String nodeKey(String blobUri) {
+    return blobUri + "#node";
   }
 
   /**
@@ -337,39 +426,36 @@ public final class UserGraph {
    * @param asOfDefault default timestamp for time travel queries
    * @return the snapshot pin for the table
    */
-  public SnapshotPin snapshotPinFor(
+  public TablePin tablePinFor(
       String cid, ResourceId tableId, SnapshotRef override, Optional<Timestamp> asOfDefault) {
-
-    return snapshots.snapshotPinFor(cid, tableId, override, asOfDefault);
+    return snapshots.tablePinFor(cid, tableId, override, asOfDefault);
   }
 
   /**
    * Resolves a relation (table or view) by name reference.
    *
-   * <p>Checks both tables and views, throwing an error if both match and returning empty if neither
-   * resolves.
+   * <p>Checks tables first, then views. Write-side catalog surface policy prevents tables and views
+   * from sharing a relation name, so the query path does not need to probe both kinds when a table
+   * exists.
    *
    * @param cid correlation ID for error reporting
    * @param ref the name reference to resolve
    * @return the resolved resource ID, if present
-   * @throws GrpcErrors if the name is ambiguous
    */
   public Optional<ResourceId> resolveName(String cid, NameRef ref) {
     validateNameRef(cid, ref);
     String accountId = requireAccountId(cid);
+    return names.resolveRelationId(accountId, ref);
+  }
 
-    // table / view?
-    Optional<ResolvedRelation> t = names.resolveTableRelation(accountId, ref);
-    Optional<ResolvedRelation> v = names.resolveViewRelation(accountId, ref);
-
-    if (t.isPresent() && v.isPresent()) {
-      throw GrpcErrors.invalidArgument(
-          cid,
-          GeneratedErrorMessages.MessageKey.QUERY_INPUT_AMBIGUOUS,
-          Map.of("name", ref.toString()));
-    }
-
-    return t.map(ResolvedRelation::resourceId).or(() -> v.map(ResolvedRelation::resourceId));
+  /**
+   * Batch variant of {@link #resolveName}: names sharing a catalog/namespace resolve their scope
+   * (catalog + namespace reads) once per call instead of once per name.
+   */
+  public Map<NameRef, Optional<ResourceId>> resolveNames(String cid, List<NameRef> refs) {
+    refs.forEach(ref -> validateNameRef(cid, ref));
+    String accountId = requireAccountId(cid);
+    return names.resolveRelationIds(accountId, refs);
   }
 
   /**
@@ -381,7 +467,19 @@ public final class UserGraph {
    * @return the schema JSON string
    */
   public String schemaJsonFor(String cid, UserTableNode tbl, SnapshotRef snapshot) {
-    return snapshots.schemaJsonFor(cid, tbl, snapshot, tbl::schemaJson);
+    return schemaJsonFor(cid, tbl, snapshot, "");
+  }
+
+  /**
+   * Gets the schema JSON for a table, preferring the pinned snapshot blob. When {@code
+   * snapshotBlobUri} names a pinned snapshot blob, the schema is read from that immutable blob
+   * rather than re-hydrating the snapshot through the live {@code (table, snapshot id)} pointer,
+   * which an in-place {@code UpdateSnapshot} can repoint after the pin was validated. Empty uri
+   * resolves the snapshot reference against the live pointer.
+   */
+  public String schemaJsonFor(
+      String cid, UserTableNode tbl, SnapshotRef snapshot, String snapshotBlobUri) {
+    return snapshots.schemaJsonFor(cid, tbl, snapshot, snapshotBlobUri, tbl::schemaJson);
   }
 
   /**
@@ -393,13 +491,41 @@ public final class UserGraph {
    * @return the schema resolution containing the table and schema JSON
    */
   public SchemaResolution schemaFor(String cid, ResourceId tblId, SnapshotRef snapshot) {
+    return schemaFor(cid, tblId, snapshot, "", "");
+  }
+
+  /**
+   * Schema resolution for a pinned query. When {@code tableBlobUri} names a pinned table blob, the
+   * table node is loaded from that immutable blob so the mapper interprets the (snapshot-sourced)
+   * schema with the pinned table's format/connector metadata — never the drifted current pointer —
+   * and the resolution survives a drop/unpublish of the current table. Empty uri reads the current
+   * pointer (a non-pinned caller).
+   *
+   * @param cid correlation ID for error reporting
+   * @param tblId the table resource ID
+   * @param snapshot the snapshot reference
+   * @param tableBlobUri the pinned table blob, or empty to read the current pointer
+   * @param snapshotBlobUri the pinned snapshot blob, or empty to resolve via the live pointer
+   * @return the schema resolution containing the table and schema JSON
+   */
+  public SchemaResolution schemaFor(
+      String cid,
+      ResourceId tblId,
+      SnapshotRef snapshot,
+      String tableBlobUri,
+      String snapshotBlobUri) {
     UserTableNode tbl =
-        table(tblId)
-            .orElseThrow(
-                () ->
-                    GrpcErrors.notFound(
-                        cid, GeneratedErrorMessages.MessageKey.TABLE, Map.of("id", tblId.getId())));
-    return new SchemaResolution(tbl, schemaJsonFor(cid, tbl, snapshot));
+        (tableBlobUri == null || tableBlobUri.isEmpty())
+            ? table(tblId)
+                .orElseThrow(
+                    () ->
+                        GrpcErrors.notFound(
+                            cid,
+                            GeneratedErrorMessages.MessageKey.TABLE,
+                            Map.of("id", tblId.getId())))
+            : pinValidator.requirePinnedTableBlob(
+                nodes.tableFromBlob(tblId, tableBlobUri), cid, tblId);
+    return new SchemaResolution(tbl, schemaJsonFor(cid, tbl, snapshot, snapshotBlobUri));
   }
 
   public record SchemaResolution(UserTableNode table, String schemaJson) {}
@@ -460,6 +586,18 @@ public final class UserGraph {
     FullyQualifiedResolver.ResolveResult fqResult =
         fq.resolveViewsByPrefix(cid, requireAccountId(cid), prefix, limit, token);
     return new ResolveResult(fqResult);
+  }
+
+  /** Counts user tables under a prefix without fetching any rows. */
+  public int countTablesByPrefix(String cid, NameRef prefix) {
+    validateNameRef(cid, prefix);
+    return fq.countTablesByPrefix(cid, requireAccountId(cid), prefix);
+  }
+
+  /** Counts user views under a prefix without fetching any rows. */
+  public int countViewsByPrefix(String cid, NameRef prefix) {
+    validateNameRef(cid, prefix);
+    return fq.countViewsByPrefix(cid, requireAccountId(cid), prefix);
   }
 
   // ----------------------------------------------------------------------

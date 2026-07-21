@@ -27,6 +27,7 @@ import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -138,14 +139,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void getCurrentSnapshotUsesCurrentPointer() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long createdMs = clock.millis() - 10_000;
     seedSnapshot(snapshotRepo, account, tableRid, 0, clock.millis(), createdMs);
@@ -159,14 +154,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void maybeAdvanceCurrentSnapshotPointerCreatesPointerWithoutMutatingTable() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long createdMs = clock.millis() - 10_000;
     seedSnapshot(snapshotRepo, account, tableRid, 1, clock.millis(), createdMs);
@@ -178,6 +167,38 @@ class SnapshotRepositoryTest {
 
     assertEquals(1L, snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId());
     assertTrue(tableRepo.getById(tableRid).orElseThrow().getPropertiesMap().isEmpty());
+  }
+
+  @Test
+  void updateDoesNotAdvanceCurrentSnapshotPointer() {
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
+
+    long t = clock.millis();
+    seedSnapshot(snapshotRepo, account, tableRid, 1, t, t - 10_000); // newest by commit time
+    seedSnapshot(snapshotRepo, account, tableRid, 2, t, t - 20_000); // older
+    snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
+        tableRid, snapshotRepo.getById(tableRid, 1).orElseThrow());
+    assertEquals(1L, snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId());
+
+    // Make snapshot 2 the newest by commit time via update(). update() must NOT advance the current
+    // pointer — the advance belongs to the service layer (which re-commits the root entry). If
+    // update() advanced here, that commit would be pre-empted and CURRENT pins would go stale.
+    Snapshot snap2 = snapshotRepo.getById(tableRid, 2).orElseThrow();
+    long version = snapshotRepo.metaForSafe(tableRid, 2).getPointerVersion();
+    Snapshot advanced =
+        snap2.toBuilder().setUpstreamCreatedAt(Timestamps.fromMillis(t + 10_000)).build();
+    assertTrue(snapshotRepo.update(advanced, version));
+
+    assertEquals(
+        1L,
+        snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId(),
+        "update() must not advance the current pointer");
+
+    // The service-path advance (which commits the root entry) is what moves it.
+    snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
+        tableRid, snapshotRepo.getById(tableRid, 2).orElseThrow());
+    assertEquals(2L, snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId());
   }
 
   @Test
@@ -202,7 +223,7 @@ class SnapshotRepositoryTest {
   }
 
   @Test
-  void getCurrentSnapshotUsesPointerEvenWhenSnapshotIsNotNewestByTime() {
+  void getAsOfSeeksPredecessorWithoutReturningNewerSnapshots() {
     String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     var tableRid =
         ResourceId.newBuilder()
@@ -210,7 +231,38 @@ class SnapshotRepositoryTest {
             .setId(UUID.randomUUID().toString())
             .setKind(ResourceKind.RK_TABLE)
             .build();
-    tableRepo.create(table(account, tableRid));
+
+    long older = clock.millis() - 100_000;
+    long newer = clock.millis() - 50_000;
+    seedSnapshot(snapshotRepo, account, tableRid, 10, clock.millis(), older);
+    seedSnapshot(snapshotRepo, account, tableRid, 20, clock.millis(), newer);
+
+    // Between the two → the older snapshot, never the newer one.
+    assertEquals(
+        10L,
+        snapshotRepo
+            .getAsOf(tableRid, Timestamps.fromMillis(newer - 1))
+            .orElseThrow()
+            .getSnapshotId());
+    // Exactly at the newer commit time → the newer snapshot.
+    assertEquals(
+        20L,
+        snapshotRepo.getAsOf(tableRid, Timestamps.fromMillis(newer)).orElseThrow().getSnapshotId());
+    // After both → the newest.
+    assertEquals(
+        20L,
+        snapshotRepo
+            .getAsOf(tableRid, Timestamps.fromMillis(clock.millis()))
+            .orElseThrow()
+            .getSnapshotId());
+    // Before the first snapshot → not found (feeds the not-found-at-time error).
+    assertTrue(snapshotRepo.getAsOf(tableRid, Timestamps.fromMillis(older - 1)).isEmpty());
+  }
+
+  @Test
+  void getCurrentSnapshotUsesPointerEvenWhenSnapshotIsNotNewestByTime() {
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long newestCreatedMs = clock.millis() - 5_000;
     long olderCreatedMs = newestCreatedMs - 1_000;
@@ -228,14 +280,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void getCurrentSnapshotFallsBackToLatestSnapshotWhenCurrentPointerIsMissing() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
     seedSnapshot(snapshotRepo, account, tableRid, 204, clock.millis(), clock.millis() - 10_000);
 
     Snapshot fallback = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
@@ -245,14 +291,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void getCurrentSnapshotFallsBackToLatestSnapshotWhenCurrentPointerIsDangling() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
     seedCurrentPointer(tableRid, 999_999L, clock.millis());
     seedSnapshot(snapshotRepo, account, tableRid, 101, clock.millis(), clock.millis() - 20_000);
     seedSnapshot(snapshotRepo, account, tableRid, 204, clock.millis(), clock.millis() - 10_000);
@@ -264,14 +304,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void maybeAdvanceCurrentSnapshotPointerDoesNotDowngradeNewerPointer() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long newerCreatedMs = clock.millis() - 10_000;
     long olderCreatedMs = newerCreatedMs - 10_000;
@@ -290,14 +324,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void maybeAdvanceCurrentSnapshotPointerDoesNotRewriteSameSnapshotIdWhenTimestampDiffers() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long originalCreatedMs = clock.millis() - 20_000;
     long conflictingCreatedMs = clock.millis() - 10_000;
@@ -332,14 +360,8 @@ class SnapshotRepositoryTest {
 
   @Test
   void maybeAdvanceCurrentSnapshotPointerRetriesWhenPointerChangesBeforeCas() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
 
     long newestCreatedMs = clock.millis() - 10_000;
     long middleCreatedMs = newestCreatedMs - 10_000;
@@ -370,14 +392,7 @@ class SnapshotRepositoryTest {
 
   @Test
   void maybeAdvanceCurrentSnapshotPointerReturnsConflictAfterBoundedCasRetries() {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tableRid =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tableRid));
+    var tableRid = newSeededTable();
     FailingCurrentSnapshotPointerRepository failingCurrentRepo =
         new FailingCurrentSnapshotPointerRepository(ptr, blobs);
     SnapshotRepository repo = new SnapshotRepository(ptr, blobs, tableRepo, failingCurrentRepo);
@@ -392,6 +407,250 @@ class SnapshotRepositoryTest {
         SnapshotRepository.CurrentSnapshotPointerUpdateResult.CONFLICT,
         repo.maybeAdvanceCurrentSnapshotPointer(tableRid, candidate));
     assertEquals(4, failingCurrentRepo.createAttempts.get());
+  }
+
+  @Test
+  void rootCurrencyIsTheCurrentSnapshotEvenWhenTheIngestPointerIsAhead() {
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
+
+    long t = clock.millis();
+    seedSnapshot(snapshotRepo, account, tableRid, 1, t, t - 20_000);
+    seedSnapshot(snapshotRepo, account, tableRid, 2, t, t - 10_000);
+    // Ingest advanced the legacy pointer to snapshot 2, but only snapshot 1 finalized: the
+    // root's currency stays at 1 and that is what every reader must see.
+    snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
+        tableRid, snapshotRepo.getById(tableRid, 2).orElseThrow());
+    seedRootWithCurrency(tableRid, 1L, t - 20_000);
+
+    assertEquals(1L, snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId());
+    assertEquals(
+        1L, snapshotRepo.getCurrentSnapshotPointer(tableRid).orElseThrow().getSnapshotId());
+    // The raw ingest pointer remains reachable for write-side plumbing.
+    assertEquals(
+        2L, snapshotRepo.latestRegisteredSnapshotPointer(tableRid).orElseThrow().getSnapshotId());
+    assertEquals(2L, snapshotRepo.latestRegisteredSnapshot(tableRid).orElseThrow().getSnapshotId());
+  }
+
+  @Test
+  void rootWithoutCurrencyGatesTheTableEvenWhenTheIngestPointerIsSet() {
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
+
+    long t = clock.millis();
+    seedSnapshot(snapshotRepo, account, tableRid, 1, t, t - 10_000);
+    snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
+        tableRid, snapshotRepo.getById(tableRid, 1).orElseThrow());
+    // The root registered the snapshot but nothing finalized: no queryable snapshot, and no
+    // fallback to the ingest pointer.
+    seedRootWithCurrency(tableRid, null, t - 10_000);
+
+    assertTrue(snapshotRepo.getCurrentSnapshot(tableRid).isEmpty());
+    assertTrue(snapshotRepo.getCurrentSnapshotPointer(tableRid).isEmpty());
+    assertEquals(
+        1L, snapshotRepo.latestRegisteredSnapshotPointer(tableRid).orElseThrow().getSnapshotId());
+  }
+
+  @Test
+  void tableWithoutARootStillReadsTheLegacyPointer() {
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
+
+    long t = clock.millis();
+    seedSnapshot(snapshotRepo, account, tableRid, 7, t, t - 10_000);
+    snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
+        tableRid, snapshotRepo.getById(tableRid, 7).orElseThrow());
+
+    assertEquals(7L, snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId());
+    assertEquals(
+        7L, snapshotRepo.getCurrentSnapshotPointer(tableRid).orElseThrow().getSnapshotId());
+  }
+
+  /**
+   * Commits a root whose manifest holds every seeded snapshot; currency as given (null = gated).
+   */
+  @Test
+  void aDanglingRootPointerStaysGatedInsteadOfFallingBackToTheLegacyPointer() {
+    // A root POINTER that exists with an unreadable blob is a swept/corrupt root, not an
+    // un-migrated table: falling back to the raw legacy pointer would bypass the visibility gate.
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
+
+    long t = clock.millis();
+    seedSnapshot(snapshotRepo, account, tableRid, 5, t, t - 10_000);
+    snapshotRepo.maybeAdvanceCurrentSnapshotPointer(
+        tableRid, snapshotRepo.getById(tableRid, 5).orElseThrow());
+    seedRootWithCurrency(tableRid, 5L, t - 10_000);
+    // Sweep the root blob out from under the pointer.
+    String rootBlobUri = new TableRootRepository(ptr, blobs).metaForSafe(tableRid).getBlobUri();
+    blobs.delete(rootBlobUri);
+
+    assertTrue(
+        snapshotRepo.getCurrentSnapshot(tableRid).isEmpty(),
+        "an unreadable root must stay gated, never serve the raw legacy pointer");
+    assertTrue(snapshotRepo.getCurrentSnapshotPointer(tableRid).isEmpty());
+    assertEquals(
+        5L,
+        snapshotRepo.latestRegisteredSnapshotPointer(tableRid).orElseThrow().getSnapshotId(),
+        "the raw accessor still serves write-side plumbing");
+  }
+
+  @Test
+  void aTransientlySweptRootBlobRecoversOnTheRetry() {
+    // The pointer exists but the first blob read misses (superseded root swept between the two
+    // reads); the retry re-follows the pointer and must serve currency, not gate a live table.
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
+    long t = clock.millis();
+    seedSnapshot(snapshotRepo, account, tableRid, 6, t, t - 10_000);
+    seedRootWithCurrency(tableRid, 6L, t - 10_000);
+
+    int[] misses = {1};
+    var flakyRoots =
+        new TableRootRepository(ptr, blobs) {
+          @Override
+          public java.util.Optional<ai.floedb.floecat.catalog.rpc.TableRoot> getByBlobUri(
+              String blobUri) {
+            if (misses[0] > 0) {
+              misses[0]--;
+              return java.util.Optional.empty();
+            }
+            return super.getByBlobUri(blobUri);
+          }
+        };
+    var flakyRepo =
+        new SnapshotRepository(
+            ptr, blobs, tableRepo, new CurrentSnapshotPointerRepository(ptr, blobs), flakyRoots);
+
+    assertEquals(
+        6L,
+        flakyRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId(),
+        "a transient sweep race must recover on the single retry");
+  }
+
+  @Test
+  void aDanglingByTimeEntryIsSkippedInFavorOfTheNextIntactSnapshot() {
+    // by-id and by-time are independent secondaries created and deleted non-atomically: a delete
+    // or partial registration can leave the NEWEST by-time entry dangling. AS_OF and
+    // latest-by-time must advance past it to the older intact snapshot, not report a spurious
+    // not-found for a healthy table.
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
+
+    long older = clock.millis() - 100_000;
+    long newer = clock.millis() - 50_000;
+    seedSnapshot(snapshotRepo, account, tableRid, 10, clock.millis(), older);
+    seedSnapshot(snapshotRepo, account, tableRid, 20, clock.millis(), newer);
+    // Dangle snapshot 20: its by-id pointer vanishes, its by-time entry stays.
+    ptr.delete(Keys.snapshotPointerById(account, tableRid.getId(), 20L));
+
+    assertEquals(
+        10L,
+        snapshotRepo
+            .getAsOf(tableRid, Timestamps.fromMillis(clock.millis()))
+            .orElseThrow()
+            .getSnapshotId(),
+        "AS_OF must skip the dangling entry to the older intact snapshot");
+    assertEquals(
+        10L,
+        snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow().getSnapshotId(),
+        "the latest-by-time fallback must skip the dangling entry too");
+  }
+
+  @Test
+  void getCurrentSnapshotServesTheRootsRefNotAnInPlaceRewrite() {
+    // getCurrentSnapshot must read the snapshot blob the ROOT published (its manifest entry's
+    // snapshot_ref), not the live (table, snapshot_id) pointer. An in-place rewrite moves the
+    // pointer before the root re-commit, so getById would serve a blob the current root never
+    // referenced. Simulate divergence: the by-id pointer names a NEW blob, the root entry an OLD
+    // one.
+    var tableRid = newSeededTable();
+    long t = clock.millis();
+    // The live snapshot (by-id) carries the "rewritten" metadata location.
+    snapshotRepo.create(
+        Snapshot.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(9)
+            .setIngestedAt(Timestamps.fromMillis(t))
+            .setUpstreamCreatedAt(Timestamps.fromMillis(t - 1_000))
+            .setMetadataLocation("s3://REWRITTEN/meta.json")
+            .build());
+    // Capture the immutable blob URI the root will reference (the ORIGINAL), then rewrite the
+    // by-id pointer to a different blob so the two diverge.
+    String rootRefUri = snapshotRepo.metaForSafe(tableRid, 9L).getBlobUri();
+    snapshotRepo.update(
+        snapshotRepo.getById(tableRid, 9L).orElseThrow().toBuilder()
+            .setMetadataLocation("s3://REWRITTEN-AGAIN/meta.json")
+            .build(),
+        snapshotRepo.metaForSafe(tableRid, 9L).getPointerVersion());
+
+    // Commit a root whose entry references the ORIGINAL blob (rootRefUri), currency = 9.
+    var rootsRepo = new TableRootRepository(ptr, blobs);
+    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(rootsRepo);
+    committer.commit(
+        tableRid,
+        ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
+            rootsRepo,
+            tableRid,
+            ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
+                .setSnapshotId(9)
+                .setSnapshotRef(
+                    ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(rootRefUri))
+                .setUpstreamCreatedAt(Timestamps.fromMillis(t - 1_000))
+                .build(),
+            null,
+            false));
+    committer.commit(
+        tableRid, current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(9L).build());
+
+    var served = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
+    assertEquals(
+        "s3://REWRITTEN/meta.json",
+        served.getMetadataLocation(),
+        "getCurrentSnapshot serves the root's published blob, not the later by-id rewrite");
+  }
+
+  @Test
+  void theVisiblePointerTimestampIsAStablePropertyOfTheSnapshot() {
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
+
+    long ingestedMs = clock.millis() - 5_000;
+    seedSnapshot(snapshotRepo, account, tableRid, 4, ingestedMs, ingestedMs - 1_000);
+    seedRootWithCurrency(tableRid, 4L, ingestedMs - 1_000);
+
+    CurrentSnapshotPointer first = snapshotRepo.getCurrentSnapshotPointer(tableRid).orElseThrow();
+    CurrentSnapshotPointer second = snapshotRepo.getCurrentSnapshotPointer(tableRid).orElseThrow();
+    assertEquals(first, second, "polling the pointer must not observe a perpetual update");
+    assertEquals(Timestamps.fromMillis(ingestedMs), first.getUpdatedAt());
+  }
+
+  private void seedRootWithCurrency(ResourceId tableId, Long currentSnapshotId, long createdAtMs) {
+    var roots = new TableRootRepository(ptr, blobs);
+    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(roots);
+    for (Snapshot snap : snapshotRepo.list(tableId, 100, "", new StringBuilder())) {
+      committer.commit(
+          tableId,
+          ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
+              roots,
+              tableId,
+              ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
+                  .setSnapshotId(snap.getSnapshotId())
+                  .setSnapshotRef(
+                      ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
+                          .setUri(
+                              snapshotRepo.metaForSafe(tableId, snap.getSnapshotId()).getBlobUri()))
+                  .setUpstreamCreatedAt(snap.getUpstreamCreatedAt())
+                  .build(),
+              null,
+              false));
+    }
+    if (currentSnapshotId != null) {
+      committer.commit(
+          tableId,
+          current ->
+              current.orElseThrow().toBuilder().setCurrentSnapshotId(currentSnapshotId).build());
+    }
   }
 
   private void seedSnapshot(
@@ -449,6 +708,18 @@ class SnapshotRepositoryTest {
         .build();
   }
 
+  private ResourceId newSeededTable() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId(UUID.randomUUID().toString())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    tableRepo.create(table(account, tableRid));
+    return tableRid;
+  }
+
   private static final class FailingCurrentSnapshotPointerRepository
       extends CurrentSnapshotPointerRepository {
     private final AtomicInteger createAttempts = new AtomicInteger();
@@ -499,14 +770,7 @@ class SnapshotRepositoryTest {
   @Test
   @Timeout(20)
   void snapshotRepoCreateConcurrentSnapshots() throws Exception {
-    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
-    var tblId =
-        ResourceId.newBuilder()
-            .setAccountId(account)
-            .setId(UUID.randomUUID().toString())
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    tableRepo.create(table(account, tblId));
+    var tblId = newSeededTable();
 
     int WORKERS = 24;
     int OPS = 200;

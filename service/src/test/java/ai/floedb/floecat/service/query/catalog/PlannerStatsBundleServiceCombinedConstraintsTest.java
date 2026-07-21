@@ -540,7 +540,7 @@ class PlannerStatsBundleServiceCombinedConstraintsTest
     TableConstraintsResult result = flattenConstraints(chunks).get(0);
     assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_NOT_FOUND, result.getStatus());
     assertEquals("planner_stats.constraints.missing", result.getFailure().getCode());
-    assertEquals("provider_missing", result.getFailure().getDetailsOrDefault("reason", ""));
+    assertEquals("absent_at_pin", result.getFailure().getDetailsOrDefault("reason", ""));
   }
 
   @Test

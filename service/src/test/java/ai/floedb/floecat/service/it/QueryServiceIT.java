@@ -201,6 +201,12 @@ class QueryServiceIT {
     var pin = descriptor.getSnapshots().getPins(0);
     assertEquals(tbl.getResourceId(), pin.getTableId());
     assertEquals(snap.getSnapshotId(), pin.getSnapshotId());
+
+    // The descriptor also exposes the opaque planner-facing identity for the same pin.
+    assertEquals(1, descriptor.getRelationPinsCount());
+    var identity = descriptor.getRelationPins(0);
+    assertEquals(snap.getSnapshotId(), identity.getSnapshotId());
+    assertFalse(identity.getPinFingerprint().isEmpty());
   }
 
   @Test

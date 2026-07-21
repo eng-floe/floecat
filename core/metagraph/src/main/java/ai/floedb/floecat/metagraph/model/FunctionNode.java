@@ -17,7 +17,6 @@
 package ai.floedb.floecat.metagraph.model;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -25,7 +24,6 @@ import java.util.Map;
 public record FunctionNode(
     ResourceId id,
     long version,
-    Instant metadataUpdatedAt,
     String engineVersion,
     ResourceId namespaceId,
     String displayName,

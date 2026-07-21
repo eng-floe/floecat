@@ -1223,51 +1223,10 @@ class ReconcileControlImplTest {
   }
 
   @Test
-  void cancelReconcileJobCancelsQueuedGrandchildrenOfCancelledPlanChildren() {
+  void cancelReconcileJobDoesNotWalkChildTreeInRequestPath() {
     var connector = job("plan-1", "JS_CANCELLED", 0, 0, 0, "");
-    var table = childJob("table-1", "JS_CANCELLED", 0, 0, 0, "", "plan-1");
-    var snapshot = snapshotChildJob("snapshot-1", "JS_CANCELLED", 0, 0, 0, "", "table-1");
-    var fileGroup =
-        new ReconcileJobStore.ReconcileJob(
-            "file-1",
-            "acct",
-            "connector-1",
-            "JS_CANCELLED",
-            "",
-            0L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L,
-            false,
-            ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
-            0L,
-            0L,
-            null,
-            null,
-            "",
-            "executor-1",
-            ReconcileJobKind.EXEC_FILE_GROUP,
-            null,
-            null,
-            null,
-            ReconcileFileGroupTask.empty(),
-            "snapshot-1");
     when(service.jobs.cancel("acct", "plan-1", "stop")).thenReturn(Optional.of(connector));
-    when(service.jobs.cancel("acct", "table-1", "stop")).thenReturn(Optional.of(table));
-    when(service.jobs.cancel("acct", "snapshot-1", "stop")).thenReturn(Optional.of(snapshot));
-    when(service.jobs.cancel("acct", "file-1", "stop")).thenReturn(Optional.of(fileGroup));
     when(service.jobs.get("acct", "plan-1")).thenReturn(Optional.of(connector));
-    when(service.jobs.get("acct", "table-1")).thenReturn(Optional.of(table));
-    when(service.jobs.get("acct", "snapshot-1")).thenReturn(Optional.of(snapshot));
-    when(service.jobs.childJobsPage("acct", "plan-1", 200, ""))
-        .thenReturn(new ReconcileJobStore.ReconcileJobPage(java.util.List.of(table), ""));
-    when(service.jobs.childJobsPage("acct", "table-1", 200, ""))
-        .thenReturn(new ReconcileJobStore.ReconcileJobPage(java.util.List.of(snapshot), ""));
-    when(service.jobs.childJobsPage("acct", "snapshot-1", 200, ""))
-        .thenReturn(new ReconcileJobStore.ReconcileJobPage(java.util.List.of(fileGroup), ""));
 
     var response =
         service
@@ -1277,9 +1236,9 @@ class ReconcileControlImplTest {
             .indefinitely();
 
     assertEquals(true, response.getCancelled());
-    verify(service.jobs).cancel("acct", "table-1", "stop");
-    verify(service.jobs).cancel("acct", "snapshot-1", "stop");
-    verify(service.jobs).cancel("acct", "file-1", "stop");
+    verify(service.jobs).cancel("acct", "plan-1", "stop");
+    verify(service.jobs, never()).childJobsPage(anyString(), anyString(), anyInt(), anyString());
+    verify(service.jobs, never()).cancel(eq("acct"), eq("table-1"), anyString());
   }
 
   @Test

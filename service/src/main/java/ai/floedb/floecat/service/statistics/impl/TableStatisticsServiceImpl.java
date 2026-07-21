@@ -34,6 +34,9 @@ import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
+import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
+import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
@@ -41,7 +44,6 @@ import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
-import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
@@ -63,13 +65,14 @@ import org.jboss.logging.Logger;
 @GrpcService
 public class TableStatisticsServiceImpl extends BaseServiceImpl implements TableStatisticsService {
 
-  @Inject TableRepository tables;
   @Inject SnapshotRepository snapshots;
   @Inject StatsStore statsStore;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject StatsOrchestrator statsOrchestrator;
+  @Inject CatalogOverlay overlay;
+  @Inject TableRootWriter rootWriter;
 
   private static final Logger LOG = Logger.getLogger(TableStatisticsService.class);
 
@@ -186,6 +189,26 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                 .ifNull()
                 .failWith(
                     () -> GrpcErrors.invalidArgument(correlationId(), TARGET_STATS_EMPTY, Map.of()))
+                .invoke(
+                    () -> {
+                      // The root commit happens ONCE, after the whole stream persisted. Note the
+                      // active-generation pointer is written on the FIRST record (by
+                      // ensureActiveGeneration), so listTargetStats / planner stats / the stale
+                      // index can already read the in-progress generation. What the root commit
+                      // gates is PINNED-query visibility (and, under the gate, the snapshot's
+                      // finalization): only a committed generation resolves through a pin.
+                      // Committing per-chunk would therefore expose a half-written generation to
+                      // pinned reads. A stream that fails mid-way leaves the generation un-rooted:
+                      // pinned queries keep resolving the previous one, and the live-active pointer
+                      // protects the partial write from GC until a retry completes.
+                      StreamState finalState = state.get();
+                      if (rootWriter != null
+                          && upserted.get() > 0
+                          && finalState.tableId() != null) {
+                        rootWriter.commitStatsGeneration(
+                            finalState.tableId(), finalState.snapshotId());
+                      }
+                    })
                 .replaceWith(
                     () -> PutTargetStatsResponse.newBuilder().setUpserted(upserted.get()).build()),
             correlationId())
@@ -237,10 +260,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
     var pc = principal.get();
     authz.require(pc, "table.write");
 
-    tables
-        .getById(state.tableId)
-        .orElseThrow(
-            () -> GrpcErrors.notFound(correlationId(), TABLE, Map.of("id", state.tableId.getId())));
+    new CatalogSurfaceWritePolicy(overlay).requireWritableTable(state.tableId, correlationId());
 
     snapshots
         .getById(state.tableId, state.snapshotId)

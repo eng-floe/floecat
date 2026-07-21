@@ -147,6 +147,13 @@ public final class StatsProviderFactory {
       this.allowUnpinnedLatestSnapshotFallback = allowUnpinnedLatestSnapshotFallback;
     }
 
+    // Generation policy: these lookups scope stats to the pin's SNAPSHOT and read the pin's frozen
+    // stats generation FIRST via resolveInGeneration — the same generation the scan uses — so plans
+    // are stable and consistent with the scan. The newest (live active) generation only fills a
+    // target the pinned generation lacks, so an incomplete pinned generation never yields
+    // NOT_FOUND; an unpinned read uses the live/newest generation directly. The SCAN stays
+    // authoritative for results (it freezes stats_generation_ref_uri); a planner/scan generation
+    // difference affects estimation only, never correctness.
     @Override
     public Optional<StatsProvider.TableStatsView> tableStats(ResourceId tableId) {
       if (allowUnpinnedLatestSnapshotFallback) {
@@ -193,6 +200,8 @@ public final class StatsProviderFactory {
 
     private OptionalLong resolveLatestSnapshotId(ResourceId tableId) {
       try {
+        // "Latest" means latest QUERY-VISIBLE: the repository's default current-snapshot read is
+        // gate-aware, so system scans agree with what queries can read.
         Optional<Snapshot> snapshot = snapshotRepository.getCurrentSnapshot(tableId);
         if (snapshot.isPresent()) {
           return OptionalLong.of(snapshot.get().getSnapshotId());
@@ -221,7 +230,9 @@ public final class StatsProviderFactory {
                 .correlationId(correlationId)
                 .latencyBudget(syncEnabled ? Optional.of(syncLatencyBudget) : Optional.empty())
                 .build();
-        StatsResolutionResult result = statsOrchestrator.resolve(request);
+        StatsResolutionResult result =
+            statsOrchestrator.resolveInGeneration(
+                request, pinResolver.pinnedStatsGenerationRef(tableId));
         return result
             .stats()
             .filter(TargetStatsRecord::hasTable)
@@ -246,7 +257,9 @@ public final class StatsProviderFactory {
                 .correlationId(correlationId)
                 .latencyBudget(syncEnabled ? Optional.of(syncLatencyBudget) : Optional.empty())
                 .build();
-        StatsResolutionResult result = statsOrchestrator.resolve(request);
+        StatsResolutionResult result =
+            statsOrchestrator.resolveInGeneration(
+                request, pinResolver.pinnedStatsGenerationRef(tableId));
         return result
             .stats()
             .filter(TargetStatsRecord::hasScalar)
@@ -276,6 +289,12 @@ public final class StatsProviderFactory {
 
     private static StatsProvider.ColumnStatsView toColumnStatsView(TargetStatsRecord record) {
       ScalarStats scalar = record.getScalar();
+      // Estimate-less envelopes are sketch carriers only (see the shared
+      // PlannerStatsResultMaterializer.hasEstimate mode gate) — never a zero-NDV estimate.
+      Ndv estimatedNdv =
+          scalar.hasNdv() && PlannerStatsResultMaterializer.hasEstimate(scalar.getNdv())
+              ? scalar.getNdv()
+              : null;
       return new ColumnStatsViewImpl(
           record.getTableId(),
           record.getTarget().getColumn().getColumnId(),
@@ -286,7 +305,7 @@ public final class StatsProviderFactory {
           scalar.getLogicalType(),
           scalar.hasMin() ? Optional.of(scalar.getMin()) : Optional.empty(),
           scalar.hasMax() ? Optional.of(scalar.getMax()) : Optional.empty(),
-          scalar.hasNdv() ? scalar.getNdv() : null,
+          estimatedNdv,
           scalar.hasAvgWidthBytes()
               ? OptionalLong.of(scalar.getAvgWidthBytes())
               : OptionalLong.empty());

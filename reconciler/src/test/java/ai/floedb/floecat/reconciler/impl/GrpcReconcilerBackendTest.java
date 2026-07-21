@@ -28,6 +28,7 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
+import ai.floedb.floecat.catalog.rpc.CreateSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableResponse;
 import ai.floedb.floecat.catalog.rpc.FileContent;
@@ -51,6 +52,7 @@ import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.UpdateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
@@ -245,6 +247,33 @@ class GrpcReconcilerBackendTest {
         GrpcReconcilerBackend.buildPutTableConstraintsRequest(tableId, 42L, second);
 
     assertThat(request1.getIdempotency().getKey()).isNotEqualTo(request2.getIdempotency().getKey());
+  }
+
+  @Test
+  void ingestSnapshotCreatesWithoutListingAllSnapshots() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.snapshot = mock(SnapshotServiceGrpc.SnapshotServiceBlockingStub.class);
+    when(backend.snapshot.withInterceptors(any())).thenReturn(backend.snapshot);
+    when(backend.snapshot.createSnapshot(any()))
+        .thenReturn(CreateSnapshotResponse.getDefaultInstance());
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("users")
+            .build();
+    Snapshot snapshot =
+        Snapshot.newBuilder().setTableId(tableId).setSnapshotId(42L).setSchemaJson("{}").build();
+
+    backend.ingestSnapshot(reconcileContext(), tableId, snapshot);
+
+    verify(backend.snapshot).createSnapshot(any());
+    verify(backend.snapshot, org.mockito.Mockito.never()).listSnapshots(any());
+    verify(backend.snapshot, org.mockito.Mockito.never()).getSnapshot(any());
+    verify(backend.snapshot, org.mockito.Mockito.never())
+        .updateSnapshot(any(UpdateSnapshotRequest.class));
   }
 
   @Test
@@ -740,8 +769,14 @@ class GrpcReconcilerBackendTest {
         Connector.newBuilder().setResourceId(connectorId).setKind(ConnectorKind.CK_DELTA).build();
     when(backend.connector.getConnector(any()))
         .thenReturn(GetConnectorResponse.newBuilder().setConnector(connector).build());
-    when(backend.serverSideStorageConfigResolver.resolve(any(), any(), any()))
-        .thenAnswer(invocation -> invocation.getArgument(2));
+    java.util.concurrent.atomic.AtomicBoolean storageConfigClosed =
+        new java.util.concurrent.atomic.AtomicBoolean();
+    when(backend.serverSideStorageConfigResolver.resolveManagedWithAuthorization(
+            any(), any(), any(), any(), any(), any(), any()))
+        .thenAnswer(
+            invocation ->
+                new ServerSideStorageConfigResolver.ResolvedConnectorConfig(
+                    invocation.getArgument(6), () -> storageConfigClosed.set(true)));
 
     FloecatConnector source = mock(FloecatConnector.class);
     backend.connectorOpener = cfg -> source;
@@ -752,10 +787,17 @@ class GrpcReconcilerBackendTest {
     @SuppressWarnings("unchecked")
     var locationCaptor = org.mockito.ArgumentCaptor.forClass(Optional.class);
     verify(backend.serverSideStorageConfigResolver)
-        .resolveWithAuthorization(
-            any(), any(), any(), locationCaptor.capture(), any(), configCaptor.capture());
+        .resolveManagedWithAuthorization(
+            any(),
+            any(),
+            any(),
+            locationCaptor.capture(),
+            org.mockito.Mockito.eq(Optional.of(tableId)),
+            any(),
+            configCaptor.capture());
     assertThat(locationCaptor.getValue()).contains("s3://bucket/path/orders");
     assertThat(configCaptor.getValue().options()).doesNotContainKey("delta.table-root");
+    assertThat(storageConfigClosed).isTrue();
   }
 
   @Test

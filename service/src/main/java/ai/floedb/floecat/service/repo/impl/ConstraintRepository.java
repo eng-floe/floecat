@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.SnapshotConstraintsKey;
@@ -37,8 +38,13 @@ public class ConstraintRepository {
 
   private final GenericResourceRepository<SnapshotConstraints, SnapshotConstraintsKey> repo;
 
-  @Inject
   public ConstraintRepository(PointerStore pointerStore, BlobStore blobStore) {
+    this(pointerStore, blobStore, null);
+  }
+
+  @Inject
+  public ConstraintRepository(
+      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -46,7 +52,23 @@ public class ConstraintRepository {
             Schemas.SNAPSHOT_CONSTRAINTS,
             SnapshotConstraints::parseFrom,
             SnapshotConstraints::toByteArray,
-            "application/x-protobuf");
+            "application/x-protobuf",
+            blobCache);
+  }
+
+  /**
+   * Load a constraints bundle by its immutable, content-addressed blob URI — the ref a pinned table
+   * root's manifest entry carries. Never consults the live (table, snapshot) pointer, so a pinned
+   * query keeps reading the exact bundle its root references even after an in-place constraints
+   * write repoints the pointer to a newer blob.
+   */
+  public Optional<SnapshotConstraints> getByBlobUri(String blobUri) {
+    return repo.getByBlobUri(blobUri);
+  }
+
+  /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
+  public Optional<SnapshotConstraints> getByBlobUriLive(String blobUri) {
+    return repo.getByBlobUriLive(blobUri);
   }
 
   /**

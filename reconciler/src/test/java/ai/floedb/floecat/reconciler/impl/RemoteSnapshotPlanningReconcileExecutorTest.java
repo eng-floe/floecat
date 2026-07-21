@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -44,6 +45,7 @@ import io.grpc.StatusRuntimeException;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -273,6 +275,59 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
+  void executeTreatsInvalidLeaseDuringResultSubmissionAsCancellation() {
+    var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
+    var workerClient = mock(RemotePlannerWorkerClient.class);
+    ReconcileWorkerAuthProvider authProvider = ignored -> java.util.Optional.empty();
+    var executor =
+        new RemoteSnapshotPlanningReconcileExecutor(backend, workerClient, authProvider, 2, true);
+
+    ReconcileJobStore.LeasedJob lease = lease(statsOnlyScope());
+    when(workerClient.getPlanSnapshotInput(any()))
+        .thenReturn(
+            new StandalonePlanSnapshotPayload(
+                lease.jobId,
+                lease.leaseEpoch,
+                "",
+                connectorId(),
+                ReconcilerService.CaptureMode.CAPTURE_ONLY,
+                false,
+                statsOnlyScope(),
+                snapshotTask()));
+    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
+        .thenReturn(
+            Optional.of(
+                FloecatConnector.DirectSnapshotStatsCapture.of(
+                    List.of(
+                        TargetStatsRecords.tableRecord(
+                            tableId(),
+                            55L,
+                            TableValueStats.newBuilder().setRowCount(7L).build(),
+                            null)),
+                    5)));
+    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any()))
+        .thenThrow(
+            new RemoteLeasePreconditionFailedException(
+                "submitLeasedPlanSnapshotResult",
+                Status.FAILED_PRECONDITION
+                    .withDescription("some server-side precondition text")
+                    .asRuntimeException()));
+    AtomicBoolean beforeHandledCompletion = new AtomicBoolean();
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (a, b, c, d, e, f, g, h) -> {},
+                () -> beforeHandledCompletion.set(true)));
+
+    assertThat(result.cancelled).isTrue();
+    assertThat(beforeHandledCompletion.get()).isTrue();
+    verify(workerClient, never()).submitPlanSnapshotFailure(any(), any(), any(), any(), any());
+  }
+
+  @Test
   void executePartitionsPlannedFileGroupsByConfiguredMaxFilesPerGroup() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
@@ -318,6 +373,48 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                             .allMatch(group -> group.filePaths().size() <= 2)),
             argThat(fileGroupJobs -> fileGroupJobs != null && fileGroupJobs.size() == 20),
             argThat(stats -> stats != null && stats.isEmpty()));
+  }
+
+  @Test
+  void executeFailsTerminalWhenExpectedSnapshotIsMissing() {
+    var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
+    var workerClient = mock(RemotePlannerWorkerClient.class);
+    ReconcileWorkerAuthProvider authProvider = ignored -> java.util.Optional.empty();
+    var executor =
+        new RemoteSnapshotPlanningReconcileExecutor(backend, workerClient, authProvider, 2, true);
+
+    ReconcileJobStore.LeasedJob lease = lease(statsOnlyScope());
+    when(workerClient.getPlanSnapshotInput(any()))
+        .thenReturn(
+            new StandalonePlanSnapshotPayload(
+                lease.jobId,
+                lease.leaseEpoch,
+                "",
+                connectorId(),
+                ReconcilerService.CaptureMode.CAPTURE_ONLY,
+                false,
+                statsOnlyScope(),
+                snapshotTask()));
+    when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
+        .thenReturn(Optional.empty());
+    when(backend.fetchSnapshotFilePlan(any(), any(), eq(55L))).thenReturn(Optional.empty());
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertTrue(!result.success());
+    assertEquals(
+        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL, result.retryDisposition);
+    verify(workerClient)
+        .submitPlanSnapshotFailure(
+            any(),
+            eq(ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL),
+            eq(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL),
+            eq(ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR),
+            eq(
+                "ReconcileFailureException: Snapshot id does not exist: tableId=table-1 snapshotId=55"));
   }
 
   @Test

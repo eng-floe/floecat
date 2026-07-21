@@ -49,6 +49,7 @@ import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestDeltaFixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
+import ai.floedb.floecat.reconciler.impl.RemoteReconcileExecutorPoller;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
@@ -58,7 +59,7 @@ import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.ReconcilerWorkerLocalProfile;
-import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileJobMaintenanceService;
+import ai.floedb.floecat.service.reconciler.jobs.DurableReconcileJobStore;
 import ai.floedb.floecat.service.repo.impl.*;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
@@ -113,6 +114,7 @@ public class ConnectorIT {
       "/iceberg-fixtures/yb-iceberg-tpcds/"
           + YB_TPCDS_TABLE_DIR
           + "/20250821_110458_00081_wm2db-1c0c595a-f1e3-4d2b-ab20-5041cb4042b8_parquet__d53f2b42c191ac5a7f935bb7.parquet";
+  private static final long RECONCILE_TEST_MAINTENANCE_SLICE_MS = 250L;
 
   @GrpcClient("floecat")
   ConnectorsGrpc.ConnectorsBlockingStub connectors;
@@ -144,7 +146,8 @@ public class ConnectorIT {
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
   @Inject BlobStore blobs;
-  @Inject ReconcileJobMaintenanceService reconcileJobMaintenance;
+  @Inject DurableReconcileJobStore durableJobs;
+  @Inject RemoteReconcileExecutorPoller reconcileExecutorPoller;
 
   private ResourceId seedAccountId;
 
@@ -1426,6 +1429,7 @@ public class ConnectorIT {
     var deadline = System.nanoTime() + Duration.ofSeconds(300).toNanos();
     ReconcileJobStore.ReconcileJob job;
     for (; ; ) {
+      runReconcileJobMaintenance(deadline);
       job = getCanonicalJob(jobId);
       if (job != null
           && (isTerminal(job.state)
@@ -1453,20 +1457,14 @@ public class ConnectorIT {
   private ReconcileJobStore.ReconcileJob awaitAggregatePlanJob(
       ReconcileJobStore.ReconcileJob planJob, long deadlineNanos) throws Exception {
     ReconcileJobStore.ReconcileJob refreshedPlanJob = planJob;
-    List<ReconcileJobStore.ReconcileJob> descendantJobs = List.of();
     for (; ; ) {
+      runReconcileJobMaintenance(deadlineNanos);
       refreshedPlanJob = getCanonicalJob(planJob.jobId);
       if (refreshedPlanJob == null) {
         refreshedPlanJob = planJob;
       }
-      descendantJobs = descendantJobsFor(planJob);
-      if (!descendantJobs.isEmpty()
-          && descendantJobs.stream().allMatch(job -> isTerminal(job.state))) {
+      if (isTerminal(refreshedPlanJob.state)) {
         break;
-      }
-      if ("JS_FAILED".equals(refreshedPlanJob.state)
-          || "JS_CANCELLED".equals(refreshedPlanJob.state)) {
-        return refreshedPlanJob;
       }
       if (System.nanoTime() > deadlineNanos) {
         break;
@@ -1474,167 +1472,20 @@ public class ConnectorIT {
       Thread.sleep(250);
     }
 
-    if (descendantJobs.isEmpty()) {
-      return refreshedPlanJob;
+    if (isTerminal(refreshedPlanJob.state)) {
+      runReconcileProjectionMaintenance(System.nanoTime() + Duration.ofSeconds(5).toNanos());
+      return java.util.Objects.requireNonNullElse(
+          getProjectedJob(refreshedPlanJob.jobId), refreshedPlanJob);
     }
 
-    if ("JS_FAILED".equals(refreshedPlanJob.state)
-        || "JS_CANCELLED".equals(refreshedPlanJob.state)) {
-      long startedAtMs =
-          descendantJobs.stream()
-              .mapToLong(job -> job.startedAtMs)
-              .filter(v -> v > 0L)
-              .min()
-              .orElse(refreshedPlanJob.startedAtMs);
-      long finishedAtMs =
-          Math.max(
-              refreshedPlanJob.finishedAtMs,
-              descendantJobs.stream().mapToLong(job -> job.finishedAtMs).max().orElse(0L));
-      long tablesScanned =
-          Math.max(
-              refreshedPlanJob.tablesScanned,
-              descendantJobs.stream().mapToLong(job -> job.tablesScanned).sum());
-      long tablesChanged =
-          Math.max(
-              refreshedPlanJob.tablesChanged,
-              descendantJobs.stream().mapToLong(job -> job.tablesChanged).sum());
-      long viewsScanned =
-          Math.max(
-              refreshedPlanJob.viewsScanned,
-              descendantJobs.stream().mapToLong(job -> job.viewsScanned).sum());
-      long viewsChanged =
-          Math.max(
-              refreshedPlanJob.viewsChanged,
-              descendantJobs.stream().mapToLong(job -> job.viewsChanged).sum());
-      long errors =
-          Math.max(
-              refreshedPlanJob.errors, descendantJobs.stream().mapToLong(job -> job.errors).sum());
-      long snapshotsProcessed =
-          Math.max(
-              refreshedPlanJob.snapshotsProcessed, aggregateSnapshotsProcessed(descendantJobs));
-      long statsProcessed =
-          Math.max(refreshedPlanJob.statsProcessed, aggregateStatsProcessed(descendantJobs));
-
-      return new ReconcileJobStore.ReconcileJob(
-          refreshedPlanJob.jobId,
-          refreshedPlanJob.accountId,
-          refreshedPlanJob.connectorId,
-          refreshedPlanJob.state,
-          refreshedPlanJob.message,
-          startedAtMs,
-          finishedAtMs,
-          tablesScanned,
-          tablesChanged,
-          viewsScanned,
-          viewsChanged,
-          errors,
-          refreshedPlanJob.fullRescan,
-          refreshedPlanJob.captureMode,
-          snapshotsProcessed,
-          statsProcessed,
-          refreshedPlanJob.scope,
-          refreshedPlanJob.executionPolicy,
-          refreshedPlanJob.executorId,
-          refreshedPlanJob.jobKind,
-          refreshedPlanJob.tableTask,
-          refreshedPlanJob.parentJobId);
-    }
-
-    boolean failed = descendantJobs.stream().anyMatch(job -> "JS_FAILED".equals(job.state));
-    boolean cancelled = descendantJobs.stream().anyMatch(job -> "JS_CANCELLED".equals(job.state));
-    String state = failed ? "JS_FAILED" : (cancelled ? "JS_CANCELLED" : "JS_SUCCEEDED");
-    String message =
-        descendantJobs.stream()
-            .filter(job -> job.message != null && !job.message.isBlank())
-            .filter(job -> !"JS_SUCCEEDED".equals(job.state))
-            .map(job -> job.jobId + ": " + job.message)
-            .findFirst()
-            .orElse(refreshedPlanJob.message);
-
-    long startedAtMs =
-        descendantJobs.stream()
-            .mapToLong(job -> job.startedAtMs)
-            .filter(v -> v > 0L)
-            .min()
-            .orElse(refreshedPlanJob.startedAtMs);
-    long finishedAtMs =
-        descendantJobs.stream()
-            .mapToLong(job -> job.finishedAtMs)
-            .max()
-            .orElse(refreshedPlanJob.finishedAtMs);
-    long tablesScanned =
-        Math.max(
-            refreshedPlanJob.tablesScanned,
-            descendantJobs.stream().mapToLong(job -> job.tablesScanned).sum());
-    long tablesChanged =
-        Math.max(
-            refreshedPlanJob.tablesChanged,
-            descendantJobs.stream().mapToLong(job -> job.tablesChanged).sum());
-    long viewsScanned =
-        Math.max(
-            refreshedPlanJob.viewsScanned,
-            descendantJobs.stream().mapToLong(job -> job.viewsScanned).sum());
-    long viewsChanged =
-        Math.max(
-            refreshedPlanJob.viewsChanged,
-            descendantJobs.stream().mapToLong(job -> job.viewsChanged).sum());
-    long errors =
-        Math.max(
-            refreshedPlanJob.errors, descendantJobs.stream().mapToLong(job -> job.errors).sum());
-    long snapshotsProcessed =
-        Math.max(refreshedPlanJob.snapshotsProcessed, aggregateSnapshotsProcessed(descendantJobs));
-    long statsProcessed =
-        Math.max(refreshedPlanJob.statsProcessed, aggregateStatsProcessed(descendantJobs));
-
-    return new ReconcileJobStore.ReconcileJob(
-        refreshedPlanJob.jobId,
-        refreshedPlanJob.accountId,
-        refreshedPlanJob.connectorId,
-        state,
-        message,
-        startedAtMs,
-        finishedAtMs,
-        tablesScanned,
-        tablesChanged,
-        viewsScanned,
-        viewsChanged,
-        errors,
-        refreshedPlanJob.fullRescan,
-        refreshedPlanJob.captureMode,
-        snapshotsProcessed,
-        statsProcessed,
-        refreshedPlanJob.scope,
-        refreshedPlanJob.executionPolicy,
-        refreshedPlanJob.executorId,
-        refreshedPlanJob.jobKind,
-        refreshedPlanJob.tableTask,
-        refreshedPlanJob.parentJobId);
-  }
-
-  private List<ReconcileJobStore.ReconcileJob> childJobsFor(
-      ReconcileJobStore.ReconcileJob planJob) {
-    return childJobs(planJob.accountId, planJob.jobId);
-  }
-
-  private List<ReconcileJobStore.ReconcileJob> descendantJobsFor(
-      ReconcileJobStore.ReconcileJob rootJob) {
-    List<ReconcileJobStore.ReconcileJob> descendants = new ArrayList<>();
-    List<ReconcileJobStore.ReconcileJob> frontier = childJobsFor(rootJob);
-    while (!frontier.isEmpty()) {
-      descendants.addAll(frontier);
-      frontier =
-          frontier.stream()
-              .filter(job -> job.jobKind != ReconcileJobKind.EXEC_FILE_GROUP)
-              .flatMap(job -> childJobsFor(job).stream())
-              .toList();
-    }
-    return descendants;
+    return refreshedPlanJob;
   }
 
   private List<ReconcileJobStore.ReconcileJob> awaitJobsTerminal(
       List<ReconcileJobStore.ReconcileJob> jobsToAwait, long deadlineNanos) throws Exception {
     List<ReconcileJobStore.ReconcileJob> current = jobsToAwait;
     for (; ; ) {
+      runReconcileJobMaintenance(deadlineNanos);
       current =
           current.stream()
               .map(job -> java.util.Objects.requireNonNullElse(getCanonicalJob(job.jobId), job))
@@ -1675,28 +1526,6 @@ public class ConnectorIT {
       }
     }
     return scope.toBuilder().setCapturePolicy(policy.build()).build();
-  }
-
-  private long aggregateSnapshotsProcessed(List<ReconcileJobStore.ReconcileJob> jobs) {
-    return jobs.stream()
-        .filter(job -> job.jobKind != ReconcileJobKind.EXEC_FILE_GROUP)
-        .filter(
-            job ->
-                job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
-                    || !supportsChildAggregation(job.jobKind)
-                    || childJobsFor(job).isEmpty())
-        .mapToLong(job -> job.snapshotsProcessed)
-        .sum();
-  }
-
-  private static boolean supportsChildAggregation(ReconcileJobKind jobKind) {
-    return jobKind == ReconcileJobKind.PLAN_CONNECTOR
-        || jobKind == ReconcileJobKind.PLAN_TABLE
-        || jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
-  }
-
-  private static long aggregateStatsProcessed(List<ReconcileJobStore.ReconcileJob> jobs) {
-    return jobs.stream().mapToLong(job -> job.statsProcessed).sum();
   }
 
   private static void assertPlanJobInProgressOrSucceeded(ReconcileJobStore.ReconcileJob planJob) {
@@ -3005,6 +2834,43 @@ public class ConnectorIT {
     return jobs.getLeaseView(jobId).orElse(null);
   }
 
+  private ReconcileJobStore.ReconcileJob getProjectedJob(String jobId) {
+    if (jobId == null || jobId.isBlank()) {
+      return null;
+    }
+    return jobs.get(jobId).orElse(null);
+  }
+
+  private void runReconcileJobMaintenance(long deadlineNanos) throws InterruptedException {
+    long maxMillis = maintenanceSliceMillis(deadlineNanos);
+    if (maxMillis <= 0L) {
+      return;
+    }
+    durableJobs.runReadyIndexMaintenanceOnce(maxMillis);
+    durableJobs.runLeaseMaintenanceOnce(maxMillis);
+    durableJobs.runCancellationMaintenanceOnce(maxMillis);
+    reconcileExecutorPoller.drainAndAwaitIdle(maxMillis);
+  }
+
+  private void runReconcileProjectionMaintenance(long deadlineNanos) throws InterruptedException {
+    for (int i = 0; i < 8; i++) {
+      long maxMillis = maintenanceSliceMillis(deadlineNanos);
+      if (maxMillis <= 0L) {
+        return;
+      }
+      durableJobs.runProjectionMaintenanceOnce(maxMillis);
+    }
+  }
+
+  private static long maintenanceSliceMillis(long deadlineNanos) {
+    long remainingNanos = deadlineNanos - System.nanoTime();
+    if (remainingNanos <= 0L) {
+      return 0L;
+    }
+    long remainingMillis = Math.max(1L, (remainingNanos + 999_999L) / 1_000_000L);
+    return Math.min(RECONCILE_TEST_MAINTENANCE_SLICE_MS, remainingMillis);
+  }
+
   private ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse awaitReconcileJobResponse(
       String jobId,
       Predicate<ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse> predicate,
@@ -3013,7 +2879,8 @@ public class ConnectorIT {
     long deadline = System.nanoTime() + timeout.toNanos();
     ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse response = null;
     do {
-      reconcileJobMaintenance.runProjectionMaintenanceOnce(10_000L);
+      runReconcileJobMaintenance(deadline);
+      runReconcileProjectionMaintenance(deadline);
       response =
           reconcileControl.getReconcileJob(
               GetReconcileJobRequest.newBuilder().setJobId(jobId).build());

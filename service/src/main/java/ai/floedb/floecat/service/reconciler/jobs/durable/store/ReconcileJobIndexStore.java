@@ -21,6 +21,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueItemResult
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -33,6 +34,12 @@ public interface ReconcileJobIndexStore {
   record CanonicalEnvelope(String canonicalPointerKey, StoredReconcileJob record) {}
 
   record StoredJobPage(List<StoredReconcileJob> records, String nextPageToken) {}
+
+  record IndexBackfillResult(boolean updated, boolean retryable) {
+    public static IndexBackfillResult unchanged() {
+      return new IndexBackfillResult(false, false);
+    }
+  }
 
   record ReadyQueueWrite(
       String readyPointerKey, String canonicalPointerKey, PointerReferenceKind referenceKind) {}
@@ -47,19 +54,101 @@ public interface ReconcileJobIndexStore {
     }
   }
 
-  sealed interface JobIndexWriteOp permits JobIndexUpsert, JobIndexDelete {}
+  sealed interface JobIndexWriteOp
+      permits JobIndexUpsert, JobIndexDelete, JobIndexCheck, JobIndexCheckAbsent {}
 
   record JobIndexUpsert(
-      String pointerKey, long expectedVersion, String blobUri, PointerReferenceKind referenceKind)
-      implements JobIndexWriteOp {}
+      String pointerKey,
+      long expectedVersion,
+      String blobUri,
+      PointerReferenceKind referenceKind,
+      ReconcileJobIndexCleanupManifest cleanupManifest)
+      implements JobIndexWriteOp {
+    public JobIndexUpsert {
+      cleanupManifest =
+          cleanupManifest == null ? ReconcileJobIndexCleanupManifest.EMPTY : cleanupManifest;
+    }
 
-  record JobIndexDelete(String pointerKey, long expectedVersion) implements JobIndexWriteOp {}
+    public JobIndexUpsert(
+        String pointerKey,
+        long expectedVersion,
+        String blobUri,
+        PointerReferenceKind referenceKind) {
+      this(
+          pointerKey,
+          expectedVersion,
+          blobUri,
+          referenceKind,
+          ReconcileJobIndexCleanupManifest.EMPTY);
+    }
+  }
+
+  record JobIndexDelete(
+      String pointerKey,
+      long expectedVersion,
+      String expectedCanonicalPointerKey,
+      String expectedLookupStoragePartitionKey,
+      boolean requireCleanupLock,
+      boolean allowAbsent)
+      implements JobIndexWriteOp {
+    public JobIndexDelete {
+      expectedCanonicalPointerKey =
+          expectedCanonicalPointerKey == null ? "" : expectedCanonicalPointerKey;
+      expectedLookupStoragePartitionKey =
+          expectedLookupStoragePartitionKey == null ? "" : expectedLookupStoragePartitionKey;
+    }
+
+    public JobIndexDelete(
+        String pointerKey,
+        long expectedVersion,
+        String expectedCanonicalPointerKey,
+        String expectedLookupStoragePartitionKey) {
+      this(
+          pointerKey,
+          expectedVersion,
+          expectedCanonicalPointerKey,
+          expectedLookupStoragePartitionKey,
+          false,
+          false);
+    }
+
+    public JobIndexDelete(
+        String pointerKey, long expectedVersion, String expectedCanonicalPointerKey) {
+      this(pointerKey, expectedVersion, expectedCanonicalPointerKey, "", false, false);
+    }
+
+    public JobIndexDelete(String pointerKey, long expectedVersion) {
+      this(pointerKey, expectedVersion, "", "", false, false);
+    }
+  }
+
+  record JobIndexCheck(String pointerKey, long expectedVersion, boolean requireCleanupLock)
+      implements JobIndexWriteOp {
+    public JobIndexCheck(String pointerKey, long expectedVersion) {
+      this(pointerKey, expectedVersion, false);
+    }
+  }
+
+  record JobIndexCheckAbsent(String pointerKey) implements JobIndexWriteOp {}
 
   record JobIndexWriteBatch(List<JobIndexWriteOp> writes, ReadyQueueMutation readyMutation) {
     public static JobIndexWriteBatch empty() {
       return new JobIndexWriteBatch(List.of(), ReadyQueueMutation.empty());
     }
   }
+
+  record JobWritePlan<T>(
+      T subject, JobIndexWriteBatch indexBatch, List<PointerStore.CasOp> extraPointerOps) {
+    public JobWritePlan {
+      indexBatch = indexBatch == null ? JobIndexWriteBatch.empty() : indexBatch;
+      extraPointerOps = extraPointerOps == null ? List.of() : List.copyOf(extraPointerOps);
+    }
+  }
+
+  record JobWriteChunk<T>(
+      List<JobWritePlan<T>> plans,
+      JobIndexWriteBatch indexBatch,
+      List<PointerStore.CasOp> extraPointerOps) {}
 
   record CanonicalRecordMutation(
       CanonicalPointerSnapshot snapshot, StoredReconcileJob previous, StoredReconcileJob current) {}
@@ -85,6 +174,8 @@ public interface ReconcileJobIndexStore {
     }
 
     public List<Integer> rollbackIndexes() {
+      // Only entries from batches that were never attempted are safe to roll back. The batch that
+      // raised the exception may have committed remotely before the client observed the failure.
       return rollbackIndexes;
     }
   }
@@ -130,6 +221,8 @@ public interface ReconcileJobIndexStore {
   StoredJobPage listStoredJobs(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states);
 
+  StoredJobPage listStoredJobsInState(String state, int pageSize, String pageToken);
+
   StoredJobPage listStoredChildJobs(
       String accountId, String parentJobId, int pageSize, String pageToken);
 
@@ -146,9 +239,38 @@ public interface ReconcileJobIndexStore {
       StoredReconcileJob previous,
       StoredReconcileJob current);
 
+  JobIndexWriteBatch buildJobDeleteBatch(CanonicalPointerSnapshot currentSnapshot);
+
+  JobIndexWriteBatch buildReadableLegacyJobDeleteBatch(
+      CanonicalPointerSnapshot currentSnapshot, StoredReconcileJob readableRecord);
+
+  JobIndexWriteBatch buildDiscoveredLegacyJobDeleteBatch(
+      CanonicalPointerSnapshot currentSnapshot, ReconcileJobIndexCleanupManifest manifest);
+
+  IndexBackfillResult backfillStoredJobIndexes(String canonicalPointerKey);
+
+  int writeItemCount(JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps);
+
+  int maxWriteItemsPerBatch();
+
+  <T> List<JobWriteChunk<T>> chunkJobWritePlans(List<JobWritePlan<T>> plans);
+
+  <T> List<JobWriteChunk<T>> chunkOversizedJobDeletePlan(JobWritePlan<T> plan);
+
   JobIndexWriteBatch combineWriteBatches(List<JobIndexWriteBatch> batches);
 
+  boolean commitReadyQueueRepairBatch(
+      List<CanonicalRecordMutation> mutations, List<ReadyQueueWrite> readyWrites);
+
   boolean compareAndSetCanonicalMutations(List<CanonicalRecordMutation> mutations);
+
+  default boolean compareAndSetBatchWithPointerOps(
+      JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
+    if (extraPointerOps != null && !extraPointerOps.isEmpty()) {
+      return false;
+    }
+    return compareAndSetCanonicalMutations(List.of());
+  }
 
   StoredReconcileJob cloneStoredRecord(StoredReconcileJob source);
 

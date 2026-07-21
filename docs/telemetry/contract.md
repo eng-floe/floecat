@@ -68,6 +68,15 @@ This lists all metrics currently available in the repository:
 | floecat.service.flight.inflight | GAUGE |  | v1 | Current number of in-flight Flight streams. | component, operation | component, operation, resource |
 | floecat.service.flight.latency | TIMER | ms | v1 | Flight request latency by operation, table, and terminal status. | component, operation, status | component, operation, reason, resource, status |
 | floecat.service.flight.requests.total | COUNTER |  | v1 | Total Flight requests by operation, table, and terminal status. | component, operation, status | component, operation, reason, resource, status |
+| floecat.service.gc.cas.delete_unsupported_accounts | GAUGE |  | v1 | Accounts whose CAS GC sweep was skipped because immutable version deletes are unsupported. | component, operation | component, operation |
+| floecat.service.gc.cas.oldest_sweep_age | GAUGE | ms | v1 | Age in milliseconds of the least-recently cleanly-swept CAS GC account. | component, operation | component, operation |
+| floecat.service.gc.cas.poisoned_accounts | GAUGE |  | v1 | Accounts whose CAS GC delete phase was poisoned in the last tick. | component, operation | component, operation |
+| floecat.service.gc.reconcile_jobs.account_page.index | GAUGE | count | v1 | Current reconcile job GC index within the cached account page. | component, operation | component, operation |
+| floecat.service.gc.reconcile_jobs.account_page.size | GAUGE | count | v1 | Current reconcile job GC cached account page size. | component, operation | component, operation |
+| floecat.service.gc.reconcile_jobs.account_tokens.active | GAUGE | count | v1 | Accounts with active reconcile job GC continuation tokens. | component, operation | component, operation |
+| floecat.service.gc.reconcile_jobs.accounts.last_tick | GAUGE | count | v1 | Reconcile job GC accounts processed in the last completed tick. | component, operation | component, operation |
+| floecat.service.gc.reconcile_jobs.deleted.last_tick | GAUGE | count | v1 | Reconcile job GC pointer/blob deletes completed in the last completed tick. | component, operation | component, operation |
+| floecat.service.gc.reconcile_jobs.quarantined.last_tick | GAUGE | count | v1 | Unreadable reconcile job GC payloads retained in the last completed tick. | component, operation | component, operation |
 | floecat.service.reconcile.cancel_job.total | COUNTER |  | v1 | CancelReconcileJob request outcomes. | component, operation, result | component, operation, reason, result |
 | floecat.service.reconcile.capture_now.total | COUNTER |  | v1 | CaptureNow request outcomes by trigger type. | component, operation, result, trigger | component, operation, reason, result, trigger |
 | floecat.service.reconcile.errors.total | COUNTER |  | v1 | Errors recorded by reconcile jobs. | component, mode, operation, result | component, mode, operation, reason, result |
@@ -78,6 +87,13 @@ This lists all metrics currently available in the repository:
 | floecat.service.reconcile.jobs.queued | GAUGE |  | v1 | Current number of queued reconcile jobs. | component, operation | component, operation |
 | floecat.service.reconcile.jobs.running | GAUGE |  | v1 | Current number of running reconcile jobs. | component, operation | component, operation |
 | floecat.service.reconcile.jobs.total | COUNTER |  | v1 | Reconcile job terminal outcomes by execution mode. | component, mode, operation, result | component, mode, operation, reason, result |
+| floecat.service.reconcile.lease_next.candidates | SUMMARY | count | v1 | Number of ready-queue candidates examined by each durable reconcile leaseNext call. | component, operation, result | component, operation, result |
+| floecat.service.reconcile.lease_next.latency | TIMER | ms | v1 | Durable reconcile leaseNext latency by terminal outcome. | component, operation, result | component, operation, result |
+| floecat.service.reconcile.lease_next.outcomes.total | COUNTER |  | v1 | Durable reconcile leaseNext outcomes. | component, operation, result | component, operation, result |
+| floecat.service.reconcile.lease_next.scans | SUMMARY | count | v1 | Number of ready-queue slice scans performed by each durable reconcile leaseNext call. | component, operation, result | component, operation, result |
+| floecat.service.reconcile.lease_next.skips.total | COUNTER |  | v1 | Ready-queue candidates skipped by durable reconcile leaseNext, grouped by reason. | component, operation, reason | component, operation, reason |
+| floecat.service.reconcile.lease_scan.permits.available | GAUGE | count | v1 | Current number of durable reconcile lease scan permits available. | component, operation | component, operation |
+| floecat.service.reconcile.lease_scan.permits.in_use | GAUGE | count | v1 | Current number of durable reconcile lease scan permits in use. | component, operation | component, operation |
 | floecat.service.reconcile.list_jobs.total | COUNTER |  | v1 | ListReconcileJobs request outcomes. | component, operation, result | component, operation, reason, result |
 | floecat.service.reconcile.planner.enqueue.total | COUNTER |  | v1 | Automatic reconcile planner enqueue decisions by mode. | component, mode, operation, result | component, mode, operation, reason, result |
 | floecat.service.reconcile.planner.tick.latency | TIMER | ms | v1 | Automatic reconcile planner tick latency. | component, operation, result | component, operation, reason, result |
@@ -94,6 +110,7 @@ This lists all metrics currently available in the repository:
 | floecat.service.stats.batch_groups.total | COUNTER |  | v1 | Stats batch request groups processed. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
 | floecat.service.stats.batch_items.total | COUNTER |  | v1 | Stats batch item counters (untagged series tracks submitted items; tagged series with result=* tracks per-outcome items; query with result tag filters to avoid double-counting). | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
 | floecat.service.stats.engine_batch_calls.total | COUNTER |  | v1 | Stats engine batch capture calls. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
+| floecat.service.stats.planner_lookup_outcomes.total | COUNTER |  | v1 | Planner stats lookup outcomes by the ladder rung that served or failed each target. | component, operation, result | component, operation, result |
 | floecat.service.stats.store_hits.total | COUNTER |  | v1 | Stats store hit count for batch resolution. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
 | floecat.service.stats.store_misses.total | COUNTER |  | v1 | Stats store miss count for batch resolution. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
 | floecat.service.stats.sync.latency | TIMER | ms | v1 | End-to-end latency of a single sync-first resolution attempt including store reads. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |

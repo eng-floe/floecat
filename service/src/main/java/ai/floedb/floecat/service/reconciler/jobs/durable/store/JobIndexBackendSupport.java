@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.service.repo.model.Keys;
+import java.util.List;
 
 final class JobIndexBackendSupport {
   static final String KIND_CANONICAL_JOB = "ReconcileJobCanonical";
@@ -36,22 +37,88 @@ final class JobIndexBackendSupport {
   static final String ATTR_PARENT_JOB_ID = "parent_job_id";
   static final String ATTR_DEDUPE_KEY_HASH = "dedupe_key_hash";
   static final String ATTR_BLOB_URI = "blob_uri";
+  static final String ATTR_CLEANUP_INDEX_POINTER_KEYS = "cleanup_index_pointer_keys";
+  static final String ATTR_CLEANUP_READY_POINTER_KEYS = "cleanup_ready_pointer_keys";
+  static final String ATTR_CLEANUP_POINTER_KEYS = "cleanup_pointer_keys";
+  static final String ATTR_CLEANUP_LEGACY_INDEX_POINTER_KEYS = "cleanup_legacy_index_pointer_keys";
+  static final String ATTR_CLEANUP_LEGACY_READY_POINTER_KEYS = "cleanup_legacy_ready_pointer_keys";
+  static final String ATTR_CLEANUP_MANIFEST_COMPLETE = "cleanup_manifest_complete";
+  static final String ATTR_CLEANUP_LEGACY_SCAN_REQUIRED = "cleanup_legacy_scan_required";
+  static final String ATTR_CLEANUP_LEGACY_SCAN_CURSOR = "cleanup_legacy_scan_cursor";
+  static final String ATTR_CLEANUP_LEGACY_SCAN_DRAINED = "cleanup_legacy_scan_drained";
+  static final String ATTR_CLEANUP_DELETE_IN_PROGRESS = "cleanup_delete_in_progress";
+  private static final String ACCOUNT_SEGMENT_PLACEHOLDER = "__account__";
+  private static final String PARENT_SEGMENT_PLACEHOLDER = "__parent__";
+  private static final String CONNECTOR_SEGMENT_PLACEHOLDER = "__connector__";
+  private static final String STATE_SEGMENT_PLACEHOLDER = "__state__";
+  private static final String ACCOUNT_ROOT_PREFIX = stripLeadingSlash(Keys.accountRootPrefix());
+  private static final String CANONICAL_JOB_MARKER =
+      accountScopedMarker(Keys.reconcileJobPointerByIdPrefix(ACCOUNT_SEGMENT_PLACEHOLDER));
+  private static final String LOOKUP_JOB_PREFIX =
+      stripLeadingSlash(Keys.reconcileJobLookupPointerByIdPrefix());
+  private static final String PARENT_JOB_MARKER =
+      accountScopedMarkerBefore(
+          Keys.reconcileJobByParentPointerPrefix(
+              ACCOUNT_SEGMENT_PLACEHOLDER, PARENT_SEGMENT_PLACEHOLDER),
+          PARENT_SEGMENT_PLACEHOLDER);
+  private static final String CONNECTOR_JOB_MARKER =
+      accountScopedMarkerBefore(
+          Keys.reconcileJobByConnectorPointerPrefix(
+              ACCOUNT_SEGMENT_PLACEHOLDER, CONNECTOR_SEGMENT_PLACEHOLDER),
+          CONNECTOR_SEGMENT_PLACEHOLDER);
+  private static final String GLOBAL_STATE_PREFIX =
+      stripLeadingSlash(Keys.reconcileJobByStatePointerPrefix());
+  private static final String ACCOUNT_STATE_MARKER =
+      accountScopedMarkerBefore(
+          Keys.reconcileJobByAccountStatePointerPrefix(
+              ACCOUNT_SEGMENT_PLACEHOLDER, STATE_SEGMENT_PLACEHOLDER),
+          STATE_SEGMENT_PLACEHOLDER);
+  private static final String CONNECTOR_STATE_MARKER =
+      accountScopedMarkerBefore(
+          Keys.reconcileJobByConnectorStatePointerPrefix(
+              ACCOUNT_SEGMENT_PLACEHOLDER,
+              CONNECTOR_SEGMENT_PLACEHOLDER,
+              STATE_SEGMENT_PLACEHOLDER),
+          CONNECTOR_SEGMENT_PLACEHOLDER);
+  private static final String DEDUPE_MARKER =
+      accountScopedMarker(Keys.reconcileDedupePointerPrefix(ACCOUNT_SEGMENT_PLACEHOLDER));
 
   private JobIndexBackendSupport() {}
 
+  static boolean validCleanupPointerKey(String pointerKey) {
+    if (pointerKey == null || !pointerKey.startsWith("/accounts/")) {
+      return false;
+    }
+    return pointerKey.contains("/reconcile/jobs/projections/by-id/")
+        || pointerKey.contains("/reconcile/jobs/root-summaries/by-account/")
+        || pointerKey.contains("/reconcile/jobs/root-summaries/by-connector/");
+  }
+
+  static boolean validCleanupIndexPointerKey(String pointerKey) {
+    return parseLookupKey(pointerKey) != null
+        || parseDedupeKey(pointerKey) != null
+        || parseParentKey(pointerKey) != null
+        || parseConnectorKey(pointerKey) != null
+        || parseGlobalStateKey(pointerKey) != null
+        || parseAccountStateKey(pointerKey) != null
+        || parseConnectorStateKey(pointerKey) != null;
+  }
+
   static CanonicalJobKey parseCanonicalJobKey(String pointerKey) {
     String normalized = stripLeadingSlash(pointerKey);
-    if (!normalized.startsWith("accounts/")) {
+    if (!normalized.startsWith(ACCOUNT_ROOT_PREFIX)) {
       return null;
     }
-    String marker = "/reconcile/jobs/by-id/";
-    int markerIndex = normalized.indexOf(marker);
+    int markerIndex = normalized.indexOf(CANONICAL_JOB_MARKER);
     if (markerIndex < 0) {
       return null;
     }
-    String accountSegment = normalized.substring("accounts/".length(), markerIndex);
-    String jobSegment = normalized.substring(markerIndex + marker.length());
+    String accountSegment = normalized.substring(ACCOUNT_ROOT_PREFIX.length(), markerIndex);
+    String jobSegment = normalized.substring(markerIndex + CANONICAL_JOB_MARKER.length());
     if (accountSegment.isBlank() || jobSegment.isBlank()) {
+      return null;
+    }
+    if (isReservedAccountSegment(accountSegment)) {
       return null;
     }
     return new CanonicalJobKey(pointerKey, accountSegment, jobSegment);
@@ -59,11 +126,10 @@ final class JobIndexBackendSupport {
 
   static LookupKey parseLookupKey(String pointerKey) {
     String normalized = stripLeadingSlash(pointerKey);
-    String prefix = "accounts/by-id/reconcile/jobs/by-id/";
-    if (!normalized.startsWith(prefix)) {
+    if (!normalized.startsWith(LOOKUP_JOB_PREFIX)) {
       return null;
     }
-    String jobSegment = normalized.substring(prefix.length());
+    String jobSegment = normalized.substring(LOOKUP_JOB_PREFIX.length());
     if (jobSegment.isBlank()) {
       return null;
     }
@@ -72,23 +138,25 @@ final class JobIndexBackendSupport {
 
   static ParentKey parseParentKey(String pointerKey) {
     String normalized = stripLeadingSlash(pointerKey);
-    if (!normalized.startsWith("accounts/")) {
+    if (!normalized.startsWith(ACCOUNT_ROOT_PREFIX)) {
       return null;
     }
-    String marker = "/reconcile/jobs/by-parent/";
-    int markerIndex = normalized.indexOf(marker);
+    int markerIndex = normalized.indexOf(PARENT_JOB_MARKER);
     if (markerIndex < 0) {
       return null;
     }
-    String accountSegment = normalized.substring("accounts/".length(), markerIndex);
-    String remainder = normalized.substring(markerIndex + marker.length());
+    String accountSegment = normalized.substring(ACCOUNT_ROOT_PREFIX.length(), markerIndex);
+    String remainder = normalized.substring(markerIndex + PARENT_JOB_MARKER.length());
     int slash = remainder.indexOf('/');
     if (slash < 0) {
       return null;
     }
     String parentSegment = remainder.substring(0, slash);
     String jobSegment = remainder.substring(slash + 1);
-    if (accountSegment.isBlank() || parentSegment.isBlank() || jobSegment.isBlank()) {
+    if (accountSegment.isBlank()
+        || isReservedAccountSegment(accountSegment)
+        || parentSegment.isBlank()
+        || jobSegment.isBlank()) {
       return null;
     }
     return new ParentKey(pointerKey, accountSegment, parentSegment, jobSegment);
@@ -96,23 +164,25 @@ final class JobIndexBackendSupport {
 
   static ConnectorKey parseConnectorKey(String pointerKey) {
     String normalized = stripLeadingSlash(pointerKey);
-    if (!normalized.startsWith("accounts/")) {
+    if (!normalized.startsWith(ACCOUNT_ROOT_PREFIX)) {
       return null;
     }
-    String marker = "/reconcile/jobs/by-connector/";
-    int markerIndex = normalized.indexOf(marker);
+    int markerIndex = normalized.indexOf(CONNECTOR_JOB_MARKER);
     if (markerIndex < 0) {
       return null;
     }
-    String accountSegment = normalized.substring("accounts/".length(), markerIndex);
-    String remainder = normalized.substring(markerIndex + marker.length());
+    String accountSegment = normalized.substring(ACCOUNT_ROOT_PREFIX.length(), markerIndex);
+    String remainder = normalized.substring(markerIndex + CONNECTOR_JOB_MARKER.length());
     int slash = remainder.indexOf('/');
     if (slash < 0) {
       return null;
     }
     String connectorSegment = remainder.substring(0, slash);
     String token = remainder.substring(slash + 1);
-    if (accountSegment.isBlank() || connectorSegment.isBlank() || token.isBlank()) {
+    if (accountSegment.isBlank()
+        || isReservedAccountSegment(accountSegment)
+        || connectorSegment.isBlank()
+        || token.isBlank()) {
       return null;
     }
     return new ConnectorKey(pointerKey, accountSegment, connectorSegment, token);
@@ -120,11 +190,10 @@ final class JobIndexBackendSupport {
 
   static GlobalStateKey parseGlobalStateKey(String pointerKey) {
     String normalized = stripLeadingSlash(pointerKey);
-    String prefix = "accounts/by-id/reconcile/jobs/by-state/";
-    if (!normalized.startsWith(prefix)) {
+    if (!normalized.startsWith(GLOBAL_STATE_PREFIX)) {
       return null;
     }
-    String remainder = normalized.substring(prefix.length());
+    String remainder = normalized.substring(GLOBAL_STATE_PREFIX.length());
     String[] parts = remainder.split("/", 4);
     if (parts.length != 4) {
       return null;
@@ -137,21 +206,21 @@ final class JobIndexBackendSupport {
 
   static AccountStateKey parseAccountStateKey(String pointerKey) {
     String normalized = stripLeadingSlash(pointerKey);
-    if (!normalized.startsWith("accounts/")) {
+    if (!normalized.startsWith(ACCOUNT_ROOT_PREFIX)) {
       return null;
     }
-    String marker = "/reconcile/jobs/by-state/";
-    int markerIndex = normalized.indexOf(marker);
+    int markerIndex = normalized.indexOf(ACCOUNT_STATE_MARKER);
     if (markerIndex < 0) {
       return null;
     }
-    String accountSegment = normalized.substring("accounts/".length(), markerIndex);
-    String remainder = normalized.substring(markerIndex + marker.length());
+    String accountSegment = normalized.substring(ACCOUNT_ROOT_PREFIX.length(), markerIndex);
+    String remainder = normalized.substring(markerIndex + ACCOUNT_STATE_MARKER.length());
     String[] parts = remainder.split("/", 3);
     if (parts.length != 3) {
       return null;
     }
     if (accountSegment.isBlank()
+        || isReservedAccountSegment(accountSegment)
         || parts[0].isBlank()
         || parts[1].isBlank()
         || parts[2].isBlank()) {
@@ -162,21 +231,21 @@ final class JobIndexBackendSupport {
 
   static ConnectorStateKey parseConnectorStateKey(String pointerKey) {
     String normalized = stripLeadingSlash(pointerKey);
-    if (!normalized.startsWith("accounts/")) {
+    if (!normalized.startsWith(ACCOUNT_ROOT_PREFIX)) {
       return null;
     }
-    String marker = "/reconcile/jobs/by-connector-state/";
-    int markerIndex = normalized.indexOf(marker);
+    int markerIndex = normalized.indexOf(CONNECTOR_STATE_MARKER);
     if (markerIndex < 0) {
       return null;
     }
-    String accountSegment = normalized.substring("accounts/".length(), markerIndex);
-    String remainder = normalized.substring(markerIndex + marker.length());
+    String accountSegment = normalized.substring(ACCOUNT_ROOT_PREFIX.length(), markerIndex);
+    String remainder = normalized.substring(markerIndex + CONNECTOR_STATE_MARKER.length());
     String[] parts = remainder.split("/", 4);
     if (parts.length != 4) {
       return null;
     }
     if (accountSegment.isBlank()
+        || isReservedAccountSegment(accountSegment)
         || parts[0].isBlank()
         || parts[1].isBlank()
         || parts[2].isBlank()
@@ -189,17 +258,18 @@ final class JobIndexBackendSupport {
 
   static DedupeKey parseDedupeKey(String pointerKey) {
     String normalized = stripLeadingSlash(pointerKey);
-    if (!normalized.startsWith("accounts/")) {
+    if (!normalized.startsWith(ACCOUNT_ROOT_PREFIX)) {
       return null;
     }
-    String marker = "/reconcile/dedupe/";
-    int markerIndex = normalized.indexOf(marker);
+    int markerIndex = normalized.indexOf(DEDUPE_MARKER);
     if (markerIndex < 0) {
       return null;
     }
-    String accountSegment = normalized.substring("accounts/".length(), markerIndex);
-    String hashSegment = normalized.substring(markerIndex + marker.length());
-    if (accountSegment.isBlank() || hashSegment.isBlank()) {
+    String accountSegment = normalized.substring(ACCOUNT_ROOT_PREFIX.length(), markerIndex);
+    String hashSegment = normalized.substring(markerIndex + DEDUPE_MARKER.length());
+    if (accountSegment.isBlank()
+        || isReservedAccountSegment(accountSegment)
+        || hashSegment.isBlank()) {
       return null;
     }
     return new DedupeKey(pointerKey, accountSegment, hashSegment);
@@ -207,16 +277,15 @@ final class JobIndexBackendSupport {
 
   static DedupeKey parseDedupePrefix(String prefix) {
     String normalized = stripLeadingSlash(prefix);
-    if (!normalized.startsWith("accounts/") || !normalized.endsWith("/")) {
+    if (!normalized.startsWith(ACCOUNT_ROOT_PREFIX) || !normalized.endsWith("/")) {
       return null;
     }
-    String marker = "/reconcile/dedupe/";
-    int markerIndex = normalized.indexOf(marker);
+    int markerIndex = normalized.indexOf(DEDUPE_MARKER);
     if (markerIndex < 0) {
       return null;
     }
-    String accountSegment = normalized.substring("accounts/".length(), markerIndex);
-    if (accountSegment.isBlank()) {
+    String accountSegment = normalized.substring(ACCOUNT_ROOT_PREFIX.length(), markerIndex);
+    if (accountSegment.isBlank() || isReservedAccountSegment(accountSegment)) {
       return null;
     }
     return new DedupeKey(prefix + "__hash__", accountSegment, "__hash__");
@@ -273,8 +342,24 @@ final class JobIndexBackendSupport {
     return "reconcile-job-lookup";
   }
 
+  static String legacyLookupPartitionKey() {
+    return "reconcile-job/by-id";
+  }
+
   static String lookupSortKey(LookupKey key) {
     return "job/" + key.jobSegment();
+  }
+
+  static LookupStorageKey currentLookupStorageKey(LookupKey key) {
+    return new LookupStorageKey(lookupPartitionKey(), lookupSortKey(key));
+  }
+
+  static LookupStorageKey legacyLookupStorageKey(LookupKey key) {
+    return new LookupStorageKey(legacyLookupPartitionKey(), lookupSortKey(key));
+  }
+
+  static List<LookupStorageKey> lookupReadStorageKeys(LookupKey key) {
+    return List.of(currentLookupStorageKey(key), legacyLookupStorageKey(key));
   }
 
   static String parentPartitionKey(ParentKey key) {
@@ -335,19 +420,22 @@ final class JobIndexBackendSupport {
     if (!normalized.endsWith("/")) {
       return null;
     }
-    if (!normalized.startsWith("accounts/")) {
+    if (!normalized.startsWith(ACCOUNT_ROOT_PREFIX)) {
       return null;
     }
-    String marker = "/reconcile/jobs/by-id/";
-    int markerIndex = normalized.indexOf(marker);
+    int markerIndex = normalized.indexOf(CANONICAL_JOB_MARKER);
     if (markerIndex < 0) {
       return null;
     }
-    String accountSegment = normalized.substring("accounts/".length(), markerIndex);
-    if (accountSegment.isBlank()) {
+    String accountSegment = normalized.substring(ACCOUNT_ROOT_PREFIX.length(), markerIndex);
+    if (accountSegment.isBlank() || isReservedAccountSegment(accountSegment)) {
       return null;
     }
     return new CanonicalJobKey(prefix + "__job__", accountSegment, "__job__");
+  }
+
+  private static boolean isReservedAccountSegment(String accountSegment) {
+    return Keys.isReservedAccountDirectorySegment(accountSegment);
   }
 
   static ParentKey parseParentPrefix(String prefix) {
@@ -355,18 +443,19 @@ final class JobIndexBackendSupport {
     if (!normalized.endsWith("/")) {
       return null;
     }
-    if (!normalized.startsWith("accounts/")) {
+    if (!normalized.startsWith(ACCOUNT_ROOT_PREFIX)) {
       return null;
     }
-    String marker = "/reconcile/jobs/by-parent/";
-    int markerIndex = normalized.indexOf(marker);
+    int markerIndex = normalized.indexOf(PARENT_JOB_MARKER);
     if (markerIndex < 0) {
       return null;
     }
-    String accountSegment = normalized.substring("accounts/".length(), markerIndex);
+    String accountSegment = normalized.substring(ACCOUNT_ROOT_PREFIX.length(), markerIndex);
     String parentSegment =
-        normalized.substring(markerIndex + marker.length(), normalized.length() - 1);
-    if (accountSegment.isBlank() || parentSegment.isBlank()) {
+        normalized.substring(markerIndex + PARENT_JOB_MARKER.length(), normalized.length() - 1);
+    if (accountSegment.isBlank()
+        || isReservedAccountSegment(accountSegment)
+        || parentSegment.isBlank()) {
       return null;
     }
     return new ParentKey(prefix + "__job__", accountSegment, parentSegment, "__job__");
@@ -377,18 +466,19 @@ final class JobIndexBackendSupport {
     if (!normalized.endsWith("/")) {
       return null;
     }
-    if (!normalized.startsWith("accounts/")) {
+    if (!normalized.startsWith(ACCOUNT_ROOT_PREFIX)) {
       return null;
     }
-    String marker = "/reconcile/jobs/by-connector/";
-    int markerIndex = normalized.indexOf(marker);
+    int markerIndex = normalized.indexOf(CONNECTOR_JOB_MARKER);
     if (markerIndex < 0) {
       return null;
     }
-    String accountSegment = normalized.substring("accounts/".length(), markerIndex);
+    String accountSegment = normalized.substring(ACCOUNT_ROOT_PREFIX.length(), markerIndex);
     String connectorSegment =
-        normalized.substring(markerIndex + marker.length(), normalized.length() - 1);
-    if (accountSegment.isBlank() || connectorSegment.isBlank()) {
+        normalized.substring(markerIndex + CONNECTOR_JOB_MARKER.length(), normalized.length() - 1);
+    if (accountSegment.isBlank()
+        || isReservedAccountSegment(accountSegment)
+        || connectorSegment.isBlank()) {
       return null;
     }
     return new ConnectorKey(prefix + "__token__", accountSegment, connectorSegment, "__token__");
@@ -396,11 +486,11 @@ final class JobIndexBackendSupport {
 
   static GlobalStateKey parseGlobalStatePrefix(String prefix) {
     String normalized = stripLeadingSlash(prefix);
-    String marker = "accounts/by-id/reconcile/jobs/by-state/";
-    if (!normalized.startsWith(marker) || !normalized.endsWith("/")) {
+    if (!normalized.startsWith(GLOBAL_STATE_PREFIX) || !normalized.endsWith("/")) {
       return null;
     }
-    String stateSegment = normalized.substring(marker.length(), normalized.length() - 1);
+    String stateSegment =
+        normalized.substring(GLOBAL_STATE_PREFIX.length(), normalized.length() - 1);
     if (stateSegment.isBlank()) {
       return null;
     }
@@ -414,18 +504,19 @@ final class JobIndexBackendSupport {
 
   static AccountStateKey parseAccountStatePrefix(String prefix) {
     String normalized = stripLeadingSlash(prefix);
-    if (!normalized.startsWith("accounts/") || !normalized.endsWith("/")) {
+    if (!normalized.startsWith(ACCOUNT_ROOT_PREFIX) || !normalized.endsWith("/")) {
       return null;
     }
-    String marker = "/reconcile/jobs/by-state/";
-    int markerIndex = normalized.indexOf(marker);
+    int markerIndex = normalized.indexOf(ACCOUNT_STATE_MARKER);
     if (markerIndex < 0) {
       return null;
     }
-    String accountSegment = normalized.substring("accounts/".length(), markerIndex);
+    String accountSegment = normalized.substring(ACCOUNT_ROOT_PREFIX.length(), markerIndex);
     String stateSegment =
-        normalized.substring(markerIndex + marker.length(), normalized.length() - 1);
-    if (accountSegment.isBlank() || stateSegment.isBlank()) {
+        normalized.substring(markerIndex + ACCOUNT_STATE_MARKER.length(), normalized.length() - 1);
+    if (accountSegment.isBlank()
+        || isReservedAccountSegment(accountSegment)
+        || stateSegment.isBlank()) {
       return null;
     }
     return new AccountStateKey(
@@ -438,18 +529,23 @@ final class JobIndexBackendSupport {
 
   static ConnectorStateKey parseConnectorStatePrefix(String prefix) {
     String normalized = stripLeadingSlash(prefix);
-    if (!normalized.startsWith("accounts/") || !normalized.endsWith("/")) {
+    if (!normalized.startsWith(ACCOUNT_ROOT_PREFIX) || !normalized.endsWith("/")) {
       return null;
     }
-    String marker = "/reconcile/jobs/by-connector-state/";
-    int markerIndex = normalized.indexOf(marker);
+    int markerIndex = normalized.indexOf(CONNECTOR_STATE_MARKER);
     if (markerIndex < 0) {
       return null;
     }
-    String accountSegment = normalized.substring("accounts/".length(), markerIndex);
-    String remainder = normalized.substring(markerIndex + marker.length(), normalized.length() - 1);
+    String accountSegment = normalized.substring(ACCOUNT_ROOT_PREFIX.length(), markerIndex);
+    String remainder =
+        normalized.substring(
+            markerIndex + CONNECTOR_STATE_MARKER.length(), normalized.length() - 1);
     String[] parts = remainder.split("/", 2);
-    if (accountSegment.isBlank() || parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {
+    if (accountSegment.isBlank()
+        || isReservedAccountSegment(accountSegment)
+        || parts.length != 2
+        || parts[0].isBlank()
+        || parts[1].isBlank()) {
       return null;
     }
     return new ConnectorStateKey(
@@ -459,6 +555,26 @@ final class JobIndexBackendSupport {
         parts[1],
         "0000000000000000000",
         "__job__");
+  }
+
+  private static String accountScopedMarker(String keysPrefix) {
+    String normalized = stripLeadingSlash(keysPrefix);
+    String accountPrefix = stripLeadingSlash(Keys.accountRootPrefix(ACCOUNT_SEGMENT_PLACEHOLDER));
+    if (!normalized.startsWith(accountPrefix)) {
+      throw new IllegalArgumentException("not an account-scoped Keys prefix: " + keysPrefix);
+    }
+    return "/" + normalized.substring(accountPrefix.length());
+  }
+
+  private static String accountScopedMarkerBefore(String keysPrefix, String segmentPlaceholder) {
+    String marker = accountScopedMarker(keysPrefix);
+    String placeholderPathElement = segmentPlaceholder + "/";
+    int placeholderIndex = marker.indexOf(placeholderPathElement);
+    if (placeholderIndex < 0) {
+      throw new IllegalArgumentException(
+          "Keys prefix does not contain placeholder " + segmentPlaceholder + ": " + keysPrefix);
+    }
+    return marker.substring(0, placeholderIndex);
   }
 
   private static String stripLeadingSlash(String key) {
@@ -471,6 +587,8 @@ final class JobIndexBackendSupport {
   record CanonicalJobKey(String pointerKey, String accountSegment, String jobSegment) {}
 
   record LookupKey(String pointerKey, String jobSegment) {}
+
+  record LookupStorageKey(String partitionKey, String sortKey) {}
 
   record ParentKey(
       String pointerKey, String accountSegment, String parentJobSegment, String jobSegment) {}

@@ -25,6 +25,8 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
+import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -150,6 +152,136 @@ class TableRepositoryTest {
     tableRepo.create(td);
 
     return tableId;
+  }
+
+  private View view(ResourceId catalogId, ResourceId namespaceId, String name) {
+    return View.newBuilder()
+        .setResourceId(
+            ResourceId.newBuilder()
+                .setAccountId(account)
+                .setId(UUID.randomUUID().toString())
+                .setKind(ResourceKind.RK_VIEW))
+        .setDisplayName(name)
+        .setCatalogId(catalogId)
+        .setNamespaceId(namespaceId)
+        .setCreatedAt(Timestamps.fromMillis(clock.millis()))
+        .build();
+  }
+
+  @Test
+  void relationClaimBlocksViewSharingTableName() {
+    ResourceId tableId = createTable("sales", "us", "orders");
+    Table table = tableRepo.getById(tableId).orElseThrow();
+    ViewRepository viewRepo = new ViewRepository(ptr, blobs);
+
+    assertThrows(
+        BaseResourceRepository.NameConflictException.class,
+        () -> viewRepo.create(view(table.getCatalogId(), table.getNamespaceId(), "orders")));
+  }
+
+  @Test
+  void relationClaimBlocksTableSharingViewName() {
+    ResourceId anchorId = createTable("sales", "us", "anchor");
+    Table anchor = tableRepo.getById(anchorId).orElseThrow();
+    ResourceId catalogId = anchor.getCatalogId();
+    ResourceId namespaceId = anchor.getNamespaceId();
+
+    ViewRepository viewRepo = new ViewRepository(ptr, blobs);
+    viewRepo.create(view(catalogId, namespaceId, "metrics"));
+
+    assertThrows(
+        BaseResourceRepository.NameConflictException.class,
+        () -> createTable(catalogId, namespaceId, "metrics"));
+  }
+
+  @Test
+  void relationNameClaimResolvesTableAndViewInOnePointerRead() {
+    ResourceId tableId = createTable("sales", "us", "orders");
+    Table table = tableRepo.getById(tableId).orElseThrow();
+    String catalogId = table.getCatalogId().getId();
+    String namespaceId = table.getNamespaceId().getId();
+
+    var claimedTable = tableRepo.relationNameClaim(account, catalogId, namespaceId, "orders");
+    assertTrue(claimedTable.isPresent());
+    assertEquals(tableId.getId(), claimedTable.get().getId());
+    assertEquals(ResourceKind.RK_TABLE, claimedTable.get().getKind());
+
+    ViewRepository viewRepo = new ViewRepository(ptr, blobs);
+    View metrics = view(table.getCatalogId(), table.getNamespaceId(), "metrics");
+    viewRepo.create(metrics);
+
+    var claimedView = tableRepo.relationNameClaim(account, catalogId, namespaceId, "metrics");
+    assertTrue(claimedView.isPresent());
+    assertEquals(metrics.getResourceId().getId(), claimedView.get().getId());
+    assertEquals(ResourceKind.RK_VIEW, claimedView.get().getKind());
+
+    assertTrue(tableRepo.relationNameClaim(account, catalogId, namespaceId, "absent").isEmpty());
+  }
+
+  @Test
+  void relationClaimBlocksRenameOntoNameHeldByOtherKind() {
+    ResourceId tableId = createTable("sales", "us", "orders");
+    Table table = tableRepo.getById(tableId).orElseThrow();
+    ViewRepository viewRepo = new ViewRepository(ptr, blobs);
+    viewRepo.create(view(table.getCatalogId(), table.getNamespaceId(), "metrics"));
+
+    Table renamed = table.toBuilder().setDisplayName("metrics").build();
+    long version = tableRepo.metaForSafe(tableId).getPointerVersion();
+
+    assertThrows(
+        BaseResourceRepository.NameConflictException.class,
+        () -> tableRepo.update(renamed, version));
+  }
+
+  @Test
+  void renameMovesRelationClaimToTheNewName() {
+    ResourceId tableId = createTable("sales", "us", "orders");
+    Table table = tableRepo.getById(tableId).orElseThrow();
+    String catalogId = table.getCatalogId().getId();
+    String namespaceId = table.getNamespaceId().getId();
+
+    Table renamed = table.toBuilder().setDisplayName("invoices").build();
+    long version = tableRepo.metaForSafe(tableId).getPointerVersion();
+    assertTrue(tableRepo.update(renamed, version));
+
+    assertTrue(
+        tableRepo.relationNameClaim(account, catalogId, namespaceId, "orders").isEmpty(),
+        "old name's claim must be released by the rename");
+    var claimed = tableRepo.relationNameClaim(account, catalogId, namespaceId, "invoices");
+    assertTrue(claimed.isPresent(), "new name's claim must be reserved by the rename");
+    assertEquals(tableId.getId(), claimed.get().getId());
+  }
+
+  @Test
+  void renameProducesANewTableBlobVersion() {
+    ResourceId tableId = createTable("sales", "us", "orders");
+    MutationMeta before = tableRepo.metaForSafe(tableId);
+
+    Table renamed =
+        tableRepo.getById(tableId).orElseThrow().toBuilder().setDisplayName("invoices").build();
+    assertTrue(tableRepo.update(renamed, before.getPointerVersion()));
+
+    /* The signal the whole warm-cache model leans on: any table change —
+     * rename included — rewrites the content-addressed table blob, so its
+     * identity (blob uri / version) moves and cached records for the old
+     * identity become unreachable. A future rename path that stopped bumping
+     * it would silently poison every content-keyed cache. */
+    MutationMeta after = tableRepo.metaForSafe(tableId);
+    assertTrue(after.getPointerVersion() > before.getPointerVersion());
+    assertTrue(
+        !after.getBlobUri().equals(before.getBlobUri()),
+        "rename must move the table blob identity");
+  }
+
+  @Test
+  void relationClaimReleasedOnDeleteFreesNameForOtherKind() {
+    ResourceId tableId = createTable("sales", "us", "orders");
+    Table table = tableRepo.getById(tableId).orElseThrow();
+    assertTrue(tableRepo.delete(tableId));
+
+    ViewRepository viewRepo = new ViewRepository(ptr, blobs);
+    assertDoesNotThrow(
+        () -> viewRepo.create(view(table.getCatalogId(), table.getNamespaceId(), "orders")));
   }
 
   @Test

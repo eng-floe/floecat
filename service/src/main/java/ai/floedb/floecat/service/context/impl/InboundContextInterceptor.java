@@ -21,6 +21,7 @@ import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.telemetry.grpc.GrpcTelemetryServerInterceptor;
 import io.grpc.Context;
 import io.grpc.Contexts;
 import io.grpc.ForwardingServerCall.SimpleForwardingServerCall;
@@ -120,10 +121,19 @@ public class InboundContextInterceptor {
     Context context = contextWithResolvedCallContext(Context.current(), resolved);
 
     populateMdc(resolved);
-    // Mirror the principal onto the Vert.x duplicated context (same channel as MDC) so it survives
-    // Quarkus's gRPC dispatch worker thread-hop into the service body, where the io.grpc.Context
-    // key alone is unreliable. See PrincipalProvider for the full rationale.
-    PrincipalProvider.storeOnDuplicatedContext(resolved.principalContext());
+    // Component/operation MDC lives HERE — the outermost interceptor — not in the telemetry
+    // interceptor: telemetry sorts inner of RPC logging (it must run inside the tracing window,
+    // below priority 0), so clearing these keys in its close would strip them from the structured
+    // JSON fields of the very rpc log line (and error line) logging emits at ITS close. This
+    // class's close runs last on the way out, keeping them present for every log line of the call.
+    MDC.put("floecat_component", "service");
+    MDC.put(
+        "floecat_operation", GrpcTelemetryServerInterceptor.simplifyOp(call.getMethodDescriptor()));
+    // Mirror the whole resolved call context onto the Vert.x duplicated context (same channel as
+    // MDC) so principal, correlation id, and engine context together survive Quarkus's gRPC
+    // dispatch worker thread-hops into the service body, where the io.grpc.Context keys alone are
+    // unreliable. See ResolvedCallContexts for the full rationale.
+    ResolvedCallContexts.storeOnDuplicatedContext(resolved);
 
     var forwarding =
         new SimpleForwardingServerCall<ReqT, RespT>(call) {
@@ -144,14 +154,32 @@ public class InboundContextInterceptor {
           }
         };
 
-    return Contexts.interceptCall(context, forwarding, headers, next);
+    try {
+      return Contexts.interceptCall(context, forwarding, headers, next);
+    } catch (RuntimeException e) {
+      // The forwarding close() clears MDC on the normal path, but if an inner interceptor throws
+      // during interceptCall (before any close), gRPC tears the call down directly and that close
+      // never runs — leaking these keys on the pooled worker thread. Clear defensively here so the
+      // thread is clean for its next call. (This owns all MDC keys since telemetry stopped clearing
+      // its own; the old ServiceTelemetryInterceptor had the same defensive catch.)
+      clearMdc();
+      throw e;
+    }
   }
 
   private static boolean isCallAllowed(ServerCall<?, ?> call) {
-    String method = call.getMethodDescriptor().getFullMethodName();
-    return method != null
-        && (method.startsWith("grpc.health.v1.Health/")
-            || method.startsWith("grpc.reflection.v1.ServerReflection/"));
+    return isInfrastructureMethod(call.getMethodDescriptor().getFullMethodName());
+  }
+
+  /**
+   * True for gRPC infrastructure methods (health probes, server reflection) rather than application
+   * RPCs. These bypass auth resolution, and — because Quarkus may not open a server span for them —
+   * span-dependent code must not treat a missing span on these paths as an ordering regression.
+   */
+  public static boolean isInfrastructureMethod(String fullMethodName) {
+    return fullMethodName != null
+        && (fullMethodName.startsWith("grpc.health.v1.Health/")
+            || fullMethodName.startsWith("grpc.reflection.v1.ServerReflection/"));
   }
 
   private static Metadata.Key<String> metadataKey(String name) {
@@ -197,6 +225,8 @@ public class InboundContextInterceptor {
   }
 
   public static void clearMdc() {
+    MDC.remove("floecat_component");
+    MDC.remove("floecat_operation");
     MDC.remove("query_id");
     MDC.remove("correlation_id");
     MDC.remove("floecat_account_id");

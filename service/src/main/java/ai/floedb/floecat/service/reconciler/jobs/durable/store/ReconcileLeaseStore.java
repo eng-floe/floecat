@@ -33,6 +33,21 @@ public interface ReconcileLeaseStore {
 
   record LeaseExpiryScanPage(List<LeaseExpiryEntry> entries, String nextPageToken) {}
 
+  final class LeaseAttemptStats {
+    private String failureReason = "";
+
+    public void recordFailure(String reason) {
+      String normalized = reason == null ? "" : reason.trim();
+      if (!normalized.isBlank()) {
+        failureReason = normalized;
+      }
+    }
+
+    public String failureReason() {
+      return failureReason;
+    }
+  }
+
   @FunctionalInterface
   interface CanonicalJobMutator {
     Optional<ReconcileJobIndexStore.CanonicalEnvelope> apply(
@@ -59,6 +74,17 @@ public interface ReconcileLeaseStore {
       long now,
       CanonicalPointerSnapshot initialSnapshot,
       StoredReconcileJob initialRecord);
+
+  default Optional<LeasedJob> leaseCanonical(
+      String canonicalPointerKey,
+      String readyPointerKey,
+      long now,
+      CanonicalPointerSnapshot initialSnapshot,
+      StoredReconcileJob initialRecord,
+      LeaseAttemptStats attemptStats) {
+    return leaseCanonical(
+        canonicalPointerKey, readyPointerKey, now, initialSnapshot, initialRecord);
+  }
 
   boolean hasActiveLease(
       String jobId,

@@ -27,8 +27,9 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.statistics.PlannerStatsResolver.PlannerLookupDiagnostics;
+import ai.floedb.floecat.service.statistics.PlannerStatsResolver.PlannerLookupOutcome;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
-import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
@@ -41,9 +42,6 @@ import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
-import com.github.benmanes.caffeine.cache.Weigher;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -57,8 +55,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.TimeUnit;
-import java.util.function.Function;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -75,6 +71,9 @@ import org.jboss.logging.Logger;
  * <p>Resolution is sync-first when {@code floecat.stats.sync.enabled=true} (default): on a store
  * miss the orchestrator attempts a bounded synchronous capture before falling back to async
  * enqueue. The outcome is encoded in {@link StatsResolutionResult} so callers can inspect quality.
+ *
+ * <p>Planner-facing store resolution — generation ordering, the fallback ladder, and the planner
+ * stats cache — lives in {@link PlannerStatsResolver}; capture policy stays here.
  */
 @ApplicationScoped
 public class StatsOrchestrator {
@@ -82,83 +81,6 @@ public class StatsOrchestrator {
   private static final Logger LOG = Logger.getLogger(StatsOrchestrator.class);
   private static final String COMPONENT = "service";
   private static final String OPERATION = "stats_orchestrator";
-
-  /**
-   * Fully-qualified cache key for a single column-stats record.
-   *
-   * <p>All four fields are required to guarantee no cross-contamination:
-   *
-   * <ul>
-   *   <li>{@code accountId} — isolates tenants.
-   *   <li>{@code tableId} — isolates tables within an account.
-   *   <li>{@code snapshotId} — isolates snapshots; new stats captures produce new snapshot IDs, so
-   *       stale entries from old snapshots are never served for new-snapshot queries.
-   *   <li>{@code storageId} — the {@link ai.floedb.floecat.stats.identity.StatsTargetIdentity}
-   *       storage key that uniquely identifies the target (column, table-level, file, etc.) within
-   *       a snapshot.
-   * </ul>
-   */
-  private record StatsCacheKey(
-      String accountId, String tableId, long snapshotId, String storageId) {}
-
-  /**
-   * Maximum total byte weight of the stats cache.
-   *
-   * <p>256 MB accommodates roughly:
-   *
-   * <ul>
-   *   <li>~200,000 scalar-only records at ~1 KB each (typical planner path today), or
-   *   <li>~2,500 sketch-bearing records at ~100 KB each (theta k=4096 + tuple v2).
-   * </ul>
-   *
-   * <p>Using weight rather than entry count prevents OOM when sketch-carrying {@link
-   * TargetStatsRecord}s are common — a record with k=4096 theta + tuple sketches is ~100× larger
-   * than a scalar record, so a count-only cap of 500,000 could allow ~50 GB of in-memory sketch
-   * data if every entry held full sketch payloads.
-   */
-  private static final long STATS_CACHE_MAX_WEIGHT_BYTES = 256L * 1024 * 1024; // 256 MB
-
-  /**
-   * Weigher: approximate JVM heap cost per cache entry.
-   *
-   * <p>Uses {@link com.google.protobuf.AbstractMessage#getSerializedSize()} as a proxy for the
-   * proto object's heap footprint. Proto objects typically occupy 1–2× their wire size in heap
-   * (field objects, repeated-field lists, etc.), so the true heap usage may be larger; the weight
-   * budget accounts for this by being set conservatively. A small fixed overhead (64 B) is added
-   * per entry for cache bookkeeping and the key object.
-   *
-   * <p>Caffeine requires the weight to fit in an {@code int}. Records larger than {@link
-   * Integer#MAX_VALUE} bytes are treated as maximum weight, effectively evicting them immediately —
-   * an acceptable safety valve for pathologically large records.
-   */
-  private static int cacheWeight(StatsCacheKey key, TargetStatsRecord record) {
-    long size = record.getSerializedSize() + 64L; // +64 for key object + cache overhead
-    return (int) Math.min(size, Integer.MAX_VALUE);
-  }
-
-  /**
-   * Application-scoped, snapshot-safe stats cache, bounded by byte weight.
-   *
-   * <p>Lifetime: the JVM process (survives all queries and connections).
-   *
-   * <p>Invalidation: snapshot IDs isolate normal new-snapshot captures, but full-rescan/finalize
-   * paths can replace stats for the same snapshot ID. Successful mutation paths must explicitly
-   * invalidate affected entries through this orchestrator; TTL is only a backstop for memory and
-   * missed invalidation bugs.
-   *
-   * <p>Only positive hits (present records) are cached. Absent results are not cached because they
-   * may be under active synchronous capture and could appear within seconds.
-   *
-   * <p>Bounded by {@link #STATS_CACHE_MAX_WEIGHT_BYTES} rather than entry count: a single
-   * sketch-bearing record can be ~100 KB while a scalar record is ~1 KB; a count-only cap would
-   * allow unbounded memory growth as sketch payloads become common.
-   */
-  private final Cache<StatsCacheKey, TargetStatsRecord> statsCache =
-      Caffeine.newBuilder()
-          .maximumWeight(STATS_CACHE_MAX_WEIGHT_BYTES)
-          .weigher((Weigher<StatsCacheKey, TargetStatsRecord>) StatsOrchestrator::cacheWeight)
-          .expireAfterWrite(10, TimeUnit.MINUTES) // Backstop; mutation paths invalidate eagerly.
-          .build();
 
   private final StatsStore statsStore;
   private final ReconcileJobStore reconcileJobStore;
@@ -168,6 +90,7 @@ public class StatsOrchestrator {
   private final boolean syncEnabled;
   private final ConcurrentMap<TableKey, String> lastEnqueuedJobByTable = new ConcurrentHashMap<>();
   private final Observability observability;
+  private final PlannerStatsResolver plannerResolver;
 
   @Inject
   public StatsOrchestrator(
@@ -187,6 +110,9 @@ public class StatsOrchestrator {
     this.syncEnabled = syncEnabled;
     this.observability =
         observability == null || observability.isUnsatisfied() ? null : observability.get();
+    this.plannerResolver =
+        new PlannerStatsResolver(
+            statsStore, this::readStore, this::incrementCounter, this::observePlannerHit);
   }
 
   public StatsOrchestrator(
@@ -206,43 +132,18 @@ public class StatsOrchestrator {
 
   /** Invalidates every cached target for one table snapshot. */
   public void invalidateStatsCache(ResourceId tableId, long snapshotId) {
-    if (tableId == null) {
-      return;
-    }
-    statsCache
-        .asMap()
-        .keySet()
-        .removeIf(
-            key ->
-                key.accountId().equals(tableId.getAccountId())
-                    && key.tableId().equals(tableId.getId())
-                    && key.snapshotId() == snapshotId);
+    plannerResolver.invalidateStatsCache(tableId, snapshotId);
   }
 
   /** Invalidates one cached target for one table snapshot. */
   public void invalidateStatsCache(ResourceId tableId, long snapshotId, StatsTarget target) {
-    if (tableId == null || target == null) {
-      return;
-    }
-    statsCache.invalidate(
-        new StatsCacheKey(
-            tableId.getAccountId(),
-            tableId.getId(),
-            snapshotId,
-            StatsTargetIdentity.storageId(target)));
+    plannerResolver.invalidateStatsCache(tableId, snapshotId, target);
   }
 
   /** Invalidates cached targets represented by successfully persisted records. */
   public void invalidateStatsCache(
       ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {
-    if (records == null || records.isEmpty()) {
-      return;
-    }
-    for (TargetStatsRecord record : records) {
-      if (record != null && record.hasTarget()) {
-        invalidateStatsCache(tableId, snapshotId, record.getTarget());
-      }
-    }
+    plannerResolver.invalidateStatsCache(tableId, snapshotId, records);
   }
 
   /**
@@ -259,7 +160,31 @@ public class StatsOrchestrator {
       observeSyncOutcome(StatsSyncOutcome.HIT, startNanos);
       return StatsResolutionResult.hit(stored.get());
     }
+    return captureAndResolve(request, startNanos);
+  }
 
+  /**
+   * Single-target resolution that honors the pinned stats generation, mirroring {@link
+   * #resolvePlannerBatchInGeneration}: the pinned generation for the pinned snapshot (query
+   * consistent), then the newest (live active) generation only to fill a target the pinned
+   * generation lacks (so an incomplete pinned generation never yields NOT_FOUND), then bounded
+   * capture. When the pin froze no generation the live/newest generation is the primary source.
+   * Used by the planner's per-relation stats reads.
+   */
+  public StatsResolutionResult resolveInGeneration(
+      StatsCaptureRequest request, Optional<String> pinnedGenerationToken) {
+    long startNanos = System.nanoTime();
+    Optional<TargetStatsRecord> stored =
+        plannerResolver.resolveSingleFromStore(request, pinnedGenerationToken);
+    if (stored.isPresent()) {
+      observeSyncOutcome(StatsSyncOutcome.HIT, startNanos);
+      return StatsResolutionResult.hit(stored.get());
+    }
+    return captureAndResolve(request, startNanos);
+  }
+
+  /** Bounded sync capture, then async-enqueue fallback, for a store miss. */
+  private StatsResolutionResult captureAndResolve(StatsCaptureRequest request, long startNanos) {
     if (syncEnabled
         && request.executionMode() == StatsExecutionMode.SYNC
         && request.latencyBudget().isPresent()) {
@@ -328,105 +253,100 @@ public class StatsOrchestrator {
    */
   public java.util.Map<String, StatsResolutionResult> resolvePlannerBatch(
       java.util.List<StatsCaptureRequest> requests, boolean staleOk, long deadlineNanos) {
+    return resolvePlannerBatchInGeneration(requests, Optional.empty(), staleOk, deadlineNanos);
+  }
+
+  /**
+   * Planner batch resolution that honors the query's pinned stats generation, with presence-only
+   * completeness: a target that exists in the pinned generation is a hit. Delegates to {@link
+   * #resolvePlannerBatchInGeneration(java.util.List, Optional, java.util.Map, boolean, long)} with
+   * no per-target completeness predicates.
+   */
+  public java.util.Map<String, StatsResolutionResult> resolvePlannerBatchInGeneration(
+      java.util.List<StatsCaptureRequest> requests,
+      Optional<String> pinnedGenerationToken,
+      boolean staleOk,
+      long deadlineNanos) {
+    return resolvePlannerBatchInGeneration(
+        requests, pinnedGenerationToken, java.util.Map.of(), staleOk, deadlineNanos);
+  }
+
+  /**
+   * Planner batch resolution that honors the query's pinned stats generation and the planner's
+   * per-target completeness needs.
+   *
+   * <p>The pin freezes a stats generation for the query's lifetime (as the scan path does), so
+   * plans are stable and reproducible for a given pin. "Exists in the pinned generation" alone is
+   * too coarse a hit rule, though: generations enrich over time (a finalize can add sketch payloads
+   * to a snapshot whose earlier generation was scalar-only), so a pinned record that lacks a
+   * requested capability must not stop resolution — the planner would consume it downgraded while a
+   * richer record for the SAME snapshot exists. For each target the lookup order is:
+   *
+   * <ol>
+   *   <li>cache hit in the pinned generation's keyspace (the live/newest keyspace when the pin
+   *       froze no generation), only if the cached record satisfies the target's completeness
+   *       predicate;
+   *   <li>the pinned generation for the pinned snapshot — the primary source; a record that fails
+   *       its predicate is held as a PARTIAL candidate rather than served;
+   *   <li>the newest (live active) generation of the SAME pinned snapshot, consulted for targets
+   *       the pinned generation lacks or serves only partially. Never a newer snapshot: this is
+   *       richer stats for identical data, not weakened snapshot consistency. If newest satisfies,
+   *       it wins; if not, the pinned partial is served (consistency prefers the pin between
+   *       equally incomplete records) — partial records never fall through to stale or capture;
+   *   <li>stale stats from a snapshot &le; the pinned snapshot (when {@code staleOk}), for targets
+   *       with no record at the pinned snapshot at all;
+   *   <li>sync/async capture.
+   * </ol>
+   *
+   * <p>Hits are cached under the generation actually served — the pinned generation under its own
+   * token, newest-fill under the empty token — so the two never contaminate each other. Records are
+   * cached whole and completeness is re-evaluated per read, so one query's lesser need never masks
+   * another's richer need. When the pin froze no generation the primary source is the live/newest
+   * generation (empty token) and the fill step is skipped: a partial primary record is served
+   * as-is, because no richer same-snapshot source exists.
+   *
+   * @param pinnedGenerationToken the generation frozen on the query pin, read as the primary
+   *     source; empty when the pin froze no generation (then the live/newest generation is primary)
+   * @param completenessByStorageId per-target completeness predicate keyed by {@code
+   *     StatsTargetIdentity.storageId}; a target with no entry treats presence as complete. Kept as
+   *     plain predicates so this class stays independent of the planner request model — callers
+   *     derive them from the request's needs (see {@code PlannerStatsResultMaterializer}).
+   */
+  public java.util.Map<String, StatsResolutionResult> resolvePlannerBatchInGeneration(
+      java.util.List<StatsCaptureRequest> requests,
+      Optional<String> pinnedGenerationToken,
+      java.util.Map<String, java.util.function.Predicate<TargetStatsRecord>>
+          completenessByStorageId,
+      boolean staleOk,
+      long deadlineNanos) {
     if (requests == null || requests.isEmpty()) {
       return java.util.Map.of();
     }
     // All requests must share the same tableId and snapshotId (grouped upstream by TableWork).
     StatsCaptureRequest first = requests.get(0);
-
-    // 1. Cache check — serve hits without touching DynamoDB.
-    // Cache key includes (accountId, tableId, snapshotId, storageId): a new snapshotId is always
-    // a cache miss, so stats from a different snapshot are never returned for the current query.
+    // Store rungs (cache → pinned/primary → newest gap-fill → stale) live in the resolver; only
+    // capture policy remains here.
+    PlannerStatsResolver.Resolution resolution =
+        plannerResolver.resolveFromStore(
+            requests, pinnedGenerationToken, completenessByStorageId, staleOk);
+    PlannerLookupDiagnostics diagnostics = resolution.diagnostics();
     java.util.Map<String, StatsResolutionResult> out =
-        new java.util.LinkedHashMap<>(requests.size());
-    java.util.List<StatsCaptureRequest> cacheMisses = new java.util.ArrayList<>();
-    for (StatsCaptureRequest req : requests) {
-      String key = storageId(req);
-      StatsCacheKey cacheKey =
-          new StatsCacheKey(
-              req.tableId().getAccountId(), req.tableId().getId(), req.snapshotId(), key);
-      TargetStatsRecord cached = statsCache.getIfPresent(cacheKey);
-      if (cached != null) {
-        observeSyncOutcome(StatsSyncOutcome.HIT);
-        out.put(key, StatsResolutionResult.hit(cached));
-      } else {
-        cacheMisses.add(req);
-      }
-    }
+        new java.util.LinkedHashMap<>(resolution.resolved());
 
-    if (cacheMisses.isEmpty()) {
-      return java.util.Collections.unmodifiableMap(out);
-    }
-
-    // 2. Batch store read for cache misses only.
-    java.util.Map<String, StatsResolutionResult> batchHits =
-        readPlannerBatchIsolated(
-            first.tableId(),
-            first.snapshotId(),
-            cacheMisses,
-            statsStore::getTargetStatsBatch,
-            statsStore::getTargetStats,
-            StatsResolutionResult::hit);
-
-    java.util.List<StatsCaptureRequest> misses = new java.util.ArrayList<>();
-    for (StatsCaptureRequest req : cacheMisses) {
-      String key = storageId(req);
-      StatsResolutionResult hit = batchHits.get(key);
-      if (hit != null && hit.hasStats()) {
-        // Write-through: only cache positive hits; absent results may appear soon via sync capture.
-        StatsCacheKey cacheKey =
-            new StatsCacheKey(
-                req.tableId().getAccountId(), req.tableId().getId(), req.snapshotId(), key);
-        statsCache.put(cacheKey, hit.stats().get());
-        observeSyncOutcome(StatsSyncOutcome.HIT);
-        out.put(key, StatsResolutionResult.hit(hit.stats().get()));
-      } else if (hit != null && hit.outcome() == StatsSyncOutcome.FAILED) {
-        out.put(key, hit);
-      } else {
-        misses.add(req);
-      }
-    }
-
-    // 3. Stale fallback for misses — BEFORE sync capture.
-    // Single batch call: finds the latest snapshot with stats once (O(1) pointer read),
-    // then fetches all missing targets from that snapshot in parallel. Replaces N×O(prefix scan).
-    java.util.List<StatsCaptureRequest> stillMissing = new java.util.ArrayList<>();
-    if (staleOk && !misses.isEmpty()) {
-      java.util.Map<String, StatsResolutionResult> staleBatch =
-          readPlannerBatchIsolated(
-              first.tableId(),
-              first.snapshotId(),
-              misses,
-              statsStore::getStaleTargetStatsBatch,
-              statsStore::getStaleTargetStats,
-              record -> StatsResolutionResult.staleHit(record, "stale_before_sync"));
-      for (StatsCaptureRequest req : misses) {
-        String key = storageId(req);
-        StatsResolutionResult stale = staleBatch.get(key);
-        if (stale != null && stale.hasStats()) {
-          out.put(key, stale);
-        } else if (stale != null && stale.outcome() == StatsSyncOutcome.FAILED) {
-          out.put(key, stale);
-        } else {
-          stillMissing.add(req);
-        }
-      }
-    } else {
-      stillMissing.addAll(misses);
-    }
-
-    // 4. Sync capture for still-missing targets (per-target within deadline).
+    // 5. Sync capture for still-missing targets (per-target within deadline).
     java.util.List<StatsCaptureRequest> asyncQueue = new java.util.ArrayList<>();
-    for (StatsCaptureRequest req : stillMissing) {
-      String key = storageId(req);
+    for (StatsCaptureRequest req : resolution.stillMissing()) {
+      String key = PlannerStatsResolver.storageId(req);
       if (!syncEnabled || req.executionMode() != StatsExecutionMode.SYNC) {
         asyncQueue.add(req);
+        diagnostics.record(PlannerLookupOutcome.CAPTURE_PENDING);
         out.put(key, StatsResolutionResult.skipped("async_mode"));
         continue;
       }
       long remainingNanos = deadlineNanos - System.nanoTime();
       if (remainingNanos <= 0) {
         asyncQueue.add(req);
+        diagnostics.record(PlannerLookupOutcome.CAPTURE_PENDING);
         out.put(key, StatsResolutionResult.timeout("latency_budget_exhausted"));
         continue;
       }
@@ -445,9 +365,11 @@ public class StatsOrchestrator {
       if (syncOutcome == StatsSyncOutcome.CAPTURED) {
         Optional<TargetStatsRecord> afterCapture = readStore(withBudget);
         if (afterCapture.isPresent()) {
+          diagnostics.record(PlannerLookupOutcome.CAPTURED);
           out.put(key, StatsResolutionResult.captured(afterCapture.get()));
         } else {
           asyncQueue.add(req);
+          diagnostics.record(PlannerLookupOutcome.CAPTURE_PENDING);
           out.put(
               key,
               StatsResolutionResult.partial(
@@ -455,6 +377,10 @@ public class StatsOrchestrator {
         }
       } else {
         asyncQueue.add(req);
+        diagnostics.record(
+            syncOutcome == StatsSyncOutcome.TIMEOUT
+                ? PlannerLookupOutcome.CAPTURE_PENDING
+                : PlannerLookupOutcome.FAILED);
         out.put(
             key,
             syncOutcome == StatsSyncOutcome.TIMEOUT
@@ -463,104 +389,14 @@ public class StatsOrchestrator {
       }
     }
 
-    // 5. Enqueue async captures for all misses that didn't sync.
+    // 6. Enqueue async captures for all misses that didn't sync.
     if (!asyncQueue.isEmpty()) {
       enqueueAsyncCaptureBatch(asyncQueue);
     }
 
+    diagnostics.emit(
+        first.tableId(), first.snapshotId(), resolution.pinnedGeneration(), requests.size());
     return java.util.Collections.unmodifiableMap(out);
-  }
-
-  private Map<String, StatsResolutionResult> readPlannerBatchIsolated(
-      ResourceId tableId,
-      long snapshotId,
-      List<StatsCaptureRequest> requests,
-      TargetBatchReader batchReader,
-      TargetReader targetReader,
-      Function<TargetStatsRecord, StatsResolutionResult> hitMapper) {
-    if (requests == null || requests.isEmpty()) {
-      return Map.of();
-    }
-
-    List<StatsTarget> targets = targetsOf(requests);
-    try {
-      Map<String, Optional<TargetStatsRecord>> batchHits =
-          batchReader.read(tableId, snapshotId, targets);
-      Map<String, StatsResolutionResult> out = new LinkedHashMap<>();
-      for (StatsCaptureRequest request : requests) {
-        String key = storageId(request);
-        Optional<TargetStatsRecord> hit = batchHits == null ? Optional.empty() : batchHits.get(key);
-        out.put(
-            key,
-            hit != null && hit.isPresent()
-                ? hitMapper.apply(hit.get())
-                : StatsResolutionResult.skipped("batch_store_miss"));
-      }
-      return java.util.Collections.unmodifiableMap(out);
-    } catch (RuntimeException batchError) {
-      if (requests.size() == 1) {
-        return readPlannerTargetIsolated(
-            tableId, snapshotId, requests.get(0), targetReader, hitMapper, batchError);
-      }
-      int mid = requests.size() / 2;
-      Map<String, StatsResolutionResult> out = new LinkedHashMap<>();
-      out.putAll(
-          readPlannerBatchIsolated(
-              tableId, snapshotId, requests.subList(0, mid), batchReader, targetReader, hitMapper));
-      out.putAll(
-          readPlannerBatchIsolated(
-              tableId,
-              snapshotId,
-              requests.subList(mid, requests.size()),
-              batchReader,
-              targetReader,
-              hitMapper));
-      return java.util.Collections.unmodifiableMap(out);
-    }
-  }
-
-  private Map<String, StatsResolutionResult> readPlannerTargetIsolated(
-      ResourceId tableId,
-      long snapshotId,
-      StatsCaptureRequest request,
-      TargetReader targetReader,
-      Function<TargetStatsRecord, StatsResolutionResult> hitMapper,
-      RuntimeException batchError) {
-    String key = storageId(request);
-    try {
-      Optional<TargetStatsRecord> record = targetReader.read(tableId, snapshotId, request.target());
-      return Map.of(
-          key,
-          record.map(hitMapper).orElseGet(() -> StatsResolutionResult.skipped("batch_store_miss")));
-    } catch (RuntimeException targetError) {
-      LOG.debugf(
-          targetError,
-          "planner stats target read failed after batch isolation table=%s target=%s",
-          tableId,
-          key);
-      String message =
-          targetError.getMessage() == null ? batchError.getMessage() : targetError.getMessage();
-      return Map.of(key, StatsResolutionResult.failed(message));
-    }
-  }
-
-  private static List<StatsTarget> targetsOf(List<StatsCaptureRequest> requests) {
-    return requests.stream().map(StatsCaptureRequest::target).toList();
-  }
-
-  private static String storageId(StatsCaptureRequest request) {
-    return StatsTargetIdentity.storageId(request.target());
-  }
-
-  @FunctionalInterface
-  private interface TargetBatchReader {
-    Map<String, Optional<TargetStatsRecord>> read(
-        ResourceId tableId, long snapshotId, List<StatsTarget> targets);
-  }
-
-  @FunctionalInterface
-  private interface TargetReader {
-    Optional<TargetStatsRecord> read(ResourceId tableId, long snapshotId, StatsTarget target);
   }
 
   /**
@@ -930,6 +766,13 @@ public class StatsOrchestrator {
         1,
         Tag.of(TagKey.RESULT, outcome.name()),
         Tag.of(TagKey.SCOPE, "orchestrator"));
+  }
+
+  /**
+   * Planner-hit callback for {@link PlannerStatsResolver}: counts a HIT without a latency sample.
+   */
+  private void observePlannerHit(StatsSyncOutcome outcome) {
+    observeSyncOutcome(outcome);
   }
 
   private void incrementCounter(MetricId metric, double amount, Tag... tags) {

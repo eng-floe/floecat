@@ -40,14 +40,15 @@ import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationKind;
+import ai.floedb.floecat.query.rpc.RelationPinIdentity;
+import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.RelationResolutions;
 import ai.floedb.floecat.query.rpc.ResolutionFailure;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.SqlDefinition;
+import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleEnd;
@@ -59,7 +60,9 @@ import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
@@ -72,6 +75,7 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
+import ai.floedb.floecat.types.Hashing;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
 import io.opentelemetry.api.trace.Span;
@@ -83,7 +87,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -117,7 +120,11 @@ public class UserObjectBundleService {
   private final EngineMetadataDecoratorProvider decoratorProvider;
   private final EngineContextProvider engineContext;
   private final boolean engineSpecificEnabled;
+  // Bumped when the engine decorator's behavior changes WITHOUT moving the engine version; folded
+  // into the identity-only possession token so a decorator change invalidates cached decoration.
+  private final String decorationEpoch;
   private final StatsProviderFactory statsFactory;
+  private final PinValidator pinValidator;
   private final long slowRpcMs;
   private final LogicalSchemaMapper logicalSchemaMapper = new LogicalSchemaMapper();
   private final FlightEndpointRef floecatFlightEndpoint;
@@ -160,8 +167,11 @@ public class UserObjectBundleService {
       StatsProviderFactory statsFactory,
       EngineMetadataDecoratorProvider decoratorProvider,
       EngineContextProvider engineContext,
+      PinValidator pinValidator,
       @ConfigProperty(name = "floecat.catalog.bundle.emit_engine_specific", defaultValue = "true")
           boolean engineSpecificEnabled,
+      @ConfigProperty(name = "floecat.catalog.bundle.decoration_epoch", defaultValue = "1")
+          String decorationEpoch,
       @ConfigProperty(name = "floecat.flight.advertised-host", defaultValue = "localhost")
           String flightHost,
       @ConfigProperty(name = "floecat.flight.advertised-port", defaultValue = "80") int flightPort,
@@ -175,7 +185,9 @@ public class UserObjectBundleService {
     this.statsFactory = statsFactory;
     this.decoratorProvider = decoratorProvider;
     this.engineContext = engineContext;
+    this.pinValidator = pinValidator;
     this.engineSpecificEnabled = engineSpecificEnabled;
+    this.decorationEpoch = safe(decorationEpoch);
     this.slowRpcMs = Math.max(0L, slowRpcMs);
     this.floecatFlightEndpoint =
         FlightEndpointRef.newBuilder()
@@ -198,6 +210,8 @@ public class UserObjectBundleService {
       int flightPort,
       boolean grpcPlainText,
       String quarkusProfile) {
+    // Test-only: these tests never reach per-read pin validation (their schema flows go through
+    // the fake overlay). Fail explicitly if one ever does, rather than NPE-ing on null repos.
     this(
         overlay,
         inputResolver,
@@ -205,7 +219,16 @@ public class UserObjectBundleService {
         statsFactory,
         decoratorProvider,
         engineContext,
+        new PinValidator(
+            null, ai.floedb.floecat.service.catalog.impl.RootRepairRequests.disabled()) {
+          @Override
+          public void validate(String correlationId, ai.floedb.floecat.query.rpc.TablePin pin) {
+            throw new IllegalStateException(
+                "test-only UserObjectBundleService has no repositories to validate pins");
+          }
+        },
         engineSpecificEnabled,
+        "1",
         flightHost,
         flightPort,
         grpcPlainText,
@@ -213,8 +236,17 @@ public class UserObjectBundleService {
         250L);
   }
 
+  /** {@link #stream(String, QueryContext, List, Set)} with no possession hint. */
   public Multi<UserObjectsBundleChunk> stream(
       String correlationId, QueryContext ctx, List<TableReferenceCandidate> tables) {
+    return stream(correlationId, ctx, tables, Set.of());
+  }
+
+  public Multi<UserObjectsBundleChunk> stream(
+      String correlationId,
+      QueryContext ctx,
+      List<TableReferenceCandidate> tables,
+      Set<String> knownBlobVersions) {
     List<TableReferenceCandidate> candidates = List.copyOf(tables);
     if (LOG.isDebugEnabled()) {
       LOG.debugf(
@@ -229,7 +261,7 @@ public class UserObjectBundleService {
         .<UserObjectsBundleChunk>deferred(
             () -> {
               UserObjectBundleIterator iterator =
-                  new UserObjectBundleIterator(correlationId, ctx, candidates);
+                  new UserObjectBundleIterator(correlationId, ctx, candidates, knownBlobVersions);
               return Multi.createFrom()
                   .iterable(() -> iterator)
                   .onFailure()
@@ -311,14 +343,14 @@ public class UserObjectBundleService {
     }
   }
 
-  private SnapshotSet collectChunkPins(
+  private RelationPinSet collectChunkPins(
       String correlationId,
       QueryContext ctx,
       List<ResolvedRelation> relations,
-      Map<ResourceId, SnapshotPin> currentSnapshotPinCache,
+      Map<ResourceId, TablePin> currentSnapshotPinCache,
       PhaseDiagnostics diagnostics) {
     if (relations == null || relations.isEmpty()) {
-      return SnapshotSet.getDefaultInstance();
+      return RelationPinSet.getDefaultInstance();
     }
     diagnostics.add("pin.relations", relations.size());
     List<QueryInput> inputs = new ArrayList<>(relations.size());
@@ -332,7 +364,7 @@ public class UserObjectBundleService {
     diagnostics.nanos("pin.build_inputs", System.nanoTime() - buildInputsStartNs);
     diagnostics.add("pin.inputs", inputs.size());
     if (inputs.isEmpty()) {
-      return SnapshotSet.getDefaultInstance();
+      return RelationPinSet.getDefaultInstance();
     }
     long asOfStartNs = System.nanoTime();
     var asOfDefault = ctx.parseAsOfDefault(correlationId);
@@ -340,6 +372,7 @@ public class UserObjectBundleService {
     long resolverStartNs = System.nanoTime();
     var resolution =
         inputResolver.resolveInputs(
+            ctx.getQueryId(),
             correlationId,
             inputs,
             asOfDefault,
@@ -347,8 +380,8 @@ public class UserObjectBundleService {
             currentSnapshotPinCache,
             diagnostics);
     diagnostics.nanos("pin.resolver", System.nanoTime() - resolverStartNs);
-    SnapshotSet incoming = resolution.snapshotSet();
-    SnapshotSet pins = incoming == null ? SnapshotSet.getDefaultInstance() : incoming;
+    RelationPinSet incoming = resolution.relationPinSet();
+    RelationPinSet pins = incoming == null ? RelationPinSet.getDefaultInstance() : incoming;
     diagnostics.add("pin.output_pins", pins.getPinsCount());
     return pins;
   }
@@ -474,13 +507,300 @@ public class UserObjectBundleService {
     }
   }
 
+  /**
+   * True when the payload built for this candidate carries the relation's complete column set (no
+   * projection). Mirrors {@link UserObjectBundleUtils#pruneSchema} exactly: a candidate that wants
+   * all columns, or names none, is served the full schema. The pin-identity token is only stamped
+   * for such responses (see buildRelation), so a cached version always denotes the full schema.
+   */
+  private static boolean servesFullSchema(TableReferenceCandidate candidate) {
+    return candidate.getWantsAllColumns() || candidate.getInitialColumnsCount() == 0;
+  }
+
+  /*
+   * The opaque pin identity for a resolved relation. Tables carry the query
+   * pin's identity, frozen at first touch. Views and system relations have no
+   * query pin in V1; they carry a derived content token — the SHA-256 of the
+   * relation id and the node's cache identity (see below for why the id is
+   * required) — which is immutable per content version, leaks no URI or
+   * storage authority, and (with an empty constraints ref) states the
+   * deterministic truth that no constraints bundle exists for them.
+   */
+  private Optional<PinIdentitySource> pinIdentityFor(
+      String correlationId, ResolvedRelation relation, QueryContext queryContext) {
+    // Only a USER table carries a per-query snapshot pin; route it through the pin's identity.
+    // Views AND system tables have no query pin, so they take the derived content token below —
+    // previously system tables fell into the pin branch and emitted no identity at all, so
+    // clients could never cache them despite that being the whole point of the content token.
+    // Discriminate on kind+origin (a system table is also a TABLE node, and a view may be USER
+    // origin) rather than the concrete node class, so the routing holds for every node backing.
+    if (relation.node().kind() == GraphNodeKind.TABLE
+        && relation.node().origin() == GraphNodeOrigin.USER) {
+      return queryContext
+          .findTablePin(relation.relationId(), correlationId)
+          .map(pin -> new PinIdentitySource(QueryPins.identity(pin), schemaScope(pin)));
+    }
+    String cacheIdentity = relation.node().cacheIdentity();
+    if (cacheIdentity == null || cacheIdentity.isBlank()) {
+      return Optional.empty();
+    }
+    // Derived content token for views and system relations: a hash of the relation id plus the
+    // node's registry cacheIdentity. The relation id is ESSENTIAL, not decoration: SystemTableNode
+    // does not override GraphNode.cacheIdentity(), which returns the bare catalog-fingerprint
+    // version (SystemNodeRegistry hands every system table in a catalog the same value), so hashing
+    // cacheIdentity alone would collide across all system tables — a client that cached one would
+    // be served another identity-only under the shared token and reuse the wrong schema. Mixing the
+    // id in makes the token unique per relation while still moving with engine content (the version
+    // changes on catalog upgrade). It also folds in a system table's resolved EXECUTION metadata
+    // (backend kind + the resolved Flight/storage endpoint) — an identity-only reply omits that
+    // metadata, and a config-resolved endpoint (configuredEndpointForKey) can change without moving
+    // cacheIdentity. A floecat redeploy does NOT reset an external caching client, so without this
+    // the client would match the token, get no endpoint, and route to the stale one. The endpoint
+    // is
+    // resolved through resolveSystemExecution — the same helper buildRelation uses to stamp it — so
+    // the token cannot drift from the served routing.
+    ResourceId relId = relation.relationId();
+    StringBuilder keyMaterial =
+        new StringBuilder()
+            .append(relId.getAccountId())
+            .append('\0')
+            .append(relId.getId())
+            .append('\0')
+            .append(relId.getKindValue())
+            .append('\0')
+            .append(cacheIdentity);
+    if (relation.node() instanceof SystemTableNode systemTableNode) {
+      keyMaterial.append('\0').append(resolveSystemExecution(systemTableNode).tokenMaterial());
+    }
+    // A CONTENT-derived identity: only table_blob_version is meaningful. A view or system relation
+    // has no query snapshot pin, so snapshot_id, pin_kind, pin_fingerprint, and constraints_ref
+    // stay unset (0 / UNSPECIFIED / empty) — deliberately, not as a placeholder. Consumers must key
+    // such a relation on table_blob_version alone and MUST NOT read the snapshot-pin fields off it
+    // (there is no snapshot to describe). The in-repo planner does exactly this — it reads only
+    // table_blob_version, constraints_ref_version, and snapshot_id off pin_identity and never
+    // branches on pin_kind (see RPC_parsing.cpp) — so the present-but-defaulted fields are inert.
+    // No schema scope either: the content hash above IS the schema identity.
+    return Optional.of(
+        new PinIdentitySource(
+            RelationPinIdentity.newBuilder()
+                .setTableBlobVersion(Hashing.sha256Hex(keyMaterial.toString()))
+                .build(),
+            ""));
+  }
+
+  /**
+   * A wire-facing pin identity plus the server-side schema-scope material its possession token
+   * folds in. The scope stays OFF the identity (RelationPinIdentity is planner-facing; the
+   * fingerprint is internal pin state) — this pair is how it travels from pinIdentityFor to
+   * possessionToken without widening the wire message.
+   */
+  private record PinIdentitySource(RelationPinIdentity identity, String schemaScope) {}
+
+  /**
+   * The schema-scope material a table pin contributes to the possession token: the read-schema
+   * fingerprint stamped on the pinned manifest entry, or — for pins built from pre-fingerprint
+   * entries — the snapshot blob version (correct but coarser: it also moves on data-only ingests,
+   * so legacy entries run cold on ingest until their next snapshot write stamps a fingerprint).
+   */
+  private static String schemaScope(ai.floedb.floecat.query.rpc.TablePin pin) {
+    return pin.getSchemaFingerprint().isBlank()
+        ? pin.getSnapshotBlobVersion()
+        : pin.getSchemaFingerprint();
+  }
+
+  /**
+   * A system table's resolved execution metadata: the backend kind plus the concrete endpoint the
+   * bundle serves (a Flight endpoint, whether built-in, node-declared, or config-resolved, or a
+   * storage-path fallback). Resolved in ONE place so buildRelation (which stamps these fields) and
+   * pinIdentityFor (which folds them into the possession token) can never disagree — the token must
+   * cover exactly the routing an identity-only reply omits.
+   */
+  private record SystemExecution(
+      String backendKind, FlightEndpointRef flightEndpoint, String storagePath) {
+    String tokenMaterial() {
+      // Build from the endpoint's explicit, contractual fields (host/port/tls) rather than
+      // FlightEndpointRef.toString(): protobuf documents Message.toString() as non-contractual and
+      // subject to change, and this token is persisted by clients and matched across queries. The
+      // reserved `ticket` field is deliberately excluded — workers must not inspect it, and it is
+      // not routing identity. The token then moves exactly when the routing it covers moves.
+      String endpoint =
+          flightEndpoint != null
+              ? flightEndpoint.getHost()
+                  + ':'
+                  + flightEndpoint.getPort()
+                  + ':'
+                  + flightEndpoint.getTls()
+              : "";
+      return backendKind + '\0' + endpoint + '\0' + storagePath;
+    }
+  }
+
+  private SystemExecution resolveSystemExecution(SystemTableNode node) {
+    String backendKind = String.valueOf(node.backendKind());
+    if (node instanceof SystemTableNode.FloeCatSystemTableNode) {
+      return new SystemExecution(backendKind, floecatFlightEndpoint, "");
+    }
+    if (node instanceof SystemTableNode.StorageSystemTableNode storage) {
+      if (storage.flightEndpoint() != null) {
+        return new SystemExecution(backendKind, storage.flightEndpoint(), "");
+      }
+      Optional<FlightEndpointRef> configured =
+          configuredEndpointForKey(storage.storageEndpointKey());
+      if (configured.isPresent()) {
+        return new SystemExecution(backendKind, configured.get(), "");
+      }
+      if (!storage.storagePath().isBlank()) {
+        return new SystemExecution(backendKind, null, storage.storagePath());
+      }
+    }
+    return new SystemExecution(backendKind, null, "");
+  }
+
+  /**
+   * The pin identity as stamped on the wire, with its {@code table_blob_version} scoped to the
+   * SERVED PAYLOAD rather than the bare content version (see {@link #possessionToken}). Both the
+   * full-response stamp and the identity-only match go through here, so the token a client
+   * advertises and the token the gate compares can never drift.
+   */
+  private Optional<RelationPinIdentity> scopedPinIdentity(
+      String correlationId,
+      ResolvedRelation relation,
+      QueryContext queryContext,
+      EngineContext ctx) {
+    return pinIdentityFor(correlationId, relation, queryContext)
+        .map(
+            src ->
+                src.identity().toBuilder()
+                    .setTableBlobVersion(
+                        possessionToken(
+                            src.identity().getTableBlobVersion(), src.schemaScope(), ctx))
+                    .build());
+  }
+
+  /**
+   * The possession token a caching client advertises
+   * (GetUserObjectsRequest.known_table_blob_versions) and the identity-only gate matches on. It
+   * must identify the WITHHELD PAYLOAD, not merely the content version: withheld columns carry
+   * engine-keyed payload (decorateColumns / hasRequiredEnginePayload), so a bare content version
+   * would let a client that shares one catalog cache across engines — or that spans an
+   * engine-version or decorator upgrade — advertise a version decorated for engine A, be served
+   * identity-only under engine B, and reuse engine-A decoration for an engine-B query. The
+   * requesting engine is already on the wire (EngineContext), so we fold it in server-side at both
+   * mint sites; the client stays engine-agnostic and correctness no longer depends on it keying its
+   * own cache by engine.
+   *
+   * <p>The token folds in a SCHEMA scope ({@code schemaScope}), because the served column schema is
+   * read from the pinned snapshot (schema-on-read) and CreateSnapshot/UpdateSnapshot can change
+   * that schema WITHOUT moving the definition ref (table_blob_version). A definition-only token
+   * would therefore let a client that holds an old schema be served identity-only for a NEW schema
+   * and reuse stale columns/types. The scope is the read-schema fingerprint stamped on the pinned
+   * manifest entry (SnapshotManifestEntry.schema_fingerprint): identical read schemas share it, so
+   * a data-only ingest keeps the token — and the client's schema — warm, while a snapshot-backed
+   * schema change moves it. Pins built from pre-fingerprint manifest entries fall back to the
+   * snapshot blob version (see {@link #schemaScope}): still never stale, just cold on every ingest
+   * until the table's next snapshot write stamps a fingerprint. Views and system relations pass an
+   * empty scope — their content hash is already the schema identity.
+   *
+   * <p>{@code decorationEpoch} additionally invalidates cached decoration when the decorator's
+   * behavior changes without moving the engine version. When there is nothing to fold in — no
+   * schema scope (views/system) AND no engine decoration — the token IS the content version,
+   * byte-identical to the unscoped behavior.
+   */
+  private String possessionToken(String contentVersion, String schemaScope, EngineContext ctx) {
+    if (contentVersion == null || contentVersion.isBlank()) {
+      return contentVersion;
+    }
+    String scope = safe(schemaScope);
+    boolean decorate = decorationRequired(ctx);
+    if (scope.isBlank() && !decorate) {
+      return contentVersion;
+    }
+    StringBuilder material = new StringBuilder(contentVersion).append('\0').append(scope);
+    if (decorate) {
+      material
+          .append('\0')
+          .append(safe(ctx.normalizedKind()))
+          .append('\0')
+          .append(safe(ctx.normalizedVersion()))
+          .append('\0')
+          .append(decorationEpoch);
+    }
+    return Hashing.sha256Hex(material.toString());
+  }
+
+  /*
+   * Identity-only response when the request proved possession of the exact
+   * content version this resolution serves: the payload (schema, columns,
+   * view definition, decoration) is omitted — the identity plus the
+   * lightweight stats are all a caching client needs, and the omitted bytes
+   * are provably identical to what it holds. A generic conditional-request
+   * feature, never client-special-casing: servers MAY ignore the hint and
+   * clients MUST treat a full payload as equally correct. Returns null when
+   * the relation must be built in full.
+   */
+  private RelationInfo identityOnlyOrNull(
+      ResolvedRelation relation,
+      Optional<RelationPinIdentity> scopedIdentity,
+      StatsProvider statsProvider,
+      Set<String> knownBlobVersions,
+      TimingAccumulator timings) {
+    // The token is the engine-scoped payload token (scopedIdentity), not the bare content version,
+    // so a client that proved possession under a different engine cannot be served identity-only.
+    // A blank version can never prove possession: a user table whose definition blob had no etag
+    // resolves to table_blob_version="" (the repository defaults a missing etag to empty), and
+    // every such table would otherwise share that key — one cached, the rest served the wrong
+    // schema identity-only. Force the full payload rather than match on the empty string.
+    if (knownBlobVersions.isEmpty()
+        || scopedIdentity.isEmpty()
+        || scopedIdentity.get().getTableBlobVersion().isBlank()
+        || !knownBlobVersions.contains(scopedIdentity.get().getTableBlobVersion())) {
+      return null;
+    }
+    RelationInfo.Builder slim = baseRelationInfo(relation).setPinIdentity(scopedIdentity.get());
+    // Time the stats lookup exactly as the full path does (buildRelation): the slim path still hits
+    // the stats provider, which can block on its latency budget. Without this, once the
+    // conditional-request feature is doing its job a large fraction of resolutions would contribute
+    // zero to statsLookup telemetry and the slow-RPC threshold.
+    long statsLookupStartNs = System.nanoTime();
+    attachTableStats(slim, relation.relationId(), statsProvider);
+    timings.addStatsLookupNanos(System.nanoTime() - statsLookupStartNs);
+    return slim.build();
+  }
+
+  /**
+   * A {@link RelationInfo} builder carrying the identity fields every response sets — id, canonical
+   * name, kind, and origin. Both the slim identity-only reply and the full payload start here, so
+   * the two can never disagree on a relation's identity.
+   */
+  private RelationInfo.Builder baseRelationInfo(ResolvedRelation relation) {
+    return RelationInfo.newBuilder()
+        .setRelationId(relation.relationId())
+        .setName(canonicalName(relation.relationId(), relation.node()))
+        .setKind(mapKind(relation.node().kind(), relation.node().origin()))
+        .setOrigin(mapOrigin(relation.node().origin()));
+  }
+
+  /**
+   * Attach the relation's live snapshot-scoped estimates (row count, size) when the stats provider
+   * has them. Both response paths keep these on the wire: they move with every ingest, so a caching
+   * client relies on the reply to refresh them even when the schema payload is omitted.
+   */
+  private static void attachTableStats(
+      RelationInfo.Builder builder, ResourceId relationId, StatsProvider statsProvider) {
+    statsProvider
+        .tableStats(relationId)
+        .map(StatsProviderFactory::toRelationStats)
+        .ifPresent(builder::setStats);
+  }
+
   private RelationInfo buildRelation(
       String correlationId,
       ResolvedRelation relation,
       QueryContext queryContext,
       MetadataResolutionContext resolutionContext,
       StatsProvider statsProvider,
-      TimingAccumulator timings) {
+      TimingAccumulator timings,
+      Optional<RelationPinIdentity> scopedIdentity) {
     if (LOG.isTraceEnabled()) {
       LOG.tracef(
           "Building relation bundle query_id=%s relation=%s kind=%s origin=%s",
@@ -490,9 +810,8 @@ public class UserObjectBundleService {
           relation.node().origin());
     }
 
-    RelationKind kind = mapKind(relation.node().kind(), relation.node().origin());
+    // origin is needed below for columnsFor; kind and name are set via baseRelationInfo.
     Origin origin = mapOrigin(relation.node().origin());
-    NameRef name = canonicalName(relation.relationId(), relation.node());
 
     List<SchemaColumn> schemaColumns =
         relation.node() instanceof ViewNode view
@@ -500,11 +819,7 @@ public class UserObjectBundleService {
             : relation.node() instanceof UserTableNode userTable
                 ? UserObjectBundleUtils.qualifyNestedColumnNames(
                     logicalSchemaForRelation(
-                            correlationId,
-                            relation.relationId(),
-                            userTable,
-                            relation.selectedInput(),
-                            queryContext)
+                            correlationId, relation.relationId(), userTable, queryContext)
                         .getColumnsList())
                 : overlay.tableSchema(relation.node().id());
 
@@ -514,12 +829,7 @@ public class UserObjectBundleService {
     List<ColumnInfo> columns =
         UserObjectBundleUtils.columnsFor(schemaColumns, pruned, origin, correlationId);
 
-    RelationInfo.Builder builder =
-        RelationInfo.newBuilder()
-            .setRelationId(relation.relationId())
-            .setName(name)
-            .setKind(kind)
-            .setOrigin(origin);
+    RelationInfo.Builder builder = baseRelationInfo(relation);
 
     /*
      * Populate the bundled endpoint metadata so workers know how to reach the table. FLOECAT
@@ -528,29 +838,21 @@ public class UserObjectBundleService {
      * path fallback. ENGINE tables never set an endpoint.
      */
     if (relation.node() instanceof SystemTableNode systemTableNode) {
+      // Resolve through the shared helper — the SAME implementation pinIdentityFor uses to fold
+      // routing into the token — so the served routing and the token that covers it cannot drift.
+      // It is invoked independently at each site (a cheap in-memory config lookup), not memoized
+      // across them; both resolve deterministically from the same node, so they always agree.
+      SystemExecution exec = resolveSystemExecution(systemTableNode);
       builder.setBackendKind(systemTableNode.backendKind());
-      if (systemTableNode instanceof SystemTableNode.FloeCatSystemTableNode) {
-        builder.setFlightEndpoint(floecatFlightEndpoint);
-      } else if (systemTableNode instanceof SystemTableNode.StorageSystemTableNode storage) {
-        if (storage.flightEndpoint() != null) {
-          builder.setFlightEndpoint(storage.flightEndpoint());
-        } else {
-          Optional<FlightEndpointRef> configuredEndpoint =
-              configuredEndpointForKey(storage.storageEndpointKey());
-          if (configuredEndpoint.isPresent()) {
-            builder.setFlightEndpoint(configuredEndpoint.get());
-          } else if (!storage.storagePath().isBlank()) {
-            builder.setStoragePath(storage.storagePath());
-          }
-        }
+      if (exec.flightEndpoint() != null) {
+        builder.setFlightEndpoint(exec.flightEndpoint());
+      } else if (!exec.storagePath().isBlank()) {
+        builder.setStoragePath(exec.storagePath());
       }
     }
 
     long statsLookupStartNs = System.nanoTime();
-    statsProvider
-        .tableStats(relation.relationId())
-        .map(StatsProviderFactory::toRelationStats)
-        .ifPresent(builder::setStats);
+    attachTableStats(builder, relation.relationId(), statsProvider);
     timings.addStatsLookupNanos(System.nanoTime() - statsLookupStartNs);
 
     // If this is a view, keep a mutable builder around for decoration.
@@ -560,11 +862,21 @@ public class UserObjectBundleService {
       builder.setViewDefinition(viewBuilder);
     }
 
-    EngineContext ctx = engineContext.engineContext();
+    // The engine captured at iterator construction, not a live provider re-read: this runs on
+    // executor threads where the request context is unreliable, and a silently empty engine would
+    // skip engine-specific decoration with no log line (eng-floe/floecat#361).
+    EngineContext ctx = resolutionContext.engineContext();
     boolean decorationRequired = decorationRequired(ctx);
     Optional<EngineMetadataDecorator> decorator = currentDecorator(ctx);
     RelationDecoration relationDecoration = null;
     boolean relationDecorationSucceeded = true;
+    // Per-phase payload-decoration success, tracked separately from
+    // relationDecorationSucceeded (which gates hint commits below). The possession-token stamp
+    // needs EVERY payload phase to have succeeded — a view or completion failure leaves the served
+    // payload incomplete, and stamping a token for it would lock that incomplete payload into a
+    // caching client until it happened to re-miss, instead of self-healing on the next query.
+    boolean viewDecorationSucceeded = true;
+    boolean completeRelationSucceeded = true;
     long relationDecorationBeforeNanos = timings.decorationTotalNanos();
 
     if (decorationRequired && decorator.isPresent()) {
@@ -610,6 +922,7 @@ public class UserObjectBundleService {
             timings.addDecorateViewNanos(System.nanoTime() - decorateViewStartNs);
           }
         } catch (RuntimeException e) {
+          viewDecorationSucceeded = false;
           LOG.debugf(
               e,
               "Decorator threw while decorating view %s (engine=%s)",
@@ -662,6 +975,7 @@ public class UserObjectBundleService {
               decorationTimingNanos(relationDecoration, COLUMN_HINT_PERSIST_NANOS_KEY));
         }
       } catch (RuntimeException e) {
+        completeRelationSucceeded = false;
         LOG.debugf(
             e,
             "Decorator threw while completing relation %s (engine=%s)",
@@ -686,11 +1000,52 @@ public class UserObjectBundleService {
           relationDecorationNanos / 1_000_000.0);
     }
 
+    // Stamp the pin identity. Two distinct concerns share the message and must NOT share a gate:
+    //
+    //   - The DATA identity (pin_fingerprint, snapshot id, AS-OF provenance,
+    // constraints_ref_version)
+    //     is a property of the pinned relation, not of the served payload shape. Callers rely on it
+    //     to tell a current pin from a historical one and to skip the constraints RPC, so it is
+    //     stamped UNCONDITIONALLY whenever the relation is pinned — including on projected or
+    //     decoration-incomplete replies, which previously lost it entirely.
+    //
+    //   - The possession token (table_blob_version) is payload-scoped: a client that advertises it
+    //     is later served identity-only and reuses its cached payload verbatim. It is kept only
+    // when
+    //     the served payload is complete and cacheable, and blanked otherwise:
+    //       * full schema — a projected subset must never advertise "I hold every column", or a
+    //         later request would be starved of columns it never received;
+    //       * every payload-decoration phase succeeded (relation, view, completion) and no column
+    //         ended up FAILED — else a transient decoration failure would lock into a caching
+    //         client instead of self-healing next query;
+    //       * non-blank — a blank version can never prove possession (the match path rejects it).
+    //
+    // scopedIdentity is computed once by the caller and threaded into both the identity-only match
+    // and this stamp, so a cache miss under a populated hint set does not hash the relation twice.
+    boolean payloadCacheable =
+        servesFullSchema(relation.candidate())
+            && relationDecorationSucceeded
+            && viewDecorationSucceeded
+            && completeRelationSucceeded
+            && countColumnsWithStatus(columnResults, ColumnStatus.COLUMN_STATUS_FAILED) == 0;
+    scopedIdentity.ifPresent(
+        id ->
+            builder.setPinIdentity(
+                payloadCacheable && !id.getTableBlobVersion().isBlank()
+                    ? id
+                    : id.toBuilder().clearTableBlobVersion().build()));
+
     builder.addAllColumns(columnResults);
     return builder.build();
   }
 
-  private static long decorationTimingNanos(
+  /**
+   * A non-negative {@code long} decoration attribute ({@code 0} when absent, non-numeric, or
+   * negative). The extraction/clamping lives here once; {@link #decorationTimingNanos} and {@link
+   * #decorationCounter} are named wrappers that keep the intent (a nanos timing vs. a warm-hit
+   * count) legible at their call sites.
+   */
+  private static long nonNegativeLongAttribute(
       RelationDecoration relationDecoration, String attributeKey) {
     if (relationDecoration == null || attributeKey == null || attributeKey.isBlank()) {
       return 0L;
@@ -702,16 +1057,14 @@ public class UserObjectBundleService {
     return Math.max(0L, number.longValue());
   }
 
+  private static long decorationTimingNanos(
+      RelationDecoration relationDecoration, String attributeKey) {
+    return nonNegativeLongAttribute(relationDecoration, attributeKey);
+  }
+
   private static long decorationCounter(
       RelationDecoration relationDecoration, String attributeKey) {
-    if (relationDecoration == null || attributeKey == null || attributeKey.isBlank()) {
-      return 0L;
-    }
-    Object value = relationDecoration.attribute(attributeKey);
-    if (!(value instanceof Number number)) {
-      return 0L;
-    }
-    return Math.max(0L, number.longValue());
+    return nonNegativeLongAttribute(relationDecoration, attributeKey);
   }
 
   private Optional<FlightEndpointRef> configuredEndpointForKey(String endpointKey) {
@@ -1109,42 +1462,26 @@ public class UserObjectBundleService {
       String correlationId,
       ResourceId relationId,
       UserTableNode userTable,
-      QueryInput selectedInput,
       QueryContext queryContext) {
-    SnapshotRef snapshotRef = explicitSnapshotOverride(selectedInput);
-    if (snapshotRef == null) {
-      snapshotRef = snapshotRefFromPin(queryContext.findSnapshotPin(relationId, correlationId));
-    }
-    if (snapshotRef == null) {
+    Optional<TablePin> pin = queryContext.findTablePin(relationId, correlationId);
+    if (pin.isEmpty()) {
+      // Not yet pinned (e.g. a relation resolved outside the pinned set): fall back to the table's
+      // default schema.
       return logicalSchemaMapper.map(userTable);
     }
+    // Consume the pinned snapshot identity, validating the pinned blobs; a bad pinned blob fails
+    // hard rather than falling back to current catalog state.
+    pinValidator.validate(correlationId, pin.get());
+    SnapshotRef snapshotRef =
+        SnapshotRef.newBuilder().setSnapshotId(pin.get().getSnapshotId()).build();
     CatalogOverlay.SchemaResolution resolved =
-        overlay.schemaFor(correlationId, relationId, snapshotRef);
+        overlay.schemaFor(
+            correlationId,
+            relationId,
+            snapshotRef,
+            pin.get().getTableBlobUri(),
+            pin.get().getSnapshotBlobUri());
     return logicalSchemaMapper.map(resolved.table(), resolved.schemaJson());
-  }
-
-  private SnapshotRef explicitSnapshotOverride(QueryInput selectedInput) {
-    if (selectedInput == null || !selectedInput.hasSnapshot()) {
-      return null;
-    }
-    SnapshotRef snapshot = selectedInput.getSnapshot();
-    return switch (snapshot.getWhichCase()) {
-      case SNAPSHOT_ID, AS_OF -> snapshot;
-      default -> null;
-    };
-  }
-
-  private SnapshotRef snapshotRefFromPin(Optional<SnapshotPin> pin) {
-    if (pin.isEmpty()) {
-      return null;
-    }
-    if (pin.get().hasSnapshotId()) {
-      return SnapshotRef.newBuilder().setSnapshotId(pin.get().getSnapshotId()).build();
-    }
-    if (pin.get().hasAsOf()) {
-      return SnapshotRef.newBuilder().setAsOf(pin.get().getAsOf()).build();
-    }
-    return null;
   }
 
   private NameRef canonicalName(ResourceId id, GraphNode node) {
@@ -1189,58 +1526,17 @@ public class UserObjectBundleService {
     return origin == GraphNodeOrigin.SYSTEM ? Origin.ORIGIN_BUILTIN : Origin.ORIGIN_USER;
   }
 
-  private QueryContext mergeSnapshotSet(
-      QueryContext existing, SnapshotSet incoming, String correlationId) {
+  private QueryContext mergeRelationPins(
+      QueryContext existing, RelationPinSet incoming, String correlationId) {
     if (incoming == null || incoming.getPinsCount() == 0) {
       return existing;
     }
-    SnapshotSet current = parseSnapshotSet(existing, correlationId);
-    SnapshotSet merged = mergeSnapshotSets(current, incoming);
+    RelationPinSet current = existing.parseRelationPins(correlationId);
+    RelationPinSet merged = QueryPins.mergeSets(current, incoming, correlationId);
     if (current.equals(merged)) {
       return existing;
     }
-    return existing.toBuilder().snapshotSet(merged.toByteArray()).build();
-  }
-
-  private SnapshotSet parseSnapshotSet(QueryContext ctx, String correlationId) {
-    return ctx.parseSnapshotSet(correlationId);
-  }
-
-  private SnapshotSet mergeSnapshotSets(SnapshotSet existing, SnapshotSet incoming) {
-    if (existing.getPinsCount() == 0 && incoming.getPinsCount() == 0) {
-      return existing;
-    }
-    Map<String, SnapshotPin> merged = new LinkedHashMap<>();
-    for (SnapshotPin pin : existing.getPinsList()) {
-      merged.put(pinKey(pin.getTableId()), pin);
-    }
-    for (SnapshotPin pin : incoming.getPinsList()) {
-      merged.merge(pinKey(pin.getTableId()), pin, UserObjectBundleService::mergePin);
-    }
-    return SnapshotSet.newBuilder().addAllPins(merged.values()).build();
-  }
-
-  private static SnapshotPin mergePin(SnapshotPin current, SnapshotPin incoming) {
-    if (incoming == null) {
-      return current;
-    }
-    if (current == null) {
-      return incoming;
-    }
-    if (current.hasSnapshotId()) {
-      return current;
-    }
-    if (incoming.hasSnapshotId()) {
-      return incoming;
-    }
-    if (current.hasAsOf()) {
-      return current;
-    }
-    return incoming;
-  }
-
-  private static String pinKey(ResourceId rid) {
-    return String.join(":", rid.getAccountId(), rid.getKind().name(), rid.getId());
+    return existing.toBuilder().relationPins(merged.toByteArray()).build();
   }
 
   private record ResolvedRelation(
@@ -1283,6 +1579,9 @@ public class UserObjectBundleService {
     private final MetadataResolutionContext resolutionContext;
     private final String engineKind;
     private final String engineVersion;
+    /* Content versions the request proved it holds; relations resolving to
+     * one of these get an identity-only response (see identityOnlyOrNull). */
+    private final Set<String> knownBlobVersions;
 
     // Maintains the order inputs were resolved so the emitted chunk mirrors the request order.
     private final List<PendingItem> pending = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
@@ -1292,12 +1591,12 @@ public class UserObjectBundleService {
     private final ArrayDeque<EagerBaseCursor> eagerBaseQueue = new ArrayDeque<>();
     private final Set<String> eagerBaseSeen = new HashSet<>();
     private final Map<RelationCacheKey, RelationInfo> relationInfoCache = new HashMap<>();
-    private final Map<ResourceId, SnapshotPin> currentSnapshotPinCache = new HashMap<>();
+    private final Map<ResourceId, TablePin> currentSnapshotPinCache = new HashMap<>();
     private final TimingAccumulator timings = new TimingAccumulator();
     private final PhaseDiagnostics diagnostics = diagnostics("get_user_objects");
     private final long streamStartNs = System.nanoTime();
     private final Span parentSpan = Span.current();
-    private SnapshotSet pendingChunkPins = SnapshotSet.getDefaultInstance();
+    private RelationPinSet pendingChunkPins = RelationPinSet.getDefaultInstance();
 
     private int seq = 1;
     private int nextInputIndex = 0;
@@ -1327,10 +1626,14 @@ public class UserObjectBundleService {
     private long nodeResolutionCacheMisses = 0L;
 
     UserObjectBundleIterator(
-        String correlationId, QueryContext ctx, List<TableReferenceCandidate> tables) {
+        String correlationId,
+        QueryContext ctx,
+        List<TableReferenceCandidate> tables,
+        Set<String> knownBlobVersions) {
       this.correlationId = correlationId;
       this.ctx = ctx;
       this.tables = tables;
+      this.knownBlobVersions = knownBlobVersions;
       this.resolutionCount = tables.size();
       this.defaultCatalogId = ctx.getQueryDefaultCatalogId();
       this.statsProvider = statsFactory.forQuery(ctx, correlationId);
@@ -1406,7 +1709,7 @@ public class UserObjectBundleService {
       if (!toPin.isEmpty()) {
         long pinStartNs = System.nanoTime();
         try {
-          SnapshotSet chunkPins =
+          RelationPinSet chunkPins =
               collectChunkPins(correlationId, ctx, toPin, currentSnapshotPinCache, diagnostics);
           long accumulateStartNs = System.nanoTime();
           try {
@@ -1455,7 +1758,7 @@ public class UserObjectBundleService {
             continue;
           }
           ResourceId baseId = baseIdOpt.get();
-          String baseKey = pinKey(baseId);
+          String baseKey = QueryPins.pinKey(baseId);
           if (eagerBaseSeen.contains(baseKey)) {
             continue; // deduplicate
           }
@@ -1594,6 +1897,36 @@ public class UserObjectBundleService {
         if (liveCtx == null) {
           liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
         }
+        // Compute the pin identity at most once per relation: the identity-only match consults it
+        // when the client sent hints, and the stamp reuses it — so a cache miss under a populated
+        // hint set does not hash the relation twice. Computed for EVERY pinned relation (not only
+        // full-schema ones), because the stamp now preserves the data identity even on a projected
+        // reply — it merely blanks the possession token there. The extra work for a projected,
+        // hint-less reply is one pin read plus a hash, off the warm path.
+        Optional<RelationPinIdentity> scopedIdentity =
+            scopedPinIdentity(
+                correlationId, found.relation(), liveCtx, resolutionContext.engineContext());
+        /* Identity-only fast path: never cached — the info cache must only
+         * ever hold full payloads, or a later request that did NOT prove
+         * possession would be served a payload-less relation. */
+        RelationInfo slim =
+            identityOnlyOrNull(
+                found.relation(), scopedIdentity, statsProvider, knownBlobVersions, timings);
+        if (slim != null) {
+          // Account the slim path symmetric with the full path below: its stats time already landed
+          // in timings via identityOnlyOrNull; fold the remaining (identity-build) time into
+          // relationBuildNanos so identity-only resolutions are not invisible to the summary event.
+          long buildNanos = System.nanoTime() - buildStartNs;
+          long statsDeltaNanos = timings.statsLookupNanos() - statsBeforeNanos;
+          relationBuildNanos += Math.max(0L, buildNanos - statsDeltaNanos);
+          resolutions.add(
+              RelationResolution.newBuilder()
+                  .setInputIndex(found.inputIndex())
+                  .setStatus(ResolutionStatus.RESOLUTION_STATUS_FOUND)
+                  .setRelation(slim)
+                  .build());
+          continue;
+        }
         RelationInfo info =
             buildRelation(
                 correlationId,
@@ -1601,7 +1934,8 @@ public class UserObjectBundleService {
                 liveCtx,
                 resolutionContext,
                 statsProvider,
-                timings);
+                timings,
+                scopedIdentity);
         long buildNanos = System.nanoTime() - buildStartNs;
         long statsDeltaNanos = timings.statsLookupNanos() - statsBeforeNanos;
         long decorationDeltaNanos = timings.decorationTotalNanos() - decorationBeforeNanos;
@@ -1812,7 +2146,11 @@ public class UserObjectBundleService {
       }
       long startNs = System.nanoTime();
       try {
-        Optional<ResourceId> resolved = overlay.resolveName(correlationId, ref);
+        // Pass the engine captured at iterator construction: re-reading it from the request
+        // context per lookup is fragile across executor hops, and an empty engine silently
+        // un-resolves engine-gated system objects (eng-floe/floecat#361).
+        Optional<ResourceId> resolved =
+            overlay.resolveName(correlationId, ref, resolutionContext.engineContext());
         nameResolutionCache.put(key, resolved);
         nameResolutionCacheMisses++;
         return resolved;
@@ -1830,7 +2168,9 @@ public class UserObjectBundleService {
       }
       long startNs = System.nanoTime();
       try {
-        Optional<GraphNode> resolved = overlay.resolve(id);
+        // Pass the engine captured at iterator construction: re-reading it from the request
+        // context per lookup is fragile across executor hops (eng-floe/floecat#361).
+        Optional<GraphNode> resolved = overlay.resolve(id, resolutionContext.engineContext());
         nodeResolutionCache.put(id, resolved);
         nodeResolutionCacheMisses++;
         return resolved;
@@ -1924,11 +2264,16 @@ public class UserObjectBundleService {
     }
 
     // Track every pin that must be durable before the next chunk is emitted.
-    private void accumulateChunkPins(SnapshotSet incomingPins) {
+    private void accumulateChunkPins(RelationPinSet incomingPins) {
       if (incomingPins == null || incomingPins.getPinsCount() == 0) {
         return;
       }
-      pendingChunkPins = mergeSnapshotSets(pendingChunkPins, incomingPins);
+      try {
+        pendingChunkPins = QueryPins.mergeSets(pendingChunkPins, incomingPins, correlationId);
+      } catch (RuntimeException | Error e) {
+        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(incomingPins));
+        throw e;
+      }
     }
 
     private void commitChunkPins() {
@@ -1940,12 +2285,21 @@ public class UserObjectBundleService {
             "Committing chunk pins query_id=%s pin_count=%d",
             ctx.getQueryId(), pendingChunkPins.getPinsCount());
       }
-      var updated =
-          queryStore.update(
-              ctx.getQueryId(),
-              existing -> mergeSnapshotSet(existing, pendingChunkPins, correlationId));
-      pendingChunkPins = SnapshotSet.getDefaultInstance();
+      RelationPinSet toCommit = pendingChunkPins;
+      // The resolver registered these pins' blobs as transient GC roots at resolution, so they are
+      // protected across the collect→commit window; this update makes the context a durable root.
+      Optional<QueryContext> updated;
+      try {
+        updated =
+            queryStore.update(
+                ctx.getQueryId(), existing -> mergeRelationPins(existing, toCommit, correlationId));
+      } catch (RuntimeException | Error e) {
+        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
+        throw e;
+      }
+      pendingChunkPins = RelationPinSet.getDefaultInstance();
       if (updated.isEmpty()) {
+        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
         LOG.warnf(
             "Failed to commit chunk pins query_id=%s query context missing", ctx.getQueryId());
         throw GrpcErrors.notFound(

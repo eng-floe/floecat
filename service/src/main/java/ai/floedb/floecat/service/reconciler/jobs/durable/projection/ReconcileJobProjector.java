@@ -306,11 +306,28 @@ public class ReconcileJobProjector {
     if (stored == null) {
       return ProjectedPublicJob.empty();
     }
+    if (stored.jobKind() == ReconcileJobKind.EXEC_FILE_GROUP) {
+      return projectExecFileGroupForRollup(stored);
+    }
     JobProjection selfProjection =
         isParentCapable(stored.jobKind())
             ? inlineSummaryProjection(stored)
             : intrinsicProjectionForRollup(stored);
     return ProjectedPublicJob.self(stored, selfProjection);
+  }
+
+  private ProjectedPublicJob projectExecFileGroupForRollup(StoredReconcileJob stored) {
+    ReconcileFileGroupTask fileGroupTask =
+        detailLoader == null ? ReconcileFileGroupTask.empty() : detailLoader.fileGroupTask(stored);
+    if (!hasFileGroupResultProjectionSignal(fileGroupTask)) {
+      return ProjectedPublicJob.self(stored, inlineSummaryProjection(stored));
+    }
+    JobProjection projection = projectExecFileGroup(fileGroupTask, stored.state);
+    return ProjectedPublicJob.self(
+        stored,
+        projection,
+        Math.max(0L, stored.snapshotsProcessed),
+        fileGroupStatsProcessed(fileGroupTask));
   }
 
   public JobProjection projectJob(
@@ -467,11 +484,16 @@ public class ReconcileJobProjector {
         failedFiles = plannedFiles;
       }
     }
+    long completedFileGroups =
+        !("JS_FAILED".equals(state) || "JS_CANCELLED".equals(state))
+                && ("JS_SUCCEEDED".equals(state) || completedFiles > 0L || failedFiles > 0L)
+            ? 1L
+            : 0L;
     return new JobProjection(
         indexesProcessed,
         1L,
         plannedFiles,
-        "JS_SUCCEEDED".equals(state) ? 1L : 0L,
+        completedFileGroups,
         ("JS_FAILED".equals(state) || "JS_CANCELLED".equals(state)) ? 1L : 0L,
         completedFiles,
         failedFiles);
@@ -527,6 +549,25 @@ public class ReconcileJobProjector {
             || result.indexArtifact().artifactFormatVersion() > 0);
   }
 
+  private static boolean hasFileGroupResultProjectionSignal(ReconcileFileGroupTask fileGroupTask) {
+    return fileGroupTask != null
+        && (!fileGroupTask.fileResults().isEmpty()
+            || fileGroupTask.fileStatsRecordCount() > 0
+            || !fileGroupTask.fileStatsBlobUri().isBlank());
+  }
+
+  private static long fileGroupStatsProcessed(ReconcileFileGroupTask fileGroupTask) {
+    if (fileGroupTask == null || fileGroupTask.isEmpty()) {
+      return 0L;
+    }
+    long fileResultStats =
+        fileGroupTask.fileResults().stream()
+            .filter(result -> result != null && !result.isEmpty())
+            .mapToLong(ReconcileFileResult::statsProcessed)
+            .sum();
+    return Math.max(fileResultStats, Math.max(0, fileGroupTask.fileStatsRecordCount()));
+  }
+
   private long plannedFilesForGroup(ReconcileFileGroupTask fileGroupTask) {
     if (fileGroupTask == null || fileGroupTask.isEmpty()) {
       return 0L;
@@ -561,6 +602,18 @@ public class ReconcileJobProjector {
     }
 
     public static ProjectedPublicJob self(StoredReconcileJob stored, JobProjection projection) {
+      return self(
+          stored,
+          projection,
+          Math.max(0L, stored.snapshotsProcessed),
+          Math.max(0L, stored.statsProcessed));
+    }
+
+    public static ProjectedPublicJob self(
+        StoredReconcileJob stored,
+        JobProjection projection,
+        long snapshotsProcessed,
+        long statsProcessed) {
       String state = blankToEmpty(stored.state);
       return new ProjectedPublicJob(
           state,
@@ -572,8 +625,8 @@ public class ReconcileJobProjector {
           stored.viewsScanned,
           stored.viewsChanged,
           stored.errors,
-          stored.snapshotsProcessed,
-          stored.statsProcessed,
+          Math.max(0L, snapshotsProcessed),
+          Math.max(0L, statsProcessed),
           blankToEmpty(stored.executorId),
           projection);
     }

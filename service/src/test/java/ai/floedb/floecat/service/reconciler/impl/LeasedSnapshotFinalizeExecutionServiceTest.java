@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anySet;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -44,6 +45,9 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
+import ai.floedb.floecat.service.repo.IdempotencyRepository;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.EnumSet;
 import java.util.List;
@@ -63,6 +67,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   private SnapshotFinalizePersistenceService persistence;
   private SnapshotFinalizeCoverageService coverageService;
   private SnapshotFinalizeChildStateService childStateService;
+  private CurrentSnapshotPointerService currentSnapshotPointerService;
   private PrincipalContext principal;
 
   @BeforeEach
@@ -72,11 +77,13 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     persistence = mock(SnapshotFinalizePersistenceService.class);
     coverageService = mock(SnapshotFinalizeCoverageService.class);
     childStateService = mock(SnapshotFinalizeChildStateService.class);
+    currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
     service.persistence = persistence;
     service.coverageService = coverageService;
     service.childStateService = childStateService;
+    service.currentSnapshotPointerService = currentSnapshotPointerService;
     when(principal.getCorrelationId()).thenReturn("corr");
   }
 
@@ -169,7 +176,124 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
-  void finalizeChunkedSuccessIgnoresPersistedFileStatsCoverageForFullRescan() {
+  void persistSuccessDoesNotFinalizeIdempotencyWhenLeaseOutcomeRejected() {
+    IdempotencyRepository idempotencyStore = mock(IdempotencyRepository.class);
+    service.idempotencyStore = idempotencyStore;
+    when(principal.getAccountId()).thenReturn(ACCOUNT_ID);
+    when(idempotencyStore.get(anyString())).thenReturn(java.util.Optional.empty());
+    when(idempotencyStore.createPending(
+            anyString(), anyString(), anyString(), anyString(), any(), any()))
+        .thenReturn(true);
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            0);
+    when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(java.util.Optional.of(finalizeJobView(snapshotTask)));
+    when(coverageService.expectedCoverage(snapshotTask))
+        .thenReturn(
+            new SnapshotFinalizeCoverageService.ExpectedCoverage(
+                SnapshotFinalizeCoverageService.PlannedCoverageState.EXPLICIT_EMPTY,
+                List.of(),
+                List.of(),
+                ""));
+    when(jobs.applyLeaseOutcome(
+            anyString(),
+            anyString(),
+            any(),
+            anyLong(),
+            anyString(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong()))
+        .thenReturn(false);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1"));
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    verify(idempotencyStore, never())
+        .finalizeSuccess(
+            anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void persistSuccessDoesNotSucceedWhenSnapshotCannotBePublished() {
+    IdempotencyRepository idempotencyStore = mock(IdempotencyRepository.class);
+    service.idempotencyStore = idempotencyStore;
+    when(principal.getAccountId()).thenReturn(ACCOUNT_ID);
+    when(idempotencyStore.get(anyString())).thenReturn(java.util.Optional.empty());
+    when(idempotencyStore.createPending(
+            anyString(), anyString(), anyString(), anyString(), any(), any()))
+        .thenReturn(true);
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            0);
+    when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(java.util.Optional.of(finalizeJobView(snapshotTask)));
+    when(coverageService.expectedCoverage(snapshotTask))
+        .thenReturn(
+            new SnapshotFinalizeCoverageService.ExpectedCoverage(
+                SnapshotFinalizeCoverageService.PlannedCoverageState.EXPLICIT_EMPTY,
+                List.of(),
+                List.of(),
+                ""));
+    StatusRuntimeException snapshotMissing =
+        Status.NOT_FOUND.withDescription("snapshot not found").asRuntimeException();
+    org.mockito.Mockito.doThrow(snapshotMissing)
+        .when(currentSnapshotPointerService)
+        .maybeAdvance(any(), eq(SNAPSHOT_ID), eq(FINALIZE_JOB_ID));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1"));
+
+    assertEquals(Status.Code.NOT_FOUND, error.getStatus().getCode());
+    verify(jobs, never())
+        .applyLeaseOutcome(
+            anyString(),
+            anyString(),
+            any(),
+            anyLong(),
+            anyString(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong());
+    verify(idempotencyStore, never())
+        .finalizeSuccess(
+            anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void finalizeChunkedSuccessReplacesFileGroupStatsForFullRescan() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -202,14 +326,13 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
     service.finalizeChunkedSuccess(lease, snapshotTask, tableId, SNAPSHOT_ID);
 
-    verify(persistence, never()).listFileStats(tableId, SNAPSHOT_ID);
-    verify(persistence, never())
-        .replaceAllStatsForSnapshot(eq(tableId), eq(SNAPSHOT_ID), anyList());
+    verify(persistence)
+        .publishFileGroupStatsGeneration(tableId, SNAPSHOT_ID, "full-rescan-parent-job", List.of());
     verify(persistence, never()).persistStats(anyList());
   }
 
   @Test
-  void finalizeChunkedSuccessBuildsAggregatesForFullRescanRemoteFinalize() {
+  void finalizeChunkedSuccessReplacesMergedAggregatesForFullRescanRemoteFinalize() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -268,7 +391,9 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
     service.finalizeChunkedSuccess(lease, snapshotTask, tableId, SNAPSHOT_ID);
 
-    verify(persistence).persistStats(List.of(aggregateRecord));
+    verify(persistence)
+        .publishFileGroupStatsGeneration(
+            tableId, SNAPSHOT_ID, "full-rescan-parent-job", List.of(aggregateRecord));
     verify(persistence)
         .mergeCompletedGroupPartials(
             eq(tableId),
@@ -278,13 +403,52 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                     FloecatConnector.StatsTargetKind.TABLE,
                     FloecatConnector.StatsTargetKind.COLUMN)),
             eq(List.of(completedGroup)));
-    verify(persistence, never()).listFileStats(eq(tableId), eq(SNAPSHOT_ID));
-    verify(persistence, never())
-        .replaceAllStatsForSnapshot(eq(tableId), eq(SNAPSHOT_ID), anyList());
+    verify(persistence, never()).persistStats(anyList());
   }
 
   @Test
-  void persistStatsChunkPersistsFinalizerAggregateStatsForFileGroupSnapshot() {
+  void persistStatsChunkPersistsFinalizerAggregateStatsForIncrementalFileGroupSnapshot() {
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            1);
+    ReconcileJobStore.LeasedJob lease = leasedJobWithStatsOutputs(false);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(ACCOUNT_ID)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(TABLE_ID)
+            .build();
+    TargetStatsRecord aggregateRecord = mock(TargetStatsRecord.class);
+    when(coverageService.expectedCoverage(snapshotTask))
+        .thenReturn(
+            new SnapshotFinalizeCoverageService.ExpectedCoverage(
+                SnapshotFinalizeCoverageService.PlannedCoverageState.NON_EMPTY,
+                List.of(),
+                List.of("s3://bucket/file-1.parquet"),
+                ""));
+    when(persistence.validateAggregateStats(List.of(aggregateRecord), tableId, SNAPSHOT_ID))
+        .thenReturn(List.of(aggregateRecord));
+
+    service.persistStatsChunk(
+        lease, snapshotTask, tableId, SNAPSHOT_ID, 0, List.of(aggregateRecord));
+
+    verify(persistence).persistStats(List.of(aggregateRecord));
+    verify(jobs)
+        .persistSnapshotFinalizeDirectStatsProgress(
+            lease.jobId, lease.leaseEpoch, lease.fullRescan, 0, 1);
+    verify(persistence, never()).mergeCompletedGroupPartials(any(), anyLong(), anySet(), anyList());
+  }
+
+  @Test
+  void persistStatsChunkDoesNotPersistFinalizerAggregateStatsForFullFileGroupSnapshot() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -317,8 +481,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     service.persistStatsChunk(
         lease, snapshotTask, tableId, SNAPSHOT_ID, 0, List.of(aggregateRecord));
 
-    verify(persistence).persistStats(List.of(aggregateRecord));
-    verify(jobs)
+    verify(persistence, never()).persistStats(anyList());
+    verify(jobs, never())
         .persistSnapshotFinalizeDirectStatsProgress(
             lease.jobId, lease.leaseEpoch, lease.fullRescan, 0, 1);
     verify(persistence, never()).mergeCompletedGroupPartials(any(), anyLong(), anySet(), anyList());
@@ -338,7 +502,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                 "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
                 1)
             .withDirectStatsPersistedRecordCountForChunk(0, 1);
-    ReconcileJobStore.LeasedJob lease = leasedJobWithAggregateOutputs(true);
+    ReconcileJobStore.LeasedJob lease = leasedJobWithAggregateOutputs(false);
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId(ACCOUNT_ID)
@@ -453,7 +617,12 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
     service.persistStatsChunk(lease, snapshotTask, tableId, SNAPSHOT_ID, 0, List.of());
 
-    verify(persistence).deleteAllStatsForSnapshot(tableId, SNAPSHOT_ID);
+    // A full-rescan finalize that finds no files re-finalizes a LIVE snapshot: it publishes an
+    // empty generation via replaceAllStatsForSnapshot (which RETAINS superseded generations for
+    // pinned readers), NOT the whole-prefix deleteAllStatsForSnapshot teardown (reserved for
+    // actual snapshot deletion).
+    verify(persistence).replaceAllStatsForSnapshot(tableId, SNAPSHOT_ID, List.of());
+    verify(persistence, never()).deleteAllStatsForSnapshot(tableId, SNAPSHOT_ID);
     verify(jobs)
         .persistSnapshotFinalizeDirectStatsProgress(lease.jobId, lease.leaseEpoch, true, 0, 0);
 
@@ -567,6 +736,37 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         ReconcileTableTask.empty(),
         ReconcileViewTask.empty(),
         ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.empty(),
+        "parent-job");
+  }
+
+  private static ReconcileJobStore.ReconcileJob finalizeJobView(
+      ReconcileSnapshotTask snapshotTask) {
+    return new ReconcileJobStore.ReconcileJob(
+        FINALIZE_JOB_ID,
+        ACCOUNT_ID,
+        "connector",
+        "JS_RUNNING",
+        "",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        0L,
+        0L,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.defaults(),
+        "",
+        "",
+        ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.empty(),
+        snapshotTask,
         ReconcileFileGroupTask.empty(),
         "parent-job");
   }

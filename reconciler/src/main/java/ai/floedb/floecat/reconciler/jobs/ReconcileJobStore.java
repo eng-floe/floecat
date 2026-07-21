@@ -1692,6 +1692,7 @@ public interface ReconcileJobStore {
     public final ReconcileSnapshotTask snapshotTask;
     public final ReconcileFileGroupTask fileGroupTask;
     public final String parentJobId;
+    public final String laneKey;
 
     public LeasedJob(
         String jobId,
@@ -1720,6 +1721,7 @@ public interface ReconcileJobStore {
           ReconcileViewTask.empty(),
           ReconcileSnapshotTask.empty(),
           ReconcileFileGroupTask.empty(),
+          "",
           "");
     }
 
@@ -1753,7 +1755,8 @@ public interface ReconcileJobStore {
           ReconcileViewTask.empty(),
           ReconcileSnapshotTask.empty(),
           ReconcileFileGroupTask.empty(),
-          parentJobId);
+          parentJobId,
+          "");
     }
 
     public LeasedJob(
@@ -1787,7 +1790,8 @@ public interface ReconcileJobStore {
           viewTask,
           ReconcileSnapshotTask.empty(),
           ReconcileFileGroupTask.empty(),
-          parentJobId);
+          parentJobId,
+          "");
     }
 
     public LeasedJob(
@@ -1807,6 +1811,44 @@ public interface ReconcileJobStore {
         ReconcileSnapshotTask snapshotTask,
         ReconcileFileGroupTask fileGroupTask,
         String parentJobId) {
+      this(
+          jobId,
+          accountId,
+          connectorId,
+          fullRescan,
+          captureMode,
+          scope,
+          executionPolicy,
+          leaseEpoch,
+          pinnedExecutorId,
+          executorId,
+          jobKind,
+          tableTask,
+          viewTask,
+          snapshotTask,
+          fileGroupTask,
+          parentJobId,
+          "");
+    }
+
+    public LeasedJob(
+        String jobId,
+        String accountId,
+        String connectorId,
+        boolean fullRescan,
+        CaptureMode captureMode,
+        ReconcileScope scope,
+        ReconcileExecutionPolicy executionPolicy,
+        String leaseEpoch,
+        String pinnedExecutorId,
+        String executorId,
+        ReconcileJobKind jobKind,
+        ReconcileTableTask tableTask,
+        ReconcileViewTask viewTask,
+        ReconcileSnapshotTask snapshotTask,
+        ReconcileFileGroupTask fileGroupTask,
+        String parentJobId,
+        String laneKey) {
       this.jobId = jobId;
       this.accountId = accountId;
       this.connectorId = connectorId;
@@ -1824,6 +1866,8 @@ public interface ReconcileJobStore {
       this.snapshotTask = snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
       this.fileGroupTask = fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
       this.parentJobId = parentJobId == null ? "" : parentJobId;
+      String normalizedLaneKey = laneKey == null ? "" : laneKey.trim();
+      this.laneKey = normalizedLaneKey.isEmpty() ? this.executionPolicy.lane() : normalizedLaneKey;
     }
   }
 

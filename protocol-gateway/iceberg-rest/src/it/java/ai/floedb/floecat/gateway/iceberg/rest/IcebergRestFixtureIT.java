@@ -35,6 +35,7 @@ import ai.floedb.floecat.catalog.rpc.GetTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
+import ai.floedb.floecat.catalog.rpc.ListTargetStatsResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
@@ -2793,23 +2794,9 @@ class IcebergRestFixtureIT {
   }
 
   private List<TargetStatsRecord> listColumnStatRecords(ResourceId tableId, SnapshotRef snapshotRef) {
-    var response =
-        withStatisticsClient(
-            stub ->
-                stub.listTargetStats(
-                    ListTargetStatsRequest.newBuilder()
-                        .setTableId(tableId)
-                        .setSnapshot(snapshotRef)
-                        .setPage(PageRequest.newBuilder().setPageSize(200).build())
-                        .build()));
-    return columnTargetStatsFromRecords(response.getRecordsList());
-  }
-
-  private List<TargetStatsRecord> awaitColumnStatRecords(
-      ResourceId tableId, SnapshotRef snapshotRef, Duration timeout) {
-    long deadline = System.nanoTime() + timeout.toNanos();
-    while (System.nanoTime() < deadline) {
-      var response =
+    ListTargetStatsResponse response;
+    try {
+      response =
           withStatisticsClient(
               stub ->
                   stub.listTargetStats(
@@ -2818,9 +2805,37 @@ class IcebergRestFixtureIT {
                           .setSnapshot(snapshotRef)
                           .setPage(PageRequest.newBuilder().setPageSize(200).build())
                           .build()));
-      var records = columnTargetStatsFromRecords(response.getRecordsList());
-      if (!records.isEmpty()) {
-        return records;
+    } catch (StatusRuntimeException e) {
+      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+        return List.of();
+      }
+      throw e;
+    }
+    return columnTargetStatsFromRecords(response.getRecordsList());
+  }
+
+  private List<TargetStatsRecord> awaitColumnStatRecords(
+      ResourceId tableId, SnapshotRef snapshotRef, Duration timeout) {
+    long deadline = System.nanoTime() + timeout.toNanos();
+    while (System.nanoTime() < deadline) {
+      try {
+        var response =
+            withStatisticsClient(
+                stub ->
+                    stub.listTargetStats(
+                        ListTargetStatsRequest.newBuilder()
+                            .setTableId(tableId)
+                            .setSnapshot(snapshotRef)
+                            .setPage(PageRequest.newBuilder().setPageSize(200).build())
+                            .build()));
+        var records = columnTargetStatsFromRecords(response.getRecordsList());
+        if (!records.isEmpty()) {
+          return records;
+        }
+      } catch (StatusRuntimeException e) {
+        if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
+          throw e;
+        }
       }
       try {
         TimeUnit.MILLISECONDS.sleep(200);

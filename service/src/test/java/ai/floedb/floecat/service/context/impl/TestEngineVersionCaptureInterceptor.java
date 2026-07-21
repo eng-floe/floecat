@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.context.impl;
 
+import ai.floedb.floecat.service.common.GrpcInterceptorPriorities;
 import io.grpc.ForwardingServerCall;
 import io.grpc.ForwardingServerCallListener;
 import io.grpc.Metadata;
@@ -23,8 +24,8 @@ import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.ServerInterceptor;
 import io.quarkus.grpc.GlobalInterceptor;
-import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.spi.Prioritized;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -33,8 +34,7 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 @ApplicationScoped
 @GlobalInterceptor
-@Priority(1000)
-public class TestEngineVersionCaptureInterceptor implements ServerInterceptor {
+public class TestEngineVersionCaptureInterceptor implements ServerInterceptor, Prioritized {
   private static final Metadata.Key<String> ENGINE_VERSION =
       Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORR =
@@ -72,5 +72,16 @@ public class TestEngineVersionCaptureInterceptor implements ServerInterceptor {
               }
             },
             headers)) {};
+  }
+
+  /**
+   * Outermost of floecat's interceptors so the raw headers are captured before anything else
+   * touches the call (higher = outer; see {@link GrpcInterceptorPriorities}). Only the {@code
+   * Prioritized} interface is honored — the {@code @Priority(1000)} annotation this replaces was
+   * silently ignored.
+   */
+  @Override
+  public int getPriority() {
+    return GrpcInterceptorPriorities.INBOUND_CONTEXT + 100;
   }
 }

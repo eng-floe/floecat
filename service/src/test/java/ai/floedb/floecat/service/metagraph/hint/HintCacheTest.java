@@ -26,7 +26,6 @@ import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.telemetry.TestObservability;
-import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -62,8 +61,7 @@ class HintCacheTest {
 
     return new UserTableNode(
         tableId,
-        version,
-        Instant.EPOCH,
+        "blob://test/v" + version,
         tableId,
         tableId,
         "tbl",

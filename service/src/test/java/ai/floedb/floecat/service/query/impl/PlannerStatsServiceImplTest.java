@@ -29,8 +29,6 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.BundleResultStatus;
 import ai.floedb.floecat.query.rpc.FetchTableConstraintsRequest;
 import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
-import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.StatsResultStatus;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
 import ai.floedb.floecat.query.rpc.TableConstraintsResult;
@@ -48,6 +46,7 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
+import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -417,8 +416,6 @@ class PlannerStatsServiceImplTest {
 
   private static QueryContext queryContextWithPin(
       String queryId, long snapshotId, QueryContext.State state) {
-    SnapshotPin pin = SnapshotPin.newBuilder().setTableId(TABLE).setSnapshotId(snapshotId).build();
-    SnapshotSet set = SnapshotSet.newBuilder().addPins(pin).build();
     PrincipalContext principal =
         PrincipalContext.newBuilder()
             .setAccountId(TABLE.getAccountId())
@@ -428,7 +425,9 @@ class PlannerStatsServiceImplTest {
     return QueryContext.builder()
         .queryId(queryId)
         .principal(principal)
-        .snapshotSet(set.toByteArray())
+        .relationPins(
+            SnapshotTestSupport.relationPins(SnapshotTestSupport.blobBackedPin(TABLE, snapshotId))
+                .toByteArray())
         .createdAtMs(1)
         .expiresAtMs(1_000)
         .state(state)

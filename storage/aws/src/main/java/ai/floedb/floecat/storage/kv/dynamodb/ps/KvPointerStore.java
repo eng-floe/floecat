@@ -15,8 +15,8 @@
  */
 package ai.floedb.floecat.storage.kv.dynamodb.ps;
 
+import ai.floedb.floecat.aws.ClosedAwsClientDetector;
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.storage.aws.ClosedAwsClientDetector;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
@@ -74,6 +74,11 @@ public abstract class KvPointerStore implements PointerStore {
     }
 
     return List.copyOf(page.items());
+  }
+
+  @Override
+  public String pageTokenAfterKey(String key) {
+    return pointers.pageTokenAfterKey(key);
   }
 
   @Override

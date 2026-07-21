@@ -172,6 +172,108 @@ class FileGroupTargetStatsRollupSketchTest {
   }
 
   @Test
+  void fileRecordRollup_soleSourceKeepsTupleSketchThroughTheThetaRebuild() {
+    SketchPayload theta =
+        ndvPayload("apache-datasketches-theta-v1", SketchRole.SKETCH_ROLE_NDV, thetaBytes("a"));
+    SketchPayload tuple =
+        ndvPayload("floedb-tuple-v2", SketchRole.SKETCH_ROLE_TUPLE_NDV, new byte[] {7, 8, 9});
+    ScalarStats sole =
+        ScalarStats.newBuilder()
+            .setDisplayName("col")
+            .setLogicalType("LONG")
+            .setRowCount(120)
+            .setNdv(
+                Ndv.newBuilder()
+                    .setApprox(NdvApprox.newBuilder().setEstimate(50).setMethod("test"))
+                    .addSketches(theta)
+                    .addSketches(tuple))
+            .build();
+
+    List<TargetStatsRecord> result =
+        FileGroupTargetStatsRollup.completeSnapshotFromFileRecords(
+            TABLE,
+            1L,
+            Set.of(FloecatConnector.StatsTargetKind.COLUMN),
+            List.of(fileRecord(1L, sole)));
+
+    // The theta rebuild reconstructs the NDV envelope from merged theta; a sole source's
+    // producer-owned tuple sketch must ride along verbatim instead of being silently dropped —
+    // this is the join-key sketch the planner consumes for fanout/skew estimation.
+    ScalarStats merged = onlyScalar(result);
+    assertTrue(
+        merged.getNdv().getSketchesList().stream()
+            .anyMatch(s -> s.getSketchType().equals("apache-datasketches-theta-v1")));
+    assertTrue(merged.getNdv().getSketchesList().stream().anyMatch(s -> s.equals(tuple)));
+  }
+
+  @Test
+  void fileRecordRollup_propagatesScalarSketchesFromASoleSourceUntouched() {
+    SketchPayload tdigest =
+        scalarPayload("apache-datasketches-tdigest-v1", SketchRole.SKETCH_ROLE_QUANTILES);
+    SketchPayload mcv =
+        scalarPayload("apache-datasketches-frequencies-utf8-v1", SketchRole.SKETCH_ROLE_MCV);
+    ScalarStats sole =
+        scalarWithSketches(
+                120,
+                ndvPayload(
+                    "apache-datasketches-theta-v1", SketchRole.SKETCH_ROLE_NDV, thetaBytes("a")),
+                tdigest)
+            .toBuilder()
+            .addSketches(mcv)
+            .build();
+
+    List<TargetStatsRecord> result =
+        FileGroupTargetStatsRollup.completeSnapshotFromFileRecords(
+            TABLE,
+            1L,
+            Set.of(FloecatConnector.StatsTargetKind.COLUMN),
+            List.of(fileRecord(1L, sole)));
+
+    // One source contributed the entire column, so its producer-owned payloads ARE the column's
+    // distribution: propagated byte-for-byte, never re-encoded. This is the payload the planner
+    // consumes for range/MCV selectivity — dropping it was the missing_quantile_sketch downgrade.
+    ScalarStats merged = onlyScalar(result);
+    assertEquals(List.of(tdigest, mcv), merged.getSketchesList());
+  }
+
+  @Test
+  void partialMerge_propagatesScalarSketchesFromASolePartialUntouched() {
+    SketchPayload tdigest =
+        scalarPayload("apache-datasketches-tdigest-v1", SketchRole.SKETCH_ROLE_QUANTILES);
+    TargetStatsRecord solePartial =
+        TargetStatsRecords.columnRecord(
+            TABLE, 1L, 1L, scalarWithSketches(120, null, tdigest), null);
+
+    List<TargetStatsRecord> result =
+        FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(
+            TABLE, 1L, Set.of(FloecatConnector.StatsTargetKind.COLUMN), List.of(solePartial));
+
+    // The full-rescan final stage merges per-group partials; a single group must not lose the
+    // sketches its file rollup carried.
+    ScalarStats merged = onlyScalar(result);
+    assertEquals(List.of(tdigest), merged.getSketchesList());
+  }
+
+  @Test
+  void partialMerge_dropsScalarSketchesAcrossMultiplePartials() {
+    SketchPayload tdigest =
+        scalarPayload("apache-datasketches-tdigest-v1", SketchRole.SKETCH_ROLE_QUANTILES);
+    TargetStatsRecord p1 =
+        TargetStatsRecords.columnRecord(TABLE, 1L, 1L, scalarWithSketches(50, null, tdigest), null);
+    TargetStatsRecord p2 =
+        TargetStatsRecords.columnRecord(TABLE, 1L, 1L, scalarWithSketches(70, null, null), null);
+
+    List<TargetStatsRecord> result =
+        FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(
+            TABLE, 1L, Set.of(FloecatConnector.StatsTargetKind.COLUMN), List.of(p1, p2));
+
+    // Two groups contributed the column: one group's sketch describes only its rows and must not
+    // be advertised as the column's distribution.
+    ScalarStats merged = onlyScalar(result);
+    assertTrue(merged.getSketchesList().isEmpty());
+  }
+
+  @Test
   void complete_preservesFinalColumnRecordWithOpaqueSketchPayloads() {
     ScalarStats finalColumnStats =
         scalarWithSketches(

@@ -39,6 +39,11 @@ public final class ResourceSchema<T, K extends ResourceKey> {
   public final Function<T, ResourceId> resourceIdFromValue;
   public final Function<T, String> displayNameFromValue;
 
+  // Null for resources that cannot be system-owned (snapshots, stats, transactions, …). When set,
+  // maps a key to the ResourceId whose system-marker the repository write path checks so that no
+  // mutation can persist against a system object. See GenericResourceRepository#guardSystemObject.
+  public final Function<K, ResourceId> resourceIdFromKey;
+
   private ResourceSchema(
       String resourceName,
       Function<K, String> canonicalPointerForKey,
@@ -47,7 +52,8 @@ public final class ResourceSchema<T, K extends ResourceKey> {
       Function<T, K> keyFromValue,
       boolean casBlobs,
       Function<T, ResourceId> resourceIdFromValue,
-      Function<T, String> displayNameFromValue) {
+      Function<T, String> displayNameFromValue,
+      Function<K, ResourceId> resourceIdFromKey) {
     this.resourceName = Objects.requireNonNull(resourceName, "resourceName");
     this.canonicalPointerForKey =
         Objects.requireNonNull(canonicalPointerForKey, "canonicalPointerForKey");
@@ -58,6 +64,7 @@ public final class ResourceSchema<T, K extends ResourceKey> {
     this.casBlobs = casBlobs;
     this.resourceIdFromValue = resourceIdFromValue;
     this.displayNameFromValue = displayNameFromValue;
+    this.resourceIdFromKey = resourceIdFromKey;
   }
 
   public static <T, K extends ResourceKey> ResourceSchema<T, K> of(
@@ -74,6 +81,7 @@ public final class ResourceSchema<T, K extends ResourceKey> {
         keyFromValue,
         false,
         null,
+        null,
         null);
   }
 
@@ -86,7 +94,8 @@ public final class ResourceSchema<T, K extends ResourceKey> {
         keyFromValue,
         true,
         resourceIdFromValue,
-        displayNameFromValue);
+        displayNameFromValue,
+        resourceIdFromKey);
   }
 
   public ResourceSchema<T, K> withPointerMeta(
@@ -99,6 +108,24 @@ public final class ResourceSchema<T, K extends ResourceKey> {
         keyFromValue,
         casBlobs,
         Objects.requireNonNull(resourceId, "resourceId"),
-        Objects.requireNonNull(displayName, "displayName"));
+        Objects.requireNonNull(displayName, "displayName"),
+        resourceIdFromKey);
+  }
+
+  /**
+   * Marks this resource as one that can be system-owned, wiring the key→ResourceId mapping the
+   * repository write path uses to reject any create/update/delete that targets a system object.
+   */
+  public ResourceSchema<T, K> withSystemGuard(Function<K, ResourceId> resourceIdFromKey) {
+    return new ResourceSchema<>(
+        resourceName,
+        canonicalPointerForKey,
+        blobUriForKey,
+        secondaryPointersFromValue,
+        keyFromValue,
+        casBlobs,
+        resourceIdFromValue,
+        displayNameFromValue,
+        Objects.requireNonNull(resourceIdFromKey, "resourceIdFromKey"));
   }
 }

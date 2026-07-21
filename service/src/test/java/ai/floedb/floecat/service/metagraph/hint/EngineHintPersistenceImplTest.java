@@ -193,6 +193,114 @@ class EngineHintPersistenceImplTest {
   }
 
   @Test
+  void persistRelationAndColumnHints_singleRepositoryUpdate() {
+    Table table = Table.newBuilder().setResourceId(TABLE_ID).build();
+    when(tableRepository.getById(TABLE_ID)).thenReturn(Optional.of(table));
+    when(tableRepository.metaForSafe(TABLE_ID)).thenReturn(meta(42L));
+    when(tableRepository.update(any(Table.class), eq(42L))).thenReturn(true);
+
+    persistence.persistRelationAndColumnHints(
+        TABLE_ID,
+        PAYLOAD_TYPE,
+        PAYLOAD,
+        ENGINE_KIND,
+        ENGINE_VERSION,
+        List.of(new EngineHintPersistence.ColumnHint("floe.column+proto", 5L, PAYLOAD)));
+
+    ArgumentCaptor<Table> tableCaptor = ArgumentCaptor.forClass(Table.class);
+    verify(tableRepository).update(tableCaptor.capture(), eq(42L));
+    Table updated = tableCaptor.getValue();
+    assertThat(updated.getPropertiesMap())
+        .containsEntry(EngineHintMetadata.tableHintKey(PAYLOAD_TYPE), encode())
+        .containsEntry(EngineHintMetadata.columnHintKey("floe.column+proto", 5L), encode());
+    verify(cacheInvalidator).accept(TABLE_ID);
+  }
+
+  @Test
+  void persistRelationAndColumnHints_noopWhenAllPresent() {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(TABLE_ID)
+            .putProperties(EngineHintMetadata.tableHintKey(PAYLOAD_TYPE), encode())
+            .putProperties(EngineHintMetadata.columnHintKey("floe.column+proto", 5L), encode())
+            .build();
+    when(tableRepository.getById(TABLE_ID)).thenReturn(Optional.of(table));
+
+    persistence.persistRelationAndColumnHints(
+        TABLE_ID,
+        PAYLOAD_TYPE,
+        PAYLOAD,
+        ENGINE_KIND,
+        ENGINE_VERSION,
+        List.of(new EngineHintPersistence.ColumnHint("floe.column+proto", 5L, PAYLOAD)));
+
+    verify(tableRepository, never()).update(any(), anyLong());
+    verify(cacheInvalidator, never()).accept(any());
+  }
+
+  @Test
+  void persistRelationAndColumnHints_singleViewUpdate() {
+    View view = View.newBuilder().setResourceId(VIEW_ID).build();
+    when(viewRepository.getById(VIEW_ID)).thenReturn(Optional.of(view));
+    when(viewRepository.metaForSafe(VIEW_ID)).thenReturn(meta(11L));
+    when(viewRepository.update(any(View.class), eq(11L))).thenReturn(true);
+
+    persistence.persistRelationAndColumnHints(
+        VIEW_ID,
+        PAYLOAD_TYPE,
+        PAYLOAD,
+        ENGINE_KIND,
+        ENGINE_VERSION,
+        List.of(new EngineHintPersistence.ColumnHint("floe.column+proto", 5L, PAYLOAD)));
+
+    ArgumentCaptor<View> viewCaptor = ArgumentCaptor.forClass(View.class);
+    verify(viewRepository).update(viewCaptor.capture(), eq(11L));
+    View updated = viewCaptor.getValue();
+    assertThat(updated.getPropertiesMap())
+        .containsEntry(EngineHintMetadata.tableHintKey(PAYLOAD_TYPE), encode())
+        .containsEntry(EngineHintMetadata.columnHintKey("floe.column+proto", 5L), encode());
+    verify(tableRepository, never()).update(any(), anyLong());
+    verify(cacheInvalidator).accept(VIEW_ID);
+  }
+
+  @Test
+  void persistRelationAndColumnHints_relationOnly() {
+    Table table = Table.newBuilder().setResourceId(TABLE_ID).build();
+    when(tableRepository.getById(TABLE_ID)).thenReturn(Optional.of(table));
+    when(tableRepository.metaForSafe(TABLE_ID)).thenReturn(meta(42L));
+    when(tableRepository.update(any(Table.class), eq(42L))).thenReturn(true);
+
+    persistence.persistRelationAndColumnHints(
+        TABLE_ID, PAYLOAD_TYPE, PAYLOAD, ENGINE_KIND, ENGINE_VERSION, List.of());
+
+    ArgumentCaptor<Table> tableCaptor = ArgumentCaptor.forClass(Table.class);
+    verify(tableRepository).update(tableCaptor.capture(), eq(42L));
+    assertThat(tableCaptor.getValue().getPropertiesMap())
+        .containsOnlyKeys(EngineHintMetadata.tableHintKey(PAYLOAD_TYPE));
+  }
+
+  @Test
+  void persistRelationAndColumnHints_columnsOnly() {
+    Table table = Table.newBuilder().setResourceId(TABLE_ID).build();
+    when(tableRepository.getById(TABLE_ID)).thenReturn(Optional.of(table));
+    when(tableRepository.metaForSafe(TABLE_ID)).thenReturn(meta(42L));
+    when(tableRepository.update(any(Table.class), eq(42L))).thenReturn(true);
+
+    persistence.persistRelationAndColumnHints(
+        TABLE_ID,
+        null,
+        null,
+        ENGINE_KIND,
+        ENGINE_VERSION,
+        List.of(new EngineHintPersistence.ColumnHint("floe.column+proto", 5L, PAYLOAD)));
+
+    ArgumentCaptor<Table> tableCaptor = ArgumentCaptor.forClass(Table.class);
+    verify(tableRepository).update(tableCaptor.capture(), eq(42L));
+    assertThat(tableCaptor.getValue().getPropertiesMap())
+        .containsOnlyKeys(EngineHintMetadata.columnHintKey("floe.column+proto", 5L));
+  }
+
+  @Test
   void deduplicateColumnHints_keepsSingleEntryPerColumnType() {
     List<EngineHintPersistence.ColumnHint> hints =
         List.of(

@@ -47,7 +47,7 @@ public class ReconcileJobMaintenanceScheduler {
         config
             .getOptionalValue(
                 "floecat.reconciler.job-store.lease-maintenance.max-tick-millis", Long.class)
-            .orElse(250L);
+            .orElse(10_000L);
     try {
       jobs.runLeaseMaintenanceOnce(maxTickMillis);
     } catch (RuntimeException e) {

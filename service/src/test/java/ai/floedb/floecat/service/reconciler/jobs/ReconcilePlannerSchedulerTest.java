@@ -51,6 +51,7 @@ import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class ReconcilePlannerSchedulerTest {
@@ -378,7 +379,8 @@ class ReconcilePlannerSchedulerTest {
         java.util.Set.of(
             ReconcileCapturePolicy.Output.TABLE_STATS,
             ReconcileCapturePolicy.Output.FILE_STATS,
-            ReconcileCapturePolicy.Output.COLUMN_STATS),
+            ReconcileCapturePolicy.Output.COLUMN_STATS,
+            ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
         enqueuedScopes.getFirst().capturePolicy().outputs());
   }
 
@@ -545,12 +547,102 @@ class ReconcilePlannerSchedulerTest {
         .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
   }
 
+  @Test
+  void runPlannerPassSkipsAccountsRejectedByTagFilter() {
+    TestScheduler scheduler = new TestScheduler();
+    scheduler.accounts = mock(AccountRepository.class);
+    scheduler.connectors = mock(ConnectorRepository.class);
+    scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    // Steady-state floecat: ignore any account carrying the ci-run key.
+    scheduler.accountTagFilter = new AccountTagFilter.IgnoreKey("ci-run");
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+    stubNoActiveRootJobs(scheduler.jobs);
+
+    List<String> enqueued = new ArrayList<>();
+    when(scheduler.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenAnswer(
+            invocation -> {
+              enqueued.add(invocation.getArgument(1, String.class));
+              return "job-" + enqueued.size();
+            });
+
+    when(scheduler.accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(
+            List.of(
+                account("acct-real", "real"),
+                taggedAccount("acct-ci", "ci", Map.of("ci-run", "run-1"))));
+    when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
+        .thenAnswer(
+            invocation -> {
+              String accountId = invocation.getArgument(0, String.class);
+              if ("acct-real".equals(accountId)) {
+                return List.of(connector("acct-real", "conn-real", "real-1"));
+              }
+              return List.of(connector("acct-ci", "conn-ci", "ci-1"));
+            });
+    stubConnectorLookup(
+        scheduler.connectors,
+        connector("acct-real", "conn-real", "real-1"),
+        connector("acct-ci", "conn-ci", "ci-1"));
+
+    scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
+
+    // The tagged CI account is skipped entirely; its connectors are never scanned.
+    assertEquals(List.of("conn-real"), enqueued);
+    verify(scheduler.connectors, never()).list(eq("acct-ci"), anyInt(), anyString(), any());
+  }
+
+  @Test
+  void runPlannerPassOwnValueManagesOnlyTheMatchingAccount() {
+    TestScheduler scheduler = new TestScheduler();
+    scheduler.accounts = mock(AccountRepository.class);
+    scheduler.connectors = mock(ConnectorRepository.class);
+    scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.executorRegistry = mock(ReconcileExecutorRegistry.class);
+    // Overlay floecat: own only this run's account, ignore untagged and prior runs.
+    scheduler.accountTagFilter = new AccountTagFilter.OwnValue("ci-run", "run-1");
+    when(scheduler.executorRegistry.hasExecutorForJobKind(any())).thenReturn(true);
+    stubNoActiveRootJobs(scheduler.jobs);
+
+    List<String> enqueued = new ArrayList<>();
+    when(scheduler.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenAnswer(
+            invocation -> {
+              enqueued.add(invocation.getArgument(1, String.class));
+              return "job-" + enqueued.size();
+            });
+
+    when(scheduler.accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(
+            List.of(
+                account("acct-real", "real"),
+                taggedAccount("acct-prior", "prior", Map.of("ci-run", "run-0")),
+                taggedAccount("acct-mine", "mine", Map.of("ci-run", "run-1"))));
+    when(scheduler.connectors.list(anyString(), anyInt(), anyString(), any()))
+        .thenReturn(List.of(connector("acct-mine", "conn-mine", "mine-1")));
+    stubConnectorLookup(scheduler.connectors, connector("acct-mine", "conn-mine", "mine-1"));
+
+    scheduler.runPlannerPass(100L, 10, 10, 1L, ReconcileMode.RM_INCREMENTAL);
+
+    assertEquals(List.of("conn-mine"), enqueued);
+    verify(scheduler.connectors, never()).list(eq("acct-real"), anyInt(), anyString(), any());
+    verify(scheduler.connectors, never()).list(eq("acct-prior"), anyInt(), anyString(), any());
+  }
+
   private static Account account(String accountId, String displayName) {
     return Account.newBuilder()
         .setResourceId(
             ResourceId.newBuilder().setId(accountId).setKind(ResourceKind.RK_ACCOUNT).build())
         .setDisplayName(displayName)
         .build();
+  }
+
+  private static Account taggedAccount(
+      String accountId, String displayName, java.util.Map<String, String> tags) {
+    return account(accountId, displayName).toBuilder().putAllTags(tags).build();
   }
 
   private static Connector connector(String accountId, String id, String displayName) {
@@ -576,6 +668,7 @@ class ReconcilePlannerSchedulerTest {
     private long nowMs;
     private ReconcileExecutionPolicy autoExecutionPolicy =
         ReconcileExecutionPolicy.of(ReconcileExecutionClass.DEFAULT, "", java.util.Map.of());
+    private AccountTagFilter accountTagFilter = new AccountTagFilter.PassAll();
 
     @Override
     long nowMs() {
@@ -585,6 +678,11 @@ class ReconcilePlannerSchedulerTest {
     @Override
     ReconcileExecutionPolicy autoExecutionPolicy() {
       return autoExecutionPolicy;
+    }
+
+    @Override
+    AccountTagFilter accountTagFilter() {
+      return accountTagFilter;
     }
   }
 }

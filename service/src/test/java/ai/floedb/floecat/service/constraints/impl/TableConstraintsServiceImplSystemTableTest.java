@@ -21,7 +21,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -37,7 +36,6 @@ import ai.floedb.floecat.catalog.rpc.ListTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.MergeTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
-import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.TableNode;
@@ -46,11 +44,11 @@ import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.service.testsupport.TestPrincipals;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
-import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -84,11 +82,7 @@ class TableConstraintsServiceImplSystemTableTest {
     service.idempotencyStore = idempotencyStore;
     service.overlay = overlay;
 
-    PrincipalContext pc = mock(PrincipalContext.class);
-    when(principal.get()).thenReturn(pc);
-    when(pc.getCorrelationId()).thenReturn("corr");
-    when(pc.getAccountId()).thenReturn("acct");
-    doNothing().when(authz).require(any(), anyString());
+    var pc = TestPrincipals.stubPrincipal(principal, authz);
   }
 
   @Test
@@ -287,7 +281,7 @@ class TableConstraintsServiceImplSystemTableTest {
             .setId("sys_ns_constraints")
             .build();
     return new SystemTableNode.EngineSystemTableNode(
-        tableId, 1L, Instant.now(), "engine-v", displayName, namespaceId, List.of(), null, null);
+        tableId, 1L, "engine-v", displayName, namespaceId, List.of(), null, null);
   }
 
   private static ResourceId systemTableId(String id) {

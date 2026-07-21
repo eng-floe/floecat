@@ -31,6 +31,8 @@ import java.util.Optional;
 public final class FakeNamespaceRepository extends NamespaceRepository {
   private final Map<ResourceId, Namespace> entries = new HashMap<>();
   private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
+  // blobUri -> namespace, so the getByBlobUri hydration fast path is exercised.
+  private final Map<String, Namespace> byBlob = new HashMap<>();
 
   public FakeNamespaceRepository() {
     super(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -39,6 +41,9 @@ public final class FakeNamespaceRepository extends NamespaceRepository {
   public void put(Namespace namespace, MutationMeta meta) {
     entries.put(namespace.getResourceId(), namespace);
     metas.put(namespace.getResourceId(), meta);
+    if (meta != null && meta.getBlobUri() != null && !meta.getBlobUri().isBlank()) {
+      byBlob.put(meta.getBlobUri(), namespace);
+    }
   }
 
   @Override
@@ -52,6 +57,20 @@ public final class FakeNamespaceRepository extends NamespaceRepository {
   @Override
   public Optional<Namespace> getById(ResourceId id) {
     return Optional.ofNullable(entries.get(id));
+  }
+
+  @Override
+  public Optional<Namespace> getByBlobUri(String blobUri) {
+    if (blobUri != null && byBlob.containsKey(blobUri)) {
+      return Optional.of(byBlob.get(blobUri));
+    }
+    return super.getByBlobUri(blobUri);
+  }
+
+  @Override
+  public Optional<Namespace> getByBlobUriLive(String blobUri) {
+    // The fake's in-memory map IS the live store; same lookup as the cached variant.
+    return getByBlobUri(blobUri);
   }
 
   @Override
@@ -72,6 +91,12 @@ public final class FakeNamespaceRepository extends NamespaceRepository {
       throw new StorageNotFoundException("missing namespace meta");
     }
     return meta;
+  }
+
+  @Override
+  public MutationMeta pointerMetaForSafe(ResourceId id) {
+    // The fake's meta map is the single source of truth for both meta variants.
+    return metaForSafe(id);
   }
 
   private boolean matchesPath(Namespace namespace, List<String> path) {

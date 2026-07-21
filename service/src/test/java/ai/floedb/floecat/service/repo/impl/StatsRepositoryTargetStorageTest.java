@@ -22,7 +22,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import ai.floedb.floecat.catalog.rpc.EngineExpressionStatsTarget;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileTargetStats;
+import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.SketchPayload;
+import ai.floedb.floecat.catalog.rpc.SketchRole;
 import ai.floedb.floecat.catalog.rpc.StatsCaptureMode;
 import ai.floedb.floecat.catalog.rpc.StatsCompleteness;
 import ai.floedb.floecat.catalog.rpc.StatsMetadata;
@@ -31,18 +34,31 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
+import ai.floedb.floecat.common.rpc.BlobHeader;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
+import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.stats.spi.StatsStore.UnpublishedGenerationDeleteResult;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.StringValue;
 import com.google.protobuf.Timestamp;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 class StatsRepositoryTargetStorageTest {
@@ -236,6 +252,303 @@ class StatsRepositoryTargetStorageTest {
     assertThat(
             repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.columnTarget(1L)))
         .isPresent();
+  }
+
+  @Test
+  void draftGenerationIsInvisibleUntilPublished() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 709L;
+    String filePath = "s3://bucket/path/file-overwrite.parquet";
+    TargetStatsRecord original =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(12L).build());
+    TargetStatsRecord replacement =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(34L).build());
+
+    repository.putTargetStatsBatch(TABLE_ID, snapshotId, List.of(original));
+    String originalGeneration =
+        repository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        "draft-job-1",
+        List.of(StatsTargetIdentity.fileTarget(filePath)),
+        List.of(replacement));
+
+    Optional<TargetStatsRecord> stored =
+        repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(filePath));
+    assertThat(stored).isPresent();
+    assertThat(stored.get().getFile().getRowCount()).isEqualTo(12L);
+    assertThat(repository.activeStatsGeneration(TABLE_ID, snapshotId)).contains(originalGeneration);
+
+    repository.publishStatsGeneration(TABLE_ID, snapshotId, "draft-job-1", List.of());
+
+    stored =
+        repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(filePath));
+    assertThat(stored).isPresent();
+    assertThat(stored.get().getFile().getRowCount()).isEqualTo(34L);
+    assertThat(repository.countTargetStats(TABLE_ID, snapshotId, Optional.empty())).isEqualTo(1);
+  }
+
+  @Test
+  void draftGenerationDoesNotAdvanceStaleIndexUntilPublished() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    String filePath = "s3://bucket/path/file-staged.parquet";
+    var target = StatsTargetIdentity.fileTarget(filePath);
+    TargetStatsRecord original =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            100L,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(12L).build());
+    TargetStatsRecord replacement =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            200L,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(34L).build());
+
+    repository.putTargetStats(original);
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID, 200L, "draft-job-2", List.of(target), List.of(replacement));
+
+    Optional<TargetStatsRecord> stale = repository.getStaleTargetStats(TABLE_ID, 999L, target);
+    assertThat(stale).isPresent();
+    assertThat(stale.get().getSnapshotId()).isEqualTo(100L);
+    assertThat(stale.get().getFile().getRowCount()).isEqualTo(12L);
+
+    repository.publishStatsGeneration(TABLE_ID, 200L, "draft-job-2", List.of());
+
+    stale = repository.getStaleTargetStats(TABLE_ID, 999L, target);
+    assertThat(stale).isPresent();
+    assertThat(stale.get().getSnapshotId()).isEqualTo(200L);
+    assertThat(stale.get().getFile().getRowCount()).isEqualTo(34L);
+  }
+
+  @Test
+  void deleteUnpublishedStatsGenerationRemovesOnlyDraftGeneration() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 710L;
+    String filePath = "s3://bucket/path/file-draft.parquet";
+    TargetStatsRecord draft =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(34L).build());
+
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        "draft-job-3",
+        List.of(StatsTargetIdentity.fileTarget(filePath)),
+        List.of(draft));
+    String pointerPrefix =
+        Keys.snapshotTargetStatsGenerationPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, "draft-job-3");
+    String blobPrefix =
+        Keys.snapshotTargetStatsBlobPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId)
+            + "generations/"
+            + Keys.encodeSegment("draft-job-3")
+            + "/";
+
+    assertThat(pointerStore.listPointersByPrefix(pointerPrefix, 10, "", new StringBuilder()))
+        .isNotEmpty();
+    assertThat(blobStore.list(blobPrefix, 10, "").keys()).isNotEmpty();
+
+    assertThat(repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, "draft-job-3"))
+        .isEqualTo(UnpublishedGenerationDeleteResult.DELETED);
+
+    assertThat(pointerStore.listPointersByPrefix(pointerPrefix, 10, "", new StringBuilder()))
+        .isEmpty();
+    assertThat(blobStore.list(blobPrefix, 10, "").keys()).isEmpty();
+  }
+
+  @Test
+  void deleteUnpublishedStatsGenerationDoesNotDeletePublishedGeneration() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 711L;
+    String filePath = "s3://bucket/path/file-published.parquet";
+    TargetStatsRecord draft =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(34L).build());
+
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        "draft-job-4",
+        List.of(StatsTargetIdentity.fileTarget(filePath)),
+        List.of(draft));
+    repository.publishStatsGeneration(TABLE_ID, snapshotId, "draft-job-4", List.of());
+
+    assertThat(repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, "draft-job-4"))
+        .isEqualTo(UnpublishedGenerationDeleteResult.NOT_DELETABLE_PUBLISHED);
+    assertThat(
+            repository.getTargetStats(
+                TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(filePath)))
+        .contains(draft);
+  }
+
+  @Test
+  void deleteUnpublishedStatsGenerationBacksOutWhenManifestAppearsBeforeDelete() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore delegateBlobStore = new InMemoryBlobStore();
+    long snapshotId = 712L;
+    String generationId = "draft-job-race";
+    String manifestUri =
+        Keys.snapshotTargetStatsManifestBlobUri(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    AtomicBoolean publishManifestDuringFirstHead = new AtomicBoolean(true);
+    BlobStore racingBlobStore =
+        new DelegatingBlobStore(delegateBlobStore) {
+          @Override
+          public Optional<BlobHeader> head(String uri) {
+            if (manifestUri.equals(uri)
+                && publishManifestDuringFirstHead.compareAndSet(true, false)) {
+              delegateBlobStore.put(
+                  uri, StringValue.of(generationId).toByteArray(), "application/x-protobuf");
+              return Optional.empty();
+            }
+            return super.head(uri);
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointerStore, racingBlobStore);
+    String filePath = "s3://bucket/path/file-race.parquet";
+    TargetStatsRecord draft =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(34L).build());
+    String pointerPrefix =
+        Keys.snapshotTargetStatsGenerationPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        List.of(StatsTargetIdentity.fileTarget(filePath)),
+        List.of(draft));
+
+    assertThat(repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, generationId))
+        .isEqualTo(UnpublishedGenerationDeleteResult.NOT_DELETABLE_PUBLISHED);
+    assertThat(pointerStore.listPointersByPrefix(pointerPrefix, 10, "", new StringBuilder()))
+        .isNotEmpty();
+
+    assertThatThrownBy(
+            () -> repository.publishStatsGeneration(TABLE_ID, snapshotId, generationId, List.of()))
+        .isInstanceOf(BaseResourceRepository.AbortRetryableException.class)
+        .hasMessageContaining("state=DELETING");
+    assertThat(repository.activeStatsGeneration(TABLE_ID, snapshotId)).isEmpty();
+    assertThat(pointerStore.listPointersByPrefix(pointerPrefix, 10, "", new StringBuilder()))
+        .isNotEmpty();
+  }
+
+  @Test
+  void deleteUnpublishedStatsGenerationRejectsPublishAfterFinalPreDeleteManifestCheck() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore delegateBlobStore = new InMemoryBlobStore();
+    long snapshotId = 713L;
+    String generationId = "draft-job-post-head-race";
+    String manifestUri =
+        Keys.snapshotTargetStatsManifestBlobUri(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    AtomicInteger manifestHeadCount = new AtomicInteger();
+    AtomicReference<StatsRepository> repositoryRef = new AtomicReference<>();
+    AtomicReference<RuntimeException> publishFailure = new AtomicReference<>();
+    BlobStore racingBlobStore =
+        new DelegatingBlobStore(delegateBlobStore) {
+          @Override
+          public Optional<BlobHeader> head(String uri) {
+            Optional<BlobHeader> header = super.head(uri);
+            if (manifestUri.equals(uri) && manifestHeadCount.incrementAndGet() == 2) {
+              try {
+                repositoryRef
+                    .get()
+                    .publishStatsGeneration(TABLE_ID, snapshotId, generationId, List.of());
+              } catch (RuntimeException e) {
+                publishFailure.set(e);
+              }
+            }
+            return header;
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointerStore, racingBlobStore);
+    repositoryRef.set(repository);
+    String filePath = "s3://bucket/path/file-post-head-race.parquet";
+    TargetStatsRecord draft =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(34L).build());
+    String pointerPrefix =
+        Keys.snapshotTargetStatsGenerationPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        List.of(StatsTargetIdentity.fileTarget(filePath)),
+        List.of(draft));
+
+    assertThat(repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, generationId))
+        .isEqualTo(UnpublishedGenerationDeleteResult.DELETED);
+
+    assertThat(publishFailure.get())
+        .isInstanceOf(BaseResourceRepository.AbortRetryableException.class);
+    assertThat(repository.activeStatsGeneration(TABLE_ID, snapshotId)).isEmpty();
+    assertThat(pointerStore.listPointersByPrefix(pointerPrefix, 10, "", new StringBuilder()))
+        .isEmpty();
+  }
+
+  @Test
+  void deleteUnpublishedStatsGenerationReturnsRetryForPublishingGeneration() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 714L;
+    String generationId = "draft-job-publishing";
+    String filePath = "s3://bucket/path/file-publishing.parquet";
+    TargetStatsRecord draft =
+        TargetStatsRecords.fileRecord(
+            TABLE_ID,
+            snapshotId,
+            FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(34L).build());
+    String lifecyclePointer =
+        Keys.snapshotTargetStatsGenerationLifecyclePointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    String pointerPrefix =
+        Keys.snapshotTargetStatsGenerationPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        List.of(StatsTargetIdentity.fileTarget(filePath)),
+        List.of(draft));
+    Pointer lifecycle = pointerStore.get(lifecyclePointer).orElseThrow();
+    pointerStore.compareAndSet(
+        lifecyclePointer,
+        lifecycle.getVersion(),
+        PointerReferences.opaqueMarkerPointer(
+            lifecyclePointer, "PUBLISHING", lifecycle.getVersion() + 1L));
+
+    assertThat(repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, generationId))
+        .isEqualTo(UnpublishedGenerationDeleteResult.RETRYABLE_IN_PROGRESS);
+    assertThat(pointerStore.listPointersByPrefix(pointerPrefix, 10, "", new StringBuilder()))
+        .isNotEmpty();
   }
 
   @Test
@@ -567,6 +880,63 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void putTargetStatsBatchIfAbsentCreatesOnlyMissingRecords() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 9193L;
+    TargetStatsRecord existing =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            TableValueStats.newBuilder().setRowCount(11L).setDataFileCount(2L).build(),
+            null);
+    TargetStatsRecord conflicting =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            TableValueStats.newBuilder().setRowCount(0L).setDataFileCount(0L).build(),
+            null);
+    TargetStatsRecord missing =
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            snapshotId,
+            7L,
+            ScalarStats.newBuilder().setDisplayName("c7").setRowCount(11L).build(),
+            null);
+
+    repository.putTargetStats(existing);
+
+    assertThat(
+            repository.putTargetStatsBatchIfAbsent(
+                TABLE_ID, snapshotId, List.of(conflicting, missing)))
+        .containsExactly(missing);
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .contains(existing);
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, missing.getTarget()))
+        .contains(missing);
+  }
+
+  @Test
+  void putTargetStatsBatchIfAbsentRejectsRecordsOutsideSnapshot() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 9194L;
+    TargetStatsRecord wrongSnapshot =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId + 1,
+            TableValueStats.newBuilder().setRowCount(11L).setDataFileCount(2L).build(),
+            null);
+
+    assertThatThrownBy(
+            () ->
+                repository.putTargetStatsBatchIfAbsent(
+                    TABLE_ID, snapshotId, List.of(wrongSnapshot)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("different table snapshot");
+  }
+
+  @Test
   void putTargetStatsIfAbsentDoesNotOverwriteWhenOnlyOperationalTimestampsDiffer() {
     StatsRepository repository =
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -644,6 +1014,447 @@ class StatsRepositoryTargetStorageTest {
             repository.getTargetStats(
                 TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(oldFilePath)))
         .isEmpty();
+  }
+
+  @Test
+  void replaceAllRetainsTheSupersededGenerationForPinnedReaders() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository statsRepository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 4242L;
+    statsRepository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.tableRecord(
+                TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(1L).build(), null)));
+    String pinnedManifestUri =
+        statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+
+    statsRepository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.tableRecord(
+                TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(2L).build(), null)));
+
+    // The pointer moved to the new generation...
+    String liveManifestUri =
+        statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    assertThat(liveManifestUri).isNotEqualTo(pinnedManifestUri);
+    // ...but the superseded generation's manifest is retained: a query that froze it keeps
+    // reading its immutable keyspace to completion (GC collects it once unreferenced).
+    assertThat(blobStore.get(pinnedManifestUri)).isNotNull();
+  }
+
+  /** A quantile sketch payload as an ANALYZE-style capture would publish it. */
+  private static SketchPayload quantileSketch(String data) {
+    return SketchPayload.newBuilder()
+        .setRole(SketchRole.SKETCH_ROLE_QUANTILES)
+        .setSketchType("kll-floats-v1")
+        .setData(ByteString.copyFromUtf8(data))
+        .setCompleteness(StatsCompleteness.SC_COMPLETE)
+        .build();
+  }
+
+  /** Publishes one column record as a full replacement (a new live generation) of the snapshot. */
+  private static void publishColumn(
+      StatsRepository repository, long snapshotId, long columnId, ScalarStats scalar) {
+    repository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        List.of(TargetStatsRecords.columnRecord(TABLE_ID, snapshotId, columnId, scalar, null)));
+  }
+
+  @Test
+  void replaceAllCarriesSupersededSketchesIntoTheNewGeneration() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 4244L;
+    var target = StatsTargetIdentity.columnTarget(7L);
+
+    // First generation: a sampled capture published the column WITH a quantile sketch.
+    publishColumn(
+        repository,
+        snapshotId,
+        7L,
+        ScalarStats.newBuilder()
+            .setLogicalType("BIGINT")
+            .setRowCount(1L)
+            .addSketches(quantileSketch("captured"))
+            .build());
+
+    // Second generation: a scalar-only republish (a file-group rollup cannot derive sketches).
+    publishColumn(
+        repository,
+        snapshotId,
+        7L,
+        ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(2L).build());
+
+    // Generations only enrich: the new generation keeps its own scalars AND the superseded
+    // generation's sketch — the unchanged snapshot's earlier payloads are still valid facts.
+    TargetStatsRecord live = repository.getTargetStats(TABLE_ID, snapshotId, target).orElseThrow();
+    assertThat(live.getScalar().getRowCount()).isEqualTo(2L);
+    assertThat(live.getScalar().getSketchesCount()).isEqualTo(1);
+    assertThat(live.getScalar().getSketches(0).getData().toStringUtf8()).isEqualTo("captured");
+  }
+
+  @Test
+  void publishingDraftGenerationCarriesSupersededSketchesIntoFinalAggregates() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 4249L;
+    long columnId = 7L;
+    String generationId = "full-rescan-job-1";
+    var columnTarget = StatsTargetIdentity.columnTarget(columnId);
+    String filePath = "s3://bucket/path/full-rescan.parquet";
+
+    publishColumn(
+        repository,
+        snapshotId,
+        columnId,
+        ScalarStats.newBuilder()
+            .setLogicalType("BIGINT")
+            .setRowCount(1L)
+            .addSketches(quantileSketch("captured"))
+            .build());
+
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        List.of(StatsTargetIdentity.fileTarget(filePath)),
+        List.of(
+            TargetStatsRecords.fileRecord(
+                TABLE_ID,
+                snapshotId,
+                FileTargetStats.newBuilder().setFilePath(filePath).setRowCount(2L).build())));
+    repository.publishStatsGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                columnId,
+                ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(2L).build(),
+                null)));
+
+    TargetStatsRecord live =
+        repository.getTargetStats(TABLE_ID, snapshotId, columnTarget).orElseThrow();
+    assertThat(live.getScalar().getRowCount()).isEqualTo(2L);
+    assertThat(live.getScalar().getSketchesCount()).isEqualTo(1);
+    assertThat(live.getScalar().getSketches(0).getData().toStringUtf8()).isEqualTo("captured");
+  }
+
+  @Test
+  void replaceAllPrefersIncomingPayloadOverSupersededForSameIdentity() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 4245L;
+    var target = StatsTargetIdentity.columnTarget(7L);
+
+    publishColumn(
+        repository,
+        snapshotId,
+        7L,
+        ScalarStats.newBuilder()
+            .setLogicalType("BIGINT")
+            .setRowCount(1L)
+            .addSketches(quantileSketch("old"))
+            .build());
+
+    // The republish carries its own payload for the same (role, sketch_type) identity: the
+    // incoming record is authoritative, so the superseded payload must not ride along.
+    publishColumn(
+        repository,
+        snapshotId,
+        7L,
+        ScalarStats.newBuilder()
+            .setLogicalType("BIGINT")
+            .setRowCount(2L)
+            .addSketches(quantileSketch("new"))
+            .build());
+
+    TargetStatsRecord live = repository.getTargetStats(TABLE_ID, snapshotId, target).orElseThrow();
+    assertThat(live.getScalar().getSketchesCount()).isEqualTo(1);
+    assertThat(live.getScalar().getSketches(0).getData().toStringUtf8()).isEqualTo("new");
+  }
+
+  @Test
+  void replaceAllDoesNotResurrectTargetsAbsentFromTheNewGeneration() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 4246L;
+
+    repository.replaceAllStatsForSnapshot(
+        TABLE_ID,
+        snapshotId,
+        java.util.List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                1L,
+                ScalarStats.newBuilder()
+                    .setLogicalType("BIGINT")
+                    .setRowCount(1L)
+                    .addSketches(quantileSketch("col1"))
+                    .build(),
+                null),
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                2L,
+                ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(1L).build(),
+                null)));
+
+    publishColumn(
+        repository,
+        snapshotId,
+        2L,
+        ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(2L).build());
+
+    // Enrichment is payload-only: which targets EXIST is the republish's decision, so col1 stays
+    // absent from the live generation (readers reach it through the pinned-generation fallback).
+    assertThat(
+            repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.columnTarget(1L)))
+        .isEmpty();
+    assertThat(
+            repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.columnTarget(2L)))
+        .isPresent();
+  }
+
+  @Test
+  void replaceAllMergesSupersededNdvEnvelopeSketches() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 4247L;
+    var target = StatsTargetIdentity.columnTarget(7L);
+    SketchPayload theta =
+        SketchPayload.newBuilder()
+            .setRole(SketchRole.SKETCH_ROLE_NDV)
+            .setSketchType("apache-datasketches-theta-v1")
+            .setData(ByteString.copyFromUtf8("theta-bytes"))
+            .setCompleteness(StatsCompleteness.SC_COMPLETE)
+            .build();
+
+    publishColumn(
+        repository,
+        snapshotId,
+        7L,
+        ScalarStats.newBuilder()
+            .setLogicalType("BIGINT")
+            .setRowCount(1L)
+            .setNdv(Ndv.newBuilder().setExact(5L).addSketches(theta))
+            .build());
+
+    // The republish carries a fresher NDV ESTIMATE but no sketch payload.
+    publishColumn(
+        repository,
+        snapshotId,
+        7L,
+        ScalarStats.newBuilder()
+            .setLogicalType("BIGINT")
+            .setRowCount(2L)
+            .setNdv(Ndv.newBuilder().setExact(6L))
+            .build());
+
+    // The new estimate stays authoritative; the superseded payload rides along in the envelope.
+    TargetStatsRecord live = repository.getTargetStats(TABLE_ID, snapshotId, target).orElseThrow();
+    assertThat(live.getScalar().getNdv().getExact()).isEqualTo(6L);
+    assertThat(live.getScalar().getNdv().getSketchesCount()).isEqualTo(1);
+    assertThat(live.getScalar().getNdv().getSketches(0).getData().toStringUtf8())
+        .isEqualTo("theta-bytes");
+  }
+
+  @Test
+  void replaceAllCarriesNdvSketchesIntoARecordWithoutAnNdvEnvelope() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 4248L;
+    var target = StatsTargetIdentity.columnTarget(7L);
+    SketchPayload theta =
+        SketchPayload.newBuilder()
+            .setRole(SketchRole.SKETCH_ROLE_NDV)
+            .setSketchType("apache-datasketches-theta-v1")
+            .setData(ByteString.copyFromUtf8("theta-bytes"))
+            .setCompleteness(StatsCompleteness.SC_COMPLETE)
+            .build();
+
+    publishColumn(
+        repository,
+        snapshotId,
+        7L,
+        ScalarStats.newBuilder()
+            .setLogicalType("BIGINT")
+            .setRowCount(1L)
+            .setNdv(Ndv.newBuilder().setExact(5L).addSketches(theta))
+            .build());
+
+    // The republish carries NO NDV envelope at all.
+    publishColumn(
+        repository,
+        snapshotId,
+        7L,
+        ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(2L).build());
+
+    // The carried payload rides in a fabricated, estimate-less envelope: hasNdv() is true but the
+    // exact/approx mode oneof stays UNSET — no estimate is invented for the new capture.
+    TargetStatsRecord live = repository.getTargetStats(TABLE_ID, snapshotId, target).orElseThrow();
+    assertThat(live.getScalar().hasNdv()).isTrue();
+    assertThat(live.getScalar().getNdv().hasExact()).isFalse();
+    assertThat(live.getScalar().getNdv().hasApprox()).isFalse();
+    assertThat(live.getScalar().getNdv().getSketchesCount()).isEqualTo(1);
+    assertThat(live.getScalar().getNdv().getSketches(0).getData().toStringUtf8())
+        .isEqualTo("theta-bytes");
+  }
+
+  @Test
+  void generationScopedBatchReadServesThePinnedGenerationAfterLiveGenerationMoves() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 4243L;
+    var target = StatsTargetIdentity.columnTarget(7L);
+    String storageId = StatsTargetIdentity.storageId(target);
+
+    publishColumn(
+        repository,
+        snapshotId,
+        7L,
+        ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(1L).build());
+    String pinnedManifestUri = repository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+
+    publishColumn(
+        repository,
+        snapshotId,
+        7L,
+        ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(2L).build());
+
+    assertThat(
+            repository
+                .getTargetStatsBatchInGeneration(
+                    TABLE_ID, snapshotId, pinnedManifestUri, java.util.List.of(target))
+                .get(storageId))
+        .isPresent()
+        .get()
+        .extracting(record -> record.getScalar().getRowCount())
+        .isEqualTo(1L);
+    assertThat(repository.getTargetStatsBatch(TABLE_ID, snapshotId, java.util.List.of(target)))
+        .containsKey(storageId);
+    assertThat(
+            repository
+                .getTargetStatsBatch(TABLE_ID, snapshotId, java.util.List.of(target))
+                .get(storageId))
+        .isPresent()
+        .get()
+        .extracting(record -> record.getScalar().getRowCount())
+        .isEqualTo(2L);
+  }
+
+  @Test
+  void gcReclaimsSupersededUnprotectedGenerationsOnly() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository statsRepository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 777L;
+    var record =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(1L).build(), null);
+
+    // gen-1 published, then superseded by gen-2, then gen-3 (live active).
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+    String gen1 = statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+    String gen2 = statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+    String gen3 = statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+
+    // gen-1 is protected (a retained root or a frozen scan references it); gen-2 is not.
+    // minAge 0: the age guard is exercised separately; here the reclaim rules are under test.
+    int reclaimed =
+        statsRepository.deleteUnreferencedGenerations(
+            TABLE_ID, gen1::equals, System.currentTimeMillis(), 0L);
+
+    assertThat(reclaimed).isEqualTo(1);
+    assertThat(blobStore.get(gen1)).isNotNull();
+    assertThat(blobStore.get(gen2)).isNull();
+    assertThat(blobStore.get(gen3)).as("live active survives regardless of roots").isNotNull();
+    // The protected and live generations' records still serve; the reclaimed one is gone.
+    assertThat(
+            statsRepository
+                .listTargetStatsInGeneration(
+                    TABLE_ID, snapshotId, gen1, java.util.Optional.empty(), 10, "")
+                .records())
+        .hasSize(1);
+    assertThat(
+            statsRepository
+                .listTargetStats(TABLE_ID, snapshotId, java.util.Optional.empty(), 10, "")
+                .records())
+        .hasSize(1);
+  }
+
+  @Test
+  void reclaimFindsCandidatesForTableIdsThatNeedEncoding() {
+    // The scan prefix is built with Keys.snapshotRootPrefix (percent-encoded); a hand-built
+    // unencoded prefix silently scanned nothing for ids with reserved characters and the table's
+    // superseded generations leaked forever.
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository statsRepository = new StatsRepository(pointerStore, blobStore);
+    var encodedTable =
+        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+            .setAccountId(TABLE_ID.getAccountId())
+            .setId("tbl with spaces/and/slashes")
+            .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
+            .build();
+    long snapshotId = 3L;
+    var record =
+        ai.floedb.floecat.stats.identity.TargetStatsRecords.tableRecord(
+            encodedTable,
+            snapshotId,
+            ai.floedb.floecat.catalog.rpc.TableValueStats.newBuilder().setRowCount(1L).build(),
+            null);
+    statsRepository.replaceAllStatsForSnapshot(encodedTable, snapshotId, java.util.List.of(record));
+    String gen1 = statsRepository.activeStatsGeneration(encodedTable, snapshotId).orElseThrow();
+    statsRepository.replaceAllStatsForSnapshot(encodedTable, snapshotId, java.util.List.of(record));
+
+    int reclaimed =
+        statsRepository.deleteUnreferencedGenerations(
+            encodedTable, uri -> false, System.currentTimeMillis(), 0L);
+
+    assertThat(reclaimed)
+        .as("the encoded prefix must surface the superseded generation")
+        .isEqualTo(1);
+    assertThat(blobStore.get(gen1)).isNull();
+  }
+
+  @Test
+  void negativeAgeGenerationSurvivesReclaimEvenAtMinAgeZero() {
+    // A generation whose manifest was published AFTER the pass began (lastModified later than the
+    // frozen pass-start nowMs) must be fenced even at min-age 0 — GC must not reclaim an in-flight
+    // publish mid-sweep. Simulate by passing a pass-start an hour before the (just-written) blobs.
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository statsRepository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 3L;
+    var record =
+        ai.floedb.floecat.stats.identity.TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            ai.floedb.floecat.catalog.rpc.TableValueStats.newBuilder().setRowCount(1L).build(),
+            null);
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+    String gen1 = statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
+
+    long passStartBeforeTheWrites = System.currentTimeMillis() - 3_600_000L;
+    int reclaimed =
+        statsRepository.deleteUnreferencedGenerations(
+            TABLE_ID, uri -> false, passStartBeforeTheWrites, 0L);
+
+    assertThat(reclaimed).as("negative-age generation is fenced even at min-age 0").isZero();
+    assertThat(blobStore.get(gen1)).as("the mid-sweep-published generation survives").isNotNull();
   }
 
   @Test
@@ -983,5 +1794,136 @@ class StatsRepositoryTargetStorageTest {
     var target = StatsTargetIdentity.columnTarget(1L);
     assertThat(repository.getStaleTargetStatsBatch(TABLE_ID, 999L, List.of(target)))
         .containsEntry(StatsTargetIdentity.storageId(target), Optional.empty());
+  }
+
+  @Test
+  void aMissingFrozenGenerationManifestSurfacesTheDescriptiveError() {
+    // S3BlobStore THROWS StorageNotFoundException on a miss (never returns null), so the
+    // descriptive broken-retention error was dead code in production. A throwing store must still
+    // reach it.
+    var throwingBlobs =
+        new InMemoryBlobStore() {
+          @Override
+          public byte[] get(String uri) {
+            throw new ai.floedb.floecat.storage.errors.StorageNotFoundException(
+                "no such blob: " + uri);
+          }
+        };
+    var repo = new StatsRepository(new InMemoryPointerStore(), throwingBlobs);
+
+    var ex =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            ai.floedb.floecat.service.repo.util.BaseResourceRepository.NotFoundException.class,
+            () ->
+                repo.listTargetStatsInGeneration(
+                    TABLE_ID,
+                    5L,
+                    "s3://t/stats/5/manifest/gen.pb",
+                    java.util.Optional.empty(),
+                    10,
+                    ""));
+    org.junit.jupiter.api.Assertions.assertTrue(
+        ex.getMessage().contains("frozen stats generation manifest missing"),
+        "the descriptive retention-invariant error must survive an S3-style throwing miss");
+  }
+
+  @Test
+  void targetBatchClassifiesAMissingFrozenGenerationBeforeReadingTargets() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    var target = StatsTargetIdentity.columnTarget(7L);
+
+    var ex =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            StatsStore.GenerationUnavailableException.class,
+            () ->
+                repository.getTargetStatsBatchInGeneration(
+                    TABLE_ID, 5L, "s3://t/stats/5/manifest/missing.pb", java.util.List.of(target)));
+
+    assertThat(ex.getMessage()).contains("frozen stats generation manifest unavailable");
+  }
+
+  @Test
+  void batchReadFaultsKeepTheirOriginalExceptionType() {
+    var pointers = new FailingTargetPointerStore();
+    StatsRepository repository = new StatsRepository(pointers, new InMemoryBlobStore());
+    long snapshotId = 101L;
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            snapshotId,
+            7L,
+            ScalarStats.newBuilder()
+                .setDisplayName("c7")
+                .setLogicalType("BIGINT")
+                .setRowCount(5L)
+                .build(),
+            null));
+    pointers.failTargetReads = true;
+
+    // The parallel batch path must rethrow the storage fault with its ORIGINAL type — the
+    // instanceof-keyed gRPC error mapping never unwraps a CompletionException, so a wrapped
+    // retryable fault would collapse into a generic INTERNAL on the batch path only.
+    assertThatThrownBy(
+            () ->
+                repository.getTargetStatsBatch(
+                    TABLE_ID, snapshotId, List.of(StatsTargetIdentity.columnTarget(7L))))
+        .isInstanceOf(StorageAbortRetryableException.class);
+  }
+
+  /** Pointer store that fails reads of per-target stats pointers once armed (writes unaffected). */
+  private static final class FailingTargetPointerStore extends InMemoryPointerStore {
+    volatile boolean failTargetReads;
+
+    @Override
+    public Optional<Pointer> get(String key) {
+      if (failTargetReads && Keys.generationFromTargetPointerKey(key) != null) {
+        throw new StorageAbortRetryableException("injected fault: " + key);
+      }
+      return super.get(key);
+    }
+  }
+
+  private static class DelegatingBlobStore implements BlobStore {
+    private final BlobStore delegate;
+
+    DelegatingBlobStore(BlobStore delegate) {
+      this.delegate = delegate;
+    }
+
+    @Override
+    public byte[] get(String uri) {
+      return delegate.get(uri);
+    }
+
+    @Override
+    public void put(String uri, byte[] bytes, String contentType) {
+      delegate.put(uri, bytes, contentType);
+    }
+
+    @Override
+    public Optional<BlobHeader> head(String uri) {
+      return delegate.head(uri);
+    }
+
+    @Override
+    public boolean delete(String uri) {
+      return delegate.delete(uri);
+    }
+
+    @Override
+    public void deletePrefix(String prefix) {
+      delegate.deletePrefix(prefix);
+    }
+
+    @Override
+    public Map<String, byte[]> getBatch(List<String> uris) {
+      return delegate.getBatch(uris);
+    }
+
+    @Override
+    public Page list(String prefix, int limit, String pageToken) {
+      return delegate.list(prefix, limit, pageToken);
+    }
   }
 }
