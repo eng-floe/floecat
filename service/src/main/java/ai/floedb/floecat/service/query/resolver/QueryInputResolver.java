@@ -222,38 +222,24 @@ public class QueryInputResolver {
     Map<NameRef, Optional<ResourceId>> resolvedNames =
         nameInputs.isEmpty() ? Map.of() : metadataGraph.resolveNames(correlationId, nameInputs);
 
+    // Resolve each input to its id and the table pins it contributes (a table yields its own pin; a
+    // view yields its base tables' pins). planInput reads the metadata graph and the shared
+    // current-snapshot cache; it does not touch `resolved` or `pinByTableId`.
+    List<InputPlan> plans = new ArrayList<>(inputs.size());
     for (QueryInput in : inputs) {
-      diag.count("pin.resolver_inputs");
-      SnapshotRef override = in.getSnapshot();
+      plans.add(planInput(state, in, resolvedNames));
+    }
 
-      switch (in.getTargetCase()) {
-        case NAME -> {
-          diag.count("pin.name_inputs");
-          long nameResolveStartNs = System.nanoTime();
-          ResourceId rid =
-              resolvedNames
-                  .getOrDefault(in.getName(), Optional.empty())
-                  .orElseThrow(
-                      () ->
-                          GrpcErrors.notFound(
-                              correlationId,
-                              QUERY_INPUT_UNRESOLVED,
-                              Map.of("name", in.getName().toString())));
-          diag.nanos("pin.input_name_resolve", System.nanoTime() - nameResolveStartNs);
-          addResolvedAndPins(state, rid, override);
-        }
-
-        case TABLE_ID -> {
-          diag.count("pin.table_id_inputs");
-          addResolvedAndPins(state, in.getTableId(), override);
-        }
-
-        case VIEW_ID -> {
-          diag.count("pin.view_id_inputs");
-          addResolvedAndPins(state, in.getViewId(), override);
-        }
-
-        default -> throw GrpcErrors.invalidArgument(correlationId, QUERY_INPUT_INVALID, Map.of());
+    // Merge the plans into the pin set in input order. Order decides two things: `resolved` mirrors
+    // the request order, and mergePin keeps the first pin seen for a table (rooting its blobs)
+    // while
+    // raising QUERY_TABLE_PIN_CONFLICT when a later reference pins the same table with an
+    // incompatible snapshot/as-of. Every kept pin is GC-rooted here, before resolveInputs returns
+    // and therefore before the caller reads any schema/stats or persists the context.
+    for (InputPlan plan : plans) {
+      state.resolved.add(plan.resolvedId());
+      for (TablePin pin : plan.pins()) {
+        mergePin(state.pinByTableId, pin, state.queryId, state.correlationId);
       }
     }
 
@@ -270,22 +256,66 @@ public class QueryInputResolver {
   // Pin resolution
   // =============================================================================
 
-  private void addResolvedAndPins(ResolutionState state, ResourceId rid, SnapshotRef override) {
-    state.resolved.add(rid);
+  /**
+   * One input's resolution: the id recorded in {@code resolved}, and the table pins it contributes,
+   * ordered. A view's id is recorded but the pins are its base tables'; a table records its id and
+   * its own single pin.
+   */
+  private record InputPlan(ResourceId resolvedId, List<TablePin> pins) {}
 
+  /**
+   * Resolve one input to its {@link InputPlan}, reading the metadata graph and the shared
+   * current-snapshot cache. Does not read or write {@code state.resolved} or {@code
+   * state.pinByTableId}; the caller merges the returned pins.
+   */
+  private InputPlan planInput(
+      ResolutionState state, QueryInput in, Map<NameRef, Optional<ResourceId>> resolvedNames) {
+    state.diagnostics.count("pin.resolver_inputs");
+    SnapshotRef override = in.getSnapshot();
+    ResourceId rid =
+        switch (in.getTargetCase()) {
+          case NAME -> {
+            state.diagnostics.count("pin.name_inputs");
+            long nameResolveStartNs = System.nanoTime();
+            ResourceId resolved =
+                resolvedNames
+                    .getOrDefault(in.getName(), Optional.empty())
+                    .orElseThrow(
+                        () ->
+                            GrpcErrors.notFound(
+                                state.correlationId,
+                                QUERY_INPUT_UNRESOLVED,
+                                Map.of("name", in.getName().toString())));
+            state.diagnostics.nanos(
+                "pin.input_name_resolve", System.nanoTime() - nameResolveStartNs);
+            yield resolved;
+          }
+          case TABLE_ID -> {
+            state.diagnostics.count("pin.table_id_inputs");
+            yield in.getTableId();
+          }
+          case VIEW_ID -> {
+            state.diagnostics.count("pin.view_id_inputs");
+            yield in.getViewId();
+          }
+          default ->
+              throw GrpcErrors.invalidArgument(state.correlationId, QUERY_INPUT_INVALID, Map.of());
+        };
+
+    List<TablePin> pins = new ArrayList<>();
     if (rid.getKind() == ResourceKind.RK_VIEW) {
       // Views are not pinned directly. We only pin their base tables.
       // Reject snapshot_id overrides for views; allow AS-OF and apply it to dependency pins.
       validateViewOverride(state.correlationId, rid, override);
-      collectBaseTables(state, rid, effectiveAsOf(override, state.asOfDefault), new HashSet<>());
-      return;
+      collectBaseTablePins(
+          state, rid, effectiveAsOf(override, state.asOfDefault), new HashSet<>(), pins);
+    } else {
+      TablePin pin = pinForResource(state, rid, override, state.asOfDefault);
+      if (pin != null) {
+        pins.add(pin);
+      }
     }
-
-    mergePin(
-        state.pinByTableId,
-        pinForResource(state, rid, override, state.asOfDefault),
-        state.queryId,
-        state.correlationId);
+    return new InputPlan(rid, pins);
   }
 
   private TablePin pinForResource(
@@ -403,21 +433,27 @@ public class QueryInputResolver {
         && pin.getOriginalAsOf().equals(asOf.get());
   }
 
-  private void collectBaseTables(
+  /**
+   * Append the table pins reachable from {@code relationId} to {@code out} in dependency order: a
+   * table contributes its own pin; a view is expanded through its base relations. {@code seen}
+   * guards against reference cycles. Appends rather than merging, so the caller decides ordering
+   * and deduplication.
+   */
+  private void collectBaseTablePins(
       ResolutionState state,
       ResourceId relationId,
       Optional<Timestamp> effectiveAsOf,
-      Set<String> seen) {
+      Set<String> seen,
+      List<TablePin> out) {
     String key = QueryPins.pinKey(relationId);
     if (!seen.add(key)) {
       return;
     }
     if (relationId.getKind() == ResourceKind.RK_TABLE) {
-      mergePin(
-          state.pinByTableId,
-          pinForResource(state, relationId, null, effectiveAsOf),
-          state.queryId,
-          state.correlationId);
+      TablePin pin = pinForResource(state, relationId, null, effectiveAsOf);
+      if (pin != null) {
+        out.add(pin);
+      }
       return;
     }
     long viewResolveStartNs = System.nanoTime();
@@ -450,7 +486,7 @@ public class QueryInputResolver {
             state.diagnostics.count("pin.view_base_name_resolutions");
             baseIds
                 .getOrDefault(baseRef, Optional.empty())
-                .ifPresent(rid -> collectBaseTables(state, rid, effectiveAsOf, seen));
+                .ifPresent(rid -> collectBaseTablePins(state, rid, effectiveAsOf, seen, out));
           }
         });
   }
