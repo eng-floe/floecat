@@ -40,12 +40,11 @@ public final class CapturePolicyValidator {
             correlationId, null, Map.of("field", fieldName + ".outputs[" + i + "]"));
       }
     }
-    if (policy.getMaxDefaultColumns() <= 0) {
+    if (policy.getMaxDefaultColumns() < 0) {
       throw GrpcErrors.invalidArgument(
           correlationId, null, Map.of("field", fieldName + ".max_default_columns"));
     }
-    if (policy.getDefaultColumnScope() == DefaultColumnScope.UNRECOGNIZED
-        || policy.getDefaultColumnScope() == DefaultColumnScope.DCS_UNSPECIFIED) {
+    if (policy.getDefaultColumnScope() == DefaultColumnScope.UNRECOGNIZED) {
       throw GrpcErrors.invalidArgument(
           correlationId, null, Map.of("field", fieldName + ".default_column_scope"));
     }

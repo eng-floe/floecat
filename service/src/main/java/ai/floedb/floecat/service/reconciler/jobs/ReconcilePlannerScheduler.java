@@ -408,8 +408,8 @@ public class ReconcilePlannerScheduler {
     return switch (scope) {
       case DCS_ALL -> ReconcileCapturePolicy.DefaultColumnScope.ALL;
       case DCS_EXPLICIT_ONLY -> ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
-      case DCS_UNSPECIFIED, DCS_FIRST_N, UNRECOGNIZED ->
-          ReconcileCapturePolicy.DefaultColumnScope.FIRST_N;
+      case DCS_UNSPECIFIED, DCS_FIRST_N -> ReconcileCapturePolicy.DefaultColumnScope.FIRST_N;
+      case UNRECOGNIZED -> throw new IllegalArgumentException("default column scope");
     };
   }
 
