@@ -178,51 +178,33 @@ public class ServerSideStorageConfigResolver {
     if (connector == null || config == null || connector.getKindValue() == 0) {
       return config;
     }
-    if (config.kind() == ConnectorConfig.Kind.DELTA) {
-      if (!connector.hasResourceId()) {
-        return config;
-      }
-      String locationPrefix = storageAuthorityLookupLocation(storageLocation, config);
-      if (locationPrefix == null) {
-        return config;
-      }
-      ResolveStorageAuthorityResponse response =
-          withHeaders(storageAuthorities, correlationId, authorizationToken)
-              .vendStorageCredentials(
-                  resolveRequest(
-                      connector.getResourceId().getAccountId(),
-                      locationPrefix,
-                      tableId,
-                      executionJobId,
-                      executionLeaseEpoch));
-      if (response == null) {
-        return config;
-      }
-      Map<String, String> merged =
-          mergeResolvedStorageConfig(
-              config.options(),
-              response,
-              true,
-              refreshableExecutionCredentials
-                  && executionJobId.isPresent()
-                  && executionLeaseEpoch.isPresent(),
-              () ->
-                  refreshExecutionBoundCredentials(
-                      correlationId,
-                      authorizationToken,
-                      connector.getResourceId().getAccountId(),
-                      locationPrefix,
-                      tableId,
-                      executionJobId,
-                      executionLeaseEpoch));
-      return merged.equals(config.options())
-          ? config
-          : new ConnectorConfig(
-              config.kind(), config.displayName(), config.uri(), merged, config.auth());
-    }
-    if (config.kind() != ConnectorConfig.Kind.ICEBERG || !connector.hasResourceId()) {
+    if ((config.kind() != ConnectorConfig.Kind.DELTA
+            && config.kind() != ConnectorConfig.Kind.ICEBERG)
+        || !connector.hasResourceId()) {
       return config;
     }
+    return resolveStorageBackedConnector(
+        correlationId,
+        authorizationToken,
+        executionJobId,
+        executionLeaseEpoch,
+        storageLocation,
+        tableId,
+        connector,
+        config,
+        refreshableExecutionCredentials);
+  }
+
+  private ConnectorConfig resolveStorageBackedConnector(
+      Optional<String> correlationId,
+      Optional<String> authorizationToken,
+      Optional<String> executionJobId,
+      Optional<String> executionLeaseEpoch,
+      Optional<String> storageLocation,
+      Optional<ResourceId> tableId,
+      Connector connector,
+      ConnectorConfig config,
+      boolean refreshableExecutionCredentials) {
     String locationPrefix = storageAuthorityLookupLocation(storageLocation, config);
     if (locationPrefix == null) {
       return config;
@@ -256,12 +238,10 @@ public class ServerSideStorageConfigResolver {
                     tableId,
                     executionJobId,
                     executionLeaseEpoch));
-    ConnectorConfig resolved =
-        merged.equals(config.options())
-            ? config
-            : new ConnectorConfig(
-                config.kind(), config.displayName(), config.uri(), merged, config.auth());
-    return resolved;
+    return merged.equals(config.options())
+        ? config
+        : new ConnectorConfig(
+            config.kind(), config.displayName(), config.uri(), merged, config.auth());
   }
 
   private static VendStorageCredentialsRequest resolveRequest(

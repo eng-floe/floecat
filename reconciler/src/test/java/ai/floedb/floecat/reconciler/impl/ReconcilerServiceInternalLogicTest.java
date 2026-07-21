@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -42,7 +43,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBase {
@@ -322,7 +322,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
   }
 
   @Test
-  void snapshotPlanningClosesActiveConnectorWhenPreOpenBackendLookupFails() {
+  void snapshotPlanningDoesNotVendTableCredentialsWhenPreOpenBackendLookupFails() {
     Connector connector =
         Connector.newBuilder()
             .setResourceId(connectorId)
@@ -331,15 +331,8 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             .setUri("s3://bucket/table/metadata/00001.metadata.json")
             .putProperties("iceberg.source", "filesystem")
             .build();
-    AtomicBoolean closed = new AtomicBoolean();
     ServerSideStorageConfigResolver storageResolver = mock(ServerSideStorageConfigResolver.class);
     service.serverSideStorageConfigResolver = storageResolver;
-    when(storageResolver.resolveManagedWithAuthorization(
-            any(), any(), any(), any(), any(), eq(connector), any(ConnectorConfig.class)))
-        .thenAnswer(
-            invocation ->
-                new ServerSideStorageConfigResolver.ResolvedConnectorConfig(
-                    invocation.getArgument(6), () -> closed.set(true)));
     service.backend =
         new DefaultBackend() {
           @Override
@@ -367,6 +360,6 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
                     "lease-1"))
         .isInstanceOf(IllegalStateException.class)
         .hasMessage("lookup failed");
-    assertThat(closed).isTrue();
+    verifyNoInteractions(storageResolver);
   }
 }
