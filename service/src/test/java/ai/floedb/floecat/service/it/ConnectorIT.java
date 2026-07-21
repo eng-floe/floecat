@@ -21,7 +21,6 @@ import static org.junit.jupiter.api.Assertions.*;
 import ai.floedb.floecat.capture.rpc.CaptureColumnPolicy;
 import ai.floedb.floecat.capture.rpc.CaptureOutput;
 import ai.floedb.floecat.capture.rpc.CapturePolicy;
-import ai.floedb.floecat.capture.rpc.DefaultColumnScope;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;

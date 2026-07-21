@@ -813,8 +813,7 @@ class ReconcileControlImplTest {
     service
         .startCapture(
             ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
-                .setMode(
-                    ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
+                .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
                 .setScope(captureScopeWithDefaultsOmitted())
                 .build())
         .await()
