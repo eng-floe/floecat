@@ -22,67 +22,32 @@ import java.util.Optional;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableIdentifier;
-import org.apache.iceberg.rest.RESTCatalog;
+import org.apache.iceberg.catalog.ViewCatalog;
 
 final class IcebergRestConnector extends IcebergConnector {
-  private final RESTCatalog catalog;
+  private final Catalog catalog;
+  private final SupportsNamespaces namespaceCatalog;
+  private final ViewCatalog viewCatalog;
   private final Catalog tableCatalog;
-  private final boolean closeCatalogOnClose;
   private final Runnable closeHook;
 
   IcebergRestConnector(
       String connectorId,
-      RESTCatalog catalog,
-      boolean ndvEnabled,
-      double ndvSampleFraction,
-      long ndvMaxFiles) {
-    this(connectorId, catalog, catalog, ndvEnabled, ndvSampleFraction, ndvMaxFiles, true, null);
-  }
-
-  IcebergRestConnector(
-      String connectorId,
-      RESTCatalog catalog,
-      Catalog tableCatalog,
-      boolean ndvEnabled,
-      double ndvSampleFraction,
-      long ndvMaxFiles) {
-    this(
-        connectorId, catalog, tableCatalog, ndvEnabled, ndvSampleFraction, ndvMaxFiles, true, null);
-  }
-
-  IcebergRestConnector(
-      String connectorId,
-      RESTCatalog catalog,
+      Catalog catalog,
+      SupportsNamespaces namespaceCatalog,
+      ViewCatalog viewCatalog,
       Catalog tableCatalog,
       boolean ndvEnabled,
       double ndvSampleFraction,
       long ndvMaxFiles,
-      boolean closeCatalogOnClose) {
-    this(
-        connectorId,
-        catalog,
-        tableCatalog,
-        ndvEnabled,
-        ndvSampleFraction,
-        ndvMaxFiles,
-        closeCatalogOnClose,
-        null);
-  }
-
-  IcebergRestConnector(
-      String connectorId,
-      RESTCatalog catalog,
-      Catalog tableCatalog,
-      boolean ndvEnabled,
-      double ndvSampleFraction,
-      long ndvMaxFiles,
-      boolean closeCatalogOnClose,
       Runnable closeHook) {
     super(connectorId, null, null, null, ndvEnabled, ndvSampleFraction, ndvMaxFiles, null);
     this.catalog = Objects.requireNonNull(catalog, "catalog");
+    this.namespaceCatalog = Objects.requireNonNull(namespaceCatalog, "namespaceCatalog");
+    this.viewCatalog = Objects.requireNonNull(viewCatalog, "viewCatalog");
     this.tableCatalog = Objects.requireNonNull(tableCatalog, "tableCatalog");
-    this.closeCatalogOnClose = closeCatalogOnClose;
     this.closeHook = closeHook;
   }
 
@@ -91,7 +56,7 @@ final class IcebergRestConnector extends IcebergConnector {
     if (isSingleTableMode()) {
       return listNamespacesSingle();
     }
-    return catalog.listNamespaces().stream().map(Namespace::toString).sorted().toList();
+    return namespaceCatalog.listNamespaces().stream().map(Namespace::toString).sorted().toList();
   }
 
   @Override
@@ -108,17 +73,17 @@ final class IcebergRestConnector extends IcebergConnector {
 
   @Override
   public List<String> listViews(String namespaceFq) {
-    return listViewsFromCatalog(catalog, namespaceFq);
+    return listViewsFromCatalog(viewCatalog, namespaceFq);
   }
 
   @Override
   public List<ViewDescriptor> listViewDescriptors(String namespaceFq) {
-    return listViewDescriptorsFromCatalog(catalog, namespaceFq);
+    return listViewDescriptorsFromCatalog(viewCatalog, namespaceFq);
   }
 
   @Override
   public Optional<ViewDescriptor> describeView(String namespaceFq, String viewName) {
-    return describeViewFromCatalog(catalog, namespaceFq, viewName);
+    return describeViewFromCatalog(viewCatalog, namespaceFq, viewName);
   }
 
   @Override
@@ -136,17 +101,10 @@ final class IcebergRestConnector extends IcebergConnector {
 
   @Override
   protected void closeCatalog() {
-    try {
-      if (closeCatalogOnClose) {
-        catalog.close();
-      }
-    } catch (Exception ignore) {
-    } finally {
-      if (closeHook != null) {
-        try {
-          closeHook.run();
-        } catch (RuntimeException ignore) {
-        }
+    if (closeHook != null) {
+      try {
+        closeHook.run();
+      } catch (RuntimeException ignore) {
       }
     }
   }

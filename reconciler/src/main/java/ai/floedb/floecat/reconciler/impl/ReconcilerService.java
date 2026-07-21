@@ -1083,7 +1083,7 @@ public class ReconcilerService {
     }
     DestinationTableMetadata metadata = requiredTableMetadata(ctx, tableId);
     ServerSideStorageConfigResolver.ResolvedConnectorConfig resolved =
-        resolveManagedServerSideStorage(
+        resolveManagedTableScopedStorage(
             ctx,
             active.connector(),
             active.resolvedConfig(),
@@ -1097,6 +1097,25 @@ public class ReconcilerService {
       resolved.close();
       throw e;
     }
+  }
+
+  private ServerSideStorageConfigResolver.ResolvedConnectorConfig resolveManagedTableScopedStorage(
+      ReconcileContext ctx,
+      Connector connector,
+      ConnectorConfig config,
+      Optional<String> storageLocation,
+      Optional<ResourceId> tableId) {
+    if (serverSideStorageConfigResolver == null) {
+      return new ServerSideStorageConfigResolver.ResolvedConnectorConfig(config, () -> {});
+    }
+    return serverSideStorageConfigResolver.resolveManagedBorrowingInputProvidersWithAuthorization(
+        ctx.authorizationToken(),
+        ctx.executionJobId(),
+        ctx.executionLeaseEpoch(),
+        storageLocation,
+        tableId,
+        connector,
+        config);
   }
 
   private ConnectorConfig withCommittedMetadataLocation(

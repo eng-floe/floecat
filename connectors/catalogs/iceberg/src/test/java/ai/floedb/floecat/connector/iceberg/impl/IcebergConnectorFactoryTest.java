@@ -19,6 +19,7 @@ package ai.floedb.floecat.connector.iceberg.impl;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -33,6 +34,9 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.Map;
+import org.apache.iceberg.rest.RESTUtil;
+import org.apache.iceberg.rest.auth.AuthManager;
+import org.apache.iceberg.rest.auth.AuthManagers;
 import org.junit.jupiter.api.Test;
 
 class IcebergConnectorFactoryTest {
@@ -258,28 +262,31 @@ class IcebergConnectorFactoryTest {
 
   @Test
   void restCatalogPropsUseRefreshingProviderWhenPresent() {
+    Map<String, String> baseProps =
+        IcebergConnectorFactory.buildBaseIcebergProperties(
+            Map.of(
+                "iceberg.source",
+                "glue",
+                "s3.region",
+                "us-east-1",
+                RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
+                "provider-1",
+                "s3.access-key-id",
+                "akid",
+                "s3.secret-access-key",
+                "secret",
+                "s3.session-token",
+                "session"));
     Map<String, String> props =
         IcebergConnectorFactory.buildCatalogProperties(
-            "https://glue.us-east-1.amazonaws.com/iceberg/",
-            IcebergConnectorFactory.buildBaseIcebergProperties(
-                Map.of(
-                    "iceberg.source",
-                    "glue",
-                    "s3.region",
-                    "us-east-1",
-                    RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
-                    "provider-1",
-                    "s3.access-key-id",
-                    "akid",
-                    "s3.secret-access-key",
-                    "secret",
-                    "s3.session-token",
-                    "session")));
+            "https://glue.us-east-1.amazonaws.com/iceberg/", baseProps);
+    Map<String, String> storageProps =
+        IcebergConnectorFactory.buildStorageProperties(baseProps, "aws-sigv4", Map.of());
 
+    IcebergConnectorFactory.applyStorageProperties(props, storageProps);
     IcebergConnectorFactory.applyCatalogAuth(props, "aws-sigv4", Map.of());
-    IcebergConnectorFactory.applyStorageAuth(props, "aws-sigv4", Map.of());
 
-    assertEquals("sigv4", props.get("rest.auth.type"));
+    assertEquals(CatalogSigV4AuthManager.class.getName(), props.get("rest.auth.type"));
     assertEquals(
         RegistryBackedAwsCredentialsProvider.class.getName(),
         props.get("client.credentials-provider"));
@@ -294,95 +301,121 @@ class IcebergConnectorFactoryTest {
   }
 
   @Test
-  void restCatalogCacheKeyIgnoresTransientProviderIdentityAndOauthToken() throws Exception {
-    Map<String, String> props1 =
+  void catalogAndLeaseScopedStorageUseDifferentCredentialProviders() {
+    Map<String, String> baseProps =
+        IcebergConnectorFactory.buildBaseIcebergProperties(
+            Map.of(
+                "iceberg.source",
+                "glue",
+                "s3.region",
+                "us-east-1",
+                RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID,
+                "catalog-provider",
+                RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
+                "storage-provider",
+                "rest.access-key-id",
+                "catalog-access",
+                "rest.secret-access-key",
+                "catalog-secret",
+                "s3.access-key-id",
+                "storage-access",
+                "s3.secret-access-key",
+                "storage-secret"));
+
+    Map<String, String> catalogProps =
         IcebergConnectorFactory.buildCatalogProperties(
-            "http://polaris:8181/api/catalog",
-            IcebergConnectorFactory.buildBaseIcebergProperties(
-                Map.of(
-                    "iceberg.source",
-                    "rest",
-                    "warehouse",
-                    "quickstart_catalog",
-                    "s3.region",
-                    "us-east-1",
-                    RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
-                    "provider-1")));
-    IcebergConnectorFactory.applyCatalogAuth(props1, "oauth2", Map.of("token", "token-1"));
-    IcebergConnectorFactory.applyStorageAuth(props1, "none", Map.of());
+            "https://glue.us-east-1.amazonaws.com/iceberg/", baseProps);
+    Map<String, String> storageProps =
+        IcebergConnectorFactory.buildStorageProperties(baseProps, "aws-sigv4", Map.of());
+    IcebergConnectorFactory.applyStorageProperties(catalogProps, storageProps);
+    IcebergConnectorFactory.applyCatalogAuth(catalogProps, "aws-sigv4", Map.of());
 
-    Map<String, String> props2 = new HashMap<>(props1);
-    props2.put("token", "token-2");
-    props2.put(
-        "client.credentials-provider."
-            + RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID,
-        "provider-2");
+    assertEquals(
+        RegistryBackedAwsCredentialsProvider.class.getName(),
+        catalogProps.get("client.credentials-provider"));
+    assertEquals(
+        "storage-provider",
+        catalogProps.get(
+            "client.credentials-provider."
+                + RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID));
+    assertEquals(CatalogSigV4AuthManager.class.getName(), catalogProps.get("rest.auth.type"));
+    assertFalse(catalogProps.containsKey("rest.access-key-id"));
+    assertFalse(catalogProps.containsKey("rest.secret-access-key"));
+    assertFalse(catalogProps.containsKey("s3.access-key-id"));
+    assertEquals(
+        "catalog-provider",
+        CatalogSigV4AuthManager.catalogAuthProperties(catalogProps)
+            .get(
+                "client.credentials-provider."
+                    + RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID));
 
-    Object key1 = catalogCacheKey(props1);
-    Object key2 = catalogCacheKey(props2);
-
-    assertEquals(key1, key2);
-    assertEquals(key1.hashCode(), key2.hashCode());
+    assertEquals(
+        RegistryBackedAwsCredentialsProvider.class.getName(),
+        storageProps.get("client.credentials-provider"));
+    assertEquals(
+        "storage-provider",
+        storageProps.get(
+            "client.credentials-provider."
+                + RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID));
+    assertFalse(storageProps.containsKey("rest.access-key-id"));
+    assertFalse(
+        storageProps.containsKey(
+            RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID));
   }
 
   @Test
-  void restCatalogCacheKeyTracksStableIcebergHeaders() throws Exception {
-    Map<String, String> props1 =
-        IcebergConnectorFactory.buildCatalogProperties(
-            "http://polaris:8181/api/catalog",
-            IcebergConnectorFactory.buildBaseIcebergProperties(
-                Map.of(
-                    "iceberg.source", "rest",
-                    "warehouse", "quickstart_catalog",
-                    "header.X-Iceberg-Access-Delegation", "remote-signing")));
-    Map<String, String> props2 = new HashMap<>(props1);
-    props2.put("header.X-Iceberg-Access-Delegation", "vended-credentials");
+  void restTableConfigOverridesConfiguredStorageFallback() {
+    Map<String, String> fallback =
+        Map.of(
+            "s3.access-key-id", "fallback-access",
+            "s3.secret-access-key", "fallback-secret",
+            "s3.endpoint", "https://fallback.example");
+    Map<String, String> tableConfig =
+        Map.of(
+            "s3.access-key-id", "vended-access",
+            "s3.secret-access-key", "vended-secret",
+            "s3.endpoint", "https://vended.example");
 
-    Object key1 = catalogCacheKey(props1);
-    Object key2 = catalogCacheKey(props2);
+    Map<String, String> merged = RESTUtil.merge(fallback, tableConfig);
 
-    assertFalse(key1.equals(key2));
+    assertEquals("vended-access", merged.get("s3.access-key-id"));
+    assertEquals("vended-secret", merged.get("s3.secret-access-key"));
+    assertEquals("https://vended.example", merged.get("s3.endpoint"));
   }
 
   @Test
-  void restCatalogCacheKeyDistinguishesStorageAuthModes() throws Exception {
-    Map<String, String> noStorageAuth =
-        IcebergConnectorFactory.buildCatalogProperties(
-            "http://polaris:8181/api/catalog",
-            IcebergConnectorFactory.buildBaseIcebergProperties(
-                Map.of(
-                    "iceberg.source", "rest",
-                    "warehouse", "quickstart_catalog",
-                    "s3.region", "us-east-1")));
+  void catalogSigV4AuthManagerCanBeLoadedByIceberg() {
+    AuthManager manager =
+        AuthManagers.loadAuthManager(
+            "test-catalog", Map.of("rest.auth.type", CatalogSigV4AuthManager.class.getName()));
 
-    Map<String, String> staticStorageAuth =
-        IcebergConnectorFactory.buildCatalogProperties(
-            "http://polaris:8181/api/catalog",
-            IcebergConnectorFactory.buildBaseIcebergProperties(
-                Map.of(
-                    "iceberg.source", "rest",
-                    "warehouse", "quickstart_catalog",
-                    "s3.region", "us-east-1",
-                    "s3.access-key-id", "akid",
-                    "s3.secret-access-key", "secret")));
+    try {
+      assertInstanceOf(CatalogSigV4AuthManager.class, manager);
+    } finally {
+      manager.close();
+    }
+  }
 
-    Map<String, String> profileStorageAuth =
-        IcebergConnectorFactory.buildCatalogProperties(
-            "http://polaris:8181/api/catalog",
-            IcebergConnectorFactory.buildBaseIcebergProperties(
-                Map.of(
-                    "iceberg.source", "rest",
-                    "warehouse", "quickstart_catalog",
-                    "s3.region", "us-east-1",
-                    "aws.profile", "dev-profile")));
+  @Test
+  void deprecatedSigV4FlagCannotBypassCatalogAuthManager() {
+    Map<String, String> props =
+        new HashMap<>(
+            Map.of(
+                "rest.sigv4-enabled",
+                "true",
+                RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID,
+                "catalog-provider"));
 
-    Object noStorageKey = catalogCacheKey(noStorageAuth);
-    Object staticStorageKey = catalogCacheKey(staticStorageAuth);
-    Object profileStorageKey = catalogCacheKey(profileStorageAuth);
+    IcebergConnectorFactory.applyCatalogAuth(props, "aws-sigv4", Map.of());
 
-    assertFalse(noStorageKey.equals(staticStorageKey));
-    assertFalse(noStorageKey.equals(profileStorageKey));
-    assertFalse(staticStorageKey.equals(profileStorageKey));
+    assertFalse(props.containsKey("rest.sigv4-enabled"));
+    assertEquals(CatalogSigV4AuthManager.class.getName(), props.get("rest.auth.type"));
+    AuthManager manager = AuthManagers.loadAuthManager("test-catalog", props);
+    try {
+      assertInstanceOf(CatalogSigV4AuthManager.class, manager);
+    } finally {
+      manager.close();
+    }
   }
 
   @Test
@@ -454,14 +487,5 @@ class IcebergConnectorFactoryTest {
     assertEquals("oauth2", props.get("rest.auth.type"));
     assertEquals("oauth-token", props.get("token"));
     assertEquals("http://polaris:8181/api/catalog/v1/oauth/tokens", props.get("oauth2-server-uri"));
-  }
-
-  private static Object catalogCacheKey(Map<String, String> props) throws Exception {
-    Class<?> keyClass =
-        Class.forName(
-            "ai.floedb.floecat.connector.iceberg.impl.IcebergConnectorFactory$CatalogCacheKey");
-    Method ofMethod = keyClass.getDeclaredMethod("of", Map.class);
-    ofMethod.setAccessible(true);
-    return ofMethod.invoke(null, props);
   }
 }

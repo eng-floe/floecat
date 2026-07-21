@@ -17,11 +17,14 @@
 package ai.floedb.floecat.connector.common.auth;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 
 class AwsGlueClientFactoryTest {
 
@@ -64,15 +67,45 @@ class AwsGlueClientFactoryTest {
   }
 
   @Test
-  void credentialsProviderFactoryBuildsFreshRegistryProviderForEachClientRefresh() {
+  void credentialsProviderFactoryDoesNotUseStorageRegistryProviderForGlue() {
     var factory =
         AwsGlueClientFactory.credentialsProviderFactory(
             Map.of(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID, "provider-1"),
             Map.of());
 
     AwsCredentialsProvider first = factory.get();
-    AwsCredentialsProvider second = factory.get();
 
-    assertNotSame(first, second);
+    assertInstanceOf(DefaultCredentialsProvider.class, first);
+  }
+
+  @Test
+  void credentialsProviderFactoryUsesCatalogRegistryProviderForGlue() {
+    var factory =
+        AwsGlueClientFactory.credentialsProviderFactory(
+            Map.of(
+                RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID, "provider-1"),
+            Map.of());
+
+    AwsCredentialsProvider provider = factory.get();
+
+    assertInstanceOf(RegistryBackedAwsCredentialsProvider.class, provider);
+  }
+
+  @Test
+  void credentialsProviderFactoryUsesCatalogStaticCredentialsForGlue() {
+    var factory =
+        AwsGlueClientFactory.credentialsProviderFactory(
+            Map.of(
+                "rest.access-key-id", "catalog-access",
+                "rest.secret-access-key", "catalog-secret",
+                "rest.session-token", "catalog-session",
+                "s3.access-key-id", "storage-access",
+                "s3.secret-access-key", "storage-secret"),
+            Map.of());
+
+    AwsCredentialsProvider provider = factory.get();
+
+    assertInstanceOf(StaticCredentialsProvider.class, provider);
+    assertEquals("catalog-access", provider.resolveCredentials().accessKeyId());
   }
 }

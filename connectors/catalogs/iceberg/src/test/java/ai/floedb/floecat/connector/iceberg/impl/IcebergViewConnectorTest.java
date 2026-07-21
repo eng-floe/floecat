@@ -48,7 +48,9 @@ class IcebergViewConnectorTest {
     catalog.addView(namespace, "v_b", fakeView("v_b", "SELECT 2", "trino", namespace));
     catalog.addView(namespace, "v_a", fakeView("v_a", "SELECT 1", "spark", namespace));
 
-    var connector = new IcebergRestConnector("iceberg-rest", catalog, false, 0.1d, 0L);
+    var connector =
+        new IcebergRestConnector(
+            "iceberg-rest", catalog, catalog, catalog, catalog, false, 0.1d, 0L, null);
 
     List<FloecatConnector.ViewDescriptor> views = connector.listViewDescriptors("ns1.ns2");
 
@@ -71,7 +73,9 @@ class IcebergViewConnectorTest {
         "v_only",
         fakeViewWithoutSpark("v_only", "SELECT current_date", "trino", namespace));
 
-    var connector = new IcebergRestConnector("iceberg-rest", catalog, false, 0.1d, 0L);
+    var connector =
+        new IcebergRestConnector(
+            "iceberg-rest", catalog, catalog, catalog, catalog, false, 0.1d, 0L, null);
 
     Optional<FloecatConnector.ViewDescriptor> described = connector.describeView("db", "v_only");
 

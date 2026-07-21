@@ -34,6 +34,8 @@ public final class RefreshingAwsCredentialsProviderRegistry {
   private static final Logger LOG =
       Logger.getLogger(RefreshingAwsCredentialsProviderRegistry.class.getName());
   public static final String OPTION_PROVIDER_ID = "floecat.aws.credentials-provider-id";
+  public static final String CATALOG_OPTION_PROVIDER_ID =
+      "floecat.catalog.aws.credentials-provider-id";
   public static final String PROPERTY_PROVIDER_ID = "floecat-provider-id";
   public static final String CLIENT_PROVIDER_CLASS =
       RegistryBackedAwsCredentialsProvider.class.getName();
