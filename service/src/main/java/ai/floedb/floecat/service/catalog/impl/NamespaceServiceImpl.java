@@ -76,6 +76,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   @Inject UserGraph metadataGraph;
   @Inject TopologyGraph topology;
   @Inject MarkerStore markerStore;
+  @Inject RecursiveResourceDropper recursiveDropper;
 
   // Overlay gives access to system namespaces (and other system objects)
   @Inject CatalogOverlay overlay;
@@ -516,6 +517,17 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   }
 
                   long markerVersion = markerStore.namespaceMarkerVersion(namespaceId);
+
+                  if (request.getRecursive()) {
+                    // Check the supplied condition before deleting descendants. The final delete
+                    // below still uses the same condition to catch a concurrent root mutation.
+                    MutationOps.BaseServiceChecks.enforcePreconditions(
+                        correlationId,
+                        namespaceRepo.metaFor(namespaceId),
+                        request.getPrecondition());
+                    recursiveDropper.dropNamespaceContents(namespace);
+                    markerVersion = markerStore.namespaceMarkerVersion(namespaceId);
+                  }
 
                   if (tableRepo.count(
                           catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())

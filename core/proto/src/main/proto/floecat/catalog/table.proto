@@ -111,6 +111,8 @@ message UpdateTableResponse {
 message DeleteTableRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   ai.floedb.floecat.common.Precondition precondition = 2;
+  // Table deletion always removes snapshots, statistics, and root state; there is no
+  // non-recursive variant, so no flag is exposed.
 }
 message DeleteTableResponse {
   ai.floedb.floecat.common.MutationMeta meta = 1;

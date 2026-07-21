@@ -35,6 +35,7 @@ import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.catalog.impl.RecursiveResourceDropper;
 import ai.floedb.floecat.service.common.AccountIds;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -48,23 +49,15 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
-import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
-import ai.floedb.floecat.service.repo.impl.TableRepository;
-import ai.floedb.floecat.service.repo.impl.TableRootRepository;
-import ai.floedb.floecat.service.repo.impl.ViewRepository;
-import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
-import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -76,17 +69,12 @@ import org.jboss.logging.Logger;
 public class AccountServiceImpl extends BaseServiceImpl implements AccountService {
   @Inject AccountRepository accountRepo;
   @Inject CatalogRepository catalogRepo;
-  @Inject NamespaceRepository namespaceRepo;
-  @Inject TableRepository tableRepo;
-  @Inject TableRootRepository tableRootRepo;
   @Inject ConnectorRepository connectorRepo;
-  @Inject ViewRepository viewRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
-  @Inject MarkerStore markerStore;
-  @Inject PointerStore pointerStore;
+  @Inject RecursiveResourceDropper recursiveDropper;
   @Inject DefaultCredentialResolver credentialResolver;
 
   private static final Set<String> ACCOUNT_MUTABLE_PATHS =
@@ -492,71 +480,22 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     CLEANUP_LOG.infof(
         "account_delete_cleanup_catalog account_id=%s catalog_id=%s",
         catalogId.getAccountId(), catalogId.getId());
-    var namespaces =
-        new ArrayList<>(namespaceRepo.listIds(catalogId.getAccountId(), catalogId.getId()));
-    namespaces.sort(Comparator.comparingInt(this::namespaceDepth).reversed());
-    for (var namespaceId : namespaces) {
-      cleanupNamespace(namespaceId, summary);
+    for (var namespaceId :
+        recursiveDropper.namespaceIds(catalogId.getAccountId(), catalogId.getId())) {
+      // A previous tree may have removed this namespace as its descendant.
+      recursiveDropper
+          .dropNamespaceTree(namespaceId)
+          .ifPresent(
+              dropped -> {
+                summary.namespacesDeleted += dropped.namespacesDeleted;
+                summary.tablesDeleted += dropped.tablesDeleted;
+                summary.viewsDeleted += dropped.viewsDeleted;
+                summary.snapshotPrefixesDeleted += dropped.snapshotPrefixesDeleted;
+              });
     }
     catalogRepo.delete(catalogId);
     metadataGraph.invalidate(catalogId);
     summary.catalogsDeleted++;
-  }
-
-  private void cleanupNamespace(ResourceId namespaceId, AccountCleanupSummary summary) {
-    var namespace = namespaceRepo.getById(namespaceId).orElse(null);
-    if (namespace == null) {
-      metadataGraph.invalidate(namespaceId);
-      return;
-    }
-    CLEANUP_LOG.infof(
-        "account_delete_cleanup_namespace account_id=%s namespace_id=%s catalog_id=%s",
-        namespaceId.getAccountId(), namespaceId.getId(), namespace.getCatalogId().getId());
-    cleanupViews(namespace, summary);
-    cleanupTables(namespace, summary);
-    namespaceRepo.delete(namespaceId);
-    metadataGraph.invalidate(namespaceId);
-    markerStore.bumpCatalogMarker(namespace.getCatalogId());
-    bumpParentNamespaceMarkers(namespace);
-    summary.namespacesDeleted++;
-  }
-
-  private void cleanupTables(
-      ai.floedb.floecat.catalog.rpc.Namespace namespace, AccountCleanupSummary summary) {
-    for (var table :
-        listAllPages(
-            (token, next) ->
-                tableRepo.list(
-                    namespace.getResourceId().getAccountId(),
-                    namespace.getCatalogId().getId(),
-                    namespace.getResourceId().getId(),
-                    200,
-                    token,
-                    next))) {
-      cleanupTable(table, summary);
-    }
-  }
-
-  private void cleanupViews(
-      ai.floedb.floecat.catalog.rpc.Namespace namespace, AccountCleanupSummary summary) {
-    for (var view :
-        listAllPages(
-            (token, next) ->
-                viewRepo.list(
-                    namespace.getResourceId().getAccountId(),
-                    namespace.getCatalogId().getId(),
-                    namespace.getResourceId().getId(),
-                    200,
-                    token,
-                    next))) {
-      var viewId = view.getResourceId();
-      CLEANUP_LOG.infof(
-          "account_delete_cleanup_view account_id=%s namespace_id=%s view_id=%s",
-          viewId.getAccountId(), namespace.getResourceId().getId(), viewId.getId());
-      viewRepo.delete(viewId);
-      metadataGraph.invalidate(viewId);
-      summary.viewsDeleted++;
-    }
   }
 
   private <T> List<T> listAllPages(BiFunction<String, StringBuilder, List<T>> pageLoader) {
@@ -576,49 +515,6 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     }
   }
 
-  private void cleanupTable(
-      ai.floedb.floecat.catalog.rpc.Table table, AccountCleanupSummary summary) {
-    var tableId = table.getResourceId();
-    CLEANUP_LOG.infof(
-        "account_delete_cleanup_table account_id=%s namespace_id=%s table_id=%s",
-        tableId.getAccountId(), table.getNamespaceId().getId(), tableId.getId());
-    tableRepo.delete(tableId);
-    metadataGraph.invalidate(tableId);
-    markerStore.bumpNamespaceMarker(table.getNamespaceId());
-    purgeSnapshotsAndStats(tableId, summary);
-    summary.tablesDeleted++;
-  }
-
-  private void purgeSnapshotsAndStats(ResourceId tableId, AccountCleanupSummary summary) {
-    CLEANUP_LOG.infof(
-        "account_delete_cleanup_snapshot_prefix account_id=%s table_id=%s",
-        tableId.getAccountId(), tableId.getId());
-    pointerStore.deleteByPrefix(Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId()));
-    // Through the repository, not a bare pointer-store delete: the root-pointer cache must drop
-    // its entry with the pointer (same-process read-your-writes).
-    tableRootRepo.purgeRoot(tableId);
-    // The root-resync re-drive marker lives under /accounts/{a}/root-resyncs/by-table/, outside the
-    // per-table /tables/{t}/ subtree the prefixes above cover. Delete it here so a failed
-    // post-commit
-    // resync on a transaction-only table does not survive account deletion as a durable orphan (its
-    // only other reaper, TransactionGc.redrivePendingRootResyncs, never runs for a deleted
-    // account).
-    pointerStore.delete(Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId()));
-    summary.snapshotPrefixesDeleted++;
-  }
-
-  private void bumpParentNamespaceMarkers(ai.floedb.floecat.catalog.rpc.Namespace namespace) {
-    var catalogId = namespace.getCatalogId();
-    var parents = namespace.getParentsList();
-    for (int i = 0; i < parents.size(); i++) {
-      var parentPath = parents.subList(0, i + 1);
-      namespaceRepo
-          .getByPath(catalogId.getAccountId(), catalogId.getId(), parentPath)
-          .map(ai.floedb.floecat.catalog.rpc.Namespace::getResourceId)
-          .ifPresent(markerStore::bumpNamespaceMarker);
-    }
-  }
-
   private static final class AccountCleanupSummary {
     private final String accountId;
     private int connectorsDeleted;
@@ -632,10 +528,6 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     private AccountCleanupSummary(String accountId) {
       this.accountId = accountId;
     }
-  }
-
-  private int namespaceDepth(ResourceId namespaceId) {
-    return namespaceRepo.getById(namespaceId).map(ns -> ns.getParentsCount()).orElse(0);
   }
 
   private Account applyAccountSpecPatch(
