@@ -289,6 +289,46 @@ class NamespaceMutationIT {
   }
 
   @Test
+  void namespaceDeleteRecursiveDropsDescendantsAndTables() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, namespacePrefix + "recursive_cat", "recursive");
+    var parent =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "parent", List.of(), "");
+    var child =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "child", List.of("parent"), "");
+    var tableToDrop =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            child.getResourceId(),
+            "orders",
+            "s3://bucket/orders",
+            "{\"cols\":[]}",
+            "none");
+
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder()
+            .setNamespaceId(parent.getResourceId())
+            .setRecursive(true)
+            .build());
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            namespace.getNamespace(
+                GetNamespaceRequest.newBuilder().setNamespaceId(parent.getResourceId()).build()));
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            namespace.getNamespace(
+                GetNamespaceRequest.newBuilder().setNamespaceId(child.getResourceId()).build()));
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            table.getTable(
+                GetTableRequest.newBuilder().setTableId(tableToDrop.getResourceId()).build()));
+  }
+
+  @Test
   void namespaceCreateIdempotent() throws Exception {
     var cat = TestSupport.createCatalog(catalog, namespacePrefix + "cat3", "cat3");
 

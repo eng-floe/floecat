@@ -91,6 +91,8 @@ message DeleteNamespaceRequest {
   ai.floedb.floecat.common.ResourceId namespace_id = 1;
   bool require_empty = 2;
   ai.floedb.floecat.common.Precondition precondition = 3;
+  // Remove descendant namespaces and their tables and views before dropping this namespace.
+  bool recursive = 4;
 }
 message DeleteNamespaceResponse {
   ai.floedb.floecat.common.MutationMeta meta = 1;

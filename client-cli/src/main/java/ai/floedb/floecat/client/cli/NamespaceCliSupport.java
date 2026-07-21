@@ -298,13 +298,22 @@ final class NamespaceCliSupport {
       }
       case "delete" -> {
         if (args.size() < 2) {
-          out.println("usage: namespace delete <id|fq> [--require-empty] [--etag <etag>]");
+          out.println(
+              "usage: namespace delete <id|fq> [--recursive|--require-empty] [--etag <etag>]");
           return;
         }
         boolean requireEmpty = args.contains("--require-empty");
+        boolean recursive = args.contains("--recursive");
+        if (requireEmpty && recursive) {
+          out.println("error: --recursive and --require-empty cannot be combined");
+          return;
+        }
         ResourceId nsId = resolveNamespaceIdFlexible(args.get(1), directory, getCurrentAccountId);
         var deleteBuilder =
-            DeleteNamespaceRequest.newBuilder().setNamespaceId(nsId).setRequireEmpty(requireEmpty);
+            DeleteNamespaceRequest.newBuilder()
+                .setNamespaceId(nsId)
+                .setRequireEmpty(requireEmpty)
+                .setRecursive(recursive);
         Precondition precondition = CliArgs.preconditionFromEtag(args);
         if (precondition != null) {
           deleteBuilder.setPrecondition(precondition);

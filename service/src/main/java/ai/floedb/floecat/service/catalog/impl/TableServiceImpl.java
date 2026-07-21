@@ -50,15 +50,11 @@ import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
-import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
-import ai.floedb.floecat.service.repo.impl.TableRootRepository;
-import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.types.ManagedTableProperties;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
@@ -74,16 +70,14 @@ import org.jboss.logging.Logger;
 public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
   @Inject TableRepository tableRepo;
-  @Inject SnapshotRepository snapshotRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
   @Inject TopologyGraph topology;
   @Inject MarkerStore markerStore;
-  @Inject PointerStore pointerStore;
   @Inject TableRootWriter rootWriter;
-  @Inject TableRootRepository tableRoots;
+  @Inject RecursiveResourceDropper recursiveDropper;
   @Inject EngineHintSchemaCleaner hintCleaner;
   @Inject CatalogOverlay overlay;
 
@@ -474,12 +468,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
-                    topology.evict(tableId);
-                    metadataGraph.invalidate(tableId);
-                    if (existing != null) {
-                      markerStore.bumpNamespaceMarker(existing.getNamespaceId());
-                    }
-                    purgeSnapshotsAndStats(tableId);
+                    recursiveDropper.cleanupDeletedTable(
+                        tableId, existing == null ? null : existing.getNamespaceId());
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   } catch (BaseResourceRepository.CorruptionException corrupt) {
                     var safe = tableRepo.metaForSafe(tableId);
@@ -501,9 +491,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                 Long.toString(tableRepo.metaForSafe(tableId).getPointerVersion())));
                       }
                     }
-                    topology.evict(tableId);
-                    metadataGraph.invalidate(tableId);
-                    purgeSnapshotsAndStats(tableId);
+                    recursiveDropper.cleanupDeletedTable(
+                        tableId, existing == null ? null : existing.getNamespaceId());
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -517,12 +506,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           "table",
                           Map.of("id", tableId.getId()));
 
-                  topology.evict(tableId);
-                  metadataGraph.invalidate(tableId);
-                  if (existing != null) {
-                    markerStore.bumpNamespaceMarker(existing.getNamespaceId());
-                  }
-                  purgeSnapshotsAndStats(tableId);
+                  recursiveDropper.cleanupDeletedTable(
+                      tableId, existing == null ? null : existing.getNamespaceId());
                   return DeleteTableResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())
@@ -800,16 +785,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   .scalar("column_id_algorithm", up.getColumnIdAlgorithm()));
     }
     return c.bytes();
-  }
-
-  private void purgeSnapshotsAndStats(ResourceId tableId) {
-    String prefix = Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId());
-    pointerStore.deleteByPrefix(prefix);
-    // The table-root pointer lives outside the snapshot prefix; left behind it would shadow the
-    // initial state of a table later recreated with the same id. Its blobs are reclaimed by
-    // CasBlobGc once the table drops out of the live set. Routed through the repository so the
-    // root-pointer cache drops its entry with the pointer (same-process read-your-writes).
-    tableRoots.purgeRoot(tableId);
   }
 
   /** Record the table's (possibly new) immutable definition blob on its root. */
