@@ -118,7 +118,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                                     request.getInputsList(),
                                     asOfDefault,
                                     Optional.of(ctx.getQueryDefaultCatalogId()),
-                                    new java.util.LinkedHashMap<>(),
+                                    new java.util.concurrent.ConcurrentHashMap<>(),
                                     diagnostics));
                     diagnostics.put("resolved_inputs", rr.resolved().size());
 

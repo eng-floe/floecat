@@ -32,9 +32,9 @@ import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 @ApplicationScoped
 public class QueryInputMetadataAssembler {
@@ -81,7 +81,7 @@ public class QueryInputMetadataAssembler {
                       inputs,
                       asOfDefault,
                       Optional.of(defaultCatalogId),
-                      new LinkedHashMap<>(),
+                      new ConcurrentHashMap<>(),
                       diagnostics));
       diagnostics.put("resolved_inputs", resolution.resolved().size());
       RelationPinSet relationPinSet = resolution.relationPinSet();
