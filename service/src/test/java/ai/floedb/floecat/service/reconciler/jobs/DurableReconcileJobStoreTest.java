@@ -28,6 +28,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -301,6 +302,65 @@ class DurableReconcileJobStoreTest {
             List.of(),
             ReconcileScope.empty().capturePolicy(),
             ReconcileSnapshotSelection.explicit(List.of(202L)));
+
+    String first =
+        store.enqueue(
+            ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, firstScope);
+    String second =
+        store.enqueue(
+            ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, secondScope);
+
+    assertNotEquals(first, second);
+  }
+
+  @Test
+  void enqueueDoesNotDedupeCapturePoliciesWithDelimiterAmbiguousColumnSelectors() {
+    ReconcileScope firstScope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(new ReconcileCapturePolicy.Column("a:true:false,b", true, false)),
+                Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS)));
+    ReconcileScope secondScope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(
+                    new ReconcileCapturePolicy.Column("a", true, false),
+                    new ReconcileCapturePolicy.Column("b", true, false)),
+                Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS)));
+
+    String first =
+        store.enqueue(
+            ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, firstScope);
+    String second =
+        store.enqueue(
+            ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, secondScope);
+
+    assertNotEquals(first, second);
+  }
+
+  @Test
+  void enqueueDoesNotDedupeCaptureRequestsWithDelimiterAmbiguousColumnSelectors() {
+    ReconcileCapturePolicy capturePolicy =
+        ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS));
+    ReconcileScope firstScope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            List.of(new ReconcileScope.ScopedCaptureRequest("tbl", 11L, "target", List.of("a,b"))),
+            capturePolicy);
+    ReconcileScope secondScope =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            List.of(
+                new ReconcileScope.ScopedCaptureRequest("tbl", 11L, "target", List.of("a", "b"))),
+            capturePolicy);
 
     String first =
         store.enqueue(

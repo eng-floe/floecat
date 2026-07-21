@@ -15,16 +15,16 @@
  */
 package ai.floedb.floecat.client.cli.util;
 
+import ai.floedb.floecat.capture.rpc.CaptureColumnPolicy;
+import ai.floedb.floecat.capture.rpc.CaptureOutput;
+import ai.floedb.floecat.capture.rpc.CapturePolicy;
+import ai.floedb.floecat.capture.rpc.DefaultColumnScope;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.NdvApprox;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
-import ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
-import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
-import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
-import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageOrBuilder;
 import com.google.protobuf.Timestamp;
@@ -243,6 +243,22 @@ public final class CliUtils {
     return Set.copyOf(outputs);
   }
 
+  public static boolean hasColumnCaptureOutput(Set<CaptureOutput> outputs) {
+    return outputs != null
+        && (outputs.contains(CaptureOutput.CO_COLUMN_STATS)
+            || outputs.contains(CaptureOutput.CO_PARQUET_PAGE_INDEX));
+  }
+
+  public static void requireColumnSelectorOutputs(
+      String selectorFlag, String captureFlag, List<String> columns, Set<CaptureOutput> outputs) {
+    boolean hasColumns =
+        columns != null && columns.stream().anyMatch(column -> column != null && !column.isBlank());
+    if (hasColumns && !hasColumnCaptureOutput(outputs)) {
+      throw new IllegalArgumentException(
+          selectorFlag + " requires " + captureFlag + " column-stats or " + captureFlag + " index");
+    }
+  }
+
   /** Parses a default column scope token for trigger-time capture policy defaults. */
   public static DefaultColumnScope parseDefaultColumnScope(String s) {
     if (s == null || s.isBlank()) {
@@ -259,18 +275,27 @@ public final class CliUtils {
   /** Builds a capture policy from explicit outputs. */
   public static CapturePolicy buildCapturePolicy(
       CaptureMode mode,
+      boolean captureSet,
       Set<CaptureOutput> requestedOutputs,
       List<String> columns,
+      boolean defaultColsSet,
       DefaultColumnScope defaultColumnScope,
+      boolean maxDefaultColsSet,
       int maxDefaultColumns) {
     if (mode == CaptureMode.CM_METADATA_ONLY) {
       return null;
     }
     java.util.LinkedHashSet<CaptureOutput> outputs =
         new java.util.LinkedHashSet<>(requestedOutputs);
-    if (outputs.isEmpty()) {
-      throw new IllegalArgumentException("--capture is required for capture modes");
+    if (!captureSet
+        && ((columns != null && !columns.isEmpty()) || defaultColsSet || maxDefaultColsSet)) {
+      throw new IllegalArgumentException(
+          "--capture is required when using --columns, --default-cols, or --max-default-cols");
     }
+    if (outputs.isEmpty()) {
+      return null;
+    }
+    requireColumnSelectorOutputs("--columns", "--capture", columns, outputs);
     CapturePolicy.Builder policy =
         CapturePolicy.newBuilder()
             .addAllOutputs(outputs)

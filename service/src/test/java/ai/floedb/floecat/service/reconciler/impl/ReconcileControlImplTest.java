@@ -30,12 +30,17 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.capture.rpc.CaptureColumnPolicy;
+import ai.floedb.floecat.capture.rpc.CaptureOutput;
+import ai.floedb.floecat.capture.rpc.CapturePolicy;
+import ai.floedb.floecat.capture.rpc.DefaultColumnScope;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
@@ -46,8 +51,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.CancelReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CaptureNowRequest;
-import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
-import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeRequest;
@@ -468,6 +471,57 @@ class ReconcileControlImplTest {
   }
 
   @Test
+  void startCaptureUsesConnectorAutoCapturePolicyWhenRequestOmitsPolicy() {
+    ResourceId connectorId = accountScopedConnectorId();
+    when(service.connectorRepo.getById(connectorId))
+        .thenReturn(
+            Optional.of(
+                Connector.newBuilder()
+                    .setResourceId(connectorId)
+                    .setState(ConnectorState.CS_ACTIVE)
+                    .setPolicy(
+                        ai.floedb.floecat.connector.rpc.ReconcilePolicy.newBuilder()
+                            .setAutoCapturePolicy(
+                                CapturePolicy.newBuilder()
+                                    .addOutputs(CaptureOutput.CO_PARQUET_PAGE_INDEX)
+                                    .setDefaultColumnScope(DefaultColumnScope.DCS_EXPLICIT_ONLY)
+                                    .setMaxDefaultColumns(7)
+                                    .build())
+                            .build())
+                    .build()));
+    when(service.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
+
+    service
+        .startCapture(
+            ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
+                .setScope(CaptureScope.newBuilder().setConnectorId(connectorId()).build())
+                .build())
+        .await()
+        .indefinitely();
+
+    ArgumentCaptor<ReconcileScope> scopeCaptor = ArgumentCaptor.forClass(ReconcileScope.class);
+    verify(service.jobs)
+        .enqueuePlan(
+            anyString(),
+            anyString(),
+            anyBoolean(),
+            any(),
+            scopeCaptor.capture(),
+            any(),
+            anyString());
+    assertEquals(
+        java.util.Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+        scopeCaptor.getValue().capturePolicy().outputs());
+    assertEquals(
+        ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+        scopeCaptor.getValue().capturePolicy().defaultColumnScope());
+    assertEquals(7, scopeCaptor.getValue().capturePolicy().maxDefaultColumns());
+  }
+
+  @Test
   void startCaptureDefaultsOmittedSnapshotSelectionToCurrent() {
     when(service.jobs.enqueuePlan(
             anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
@@ -667,6 +721,9 @@ class ReconcileControlImplTest {
                 service
                     .captureNow(
                         CaptureNowRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
                             .setScope(
                                 CaptureScope.newBuilder().setConnectorId(connectorId()).build())
                             .build())
@@ -690,8 +747,107 @@ class ReconcileControlImplTest {
                             .setScope(
                                 CaptureScope.newBuilder()
                                     .setConnectorId(connectorId())
-                                    .setCapturePolicy(CapturePolicy.newBuilder().build())
+                                    .setCapturePolicy(
+                                        ai.floedb.floecat.capture.rpc.CapturePolicy.newBuilder()
+                                            .build())
                                     .build())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void startCaptureRejectsColumnPolicyWithNoEnabledOutputs() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .startCapture(
+                        ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
+                            .setScope(captureScopeWithDisabledColumnPolicy())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void captureNowRejectsColumnPolicyWithNoEnabledOutputs() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .captureNow(
+                        CaptureNowRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
+                            .setScope(captureScopeWithDisabledColumnPolicy())
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    verify(service.jobs, never())
+        .enqueuePlan(anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString());
+  }
+
+  @Test
+  void startCaptureDefaultsOmittedCapturePolicyFields() {
+    when(service.jobs.enqueuePlan(
+            anyString(), anyString(), anyBoolean(), any(), any(), any(), anyString()))
+        .thenReturn("job-1");
+
+    service
+        .startCapture(
+            ai.floedb.floecat.reconciler.rpc.StartCaptureRequest.newBuilder()
+                .setMode(ai.floedb.floecat.reconciler.rpc.CaptureMode.CM_METADATA_AND_CAPTURE)
+                .setScope(captureScopeWithDefaultsOmitted())
+                .build())
+        .await()
+        .indefinitely();
+
+    ArgumentCaptor<ReconcileScope> scopeCaptor = ArgumentCaptor.forClass(ReconcileScope.class);
+    verify(service.jobs)
+        .enqueuePlan(
+            anyString(),
+            anyString(),
+            anyBoolean(),
+            any(),
+            scopeCaptor.capture(),
+            any(),
+            anyString());
+    assertEquals(
+        ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+        scopeCaptor.getValue().capturePolicy().defaultColumnScope());
+    assertEquals(32, scopeCaptor.getValue().capturePolicy().maxDefaultColumns());
+  }
+
+  @Test
+  void captureNowRejectsUnrecognizedDefaultColumnScope() {
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .captureNow(
+                        CaptureNowRequest.newBuilder()
+                            .setMode(
+                                ai.floedb.floecat.reconciler.rpc.CaptureMode
+                                    .CM_METADATA_AND_CAPTURE)
+                            .setScope(captureScopeWithDefaultColumnScopeValue(99))
                             .build())
                     .await()
                     .indefinitely());
@@ -1153,11 +1309,52 @@ class ReconcileControlImplTest {
     return CaptureScope.newBuilder()
         .setConnectorId(connectorId())
         .setCapturePolicy(
+            ai.floedb.floecat.capture.rpc.CapturePolicy.newBuilder()
+                .addOutputs(ai.floedb.floecat.capture.rpc.CaptureOutput.CO_TABLE_STATS)
+                .addOutputs(ai.floedb.floecat.capture.rpc.CaptureOutput.CO_FILE_STATS)
+                .addOutputs(ai.floedb.floecat.capture.rpc.CaptureOutput.CO_COLUMN_STATS)
+                .build())
+        .build();
+  }
+
+  private static CaptureScope captureScopeWithDisabledColumnPolicy() {
+    return CaptureScope.newBuilder()
+        .setConnectorId(connectorId())
+        .setCapturePolicy(
             CapturePolicy.newBuilder()
                 .addOutputs(CaptureOutput.CO_TABLE_STATS)
-                .addOutputs(CaptureOutput.CO_FILE_STATS)
-                .addOutputs(CaptureOutput.CO_COLUMN_STATS)
+                .addColumns(CaptureColumnPolicy.newBuilder().setSelector("c1").build())
                 .build())
+        .build();
+  }
+
+  private static CaptureScope captureScopeWithDefaultColumnScope(DefaultColumnScope scope) {
+    return CaptureScope.newBuilder()
+        .setConnectorId(connectorId())
+        .setCapturePolicy(
+            CapturePolicy.newBuilder()
+                .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                .setDefaultColumnScope(scope)
+                .build())
+        .build();
+  }
+
+  private static CaptureScope captureScopeWithDefaultColumnScopeValue(int scopeValue) {
+    return CaptureScope.newBuilder()
+        .setConnectorId(connectorId())
+        .setCapturePolicy(
+            CapturePolicy.newBuilder()
+                .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                .setDefaultColumnScopeValue(scopeValue)
+                .build())
+        .build();
+  }
+
+  private static CaptureScope captureScopeWithDefaultsOmitted() {
+    return CaptureScope.newBuilder()
+        .setConnectorId(connectorId())
+        .setCapturePolicy(
+            CapturePolicy.newBuilder().addOutputs(CaptureOutput.CO_TABLE_STATS).build())
         .build();
   }
 

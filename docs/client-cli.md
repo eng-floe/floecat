@@ -168,14 +168,31 @@ calls), use the builder directly and supply real `setAccountId` / `setCatalog` c
   connector update glue-iceberg --policy-enabled true --policy-mode incremental --policy-current
   connector update glue-iceberg --policy-latest-n 5
   connector update glue-iceberg --policy-all
+  connector update glue-iceberg --policy-capture stats,index
+  connector update glue-iceberg --policy-capture index --policy-default-cols explicit-only
+  connector update glue-iceberg --policy-capture none
   ```
 
 - **Triggering a connector to read an upstream table**
 
   ```
   connector trigger glue-iceberg --incremental --current --mode metadata-only
+  connector trigger glue-iceberg --incremental --current --mode metadata-and-capture
   connector trigger glue-iceberg --full --current --mode metadata-and-capture --capture stats
+  connector trigger glue-iceberg --full --current --mode metadata-and-capture --capture index
   ```
+
+  For capture modes, the reconciler API resolves a missing request capture policy from the
+  connector's persisted auto-capture policy when present. Trigger-time `--capture` flags override
+  that policy for the run. If neither an explicit request policy nor a persisted connector policy
+  is present, the request is rejected.
+  Trigger-time `--columns`, `--default-cols`, and `--max-default-cols` are only valid with an
+  explicit `--capture`; otherwise the request inherits the connector's persisted policy unchanged.
+  `connector create` and `connector validate` do not accept `--policy-capture none`; use
+  `connector update ... --policy-capture none` to clear a persisted auto-capture policy.
+  `--policy-columns`, `--policy-default-cols`, and `--policy-max-default-cols` require an explicit
+  `--policy-capture`, and those flags cannot be combined with `--policy-capture none`.
+  Use `connector update ... --policy-capture none` to clear a persisted auto-capture policy.
 
 - **Creating a storage authority for Iceberg REST credential vending**
 

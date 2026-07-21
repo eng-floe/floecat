@@ -176,6 +176,14 @@ To extend behavior:
   update Floecat Table records (storing schema JSON + upstream ref), ingests snapshot lineage via
   `enumerateSnapshots`, then routes stats capture through the stats control plane (native engine
   uses `captureSnapshotTargetStats`).
+- **Persisted capture policy** – connectors can store a default auto-capture policy that scheduled
+  reconcile runs and trigger-time capture modes inherit when `--capture` is omitted. Example:
+  ```
+  connector update "Glue Iceberg" \
+    --policy-capture stats,index \
+    --policy-default-cols explicit-only
+  ```
+  Use `connector update "Glue Iceberg" --policy-capture none` to clear the persisted policy.
 
 ## Cross-References
 - [`docs/cli-reference.md`](cli-reference.md)

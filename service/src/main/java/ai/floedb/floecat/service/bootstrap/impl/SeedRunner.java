@@ -16,6 +16,9 @@
 
 package ai.floedb.floecat.service.bootstrap.impl;
 
+import ai.floedb.floecat.capture.rpc.CaptureOutput;
+import ai.floedb.floecat.capture.rpc.CapturePolicy;
+import ai.floedb.floecat.capture.rpc.DefaultColumnScope;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.Namespace;
@@ -40,8 +43,6 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.TestDeltaFixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
-import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
-import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse;
@@ -1108,6 +1109,14 @@ public class SeedRunner {
     CapturePolicy.Builder builder = CapturePolicy.newBuilder();
     ReconcileCapturePolicy effective =
         capturePolicy == null ? ReconcileCapturePolicy.empty() : capturePolicy;
+    for (ReconcileCapturePolicy.Column column : effective.columns()) {
+      builder.addColumns(
+          ai.floedb.floecat.capture.rpc.CaptureColumnPolicy.newBuilder()
+              .setSelector(column.selector())
+              .setCaptureStats(column.captureStats())
+              .setCaptureIndex(column.captureIndex())
+              .build());
+    }
     for (ReconcileCapturePolicy.Output output : effective.outputs()) {
       switch (output) {
         case TABLE_STATS -> builder.addOutputs(CaptureOutput.CO_TABLE_STATS);
@@ -1116,7 +1125,19 @@ public class SeedRunner {
         case PARQUET_PAGE_INDEX -> builder.addOutputs(CaptureOutput.CO_PARQUET_PAGE_INDEX);
       }
     }
-    return builder.build();
+    return builder
+        .setDefaultColumnScope(toProtoDefaultColumnScope(effective.defaultColumnScope()))
+        .setMaxDefaultColumns(effective.maxDefaultColumns())
+        .build();
+  }
+
+  private static DefaultColumnScope toProtoDefaultColumnScope(
+      ReconcileCapturePolicy.DefaultColumnScope scope) {
+    return switch (scope == null ? ReconcileCapturePolicy.DefaultColumnScope.FIRST_N : scope) {
+      case FIRST_N -> DefaultColumnScope.DCS_FIRST_N;
+      case ALL -> DefaultColumnScope.DCS_ALL;
+      case EXPLICIT_ONLY -> DefaultColumnScope.DCS_EXPLICIT_ONLY;
+    };
   }
 
   private ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControlWithSeedAuth(

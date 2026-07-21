@@ -18,6 +18,7 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.connector.rpc";
 
 import "floecat/common/common.proto";
+import "floecat/capture/capture.proto";
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/duration.proto";
@@ -172,6 +173,7 @@ message ReconcilePolicy {
   ReconcileMode mode = 5;
   ReconcileSnapshotScope scope = 6;
   uint32 latest_n = 7;
+  ai.floedb.floecat.capture.CapturePolicy auto_capture_policy = 8;
 }
 
 enum ReconcileMode {

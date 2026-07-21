@@ -51,6 +51,7 @@ import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
+import ai.floedb.floecat.service.common.CapturePolicyValidator;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
@@ -119,6 +120,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           "policy.mode",
           "policy.scope",
           "policy.latest_n",
+          "policy.auto_capture_policy",
           "state");
 
   private static final Logger LOG = Logger.getLogger(Connectors.class);
@@ -800,11 +802,16 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   }
 
   private static Connector maskConnector(Connector connector) {
-    if (connector == null || !connector.hasAuth()) {
+    if (connector == null) {
       return connector;
     }
-    AuthConfig masked = maskAuthConfig(connector.getAuth());
-    return connector.toBuilder().setAuth(masked).build();
+    var builder = connector.toBuilder();
+    boolean changed = false;
+    if (connector.hasAuth()) {
+      builder.setAuth(maskAuthConfig(connector.getAuth()));
+      changed = true;
+    }
+    return changed ? builder.build() : connector;
   }
 
   private static AuthConfig maskAuthConfig(AuthConfig auth) {
@@ -961,6 +968,10 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     }
     if (policy.getScope() == ReconcileSnapshotScope.RSS_LATEST_N && policy.getLatestN() <= 0) {
       throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "policy.latest_n"));
+    }
+    if (policy.hasAutoCapturePolicy()) {
+      CapturePolicyValidator.validate(
+          policy.getAutoCapturePolicy(), corr, "policy.auto_capture_policy");
     }
   }
 
@@ -1279,6 +1290,13 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       if (maskTargets(mask, "policy.latest_n")) {
         pb.setLatestN(inPol.getLatestN());
       }
+      if (maskTargets(mask, "policy.auto_capture_policy")) {
+        if (inPol.hasAutoCapturePolicy()) {
+          pb.setAutoCapturePolicy(inPol.getAutoCapturePolicy());
+        } else {
+          pb.clearAutoCapturePolicy();
+        }
+      }
       b.setPolicy(pb.build());
     }
 
@@ -1393,7 +1411,30 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                 .scalar("scope", policy.getScope().name())
                 .scalar("latest_n", policy.getLatestN())
                 .scalar("not_before_seconds", policy.getNotBefore().getSeconds())
-                .scalar("not_before_nanos", policy.getNotBefore().getNanos()));
+                .scalar("not_before_nanos", policy.getNotBefore().getNanos())
+                .group(
+                    "auto_capture_policy",
+                    autoCaptureGroup -> {
+                      if (!policy.hasAutoCapturePolicy()) {
+                        return;
+                      }
+                      var capturePolicy = policy.getAutoCapturePolicy();
+                      autoCaptureGroup
+                          .list("outputs", capturePolicy.getOutputsList())
+                          .scalar(
+                              "default_column_scope", capturePolicy.getDefaultColumnScope().name())
+                          .scalar("max_default_columns", capturePolicy.getMaxDefaultColumns());
+                      for (int i = 0; i < capturePolicy.getColumnsCount(); i++) {
+                        var column = capturePolicy.getColumns(i);
+                        int index = i;
+                        autoCaptureGroup.group(
+                            "columns[" + index + "]",
+                            cg ->
+                                cg.scalar("selector", column.getSelector())
+                                    .scalar("capture_stats", column.getCaptureStats())
+                                    .scalar("capture_index", column.getCaptureIndex()));
+                      }
+                    }));
 
     c.scalar("state", s.getState().name());
     c.map("properties", s.getPropertiesMap());

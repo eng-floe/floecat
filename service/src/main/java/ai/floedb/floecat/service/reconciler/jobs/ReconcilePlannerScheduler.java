@@ -17,6 +17,10 @@
 package ai.floedb.floecat.service.reconciler.jobs;
 
 import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.capture.rpc.CaptureColumnPolicy;
+import ai.floedb.floecat.capture.rpc.CaptureOutput;
+import ai.floedb.floecat.capture.rpc.CapturePolicy;
+import ai.floedb.floecat.capture.rpc.DefaultColumnScope;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.ReconcileMode;
@@ -301,7 +305,7 @@ public class ReconcilePlannerScheduler {
               null,
               null,
               List.of(),
-              DEFAULT_CAPTURE_POLICY,
+              effectiveCapturePolicy(connector),
               effectiveSnapshotSelection(connector)),
           autoExecutionPolicy(),
           "");
@@ -366,6 +370,56 @@ public class ReconcilePlannerScheduler {
       };
     }
     return ReconcileSnapshotSelection.current();
+  }
+
+  private static ReconcileCapturePolicy effectiveCapturePolicy(Connector connector) {
+    if (connector != null
+        && connector.hasPolicy()
+        && connector.getPolicy().hasAutoCapturePolicy()) {
+      return fromProtoCapturePolicy(connector.getPolicy().getAutoCapturePolicy());
+    }
+    return DEFAULT_CAPTURE_POLICY;
+  }
+
+  private static ReconcileCapturePolicy fromProtoCapturePolicy(CapturePolicy capturePolicy) {
+    if (capturePolicy == null) {
+      return ReconcileCapturePolicy.empty();
+    }
+    return ReconcileCapturePolicy.of(
+        capturePolicy.getColumnsList().stream()
+            .map(ReconcilePlannerScheduler::fromProtoCaptureColumnPolicy)
+            .toList(),
+        capturePolicy.getOutputsList().stream()
+            .map(ReconcilePlannerScheduler::fromProtoCaptureOutput)
+            .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new)),
+        fromProtoDefaultColumnScope(capturePolicy.getDefaultColumnScope()),
+        capturePolicy.getMaxDefaultColumns());
+  }
+
+  private static ReconcileCapturePolicy.Column fromProtoCaptureColumnPolicy(
+      CaptureColumnPolicy column) {
+    return new ReconcileCapturePolicy.Column(
+        column.getSelector(), column.getCaptureStats(), column.getCaptureIndex());
+  }
+
+  private static ReconcileCapturePolicy.Output fromProtoCaptureOutput(CaptureOutput output) {
+    return switch (output) {
+      case CO_TABLE_STATS -> ReconcileCapturePolicy.Output.TABLE_STATS;
+      case CO_FILE_STATS -> ReconcileCapturePolicy.Output.FILE_STATS;
+      case CO_COLUMN_STATS -> ReconcileCapturePolicy.Output.COLUMN_STATS;
+      case CO_PARQUET_PAGE_INDEX -> ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX;
+      case CO_UNSPECIFIED, UNRECOGNIZED -> throw new IllegalArgumentException("capture output");
+    };
+  }
+
+  private static ReconcileCapturePolicy.DefaultColumnScope fromProtoDefaultColumnScope(
+      DefaultColumnScope scope) {
+    return switch (scope) {
+      case DCS_ALL -> ReconcileCapturePolicy.DefaultColumnScope.ALL;
+      case DCS_EXPLICIT_ONLY -> ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
+      case DCS_UNSPECIFIED, DCS_FIRST_N -> ReconcileCapturePolicy.DefaultColumnScope.FIRST_N;
+      case UNRECOGNIZED -> throw new IllegalArgumentException("default column scope");
+    };
   }
 
   private static ReconcileMode effectiveMode(Connector connector, ReconcileMode defaultMode) {

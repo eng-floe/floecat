@@ -844,12 +844,12 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       .addAllFilePaths(payload.plannedFilePaths())
                       .setStorageLocation(payload.storageLocation())
                       .setCapturePolicy(
-                          ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
+                          ai.floedb.floecat.capture.rpc.CapturePolicy.newBuilder()
                               .addAllColumns(
                                   payload.capturePolicy().columns().stream()
                                       .map(
                                           column ->
-                                              ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy
+                                              ai.floedb.floecat.capture.rpc.CaptureColumnPolicy
                                                   .newBuilder()
                                                   .setSelector(column.selector())
                                                   .setCaptureStats(column.captureStats())
@@ -1291,12 +1291,12 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
     }
     if (effectiveScope.hasCapturePolicy()) {
       builder.setCapturePolicy(
-          ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
+          ai.floedb.floecat.capture.rpc.CapturePolicy.newBuilder()
               .addAllColumns(
                   effectiveScope.capturePolicy().columns().stream()
                       .map(
                           column ->
-                              ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy.newBuilder()
+                              ai.floedb.floecat.capture.rpc.CaptureColumnPolicy.newBuilder()
                                   .setSelector(column.selector())
                                   .setCaptureStats(column.captureStats())
                                   .setCaptureIndex(column.captureIndex())
@@ -1340,23 +1340,22 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
     return builder.build();
   }
 
-  private static ai.floedb.floecat.reconciler.rpc.CaptureOutput toProtoCaptureOutput(
+  private static ai.floedb.floecat.capture.rpc.CaptureOutput toProtoCaptureOutput(
       ReconcileCapturePolicy.Output output) {
     return switch (output) {
-      case TABLE_STATS -> ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_TABLE_STATS;
-      case FILE_STATS -> ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_FILE_STATS;
-      case COLUMN_STATS -> ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_COLUMN_STATS;
-      case PARQUET_PAGE_INDEX ->
-          ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_PARQUET_PAGE_INDEX;
+      case TABLE_STATS -> ai.floedb.floecat.capture.rpc.CaptureOutput.CO_TABLE_STATS;
+      case FILE_STATS -> ai.floedb.floecat.capture.rpc.CaptureOutput.CO_FILE_STATS;
+      case COLUMN_STATS -> ai.floedb.floecat.capture.rpc.CaptureOutput.CO_COLUMN_STATS;
+      case PARQUET_PAGE_INDEX -> ai.floedb.floecat.capture.rpc.CaptureOutput.CO_PARQUET_PAGE_INDEX;
     };
   }
 
-  private static ai.floedb.floecat.reconciler.rpc.DefaultColumnScope toProtoDefaultColumnScope(
+  private static ai.floedb.floecat.capture.rpc.DefaultColumnScope toProtoDefaultColumnScope(
       ReconcileCapturePolicy.DefaultColumnScope scope) {
     return switch (scope == null ? ReconcileCapturePolicy.DefaultColumnScope.FIRST_N : scope) {
-      case ALL -> ai.floedb.floecat.reconciler.rpc.DefaultColumnScope.DCS_ALL;
-      case EXPLICIT_ONLY -> ai.floedb.floecat.reconciler.rpc.DefaultColumnScope.DCS_EXPLICIT_ONLY;
-      case FIRST_N -> ai.floedb.floecat.reconciler.rpc.DefaultColumnScope.DCS_FIRST_N;
+      case ALL -> ai.floedb.floecat.capture.rpc.DefaultColumnScope.DCS_ALL;
+      case EXPLICIT_ONLY -> ai.floedb.floecat.capture.rpc.DefaultColumnScope.DCS_EXPLICIT_ONLY;
+      case FIRST_N -> ai.floedb.floecat.capture.rpc.DefaultColumnScope.DCS_FIRST_N;
     };
   }
 
@@ -1404,12 +1403,12 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
   }
 
   private static ReconcileCapturePolicy.DefaultColumnScope fromProtoDefaultColumnScope(
-      ai.floedb.floecat.reconciler.rpc.DefaultColumnScope scope) {
+      ai.floedb.floecat.capture.rpc.DefaultColumnScope scope) {
     return switch (scope) {
       case DCS_ALL -> ReconcileCapturePolicy.DefaultColumnScope.ALL;
       case DCS_EXPLICIT_ONLY -> ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
-      case DCS_FIRST_N, DCS_UNSPECIFIED, UNRECOGNIZED ->
-          ReconcileCapturePolicy.DefaultColumnScope.FIRST_N;
+      case DCS_FIRST_N, DCS_UNSPECIFIED -> ReconcileCapturePolicy.DefaultColumnScope.FIRST_N;
+      case UNRECOGNIZED -> throw new IllegalArgumentException("default column scope");
     };
   }
 
@@ -1546,7 +1545,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
   }
 
   private static ReconcileCapturePolicy.Output fromProtoCaptureOutput(
-      ai.floedb.floecat.reconciler.rpc.CaptureOutput output) {
+      ai.floedb.floecat.capture.rpc.CaptureOutput output) {
     return switch (output) {
       case CO_TABLE_STATS -> ReconcileCapturePolicy.Output.TABLE_STATS;
       case CO_FILE_STATS -> ReconcileCapturePolicy.Output.FILE_STATS;

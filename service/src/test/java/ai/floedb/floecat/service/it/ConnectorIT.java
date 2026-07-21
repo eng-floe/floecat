@@ -18,6 +18,9 @@ package ai.floedb.floecat.service.it;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.floecat.capture.rpc.CaptureColumnPolicy;
+import ai.floedb.floecat.capture.rpc.CaptureOutput;
+import ai.floedb.floecat.capture.rpc.CapturePolicy;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
@@ -49,8 +52,6 @@ import ai.floedb.floecat.reconciler.impl.RemoteReconcileExecutorPoller;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
-import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
-import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
@@ -547,10 +548,10 @@ public class ConnectorIT {
             true,
             scopeWithCaptureOutputs(
                 CaptureScope.newBuilder().setConnectorId(conn.getResourceId()).build(),
-                CaptureOutput.CO_TABLE_STATS,
-                CaptureOutput.CO_FILE_STATS,
-                CaptureOutput.CO_COLUMN_STATS,
-                CaptureOutput.CO_PARQUET_PAGE_INDEX),
+                ai.floedb.floecat.capture.rpc.CaptureOutput.CO_TABLE_STATS,
+                ai.floedb.floecat.capture.rpc.CaptureOutput.CO_FILE_STATS,
+                ai.floedb.floecat.capture.rpc.CaptureOutput.CO_COLUMN_STATS,
+                ai.floedb.floecat.capture.rpc.CaptureOutput.CO_PARQUET_PAGE_INDEX),
             false);
     assertNotNull(job);
     assertEquals("JS_SUCCEEDED", job.state, () -> "job failed: " + job.message);
@@ -1504,19 +1505,20 @@ public class ConnectorIT {
     }
     return scopeWithCaptureOutputs(
         scope,
-        CaptureOutput.CO_TABLE_STATS,
-        CaptureOutput.CO_FILE_STATS,
-        CaptureOutput.CO_COLUMN_STATS);
+        ai.floedb.floecat.capture.rpc.CaptureOutput.CO_TABLE_STATS,
+        ai.floedb.floecat.capture.rpc.CaptureOutput.CO_FILE_STATS,
+        ai.floedb.floecat.capture.rpc.CaptureOutput.CO_COLUMN_STATS);
   }
 
   private static CaptureScope scopeWithCaptureOutputs(
-      CaptureScope scope, CaptureOutput... outputs) {
+      CaptureScope scope, ai.floedb.floecat.capture.rpc.CaptureOutput... outputs) {
     if (scope == null || scope.hasCapturePolicy()) {
       return scope;
     }
-    CapturePolicy.Builder policy = CapturePolicy.newBuilder();
+    ai.floedb.floecat.capture.rpc.CapturePolicy.Builder policy =
+        ai.floedb.floecat.capture.rpc.CapturePolicy.newBuilder();
     if (outputs != null) {
-      for (CaptureOutput output : outputs) {
+      for (ai.floedb.floecat.capture.rpc.CaptureOutput output : outputs) {
         if (output != null) {
           policy.addOutputs(output);
         }
@@ -2430,6 +2432,206 @@ public class ConnectorIT {
                                         .build())
                                 .build())
                         .setUpdateMask(FieldMask.newBuilder().addPaths("policy.scope").build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void createConnectorRejectsAutoCapturePolicyWithoutOutputs() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-empty-create", "");
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setDisplayName("policy-empty-create")
+                                .setKind(ConnectorKind.CK_UNITY)
+                                .setUri("dummy://x")
+                                .setSource(source(List.of("a", "b")))
+                                .setDestination(dest("cat-policy-empty-create"))
+                                .setPolicy(
+                                    ReconcilePolicy.newBuilder()
+                                        .setAutoCapturePolicy(CapturePolicy.newBuilder().build())
+                                        .build())
+                                .build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void createConnectorRejectsAutoCapturePolicyWithUnspecifiedOutput() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-unspecified-create", "");
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setDisplayName("policy-unspecified-create")
+                                .setKind(ConnectorKind.CK_UNITY)
+                                .setUri("dummy://x")
+                                .setSource(source(List.of("a", "b")))
+                                .setDestination(dest("cat-policy-unspecified-create"))
+                                .setPolicy(
+                                    ReconcilePolicy.newBuilder()
+                                        .setAutoCapturePolicy(
+                                            CapturePolicy.newBuilder()
+                                                .addOutputs(CaptureOutput.CO_UNSPECIFIED)
+                                                .build())
+                                        .build())
+                                .build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void createConnectorRejectsAutoCapturePolicyUnknownDefaultColumnScope() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-scope-create", "");
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.createConnector(
+                    CreateConnectorRequest.newBuilder()
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setDisplayName("policy-scope-create")
+                                .setKind(ConnectorKind.CK_UNITY)
+                                .setUri("dummy://x")
+                                .setSource(source(List.of("a", "b")))
+                                .setDestination(dest("cat-policy-scope-create"))
+                                .setPolicy(
+                                    ReconcilePolicy.newBuilder()
+                                        .setAutoCapturePolicy(
+                                            CapturePolicy.newBuilder()
+                                                .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                                                .setDefaultColumnScopeValue(99)
+                                                .build())
+                                        .build())
+                                .build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void createConnectorAcceptsOmittedAutoCapturePolicyDefaults() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-scope-unspecified-create", "");
+
+    var created =
+        connectors.createConnector(
+            CreateConnectorRequest.newBuilder()
+                .setSpec(
+                    ConnectorSpec.newBuilder()
+                        .setDisplayName("policy-scope-unspecified-create")
+                        .setKind(ConnectorKind.CK_UNITY)
+                        .setUri("dummy://x")
+                        .setSource(source(List.of("a", "b")))
+                        .setDestination(dest("cat-policy-scope-unspecified-create"))
+                        .setPolicy(
+                            ReconcilePolicy.newBuilder()
+                                .setAutoCapturePolicy(
+                                    CapturePolicy.newBuilder()
+                                        .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                                        .build())
+                                .build())
+                        .build())
+                .build());
+
+    assertEquals(
+        CaptureOutput.CO_TABLE_STATS,
+        created.getConnector().getPolicy().getAutoCapturePolicy().getOutputs(0));
+  }
+
+  @Test
+  void updateConnectorRejectsAutoCapturePolicyColumnWithoutEnabledOutputs() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-column-update", "");
+    var connector =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("policy-column-update")
+                .setKind(ConnectorKind.CK_UNITY)
+                .setUri("dummy://x")
+                .setSource(source(List.of("a", "b")))
+                .setDestination(dest("cat-policy-column-update"))
+                .build());
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.updateConnector(
+                    UpdateConnectorRequest.newBuilder()
+                        .setConnectorId(connector.getResourceId())
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setPolicy(
+                                    ReconcilePolicy.newBuilder()
+                                        .setAutoCapturePolicy(
+                                            CapturePolicy.newBuilder()
+                                                .addOutputs(CaptureOutput.CO_TABLE_STATS)
+                                                .addColumns(
+                                                    CaptureColumnPolicy.newBuilder()
+                                                        .setSelector("c1")
+                                                        .build())
+                                                .build())
+                                        .build())
+                                .build())
+                        .setUpdateMask(
+                            FieldMask.newBuilder().addPaths("policy.auto_capture_policy").build())
+                        .build()));
+
+    TestSupport.assertGrpcAndMc(
+        ex, Status.Code.INVALID_ARGUMENT, ErrorCode.MC_INVALID_ARGUMENT, "Invalid argument");
+  }
+
+  @Test
+  void updateConnectorRejectsAutoCapturePolicyWithUnknownOutputValue() throws Exception {
+    TestSupport.createCatalog(catalogService, "cat-policy-unknown-update", "");
+    var connector =
+        TestSupport.createConnector(
+            connectors,
+            ConnectorSpec.newBuilder()
+                .setDisplayName("policy-unknown-update")
+                .setKind(ConnectorKind.CK_UNITY)
+                .setUri("dummy://x")
+                .setSource(source(List.of("a", "b")))
+                .setDestination(dest("cat-policy-unknown-update"))
+                .build());
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                connectors.updateConnector(
+                    UpdateConnectorRequest.newBuilder()
+                        .setConnectorId(connector.getResourceId())
+                        .setSpec(
+                            ConnectorSpec.newBuilder()
+                                .setPolicy(
+                                    ReconcilePolicy.newBuilder()
+                                        .setAutoCapturePolicy(
+                                            CapturePolicy.newBuilder().addOutputsValue(99).build())
+                                        .build())
+                                .build())
+                        .setUpdateMask(
+                            FieldMask.newBuilder().addPaths("policy.auto_capture_policy").build())
                         .build()));
 
     TestSupport.assertGrpcAndMc(

@@ -172,6 +172,59 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
+  void executePreservesTypedCapturePolicyInPlannedFileGroupScopes() {
+    var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
+    var workerClient = mock(RemotePlannerWorkerClient.class);
+    ReconcileWorkerAuthProvider authProvider = ignored -> java.util.Optional.empty();
+    var executor =
+        new RemoteSnapshotPlanningReconcileExecutor(backend, workerClient, authProvider, 2, true);
+
+    ReconcileScope scope = scopeWithTypedCapturePolicy();
+    ReconcileJobStore.LeasedJob lease = lease(scope);
+    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
+    when(workerClient.getPlanSnapshotInput(any()))
+        .thenReturn(
+            new StandalonePlanSnapshotPayload(
+                lease.jobId,
+                lease.leaseEpoch,
+                "",
+                connectorId(),
+                ReconcilerService.CaptureMode.CAPTURE_ONLY,
+                false,
+                scope,
+                snapshotTask()));
+    when(backend.fetchSnapshotFilePlan(any(), any(), eq(55L)))
+        .thenReturn(
+            Optional.of(new FloecatConnector.SnapshotFilePlan(snapshotFiles(1), List.of())));
+    when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertTrue(result.success());
+    verify(workerClient)
+        .submitPlanSnapshotSuccess(
+            eq(remoteLease),
+            any(),
+            argThat(
+                fileGroupJobs ->
+                    fileGroupJobs != null
+                        && fileGroupJobs.size() == 1
+                        && fileGroupJobs
+                            .get(0)
+                            .scope()
+                            .capturePolicy()
+                            .outputs()
+                            .contains(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)
+                        && fileGroupJobs.get(0).scope().capturePolicy().defaultColumnScope()
+                            == ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY
+                        && fileGroupJobs.get(0).scope().capturePolicy().maxDefaultColumns() == 7),
+            any());
+  }
+
+  @Test
   void executeFallsBackToFileGroupsWhenDirectStatsAreUnavailable() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
@@ -560,6 +613,20 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             EnumSet.of(
                 ReconcileCapturePolicy.Output.TABLE_STATS,
                 ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+  }
+
+  private static ReconcileScope scopeWithTypedCapturePolicy() {
+    return ReconcileScope.of(
+        List.of(),
+        "table-1",
+        List.of(),
+        ReconcileCapturePolicy.of(
+            List.of(),
+            EnumSet.of(
+                ReconcileCapturePolicy.Output.TABLE_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+            7));
   }
 
   private static ResourceId connectorId() {

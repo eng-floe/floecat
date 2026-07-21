@@ -25,8 +25,11 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.capture.rpc.CaptureOutput;
+import ai.floedb.floecat.capture.rpc.DefaultColumnScope;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -55,6 +58,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -592,6 +596,87 @@ class GrpcRemoteReconcileExecutorClientTest {
     verify(channel).awaitTermination(5, TimeUnit.SECONDS);
     assertThat(client.transportFailureLogs())
         .containsExactly("submitLeasedPlanSnapshotResult@dedicated#1");
+  }
+
+  @Test
+  void submitPlanTableSuccessPreservesTypedCapturePolicyInScope() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel chunkChannel = mock(ManagedChannel.class);
+    ManagedChannel successChannel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub chunkStub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub successStub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(chunkChannel, chunkStub);
+    client.enqueueTransport(successChannel, successStub);
+    when(chunkStub.submitLeasedPlanTableResult(any()))
+        .thenReturn(SubmitLeasedPlanTableResultResponse.newBuilder().setAccepted(true).build());
+    when(successStub.submitLeasedPlanTableResult(any()))
+        .thenReturn(SubmitLeasedPlanTableResultResponse.newBuilder().setAccepted(true).build());
+    when(chunkChannel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
+    when(successChannel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
+
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            null,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(),
+                Set.of(ReconcileCapturePolicy.Output.TABLE_STATS),
+                ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+                7),
+            ReconcileSnapshotSelection.unspecified());
+
+    assertThat(
+            client.submitPlanTableSuccess(
+                remoteLease(),
+                List.of(
+                    new PlannedSnapshotJob(
+                        scope, ReconcileSnapshotTask.of("table-1", 55L, "db", "events"))),
+                1L,
+                1L,
+                0L,
+                1L,
+                1L))
+        .isTrue();
+
+    ArgumentCaptor<SubmitLeasedPlanTableResultRequest> chunkCaptor =
+        ArgumentCaptor.forClass(SubmitLeasedPlanTableResultRequest.class);
+    ArgumentCaptor<SubmitLeasedPlanTableResultRequest> successCaptor =
+        ArgumentCaptor.forClass(SubmitLeasedPlanTableResultRequest.class);
+    verify(chunkStub).submitLeasedPlanTableResult(chunkCaptor.capture());
+    verify(successStub).submitLeasedPlanTableResult(successCaptor.capture());
+    assertThat(chunkCaptor.getValue().hasChunk()).isTrue();
+    assertThat(successCaptor.getValue().getSuccess().getChunkCount()).isEqualTo(1);
+    assertThat(
+            chunkCaptor
+                .getValue()
+                .getChunk()
+                .getSnapshotJobs(0)
+                .getScope()
+                .getCapturePolicy()
+                .getOutputsList())
+        .containsExactly(CaptureOutput.CO_TABLE_STATS);
+    assertThat(
+            chunkCaptor
+                .getValue()
+                .getChunk()
+                .getSnapshotJobs(0)
+                .getScope()
+                .getCapturePolicy()
+                .getDefaultColumnScope())
+        .isEqualTo(DefaultColumnScope.DCS_EXPLICIT_ONLY);
+    assertThat(
+            chunkCaptor
+                .getValue()
+                .getChunk()
+                .getSnapshotJobs(0)
+                .getScope()
+                .getCapturePolicy()
+                .getMaxDefaultColumns())
+        .isEqualTo(7);
   }
 
   @Test
