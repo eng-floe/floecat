@@ -201,6 +201,60 @@ public class QueryInputResolverTest {
                 Optional.empty()));
   }
 
+  /**
+   * Two references to the same table's CURRENT snapshot in one batch resolve the snapshot once,
+   * even though the inputs are resolved concurrently. Without single-flight the two references
+   * could resolve independently and, if an ingest landed between them, freeze different snapshots.
+   */
+  @Test
+  void currentSnapshotForRepeatedTableIsResolvedOnce() {
+    ResourceId tableId = rid("T1");
+    NameRef a = name("c", "ns", "a");
+    NameRef b = name("c", "ns", "b");
+    metadataGraph.bind(a, tableId);
+    metadataGraph.bind(b, tableId);
+    metadataGraph.setCurrentSnapshot(tableId, 55);
+
+    var result =
+        resolver.resolveInputs(
+            "cid",
+            List.of(
+                QueryInput.newBuilder().setName(a).build(),
+                QueryInput.newBuilder().setName(b).build()),
+            Optional.empty(),
+            Optional.empty());
+
+    long pinsForT1 =
+        result.snapshotSet().getPinsList().stream()
+            .filter(p -> p.getTableId().getId().equals("T1"))
+            .count();
+    assertEquals(1, pinsForT1, "the two references must merge into one pin");
+
+    long tablePinCallsForT1 =
+        metadataGraph.pinCalls().stream().filter(c -> c.tableId().equals(tableId)).count();
+    assertEquals(1, tablePinCallsForT1, "CURRENT snapshot for a table must be resolved once");
+  }
+
+  /** A batch of distinct relations resolves every one, preserving request order. */
+  @Test
+  void batchResolvesEveryInputInRequestOrder() {
+    List<QueryInput> inputs = new ArrayList<>();
+    List<String> expectedOrder = new ArrayList<>();
+    for (int i = 0; i < 12; i++) {
+      NameRef n = name("c", "ns", "t" + i);
+      ResourceId id = rid("T" + i);
+      metadataGraph.bind(n, id);
+      metadataGraph.setCurrentSnapshot(id, 100 + i);
+      inputs.add(QueryInput.newBuilder().setName(n).build());
+      expectedOrder.add("T" + i);
+    }
+
+    var result = resolver.resolveInputs("cid", inputs, Optional.empty(), Optional.empty());
+
+    assertEquals(expectedOrder, result.resolved().stream().map(ResourceId::getId).toList());
+    assertEquals(12, result.snapshotSet().getPinsCount());
+  }
+
   /** When a QueryInput specifies a snapshot_id override, the resolver must use it verbatim. */
   @Test
   void snapshot_override_id() {
@@ -1102,7 +1156,9 @@ public class QueryInputResolverTest {
     private final Map<NameRef, RuntimeException> failures = new HashMap<>();
     private final Map<String, Long> currentSnapshots = new HashMap<>();
     private final Map<String, Long> asOfSnapshots = new HashMap<>();
-    private final List<PinCall> pinCalls = new ArrayList<>();
+    // Written from resolution tasks, which may run in parallel; keep it thread-safe.
+    private final List<PinCall> pinCalls =
+        java.util.Collections.synchronizedList(new ArrayList<>());
     private final Map<ResourceId, String> catalogNames = new HashMap<>();
     private Consumer<ResourceId> beforeTablePin = ignored -> {};
 

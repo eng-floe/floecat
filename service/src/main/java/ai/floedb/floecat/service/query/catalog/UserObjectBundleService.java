@@ -94,6 +94,7 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -1591,7 +1592,7 @@ public class UserObjectBundleService {
     private final ArrayDeque<EagerBaseCursor> eagerBaseQueue = new ArrayDeque<>();
     private final Set<String> eagerBaseSeen = new HashSet<>();
     private final Map<RelationCacheKey, RelationInfo> relationInfoCache = new HashMap<>();
-    private final Map<ResourceId, TablePin> currentSnapshotPinCache = new HashMap<>();
+    private final Map<ResourceId, TablePin> currentSnapshotPinCache = new ConcurrentHashMap<>();
     private final TimingAccumulator timings = new TimingAccumulator();
     private final PhaseDiagnostics diagnostics = diagnostics("get_user_objects");
     private final long streamStartNs = System.nanoTime();
