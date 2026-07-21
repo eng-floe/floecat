@@ -39,6 +39,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService.ActiveConnector;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
@@ -91,7 +92,12 @@ class QueuedReconcileWorkerSupport {
 
   record PlannedViewMutationResult(ExecutionResult result, PlannedViewMutation mutation) {}
 
-  record TableExecutionResult(ExecutionResult result, List<String> matchedTableIds) {}
+  record TableExecutionResult(
+      ExecutionResult result, List<String> matchedTableIds, List<Long> captureSnapshotIds) {
+    TableExecutionResult(ExecutionResult result, List<String> matchedTableIds) {
+      this(result, matchedTableIds, List.of());
+    }
+  }
 
   @Inject ReconcilerService reconcilerService;
   @Inject ReconcilerBackend backend;
@@ -105,6 +111,8 @@ class QueuedReconcileWorkerSupport {
       ReconcileTableTask tableTask,
       CaptureMode captureMode,
       String bearerToken,
+      String executionJobId,
+      String executionLeaseEpoch,
       BooleanSupplier cancelRequested,
       ReconcileExecutor.ProgressListener progress) {
     ProgressListener progressListener = progress == null ? null : progress::onProgress;
@@ -117,9 +125,12 @@ class QueuedReconcileWorkerSupport {
             tableTask,
             captureMode,
             bearerToken,
+            executionJobId,
+            executionLeaseEpoch,
             cancelRequested,
             progressListener);
-    return new TableExecutionResult(toExecutionResult(result), result.matchedTableIds());
+    return new TableExecutionResult(
+        toExecutionResult(result), result.matchedTableIds(), result.captureSnapshotIds());
   }
 
   PlannedViewMutationResult prepareViewMutation(
@@ -128,6 +139,8 @@ class QueuedReconcileWorkerSupport {
       ReconcileScope scopeIn,
       ReconcileViewTask viewTask,
       String bearerToken,
+      String executionJobId,
+      String executionLeaseEpoch,
       BooleanSupplier cancelRequested,
       ReconcileExecutor.ProgressListener progress) {
     // Queue-only mutation preparation: discovery view work may create the destination namespace
@@ -157,6 +170,8 @@ class QueuedReconcileWorkerSupport {
             scope,
             effectiveViewTask,
             bearerToken,
+            executionJobId,
+            executionLeaseEpoch,
             cancelRequested,
             progressListener)
         : prepareStrictViewMutation(
@@ -165,6 +180,8 @@ class QueuedReconcileWorkerSupport {
             scope,
             effectiveViewTask,
             bearerToken,
+            executionJobId,
+            executionLeaseEpoch,
             cancelRequested,
             progressListener);
   }
@@ -177,6 +194,8 @@ class QueuedReconcileWorkerSupport {
       ReconcileTableTask tableTask,
       CaptureMode captureMode,
       String bearerToken,
+      String executionJobId,
+      String executionLeaseEpoch,
       BooleanSupplier cancelRequested,
       ProgressListener progress) {
     ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
@@ -207,6 +226,8 @@ class QueuedReconcileWorkerSupport {
             effectiveTableTask,
             captureMode,
             bearerToken,
+            executionJobId,
+            executionLeaseEpoch,
             cancelRequested,
             progress)
         : reconcileSingleTableTask(
@@ -217,6 +238,8 @@ class QueuedReconcileWorkerSupport {
             effectiveTableTask,
             captureMode,
             bearerToken,
+            executionJobId,
+            executionLeaseEpoch,
             cancelRequested,
             progress);
   }
@@ -227,6 +250,8 @@ class QueuedReconcileWorkerSupport {
       ReconcileScope scope,
       ReconcileViewTask viewTask,
       String bearerToken,
+      String executionJobId,
+      String executionLeaseEpoch,
       BooleanSupplier cancelRequested,
       ProgressListener progress) {
     if (viewTask.destinationViewId().isBlank()) {
@@ -278,7 +303,11 @@ class QueuedReconcileWorkerSupport {
     }
 
     ReconcileContext ctx =
-        reconcilerService.buildContext(principal, Optional.ofNullable(bearerToken));
+        reconcilerService.buildContext(
+            principal,
+            Optional.ofNullable(bearerToken),
+            Optional.ofNullable(executionJobId),
+            Optional.ofNullable(executionLeaseEpoch));
     BooleanSupplier cancelCheck = cancelRequested == null ? NO_CANCEL : cancelRequested;
     ProgressListener progressOut = progress == null ? NO_PROGRESS : progress;
 
@@ -290,73 +319,25 @@ class QueuedReconcileWorkerSupport {
           toExecutionResult(new Result(0, 0, 0, 0, 1, 0, 0, e)), null);
     }
 
-    ResourceId destinationViewId =
-        ReconcilerService.destinationResourceId(
-            connectorId, ResourceKind.RK_VIEW, viewTask.destinationViewId());
-    ReconcilerBackend.DestinationViewMetadata destinationViewMetadata;
-    try {
-      destinationViewMetadata =
-          backend
-              .lookupDestinationViewMetadata(ctx, destinationViewId)
-              .orElseThrow(
-                  () ->
-                      new IllegalArgumentException(
-                          "Destination view id does not exist: " + viewTask.destinationViewId()));
-    } catch (Exception e) {
-      return new PlannedViewMutationResult(
-          toExecutionResult(new Result(0, 0, 0, 0, 1, 0, 0, e)), null);
-    }
-    if (destinationViewMetadata.namespaceId() == null
-        || destinationViewMetadata.namespaceId().getId().isBlank()) {
-      return new PlannedViewMutationResult(
-          toExecutionResult(
-              new Result(
-                  0,
-                  0,
-                  0,
-                  0,
-                  1,
-                  0,
-                  0,
-                  new IllegalArgumentException(
-                      "Destination view namespace cannot be resolved from id: "
-                          + viewTask.destinationViewId()))),
-          null);
-    }
-    if (destinationViewMetadata.catalogId() == null
-        || destinationViewMetadata.catalogId().getId().isBlank()) {
-      return new PlannedViewMutationResult(
-          toExecutionResult(
-              new Result(
-                  0,
-                  0,
-                  0,
-                  0,
-                  1,
-                  0,
-                  0,
-                  new IllegalArgumentException(
-                      "Destination view catalog cannot be resolved from id: "
-                          + viewTask.destinationViewId()))),
-          null);
-    }
-
-    try (FloecatConnector connector =
-        reconcilerService.connectorOpener.open(active.resolvedConfig())) {
-      ensureNotCancelled(cancelCheck);
-      FloecatConnector.ViewDescriptor view =
-          connector
-              .describeView(viewTask.sourceNamespace(), viewTask.sourceView())
-              .orElseThrow(
-                  () ->
-                      new IllegalArgumentException(
-                          "View not found: "
-                              + viewTask.sourceNamespace()
-                              + "."
-                              + viewTask.sourceView()));
-
-      ResourceId destNamespaceId = destinationViewMetadata.namespaceId();
-      if (!scope.matchesNamespaceId(destNamespaceId.getId())) {
+    try (active) {
+      ResourceId destinationViewId =
+          ReconcilerService.destinationResourceId(
+              connectorId, ResourceKind.RK_VIEW, viewTask.destinationViewId());
+      ReconcilerBackend.DestinationViewMetadata destinationViewMetadata;
+      try {
+        destinationViewMetadata =
+            backend
+                .lookupDestinationViewMetadata(ctx, destinationViewId)
+                .orElseThrow(
+                    () ->
+                        new IllegalArgumentException(
+                            "Destination view id does not exist: " + viewTask.destinationViewId()));
+      } catch (Exception e) {
+        return new PlannedViewMutationResult(
+            toExecutionResult(new Result(0, 0, 0, 0, 1, 0, 0, e)), null);
+      }
+      if (destinationViewMetadata.namespaceId() == null
+          || destinationViewMetadata.namespaceId().getId().isBlank()) {
         return new PlannedViewMutationResult(
             toExecutionResult(
                 new Result(
@@ -368,43 +349,93 @@ class QueuedReconcileWorkerSupport {
                     0,
                     0,
                     new IllegalArgumentException(
-                        "Connector destination namespace id "
-                            + destNamespaceId.getId()
-                            + " does not match requested scope"))),
+                        "Destination view namespace cannot be resolved from id: "
+                            + viewTask.destinationViewId()))),
+            null);
+      }
+      if (destinationViewMetadata.catalogId() == null
+          || destinationViewMetadata.catalogId().getId().isBlank()) {
+        return new PlannedViewMutationResult(
+            toExecutionResult(
+                new Result(
+                    0,
+                    0,
+                    0,
+                    0,
+                    1,
+                    0,
+                    0,
+                    new IllegalArgumentException(
+                        "Destination view catalog cannot be resolved from id: "
+                            + viewTask.destinationViewId()))),
             null);
       }
 
-      ensureNotCancelled(cancelCheck);
-      List<SchemaColumn> outputColumns = viewOutputColumns(connector, view);
-      if (view.sqlDefinitions().isEmpty() || outputColumns.isEmpty()) {
-        return new PlannedViewMutationResult(
-            ExecutionResult.success(0, 0, 0, 0, 0, 0, 0, "OK"), null);
-      }
+      try (FloecatConnector connector =
+          reconcilerService.connectorOpener.open(active.resolvedConfig())) {
+        ensureNotCancelled(cancelCheck);
+        FloecatConnector.ViewDescriptor view =
+            connector
+                .describeView(viewTask.sourceNamespace(), viewTask.sourceView())
+                .orElseThrow(
+                    () ->
+                        new IllegalArgumentException(
+                            "View not found: "
+                                + viewTask.sourceNamespace()
+                                + "."
+                                + viewTask.sourceView()));
 
-      progressOut.onProgress(
-          0, 0, 1, 0, 0, 0, 0, "Processing view " + view.namespaceFq() + "." + view.name());
-      ViewSpec viewSpec =
-          ViewSpec.newBuilder()
-              .setCatalogId(destinationViewMetadata.catalogId())
-              .setNamespaceId(destNamespaceId)
-              .setDisplayName(destinationViewMetadata.displayName())
-              .addAllSqlDefinitions(toCatalogSqlDefinitions(view))
-              .addAllCreationSearchPath(view.searchPath() != null ? view.searchPath() : List.of())
-              .addAllOutputColumns(outputColumns)
-              .putAllProperties(
-                  ReconcilerService.sourceIdentityProperties(
-                      connectorId, view.namespaceFq(), view.name()))
-              .build();
-      return new PlannedViewMutationResult(
-          ExecutionResult.success(0, 0, 1, 0, 0, 0, 0, "OK"),
-          new PlannedViewMutation(destinationViewId, viewSpec, ""));
-    } catch (Exception e) {
-      if (e instanceof ReconcileCancelledException) {
+        ResourceId destNamespaceId = destinationViewMetadata.namespaceId();
+        if (!scope.matchesNamespaceId(destNamespaceId.getId())) {
+          return new PlannedViewMutationResult(
+              toExecutionResult(
+                  new Result(
+                      0,
+                      0,
+                      0,
+                      0,
+                      1,
+                      0,
+                      0,
+                      new IllegalArgumentException(
+                          "Connector destination namespace id "
+                              + destNamespaceId.getId()
+                              + " does not match requested scope"))),
+              null);
+        }
+
+        ensureNotCancelled(cancelCheck);
+        List<SchemaColumn> outputColumns = viewOutputColumns(connector, view);
+        if (view.sqlDefinitions().isEmpty() || outputColumns.isEmpty()) {
+          return new PlannedViewMutationResult(
+              ExecutionResult.success(0, 0, 0, 0, 0, 0, 0, "OK"), null);
+        }
+
+        progressOut.onProgress(
+            0, 0, 1, 0, 0, 0, 0, "Processing view " + view.namespaceFq() + "." + view.name());
+        ViewSpec viewSpec =
+            ViewSpec.newBuilder()
+                .setCatalogId(destinationViewMetadata.catalogId())
+                .setNamespaceId(destNamespaceId)
+                .setDisplayName(destinationViewMetadata.displayName())
+                .addAllSqlDefinitions(toCatalogSqlDefinitions(view))
+                .addAllCreationSearchPath(view.searchPath() != null ? view.searchPath() : List.of())
+                .addAllOutputColumns(outputColumns)
+                .putAllProperties(
+                    ReconcilerService.sourceIdentityProperties(
+                        connectorId, view.namespaceFq(), view.name()))
+                .build();
         return new PlannedViewMutationResult(
-            ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled"), null);
+            ExecutionResult.success(0, 0, 1, 0, 0, 0, 0, "OK"),
+            new PlannedViewMutation(destinationViewId, viewSpec, ""));
+      } catch (Exception e) {
+        if (e instanceof ReconcileCancelledException) {
+          return new PlannedViewMutationResult(
+              ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled"), null);
+        }
+        return new PlannedViewMutationResult(
+            toExecutionResult(new Result(0, 0, 1, 0, 1, 0, 0, e)), null);
       }
-      return new PlannedViewMutationResult(
-          toExecutionResult(new Result(0, 0, 1, 0, 1, 0, 0, e)), null);
     }
   }
 
@@ -414,6 +445,8 @@ class QueuedReconcileWorkerSupport {
       ReconcileScope scope,
       ReconcileViewTask viewTask,
       String bearerToken,
+      String executionJobId,
+      String executionLeaseEpoch,
       BooleanSupplier cancelRequested,
       ProgressListener progress) {
     if (viewTask.sourceNamespace().isBlank() || viewTask.sourceView().isBlank()) {
@@ -448,7 +481,11 @@ class QueuedReconcileWorkerSupport {
     }
 
     ReconcileContext ctx =
-        reconcilerService.buildContext(principal, Optional.ofNullable(bearerToken));
+        reconcilerService.buildContext(
+            principal,
+            Optional.ofNullable(bearerToken),
+            Optional.ofNullable(executionJobId),
+            Optional.ofNullable(executionLeaseEpoch));
     BooleanSupplier cancelCheck = cancelRequested == null ? NO_CANCEL : cancelRequested;
     ProgressListener progressOut = progress == null ? NO_PROGRESS : progress;
 
@@ -460,96 +497,98 @@ class QueuedReconcileWorkerSupport {
           toExecutionResult(new Result(0, 0, 0, 0, 1, 0, 0, e)), null);
     }
 
-    ResourceId destNamespaceId =
-        resolveOrCreateDiscoveryNamespaceId(
-            ctx,
-            connectorId,
-            active.source(),
-            active.destination(),
-            viewTask.destinationNamespaceId());
-    if (!scope.matchesNamespaceId(destNamespaceId.getId())) {
-      return new PlannedViewMutationResult(
-          toExecutionResult(
-              new Result(
-                  0,
-                  0,
-                  0,
-                  0,
-                  1,
-                  0,
-                  0,
-                  new IllegalArgumentException(
-                      "Connector destination namespace id "
-                          + destNamespaceId.getId()
-                          + " does not match requested scope"))),
-          null);
-    }
-    ResourceId destCatalogId = active.destination().getCatalogId();
-    String destNsFq = reconcilerService.resolveNamespaceFq(ctx, destNamespaceId);
-    String displayName =
-        viewTask.destinationViewDisplayName().isBlank()
-            ? viewTask.sourceView()
-            : viewTask.destinationViewDisplayName();
+    try (active) {
+      ResourceId destNamespaceId =
+          resolveOrCreateDiscoveryNamespaceId(
+              ctx,
+              connectorId,
+              active.source(),
+              active.destination(),
+              viewTask.destinationNamespaceId());
+      if (!scope.matchesNamespaceId(destNamespaceId.getId())) {
+        return new PlannedViewMutationResult(
+            toExecutionResult(
+                new Result(
+                    0,
+                    0,
+                    0,
+                    0,
+                    1,
+                    0,
+                    0,
+                    new IllegalArgumentException(
+                        "Connector destination namespace id "
+                            + destNamespaceId.getId()
+                            + " does not match requested scope"))),
+            null);
+      }
+      ResourceId destCatalogId = active.destination().getCatalogId();
+      String destNsFq = reconcilerService.resolveNamespaceFq(ctx, destNamespaceId);
+      String displayName =
+          viewTask.destinationViewDisplayName().isBlank()
+              ? viewTask.sourceView()
+              : viewTask.destinationViewDisplayName();
 
-    try (FloecatConnector connector =
-        reconcilerService.connectorOpener.open(active.resolvedConfig())) {
-      ensureNotCancelled(cancelCheck);
-      FloecatConnector.ViewDescriptor view =
-          connector
-              .describeView(viewTask.sourceNamespace(), viewTask.sourceView())
-              .orElseThrow(
-                  () ->
-                      new IllegalArgumentException(
-                          "View not found: "
-                              + viewTask.sourceNamespace()
-                              + "."
-                              + viewTask.sourceView()));
-      List<SchemaColumn> outputColumns = viewOutputColumns(connector, view);
-      if (view.sqlDefinitions().isEmpty() || outputColumns.isEmpty()) {
+      try (FloecatConnector connector =
+          reconcilerService.connectorOpener.open(active.resolvedConfig())) {
+        ensureNotCancelled(cancelCheck);
+        FloecatConnector.ViewDescriptor view =
+            connector
+                .describeView(viewTask.sourceNamespace(), viewTask.sourceView())
+                .orElseThrow(
+                    () ->
+                        new IllegalArgumentException(
+                            "View not found: "
+                                + viewTask.sourceNamespace()
+                                + "."
+                                + viewTask.sourceView()));
+        List<SchemaColumn> outputColumns = viewOutputColumns(connector, view);
+        if (view.sqlDefinitions().isEmpty() || outputColumns.isEmpty()) {
+          return new PlannedViewMutationResult(
+              ExecutionResult.success(0, 0, 0, 0, 0, 0, 0, "OK"), null);
+        }
+        progressOut.onProgress(
+            0, 0, 1, 0, 0, 0, 0, "Processing view " + view.namespaceFq() + "." + view.name());
+        ViewSpec viewSpec =
+            ViewSpec.newBuilder()
+                .setCatalogId(destCatalogId)
+                .setNamespaceId(destNamespaceId)
+                .setDisplayName(displayName)
+                .addAllSqlDefinitions(toCatalogSqlDefinitions(view))
+                .addAllCreationSearchPath(view.searchPath() != null ? view.searchPath() : List.of())
+                .addAllOutputColumns(outputColumns)
+                .putAllProperties(
+                    ReconcilerService.sourceIdentityProperties(
+                        connectorId, view.namespaceFq(), view.name()))
+                .build();
+        Optional<ResourceId> existingViewId =
+            !blank(viewTask.destinationViewId())
+                ? Optional.of(
+                    ReconcilerService.destinationResourceId(
+                        connectorId, ResourceKind.RK_VIEW, viewTask.destinationViewId()))
+                : reconcilerService.lookupDestinationViewIdByName(
+                    ctx, destCatalogId, destNamespaceId, destNsFq, displayName);
         return new PlannedViewMutationResult(
-            ExecutionResult.success(0, 0, 0, 0, 0, 0, 0, "OK"), null);
-      }
-      progressOut.onProgress(
-          0, 0, 1, 0, 0, 0, 0, "Processing view " + view.namespaceFq() + "." + view.name());
-      ViewSpec viewSpec =
-          ViewSpec.newBuilder()
-              .setCatalogId(destCatalogId)
-              .setNamespaceId(destNamespaceId)
-              .setDisplayName(displayName)
-              .addAllSqlDefinitions(toCatalogSqlDefinitions(view))
-              .addAllCreationSearchPath(view.searchPath() != null ? view.searchPath() : List.of())
-              .addAllOutputColumns(outputColumns)
-              .putAllProperties(
-                  ReconcilerService.sourceIdentityProperties(
-                      connectorId, view.namespaceFq(), view.name()))
-              .build();
-      Optional<ResourceId> existingViewId =
-          !blank(viewTask.destinationViewId())
-              ? Optional.of(
-                  ReconcilerService.destinationResourceId(
-                      connectorId, ResourceKind.RK_VIEW, viewTask.destinationViewId()))
-              : reconcilerService.lookupDestinationViewIdByName(
-                  ctx, destCatalogId, destNamespaceId, destNsFq, displayName);
-      return new PlannedViewMutationResult(
-          ExecutionResult.success(0, 0, 1, 0, 0, 0, 0, "OK"),
-          existingViewId
-              .map(viewId -> new PlannedViewMutation(viewId, viewSpec, ""))
-              .orElseGet(
-                  () ->
-                      new PlannedViewMutation(
-                          null,
-                          viewSpec,
-                          "namespace-id:"
-                              + destNamespaceId.getId()
-                              + "|view-name:"
-                              + displayName)));
-    } catch (Exception e) {
-      if (e instanceof ReconcileCancelledException) {
+            ExecutionResult.success(0, 0, 1, 0, 0, 0, 0, "OK"),
+            existingViewId
+                .map(viewId -> new PlannedViewMutation(viewId, viewSpec, ""))
+                .orElseGet(
+                    () ->
+                        new PlannedViewMutation(
+                            null,
+                            viewSpec,
+                            "namespace-id:"
+                                + destNamespaceId.getId()
+                                + "|view-name:"
+                                + displayName)));
+      } catch (Exception e) {
+        if (e instanceof ReconcileCancelledException) {
+          return new PlannedViewMutationResult(
+              ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled"), null);
+        }
         return new PlannedViewMutationResult(
-            ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled"), null);
+            toExecutionResult(new Result(0, 0, 1, 0, 1, 0, 0, e)), null);
       }
-      return new PlannedViewMutationResult(
-          toExecutionResult(new Result(0, 0, 1, 0, 1, 0, 0, e)), null);
     }
   }
 
@@ -561,6 +600,8 @@ class QueuedReconcileWorkerSupport {
       ReconcileTableTask tableTask,
       CaptureMode captureMode,
       String bearerToken,
+      String executionJobId,
+      String executionLeaseEpoch,
       BooleanSupplier cancelRequested,
       ProgressListener progress) {
     ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
@@ -571,7 +612,11 @@ class QueuedReconcileWorkerSupport {
     }
 
     ReconcileContext ctx =
-        reconcilerService.buildContext(principal, Optional.ofNullable(bearerToken));
+        reconcilerService.buildContext(
+            principal,
+            Optional.ofNullable(bearerToken),
+            Optional.ofNullable(executionJobId),
+            Optional.ofNullable(executionLeaseEpoch));
     BooleanSupplier cancelCheck = cancelRequested == null ? NO_CANCEL : cancelRequested;
     ProgressListener progressOut = progress == null ? NO_PROGRESS : progress;
 
@@ -582,120 +627,24 @@ class QueuedReconcileWorkerSupport {
       return new Result(0, 0, 0, 0, 1, 0, 0, e);
     }
 
-    ResourceId destinationTableId =
-        ReconcilerService.destinationResourceId(
-            connectorId, ResourceKind.RK_TABLE, tableTask.destinationTableId());
-    ReconcilerBackend.DestinationTableMetadata tableMetadata;
-    try {
-      tableMetadata =
-          backend
-              .lookupDestinationTableMetadata(ctx, destinationTableId)
-              .orElseThrow(
-                  () ->
-                      new IllegalArgumentException(
-                          "Destination table id does not exist: "
-                              + tableTask.destinationTableId()));
-    } catch (Exception e) {
-      return new Result(0, 0, 0, 0, 1, 0, 0, e);
-    }
-    if (tableMetadata.namespaceId() == null || tableMetadata.namespaceId().getId().isBlank()) {
-      return new Result(
-          0,
-          0,
-          0,
-          0,
-          1,
-          0,
-          0,
-          new IllegalArgumentException(
-              "Destination table namespace cannot be resolved from id: "
-                  + tableTask.destinationTableId()));
-    }
-
-    SourceSelector source = active.source();
-    TableExecutionProgress tableProgress = new TableExecutionProgress();
-    ProgressListener trackingProgress =
-        (tablesScanned,
-            tablesChanged,
-            viewsScanned,
-            viewsChanged,
-            errors,
-            snapshotsProcessed,
-            statsProcessed,
-            message) -> {
-          tableProgress.observe(tablesScanned, tablesChanged, snapshotsProcessed, statsProcessed);
-          progressOut.onProgress(
-              tablesScanned,
-              tablesChanged,
-              viewsScanned,
-              viewsChanged,
-              errors,
-              snapshotsProcessed,
-              statsProcessed,
-              message);
-        };
-    ResourceId destNamespaceId = tableMetadata.namespaceId();
-    String destNsFq = reconcilerService.resolveNamespaceFq(ctx, destNamespaceId);
-    String destTableDisplay =
-        tableMetadata.displayName() == null || tableMetadata.displayName().isBlank()
-            ? tableTask.destinationTableDisplayName()
-            : tableMetadata.displayName();
-
-    try (FloecatConnector connector =
-        reconcilerService.connectorOpener.open(active.resolvedConfig())) {
-      boolean includeCoreMetadata =
-          ReconcilerService.includesMetadata(captureMode)
-              && !ReconcilerService.isCaptureOnlyConnector(active.connector());
-      TableExecutionOutcome outcome =
-          executeResolvedTable(
-              ctx,
-              active,
-              connectorId,
-              connector,
-              fullRescan,
-              includeCoreMetadata,
-              captureMode,
-              scope,
-              new ResolvedTable(
-                  tableTask.sourceNamespace(),
-                  tableTask.sourceTable(),
-                  destNamespaceId,
-                  destTableDisplay,
-                  ignoredDisplay -> Optional.of(destinationTableId),
-                  (upstream, ignoredDisplay, ignoredCandidate) -> {
-                    boolean tableMetadataChanged = false;
-                    if (ReconcilerService.allowsTableMetadataMutation(
-                        active.connector(), captureMode)) {
-                      FloecatConnector.TableDescriptor effective =
-                          overrideDisplay(upstream, destNsFq, destTableDisplay);
-                      tableMetadataChanged =
-                          updateTableById(
-                              ctx,
-                              destinationTableId,
-                              tableMetadata.catalogId(),
-                              destNamespaceId,
-                              effective,
-                              connector.format(),
-                              active.connector().getResourceId(),
-                              active.config().uri(),
-                              tableTask.sourceNamespace(),
-                              tableTask.sourceTable());
-                    }
-                    return DestinationTableResolution.resolved(
-                        destinationTableId, tableMetadataChanged);
-                  }),
-              ReconcilerService.normalizeSelectors(source.getColumnsList()),
-              cancelCheck,
-              trackingProgress,
-              tableProgress,
-              0,
-              0,
-              0,
-              0,
-              0);
-      if (!ReconcilerService.includesMetadata(captureMode)
-          && !scope.destinationCaptureRequests().isEmpty()
-          && outcome.tablesScanned() == 0) {
+    try (active) {
+      ResourceId destinationTableId =
+          ReconcilerService.destinationResourceId(
+              connectorId, ResourceKind.RK_TABLE, tableTask.destinationTableId());
+      ReconcilerBackend.DestinationTableMetadata tableMetadata;
+      try {
+        tableMetadata =
+            backend
+                .lookupDestinationTableMetadata(ctx, destinationTableId)
+                .orElseThrow(
+                    () ->
+                        new IllegalArgumentException(
+                            "Destination table id does not exist: "
+                                + tableTask.destinationTableId()));
+      } catch (Exception e) {
+        return new Result(0, 0, 0, 0, 1, 0, 0, e);
+      }
+      if (tableMetadata.namespaceId() == null || tableMetadata.namespaceId().getId().isBlank()) {
         return new Result(
             0,
             0,
@@ -705,41 +654,139 @@ class QueuedReconcileWorkerSupport {
             0,
             0,
             new IllegalArgumentException(
-                "No tables matched scoped capture requests: "
-                    + ReconcilerService.indexScopedCaptureRequestsByTableScope(
-                            scope.destinationCaptureRequests())
-                        .keySet()
-                        .stream()
-                        .sorted()
-                        .collect(Collectors.joining(", "))));
+                "Destination table namespace cannot be resolved from id: "
+                    + tableTask.destinationTableId()));
       }
-      if (outcome.errorReason().isPresent()) {
-        return tableFailureResult(outcome);
-      }
-      return tableSuccessResult(outcome);
-    } catch (Exception e) {
-      if (e instanceof ReconcileCancelledException) {
+
+      SourceSelector source = active.source();
+      TableExecutionProgress tableProgress = new TableExecutionProgress();
+      ProgressListener trackingProgress =
+          (tablesScanned,
+              tablesChanged,
+              viewsScanned,
+              viewsChanged,
+              errors,
+              snapshotsProcessed,
+              statsProcessed,
+              message) -> {
+            tableProgress.observe(tablesScanned, tablesChanged, snapshotsProcessed, statsProcessed);
+            progressOut.onProgress(
+                tablesScanned,
+                tablesChanged,
+                viewsScanned,
+                viewsChanged,
+                errors,
+                snapshotsProcessed,
+                statsProcessed,
+                message);
+          };
+      ResourceId destNamespaceId = tableMetadata.namespaceId();
+      String destNsFq = reconcilerService.resolveNamespaceFq(ctx, destNamespaceId);
+      String destTableDisplay =
+          tableMetadata.displayName() == null || tableMetadata.displayName().isBlank()
+              ? tableTask.destinationTableDisplayName()
+              : tableMetadata.displayName();
+
+      try (FloecatConnector connector =
+          reconcilerService.connectorOpener.open(active.resolvedConfig())) {
+        boolean includeCoreMetadata =
+            ReconcilerService.includesMetadata(captureMode)
+                && !ReconcilerService.isCaptureOnlyConnector(active.connector());
+        TableExecutionOutcome outcome =
+            executeResolvedTable(
+                ctx,
+                active,
+                connectorId,
+                connector,
+                fullRescan,
+                includeCoreMetadata,
+                captureMode,
+                scope,
+                new ResolvedTable(
+                    tableTask.sourceNamespace(),
+                    tableTask.sourceTable(),
+                    destNamespaceId,
+                    destTableDisplay,
+                    ignoredDisplay -> Optional.of(destinationTableId),
+                    (upstream, ignoredDisplay, ignoredCandidate) -> {
+                      boolean tableMetadataChanged = false;
+                      if (ReconcilerService.allowsTableMetadataMutation(
+                          active.connector(), captureMode)) {
+                        FloecatConnector.TableDescriptor effective =
+                            overrideDisplay(upstream, destNsFq, destTableDisplay);
+                        tableMetadataChanged =
+                            updateTableById(
+                                ctx,
+                                destinationTableId,
+                                tableMetadata.catalogId(),
+                                destNamespaceId,
+                                effective,
+                                connector.format(),
+                                active.connector().getResourceId(),
+                                active.config().uri(),
+                                tableTask.sourceNamespace(),
+                                tableTask.sourceTable());
+                      }
+                      return DestinationTableResolution.resolved(
+                          destinationTableId, tableMetadataChanged);
+                    }),
+                ReconcilerService.normalizeSelectors(source.getColumnsList()),
+                cancelCheck,
+                trackingProgress,
+                tableProgress,
+                0,
+                0,
+                0,
+                0,
+                0);
+        if (!ReconcilerService.includesMetadata(captureMode)
+            && !scope.destinationCaptureRequests().isEmpty()
+            && outcome.tablesScanned() == 0) {
+          return new Result(
+              0,
+              0,
+              0,
+              0,
+              1,
+              0,
+              0,
+              new IllegalArgumentException(
+                  "No tables matched scoped capture requests: "
+                      + ReconcilerService.indexScopedCaptureRequestsByTableScope(
+                              scope.destinationCaptureRequests())
+                          .keySet()
+                          .stream()
+                          .sorted()
+                          .collect(Collectors.joining(", "))));
+        }
+        if (outcome.errorReason().isPresent()) {
+          return tableFailureResult(outcome);
+        }
+        return tableSuccessResult(outcome);
+      } catch (Exception e) {
+        if (e instanceof ReconcileCancelledException) {
+          return new Result(
+              tableProgress.tablesScanned,
+              tableProgress.tablesChanged,
+              0,
+              0,
+              0,
+              tableProgress.snapshotsProcessed,
+              tableProgress.statsProcessed,
+              e,
+              tableProgress.degradedReason.map(List::of).orElseGet(List::of));
+        }
         return new Result(
             tableProgress.tablesScanned,
             tableProgress.tablesChanged,
             0,
             0,
-            0,
+            1,
             tableProgress.snapshotsProcessed,
             tableProgress.statsProcessed,
             e,
             tableProgress.degradedReason.map(List::of).orElseGet(List::of));
       }
-      return new Result(
-          tableProgress.tablesScanned,
-          tableProgress.tablesChanged,
-          0,
-          0,
-          1,
-          tableProgress.snapshotsProcessed,
-          tableProgress.statsProcessed,
-          e,
-          tableProgress.degradedReason.map(List::of).orElseGet(List::of));
     }
   }
 
@@ -751,6 +798,8 @@ class QueuedReconcileWorkerSupport {
       ReconcileTableTask tableTask,
       CaptureMode captureMode,
       String bearerToken,
+      String executionJobId,
+      String executionLeaseEpoch,
       BooleanSupplier cancelRequested,
       ProgressListener progress) {
     ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
@@ -762,7 +811,11 @@ class QueuedReconcileWorkerSupport {
     }
 
     ReconcileContext ctx =
-        reconcilerService.buildContext(principal, Optional.ofNullable(bearerToken));
+        reconcilerService.buildContext(
+            principal,
+            Optional.ofNullable(bearerToken),
+            Optional.ofNullable(executionJobId),
+            Optional.ofNullable(executionLeaseEpoch));
     BooleanSupplier cancelCheck = cancelRequested == null ? NO_CANCEL : cancelRequested;
     ProgressListener progressOut = progress == null ? NO_PROGRESS : progress;
 
@@ -773,99 +826,114 @@ class QueuedReconcileWorkerSupport {
       return new Result(0, 0, 0, 0, 1, 0, 0, e);
     }
 
-    ResourceId destNamespaceId =
-        resolveOrCreateDiscoveryNamespaceId(
-            ctx,
-            connectorId,
-            active.source(),
-            active.destination(),
-            tableTask.destinationNamespaceId());
-    if (!scope.matchesNamespaceId(destNamespaceId.getId())) {
-      return new Result(
-          0,
-          0,
-          0,
-          0,
-          1,
-          0,
-          0,
-          new IllegalArgumentException(
-              "Connector destination namespace id "
-                  + destNamespaceId.getId()
-                  + " does not match requested scope"));
-    }
+    try (active) {
+      ResourceId destNamespaceId =
+          resolveOrCreateDiscoveryNamespaceId(
+              ctx,
+              connectorId,
+              active.source(),
+              active.destination(),
+              tableTask.destinationNamespaceId());
+      if (!scope.matchesNamespaceId(destNamespaceId.getId())) {
+        return new Result(
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            new IllegalArgumentException(
+                "Connector destination namespace id "
+                    + destNamespaceId.getId()
+                    + " does not match requested scope"));
+      }
 
-    String destNsFq = reconcilerService.resolveNamespaceFq(ctx, destNamespaceId);
-    String displayName =
-        tableTask.destinationTableDisplayName().isBlank()
-            ? tableTask.sourceTable()
-            : tableTask.destinationTableDisplayName();
-    TableExecutionProgress tableProgress = new TableExecutionProgress();
-    ProgressListener trackingProgress =
-        (tablesScanned,
-            tablesChanged,
-            viewsScanned,
-            viewsChanged,
-            errors,
-            snapshotsProcessed,
-            statsProcessed,
-            message) -> {
-          tableProgress.observe(tablesScanned, tablesChanged, snapshotsProcessed, statsProcessed);
-          progressOut.onProgress(
-              tablesScanned,
+      String destNsFq = reconcilerService.resolveNamespaceFq(ctx, destNamespaceId);
+      String displayName =
+          tableTask.destinationTableDisplayName().isBlank()
+              ? tableTask.sourceTable()
+              : tableTask.destinationTableDisplayName();
+      TableExecutionProgress tableProgress = new TableExecutionProgress();
+      ProgressListener trackingProgress =
+          (tablesScanned,
               tablesChanged,
               viewsScanned,
               viewsChanged,
               errors,
               snapshotsProcessed,
               statsProcessed,
-              message);
-        };
+              message) -> {
+            tableProgress.observe(tablesScanned, tablesChanged, snapshotsProcessed, statsProcessed);
+            progressOut.onProgress(
+                tablesScanned,
+                tablesChanged,
+                viewsScanned,
+                viewsChanged,
+                errors,
+                snapshotsProcessed,
+                statsProcessed,
+                message);
+          };
 
-    try (FloecatConnector connector =
-        reconcilerService.connectorOpener.open(active.resolvedConfig())) {
-      ResourceId destCatalogId = active.destination().getCatalogId();
-      Set<String> defaultColumnSelectors =
-          ReconcilerService.normalizeSelectors(active.source().getColumnsList());
-      boolean includeCoreMetadata =
-          ReconcilerService.includesMetadata(captureMode)
-              && !ReconcilerService.isCaptureOnlyConnector(active.connector());
-      TableExecutionOutcome outcome =
-          executeResolvedTable(
-              ctx,
-              active,
-              connectorId,
-              connector,
-              fullRescan,
-              includeCoreMetadata,
-              captureMode,
-              scope,
-              new ResolvedTable(
-                  tableTask.sourceNamespace(),
-                  tableTask.sourceTable(),
-                  destNamespaceId,
-                  displayName,
-                  destTableDisplay ->
-                      !blank(tableTask.destinationTableId())
-                          ? Optional.of(
-                              ReconcilerService.destinationResourceId(
-                                  connectorId,
-                                  ResourceKind.RK_TABLE,
-                                  tableTask.destinationTableId()))
-                          : reconcilerService.lookupDestinationTableIdByName(
-                              ctx, destCatalogId, destNamespaceId, destNsFq, destTableDisplay),
-                  (upstream, destTableDisplay, existingTableId) -> {
-                    FloecatConnector.TableDescriptor effective =
-                        overrideDisplay(upstream, destNsFq, destTableDisplay);
-                    if (!ReconcilerService.allowsTableMetadataMutation(
-                        active.connector(), captureMode)) {
-                      return DestinationTableResolution.of(existingTableId, false);
-                    }
-                    if (existingTableId.isPresent()) {
-                      boolean tableMetadataChanged =
-                          updateTableById(
+      try (FloecatConnector connector =
+          reconcilerService.connectorOpener.open(active.resolvedConfig())) {
+        ResourceId destCatalogId = active.destination().getCatalogId();
+        Set<String> defaultColumnSelectors =
+            ReconcilerService.normalizeSelectors(active.source().getColumnsList());
+        boolean includeCoreMetadata =
+            ReconcilerService.includesMetadata(captureMode)
+                && !ReconcilerService.isCaptureOnlyConnector(active.connector());
+        TableExecutionOutcome outcome =
+            executeResolvedTable(
+                ctx,
+                active,
+                connectorId,
+                connector,
+                fullRescan,
+                includeCoreMetadata,
+                captureMode,
+                scope,
+                new ResolvedTable(
+                    tableTask.sourceNamespace(),
+                    tableTask.sourceTable(),
+                    destNamespaceId,
+                    displayName,
+                    destTableDisplay ->
+                        !blank(tableTask.destinationTableId())
+                            ? Optional.of(
+                                ReconcilerService.destinationResourceId(
+                                    connectorId,
+                                    ResourceKind.RK_TABLE,
+                                    tableTask.destinationTableId()))
+                            : reconcilerService.lookupDestinationTableIdByName(
+                                ctx, destCatalogId, destNamespaceId, destNsFq, destTableDisplay),
+                    (upstream, destTableDisplay, existingTableId) -> {
+                      FloecatConnector.TableDescriptor effective =
+                          overrideDisplay(upstream, destNsFq, destTableDisplay);
+                      if (!ReconcilerService.allowsTableMetadataMutation(
+                          active.connector(), captureMode)) {
+                        return DestinationTableResolution.of(existingTableId, false);
+                      }
+                      if (existingTableId.isPresent()) {
+                        boolean tableMetadataChanged =
+                            updateTableById(
+                                ctx,
+                                existingTableId.get(),
+                                destCatalogId,
+                                destNamespaceId,
+                                effective,
+                                connector.format(),
+                                active.connector().getResourceId(),
+                                active.config().uri(),
+                                tableTask.sourceNamespace(),
+                                tableTask.sourceTable());
+                        return DestinationTableResolution.resolved(
+                            existingTableId.get(), tableMetadataChanged);
+                      }
+                      return DestinationTableResolution.resolved(
+                          ensureTable(
                               ctx,
-                              existingTableId.get(),
                               destCatalogId,
                               destNamespaceId,
                               effective,
@@ -873,59 +941,46 @@ class QueuedReconcileWorkerSupport {
                               active.connector().getResourceId(),
                               active.config().uri(),
                               tableTask.sourceNamespace(),
-                              tableTask.sourceTable());
-                      return DestinationTableResolution.resolved(
-                          existingTableId.get(), tableMetadataChanged);
-                    }
-                    return DestinationTableResolution.resolved(
-                        ensureTable(
-                            ctx,
-                            destCatalogId,
-                            destNamespaceId,
-                            effective,
-                            connector.format(),
-                            active.connector().getResourceId(),
-                            active.config().uri(),
-                            tableTask.sourceNamespace(),
-                            tableTask.sourceTable()),
-                        true);
-                  }),
-              defaultColumnSelectors,
-              cancelCheck,
-              trackingProgress,
-              tableProgress,
+                              tableTask.sourceTable()),
+                          true);
+                    }),
+                defaultColumnSelectors,
+                cancelCheck,
+                trackingProgress,
+                tableProgress,
+                0,
+                0,
+                0,
+                0,
+                0);
+        if (outcome.errorReason().isPresent()) {
+          return tableFailureResult(outcome);
+        }
+        return tableSuccessResult(outcome);
+      } catch (Exception e) {
+        if (e instanceof ReconcileCancelledException) {
+          return new Result(
+              tableProgress.tablesScanned,
+              tableProgress.tablesChanged,
               0,
               0,
               0,
-              0,
-              0);
-      if (outcome.errorReason().isPresent()) {
-        return tableFailureResult(outcome);
-      }
-      return tableSuccessResult(outcome);
-    } catch (Exception e) {
-      if (e instanceof ReconcileCancelledException) {
+              tableProgress.snapshotsProcessed,
+              tableProgress.statsProcessed,
+              e,
+              tableProgress.degradedReason.map(List::of).orElseGet(List::of));
+        }
         return new Result(
             tableProgress.tablesScanned,
             tableProgress.tablesChanged,
             0,
             0,
-            0,
+            1,
             tableProgress.snapshotsProcessed,
             tableProgress.statsProcessed,
             e,
             tableProgress.degradedReason.map(List::of).orElseGet(List::of));
       }
-      return new Result(
-          tableProgress.tablesScanned,
-          tableProgress.tablesChanged,
-          0,
-          0,
-          1,
-          tableProgress.snapshotsProcessed,
-          tableProgress.statsProcessed,
-          e,
-          tableProgress.degradedReason.map(List::of).orElseGet(List::of));
     }
   }
 
@@ -983,9 +1038,6 @@ class QueuedReconcileWorkerSupport {
     if (!scope.acceptsTable(table.destinationNamespaceId().getId(), tableId.getId())) {
       return TableExecutionOutcome.skipped();
     }
-    ConnectorConfig tableScopedConfig =
-        reconcilerService.tableScopedResolvedConfig(ctx, active, tableId);
-
     Map<String, Map<Long, List<ReconcileScope.ScopedCaptureRequest>>> scopedCaptureRequestsByTable =
         ReconcilerService.indexScopedCaptureRequestsByTableScope(
             scope.destinationCaptureRequests());
@@ -1025,30 +1077,66 @@ class QueuedReconcileWorkerSupport {
         !tableScopedCaptureRequestsBySnapshot.isEmpty()
             ? tableScopedCaptureRequestsBySnapshot.keySet()
             : Set.of();
-    Set<Long> knownSnapshotIds = fullRescan ? Set.of() : backend.existingSnapshotIds(ctx, tableId);
+    boolean captureOnly = captureMode == CaptureMode.CAPTURE_ONLY;
+    Set<Long> knownSnapshotIds =
+        (captureOnly || !fullRescan) ? backend.existingSnapshotIds(ctx, tableId) : Set.of();
+    ReconcileCapturePolicy capturePolicy =
+        ReconcilerService.effectiveCapturePolicy(scope, captureMode);
     Set<Long> enumerationKnownSnapshotIds =
         reconcilerService.enumerationKnownSnapshotIds(
             ctx,
             tableId,
             fullRescan,
             knownSnapshotIds,
-            ReconcileCapturePolicy.empty(),
+            capturePolicy,
             tableScopedCaptureRequestsBySnapshot,
             defaultColumnSelectors);
+    ReconcileSnapshotSelection enumerationSelection =
+        captureOnly
+            ? ReconcilerService.captureOnlyEnumerationSelection(
+                scope.snapshotSelection(), knownSnapshotIds, targetSnapshotIds)
+            : scope.snapshotSelection();
+    boolean enumerationFullRescan = captureOnly || fullRescan;
 
     MetadataPassOutcome outcome;
-    if (tableScopedConfig != null && !tableScopedConfig.equals(active.resolvedConfig())) {
-      try (FloecatConnector tableScopedConnector =
-          reconcilerService.connectorOpener.open(tableScopedConfig)) {
+    try (var tableScoped = reconcilerService.tableScopedResolvedConfig(ctx, active, tableId)) {
+      ConnectorConfig tableScopedConfig = tableScoped.config();
+      if (tableScopedConfig != null && !tableScopedConfig.equals(active.resolvedConfig())) {
+        try (FloecatConnector tableScopedConnector =
+            reconcilerService.connectorOpener.open(tableScopedConfig)) {
+          outcome =
+              processMetadataPass(
+                  ctx,
+                  scope,
+                  tableId,
+                  tableScopedConnector,
+                  table.sourceNamespace(),
+                  table.sourceTable(),
+                  enumerationSelection,
+                  enumerationFullRescan,
+                  includeCoreMetadata,
+                  knownSnapshotIds,
+                  enumerationKnownSnapshotIds,
+                  targetSnapshotIds,
+                  cancelRequested,
+                  progress,
+                  tablesScannedBase + tablesScanned,
+                  tablesChangedBase,
+                  errors,
+                  snapshotsProcessedBase,
+                  statsProcessedBase);
+        }
+      } else {
         outcome =
             processMetadataPass(
                 ctx,
                 scope,
                 tableId,
-                tableScopedConnector,
+                connector,
                 table.sourceNamespace(),
                 table.sourceTable(),
-                fullRescan,
+                enumerationSelection,
+                enumerationFullRescan,
                 includeCoreMetadata,
                 knownSnapshotIds,
                 enumerationKnownSnapshotIds,
@@ -1061,32 +1149,28 @@ class QueuedReconcileWorkerSupport {
                 snapshotsProcessedBase,
                 statsProcessedBase);
       }
-    } else {
-      outcome =
-          processMetadataPass(
-              ctx,
-              scope,
-              tableId,
-              connector,
-              table.sourceNamespace(),
-              table.sourceTable(),
-              fullRescan,
-              includeCoreMetadata,
-              knownSnapshotIds,
-              enumerationKnownSnapshotIds,
-              targetSnapshotIds,
-              cancelRequested,
-              progress,
-              tablesScannedBase + tablesScanned,
-              tablesChangedBase,
-              errors,
-              snapshotsProcessedBase,
-              statsProcessedBase);
     }
     long snapshotsProcessed = outcome.ingestCounts().snapshotsProcessed;
     long statsProcessed = 0L;
     long tablesChanged =
         destinationTable.tableMetadataChanged() || outcome.tableChanged() ? 1L : 0L;
+    boolean requiresCaptureOutputs =
+        capturePolicy.requestsStats() || capturePolicy.requestsIndexes();
+    List<Long> captureSnapshotIds =
+        outcome.enumeratedSnapshotIds().stream()
+            .filter(
+                snapshotId ->
+                    fullRescan
+                        || !requiresCaptureOutputs
+                        || !reconcilerService.isSnapshotCaptureCompleteForScope(
+                            ctx,
+                            tableId,
+                            snapshotId,
+                            capturePolicy,
+                            tableScopedCaptureRequestsBySnapshot.getOrDefault(
+                                snapshotId, List.of()),
+                            defaultColumnSelectors))
+            .toList();
     if (progressState != null) {
       progressState.observe(
           tablesScannedBase + tablesScanned,
@@ -1110,6 +1194,7 @@ class QueuedReconcileWorkerSupport {
         tablesChanged,
         snapshotsProcessed,
         statsProcessed,
+        captureSnapshotIds,
         Optional.empty(),
         Optional.empty());
   }
@@ -1291,7 +1376,8 @@ class QueuedReconcileWorkerSupport {
       FloecatConnector connector,
       String sourceNs,
       String sourceTable,
-      boolean fullRescan,
+      ReconcileSnapshotSelection enumerationSelection,
+      boolean enumerationFullRescan,
       boolean includeCoreMetadata,
       Set<Long> knownSnapshotIds,
       Set<Long> enumerationKnownSnapshotIds,
@@ -1309,8 +1395,8 @@ class QueuedReconcileWorkerSupport {
             sourceTable,
             tableId,
             ReconcilerService.snapshotEnumerationOptions(
-                scope.snapshotSelection(),
-                fullRescan,
+                enumerationSelection,
+                enumerationFullRescan,
                 enumerationKnownSnapshotIds,
                 targetSnapshotIds));
     List<FloecatConnector.SnapshotBundle> bundles =
@@ -1336,7 +1422,14 @@ class QueuedReconcileWorkerSupport {
             errors,
             snapshotsProcessedBase,
             statsProcessedBase);
-    return new MetadataPassOutcome(ingestCounts, ingestCounts.tableChanged);
+    List<Long> enumeratedSnapshotIds =
+        bundles.stream()
+            .filter(java.util.Objects::nonNull)
+            .map(FloecatConnector.SnapshotBundle::snapshotId)
+            .filter(snapshotId -> snapshotId >= 0L)
+            .distinct()
+            .toList();
+    return new MetadataPassOutcome(ingestCounts, ingestCounts.tableChanged, enumeratedSnapshotIds);
   }
 
   private boolean maybeIngestSnapshotConstraints(
@@ -1473,7 +1566,8 @@ class QueuedReconcileWorkerSupport {
         outcome.statsProcessed(),
         null,
         outcome.degradedReason().map(List::of).orElseGet(List::of),
-        matchedTableIds);
+        matchedTableIds,
+        outcome.captureSnapshotIds());
   }
 
   private static Result tableFailureResult(TableExecutionOutcome outcome) {
@@ -1491,7 +1585,8 @@ class QueuedReconcileWorkerSupport {
         outcome.statsProcessed(),
         new RuntimeException(outcome.errorReason().orElse("unknown error")),
         outcome.degradedReason().map(List::of).orElseGet(List::of),
-        matchedTableIds);
+        matchedTableIds,
+        outcome.captureSnapshotIds());
   }
 
   private static ExecutionResult toExecutionResult(Result result) {
@@ -1762,6 +1857,7 @@ class QueuedReconcileWorkerSupport {
     public final Exception error;
     public final List<String> degradedReasons;
     private final List<String> matchedTableIds;
+    private final List<Long> captureSnapshotIds;
 
     private Result(
         long tablesScanned,
@@ -1834,6 +1930,7 @@ class QueuedReconcileWorkerSupport {
           statsProcessed,
           error,
           degradedReasons,
+          List.of(),
           List.of());
     }
 
@@ -1847,7 +1944,8 @@ class QueuedReconcileWorkerSupport {
         long statsProcessed,
         Exception error,
         List<String> degradedReasons,
-        List<String> matchedTableIds) {
+        List<String> matchedTableIds,
+        List<Long> captureSnapshotIds) {
       this.tablesScanned = tablesScanned;
       this.tablesChanged = tablesChanged;
       this.viewsScanned = viewsScanned;
@@ -1866,6 +1964,14 @@ class QueuedReconcileWorkerSupport {
           matchedTableIds == null || matchedTableIds.isEmpty()
               ? List.of()
               : matchedTableIds.stream().filter(id -> id != null && !id.isBlank()).toList();
+      this.captureSnapshotIds =
+          captureSnapshotIds == null || captureSnapshotIds.isEmpty()
+              ? List.of()
+              : captureSnapshotIds.stream()
+                  .filter(java.util.Objects::nonNull)
+                  .filter(id -> id >= 0L)
+                  .distinct()
+                  .toList();
     }
 
     private boolean ok() {
@@ -1878,6 +1984,10 @@ class QueuedReconcileWorkerSupport {
 
     private List<String> matchedTableIds() {
       return matchedTableIds;
+    }
+
+    private List<Long> captureSnapshotIds() {
+      return captureSnapshotIds;
     }
 
     private String message() {
@@ -1990,10 +2100,12 @@ class QueuedReconcileWorkerSupport {
       long tablesChanged,
       long snapshotsProcessed,
       long statsProcessed,
+      List<Long> captureSnapshotIds,
       Optional<String> degradedReason,
       Optional<String> errorReason) {
     private static TableExecutionOutcome skipped() {
-      return new TableExecutionOutcome(null, 0L, 0L, 0L, 0L, Optional.empty(), Optional.empty());
+      return new TableExecutionOutcome(
+          null, 0L, 0L, 0L, 0L, List.of(), Optional.empty(), Optional.empty());
     }
   }
 
@@ -2013,5 +2125,6 @@ class QueuedReconcileWorkerSupport {
     }
   }
 
-  private record MetadataPassOutcome(IngestCounts ingestCounts, boolean tableChanged) {}
+  private record MetadataPassOutcome(
+      IngestCounts ingestCounts, boolean tableChanged, List<Long> enumeratedSnapshotIds) {}
 }

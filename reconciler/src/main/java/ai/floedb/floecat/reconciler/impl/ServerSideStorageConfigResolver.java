@@ -16,8 +16,10 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
 import ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials;
+import ai.floedb.floecat.connector.common.auth.TerminalCredentialRefreshException;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
@@ -27,6 +29,8 @@ import ai.floedb.floecat.storage.rpc.StorageCredentialUsage;
 import ai.floedb.floecat.storage.rpc.VendStorageCredentialsRequest;
 import ai.floedb.floecat.storage.rpc.VendedStorageCredential;
 import io.grpc.Metadata;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.grpc.stub.AbstractStub;
 import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
@@ -90,6 +94,7 @@ public class ServerSideStorageConfigResolver {
         Optional.empty(),
         Optional.empty(),
         Optional.empty(),
+        Optional.empty(),
         connector,
         config,
         false);
@@ -103,24 +108,7 @@ public class ServerSideStorageConfigResolver {
         ctx.flatMap(ReconcileContext::executionJobId),
         ctx.flatMap(ReconcileContext::executionLeaseEpoch),
         Optional.empty(),
-        connector,
-        config,
-        false);
-  }
-
-  public ConnectorConfig resolveWithAuthorization(
-      Optional<String> authorizationToken,
-      Optional<String> executionJobId,
-      Optional<String> executionLeaseEpoch,
-      Optional<String> storageLocation,
-      Connector connector,
-      ConnectorConfig config) {
-    return resolve(
         Optional.empty(),
-        authorizationToken,
-        executionJobId,
-        executionLeaseEpoch,
-        storageLocation,
         connector,
         config,
         false);
@@ -131,6 +119,7 @@ public class ServerSideStorageConfigResolver {
       Optional<String> executionJobId,
       Optional<String> executionLeaseEpoch,
       Optional<String> storageLocation,
+      Optional<ResourceId> tableId,
       Connector connector,
       ConnectorConfig config) {
     return resolveManaged(
@@ -139,6 +128,7 @@ public class ServerSideStorageConfigResolver {
         executionJobId,
         executionLeaseEpoch,
         storageLocation,
+        tableId,
         connector,
         config);
   }
@@ -149,6 +139,7 @@ public class ServerSideStorageConfigResolver {
       Optional<String> executionJobId,
       Optional<String> executionLeaseEpoch,
       Optional<String> storageLocation,
+      Optional<ResourceId> tableId,
       Connector connector,
       ConnectorConfig config) {
     ConnectorConfig resolved =
@@ -158,6 +149,7 @@ public class ServerSideStorageConfigResolver {
             executionJobId,
             executionLeaseEpoch,
             storageLocation,
+            tableId,
             connector,
             config,
             true);
@@ -179,55 +171,40 @@ public class ServerSideStorageConfigResolver {
       Optional<String> executionJobId,
       Optional<String> executionLeaseEpoch,
       Optional<String> storageLocation,
+      Optional<ResourceId> tableId,
       Connector connector,
       ConnectorConfig config,
       boolean refreshableExecutionCredentials) {
     if (connector == null || config == null || connector.getKindValue() == 0) {
       return config;
     }
-    if (config.kind() == ConnectorConfig.Kind.DELTA) {
-      if (!connector.hasResourceId()) {
-        return config;
-      }
-      String locationPrefix = storageAuthorityLookupLocation(storageLocation, config);
-      if (locationPrefix == null) {
-        return config;
-      }
-      ResolveStorageAuthorityResponse response =
-          withHeaders(storageAuthorities, correlationId, authorizationToken)
-              .vendStorageCredentials(
-                  resolveRequest(
-                      connector.getResourceId().getAccountId(),
-                      locationPrefix,
-                      executionJobId,
-                      executionLeaseEpoch));
-      if (response == null) {
-        return config;
-      }
-      Map<String, String> merged =
-          mergeResolvedStorageConfig(
-              config.options(),
-              response,
-              true,
-              refreshableExecutionCredentials
-                  && executionJobId.isPresent()
-                  && executionLeaseEpoch.isPresent(),
-              () ->
-                  refreshExecutionBoundCredentials(
-                      correlationId,
-                      authorizationToken,
-                      connector.getResourceId().getAccountId(),
-                      locationPrefix,
-                      executionJobId,
-                      executionLeaseEpoch));
-      return merged.equals(config.options())
-          ? config
-          : new ConnectorConfig(
-              config.kind(), config.displayName(), config.uri(), merged, config.auth());
-    }
-    if (config.kind() != ConnectorConfig.Kind.ICEBERG || !connector.hasResourceId()) {
+    if ((config.kind() != ConnectorConfig.Kind.DELTA
+            && config.kind() != ConnectorConfig.Kind.ICEBERG)
+        || !connector.hasResourceId()) {
       return config;
     }
+    return resolveStorageBackedConnector(
+        correlationId,
+        authorizationToken,
+        executionJobId,
+        executionLeaseEpoch,
+        storageLocation,
+        tableId,
+        connector,
+        config,
+        refreshableExecutionCredentials);
+  }
+
+  private ConnectorConfig resolveStorageBackedConnector(
+      Optional<String> correlationId,
+      Optional<String> authorizationToken,
+      Optional<String> executionJobId,
+      Optional<String> executionLeaseEpoch,
+      Optional<String> storageLocation,
+      Optional<ResourceId> tableId,
+      Connector connector,
+      ConnectorConfig config,
+      boolean refreshableExecutionCredentials) {
     String locationPrefix = storageAuthorityLookupLocation(storageLocation, config);
     if (locationPrefix == null) {
       return config;
@@ -238,6 +215,7 @@ public class ServerSideStorageConfigResolver {
                 resolveRequest(
                     connector.getResourceId().getAccountId(),
                     locationPrefix,
+                    tableId,
                     executionJobId,
                     executionLeaseEpoch));
     if (response == null) {
@@ -257,19 +235,19 @@ public class ServerSideStorageConfigResolver {
                     authorizationToken,
                     connector.getResourceId().getAccountId(),
                     locationPrefix,
+                    tableId,
                     executionJobId,
                     executionLeaseEpoch));
-    ConnectorConfig resolved =
-        merged.equals(config.options())
-            ? config
-            : new ConnectorConfig(
-                config.kind(), config.displayName(), config.uri(), merged, config.auth());
-    return resolved;
+    return merged.equals(config.options())
+        ? config
+        : new ConnectorConfig(
+            config.kind(), config.displayName(), config.uri(), merged, config.auth());
   }
 
   private static VendStorageCredentialsRequest resolveRequest(
       String accountId,
       String locationPrefix,
+      Optional<ResourceId> tableId,
       Optional<String> executionJobId,
       Optional<String> executionLeaseEpoch) {
     VendStorageCredentialsRequest.Builder request =
@@ -277,6 +255,9 @@ public class ServerSideStorageConfigResolver {
             .setAccountId(accountId)
             .setLocationPrefix(locationPrefix)
             .setUsage(StorageCredentialUsage.SCU_SERVER);
+    if (tableId.isPresent()) {
+      request.setTableId(tableId.orElseThrow());
+    }
     if (executionJobId.isPresent() ^ executionLeaseEpoch.isPresent()) {
       throw new IllegalArgumentException(
           "executionJobId and executionLeaseEpoch must both be present together");
@@ -356,12 +337,23 @@ public class ServerSideStorageConfigResolver {
       Optional<String> authorizationToken,
       String accountId,
       String locationPrefix,
+      Optional<ResourceId> tableId,
       Optional<String> executionJobId,
       Optional<String> executionLeaseEpoch) {
-    ResolveStorageAuthorityResponse response =
-        withHeaders(storageAuthorities, correlationId, authorizationToken)
-            .vendStorageCredentials(
-                resolveRequest(accountId, locationPrefix, executionJobId, executionLeaseEpoch));
+    ResolveStorageAuthorityResponse response;
+    try {
+      response =
+          withHeaders(storageAuthorities, correlationId, authorizationToken)
+              .vendStorageCredentials(
+                  resolveRequest(
+                      accountId, locationPrefix, tableId, executionJobId, executionLeaseEpoch));
+    } catch (StatusRuntimeException error) {
+      if (isTerminalExecutionCredentialRefresh(error)) {
+        throw new TerminalCredentialRefreshException(
+            "Execution-bound storage credential refresh was rejected", error);
+      }
+      throw error;
+    }
     return resolvedStorageCredentials(response)
         .filter(ServerSideStorageConfigResolver::isRefreshableExecutionCredential)
         .orElseThrow(
@@ -369,6 +361,13 @@ public class ServerSideStorageConfigResolver {
                 new IllegalStateException(
                     "Expected refreshable execution-bound credentials with access key, secret key,"
                         + " session token, and expiresAt"));
+  }
+
+  static boolean isTerminalExecutionCredentialRefresh(StatusRuntimeException error) {
+    Status.Code code = error.getStatus().getCode();
+    return ReconcileLeaseGrpcStatus.isLeasePreconditionFailure(error)
+        || code == Status.Code.UNAUTHENTICATED
+        || code == Status.Code.PERMISSION_DENIED;
   }
 
   static Optional<ResolvedStorageCredentials> resolvedStorageCredentials(

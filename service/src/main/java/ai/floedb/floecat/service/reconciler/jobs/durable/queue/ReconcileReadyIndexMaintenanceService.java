@@ -30,6 +30,8 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class ReconcileReadyIndexMaintenanceService {
+
+  private static final long SLOW_MAINTENANCE_LOG_THRESHOLD_MS = 30_000L;
   private static final Logger LOG = Logger.getLogger(ReconcileReadyIndexMaintenanceService.class);
   private static final String QUEUED_STATE = "JS_QUEUED";
   public static final int CURRENT_READY_INDEX_VERSION = 2;
@@ -353,10 +355,26 @@ public class ReconcileReadyIndexMaintenanceService {
 
   private void logMaintenanceSummary(long startedAtMs, ReadyIndexRepairStats stats) {
     long elapsedMs = System.currentTimeMillis() - startedAtMs;
-    if (!stats.active() && elapsedMs <= 500L) {
+    boolean noteworthy =
+        !stats.completed()
+            || stats.jobsWithRepairs() > 0
+            || stats.readyWrites() > 0
+            || stats.failedChunks() > 0
+            || elapsedMs >= SLOW_MAINTENANCE_LOG_THRESHOLD_MS;
+    if (!noteworthy) {
       LOG.debugf(
-          "runReadyIndexMaintenanceOnce total_ms=%d ready_index_completed=%s",
-          Long.valueOf(elapsedMs), Boolean.valueOf(stats.completed()));
+          "runReadyIndexMaintenanceOnce total_ms=%d ready_index_completed=%s"
+              + " ready_index_pages=%d ready_index_jobs_scanned=%d"
+              + " ready_index_jobs_repaired=%d ready_index_writes=%d"
+              + " ready_index_chunks=%d ready_index_failed_chunks=%d",
+          Long.valueOf(elapsedMs),
+          Boolean.valueOf(stats.completed()),
+          Integer.valueOf(stats.pages()),
+          Integer.valueOf(stats.scanned()),
+          Integer.valueOf(stats.jobsWithRepairs()),
+          Integer.valueOf(stats.readyWrites()),
+          Integer.valueOf(stats.chunks()),
+          Integer.valueOf(stats.failedChunks()));
       return;
     }
     LOG.infof(

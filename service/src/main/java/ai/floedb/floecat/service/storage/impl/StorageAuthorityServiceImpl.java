@@ -22,12 +22,18 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
+import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.spi.ConnectorConfig;
+import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
+import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
+import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -89,6 +95,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   @Inject StorageAuthorityResolver resolver;
   @Inject SecretsManager secretsManager;
   @Inject TableRepository tableRepo;
+  @Inject ConnectorRepository connectorRepo;
   @Inject SnapshotRepository snapshotRepo;
   @Inject ReconcileJobStore reconcileJobs;
 
@@ -473,6 +480,12 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
       VendStorageCredentialsRequest request, ReconcileJobStore.ReconcileJob job) {
     String requestedLocationPrefix = validateExplicitLocation(request);
     CredentialScope scope = resolveLeaseScopedLocation(job);
+    if ((scope == null || scope.authorityLookupLocationPrefix() == null) && request.hasTableId()) {
+      scope = resolveDiscoveryTableLocation(request.getTableId(), job);
+    }
+    if (scope == null || scope.authorityLookupLocationPrefix() == null) {
+      scope = resolvePlannerBootstrapLocation(requestedLocationPrefix, job);
+    }
     if (scope == null || scope.authorityLookupLocationPrefix() == null) {
       throw io.grpc.Status.FAILED_PRECONDITION
           .withDescription("reconcile lease is not bound to a concrete storage location")
@@ -512,31 +525,26 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     }
     boolean renewed = reconcileJobs.renewLease(jobId, leaseEpoch);
     if (!renewed) {
-      throw io.grpc.Status.FAILED_PRECONDITION
-          .withDescription("reconcile lease is no longer valid")
-          .asRuntimeException();
+      throw ReconcileLeaseGrpcStatus.leasePreconditionFailed("reconcile lease is no longer valid");
     }
     ReconcileJobStore.ReconcileJob job =
         reconcileJobs
             .getLeaseView(jobId)
             .orElseThrow(
                 () ->
-                    io.grpc.Status.NOT_FOUND
-                        .withDescription("reconcile job not found: " + jobId)
-                        .asRuntimeException());
+                    ReconcileLeaseGrpcStatus.leasePreconditionFailed(
+                        "reconcile job not found: " + jobId));
     if (!accountId.equals(job.accountId)) {
       throw io.grpc.Status.PERMISSION_DENIED
           .withDescription("reconcile lease account does not match requested account")
           .asRuntimeException();
     }
     if (!isActiveLeasedState(job.state)) {
-      throw io.grpc.Status.FAILED_PRECONDITION
-          .withDescription(
-              "reconcile job is no longer active for lease "
-                  + jobId
-                  + " state="
-                  + (job.state == null ? "" : job.state))
-          .asRuntimeException();
+      throw ReconcileLeaseGrpcStatus.leasePreconditionFailed(
+          "reconcile job is no longer active for lease "
+              + jobId
+              + " state="
+              + (job.state == null ? "" : job.state));
     }
     return job;
   }
@@ -562,6 +570,91 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                     .setId(tableId)
                     .build()));
     return CredentialScope.forSingleLocation(locationPrefix);
+  }
+
+  private CredentialScope resolveDiscoveryTableLocation(
+      ResourceId requestedTableId, ReconcileJobStore.ReconcileJob job) {
+    if (job == null
+        || job.jobKind != ReconcileJobKind.PLAN_TABLE
+        || job.tableTask == null
+        || !job.tableTask.discoveryMode()
+        || (job.tableTask.destinationTableId() != null
+            && !job.tableTask.destinationTableId().isBlank())) {
+      return null;
+    }
+    ResourceId tableId = scopedTableId(job.accountId, requestedTableId, correlationId());
+    Table table = loadVisibleTable(tableId);
+    if (!table.hasUpstream()
+        || !table.getUpstream().hasConnectorId()
+        || !job.connectorId.equals(table.getUpstream().getConnectorId().getId())
+        || !job.tableTask
+            .sourceNamespace()
+            .equals(String.join(".", table.getUpstream().getNamespacePathList()))
+        || !job.tableTask.sourceTable().equals(table.getUpstream().getTableDisplayName())) {
+      throw io.grpc.Status.PERMISSION_DENIED
+          .withDescription("requested table does not match the leased reconcile table")
+          .asRuntimeException();
+    }
+    return CredentialScope.forSingleLocation(resolveTableLocationPrefix(table));
+  }
+
+  private CredentialScope resolvePlannerBootstrapLocation(
+      String requestedLocationPrefix, ReconcileJobStore.ReconcileJob job) {
+    if (job == null || !allowsConnectorBootstrapScope(job)) {
+      return null;
+    }
+    ResourceId connectorId =
+        ResourceId.newBuilder()
+            .setAccountId(job.accountId)
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .setId(job.connectorId)
+            .build();
+    Connector connector =
+        connectorRepo
+            .getById(connectorId)
+            .orElseThrow(
+                () ->
+                    io.grpc.Status.NOT_FOUND
+                        .withDescription("reconcile connector not found: " + job.connectorId)
+                        .asRuntimeException());
+    String bootstrapLocation = connectorSourceStorageLocation(connector);
+    if (bootstrapLocation == null) {
+      return null;
+    }
+    if (!StorageAuthorityResolver.matchesLocationPrefix(
+        requestedLocationPrefix, bootstrapLocation)) {
+      throw io.grpc.Status.PERMISSION_DENIED
+          .withDescription("requested location is outside the leased reconcile connector scope")
+          .asRuntimeException();
+    }
+    return CredentialScope.forSingleLocation(bootstrapLocation);
+  }
+
+  private static boolean allowsConnectorBootstrapScope(ReconcileJobStore.ReconcileJob job) {
+    if (job.jobKind == ReconcileJobKind.PLAN_VIEW) {
+      return true;
+    }
+    return job.jobKind == ReconcileJobKind.PLAN_TABLE
+        && job.tableTask != null
+        && job.tableTask.discoveryMode()
+        && (job.tableTask.destinationTableId() == null
+            || job.tableTask.destinationTableId().isBlank());
+  }
+
+  private static String connectorSourceStorageLocation(Connector connector) {
+    if (connector == null || !connector.hasResourceId()) {
+      return null;
+    }
+    ConnectorConfig config = ConnectorConfigMapper.fromProto(connector);
+    if (config.kind() == ConnectorConfig.Kind.DELTA) {
+      String location = trimToNull(config.options().get("storage_location"));
+      return location != null ? location : trimToNull(config.options().get("delta.table-root"));
+    }
+    if (config.kind() == ConnectorConfig.Kind.ICEBERG
+        && "filesystem".equalsIgnoreCase(trimToNull(config.options().get("iceberg.source")))) {
+      return trimToNull(config.uri());
+    }
+    return null;
   }
 
   private static boolean isWithinExecutionScope(

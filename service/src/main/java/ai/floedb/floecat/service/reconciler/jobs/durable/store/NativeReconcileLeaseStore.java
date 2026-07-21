@@ -1201,6 +1201,9 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
       long newExpiresAtMs,
       Long millisUntilExpiryBeforeRenew,
       long renewLatencyMs) {
+    if (!LOG.isDebugEnabled()) {
+      return;
+    }
     String jobKind = resolveJobKindForLeaseLog(accountId, jobId);
     String message =
         String.format(
@@ -1213,10 +1216,6 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
             newExpiresAtMs,
             millisUntilExpiryBeforeRenew == null ? Long.MIN_VALUE : millisUntilExpiryBeforeRenew,
             renewLatencyMs);
-    if (Objects.equals(ReconcileJobKind.EXEC_FILE_GROUP.name(), jobKind)) {
-      LOG.info(message);
-      return;
-    }
     LOG.debug(message);
   }
 

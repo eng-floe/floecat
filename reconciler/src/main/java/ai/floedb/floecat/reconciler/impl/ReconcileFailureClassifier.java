@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.connector.common.auth.TerminalCredentialRefreshException;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.LinkedHashSet;
@@ -38,6 +39,9 @@ final class ReconcileFailureClassifier {
     var seen = new LinkedHashSet<Throwable>();
     Throwable cur = error;
     while (cur != null && !seen.contains(cur)) {
+      if (cur instanceof TerminalCredentialRefreshException terminalRefresh) {
+        return terminalInternal(terminalRefresh.getMessage(), terminalRefresh);
+      }
       if (cur instanceof StatusRuntimeException sre) {
         Status.Code code = sre.getStatus().getCode();
         if (code == Status.Code.UNAUTHENTICATED || code == Status.Code.PERMISSION_DENIED) {

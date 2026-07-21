@@ -45,6 +45,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -66,6 +67,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   private SnapshotFinalizePersistenceService persistence;
   private SnapshotFinalizeCoverageService coverageService;
   private SnapshotFinalizeChildStateService childStateService;
+  private CurrentSnapshotPointerService currentSnapshotPointerService;
   private PrincipalContext principal;
 
   @BeforeEach
@@ -75,11 +77,13 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     persistence = mock(SnapshotFinalizePersistenceService.class);
     coverageService = mock(SnapshotFinalizeCoverageService.class);
     childStateService = mock(SnapshotFinalizeChildStateService.class);
+    currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
     service.persistence = persistence;
     service.coverageService = coverageService;
     service.childStateService = childStateService;
+    service.currentSnapshotPointerService = currentSnapshotPointerService;
     when(principal.getCorrelationId()).thenReturn("corr");
   }
 
@@ -222,6 +226,67 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             () -> service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1"));
 
     assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    verify(idempotencyStore, never())
+        .finalizeSuccess(
+            anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void persistSuccessDoesNotSucceedWhenSnapshotCannotBePublished() {
+    IdempotencyRepository idempotencyStore = mock(IdempotencyRepository.class);
+    service.idempotencyStore = idempotencyStore;
+    when(principal.getAccountId()).thenReturn(ACCOUNT_ID);
+    when(idempotencyStore.get(anyString())).thenReturn(java.util.Optional.empty());
+    when(idempotencyStore.createPending(
+            anyString(), anyString(), anyString(), anyString(), any(), any()))
+        .thenReturn(true);
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            0);
+    when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(java.util.Optional.of(finalizeJobView(snapshotTask)));
+    when(coverageService.expectedCoverage(snapshotTask))
+        .thenReturn(
+            new SnapshotFinalizeCoverageService.ExpectedCoverage(
+                SnapshotFinalizeCoverageService.PlannedCoverageState.EXPLICIT_EMPTY,
+                List.of(),
+                List.of(),
+                ""));
+    StatusRuntimeException snapshotMissing =
+        Status.NOT_FOUND.withDescription("snapshot not found").asRuntimeException();
+    org.mockito.Mockito.doThrow(snapshotMissing)
+        .when(currentSnapshotPointerService)
+        .maybeAdvance(any(), eq(SNAPSHOT_ID), eq(FINALIZE_JOB_ID));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1"));
+
+    assertEquals(Status.Code.NOT_FOUND, error.getStatus().getCode());
+    verify(jobs, never())
+        .applyLeaseOutcome(
+            anyString(),
+            anyString(),
+            any(),
+            anyLong(),
+            anyString(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong());
     verify(idempotencyStore, never())
         .finalizeSuccess(
             anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());

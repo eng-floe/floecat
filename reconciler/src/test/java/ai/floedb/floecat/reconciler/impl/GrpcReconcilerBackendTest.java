@@ -769,8 +769,14 @@ class GrpcReconcilerBackendTest {
         Connector.newBuilder().setResourceId(connectorId).setKind(ConnectorKind.CK_DELTA).build();
     when(backend.connector.getConnector(any()))
         .thenReturn(GetConnectorResponse.newBuilder().setConnector(connector).build());
-    when(backend.serverSideStorageConfigResolver.resolve(any(), any(), any()))
-        .thenAnswer(invocation -> invocation.getArgument(2));
+    java.util.concurrent.atomic.AtomicBoolean storageConfigClosed =
+        new java.util.concurrent.atomic.AtomicBoolean();
+    when(backend.serverSideStorageConfigResolver.resolveManagedWithAuthorization(
+            any(), any(), any(), any(), any(), any(), any()))
+        .thenAnswer(
+            invocation ->
+                new ServerSideStorageConfigResolver.ResolvedConnectorConfig(
+                    invocation.getArgument(6), () -> storageConfigClosed.set(true)));
 
     FloecatConnector source = mock(FloecatConnector.class);
     backend.connectorOpener = cfg -> source;
@@ -781,10 +787,17 @@ class GrpcReconcilerBackendTest {
     @SuppressWarnings("unchecked")
     var locationCaptor = org.mockito.ArgumentCaptor.forClass(Optional.class);
     verify(backend.serverSideStorageConfigResolver)
-        .resolveWithAuthorization(
-            any(), any(), any(), locationCaptor.capture(), any(), configCaptor.capture());
+        .resolveManagedWithAuthorization(
+            any(),
+            any(),
+            any(),
+            locationCaptor.capture(),
+            org.mockito.Mockito.eq(Optional.of(tableId)),
+            any(),
+            configCaptor.capture());
     assertThat(locationCaptor.getValue()).contains("s3://bucket/path/orders");
     assertThat(configCaptor.getValue().options()).doesNotContainKey("delta.table-root");
+    assertThat(storageConfigClosed).isTrue();
   }
 
   @Test

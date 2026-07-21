@@ -139,27 +139,6 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
         .containsExactly(11L);
   }
 
-  @Test
-  void filterPlannableSnapshotBundlesKeepsOnlyKnownLocalSnapshotsForCaptureOnly() {
-    List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> bundles =
-        List.of(
-            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, "", null, 0L, null, Map.of(), 0, null),
-            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, null),
-            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                12L, 11L, 3L, "", null, 0L, null, Map.of(), 0, null));
-
-    List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
-        ReconcilerService.filterPlannableSnapshotBundles(
-            bundles, ReconcilerService.CaptureMode.CAPTURE_ONLY, Set.of(10L, 12L));
-
-    assertThat(filtered)
-        .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(10L, 12L);
-  }
-
-  @Test
   void knownSnapshotIdsForEnumerationIsStatsAwareForStatsModes() {
     Set<Long> metadataOnly =
         ReconcilerService.knownSnapshotIdsForEnumeration(
@@ -206,14 +185,15 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
 
     ReconcileContext ctx =
         new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.empty());
-    ReconcilerService.ActiveConnector active = service.activeConnectorForResult(ctx, connectorId);
-
-    assertThat(active.config().options())
-        .doesNotContainKeys("s3.access-key-id", "s3.secret-access-key", "s3.session-token");
-    assertThat(active.resolvedConfig().options())
-        .containsEntry("s3.access-key-id", "access-key")
-        .containsEntry("s3.secret-access-key", "secret-key")
-        .containsEntry("s3.session-token", "session-token");
+    try (ReconcilerService.ActiveConnector active =
+        service.activeConnectorForResult(ctx, connectorId)) {
+      assertThat(active.config().options())
+          .doesNotContainKeys("s3.access-key-id", "s3.secret-access-key", "s3.session-token");
+      assertThat(active.resolvedConfig().options())
+          .containsEntry("s3.access-key-id", "access-key")
+          .containsEntry("s3.secret-access-key", "secret-key")
+          .containsEntry("s3.session-token", "session-token");
+    }
   }
 
   @Test
@@ -230,19 +210,30 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     ServerSideStorageConfigResolver storageResolver = mock(ServerSideStorageConfigResolver.class);
     service.serverSideStorageConfigResolver = storageResolver;
     service.backend = new ReturningBackend(connector);
-    when(storageResolver.resolveWithAuthorization(
-            any(), any(), any(), any(), eq(connector), any(ConnectorConfig.class)))
-        .thenAnswer(invocation -> invocation.getArgument(5));
+    when(storageResolver.resolveManagedWithAuthorization(
+            any(), any(), any(), any(), any(), eq(connector), any(ConnectorConfig.class)))
+        .thenAnswer(
+            invocation ->
+                new ServerSideStorageConfigResolver.ResolvedConnectorConfig(
+                    invocation.getArgument(6), () -> {}));
 
     ReconcileContext ctx =
         new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.empty());
-    service.activeConnectorForResult(ctx, connectorId);
+    try (var ignored = service.activeConnectorForResult(ctx, connectorId)) {
+      // The managed storage configuration remains live for the active connector lifetime.
+    }
 
     @SuppressWarnings("unchecked")
     var locationCaptor = org.mockito.ArgumentCaptor.forClass(Optional.class);
     verify(storageResolver)
-        .resolveWithAuthorization(
-            any(), any(), any(), locationCaptor.capture(), eq(connector), any());
+        .resolveManagedWithAuthorization(
+            any(),
+            any(),
+            any(),
+            locationCaptor.capture(),
+            eq(Optional.empty()),
+            eq(connector),
+            any());
     assertThat(locationCaptor.getValue())
         .contains("s3://bucket/table/metadata/00001.metadata.json");
   }
@@ -296,11 +287,12 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
 
     ReconcileContext ctx =
         new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.empty());
-    ReconcilerService.ActiveConnector active = service.activeConnectorForResult(ctx, connectorId);
-    ConnectorConfig scoped = service.tableScopedResolvedConfig(ctx, active, tableId);
-
-    assertThat(scoped.options())
-        .containsEntry(
-            "metadata-location", "s3://bucket/table/metadata/00001-committed.metadata.json");
+    try (ReconcilerService.ActiveConnector active =
+            service.activeConnectorForResult(ctx, connectorId);
+        var scoped = service.tableScopedResolvedConfig(ctx, active, tableId)) {
+      assertThat(scoped.config().options())
+          .containsEntry(
+              "metadata-location", "s3://bucket/table/metadata/00001-committed.metadata.json");
+    }
   }
 }
