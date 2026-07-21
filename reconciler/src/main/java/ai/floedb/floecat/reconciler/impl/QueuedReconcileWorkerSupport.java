@@ -93,7 +93,7 @@ class QueuedReconcileWorkerSupport {
   record PlannedViewMutationResult(ExecutionResult result, PlannedViewMutation mutation) {}
 
   record TableExecutionResult(
-      ExecutionResult result, List<String> matchedTableIds, List<Long> enumeratedSnapshotIds) {
+      ExecutionResult result, List<String> matchedTableIds, List<Long> captureSnapshotIds) {
     TableExecutionResult(ExecutionResult result, List<String> matchedTableIds) {
       this(result, matchedTableIds, List.of());
     }
@@ -130,7 +130,7 @@ class QueuedReconcileWorkerSupport {
             cancelRequested,
             progressListener);
     return new TableExecutionResult(
-        toExecutionResult(result), result.matchedTableIds(), result.enumeratedSnapshotIds());
+        toExecutionResult(result), result.matchedTableIds(), result.captureSnapshotIds());
   }
 
   PlannedViewMutationResult prepareViewMutation(
@@ -1567,7 +1567,7 @@ class QueuedReconcileWorkerSupport {
         null,
         outcome.degradedReason().map(List::of).orElseGet(List::of),
         matchedTableIds,
-        outcome.enumeratedSnapshotIds());
+        outcome.captureSnapshotIds());
   }
 
   private static Result tableFailureResult(TableExecutionOutcome outcome) {
@@ -1586,7 +1586,7 @@ class QueuedReconcileWorkerSupport {
         new RuntimeException(outcome.errorReason().orElse("unknown error")),
         outcome.degradedReason().map(List::of).orElseGet(List::of),
         matchedTableIds,
-        outcome.enumeratedSnapshotIds());
+        outcome.captureSnapshotIds());
   }
 
   private static ExecutionResult toExecutionResult(Result result) {
@@ -1857,7 +1857,7 @@ class QueuedReconcileWorkerSupport {
     public final Exception error;
     public final List<String> degradedReasons;
     private final List<String> matchedTableIds;
-    private final List<Long> enumeratedSnapshotIds;
+    private final List<Long> captureSnapshotIds;
 
     private Result(
         long tablesScanned,
@@ -1945,7 +1945,7 @@ class QueuedReconcileWorkerSupport {
         Exception error,
         List<String> degradedReasons,
         List<String> matchedTableIds,
-        List<Long> enumeratedSnapshotIds) {
+        List<Long> captureSnapshotIds) {
       this.tablesScanned = tablesScanned;
       this.tablesChanged = tablesChanged;
       this.viewsScanned = viewsScanned;
@@ -1964,10 +1964,10 @@ class QueuedReconcileWorkerSupport {
           matchedTableIds == null || matchedTableIds.isEmpty()
               ? List.of()
               : matchedTableIds.stream().filter(id -> id != null && !id.isBlank()).toList();
-      this.enumeratedSnapshotIds =
-          enumeratedSnapshotIds == null || enumeratedSnapshotIds.isEmpty()
+      this.captureSnapshotIds =
+          captureSnapshotIds == null || captureSnapshotIds.isEmpty()
               ? List.of()
-              : enumeratedSnapshotIds.stream()
+              : captureSnapshotIds.stream()
                   .filter(java.util.Objects::nonNull)
                   .filter(id -> id >= 0L)
                   .distinct()
@@ -1986,8 +1986,8 @@ class QueuedReconcileWorkerSupport {
       return matchedTableIds;
     }
 
-    private List<Long> enumeratedSnapshotIds() {
-      return enumeratedSnapshotIds;
+    private List<Long> captureSnapshotIds() {
+      return captureSnapshotIds;
     }
 
     private String message() {
@@ -2100,7 +2100,7 @@ class QueuedReconcileWorkerSupport {
       long tablesChanged,
       long snapshotsProcessed,
       long statsProcessed,
-      List<Long> enumeratedSnapshotIds,
+      List<Long> captureSnapshotIds,
       Optional<String> degradedReason,
       Optional<String> errorReason) {
     private static TableExecutionOutcome skipped() {

@@ -17,12 +17,10 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -34,8 +32,6 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
-import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
-import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationTableMetadata;
 import java.time.Instant;
@@ -143,27 +139,6 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
         .containsExactly(11L);
   }
 
-  @Test
-  void filterPlannableSnapshotBundlesKeepsOnlyKnownLocalSnapshotsForCaptureOnly() {
-    List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> bundles =
-        List.of(
-            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, "", null, 0L, null, Map.of(), 0, null),
-            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, null),
-            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                12L, 11L, 3L, "", null, 0L, null, Map.of(), 0, null));
-
-    List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
-        ReconcilerService.filterPlannableSnapshotBundles(
-            bundles, ReconcilerService.CaptureMode.CAPTURE_ONLY, Set.of(10L, 12L));
-
-    assertThat(filtered)
-        .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(10L, 12L);
-  }
-
-  @Test
   void knownSnapshotIdsForEnumerationIsStatsAwareForStatsModes() {
     Set<Long> metadataOnly =
         ReconcilerService.knownSnapshotIdsForEnumeration(
@@ -319,47 +294,5 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
           .containsEntry(
               "metadata-location", "s3://bucket/table/metadata/00001-committed.metadata.json");
     }
-  }
-
-  @Test
-  void snapshotPlanningDoesNotVendTableCredentialsWhenPreOpenBackendLookupFails() {
-    Connector connector =
-        Connector.newBuilder()
-            .setResourceId(connectorId)
-            .setState(ConnectorState.CS_ACTIVE)
-            .setKind(ConnectorKind.CK_ICEBERG)
-            .setUri("s3://bucket/table/metadata/00001.metadata.json")
-            .putProperties("iceberg.source", "filesystem")
-            .build();
-    ServerSideStorageConfigResolver storageResolver = mock(ServerSideStorageConfigResolver.class);
-    service.serverSideStorageConfigResolver = storageResolver;
-    service.backend =
-        new DefaultBackend() {
-          @Override
-          public Connector lookupConnector(ReconcileContext ctx, ResourceId requestedConnectorId) {
-            return connector;
-          }
-
-          @Override
-          public Set<Long> existingSnapshotIds(ReconcileContext ctx, ResourceId tableId) {
-            throw new IllegalStateException("lookup failed");
-          }
-        };
-
-    assertThatThrownBy(
-            () ->
-                service.planSnapshotTasks(
-                    principal,
-                    connectorId,
-                    false,
-                    ReconcileScope.empty(),
-                    ReconcileTableTask.of("src", "orders", "table-1", "orders"),
-                    ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
-                    "token",
-                    "job-1",
-                    "lease-1"))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessage("lookup failed");
-    verifyNoInteractions(storageResolver);
   }
 }

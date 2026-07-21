@@ -392,7 +392,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
         || task.destinationTableId().isBlank()) {
       return List.of();
     }
-    return tableExecution.enumeratedSnapshotIds().stream()
+    return tableExecution.captureSnapshotIds().stream()
         .filter(snapshotId -> snapshotId != null && snapshotId >= 0L)
         .map(
             snapshotId ->

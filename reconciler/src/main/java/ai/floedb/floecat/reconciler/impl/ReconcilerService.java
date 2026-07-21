@@ -39,7 +39,6 @@ import ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
-import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
@@ -264,153 +263,6 @@ public class ReconcilerService {
     }
   }
 
-  public List<ReconcileSnapshotTask> planSnapshotTasks(
-      PrincipalContext principal,
-      ResourceId connectorId,
-      boolean fullRescan,
-      ReconcileScope scopeIn,
-      ReconcileTableTask tableTask,
-      CaptureMode captureMode,
-      String bearerToken,
-      String executionJobId,
-      String executionLeaseEpoch) {
-    ReconcileScope scope = scopeIn == null ? ReconcileScope.empty() : scopeIn;
-    ReconcileTableTask effectiveTask = tableTask == null ? ReconcileTableTask.empty() : tableTask;
-    if (effectiveTask.isEmpty()
-        || effectiveTask.sourceNamespace().isBlank()
-        || effectiveTask.sourceTable().isBlank()
-        || effectiveTask.destinationTableId() == null
-        || effectiveTask.destinationTableId().isBlank()) {
-      return List.of();
-    }
-
-    ReconcileContext ctx =
-        buildContext(
-            principal,
-            Optional.ofNullable(bearerToken),
-            Optional.ofNullable(executionJobId),
-            Optional.ofNullable(executionLeaseEpoch));
-    try (ActiveConnector active = activeConnectorForTableScopedResult(ctx, connectorId)) {
-      ResourceId tableId =
-          ResourceId.newBuilder()
-              .setAccountId(connectorId.getAccountId())
-              .setKind(ResourceKind.RK_TABLE)
-              .setId(effectiveTask.destinationTableId())
-              .build();
-      Set<Long> targetSnapshotIds =
-          scope.destinationCaptureRequests().stream()
-              .filter(request -> request != null)
-              .filter(request -> tableId.getId().equals(request.tableId()))
-              .map(ReconcileScope.ScopedCaptureRequest::snapshotId)
-              .filter(snapshotId -> snapshotId >= 0)
-              .collect(Collectors.toCollection(LinkedHashSet::new));
-      boolean captureOnly = captureMode == CaptureMode.CAPTURE_ONLY;
-      Set<Long> knownSnapshotIds =
-          (captureOnly || !fullRescan) ? backend.existingSnapshotIds(ctx, tableId) : Set.of();
-      Set<String> defaultColumnSelectors = normalizeSelectors(active.source().getColumnsList());
-      ReconcileCapturePolicy capturePolicy = effectiveCapturePolicy(scope, captureMode);
-      boolean requiresCaptureOutputs =
-          capturePolicy.requestsStats() || capturePolicy.requestsIndexes();
-      Map<Long, List<ReconcileScope.ScopedCaptureRequest>> scopedCaptureRequestsBySnapshot =
-          scope.destinationCaptureRequests().stream()
-              .filter(request -> request != null && tableId.getId().equals(request.tableId()))
-              .collect(
-                  Collectors.groupingBy(
-                      ReconcileScope.ScopedCaptureRequest::snapshotId,
-                      LinkedHashMap::new,
-                      Collectors.toList()));
-      // Capture completeness is evaluated in planSnapshotTasks(), which is responsible for
-      // enqueuing follow-up snapshot work. Direct table execution here is metadata-only.
-      Set<Long> enumerationKnownSnapshotIds =
-          enumerationKnownSnapshotIds(
-              ctx,
-              tableId,
-              fullRescan,
-              knownSnapshotIds,
-              capturePolicy,
-              scopedCaptureRequestsBySnapshot,
-              defaultColumnSelectors);
-      ReconcileSnapshotSelection enumerationSelection =
-          captureOnly
-              ? captureOnlyEnumerationSelection(
-                  scope.snapshotSelection(), knownSnapshotIds, targetSnapshotIds)
-              : scope.snapshotSelection();
-      Set<Long> enumerationTargetSnapshotIds =
-          captureOnly
-              ? selectionSnapshotIds(enumerationSelection).orElse(Set.of())
-              : targetSnapshotIds;
-      boolean enumerationFullRescan = captureOnly || fullRescan;
-
-      try (var tableConfig = tableScopedResolvedConfig(ctx, active, tableId);
-          FloecatConnector connector = connectorOpener.open(tableConfig.config())) {
-        List<FloecatConnector.SnapshotBundle> bundles =
-            connector.enumerateSnapshots(
-                effectiveTask.sourceNamespace(),
-                effectiveTask.sourceTable(),
-                tableId,
-                snapshotEnumerationOptions(
-                    enumerationSelection,
-                    enumerationFullRescan,
-                    requiresCaptureOutputs ? Set.of() : enumerationKnownSnapshotIds,
-                    enumerationTargetSnapshotIds));
-        if (bundles == null || bundles.isEmpty()) {
-          return List.of();
-        }
-        List<FloecatConnector.SnapshotBundle> plannableBundles =
-            filterPlannableSnapshotBundles(bundles, captureMode, knownSnapshotIds);
-        return plannableBundles.stream()
-            .filter(bundle -> bundle != null && bundle.snapshotId() >= 0)
-            .filter(
-                bundle ->
-                    fullRescan
-                        || !requiresCaptureOutputs
-                        || !isSnapshotCaptureCompleteForScope(
-                            ctx,
-                            tableId,
-                            bundle.snapshotId(),
-                            capturePolicy,
-                            scopedCaptureRequestsBySnapshot.getOrDefault(
-                                bundle.snapshotId(), List.of()),
-                            defaultColumnSelectors))
-            .filter(
-                bundle ->
-                    targetSnapshotIds.isEmpty() || targetSnapshotIds.contains(bundle.snapshotId()))
-            .map(
-                bundle ->
-                    ReconcileSnapshotTask.of(
-                        effectiveTask.destinationTableId(),
-                        bundle.snapshotId(),
-                        effectiveTask.sourceNamespace(),
-                        effectiveTask.sourceTable()))
-            .distinct()
-            .toList();
-      }
-    } catch (RuntimeException e) {
-      throw e;
-    } catch (Exception e) {
-      throw new RuntimeException(
-          "Failed to plan snapshot tasks for connector " + connectorId.getId(), e);
-    }
-  }
-
-  static List<FloecatConnector.SnapshotBundle> filterPlannableSnapshotBundles(
-      List<FloecatConnector.SnapshotBundle> bundles,
-      CaptureMode captureMode,
-      Set<Long> knownSnapshotIds) {
-    if (bundles == null || bundles.isEmpty()) {
-      return bundles == null ? List.of() : bundles;
-    }
-    if (includesMetadata(captureMode)) {
-      return bundles;
-    }
-    if (knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
-      return bundles;
-    }
-    return bundles.stream()
-        .filter(bundle -> bundle != null && knownSnapshotIds.contains(bundle.snapshotId()))
-        .toList();
-  }
-
   static Optional<String> validateScopeCombinations(
       ReconcileScope scope, CaptureMode captureMode, boolean viewsOnly) {
     if (scope == null) {
@@ -602,13 +454,6 @@ public class ReconcilerService {
               .collect(Collectors.toCollection(LinkedHashSet::new));
       case ALL, UNSPECIFIED -> Set.copyOf(known);
     };
-  }
-
-  private static Optional<Set<Long>> selectionSnapshotIds(ReconcileSnapshotSelection selection) {
-    if (selection == null || selection.kind() != ReconcileSnapshotSelection.Kind.EXPLICIT) {
-      return Optional.empty();
-    }
-    return Optional.of(Set.copyOf(selection.snapshotIds()));
   }
 
   boolean isSnapshotCaptureCompleteForScope(
@@ -1199,24 +1044,14 @@ public class ReconcilerService {
 
   private ActiveConnector activeConnector(
       ReconcileContext ctx, Connector connector, ResourceId connectorId) {
-    return activeConnector(ctx, connector, connectorId, true);
-  }
-
-  private ActiveConnector activeConnector(
-      ReconcileContext ctx,
-      Connector connector,
-      ResourceId connectorId,
-      boolean resolveServerSideStorage) {
     if (connector.getState() != ConnectorState.CS_ACTIVE) {
       throw new IllegalStateException("Connector not ACTIVE: " + connectorId.getId());
     }
     ConnectorConfig config = ConnectorConfigMapper.fromProto(connector);
     ConnectorConfig authenticated = resolveCredentials(config, connector.getAuth(), connectorId);
     ServerSideStorageConfigResolver.ResolvedConnectorConfig resolved =
-        resolveServerSideStorage
-            ? resolveManagedServerSideStorage(
-                ctx, connector, authenticated, sourceStorageLocation(config), Optional.empty())
-            : new ServerSideStorageConfigResolver.ResolvedConnectorConfig(authenticated, () -> {});
+        resolveManagedServerSideStorage(
+            ctx, connector, authenticated, sourceStorageLocation(config), Optional.empty());
     return new ActiveConnector(
         connector,
         connector.hasSource() ? connector.getSource() : SourceSelector.getDefaultInstance(),
@@ -1228,16 +1063,6 @@ public class ReconcilerService {
   }
 
   ActiveConnector activeConnectorForResult(ReconcileContext ctx, ResourceId connectorId) {
-    return activeConnectorForResult(ctx, connectorId, true);
-  }
-
-  private ActiveConnector activeConnectorForTableScopedResult(
-      ReconcileContext ctx, ResourceId connectorId) {
-    return activeConnectorForResult(ctx, connectorId, false);
-  }
-
-  private ActiveConnector activeConnectorForResult(
-      ReconcileContext ctx, ResourceId connectorId, boolean resolveServerSideStorage) {
     Connector connector;
     try {
       connector = backend.lookupConnector(ctx, connectorId);
@@ -1247,7 +1072,7 @@ public class ReconcilerService {
           "getConnector failed: " + connectorId.getId(),
           e);
     }
-    return activeConnector(ctx, connector, connectorId, resolveServerSideStorage);
+    return activeConnector(ctx, connector, connectorId);
   }
 
   ServerSideStorageConfigResolver.ResolvedConnectorConfig tableScopedResolvedConfig(
