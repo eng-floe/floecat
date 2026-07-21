@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.concurrent.BoundedFanout;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -39,10 +40,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.Semaphore;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.context.ManagedExecutor;
 
@@ -401,40 +400,15 @@ public final class NameResolver {
 
   /**
    * Fans out per-namespace work across up to {@value #MAX_PARALLEL_NS_SCANS} concurrent tasks on
-   * the injected blocking executor. Each namespace is an independent DynamoDB scan; parallel
-   * execution reduces wall-clock time from O(N) to O(1) for warm DynamoDB connections.
+   * the injected blocking executor and flattens the per-namespace results. Each namespace is an
+   * independent DynamoDB scan; parallel execution reduces wall-clock time from O(N) to O(1) for
+   * warm DynamoDB connections.
    */
   private <T> List<T> parallelScan(
       List<ResourceId> nsIds, java.util.function.Function<ResourceId, List<T>> task) {
-    Semaphore gate = new Semaphore(MAX_PARALLEL_NS_SCANS);
-    io.opentelemetry.context.Context otelContext = io.opentelemetry.context.Context.current();
-    List<CompletableFuture<List<T>>> futures =
-        nsIds.stream()
-            .<CompletableFuture<List<T>>>map(
-                ns ->
-                    CompletableFuture.<List<T>>supplyAsync(
-                        () -> {
-                          gate.acquireUninterruptibly();
-                          try (io.opentelemetry.context.Scope ignored = otelContext.makeCurrent()) {
-                            return task.apply(ns);
-                          } finally {
-                            gate.release();
-                          }
-                        },
-                        blockingExecutor))
-            .toList();
-    List<T> out = new ArrayList<>();
-    for (CompletableFuture<List<T>> f : futures) {
-      try {
-        out.addAll(f.join());
-      } catch (java.util.concurrent.CompletionException ce) {
-        Throwable cause = ce.getCause();
-        if (cause instanceof RuntimeException re) throw re;
-        if (cause instanceof Error e) throw e;
-        throw new IllegalStateException("unexpected checked exception from async task", cause);
-      }
-    }
-    return out;
+    return BoundedFanout.mapOrdered(nsIds, MAX_PARALLEL_NS_SCANS, blockingExecutor, task).stream()
+        .flatMap(List::stream)
+        .toList();
   }
 
   private ResourceId requireCanonicalTableId(ResourceId tableId) {
