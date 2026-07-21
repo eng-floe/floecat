@@ -491,6 +491,17 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   var correlationId = princ.getCorrelationId();
                   authz.require(princ, "namespace.write");
 
+                  if (request.getRecursive() && request.getRequireEmpty()) {
+                    throw GrpcErrors.invalidArgument(
+                        correlationId,
+                        null,
+                        Map.of("reason", "recursive and require_empty cannot be combined"));
+                  }
+                  if (request.getRecursive()) {
+                    authz.require(princ, "table.write");
+                    authz.require(princ, "view.write");
+                  }
+
                   var namespaceId = request.getNamespaceId();
                   catalogSurfaceWritePolicy().requireDeletableNamespace(namespaceId, correlationId);
 
@@ -525,8 +536,18 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                         correlationId,
                         namespaceRepo.metaFor(namespaceId),
                         request.getPrecondition());
+                    if (!markerStore.advanceNamespaceMarker(namespaceId, markerVersion)) {
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "namespace children changed before recursive delete: "
+                              + namespaceId.getId());
+                    }
                     recursiveDropper.dropNamespaceContents(namespace);
-                    markerVersion = markerStore.namespaceMarkerVersion(namespaceId);
+                    if (markerStore.namespaceMarkerVersion(namespaceId) != markerVersion + 1) {
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "namespace children changed during recursive delete: "
+                              + namespaceId.getId());
+                    }
+                    markerVersion++;
                   }
 
                   if (tableRepo.count(
@@ -552,6 +573,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   }
 
                   if (!markerStore.advanceNamespaceMarker(namespaceId, markerVersion)) {
+                    if (request.getRecursive()) {
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "namespace children changed during recursive delete: "
+                              + namespaceId.getId());
+                    }
                     throw GrpcErrors.preconditionFailed(
                         correlationId,
                         GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
@@ -559,6 +585,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   }
                   var markerAfterAdvance = markerStore.namespaceMarkerVersion(namespaceId);
                   if (markerAfterAdvance != markerVersion + 1) {
+                    if (request.getRecursive()) {
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "namespace children changed during recursive delete: "
+                              + namespaceId.getId());
+                    }
                     throw GrpcErrors.preconditionFailed(
                         correlationId,
                         GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
@@ -567,6 +598,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   if (tableRepo.count(
                           catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())
                       > 0) {
+                    if (request.getRecursive()) {
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "namespace tables changed during recursive delete: "
+                              + namespaceId.getId());
+                    }
                     var pretty =
                         prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
                     throw GrpcErrors.conflict(
@@ -576,6 +612,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   }
                   if (hasImmediateChildren(
                       catalogId.getAccountId(), catalogId.getId(), parentPath)) {
+                    if (request.getRecursive()) {
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "namespace children changed during recursive delete: "
+                              + namespaceId.getId());
+                    }
                     var pretty =
                         prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
                     throw GrpcErrors.conflict(

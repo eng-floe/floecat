@@ -99,9 +99,14 @@ public class RecursiveResourceDropper {
 
   /** Removes a table after its pointer has already been deleted through a public mutation. */
   public void cleanupDeletedTable(ResourceId tableId, ResourceId namespaceId) {
+    cleanupDeletedTable(tableId, namespaceId, true);
+  }
+
+  private void cleanupDeletedTable(
+      ResourceId tableId, ResourceId namespaceId, boolean bumpNamespaceMarker) {
     topology.evict(tableId);
     metadataGraph.invalidate(tableId);
-    if (namespaceId != null) {
+    if (bumpNamespaceMarker && namespaceId != null) {
       markerStore.bumpNamespaceMarker(namespaceId);
     }
     pointerStore.deleteByPrefix(Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId()));
@@ -189,7 +194,9 @@ public class RecursiveResourceDropper {
               tableToken,
               next)) {
         tableRepo.delete(table.getResourceId());
-        cleanupDeletedTable(table.getResourceId(), table.getNamespaceId());
+        // The enclosing namespace is about to be guarded and deleted. Do not make its own
+        // cleanup look like a concurrent child mutation to that marker protocol.
+        cleanupDeletedTable(table.getResourceId(), table.getNamespaceId(), false);
         summary.tablesDeleted++;
         summary.snapshotPrefixesDeleted++;
       }
