@@ -404,6 +404,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../../caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Caching
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../operations/" class="md-nav__link">
         
   
@@ -2178,6 +2201,87 @@
 <td>component, operation, reason, resource, status</td>
 </tr>
 <tr>
+<td>floecat.service.gc.cas.delete_unsupported_accounts</td>
+<td>GAUGE</td>
+<td></td>
+<td>v1</td>
+<td>Accounts whose CAS GC sweep was skipped because immutable version deletes are unsupported.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.gc.cas.oldest_sweep_age</td>
+<td>GAUGE</td>
+<td>ms</td>
+<td>v1</td>
+<td>Age in milliseconds of the least-recently cleanly-swept CAS GC account.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.gc.cas.poisoned_accounts</td>
+<td>GAUGE</td>
+<td></td>
+<td>v1</td>
+<td>Accounts whose CAS GC delete phase was poisoned in the last tick.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.gc.reconcile_jobs.account_page.index</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Current reconcile job GC index within the cached account page.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.gc.reconcile_jobs.account_page.size</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Current reconcile job GC cached account page size.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.gc.reconcile_jobs.account_tokens.active</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Accounts with active reconcile job GC continuation tokens.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.gc.reconcile_jobs.accounts.last_tick</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Reconcile job GC accounts processed in the last completed tick.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.gc.reconcile_jobs.deleted.last_tick</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Reconcile job GC pointer/blob deletes completed in the last completed tick.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.gc.reconcile_jobs.quarantined.last_tick</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Unreadable reconcile job GC payloads retained in the last completed tick.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
 <td>floecat.service.reconcile.cancel_job.total</td>
 <td>COUNTER</td>
 <td></td>
@@ -2266,6 +2370,69 @@
 <td>Reconcile job terminal outcomes by execution mode.</td>
 <td>component, mode, operation, result</td>
 <td>component, mode, operation, reason, result</td>
+</tr>
+<tr>
+<td>floecat.service.reconcile.lease_next.candidates</td>
+<td>SUMMARY</td>
+<td>count</td>
+<td>v1</td>
+<td>Number of ready-queue candidates examined by each durable reconcile leaseNext call.</td>
+<td>component, operation, result</td>
+<td>component, operation, result</td>
+</tr>
+<tr>
+<td>floecat.service.reconcile.lease_next.latency</td>
+<td>TIMER</td>
+<td>ms</td>
+<td>v1</td>
+<td>Durable reconcile leaseNext latency by terminal outcome.</td>
+<td>component, operation, result</td>
+<td>component, operation, result</td>
+</tr>
+<tr>
+<td>floecat.service.reconcile.lease_next.outcomes.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Durable reconcile leaseNext outcomes.</td>
+<td>component, operation, result</td>
+<td>component, operation, result</td>
+</tr>
+<tr>
+<td>floecat.service.reconcile.lease_next.scans</td>
+<td>SUMMARY</td>
+<td>count</td>
+<td>v1</td>
+<td>Number of ready-queue slice scans performed by each durable reconcile leaseNext call.</td>
+<td>component, operation, result</td>
+<td>component, operation, result</td>
+</tr>
+<tr>
+<td>floecat.service.reconcile.lease_next.skips.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Ready-queue candidates skipped by durable reconcile leaseNext, grouped by reason.</td>
+<td>component, operation, reason</td>
+<td>component, operation, reason</td>
+</tr>
+<tr>
+<td>floecat.service.reconcile.lease_scan.permits.available</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Current number of durable reconcile lease scan permits available.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.reconcile.lease_scan.permits.in_use</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Current number of durable reconcile lease scan permits in use.</td>
+<td>component, operation</td>
+<td>component, operation</td>
 </tr>
 <tr>
 <td>floecat.service.reconcile.list_jobs.total</td>
@@ -2410,6 +2577,15 @@
 <td>Stats engine batch capture calls.</td>
 <td>component, operation</td>
 <td>component, mode, operation, reason, resource, result, scope, trigger</td>
+</tr>
+<tr>
+<td>floecat.service.stats.planner_lookup_outcomes.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Planner stats lookup outcomes by the ladder rung that served or failed each target.</td>
+<td>component, operation, result</td>
+<td>component, operation, result</td>
 </tr>
 <tr>
 <td>floecat.service.stats.store_hits.total</td>

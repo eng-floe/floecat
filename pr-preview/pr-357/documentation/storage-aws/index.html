@@ -404,6 +404,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Caching
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../operations/" class="md-nav__link">
         
   
@@ -1340,6 +1363,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Configuration &amp; Extensibility">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#required-s3-versioning-and-lifecycle-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Required S3 versioning and lifecycle policy
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1699,6 +1737,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Configuration &amp; Extensibility">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#required-s3-versioning-and-lifecycle-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Required S3 versioning and lifecycle policy
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1808,6 +1861,56 @@ CAS blob GC → S3BlobStore.list (ListObjectsV2) → deletePrefix
   provisioning.
 - Wrap additional S3 options (encryption, storage classes) inside <code>S3BlobStore</code> by extending metadata
   tags.</p>
+<h3 id="required-s3-versioning-and-lifecycle-policy">Required S3 versioning and lifecycle policy<a class="headerlink" href="#required-s3-versioning-and-lifecycle-policy" title="Permanent link">&para;</a></h3>
+<p>An S3-backed deployment <strong>must</strong> provision both of the following on the bucket configured by
+<code>floecat.blob.s3.bucket</code>:</p>
+<ol>
+<li>Bucket versioning with status <code>Enabled</code>. CAS blob GC fails closed when versioning is disabled or
+   suspended because it cannot safely race a blob re-reference without immutable version IDs. The
+   service role needs <code>s3:GetBucketVersioning</code> to verify this prerequisite, and — because CAS GC
+   deletes a specific version id (<code>DeleteObject</code> with <code>versionId</code>), not the current version —
+   <code>s3:DeleteObjectVersion</code>. Plain <code>s3:DeleteObject</code> is insufficient: without
+   <code>s3:DeleteObjectVersion</code> every version-targeted GC delete fails with <code>AccessDenied</code> and aborts
+   the tick.</li>
+<li>A <code>NoncurrentVersionExpiration</code> lifecycle rule. Repository writes deliberately PUT recurring
+   content-addressed keys again on every re-reference. Each PUT refreshes the current version for GC
+   safety and makes the previous version noncurrent. CAS GC only lists and deletes current versions;
+   without a bucket lifecycle rule, noncurrent versions of hot keys accumulate indefinitely. See
+   <a href="https://docs.aws.amazon.com/AmazonS3/latest/userguide/DeletingObjectVersions.html">Deleting object versions from a versioning-enabled bucket</a>
+   for AWS's lifecycle and billing behavior.</li>
+</ol>
+<p>Choose the expiration window and retained-version count to match the deployment's recovery policy.
+For example, the following rule keeps at least three newer noncurrent versions and does not expire a
+noncurrent version until it has been noncurrent for 30 days:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;Rules&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;ID&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;floecat-expire-noncurrent-cas-versions&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;Status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Enabled&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;Filter&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;Prefix&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="w"> </span><span class="p">},</span>
+<span class="w">      </span><span class="nt">&quot;NoncurrentVersionExpiration&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">&quot;NoncurrentDays&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">30</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">&quot;NewerNoncurrentVersions&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span>
+<span class="w">      </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>Apply the rule through the deployment's bucket IaC. For a newly provisioned bucket, the equivalent
+AWS CLI operations are:</p>
+<div class="highlight"><pre><span></span><code>aws<span class="w"> </span>s3api<span class="w"> </span>put-bucket-versioning<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--bucket<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$FLOECAT_BLOB_S3_BUCKET</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--versioning-configuration<span class="w"> </span><span class="nv">Status</span><span class="o">=</span>Enabled
+aws<span class="w"> </span>s3api<span class="w"> </span>put-bucket-lifecycle-configuration<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--bucket<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$FLOECAT_BLOB_S3_BUCKET</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--lifecycle-configuration<span class="w"> </span>file://floecat-blob-lifecycle.json
+</code></pre></div>
+<p><code>put-bucket-lifecycle-configuration</code> replaces the bucket's complete lifecycle configuration. When a
+bucket already has lifecycle rules, merge the Floecat rule into the existing <code>Rules</code> array instead of
+overwriting it. The provisioning identity needs <code>s3:PutLifecycleConfiguration</code>; the Floecat runtime
+identity does not. Expiration permanently removes noncurrent versions, so shortening the example
+window trades recovery history for lower storage cost. The bundled LocalStack initializer provisions
+this example policy automatically.</p>
 <h2 id="examples-scenarios">Examples &amp; Scenarios<a class="headerlink" href="#examples-scenarios" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Production deployment</strong> – Set <code>floecat.kv=dynamodb</code>, <code>floecat.blob=s3</code>, supply the DynamoDB table

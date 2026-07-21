@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/connectors-common/">
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/caching/">
       
       
-        <link rel="prev" href="../transactions/">
+        <link rel="prev" href="../service/">
       
       
-        <link rel="next" href="../connectors-iceberg/">
+        <link rel="next" href="../operations/">
       
       
       <link rel="icon" href="../assets/images/favicon.png">
@@ -24,7 +24,7 @@
     
     
       
-        <title>Connector Common - Floecat Documentation</title>
+        <title>Caching - Floecat Documentation</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#connector-common" class="md-skip">
+        <a href="#caching" class="md-skip">
           Skip to content
         </a>
       
@@ -114,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Connector Common
+              Caching
             
           </span>
         </div>
@@ -287,8 +287,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -299,13 +301,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-          
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
         
           
           <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
@@ -321,7 +321,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             Getting Started
@@ -401,10 +401,32 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../caching/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Caching
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -415,6 +437,71 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#principles" class="md-nav__link">
+    <span class="md-ellipsis">
+      Principles
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-four-disciplines" class="md-nav__link">
+    <span class="md-ellipsis">
+      The four disciplines
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deliberately-live-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deliberately live reads
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#staleness-bounds" class="md-nav__link">
+    <span class="md-ellipsis">
+      Staleness bounds
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -857,8 +944,6 @@
       
   
   
-    
-  
   
   
     
@@ -871,11 +956,13 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
         
           
           <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
@@ -891,7 +978,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             Connectors
@@ -902,32 +989,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    Connector Common
-    
-  </span>
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../connectors-common/" class="md-nav__link">
         
   
   
@@ -938,44 +1003,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#overview" class="md-nav__link">
-    <span class="md-ellipsis">
-      Overview
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#where-it-fits" class="md-nav__link">
-    <span class="md-ellipsis">
-      Where It Fits
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1617,9 +1644,36 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#where-it-fits" class="md-nav__link">
+  <a href="#principles" class="md-nav__link">
     <span class="md-ellipsis">
-      Where It Fits
+      Principles
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-four-disciplines" class="md-nav__link">
+    <span class="md-ellipsis">
+      The four disciplines
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deliberately-live-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deliberately live reads
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#staleness-bounds" class="md-nav__link">
+    <span class="md-ellipsis">
+      Staleness bounds
     </span>
   </a>
   
@@ -1641,7 +1695,7 @@
 
 
   
-    <a href="https://github.com/eng-floe/floecat/edit/mc-connector-policy2/docs/connectors-common.md" title="Edit this page" class="md-content__button md-icon">
+    <a href="https://github.com/eng-floe/floecat/edit/mc-connector-policy2/docs/caching.md" title="Edit this page" class="md-content__button md-icon">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1649,17 +1703,157 @@
   
 
 
-<h1 id="connector-common">Connector Common<a class="headerlink" href="#connector-common" title="Permanent link">&para;</a></h1>
+<h1 id="caching">Caching<a class="headerlink" href="#caching" title="Permanent link">&para;</a></h1>
 <h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
-<p><code>core/connectors/common/</code> provides shared utilities used by connector implementations (Delta,
-Iceberg, and others). It includes stats engines, NDV helpers, planners, and auth helpers that
-implementations reuse rather than duplicate.</p>
-<h2 id="where-it-fits">Where It Fits<a class="headerlink" href="#where-it-fits" title="Permanent link">&para;</a></h2>
+<p>Floecat's read path is built around one observation: everything a query reads below the mutable
+pointer reads is an immutable blob. Caching therefore splits into a small number of disciplines,
+each with a different correctness contract, rather than one generic cache with invalidation
+callbacks.</p>
+<h2 id="principles">Principles<a class="headerlink" href="#principles" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Connector SPI</strong> – Interfaces live in <a href="../connectors-spi/"><code>docs/connectors-spi.md</code></a>.</li>
-<li><strong>Connector Implementations</strong> – Iceberg and Delta implementations call into the shared helpers
-  when generating stats or planning scans.</li>
+<li><strong>Mutable edges resolve to immutable keys.</strong> A read first resolves a mutable pointer (resource ID
+  → current blob URI), then follows content-addressed references. Only the pointer resolution can
+  be stale; the content it names is immutable.</li>
+<li><strong>Content-addressed means no invalidation.</strong> The bytes at a CAS blob URI never change, so a
+  decoded entry keyed by URI is right forever. Eviction exists only for memory, never correctness.</li>
+<li><strong>Caches serve content, never existence.</strong> A resident decode may outlive the durable blob (GC can
+  sweep a superseded blob while its decode is still cached). Any read whose emptiness is
+  load-bearing — a liveness or integrity probe — must hit the live store.</li>
 </ul>
+<h2 id="the-four-disciplines">The four disciplines<a class="headerlink" href="#the-four-disciplines" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Discipline</th>
+<th>Implementation</th>
+<th>What it holds</th>
+<th>Freshness contract</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Versioned pointers</td>
+<td><code>PointerTtlCache</code> (<code>service/repo/cache/</code>)</td>
+<td>Root pointer (<code>TableRootRepository</code>, <code>floecat.root.pointer-cache-ttl-seconds</code>, default 2) and table-definition metas (<code>GraphCacheManager</code>, <code>floecat.metadata.graph.meta-cache-ttl-seconds</code>, default 2)</td>
+<td>Short TTL bounds cross-instance staleness. Version-guarded populate (<code>putIfFresher</code>) keeps the highest pointer version; absence is never cached; writes invalidate then repopulate from a live read (read-your-writes on the writing instance). The root commit funnel bypasses the cache entirely via <code>metaForSafeLive</code> — CAS needs fresh versions. TTL 0 disables.</td>
+</tr>
+<tr>
+<td>Immutable decoded content</td>
+<td><code>ImmutableBlobCache</code> (<code>service/repo/cache/</code>)</td>
+<td>Decoded root blobs, snapshot-manifest pages, catalog/namespace/table/view/snapshot/constraints blobs, stats generation manifests, plus derived forms: manifest-entry indexes (<code>headUri + "#index"</code>) and graph nodes (<code>blobUri + "#node"</code>)</td>
+<td>Content-addressed, so no invalidation. Byte-weighted LRU: <code>serializedSize × 3</code> retained-heap estimate, 256 MB default, 15-minute access TTL, single-flight loads, absence never cached. Config <code>floecat.blob.cache.*</code>; kill switch <code>floecat.blob.cache.enabled=false</code>. Only <code>casBlobs</code> schemas route through it — blobs overwritten in place must never be cached by URI.</td>
+</tr>
+<tr>
+<td>Membership lists</td>
+<td><code>CatalogTopologyCache</code> (<code>service/metagraph/cache/</code>)</td>
+<td>Namespace refs per catalog and relation (table/view) refs per namespace, from pointer prefix scans</td>
+<td>15-minute access TTL (<code>floecat.topology.cache-ttl-minutes</code>; sizes <code>floecat.topology.ns-cache-size</code>=10000, <code>floecat.topology.rel-cache-size</code>=5000). DDL services evict on write, so same-process listings are immediately current; cross-instance staleness is bounded by the TTL.</td>
+</tr>
+<tr>
+<td>Per-query state</td>
+<td><code>QueryContextStore</code> and per-query memos</td>
+<td><code>QueryContext</code> (pins, snapshot set, expansion map) keyed by query ID</td>
+<td>Scoped to one query lease; consistency comes from pinning, not freshness.</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>ImmutableBlobCache</code> budget is <strong>shared across all tenants</strong>. The previous design kept a
+dedicated node cache per account so eviction pressure was isolated between tenants; folding nodes
+into the process-wide cache trades that isolation for byte-accurate weighing, one budget to
+operate, and cross-layer sharing (a node and the pages it came from compete honestly for the same
+memory). One tenant's wide-schema or long-history scans can therefore evict another tenant's hot
+entries — softened by Caffeine's TinyLFU admission policy, which favors frequently reused entries
+over one-shot scan traffic. Operators should also note the knob-semantics change:
+<code>floecat.metadata.graph.cache-max-size</code> used to bound cached nodes per account; it now only gates
+node caching (<code>0</code> = off) and sizes the pointer-meta cache, while node memory is governed by
+<code>floecat.blob.cache.max-weight-bytes</code>.</p>
+<p><code>StatsOrchestrator</code> additionally keeps its own byte-weighted 256 MB cache of decoded
+<code>TargetStatsRecord</code>s, keyed by <code>(accountId, tableId, snapshotId, storageId)</code>; only positive hits
+are cached and mutation paths invalidate explicitly (10-minute write TTL as a backstop).
+Target-stats record blobs are deliberately <strong>not</strong> in the <code>ImmutableBlobCache</code>: they are written to
+deterministic (not content-addressed) URIs and a re-capture may overwrite one in place, so
+URI-keyed caching would be unsound for them.</p>
+<h2 id="deliberately-live-reads">Deliberately live reads<a class="headerlink" href="#deliberately-live-reads" title="Permanent link">&para;</a></h2>
+<p>Six reads bypass every cache because their result is a detector, not content:</p>
+<table>
+<thead>
+<tr>
+<th>Read</th>
+<th>Site</th>
+<th>Why it must be live</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pin-root HEAD</td>
+<td><code>PinValidator.validate</code></td>
+<td>The pin's integrity contract: one HEAD confirms the pinned root blob exists at the pinned version. The CAS GC min-age fence measures age since the blob was <em>written</em>, so a recently observed etag proves nothing about the blob still existing.</td>
+</tr>
+<tr>
+<td>Frozen stats-manifest read</td>
+<td><code>StatsRepository.listTargetStatsInGeneration</code> (per scan page)</td>
+<td>This read <em>is</em> the scan's retention guard. A cached generation ID would let a scan page "successfully" over a reclaimed generation — empty pages, silently truncated results — exactly when the guard must fire.</td>
+</tr>
+<tr>
+<td>Pinned table + snapshot loads</td>
+<td><code>ScanBundleService.initScan</code></td>
+<td><code>requirePinned*</code>'s contract is that a missing pinned blob fails as catalog-integrity corruption; a still-resident decode must not mask a swept blob. Once per scan session, not per page.</td>
+</tr>
+<tr>
+<td>Pinned snapshot schema load</td>
+<td><code>SnapshotHelper.schemaJsonFor</code></td>
+<td>Same pin-integrity contract for the schema read from the pinned snapshot blob.</td>
+</tr>
+<tr>
+<td>Pinned table-node load</td>
+<td><code>NodeLoader.tableFromBlob</code></td>
+<td>A query pinned to a blob must read that exact blob; a miss fails hard instead of drifting to current state.</td>
+</tr>
+<tr>
+<td>Pinned constraints load</td>
+<td><code>PlannerStatsBundleService</code></td>
+<td>Emptiness is the broken-retention detector (pinned blobs are GC-rooted for the query's lifetime); a resident decode must not suppress the warning where cache warmth is highest.</td>
+</tr>
+</tbody>
+</table>
+<p>The repository API encodes the split: <code>getByBlobUri</code> serves cached content — a present result does
+<strong>not</strong> prove the blob still exists — while <code>getByBlobUriLive</code> bypasses the cache for reads whose
+emptiness is load-bearing.</p>
+<h2 id="staleness-bounds">Staleness bounds<a class="headerlink" href="#staleness-bounds" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Observation</th>
+<th>Bound</th>
+<th>Governed by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cross-instance DDL visibility (which blob a definition pointer names)</td>
+<td>≤ 2 s</td>
+<td>Graph meta cache TTL (<code>floecat.metadata.graph.meta-cache-ttl-seconds</code>)</td>
+</tr>
+<tr>
+<td>Table currency (which root is current)</td>
+<td>≤ 2 s cross-instance; read-your-writes on the writing instance for update/create</td>
+<td>Root pointer cache TTL (<code>floecat.root.pointer-cache-ttl-seconds</code>) plus invalidate-then-live-refresh on writes</td>
+</tr>
+<tr>
+<td>Catalog/namespace listings</td>
+<td>≤ 15 min cross-instance; immediate same-process</td>
+<td>Topology cache TTL plus evict-on-write from DDL services</td>
+</tr>
+<tr>
+<td>Pinned data read within a query</td>
+<td>None by construction</td>
+<td>Immutable blobs plus live integrity reads</td>
+</tr>
+</tbody>
+</table>
+<p>Defaults for <code>floecat.root.pointer-cache-ttl-seconds</code> and <code>floecat.blob.cache.*</code> are set in
+<code>service/src/main/resources/application.properties</code>; the graph meta TTL and <code>floecat.topology.*</code>
+defaults come from their <code>@ConfigProperty</code> declarations (<code>UserGraph</code>, <code>CatalogTopologyCache</code>).</p>
 
 
 

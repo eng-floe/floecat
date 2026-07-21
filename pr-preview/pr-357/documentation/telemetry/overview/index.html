@@ -404,6 +404,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../../caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Caching
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../operations/" class="md-nav__link">
         
   
@@ -1928,6 +1951,7 @@ metric contract entries.</p>
 <li><strong><code>StoreMetrics</code></strong> wraps storage layer counters/timers (<code>bytes</code>, <code>requests</code>, <code>latency</code>) with the right tag set (<code>component</code>, <code>operation</code>, <code>result</code>, <code>status</code>). Callers record bytes or durations and the helper ensures every emission matches the <code>floecat.core.store.*</code> definitions.</li>
 <li><strong><code>GcMetrics</code></strong> handles scheduler health (enabled, running state, last tick timestamps) for pointer, CAS, and idempotency collectors. Each helper knows its <code>component</code>/<code>operation</code> pair and tags results/exceptions consistently.</li>
 <li><strong>Scheduler-driven gauges</strong> – the GC schedulers (<code>floecat.service.gc.*</code>) and storage refresher expose gauges that update when those schedulers run. The GC metrics (<code>enabled</code>, <code>running</code>, <code>last.tick.start.ms</code>, <code>last.tick.end.ms</code>) reflect the most recent tick and remain unchanged when the scheduler is disabled (<code>enabled=0</code>, <code>running=0</code>). The storage metrics update on the refresh schedule controlled by <code>floecat.metrics.storage.refresh</code> (default <code>30s</code>), so per-account gauges (<code>floecat.service.storage.account.*</code>) represent the last sampled snapshot rather than every write.</li>
+<li><strong>Reconcile job GC observability</strong> – reconcile job GC emits <code>floecat.core.gc.collections</code> result values for tick, ready-slice, account-slice, delete, and quarantine work. Unreadable canonical job payloads, dedupe-owned jobs, ready entries, and root summaries are retained and counted with <code>*-quarantined</code> result values instead of deleted. The scheduler also exposes service gauges under <code>floecat.service.gc.reconcile_jobs.*</code> for last-tick account throughput, current cached account-page position, active continuation-token count, last-tick quarantine count, and last-tick delete count. Each completed tick writes one INFO summary log with the same low-cardinality totals; failures write a WARN and increment <code>floecat.core.gc.errors</code> with <code>gc=reconcile-jobs</code>.</li>
 <li><strong><code>ObservationScope</code></strong> is the standard pattern for RPC/async spans: call <code>observability.observe(category, component, operation, tags...)</code>, use the returned scope to mark success/error/retry, then <code>close()</code>. Scopes emit latency, error, and retry metrics in addition to optional timers, so helpers prefer them to manual timer/counter manipulation. The Micrometer implementation provides real scopes for <code>Category.RPC</code>, <code>Category.STORE</code>, <code>Category.CACHE</code>, and <code>Category.GC</code>; only <code>BACKGROUND</code> and <code>OTHER</code> return a <code>NOOP_SCOPE</code>. This lets the helpers listed above reuse the same lifecycle hooks rather than sprinkling ad-hoc counters and timers around the code.</li>
 </ul>
 <p>Gauges emitted through these helpers can represent different sampling types:</p>

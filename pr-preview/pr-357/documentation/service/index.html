@@ -16,7 +16,7 @@
         <link rel="prev" href="../architecture/">
       
       
-        <link rel="next" href="../operations/">
+        <link rel="next" href="../caching/">
       
       
       <link rel="icon" href="../assets/images/favicon.png">
@@ -605,6 +605,29 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Caching
+    
+  </span>
+  
+
+      </a>
     </li>
   
 
@@ -1981,8 +2004,10 @@ query lifecycle / scan bundle logic.</p>
 <li><code>catalog/builtin</code> – Shared builtin catalog data model, validator, and loader helpers.</li>
 <li><code>service/query</code> – Query lifecycle management (<code>QueryContext</code>, <code>QueryContextStore</code>,
   <code>QueryServiceImpl</code>).</li>
-<li><code>service/query/graph</code> – MetadataGraph cache + immutable node models shared by planners/executors
-  (see <a href="../metadata-graph/"><code>docs/metadata-graph.md</code></a>).</li>
+<li><code>service/metagraph</code> – MetadataGraph runtime (façade, loader, resolvers, hint manager, topology
+  cache); the immutable node models live in <code>core/metagraph</code>, and the shared caches
+  (<code>ImmutableBlobCache</code>, <code>PointerTtlCache</code>) in <code>service/repo/cache/</code> (see
+  <a href="../metadata-graph/"><code>docs/metadata-graph.md</code></a> and <a href="../caching/"><code>docs/caching.md</code></a>).</li>
 <li><code>service/gc</code> – Scheduled cleanup for idempotency records, orphan pointers/blobs, stale transaction
   artifacts, and durable reconcile jobs.</li>
 <li><code>service/bootstrap</code> – Optional seeding of demo accounts and catalog data.</li>
@@ -2065,12 +2090,22 @@ configured location, caches them by engine kind, and exposes them through
 <code>x-engine-version</code>; the RPC always returns the filtered builtin bundle for the requested engine.</p>
 <h3 id="gc-and-bootstrap">GC and Bootstrap<a class="headerlink" href="#gc-and-bootstrap" title="Permanent link">&para;</a></h3>
 <p><code>IdempotencyGc</code> runs on a configurable cadence (see <code>floecat.gc.*</code> config) and sweeps expired
-idempotency records in slices to avoid starvation. <code>CasBlobGc</code> enumerates blob prefixes and removes
-CAS blobs with no remaining pointers once they exceed the configured min-age. <code>PointerGc</code> removes
+idempotency records in slices to avoid starvation. <code>CasBlobGc</code> performs a reachability-based sweep
+per account: the referenced set is built from live pointers, the pin roots of live query contexts,
+and the chains walked out of current table roots (root blob, manifest pages, and every
+definition/snapshot/generation-manifest/constraints blob they reference). A pinned root protects
+its whole chain, so pinned blobs stay readable for the query's lifetime. Deletes are fenced by a
+30 s min-age (<code>floecat.gc.cas.min-age-ms</code>, age since the blob was written), and any failed
+root-chain walk poisons the account's delete phase — the referenced set is untrustworthy, so
+nothing is deleted that pass (fail closed). <code>PointerGc</code> removes
 orphan/stale pointers. <code>TransactionGc</code> reaps expired/aborted transaction artifacts and dangling
 intent indices. <code>ReconcileJobGc</code> enforces durable reconcile retention and queue/dedupe cleanup for
-terminal jobs. It is retention-oriented GC, not a queue repair or index rebuild loop. <code>SeedRunner</code>
-populates demo data when <code>floecat.seed.enabled=true</code>.</p>
+terminal jobs. The default finished reconcile-job retention window is 24 h
+(<code>floecat.gc.reconcile-jobs.retention-ms=86400000</code>); older terminal jobs are removed from job-list
+and job-detail views after that window unless operators configure a longer retention period or update
+connector settings with <code>connector settings update --finished-job-retention-sec</code>. It is
+retention-oriented GC, not a queue repair or index rebuild loop. <code>SeedRunner</code> populates demo data
+when <code>floecat.seed.enabled=true</code>.</p>
 <p>For connector-backed fixture tables, seeding runs a combined reconcile pass per fixture scope
 using <code>METADATA_AND_CAPTURE</code>.</p>
 <p>This ingests metadata/snapshots and runs capture through the reconcile job tree for stats.
@@ -2140,7 +2175,7 @@ rows upserted after all batches have been consumed.</p>
 </tr>
 <tr>
 <td><code>floecat.gc.reconcile-jobs.*</code></td>
-<td>Cadence, retention, and slice settings for durable reconcile-job GC.</td>
+<td>Cadence, retention, and slice settings for durable reconcile-job GC. Finished terminal jobs default to 24 h retention.</td>
 </tr>
 <tr>
 <td><code>floecat.reconciler.job-store.*</code></td>
