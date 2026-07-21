@@ -510,6 +510,36 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
+  void resolveForStrictTableWithoutDestinationDoesNotUseDiscoveryScope() {
+    when(reconcileJobs.getLeaseView("job-1"))
+        .thenReturn(Optional.of(strictUnboundTableLeaseView()));
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setTableId(TABLE_ID)
+                            .setLocationPrefix("s3://warehouse/orders/metadata/v1.json")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1")))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+  }
+
+  @Test
   void resolveForDiscoveryTableRejectsTableFromDifferentSource() {
     when(reconcileJobs.getLeaseView("job-1")).thenReturn(Optional.of(discoveryTableLeaseView()));
     when(tableRepo.getById(TABLE_ID))
@@ -915,6 +945,35 @@ class StorageAuthorityServiceImplTest {
         "",
         ReconcileJobKind.PLAN_TABLE,
         ReconcileTableTask.discovery("src", "orders", "namespace-1", "orders"),
+        ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.empty(),
+        "");
+  }
+
+  private static ReconcileJobStore.ReconcileJob strictUnboundTableLeaseView() {
+    return new ReconcileJobStore.ReconcileJob(
+        "job-1",
+        "acct",
+        "conn-1",
+        "JS_RUNNING",
+        "",
+        1L,
+        1L,
+        1L,
+        1L,
+        0L,
+        0L,
+        0L,
+        false,
+        ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
+        0L,
+        0L,
+        ReconcileScope.empty(),
+        ReconcileExecutionPolicy.defaults(),
+        "",
+        ReconcileJobKind.PLAN_TABLE,
+        ReconcileTableTask.of("src", "orders"),
         ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
         ReconcileSnapshotTask.empty(),
         ReconcileFileGroupTask.empty(),

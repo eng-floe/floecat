@@ -581,6 +581,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     if (job == null
         || job.jobKind != ReconcileJobKind.PLAN_TABLE
         || job.tableTask == null
+        || !job.tableTask.discoveryMode()
         || (job.tableTask.destinationTableId() != null
             && !job.tableTask.destinationTableId().isBlank())) {
       return null;
