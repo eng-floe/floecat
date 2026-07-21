@@ -92,6 +92,8 @@ message DeleteNamespaceRequest {
   bool require_empty = 2;
   ai.floedb.floecat.common.Precondition precondition = 3;
   // Remove descendant namespaces and their tables and views before dropping this namespace.
+  // Concurrent changes to the root namespace metadata can cause the operation to make partial
+  // progress before its precondition fails; callers may retry after resolving the precondition.
   bool recursive = 4;
 }
 message DeleteNamespaceResponse {
