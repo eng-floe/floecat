@@ -30,6 +30,7 @@ import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.service.concurrent.BoundedFanout;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
@@ -37,8 +38,6 @@ import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.telemetry.AggregatingPhaseDiagnostics;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
-import io.opentelemetry.context.Context;
-import io.opentelemetry.context.Scope;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -50,12 +49,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.Semaphore;
 import org.eclipse.microprofile.context.ManagedExecutor;
 
 /**
@@ -402,48 +398,16 @@ public class QueryInputResolver {
       ResolutionState state,
       List<QueryInput> inputs,
       Map<NameRef, Optional<ResourceId>> resolvedNames) {
-    Semaphore gate = new Semaphore(MAX_PARALLEL_INPUT_RESOLUTIONS);
-    Context otelContext = Context.current();
     AggregatingPhaseDiagnostics taskDiagnostics = new AggregatingPhaseDiagnostics();
     ResolutionState taskState = state.withDiagnostics(taskDiagnostics);
-    List<CompletableFuture<InputPlan>> futures =
-        inputs.stream()
-            .map(
-                in ->
-                    CompletableFuture.supplyAsync(
-                        () -> {
-                          gate.acquireUninterruptibly();
-                          try (Scope ignored = otelContext.makeCurrent()) {
-                            return planInput(taskState, in, resolvedNames);
-                          } finally {
-                            gate.release();
-                          }
-                        },
-                        blockingExecutor))
-            .toList();
-
-    List<InputPlan> plans = new ArrayList<>(inputs.size());
-    for (CompletableFuture<InputPlan> future : futures) {
-      plans.add(joinUnwrapped(future));
-    }
+    List<InputPlan> plans =
+        BoundedFanout.mapOrdered(
+            inputs,
+            MAX_PARALLEL_INPUT_RESOLUTIONS,
+            blockingExecutor,
+            in -> planInput(taskState, in, resolvedNames));
     taskDiagnostics.flushInto(state.diagnostics);
     return plans;
-  }
-
-  /** Join a resolution task, surfacing its original (unwrapped) failure rather than a wrapper. */
-  private static InputPlan joinUnwrapped(CompletableFuture<InputPlan> future) {
-    try {
-      return future.join();
-    } catch (CompletionException ce) {
-      Throwable cause = ce.getCause();
-      if (cause instanceof RuntimeException re) {
-        throw re;
-      }
-      if (cause instanceof Error e) {
-        throw e;
-      }
-      throw new IllegalStateException("unexpected checked exception from input resolution", cause);
-    }
   }
 
   /**
