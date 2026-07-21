@@ -50,6 +50,7 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
@@ -74,6 +75,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   @Inject IdempotencyRepository idempotencyStore;
   @Inject UserGraph metadataGraph;
   @Inject TopologyGraph topology;
+  @Inject MarkerStore markerStore;
   @Inject CatalogOverlay overlay;
   @Inject EngineHintSchemaCleaner hintCleaner;
 
@@ -237,6 +239,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                     }
                     metadataGraph.invalidate(viewResourceId);
                     topology.evictRelationRefs(view.getNamespaceId());
+                    markerStore.bumpNamespaceMarker(view.getNamespaceId());
                     var meta = viewRepo.metaForSafe(viewResourceId);
                     return CreateViewResponse.newBuilder().setView(view).setMeta(meta).build();
                   }
@@ -279,6 +282,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                                     }
                                     metadataGraph.invalidate(viewResourceId);
                                     topology.evictRelationRefs(view.getNamespaceId());
+                                    markerStore.bumpNamespaceMarker(view.getNamespaceId());
                                     return new IdempotencyGuard.CreateResult<>(
                                         view, viewResourceId);
                                   },
@@ -400,6 +404,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   topology.evict(viewId);
                   if (!current.getNamespaceId().getId().equals(desired.getNamespaceId().getId())) {
                     topology.evictRelationRefs(desired.getNamespaceId());
+                    markerStore.bumpNamespaceMarker(current.getNamespaceId());
+                    markerStore.bumpNamespaceMarker(desired.getNamespaceId());
                   }
                   metadataGraph.invalidate(viewId);
 
@@ -431,6 +437,13 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   catalogSurfaceWritePolicy()
                       .requireWritableViewForDelete(viewId, correlationId, callerCares);
 
+                  View existing = null;
+                  try {
+                    existing = viewRepo.getById(viewId).orElse(null);
+                  } catch (BaseResourceRepository.CorruptionException ignore) {
+                    // Marker bump is best-effort; permit deletion of a missing or corrupt blob.
+                  }
+
                   MutationMeta meta;
                   try {
                     meta = viewRepo.metaFor(viewId);
@@ -443,6 +456,9 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                         correlationId, safe, request.getPrecondition());
                     topology.evict(viewId);
                     metadataGraph.invalidate(viewId);
+                    if (existing != null) {
+                      markerStore.bumpNamespaceMarker(existing.getNamespaceId());
+                    }
                     return DeleteViewResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -458,6 +474,9 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
                   topology.evict(viewId);
                   metadataGraph.invalidate(viewId);
+                  if (existing != null) {
+                    markerStore.bumpNamespaceMarker(existing.getNamespaceId());
+                  }
                   return DeleteViewResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())
