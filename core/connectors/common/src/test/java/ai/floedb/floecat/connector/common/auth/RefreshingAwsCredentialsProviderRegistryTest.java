@@ -18,9 +18,12 @@ package ai.floedb.floecat.connector.common.auth;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Handler;
 import java.util.logging.Level;
@@ -29,6 +32,38 @@ import java.util.logging.Logger;
 import org.junit.jupiter.api.Test;
 
 class RefreshingAwsCredentialsProviderRegistryTest {
+  @Test
+  void cachesTerminalRefreshFailure() {
+    String providerId = "terminal-refresh-test";
+    AtomicInteger refreshes = new AtomicInteger();
+    TerminalCredentialRefreshException terminal =
+        new TerminalCredentialRefreshException("lease lost", new IllegalStateException("stale"));
+    try {
+      RefreshingAwsCredentialsProviderRegistry.register(
+          providerId,
+          credentials("old", Instant.now().minusSeconds(1)),
+          () -> {
+            refreshes.incrementAndGet();
+            throw terminal;
+          },
+          Duration.ZERO);
+
+      assertSame(
+          terminal,
+          assertThrows(
+              TerminalCredentialRefreshException.class,
+              () -> RefreshingAwsCredentialsProviderRegistry.resolve(providerId)));
+      assertSame(
+          terminal,
+          assertThrows(
+              TerminalCredentialRefreshException.class,
+              () -> RefreshingAwsCredentialsProviderRegistry.resolve(providerId)));
+      assertEquals(1, refreshes.get());
+    } finally {
+      RefreshingAwsCredentialsProviderRegistry.unregister(providerId);
+    }
+  }
+
   @Test
   void logsSuccessfulCredentialRefreshAtInfo() {
     String providerId = "refresh-log-test";

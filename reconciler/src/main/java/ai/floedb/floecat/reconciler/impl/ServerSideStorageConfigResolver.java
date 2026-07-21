@@ -19,6 +19,7 @@ package ai.floedb.floecat.reconciler.impl;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
 import ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials;
+import ai.floedb.floecat.connector.common.auth.TerminalCredentialRefreshException;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
@@ -28,6 +29,8 @@ import ai.floedb.floecat.storage.rpc.StorageCredentialUsage;
 import ai.floedb.floecat.storage.rpc.VendStorageCredentialsRequest;
 import ai.floedb.floecat.storage.rpc.VendedStorageCredential;
 import io.grpc.Metadata;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.grpc.stub.AbstractStub;
 import io.grpc.stub.MetadataUtils;
 import io.quarkus.grpc.GrpcClient;
@@ -357,11 +360,20 @@ public class ServerSideStorageConfigResolver {
       Optional<ResourceId> tableId,
       Optional<String> executionJobId,
       Optional<String> executionLeaseEpoch) {
-    ResolveStorageAuthorityResponse response =
-        withHeaders(storageAuthorities, correlationId, authorizationToken)
-            .vendStorageCredentials(
-                resolveRequest(
-                    accountId, locationPrefix, tableId, executionJobId, executionLeaseEpoch));
+    ResolveStorageAuthorityResponse response;
+    try {
+      response =
+          withHeaders(storageAuthorities, correlationId, authorizationToken)
+              .vendStorageCredentials(
+                  resolveRequest(
+                      accountId, locationPrefix, tableId, executionJobId, executionLeaseEpoch));
+    } catch (StatusRuntimeException error) {
+      if (isTerminalExecutionCredentialRefresh(error)) {
+        throw new TerminalCredentialRefreshException(
+            "Execution-bound storage credential refresh was rejected", error);
+      }
+      throw error;
+    }
     return resolvedStorageCredentials(response)
         .filter(ServerSideStorageConfigResolver::isRefreshableExecutionCredential)
         .orElseThrow(
@@ -369,6 +381,13 @@ public class ServerSideStorageConfigResolver {
                 new IllegalStateException(
                     "Expected refreshable execution-bound credentials with access key, secret key,"
                         + " session token, and expiresAt"));
+  }
+
+  private static boolean isTerminalExecutionCredentialRefresh(StatusRuntimeException error) {
+    Status.Code code = error.getStatus().getCode();
+    return code == Status.Code.FAILED_PRECONDITION
+        || code == Status.Code.UNAUTHENTICATED
+        || code == Status.Code.PERMISSION_DENIED;
   }
 
   static Optional<ResolvedStorageCredentials> resolvedStorageCredentials(

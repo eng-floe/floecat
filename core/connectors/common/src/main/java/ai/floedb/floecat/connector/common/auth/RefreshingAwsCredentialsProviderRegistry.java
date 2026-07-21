@@ -150,6 +150,7 @@ public final class RefreshingAwsCredentialsProviderRegistry {
     private final Supplier<ResolvedStorageCredentials> refresher;
     private final Duration refreshSkew;
     private volatile ResolvedStorageCredentials current;
+    private volatile TerminalCredentialRefreshException terminalFailure;
 
     private Entry(
         ResolvedStorageCredentials initialCredentials,
@@ -161,10 +162,18 @@ public final class RefreshingAwsCredentialsProviderRegistry {
     }
 
     private AwsCredentials resolveCredentials() {
+      TerminalCredentialRefreshException terminal = terminalFailure;
+      if (terminal != null) {
+        throw terminal;
+      }
       ResolvedStorageCredentials snapshot = current;
       Instant now = Instant.now();
       if (shouldRefresh(snapshot, refreshSkew, now)) {
         synchronized (this) {
+          terminal = terminalFailure;
+          if (terminal != null) {
+            throw terminal;
+          }
           snapshot = current;
           now = Instant.now();
           if (shouldRefresh(snapshot, refreshSkew, now)) {
@@ -182,6 +191,10 @@ public final class RefreshingAwsCredentialsProviderRegistry {
                     snapshot == null ? null : snapshot.expiresAt(), refreshed.expiresAt()
                   });
             } catch (RuntimeException e) {
+              if (e instanceof TerminalCredentialRefreshException terminalRefresh) {
+                terminalFailure = terminalRefresh;
+                throw terminalRefresh;
+              }
               if (snapshot != null
                   && snapshot.expiresAt() != null
                   && now.isBefore(snapshot.expiresAt())) {

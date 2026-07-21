@@ -24,12 +24,14 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
+import ai.floedb.floecat.connector.common.auth.TerminalCredentialRefreshException;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
@@ -770,6 +772,78 @@ class ServerSideStorageConfigResolverTest {
       assertEquals("test-access-2", credentials.accessKeyId());
       assertEquals("test-secret-2", credentials.secretAccessKey());
       assertEquals("test-session-2", credentials.sessionToken());
+    }
+  }
+
+  @Test
+  void rejectedExecutionLeaseStopsAndCachesCredentialRefresh() {
+    ServerSideStorageConfigResolver resolver =
+        new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
+    resolver.storageAuthorities = mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
+    when(resolver.storageAuthorities.withInterceptors(any()))
+        .thenReturn(resolver.storageAuthorities);
+    when(resolver.storageAuthorities.vendStorageCredentials(any()))
+        .thenReturn(
+            ResolveStorageAuthorityResponse.newBuilder()
+                .addStorageCredentials(
+                    VendedStorageCredential.newBuilder()
+                        .putConfig("s3.access-key-id", "test-access")
+                        .putConfig("s3.secret-access-key", "test-secret")
+                        .putConfig("s3.session-token", "test-session")
+                        .setExpiresAt(
+                            com.google.protobuf.util.Timestamps.fromMillis(
+                                Instant.now().minusSeconds(1).toEpochMilli())))
+                .build())
+        .thenThrow(
+            Status.FAILED_PRECONDITION
+                .withDescription("reconcile lease is no longer valid")
+                .asRuntimeException());
+
+    Connector connector =
+        Connector.newBuilder()
+            .setKind(ConnectorKind.CK_DELTA)
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("conn")
+                    .setKind(ResourceKind.RK_CONNECTOR)
+                    .build())
+            .build();
+    ConnectorConfig config =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "delta",
+            "http://localhost",
+            Map.of("delta.source", "unity"),
+            new ConnectorConfig.Auth("none", Map.of(), Map.of()));
+
+    try (var resolved =
+        resolver.resolveManagedWithAuthorization(
+            java.util.Optional.of("token"),
+            java.util.Optional.of("job-1"),
+            java.util.Optional.of("lease-1"),
+            java.util.Optional.of("s3://bucket/table"),
+            java.util.Optional.empty(),
+            connector,
+            config)) {
+      String providerId =
+          resolved
+              .config()
+              .options()
+              .get(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
+
+      TerminalCredentialRefreshException first =
+          assertThrows(
+              TerminalCredentialRefreshException.class,
+              () -> RefreshingAwsCredentialsProviderRegistry.resolve(providerId));
+      TerminalCredentialRefreshException second =
+          assertThrows(
+              TerminalCredentialRefreshException.class,
+              () -> RefreshingAwsCredentialsProviderRegistry.resolve(providerId));
+
+      assertEquals(first, second);
+      assertInstanceOf(StatusRuntimeException.class, first.getCause());
+      verify(resolver.storageAuthorities, times(2)).vendStorageCredentials(any());
     }
   }
 
