@@ -21,7 +21,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
-import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -38,7 +37,6 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
   // anywhere (a failing job would silently requeue and retry).
   private static final Logger LOG = Logger.getLogger(RemoteDefaultReconcileExecutor.class);
 
-  private final ReconcilerService reconcilerService;
   private final QueuedReconcileWorkerSupport queuedWorkerSupport;
   private final RemotePlannerWorkerClient workerClient;
   private final ReconcileWorkerAuthProvider reconcileWorkerAuthProvider;
@@ -47,7 +45,6 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
 
   @Inject
   public RemoteDefaultReconcileExecutor(
-      ReconcilerService reconcilerService,
       QueuedReconcileWorkerSupport queuedWorkerSupport,
       RemotePlannerWorkerClient workerClient,
       ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
@@ -57,7 +54,6 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
           boolean enabled,
       @ConfigProperty(name = "floecat.reconciler.worker.auth.required", defaultValue = "true")
           boolean workerAuthRequired) {
-    this.reconcilerService = reconcilerService;
     this.queuedWorkerSupport = queuedWorkerSupport;
     this.workerClient = workerClient;
     this.reconcileWorkerAuthProvider = reconcileWorkerAuthProvider;
@@ -66,18 +62,11 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
   }
 
   RemoteDefaultReconcileExecutor(
-      ReconcilerService reconcilerService,
       QueuedReconcileWorkerSupport queuedWorkerSupport,
       RemotePlannerWorkerClient workerClient,
       ReconcileWorkerAuthProvider reconcileWorkerAuthProvider,
       boolean enabled) {
-    this(
-        reconcilerService,
-        queuedWorkerSupport,
-        workerClient,
-        reconcileWorkerAuthProvider,
-        enabled,
-        true);
+    this(queuedWorkerSupport, workerClient, reconcileWorkerAuthProvider, enabled, true);
   }
 
   @Override
@@ -210,9 +199,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
 
     List<ReconcileSnapshotTask> snapshotTasks;
     try {
-      snapshotTasks =
-          snapshotTasksForSuccessfulPlan(
-              principal, connectorId, payload, tableExecution, remoteLease);
+      snapshotTasks = snapshotTasksForSuccessfulPlan(payload, tableExecution);
     } catch (Exception e) {
       Exception classified =
           e instanceof ReconcileFailureException failure
@@ -393,11 +380,8 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
   }
 
   private List<ReconcileSnapshotTask> snapshotTasksForSuccessfulPlan(
-      PrincipalContext principal,
-      ResourceId connectorId,
       StandalonePlanTablePayload payload,
-      QueuedReconcileWorkerSupport.TableExecutionResult tableExecution,
-      RemoteLeasedJob remoteLease) {
+      QueuedReconcileWorkerSupport.TableExecutionResult tableExecution) {
     if (payload.captureMode() == ReconcilerService.CaptureMode.METADATA_ONLY) {
       return List.of();
     }
@@ -408,17 +392,17 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
         || task.destinationTableId().isBlank()) {
       return List.of();
     }
-    ReconcileScope scope = payload.scope() == null ? ReconcileScope.empty() : payload.scope();
-    return reconcilerService.planSnapshotTasks(
-        principal,
-        connectorId,
-        payload.fullRescan(),
-        scope,
-        task,
-        payload.captureMode(),
-        workerAuthorizationHeader(principal.getAccountId()),
-        remoteLease.lease().jobId,
-        remoteLease.lease().leaseEpoch);
+    return tableExecution.enumeratedSnapshotIds().stream()
+        .filter(snapshotId -> snapshotId != null && snapshotId >= 0L)
+        .map(
+            snapshotId ->
+                ReconcileSnapshotTask.of(
+                    task.destinationTableId(),
+                    snapshotId,
+                    task.sourceNamespace(),
+                    task.sourceTable()))
+        .distinct()
+        .toList();
   }
 
   private String workerAuthorizationHeader(String accountId) {

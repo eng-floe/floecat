@@ -611,7 +611,7 @@ public class ReconcilerService {
     return Optional.of(Set.copyOf(selection.snapshotIds()));
   }
 
-  private boolean isSnapshotCaptureCompleteForScope(
+  boolean isSnapshotCaptureCompleteForScope(
       ReconcileContext ctx,
       ResourceId tableId,
       long snapshotId,

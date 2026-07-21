@@ -39,6 +39,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService.ActiveConnector;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
@@ -91,7 +92,12 @@ class QueuedReconcileWorkerSupport {
 
   record PlannedViewMutationResult(ExecutionResult result, PlannedViewMutation mutation) {}
 
-  record TableExecutionResult(ExecutionResult result, List<String> matchedTableIds) {}
+  record TableExecutionResult(
+      ExecutionResult result, List<String> matchedTableIds, List<Long> enumeratedSnapshotIds) {
+    TableExecutionResult(ExecutionResult result, List<String> matchedTableIds) {
+      this(result, matchedTableIds, List.of());
+    }
+  }
 
   @Inject ReconcilerService reconcilerService;
   @Inject ReconcilerBackend backend;
@@ -123,7 +129,8 @@ class QueuedReconcileWorkerSupport {
             executionLeaseEpoch,
             cancelRequested,
             progressListener);
-    return new TableExecutionResult(toExecutionResult(result), result.matchedTableIds());
+    return new TableExecutionResult(
+        toExecutionResult(result), result.matchedTableIds(), result.enumeratedSnapshotIds());
   }
 
   PlannedViewMutationResult prepareViewMutation(
@@ -1070,16 +1077,26 @@ class QueuedReconcileWorkerSupport {
         !tableScopedCaptureRequestsBySnapshot.isEmpty()
             ? tableScopedCaptureRequestsBySnapshot.keySet()
             : Set.of();
-    Set<Long> knownSnapshotIds = fullRescan ? Set.of() : backend.existingSnapshotIds(ctx, tableId);
+    boolean captureOnly = captureMode == CaptureMode.CAPTURE_ONLY;
+    Set<Long> knownSnapshotIds =
+        (captureOnly || !fullRescan) ? backend.existingSnapshotIds(ctx, tableId) : Set.of();
+    ReconcileCapturePolicy capturePolicy =
+        ReconcilerService.effectiveCapturePolicy(scope, captureMode);
     Set<Long> enumerationKnownSnapshotIds =
         reconcilerService.enumerationKnownSnapshotIds(
             ctx,
             tableId,
             fullRescan,
             knownSnapshotIds,
-            ReconcileCapturePolicy.empty(),
+            capturePolicy,
             tableScopedCaptureRequestsBySnapshot,
             defaultColumnSelectors);
+    ReconcileSnapshotSelection enumerationSelection =
+        captureOnly
+            ? ReconcilerService.captureOnlyEnumerationSelection(
+                scope.snapshotSelection(), knownSnapshotIds, targetSnapshotIds)
+            : scope.snapshotSelection();
+    boolean enumerationFullRescan = captureOnly || fullRescan;
 
     MetadataPassOutcome outcome;
     try (var tableScoped = reconcilerService.tableScopedResolvedConfig(ctx, active, tableId)) {
@@ -1095,7 +1112,8 @@ class QueuedReconcileWorkerSupport {
                   tableScopedConnector,
                   table.sourceNamespace(),
                   table.sourceTable(),
-                  fullRescan,
+                  enumerationSelection,
+                  enumerationFullRescan,
                   includeCoreMetadata,
                   knownSnapshotIds,
                   enumerationKnownSnapshotIds,
@@ -1117,7 +1135,8 @@ class QueuedReconcileWorkerSupport {
                 connector,
                 table.sourceNamespace(),
                 table.sourceTable(),
-                fullRescan,
+                enumerationSelection,
+                enumerationFullRescan,
                 includeCoreMetadata,
                 knownSnapshotIds,
                 enumerationKnownSnapshotIds,
@@ -1135,6 +1154,23 @@ class QueuedReconcileWorkerSupport {
     long statsProcessed = 0L;
     long tablesChanged =
         destinationTable.tableMetadataChanged() || outcome.tableChanged() ? 1L : 0L;
+    boolean requiresCaptureOutputs =
+        capturePolicy.requestsStats() || capturePolicy.requestsIndexes();
+    List<Long> captureSnapshotIds =
+        outcome.enumeratedSnapshotIds().stream()
+            .filter(
+                snapshotId ->
+                    fullRescan
+                        || !requiresCaptureOutputs
+                        || !reconcilerService.isSnapshotCaptureCompleteForScope(
+                            ctx,
+                            tableId,
+                            snapshotId,
+                            capturePolicy,
+                            tableScopedCaptureRequestsBySnapshot.getOrDefault(
+                                snapshotId, List.of()),
+                            defaultColumnSelectors))
+            .toList();
     if (progressState != null) {
       progressState.observe(
           tablesScannedBase + tablesScanned,
@@ -1158,6 +1194,7 @@ class QueuedReconcileWorkerSupport {
         tablesChanged,
         snapshotsProcessed,
         statsProcessed,
+        captureSnapshotIds,
         Optional.empty(),
         Optional.empty());
   }
@@ -1339,7 +1376,8 @@ class QueuedReconcileWorkerSupport {
       FloecatConnector connector,
       String sourceNs,
       String sourceTable,
-      boolean fullRescan,
+      ReconcileSnapshotSelection enumerationSelection,
+      boolean enumerationFullRescan,
       boolean includeCoreMetadata,
       Set<Long> knownSnapshotIds,
       Set<Long> enumerationKnownSnapshotIds,
@@ -1357,8 +1395,8 @@ class QueuedReconcileWorkerSupport {
             sourceTable,
             tableId,
             ReconcilerService.snapshotEnumerationOptions(
-                scope.snapshotSelection(),
-                fullRescan,
+                enumerationSelection,
+                enumerationFullRescan,
                 enumerationKnownSnapshotIds,
                 targetSnapshotIds));
     List<FloecatConnector.SnapshotBundle> bundles =
@@ -1384,7 +1422,14 @@ class QueuedReconcileWorkerSupport {
             errors,
             snapshotsProcessedBase,
             statsProcessedBase);
-    return new MetadataPassOutcome(ingestCounts, ingestCounts.tableChanged);
+    List<Long> enumeratedSnapshotIds =
+        bundles.stream()
+            .filter(java.util.Objects::nonNull)
+            .map(FloecatConnector.SnapshotBundle::snapshotId)
+            .filter(snapshotId -> snapshotId >= 0L)
+            .distinct()
+            .toList();
+    return new MetadataPassOutcome(ingestCounts, ingestCounts.tableChanged, enumeratedSnapshotIds);
   }
 
   private boolean maybeIngestSnapshotConstraints(
@@ -1521,7 +1566,8 @@ class QueuedReconcileWorkerSupport {
         outcome.statsProcessed(),
         null,
         outcome.degradedReason().map(List::of).orElseGet(List::of),
-        matchedTableIds);
+        matchedTableIds,
+        outcome.enumeratedSnapshotIds());
   }
 
   private static Result tableFailureResult(TableExecutionOutcome outcome) {
@@ -1539,7 +1585,8 @@ class QueuedReconcileWorkerSupport {
         outcome.statsProcessed(),
         new RuntimeException(outcome.errorReason().orElse("unknown error")),
         outcome.degradedReason().map(List::of).orElseGet(List::of),
-        matchedTableIds);
+        matchedTableIds,
+        outcome.enumeratedSnapshotIds());
   }
 
   private static ExecutionResult toExecutionResult(Result result) {
@@ -1810,6 +1857,7 @@ class QueuedReconcileWorkerSupport {
     public final Exception error;
     public final List<String> degradedReasons;
     private final List<String> matchedTableIds;
+    private final List<Long> enumeratedSnapshotIds;
 
     private Result(
         long tablesScanned,
@@ -1882,6 +1930,7 @@ class QueuedReconcileWorkerSupport {
           statsProcessed,
           error,
           degradedReasons,
+          List.of(),
           List.of());
     }
 
@@ -1895,7 +1944,8 @@ class QueuedReconcileWorkerSupport {
         long statsProcessed,
         Exception error,
         List<String> degradedReasons,
-        List<String> matchedTableIds) {
+        List<String> matchedTableIds,
+        List<Long> enumeratedSnapshotIds) {
       this.tablesScanned = tablesScanned;
       this.tablesChanged = tablesChanged;
       this.viewsScanned = viewsScanned;
@@ -1914,6 +1964,14 @@ class QueuedReconcileWorkerSupport {
           matchedTableIds == null || matchedTableIds.isEmpty()
               ? List.of()
               : matchedTableIds.stream().filter(id -> id != null && !id.isBlank()).toList();
+      this.enumeratedSnapshotIds =
+          enumeratedSnapshotIds == null || enumeratedSnapshotIds.isEmpty()
+              ? List.of()
+              : enumeratedSnapshotIds.stream()
+                  .filter(java.util.Objects::nonNull)
+                  .filter(id -> id >= 0L)
+                  .distinct()
+                  .toList();
     }
 
     private boolean ok() {
@@ -1926,6 +1984,10 @@ class QueuedReconcileWorkerSupport {
 
     private List<String> matchedTableIds() {
       return matchedTableIds;
+    }
+
+    private List<Long> enumeratedSnapshotIds() {
+      return enumeratedSnapshotIds;
     }
 
     private String message() {
@@ -2038,10 +2100,12 @@ class QueuedReconcileWorkerSupport {
       long tablesChanged,
       long snapshotsProcessed,
       long statsProcessed,
+      List<Long> enumeratedSnapshotIds,
       Optional<String> degradedReason,
       Optional<String> errorReason) {
     private static TableExecutionOutcome skipped() {
-      return new TableExecutionOutcome(null, 0L, 0L, 0L, 0L, Optional.empty(), Optional.empty());
+      return new TableExecutionOutcome(
+          null, 0L, 0L, 0L, 0L, List.of(), Optional.empty(), Optional.empty());
     }
   }
 
@@ -2061,5 +2125,6 @@ class QueuedReconcileWorkerSupport {
     }
   }
 
-  private record MetadataPassOutcome(IngestCounts ingestCounts, boolean tableChanged) {}
+  private record MetadataPassOutcome(
+      IngestCounts ingestCounts, boolean tableChanged, List<Long> enumeratedSnapshotIds) {}
 }

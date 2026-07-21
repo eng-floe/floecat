@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -37,19 +38,74 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class RemoteDefaultReconcileExecutorTest {
 
   @Test
+  void executeTablePlansCaptureFromExactMetadataEnumeration() {
+    QueuedReconcileWorkerSupport queuedWorkerSupport = mock(QueuedReconcileWorkerSupport.class);
+    RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
+    ReconcileWorkerAuthProvider authProvider = accountId -> java.util.Optional.empty();
+    var executor =
+        new RemoteDefaultReconcileExecutor(queuedWorkerSupport, workerClient, authProvider, true);
+    ReconcileJobStore.LeasedJob lease =
+        tableLease(
+            "job-metadata-capture", "acct-a", ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
+    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
+    when(workerClient.getPlanTableInput(remoteLease))
+        .thenReturn(planTablePayload(lease, connectorId("acct-a")));
+    when(queuedWorkerSupport.executePlannedTable(
+            any(),
+            eq(connectorId("acct-a")),
+            eq(false),
+            any(),
+            any(),
+            eq(ReconcilerService.CaptureMode.METADATA_AND_CAPTURE),
+            eq(null),
+            eq("job-metadata-capture"),
+            eq("lease-job-metadata-capture"),
+            any(),
+            any()))
+        .thenReturn(
+            new QueuedReconcileWorkerSupport.TableExecutionResult(
+                ReconcileExecutor.ExecutionResult.success(1, 1, 0, 2, 0, "ok"),
+                List.of("table-1"),
+                List.of(1454930L, 1454933L)));
+    when(workerClient.submitPlanTableSuccess(
+            any(), any(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
+        .thenReturn(true);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertTrue(result.ok());
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<PlannedSnapshotJob>> jobsCaptor = ArgumentCaptor.forClass(List.class);
+    verify(workerClient)
+        .submitPlanTableSuccess(
+            eq(remoteLease),
+            jobsCaptor.capture(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong(),
+            anyLong());
+    assertEquals(
+        List.of(1454930L, 1454933L),
+        jobsCaptor.getValue().stream().map(job -> job.snapshotTask().snapshotId()).toList());
+  }
+
+  @Test
   void executeTableDoesNotLeakWorkerAuthorizationAcrossAccounts() {
-    ReconcilerService reconcilerService = mock(ReconcilerService.class);
     QueuedReconcileWorkerSupport queuedWorkerSupport = mock(QueuedReconcileWorkerSupport.class);
     RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
     ReconcileWorkerAuthProvider authProvider =
         accountId -> java.util.Optional.of("Bearer worker-token-" + accountId);
     var executor =
-        new RemoteDefaultReconcileExecutor(
-            reconcilerService, queuedWorkerSupport, workerClient, authProvider, true);
+        new RemoteDefaultReconcileExecutor(queuedWorkerSupport, workerClient, authProvider, true);
 
     ReconcileJobStore.LeasedJob leaseOne = tableLease("job-1", "acct-a");
     ReconcileJobStore.LeasedJob leaseTwo = tableLease("job-2", "acct-b");
@@ -139,13 +195,11 @@ class RemoteDefaultReconcileExecutorTest {
 
   @Test
   void executeTableMarksCompletionStartedWhenRemoteLeasePreconditionFails() {
-    ReconcilerService reconcilerService = mock(ReconcilerService.class);
     QueuedReconcileWorkerSupport queuedWorkerSupport = mock(QueuedReconcileWorkerSupport.class);
     RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
     ReconcileWorkerAuthProvider authProvider = accountId -> java.util.Optional.empty();
     var executor =
-        new RemoteDefaultReconcileExecutor(
-            reconcilerService, queuedWorkerSupport, workerClient, authProvider, true);
+        new RemoteDefaultReconcileExecutor(queuedWorkerSupport, workerClient, authProvider, true);
 
     ReconcileJobStore.LeasedJob lease = tableLease("job-precondition", "acct-a");
     RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
@@ -185,13 +239,11 @@ class RemoteDefaultReconcileExecutorTest {
 
   @Test
   void executeViewMarksCompletionStartedWhenRemoteLeasePreconditionFails() {
-    ReconcilerService reconcilerService = mock(ReconcilerService.class);
     QueuedReconcileWorkerSupport queuedWorkerSupport = mock(QueuedReconcileWorkerSupport.class);
     RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
     ReconcileWorkerAuthProvider authProvider = accountId -> java.util.Optional.empty();
     var executor =
-        new RemoteDefaultReconcileExecutor(
-            reconcilerService, queuedWorkerSupport, workerClient, authProvider, true);
+        new RemoteDefaultReconcileExecutor(queuedWorkerSupport, workerClient, authProvider, true);
 
     ReconcileJobStore.LeasedJob lease = viewLease("job-view-precondition", "acct-a");
     RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
@@ -227,12 +279,17 @@ class RemoteDefaultReconcileExecutorTest {
   }
 
   private static ReconcileJobStore.LeasedJob tableLease(String jobId, String accountId) {
+    return tableLease(jobId, accountId, ReconcilerService.CaptureMode.METADATA_ONLY);
+  }
+
+  private static ReconcileJobStore.LeasedJob tableLease(
+      String jobId, String accountId, ReconcilerService.CaptureMode captureMode) {
     return new ReconcileJobStore.LeasedJob(
         jobId,
         accountId,
         "connector-1",
         false,
-        ReconcilerService.CaptureMode.METADATA_ONLY,
+        captureMode,
         ReconcileScope.empty(),
         ReconcileExecutionPolicy.defaults(),
         "lease-" + jobId,

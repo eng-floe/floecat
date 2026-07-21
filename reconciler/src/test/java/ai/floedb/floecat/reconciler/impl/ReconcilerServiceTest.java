@@ -1561,7 +1561,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
   }
 
   @Test
-  void metadataExecutionIgnoresCaptureCompletenessWhenCaptureRunsOutOfBand() {
+  void metadataExecutionIncludesCaptureIncompleteSnapshotsInSingleEnumeration() {
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId("acct")
@@ -1698,7 +1698,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
             tableId, false, scope, ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
 
     assertThat(result.ok()).isTrue();
-    assertThat(backend.capturedKnownSnapshotIds).containsExactly(42L);
+    assertThat(backend.capturedKnownSnapshotIds).isEmpty();
   }
 
   @Test

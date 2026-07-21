@@ -28,6 +28,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultResponse;
+import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.MutationOps;
@@ -45,6 +46,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
   @Inject SnapshotFinalizePersistenceService persistence;
   @Inject SnapshotFinalizeCoverageService coverageService;
   @Inject SnapshotFinalizeChildStateService childStateService;
+  @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
 
   public boolean persistChunk(
       PrincipalContext principalContext,
@@ -112,6 +114,8 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                     () -> {
                       finalizeChunkedSuccess(
                           lease, snapshotTask, tableId, snapshotTask.snapshotId());
+                      currentSnapshotPointerService.maybeAdvance(
+                          tableId, snapshotTask.snapshotId(), lease.jobId);
                       boolean accepted =
                           jobs.applyLeaseOutcome(
                               lease.jobId,
