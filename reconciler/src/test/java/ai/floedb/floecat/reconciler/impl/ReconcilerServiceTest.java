@@ -31,6 +31,7 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -51,11 +52,91 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
   private static final String DEST_CATALOG = "cat-1";
   private static final List<String> DEST_NAMESPACE_PATH = List.of("dest_ns");
+
+  @Test
+  void snapshotPlanningVendsOnlyTableScopedStorageCredentials() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    Connector connector =
+        activeConnector().toBuilder().putProperties("storage_location", "s3://warehouse").build();
+    AtomicInteger resolveCalls = new AtomicInteger();
+    AtomicReference<Optional<String>> resolvedLocation = new AtomicReference<>();
+    AtomicReference<Optional<ResourceId>> resolvedTableId = new AtomicReference<>();
+    service.serverSideStorageConfigResolver =
+        new ServerSideStorageConfigResolver(Optional.empty(), Optional.empty()) {
+          @Override
+          public ResolvedConnectorConfig resolveManagedWithAuthorization(
+              Optional<String> authorizationToken,
+              Optional<String> executionJobId,
+              Optional<String> executionLeaseEpoch,
+              Optional<String> storageLocation,
+              Optional<ResourceId> requestedTableId,
+              Connector requestedConnector,
+              ConnectorConfig config) {
+            resolveCalls.incrementAndGet();
+            resolvedLocation.set(storageLocation);
+            resolvedTableId.set(requestedTableId);
+            return new ResolvedConnectorConfig(config, () -> {});
+          }
+        };
+    service.backend =
+        new DefaultBackend() {
+          @Override
+          public Connector lookupConnector(ReconcileContext ctx, ResourceId ignoredConnectorId) {
+            return connector;
+          }
+
+          @Override
+          public Optional<DestinationTableMetadata> lookupDestinationTableMetadata(
+              ReconcileContext ctx, ResourceId ignoredTableId) {
+            return Optional.of(
+                new DestinationTableMetadata(
+                    ResourceId.newBuilder()
+                        .setAccountId("acct")
+                        .setKind(ResourceKind.RK_CATALOG)
+                        .setId("cat-1")
+                        .build(),
+                    ResourceId.newBuilder()
+                        .setAccountId("acct")
+                        .setKind(ResourceKind.RK_NAMESPACE)
+                        .setId("ns-1")
+                        .build(),
+                    "tbl",
+                    "src_cat.src_ns",
+                    "tbl",
+                    connectorId,
+                    "s3://warehouse/table-1",
+                    ""));
+          }
+        };
+    service.connectorOpener = config -> new FakeConnector(List.of());
+
+    service.planSnapshotTasks(
+        principal,
+        connectorId,
+        false,
+        ReconcileScope.empty(),
+        ReconcileTableTask.of("src_cat.src_ns", "tbl", tableId.getId(), "tbl"),
+        ReconcilerService.CaptureMode.METADATA_ONLY,
+        "token",
+        "job-1",
+        "lease-1");
+
+    assertThat(resolveCalls).hasValue(1);
+    assertThat(resolvedLocation.get()).contains("s3://warehouse/table-1");
+    assertThat(resolvedTableId.get()).contains(tableId);
+  }
 
   @Test
   void tableFilterPlanningRejectsMetadataWithoutSourceIdentity() {

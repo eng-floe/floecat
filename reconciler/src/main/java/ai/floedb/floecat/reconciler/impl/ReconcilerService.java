@@ -290,7 +290,7 @@ public class ReconcilerService {
             Optional.ofNullable(bearerToken),
             Optional.ofNullable(executionJobId),
             Optional.ofNullable(executionLeaseEpoch));
-    try (ActiveConnector active = activeConnectorForResult(ctx, connectorId)) {
+    try (ActiveConnector active = activeConnectorForTableScopedResult(ctx, connectorId)) {
       ResourceId tableId =
           ResourceId.newBuilder()
               .setAccountId(connectorId.getAccountId())
@@ -1199,17 +1199,24 @@ public class ReconcilerService {
 
   private ActiveConnector activeConnector(
       ReconcileContext ctx, Connector connector, ResourceId connectorId) {
+    return activeConnector(ctx, connector, connectorId, true);
+  }
+
+  private ActiveConnector activeConnector(
+      ReconcileContext ctx,
+      Connector connector,
+      ResourceId connectorId,
+      boolean resolveServerSideStorage) {
     if (connector.getState() != ConnectorState.CS_ACTIVE) {
       throw new IllegalStateException("Connector not ACTIVE: " + connectorId.getId());
     }
     ConnectorConfig config = ConnectorConfigMapper.fromProto(connector);
+    ConnectorConfig authenticated = resolveCredentials(config, connector.getAuth(), connectorId);
     ServerSideStorageConfigResolver.ResolvedConnectorConfig resolved =
-        resolveManagedServerSideStorage(
-            ctx,
-            connector,
-            resolveCredentials(config, connector.getAuth(), connectorId),
-            sourceStorageLocation(config),
-            Optional.empty());
+        resolveServerSideStorage
+            ? resolveManagedServerSideStorage(
+                ctx, connector, authenticated, sourceStorageLocation(config), Optional.empty())
+            : new ServerSideStorageConfigResolver.ResolvedConnectorConfig(authenticated, () -> {});
     return new ActiveConnector(
         connector,
         connector.hasSource() ? connector.getSource() : SourceSelector.getDefaultInstance(),
@@ -1221,6 +1228,16 @@ public class ReconcilerService {
   }
 
   ActiveConnector activeConnectorForResult(ReconcileContext ctx, ResourceId connectorId) {
+    return activeConnectorForResult(ctx, connectorId, true);
+  }
+
+  private ActiveConnector activeConnectorForTableScopedResult(
+      ReconcileContext ctx, ResourceId connectorId) {
+    return activeConnectorForResult(ctx, connectorId, false);
+  }
+
+  private ActiveConnector activeConnectorForResult(
+      ReconcileContext ctx, ResourceId connectorId, boolean resolveServerSideStorage) {
     Connector connector;
     try {
       connector = backend.lookupConnector(ctx, connectorId);
@@ -1230,7 +1247,7 @@ public class ReconcilerService {
           "getConnector failed: " + connectorId.getId(),
           e);
     }
-    return activeConnector(ctx, connector, connectorId);
+    return activeConnector(ctx, connector, connectorId, resolveServerSideStorage);
   }
 
   ServerSideStorageConfigResolver.ResolvedConnectorConfig tableScopedResolvedConfig(
