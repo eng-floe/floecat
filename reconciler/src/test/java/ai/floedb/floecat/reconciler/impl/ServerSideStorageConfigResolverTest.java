@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -47,6 +48,21 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class ServerSideStorageConfigResolverTest {
+
+  @Test
+  void onlyStructuredLeaseFailedPreconditionIsTerminalForCredentialRefresh() {
+    StatusRuntimeException locationResolutionFailure =
+        Status.FAILED_PRECONDITION
+            .withDescription("reconcile lease is not bound to a concrete storage location")
+            .asRuntimeException();
+    StatusRuntimeException leaseFailure =
+        ReconcileLeaseGrpcStatus.leasePreconditionFailed("reconcile lease is no longer valid");
+
+    assertFalse(
+        ServerSideStorageConfigResolver.isTerminalExecutionCredentialRefresh(
+            locationResolutionFailure));
+    assertTrue(ServerSideStorageConfigResolver.isTerminalExecutionCredentialRefresh(leaseFailure));
+  }
 
   @Test
   void restStorageLocationHintUsesTableStorageRootForAuthorityLookup() {
@@ -795,9 +811,7 @@ class ServerSideStorageConfigResolverTest {
                                 Instant.now().minusSeconds(1).toEpochMilli())))
                 .build())
         .thenThrow(
-            Status.FAILED_PRECONDITION
-                .withDescription("reconcile lease is no longer valid")
-                .asRuntimeException());
+            ReconcileLeaseGrpcStatus.leasePreconditionFailed("reconcile lease is no longer valid"));
 
     Connector connector =
         Connector.newBuilder()

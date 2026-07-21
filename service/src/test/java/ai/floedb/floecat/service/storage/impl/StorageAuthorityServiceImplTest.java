@@ -38,6 +38,7 @@ import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
+import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -407,6 +408,34 @@ class StorageAuthorityServiceImplTest {
   }
 
   @Test
+  void resolveForAccountLocationMarksRejectedLeaseAsLeasePreconditionFailure() {
+    when(reconcileJobs.renewLease("job-1", "lease-1")).thenReturn(false);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .vendStorageCredentials(
+                        VendStorageCredentialsRequest.newBuilder()
+                            .setAccountId("acct")
+                            .setLocationPrefix("s3://warehouse/orders/data/part-000.parquet")
+                            .setUsage(StorageCredentialUsage.SCU_SERVER)
+                            .setExecutionBinding(
+                                ai.floedb.floecat.storage.rpc.ExecutionBinding.newBuilder()
+                                    .setReconcileLease(
+                                        ai.floedb.floecat.storage.rpc.ReconcileLeaseBinding
+                                            .newBuilder()
+                                            .setJobId("job-1")
+                                            .setLeaseEpoch("lease-1")))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertTrue(ReconcileLeaseGrpcStatus.isLeasePreconditionFailure(error));
+  }
+
+  @Test
   void resolveForDiscoveryPlannerUsesConnectorBootstrapScopeBeforeTableExists() {
     when(reconcileJobs.getLeaseView("job-1")).thenReturn(Optional.of(discoveryTableLeaseView()));
 
@@ -537,6 +566,7 @@ class StorageAuthorityServiceImplTest {
                     .indefinitely());
 
     assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    assertFalse(ReconcileLeaseGrpcStatus.isLeasePreconditionFailure(error));
   }
 
   @Test

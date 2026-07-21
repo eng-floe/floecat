@@ -25,6 +25,7 @@ import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
+import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -524,31 +525,26 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     }
     boolean renewed = reconcileJobs.renewLease(jobId, leaseEpoch);
     if (!renewed) {
-      throw io.grpc.Status.FAILED_PRECONDITION
-          .withDescription("reconcile lease is no longer valid")
-          .asRuntimeException();
+      throw ReconcileLeaseGrpcStatus.leasePreconditionFailed("reconcile lease is no longer valid");
     }
     ReconcileJobStore.ReconcileJob job =
         reconcileJobs
             .getLeaseView(jobId)
             .orElseThrow(
                 () ->
-                    io.grpc.Status.NOT_FOUND
-                        .withDescription("reconcile job not found: " + jobId)
-                        .asRuntimeException());
+                    ReconcileLeaseGrpcStatus.leasePreconditionFailed(
+                        "reconcile job not found: " + jobId));
     if (!accountId.equals(job.accountId)) {
       throw io.grpc.Status.PERMISSION_DENIED
           .withDescription("reconcile lease account does not match requested account")
           .asRuntimeException();
     }
     if (!isActiveLeasedState(job.state)) {
-      throw io.grpc.Status.FAILED_PRECONDITION
-          .withDescription(
-              "reconcile job is no longer active for lease "
-                  + jobId
-                  + " state="
-                  + (job.state == null ? "" : job.state))
-          .asRuntimeException();
+      throw ReconcileLeaseGrpcStatus.leasePreconditionFailed(
+          "reconcile job is no longer active for lease "
+              + jobId
+              + " state="
+              + (job.state == null ? "" : job.state));
     }
     return job;
   }

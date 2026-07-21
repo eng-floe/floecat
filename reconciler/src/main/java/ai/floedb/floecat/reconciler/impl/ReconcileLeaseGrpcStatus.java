@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.common.rpc.Error;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import com.google.protobuf.Any;
 import com.google.rpc.ErrorInfo;
 import io.grpc.Status;
@@ -27,14 +29,23 @@ public final class ReconcileLeaseGrpcStatus {
   public static final String ERROR_DOMAIN = "ai.floedb.floecat.reconciler";
   public static final String LEASE_PRECONDITION_FAILED_REASON =
       "RECONCILE_LEASE_PRECONDITION_FAILED";
+  private static final String REASON_PARAM = "reason";
 
   private ReconcileLeaseGrpcStatus() {}
 
   public static StatusRuntimeException leasePreconditionFailed(String description) {
+    String message = description == null ? "" : description;
     com.google.rpc.Status status =
         com.google.rpc.Status.newBuilder()
             .setCode(Status.Code.FAILED_PRECONDITION.value())
-            .setMessage(description == null ? "" : description)
+            .setMessage(message)
+            .addDetails(
+                Any.pack(
+                    Error.newBuilder()
+                        .setCode(ErrorCode.MC_PRECONDITION_FAILED)
+                        .setMessage(message)
+                        .putParams(REASON_PARAM, LEASE_PRECONDITION_FAILED_REASON)
+                        .build()))
             .addDetails(
                 Any.pack(
                     ErrorInfo.newBuilder()
@@ -65,14 +76,19 @@ public final class ReconcileLeaseGrpcStatus {
       return false;
     }
     for (Any detail : status.getDetailsList()) {
-      if (!detail.is(ErrorInfo.class)) {
-        continue;
-      }
       try {
-        ErrorInfo errorInfo = detail.unpack(ErrorInfo.class);
-        if (LEASE_PRECONDITION_FAILED_REASON.equals(errorInfo.getReason())
-            && ERROR_DOMAIN.equals(errorInfo.getDomain())) {
-          return true;
+        if (detail.is(ErrorInfo.class)) {
+          ErrorInfo errorInfo = detail.unpack(ErrorInfo.class);
+          if (LEASE_PRECONDITION_FAILED_REASON.equals(errorInfo.getReason())
+              && ERROR_DOMAIN.equals(errorInfo.getDomain())) {
+            return true;
+          }
+        } else if (detail.is(Error.class)) {
+          Error floecatError = detail.unpack(Error.class);
+          if (LEASE_PRECONDITION_FAILED_REASON.equals(
+              floecatError.getParamsMap().get(REASON_PARAM))) {
+            return true;
+          }
         }
       } catch (com.google.protobuf.InvalidProtocolBufferException ignored) {
         continue;

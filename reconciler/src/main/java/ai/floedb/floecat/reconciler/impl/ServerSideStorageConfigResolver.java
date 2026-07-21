@@ -363,9 +363,9 @@ public class ServerSideStorageConfigResolver {
                         + " session token, and expiresAt"));
   }
 
-  private static boolean isTerminalExecutionCredentialRefresh(StatusRuntimeException error) {
+  static boolean isTerminalExecutionCredentialRefresh(StatusRuntimeException error) {
     Status.Code code = error.getStatus().getCode();
-    return code == Status.Code.FAILED_PRECONDITION
+    return ReconcileLeaseGrpcStatus.isLeasePreconditionFailure(error)
         || code == Status.Code.UNAUTHENTICATED
         || code == Status.Code.PERMISSION_DENIED;
   }
