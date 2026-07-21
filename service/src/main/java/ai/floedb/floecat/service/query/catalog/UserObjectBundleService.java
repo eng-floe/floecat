@@ -101,6 +101,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.function.LongConsumer;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.Config;
 import org.eclipse.microprofile.config.ConfigProvider;
@@ -1601,9 +1602,13 @@ public class UserObjectBundleService {
 
     // Maintains the order inputs were resolved so the emitted chunk mirrors the request order.
     private final List<PendingItem> pending = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
+    // Per-request resolution memos. Both resolve each key at most once: a repeated lookup returns
+    // the stored Optional (present or empty). See memoize() / resolveNameCached /
+    // resolveNodeCached.
     private final Map<NormalizedNameRef, Optional<ResourceId>> nameResolutionCache =
-        new HashMap<>();
-    private final Map<ResourceId, Optional<GraphNode>> nodeResolutionCache = new HashMap<>();
+        new ConcurrentHashMap<>();
+    private final Map<ResourceId, Optional<GraphNode>> nodeResolutionCache =
+        new ConcurrentHashMap<>();
     private final ArrayDeque<EagerBaseCursor> eagerBaseQueue = new ArrayDeque<>();
     private final Set<String> eagerBaseSeen = new HashSet<>();
     private final Map<RelationCacheKey, RelationInfo> relationInfoCache = new HashMap<>();
@@ -1651,7 +1656,9 @@ public class UserObjectBundleService {
       this.correlationId = correlationId;
       this.ctx = ctx;
       this.tables = tables;
-      this.knownBlobVersions = knownBlobVersions;
+      // Read-only for the life of the iterator (consulted by the identity-only fast path); copy so
+      // that stays true regardless of what the caller does with its set afterwards.
+      this.knownBlobVersions = Set.copyOf(knownBlobVersions);
       this.resolutionCount = tables.size();
       this.defaultCatalogId = ctx.getQueryDefaultCatalogId();
       this.statsProvider = statsFactory.forQuery(ctx, correlationId);
@@ -2172,46 +2179,65 @@ public class UserObjectBundleService {
     }
 
     private Optional<ResourceId> resolveNameCached(NameRef ref) {
-      NormalizedNameRef key = normalizedNameRef(ref);
-      // Stored values are non-null Optional instances; null means cache miss.
-      Optional<ResourceId> cached = nameResolutionCache.get(key);
-      if (cached != null) {
-        nameResolutionCacheHits++;
-        return cached;
-      }
-      long startNs = System.nanoTime();
-      try {
-        // Pass the engine captured at iterator construction: re-reading it from the request
-        // context per lookup is fragile across executor hops, and an empty engine silently
-        // un-resolves engine-gated system objects (eng-floe/floecat#361).
-        Optional<ResourceId> resolved =
-            overlay.resolveName(correlationId, ref, resolutionContext.engineContext());
-        nameResolutionCache.put(key, resolved);
+      // Engine captured at iterator construction is passed through: re-reading it from the request
+      // context per lookup is fragile across executor hops, and an empty engine silently
+      // un-resolves engine-gated system objects (eng-floe/floecat#361).
+      Memoized<ResourceId> m =
+          memoize(
+              nameResolutionCache,
+              normalizedNameRef(ref),
+              () -> overlay.resolveName(correlationId, ref, resolutionContext.engineContext()),
+              nanos -> nameResolveNanos += nanos);
+      if (m.resolved()) {
         nameResolutionCacheMisses++;
-        return resolved;
-      } finally {
-        nameResolveNanos += System.nanoTime() - startNs;
+      } else {
+        nameResolutionCacheHits++;
       }
+      return m.value();
     }
 
     private Optional<GraphNode> resolveNodeCached(ResourceId id) {
-      // Stored values are non-null Optional instances; null means cache miss.
-      Optional<GraphNode> cached = nodeResolutionCache.get(id);
-      if (cached != null) {
-        nodeResolutionCacheHits++;
-        return cached;
-      }
-      long startNs = System.nanoTime();
-      try {
-        // Pass the engine captured at iterator construction: re-reading it from the request
-        // context per lookup is fragile across executor hops (eng-floe/floecat#361).
-        Optional<GraphNode> resolved = overlay.resolve(id, resolutionContext.engineContext());
-        nodeResolutionCache.put(id, resolved);
+      Memoized<GraphNode> m =
+          memoize(
+              nodeResolutionCache,
+              id,
+              () -> overlay.resolve(id, resolutionContext.engineContext()),
+              nanos -> nodeResolveNanos += nanos);
+      if (m.resolved()) {
         nodeResolutionCacheMisses++;
-        return resolved;
-      } finally {
-        nodeResolveNanos += System.nanoTime() - startNs;
+      } else {
+        nodeResolutionCacheHits++;
       }
+      return m.value();
+    }
+
+    /**
+     * A memoized value together with whether this call resolved it (a miss) vs. found it cached.
+     */
+    private record Memoized<V>(Optional<V> value, boolean resolved) {}
+
+    /**
+     * Return {@code cache.get(key)}, resolving and storing it once if absent. The resolve runs at
+     * most once per key even under concurrent callers (computeIfAbsent single-flight); its elapsed
+     * time is reported to {@code addNanos}. {@link Memoized#resolved()} is true when this call ran
+     * the resolve.
+     */
+    private <K, V> Memoized<V> memoize(
+        Map<K, Optional<V>> cache, K key, Supplier<Optional<V>> resolve, LongConsumer addNanos) {
+      boolean[] resolvedHere = {false};
+      Optional<V> value =
+          cache.computeIfAbsent(
+              key,
+              k -> {
+                resolvedHere[0] = true;
+                long startNs = System.nanoTime();
+                try {
+                  return resolve.get();
+                } finally {
+                  addNanos.accept(System.nanoTime() - startNs);
+                }
+              });
+      return new Memoized<>(value, resolvedHere[0]);
     }
 
     private Optional<ResolvedRelation> selectResolvedRelationTimed(
