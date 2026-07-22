@@ -37,6 +37,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
+import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -79,6 +80,7 @@ class AccountMutationIT {
 
   @Inject AccountRepository accountRepository;
   @Inject CatalogRepository catalogRepository;
+  @Inject NamespaceRepository namespaceRepository;
   @Inject TableRepository tableRepository;
   @Inject ViewRepository viewRepository;
   @Inject PointerStore ptr;
@@ -525,6 +527,77 @@ class AccountMutationIT {
         ptr.get(Keys.viewPointerById(seedAccountId, createdView.getResourceId().getId()))
             .isEmpty());
     assertEquals(0, ptr.countByPrefix(Keys.viewRootPrefix(seedAccountId)));
+  }
+
+  @Test
+  void deleteAccountCleansNestedNamespaceTree() throws Exception {
+    // Account teardown must clean an entire nested namespace tree with relations at several depths.
+    // The dropper runs unguarded here, so cleanup cannot raise AbortRetryableException and orphan
+    // resources by retrying the account delete after its pointer is gone (regression for #397).
+    var cat = TestSupport.createCatalog(catalog, accountPrefix + "nested_cat", "");
+    var db =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "db", List.of(), "nested db");
+    var schema =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "schema", List.of("db"), "nested schema");
+    var sub =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "sub", List.of("db", "schema"), "nested sub");
+    var schemaJson = SchemaParser.toJson(SIMPLE_SCHEMA);
+
+    TestSupport.createTable(
+        table,
+        cat.getResourceId(),
+        schema.getResourceId(),
+        accountPrefix + "schema_table",
+        "s3://bucket/",
+        schemaJson,
+        "table");
+    TestSupport.createTable(
+        table,
+        cat.getResourceId(),
+        sub.getResourceId(),
+        accountPrefix + "sub_table",
+        "s3://bucket/",
+        schemaJson,
+        "table");
+    TestSupport.createView(
+        view,
+        cat.getResourceId(),
+        schema.getResourceId(),
+        accountPrefix + "schema_view",
+        "SELECT 1",
+        "view");
+
+    assertEquals(3, namespaceRepository.listIds(seedAccountId, cat.getResourceId().getId()).size());
+
+    var seededAccountId = seedAccountResourceId();
+    var seededMeta = accountRepository.metaForSafe(seededAccountId);
+    tenancy.deleteAccount(
+        DeleteAccountRequest.newBuilder()
+            .setAccountId(seededAccountId)
+            .setPrecondition(
+                Precondition.newBuilder()
+                    .setExpectedVersion(seededMeta.getPointerVersion())
+                    .setExpectedEtag(seededMeta.getEtag())
+                    .build())
+            .build());
+
+    assertEquals(0, namespaceRepository.listIds(seedAccountId, cat.getResourceId().getId()).size());
+    assertEquals(
+        0,
+        tableRepository.count(
+            seedAccountId, cat.getResourceId().getId(), schema.getResourceId().getId()));
+    assertEquals(
+        0,
+        tableRepository.count(
+            seedAccountId, cat.getResourceId().getId(), sub.getResourceId().getId()));
+    assertEquals(
+        0,
+        viewRepository.count(
+            seedAccountId, cat.getResourceId().getId(), schema.getResourceId().getId()));
+    assertEquals(0, catalogRepository.count(seedAccountId));
+    assertEquals(0, ptr.countByPrefix(Keys.tableRootPrefix(seedAccountId)));
   }
 
   private ResourceId seedAccountResourceId() {
