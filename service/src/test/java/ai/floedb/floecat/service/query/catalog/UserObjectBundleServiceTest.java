@@ -2091,6 +2091,98 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void requestedInputAfterAnOverflowingViewSpillsToTheNextChunkInOrder() {
+    // Input 0 is a view whose eager base tables overflow one chunk; input 1 is a plain table.
+    // The base tables fill chunk 1 after the view, so the requested table cannot be emitted there
+    // and must appear in chunk 2 — after the view's remaining bases — with its input index intact.
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("WIDE_VIEW")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    int baseCount = 30; // > MAX_RESOLUTIONS_PER_CHUNK (25) so the bases span two chunks
+    List<NameRef> baseRefs = new ArrayList<>(baseCount);
+    for (int i = 0; i < baseCount; i++) {
+      ResourceId baseId =
+          ResourceId.newBuilder()
+              .setAccountId("acct")
+              .setId("WB_BASE_" + i)
+              .setKind(ResourceKind.RK_TABLE)
+              .build();
+      NameRef baseRef = NameRef.newBuilder().setCatalog("cat").setName("wb_base_" + i).build();
+      overlay.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("c" + i), baseRef);
+      baseRefs.add(baseRef);
+    }
+    ViewNode viewNode =
+        new ViewNode(
+            viewId,
+            "blob://test/wide",
+            DEFAULT_CATALOG,
+            ResourceId.getDefaultInstance(),
+            "wide_view",
+            "SELECT 1",
+            "spark",
+            List.of(SchemaColumn.newBuilder().setName("c0").setNullable(true).build()),
+            baseRefs,
+            List.of(),
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Optional.empty(),
+            Map.of(),
+            Map.of());
+    overlay.registerRelation(
+        viewId,
+        viewNode,
+        UserObjectBundleTestSupport.schemaFor("c0"),
+        NameRef.newBuilder().setCatalog("cat").setName("wide_view").build());
+
+    TableReferenceCandidate viewCandidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setViewId(viewId))
+            .build();
+    TableReferenceCandidate tableCandidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(viewCandidate, tableCandidate))
+            .collect()
+            .asList()
+            .await()
+            .indefinitely();
+
+    // header + two resolution chunks (bases span the cap) + end.
+    List<RelationResolution> all =
+        chunks.stream()
+            .filter(UserObjectsBundleChunk::hasResolutions)
+            .flatMap(c -> c.getResolutions().getItemsList().stream())
+            .toList();
+
+    // Every resolution chunk respects the cap.
+    chunks.stream()
+        .filter(UserObjectsBundleChunk::hasResolutions)
+        .forEach(c -> assertThat(c.getResolutions().getItemsCount()).isLessThanOrEqualTo(25));
+
+    // The view (index 0) comes first, the requested table (index 1) last, with 30 synthetic bases
+    // (index -1) in between — i.e. the table spilled past the bases but kept its request position.
+    assertThat(all.get(0).getInputIndex()).isEqualTo(0);
+    assertThat(all.get(0).getRelation().getRelationId()).isEqualTo(viewId);
+    RelationResolution last = all.get(all.size() - 1);
+    assertThat(last.getInputIndex()).isEqualTo(1);
+    assertThat(last.getRelation().getRelationId()).isEqualTo(TABLE_A);
+    long bases = all.stream().filter(r -> r.getInputIndex() == -1).count();
+    assertThat(bases).isEqualTo(baseCount);
+
+    // End counts only the two requested inputs.
+    UserObjectsBundleChunk end = chunks.get(chunks.size() - 1);
+    assertThat(end.getEnd().getResolutionCount()).isEqualTo(2);
+    assertThat(end.getEnd().getFoundCount()).isEqualTo(2);
+    assertThat(end.getEnd().getNotFoundCount()).isZero();
+  }
+
+  @Test
   void viewAsOfOverrideKeepsAsOfPinForEagerBaseTable() throws Exception {
     ResourceId viewId =
         ResourceId.newBuilder()

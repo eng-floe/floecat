@@ -1611,6 +1611,10 @@ public class UserObjectBundleService {
         new ConcurrentHashMap<>();
     private final ArrayDeque<EagerBaseCursor> eagerBaseQueue = new ArrayDeque<>();
     private final Set<String> eagerBaseSeen = new HashSet<>();
+    // Requested inputs selected for a chunk that filled before they could be emitted (a view ahead
+    // of them expanded into enough base tables to reach the cap). Emitted, in order, ahead of newly
+    // selected inputs in the next chunk — so a resolution's position never depends on chunk size.
+    private final ArrayDeque<PendingItem> resolvedSpillover = new ArrayDeque<>();
     private final Map<RelationCacheKey, RelationInfo> relationInfoCache = new HashMap<>();
     private final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache =
         new ConcurrentHashMap<>();
@@ -1720,15 +1724,33 @@ public class UserObjectBundleService {
 
     private void fillPending() {
       List<ResolvedRelation> toPin = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
+      // Carry-over first, in emit order: a prior view's undrained base tables, then requested
+      // inputs a prior chunk selected but could not fit.
       drainEagerBaseTables(toPin);
-      while (nextInputIndex < resolutionCount && pending.size() < MAX_RESOLUTIONS_PER_CHUNK) {
-        PendingItem item = resolveNextResolution();
-        pending.add(item);
-        if (item instanceof PendingFound found) {
-          toPin.add(found.relation());
-          if (found.relation().node() instanceof ViewNode view && !view.baseRelations().isEmpty()) {
-            eagerBaseQueue.addLast(new EagerBaseCursor(view));
-            drainEagerBaseTables(toPin);
+      while (!resolvedSpillover.isEmpty() && pending.size() < MAX_RESOLUTIONS_PER_CHUNK) {
+        gather(resolvedSpillover.removeFirst(), toPin);
+      }
+      // Then newly requested inputs, up to this chunk's remaining capacity. Selecting is separated
+      // from gathering so the select step can later run in parallel; today it is a serial loop.
+      int budget = MAX_RESOLUTIONS_PER_CHUNK - pending.size();
+      if (budget > 0 && nextInputIndex < resolutionCount) {
+        int planCount = Math.min(budget, resolutionCount - nextInputIndex);
+        List<PlannedInput> plan = new ArrayList<>(planCount);
+        for (int i = 0; i < planCount; i++) {
+          plan.add(planInput(nextInputIndex + i));
+        }
+        nextInputIndex += planCount;
+        List<PendingItem> selected = new ArrayList<>(plan.size());
+        for (PlannedInput planned : plan) {
+          selected.add(selectOne(planned));
+        }
+        for (PendingItem item : selected) {
+          // A view gathered earlier in this loop can fill the chunk via its base tables; the
+          // remaining already-selected inputs wait for the next chunk (their nodes are cached).
+          if (pending.size() >= MAX_RESOLUTIONS_PER_CHUNK) {
+            resolvedSpillover.addLast(item);
+          } else {
+            gather(item, toPin);
           }
         }
       }
@@ -1763,6 +1785,27 @@ public class UserObjectBundleService {
     private void cancel() {
       cancelled.set(true);
       publishStreamTelemetry("cancelled");
+    }
+
+    /**
+     * Append one selected resolution to the chunk on the driver thread: tally its found/not-found
+     * count, queue a FOUND table for pinning, and — for a FOUND view — drain its base tables right
+     * after it so bases follow their view in the emitted order. ERROR resolutions count toward
+     * neither found nor not-found, matching the end-chunk contract.
+     */
+    private void gather(PendingItem item, List<ResolvedRelation> toPin) {
+      pending.add(item);
+      if (item instanceof PendingFound found) {
+        foundCount++;
+        toPin.add(found.relation());
+        if (found.relation().node() instanceof ViewNode view && !view.baseRelations().isEmpty()) {
+          eagerBaseQueue.addLast(new EagerBaseCursor(view));
+          drainEagerBaseTables(toPin);
+        }
+      } else if (item instanceof PendingResolved resolved
+          && resolved.resolution().getStatus() == ResolutionStatus.RESOLUTION_STATUS_NOT_FOUND) {
+        notFoundCount++;
+      }
     }
 
     /**
@@ -1824,30 +1867,42 @@ public class UserObjectBundleService {
       return cursor.nextBaseIndex >= baseRelations.size();
     }
 
-    private PendingItem resolveNextResolution() {
+    /** A requested input paired with its normalized candidates, ready to select against. */
+    private record PlannedInput(
+        int inputIndex, TableReferenceCandidate candidate, List<QueryInput> normalized) {}
+
+    /** Normalize one requested input's candidates. Pure with respect to resolution state. */
+    private PlannedInput planInput(int inputIndex) {
+      TableReferenceCandidate candidate = tables.get(inputIndex);
+      if (LOG.isTraceEnabled()) {
+        LOG.tracef(
+            "Planning candidate query_id=%s input_index=%d candidate_count=%d",
+            ctx.getQueryId(), inputIndex, candidate.getCandidatesCount());
+      }
+      long normalizeStartNs = System.nanoTime();
+      try {
+        List<QueryInput> normalized =
+            normalizeCandidates(correlationId, candidate, this::defaultCatalogName);
+        return new PlannedInput(inputIndex, candidate, normalized);
+      } finally {
+        normalizeNanos += System.nanoTime() - normalizeStartNs;
+      }
+    }
+
+    /**
+     * Resolve one planned input to a {@link PendingItem} (FOUND, NOT_FOUND, or ERROR), without
+     * touching found/not-found counters or chunk order — the driver's {@link #gather} owns those.
+     */
+    private PendingItem selectOne(PlannedInput planned) {
+      int inputIndex = planned.inputIndex();
       long resolveStartNs = System.nanoTime();
       try {
-        TableReferenceCandidate candidate = tables.get(nextInputIndex);
-        int inputIndex = nextInputIndex;
-        nextInputIndex++;
-        if (LOG.isTraceEnabled()) {
-          LOG.tracef(
-              "Resolving candidate query_id=%s input_index=%d candidate_count=%d",
-              ctx.getQueryId(), inputIndex, candidate.getCandidatesCount());
-        }
-        List<QueryInput> normalized;
-        long normalizeStartNs = System.nanoTime();
-        try {
-          normalized = normalizeCandidates(correlationId, candidate, this::defaultCatalogName);
-        } finally {
-          normalizeNanos += System.nanoTime() - normalizeStartNs;
-        }
         try {
           long selectStartNs = System.nanoTime();
           Optional<ResolvedRelation> resolved =
-              selectResolvedRelationTimed(correlationId, candidate, normalized, selectStartNs);
+              selectResolvedRelationTimed(
+                  correlationId, planned.candidate(), planned.normalized(), selectStartNs);
           if (resolved.isPresent()) {
-            foundCount++;
             if (LOG.isTraceEnabled()) {
               LOG.tracef(
                   "Resolved candidate query_id=%s input_index=%d relation=%s",
@@ -1867,7 +1922,7 @@ public class UserObjectBundleService {
                   .setMessage("relation resolved but missing from graph")
                   .putDetails("resource_id", e.relationId().getId())
                   .putDetails("default_catalog", defaultCatalogForDiagnostics())
-                  .addAllAttempted(normalized)
+                  .addAllAttempted(planned.normalized())
                   .build();
           return new PendingResolved(
               RelationResolution.newBuilder()
@@ -1876,19 +1931,18 @@ public class UserObjectBundleService {
                   .setFailure(failure)
                   .build());
         }
-        notFoundCount++;
         if (LOG.isTraceEnabled()) {
           LOG.tracef(
               "Candidate not found query_id=%s input_index=%d attempted=%d",
-              ctx.getQueryId(), inputIndex, normalized.size());
+              ctx.getQueryId(), inputIndex, planned.normalized().size());
         }
         ResolutionFailure failure =
             ResolutionFailure.newBuilder()
                 .setCode("catalog_bundle.relation_not_found")
                 .setMessage("relation not found")
-                .putDetails("candidate_count", Integer.toString(normalized.size()))
+                .putDetails("candidate_count", Integer.toString(planned.normalized().size()))
                 .putDetails("default_catalog", defaultCatalogForDiagnostics())
-                .addAllAttempted(normalized)
+                .addAllAttempted(planned.normalized())
                 .build();
         return new PendingResolved(
             RelationResolution.newBuilder()
