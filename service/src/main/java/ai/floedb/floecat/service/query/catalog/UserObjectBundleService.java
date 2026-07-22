@@ -57,7 +57,6 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -723,7 +722,10 @@ public class UserObjectBundleService {
     // of them expanded into enough base tables to reach the cap). Emitted, in order, ahead of newly
     // selected inputs in the next chunk — so a resolution's position never depends on chunk size.
     private final ArrayDeque<PendingItem> resolvedSpillover = new ArrayDeque<>();
-    private final Map<RelationCacheKey, RelationInfo> relationInfoCache = new HashMap<>();
+    // Read via size() from the Mutiny termination/failure callback (transport thread) while the
+    // driver may still be put()-ing mid-build on a cancelled stream; ConcurrentHashMap makes that
+    // concurrent size() well-defined, so a cancelled stream reports partial-but-not-torn telemetry.
+    private final Map<RelationCacheKey, RelationInfo> relationInfoCache = new ConcurrentHashMap<>();
     private final TimingAccumulator timings = new TimingAccumulator();
     private final PhaseDiagnostics diagnostics = diagnostics("get_user_objects");
     private final long streamStartNs = System.nanoTime();
@@ -733,7 +735,10 @@ public class UserObjectBundleService {
 
     private final BundleChunkStream stream;
     private int nextInputIndex = 0;
-    private int emittedResolutionChunks = 0;
+    // Read from the Mutiny termination/failure callback (transport thread) while the driver may
+    // still be incrementing it mid-build on a cancelled stream; volatile makes that read see a
+    // well-defined value, so a cancelled stream reports partial-but-not-torn telemetry.
+    private volatile int emittedResolutionChunks = 0;
     private final AtomicBoolean telemetryPublished = new AtomicBoolean(false);
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private boolean defaultCatalogResolved = false;
