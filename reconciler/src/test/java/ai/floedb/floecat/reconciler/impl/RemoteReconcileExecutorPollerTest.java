@@ -786,6 +786,16 @@ class RemoteReconcileExecutorPollerTest {
   }
 
   @Test
+  void resourceExhaustedLeaseFailureIsBackpressure() {
+    assertTrue(
+        RemoteReconcileExecutorPoller.isLeaseScanBackpressure(
+            new io.grpc.StatusRuntimeException(io.grpc.Status.RESOURCE_EXHAUSTED)));
+    assertTrue(
+        !RemoteReconcileExecutorPoller.isLeaseScanBackpressure(
+            new io.grpc.StatusRuntimeException(io.grpc.Status.INTERNAL)));
+  }
+
+  @Test
   void runLeaseStopsWhenHeartbeatReturnsLeaseInvalid() throws Exception {
     RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
     CountDownLatch stopped = new CountDownLatch(1);

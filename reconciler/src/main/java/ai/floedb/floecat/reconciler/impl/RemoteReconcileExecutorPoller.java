@@ -201,6 +201,11 @@ public class RemoteReconcileExecutorPoller {
         lease = client.lease(request, workerLeaseSource());
       } catch (RuntimeException e) {
         releaseFileGroupSlot(fileGroupSlotReserved);
+        if (isLeaseScanBackpressure(e)) {
+          LOG.debugf(
+              "Skipping reconcile poll cycle due to lease scan backpressure: %s", e.getMessage());
+          return Optional.empty();
+        }
         if (shouldIgnoreStartupUnavailable(e)) {
           LOG.debugf(
               "Skipping local reconcile poll cycle until gRPC server is ready: %s", e.getMessage());
@@ -287,6 +292,11 @@ public class RemoteReconcileExecutorPoller {
       case LOCAL -> "local-poller";
       case REMOTE -> "remote-poller";
     };
+  }
+
+  static boolean isLeaseScanBackpressure(RuntimeException error) {
+    return error instanceof StatusRuntimeException statusError
+        && statusError.getStatus().getCode() == Status.Code.RESOURCE_EXHAUSTED;
   }
 
   private boolean shouldIgnoreStartupUnavailable(RuntimeException error) {
