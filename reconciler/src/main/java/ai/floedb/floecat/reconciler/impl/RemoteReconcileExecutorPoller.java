@@ -112,7 +112,7 @@ public class RemoteReconcileExecutorPoller {
         !hasControlExecutor || maxParallelism <= 1
             ? 0
             : Math.min(maxParallelism - 1, Math.max(0, configuredReservedControlSlots));
-    fileGroupSlots = new Semaphore(maxParallelism - reservedControlSlots, true);
+    fileGroupSlots = new Semaphore(maxParallelism - reservedControlSlots);
     workers = Executors.newFixedThreadPool(maxParallelism);
   }
 
@@ -275,6 +275,8 @@ public class RemoteReconcileExecutorPoller {
   }
 
   private static boolean isFileGroupOnly(ReconcileExecutor executor) {
+    // Capacity reservation relies on executor-scoped leases and a dedicated file-group executor.
+    // A mixed control/file-group executor must split those lease requests before it is supported.
     return executor != null
         && !executor.supportedJobKinds().isEmpty()
         && executor.supportedJobKinds().stream()
