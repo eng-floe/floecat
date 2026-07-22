@@ -35,15 +35,12 @@ import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationPinIdentity;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.RelationResolution;
-import ai.floedb.floecat.query.rpc.RelationResolutions;
 import ai.floedb.floecat.query.rpc.ResolutionFailure;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
-import ai.floedb.floecat.query.rpc.UserObjectsBundleEnd;
-import ai.floedb.floecat.query.rpc.UserObjectsBundleHeader;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
@@ -393,36 +390,6 @@ public class UserObjectBundleService {
     RelationPinSet pins = incoming == null ? RelationPinSet.getDefaultInstance() : incoming;
     diagnostics.add("pin.output_pins", pins.getPinsCount());
     return pins;
-  }
-
-  private UserObjectsBundleChunk headerChunk(String queryId, int seq) {
-    UserObjectsBundleHeader header = UserObjectsBundleHeader.newBuilder().build();
-    return UserObjectsBundleChunk.newBuilder()
-        .setQueryId(queryId)
-        .setSeq(seq)
-        .setHeader(header)
-        .build();
-  }
-
-  private UserObjectsBundleChunk resolutionsChunk(
-      String queryId, int seq, List<RelationResolution> resolutions) {
-    RelationResolutions chunk = RelationResolutions.newBuilder().addAllItems(resolutions).build();
-    return UserObjectsBundleChunk.newBuilder()
-        .setQueryId(queryId)
-        .setSeq(seq)
-        .setResolutions(chunk)
-        .build();
-  }
-
-  private UserObjectsBundleChunk endChunk(
-      String queryId, int seq, int resolutionCount, int foundCount, int notFoundCount) {
-    UserObjectsBundleEnd end =
-        UserObjectsBundleEnd.newBuilder()
-            .setResolutionCount(resolutionCount)
-            .setFoundCount(foundCount)
-            .setNotFoundCount(notFoundCount)
-            .build();
-    return UserObjectsBundleChunk.newBuilder().setQueryId(queryId).setSeq(seq).setEnd(end).build();
   }
 
   /**
@@ -1054,11 +1021,9 @@ public class UserObjectBundleService {
     private final Span parentSpan = Span.current();
     private RelationPinSet pendingChunkPins = RelationPinSet.getDefaultInstance();
 
-    private int seq = 1;
+    private final BundleChunkStream stream;
     private int nextInputIndex = 0;
     private int emittedResolutionChunks = 0;
-    private boolean headerEmitted = false;
-    private boolean endEmitted = false;
     private final AtomicBoolean telemetryPublished = new AtomicBoolean(false);
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private boolean defaultCatalogResolved = false;
@@ -1071,6 +1036,7 @@ public class UserObjectBundleService {
         Set<String> knownBlobVersions) {
       this.correlationId = correlationId;
       this.ctx = ctx;
+      this.stream = new BundleChunkStream(ctx.getQueryId(), MAX_RESOLUTIONS_PER_CHUNK);
       this.tables = tables;
       // Read-only for the life of the iterator (consulted by the identity-only fast path); copy so
       // that stays true regardless of what the caller does with its set afterwards.
@@ -1098,41 +1064,46 @@ public class UserObjectBundleService {
 
     @Override
     public boolean hasNext() {
-      return !endEmitted;
+      return stream.isOpen();
     }
 
     @Override
     public UserObjectsBundleChunk next() {
       throwIfCancelled(this::isCancelled);
-      if (!headerEmitted) {
-        headerEmitted = true;
+      if (stream.headerPending()) {
         if (LOG.isDebugEnabled()) {
-          LOG.debugf("Emitting header chunk query_id=%s seq=%d", ctx.getQueryId(), seq);
+          LOG.debugf("Emitting header chunk query_id=%s seq=%d", ctx.getQueryId(), stream.seq());
         }
-        return headerChunk(ctx.getQueryId(), seq++);
+        return stream.header();
       }
 
-      if (pending.isEmpty()
-          && (nextInputIndex < resolutionCount
-              || !eagerBaseQueue.isEmpty()
-              || !resolvedSpillover.isEmpty())) {
-        fillPending();
+      // Pump the pipeline into the framer only when it has nothing left to slice, so a batch's
+      // pin/stats/build barrier stays aligned with the chunk it produces.
+      if (!stream.hasBufferedResolutions()) {
+        if (pending.isEmpty()
+            && (nextInputIndex < resolutionCount
+                || !eagerBaseQueue.isEmpty()
+                || !resolvedSpillover.isEmpty())) {
+          fillPending();
+        }
+        if (!pending.isEmpty()) {
+          buildChunkIntoStream();
+        }
       }
 
-      if (!pending.isEmpty()) {
-        return flushResolutionChunk();
+      if (stream.hasBufferedResolutions()) {
+        emittedResolutionChunks++;
+        return stream.nextResolutionChunk();
       }
 
-      if (!endEmitted) {
-        endEmitted = true;
+      if (stream.isOpen()) {
         publishStreamTelemetry("completed");
         if (LOG.isDebugEnabled()) {
           LOG.debugf(
               "Emitting end chunk query_id=%s seq=%d resolutions=%d found=%d not_found=%d",
-              ctx.getQueryId(), seq, resolutionCount, timings.found(), timings.notFound());
+              ctx.getQueryId(), stream.seq(), resolutionCount, timings.found(), timings.notFound());
         }
-        return endChunk(
-            ctx.getQueryId(), seq++, resolutionCount, timings.found(), timings.notFound());
+        return stream.end(resolutionCount, timings.found(), timings.notFound());
       }
 
       throw new NoSuchElementException();
@@ -1516,13 +1487,13 @@ public class UserObjectBundleService {
           .build();
     }
 
-    private UserObjectsBundleChunk flushResolutionChunk() {
+    private void buildChunkIntoStream() {
       List<PendingItem> chunkItems = new ArrayList<>(pending);
       pending.clear();
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
             "Flushing resolution chunk query_id=%s seq=%d pending_items=%d pending_pins=%d",
-            ctx.getQueryId(), seq, chunkItems.size(), pendingChunkPins.getPinsCount());
+            ctx.getQueryId(), stream.seq(), chunkItems.size(), pendingChunkPins.getPinsCount());
       }
       // Ensure pins are durable before accessing stats (which expect the QueryContext to be
       // pinned).
@@ -1611,7 +1582,6 @@ public class UserObjectBundleService {
       }
 
       List<RelationResolution> resolutions = List.of(slots);
-      emittedResolutionChunks++;
       if (LOG.isDebugEnabled()) {
         int chunkFound = 0;
         int chunkNotFound = 0;
@@ -1626,9 +1596,14 @@ public class UserObjectBundleService {
         }
         LOG.debugf(
             "Resolved chunk query_id=%s seq=%d items=%d found=%d not_found=%d error=%d",
-            ctx.getQueryId(), seq, resolutions.size(), chunkFound, chunkNotFound, chunkError);
+            ctx.getQueryId(),
+            stream.seq(),
+            resolutions.size(),
+            chunkFound,
+            chunkNotFound,
+            chunkError);
       }
-      return resolutionsChunk(ctx.getQueryId(), seq++, resolutions);
+      stream.offer(resolutions);
     }
 
     // The GetUserObjects RPC has many internal sub-phases (resolve, decoration, ...). We do NOT
