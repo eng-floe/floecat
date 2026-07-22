@@ -85,7 +85,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
-import java.util.function.LongConsumer;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -762,6 +761,21 @@ public class UserObjectBundleService {
       RelationNode node,
       QueryInput selectedInput) {}
 
+  /** A requested input paired with its normalized candidates, ready to select against. */
+  record PlannedInput(
+      int inputIndex,
+      TableReferenceCandidate candidate,
+      List<QueryInput> normalized,
+      RuntimeException planningFailure) {
+    static PlannedInput failed(int inputIndex, RuntimeException failure) {
+      return new PlannedInput(inputIndex, null, List.of(), failure);
+    }
+
+    boolean failed() {
+      return planningFailure != null;
+    }
+  }
+
   private record RelationCacheKey(
       ResourceId relationId,
       boolean wantsAllColumns,
@@ -769,8 +783,6 @@ public class UserObjectBundleService {
       String engineKind,
       String engineVersion,
       SnapshotRef snapshotOverride) {}
-
-  private record NormalizedNameRef(String catalog, List<String> path, String name) {}
 
   private static final class GraphNodeMissingException extends RuntimeException {
     private final ResourceId relationId;
@@ -802,13 +814,9 @@ public class UserObjectBundleService {
 
     // Maintains the order inputs were resolved so the emitted chunk mirrors the request order.
     private final List<PendingItem> pending = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
-    // Per-request resolution memos. Both resolve each key at most once: a repeated lookup returns
-    // the stored Optional (present or empty). See memoize() / resolveNameCached /
-    // resolveNodeCached.
-    private final Map<NormalizedNameRef, Optional<ResourceId>> nameResolutionCache =
-        new ConcurrentHashMap<>();
-    private final Map<ResourceId, Optional<GraphNode>> nodeResolutionCache =
-        new ConcurrentHashMap<>();
+    // Per-request name/node resolution memo, shared (thread-safe) across the concurrent select
+    // stage; records its hit/miss and resolve-nanos into the request tally below.
+    private final RelationResolutionCache resolutionCache;
     private final ArrayDeque<EagerBaseCursor> eagerBaseQueue = new ArrayDeque<>();
     private final Set<String> eagerBaseSeen = new HashSet<>();
     // Requested inputs selected for a chunk that filled before they could be emitted (a view ahead
@@ -856,6 +864,8 @@ public class UserObjectBundleService {
               Objects.requireNonNull(ctx.getQueryDefaultCatalogId(), "query default catalog id"),
               requestEngine,
               statsProvider);
+      this.resolutionCache =
+          new RelationResolutionCache(overlay, correlationId, requestEngine, timings);
       initializeParentSpan();
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
@@ -1051,7 +1061,7 @@ public class UserObjectBundleService {
         try {
           NameRef enriched =
               ViewContextUtils.enrichForViewContext(baseRef, cursor.view, defaultCatalogName());
-          Optional<ResourceId> baseIdOpt = resolveNameCached(enriched);
+          Optional<ResourceId> baseIdOpt = resolutionCache.resolveName(enriched);
           if (baseIdOpt.isEmpty()) {
             continue;
           }
@@ -1060,7 +1070,7 @@ public class UserObjectBundleService {
           if (eagerBaseSeen.contains(baseKey)) {
             continue; // deduplicate
           }
-          Optional<GraphNode> nodeOpt = resolveNodeCached(baseId);
+          Optional<GraphNode> nodeOpt = resolutionCache.resolveNode(baseId);
           if (nodeOpt.isEmpty() || !(nodeOpt.get() instanceof RelationNode rel)) {
             continue;
           }
@@ -1132,8 +1142,8 @@ public class UserObjectBundleService {
                   correlationId,
                   planned.candidate(),
                   planned.normalized(),
-                  this::resolveNameCached,
-                  this::resolveNodeCached);
+                  resolutionCache::resolveName,
+                  resolutionCache::resolveNode);
         } finally {
           timings.addSelectRelationNanos(System.nanoTime() - selectStartNs);
         }
@@ -1432,8 +1442,8 @@ public class UserObjectBundleService {
               totalMs,
               pinMs,
               schedulingMs,
-              nameResolutionCache.size(),
-              nodeResolutionCache.size(),
+              resolutionCache.nameEntries(),
+              resolutionCache.nodeEntries(),
               relationInfoCache.size(),
               safe(outcome)));
       updateParentSpanSummary(outcome, totalMs);
@@ -1534,86 +1544,6 @@ public class UserObjectBundleService {
 
     private String defaultCatalogForDiagnostics() {
       return defaultCatalogResolved ? defaultCatalogName : "";
-    }
-
-    private Optional<ResourceId> resolveNameCached(NameRef ref) {
-      // Engine captured at iterator construction is passed through: re-reading it from the request
-      // context per lookup is fragile across executor hops, and an empty engine silently
-      // un-resolves engine-gated system objects (eng-floe/floecat#361).
-      Memoized<ResourceId> m =
-          memoize(
-              nameResolutionCache,
-              normalizedNameRef(ref),
-              () -> overlay.resolveName(correlationId, ref, resolutionContext.engineContext()),
-              timings::addNameResolveNanos);
-      if (m.resolved()) {
-        timings.recordNameCacheMiss();
-      } else {
-        timings.recordNameCacheHit();
-      }
-      return m.value();
-    }
-
-    private Optional<GraphNode> resolveNodeCached(ResourceId id) {
-      Memoized<GraphNode> m =
-          memoize(
-              nodeResolutionCache,
-              id,
-              () -> overlay.resolve(id, resolutionContext.engineContext()),
-              timings::addNodeResolveNanos);
-      if (m.resolved()) {
-        timings.recordNodeCacheMiss();
-      } else {
-        timings.recordNodeCacheHit();
-      }
-      return m.value();
-    }
-
-    /**
-     * A memoized value together with whether this call resolved it (a miss) vs. found it cached.
-     */
-    private record Memoized<V>(Optional<V> value, boolean resolved) {}
-
-    /**
-     * Return {@code cache.get(key)}, resolving and storing it once if absent. The resolve runs at
-     * most once per key even under concurrent callers (computeIfAbsent single-flight); its elapsed
-     * time is reported to {@code addNanos}. {@link Memoized#resolved()} is true when this call ran
-     * the resolve.
-     */
-    private <K, V> Memoized<V> memoize(
-        Map<K, Optional<V>> cache, K key, Supplier<Optional<V>> resolve, LongConsumer addNanos) {
-      boolean[] resolvedHere = {false};
-      Optional<V> value =
-          cache.computeIfAbsent(
-              key,
-              k -> {
-                resolvedHere[0] = true;
-                long startNs = System.nanoTime();
-                try {
-                  return resolve.get();
-                } finally {
-                  addNanos.accept(System.nanoTime() - startNs);
-                }
-              });
-      return new Memoized<>(value, resolvedHere[0]);
-    }
-
-    private NormalizedNameRef normalizedNameRef(NameRef ref) {
-      List<String> normalizedPath = new ArrayList<>(ref.getPathCount());
-      for (String segment : ref.getPathList()) {
-        normalizedPath.add(normalizeNameToken(segment));
-      }
-      return new NormalizedNameRef(
-          normalizeNameToken(ref.getCatalog()),
-          List.copyOf(normalizedPath),
-          normalizeNameToken(ref.getName()));
-    }
-
-    private String normalizeNameToken(String token) {
-      if (token == null) {
-        return "";
-      }
-      return token.trim();
     }
 
     /**
