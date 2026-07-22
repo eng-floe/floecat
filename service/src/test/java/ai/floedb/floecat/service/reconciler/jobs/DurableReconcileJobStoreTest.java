@@ -58,6 +58,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndex
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexCleanupManifest;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -1398,6 +1399,31 @@ class DurableReconcileJobStoreTest {
       assertTrue(Thread.currentThread().isInterrupted());
     } finally {
       Thread.interrupted();
+    }
+  }
+
+  @Test
+  void leaseNextReportsDeadlineAbortAsCapacityExceededInsteadOfEmpty() {
+    ReconcileReadyQueueStore original = store.readyQueueStore;
+    ReconcileReadyQueueStore readyQueue = Mockito.mock(ReconcileReadyQueueStore.class);
+    store.readyQueueStore = readyQueue;
+    try {
+      Mockito.when(readyQueue.leaseReadyDue(Mockito.anyLong(), Mockito.any(), Mockito.any()))
+          .thenAnswer(
+              invocation -> {
+                ReconcileReadyQueueStore.LeaseScanStats stats = invocation.getArgument(2);
+                stats.abortedByDeadline = true;
+                return Optional.empty();
+              });
+
+      LeaseScanCapacityExceededException error =
+          assertThrows(
+              LeaseScanCapacityExceededException.class,
+              () -> store.leaseNext(ReconcileJobStore.LeaseRequest.all()));
+
+      assertTrue(error.getMessage().contains("deadline exceeded"));
+    } finally {
+      store.readyQueueStore = original;
     }
   }
 
