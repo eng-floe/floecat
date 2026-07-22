@@ -28,8 +28,8 @@ import org.apache.iceberg.types.Types;
 /**
  * IcebergSchemaMapper: Converts Iceberg-formatted schema JSON to logical SchemaDescriptor.
  *
- * <p>Handles Iceberg's native field IDs and nested structures (struct, list<struct>,
- * map<*,struct>).
+ * <p>Handles Iceberg's native field IDs and nested structures (struct, map<*,struct>). Lists
+ * surface as single opaque variant leaves.
  */
 public final class IcebergSchemaMapper {
 
@@ -87,11 +87,9 @@ public final class IcebergSchemaMapper {
     Type t = field.type();
 
     // Emit both container and leaf nodes. Stats will later filter to leaf=true.
-    // We treat struct/list/map as non-leaf (containers).
-    boolean isLeaf =
-        !(t instanceof Types.StructType)
-            && !(t instanceof Types.ListType)
-            && !(t instanceof Types.MapType);
+    // We treat struct/map as non-leaf (containers). Lists surface as a single
+    // opaque variant column (like iceberg VARIANT), so they are leaves.
+    boolean isLeaf = !(t instanceof Types.StructType) && !(t instanceof Types.MapType);
 
     sb.addColumns(
         ColumnIdComputer.withComputedId(
@@ -116,15 +114,8 @@ public final class IcebergSchemaMapper {
       return;
     }
 
-    // list<struct>
-    if (t instanceof Types.ListType lt && lt.elementType() instanceof Types.StructType st2) {
-      String childPrefix = physical + "[]";
-      int childOrdinal = 1;
-      for (Types.NestedField child : st2.fields()) {
-        addIcebergField(cid_algo, sb, child, childPrefix, partitionKeys, childOrdinal++);
-      }
-      return;
-    }
+    // list columns are opaque variant leaves; element fields are reachable
+    // through variant subscripting, not as expanded child columns.
 
     // map<*, struct>
     if (t instanceof Types.MapType mt && mt.valueType() instanceof Types.StructType st3) {

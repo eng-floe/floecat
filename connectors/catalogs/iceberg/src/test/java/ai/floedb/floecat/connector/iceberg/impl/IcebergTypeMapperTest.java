@@ -160,8 +160,9 @@ class IcebergTypeMapperTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  void listMapsToArray() {
-    assertKind(Types.ListType.ofOptional(1, Types.StringType.get()), LogicalKind.ARRAY);
+  void listMapsToVariant() {
+    // Lists surface as opaque variant columns (docs/sql/list_as_variant.md in core).
+    assertKind(Types.ListType.ofOptional(1, Types.StringType.get()), LogicalKind.VARIANT);
   }
 
   @Test

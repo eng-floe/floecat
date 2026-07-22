@@ -197,7 +197,8 @@ class DeltaSchemaMapperTest {
   }
 
   @Test
-  void arrayObjectNodeMapsToArrayAndIsNotLeaf() {
+  void arrayObjectNodeMapsToVariantAndIsLeaf() {
+    // Delta arrays surface as opaque variant leaves, like iceberg lists.
     String json =
         """
         {"fields":[
@@ -206,8 +207,8 @@ class DeltaSchemaMapperTest {
         ]}
         """;
     SchemaColumn col = firstColumn(json);
-    assertThat(col.getLogicalType()).isEqualTo("ARRAY");
-    assertThat(col.getLeaf()).isFalse();
+    assertThat(col.getLogicalType()).isEqualTo("VARIANT");
+    assertThat(col.getLeaf()).isTrue();
   }
 
   @Test

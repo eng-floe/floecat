@@ -98,7 +98,7 @@ final class DeltaTypeMapper {
     // Delta TimestampNTZType is timezone-naive (local) → TIMESTAMP (no UTC normalisation).
     if (dt instanceof TimestampType) return LogicalType.of(LogicalKind.TIMESTAMPTZ);
     if (dt instanceof TimestampNTZType) return LogicalType.of(LogicalKind.TIMESTAMP);
-    if (dt instanceof ArrayType) return LogicalType.of(LogicalKind.ARRAY);
+    if (dt instanceof ArrayType) return LogicalType.of(LogicalKind.VARIANT);
     if (dt instanceof MapType) return LogicalType.of(LogicalKind.MAP);
     if (dt instanceof StructType) return LogicalType.of(LogicalKind.STRUCT);
     if (dt instanceof VariantType) return LogicalType.of(LogicalKind.VARIANT);
