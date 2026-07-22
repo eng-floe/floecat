@@ -563,6 +563,90 @@ class RemoteReconcileExecutorPollerTest {
   }
 
   @Test
+  void pollOnceReservesConfiguredCapacityForControlWork() throws Exception {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    CountDownLatch fileGroupsStarted = new CountDownLatch(2);
+    CountDownLatch plannerStarted = new CountDownLatch(1);
+    CountDownLatch releaseExecutions = new CountDownLatch(1);
+    ReconcileExecutor fileGroupExecutor =
+        remoteExecutor(
+            "file-group",
+            Set.of(ReconcileJobKind.EXEC_FILE_GROUP),
+            context -> {
+              fileGroupsStarted.countDown();
+              await(releaseExecutions);
+              return ReconcileExecutor.ExecutionResult.success(0, 0, 0, 0, 0, "file-group");
+            });
+    ReconcileExecutor plannerExecutor =
+        remoteExecutor(
+            "planner",
+            Set.of(ReconcileJobKind.PLAN_CONNECTOR),
+            context -> {
+              plannerStarted.countDown();
+              await(releaseExecutions);
+              return ReconcileExecutor.ExecutionResult.success(0, 0, 0, 0, 0, "planner");
+            });
+
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry =
+        new ReconcileExecutorRegistry(List.of(fileGroupExecutor, plannerExecutor));
+    Config pollerConfig = mock(Config.class);
+    when(pollerConfig.getOptionalValue("reconciler.max-parallelism", Integer.class))
+        .thenReturn(java.util.Optional.of(3));
+    when(pollerConfig.getOptionalValue("reconciler.reserved-control-slots", Integer.class))
+        .thenReturn(java.util.Optional.of(1));
+    when(pollerConfig.getOptionalValue(anyString(), eq(Long.class)))
+        .thenReturn(java.util.Optional.empty());
+    poller.config = pollerConfig;
+    poller.workerModeValue = "local";
+    poller.init();
+
+    AtomicInteger fileGroupLeases = new AtomicInteger();
+    AtomicInteger plannerLeases = new AtomicInteger();
+    when(client.lease(
+            argThat(
+                request ->
+                    request != null
+                        && request.jobKinds.equals(Set.of(ReconcileJobKind.EXEC_FILE_GROUP))),
+            eq("local-poller")))
+        .thenAnswer(
+            ignored -> {
+              int leaseIndex = fileGroupLeases.getAndIncrement();
+              return leaseIndex < 2
+                  ? java.util.Optional.of(
+                      leasedJob("file-group-" + leaseIndex, ReconcileJobKind.EXEC_FILE_GROUP))
+                  : java.util.Optional.empty();
+            });
+    when(client.lease(
+            argThat(
+                request ->
+                    request != null
+                        && request.jobKinds.equals(Set.of(ReconcileJobKind.PLAN_CONNECTOR))),
+            eq("local-poller")))
+        .thenAnswer(
+            ignored ->
+                plannerLeases.getAndIncrement() == 0
+                    ? java.util.Optional.of(
+                        leasedJob("plan-connector", ReconcileJobKind.PLAN_CONNECTOR))
+                    : java.util.Optional.empty());
+    when(client.renew(any()))
+        .thenReturn(new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false));
+    when(client.cancellationRequested(any())).thenReturn(false);
+    when(client.complete(
+            any(), any(), any(), any(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(),
+            anyLong(), anyLong(), any()))
+        .thenReturn(new RemoteReconcileExecutorClient.CompletionResult(true));
+
+    poller.pollOnce();
+
+    assertTrue(fileGroupsStarted.await(5, TimeUnit.SECONDS));
+    assertTrue(plannerStarted.await(5, TimeUnit.SECONDS));
+    assertEquals(2, fileGroupLeases.get());
+    releaseExecutions.countDown();
+  }
+
+  @Test
   void pollOnceUsesRemoteLeaseSourceInRemoteMode() {
     RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
     ReconcileExecutor executor =
@@ -1409,6 +1493,15 @@ class RemoteReconcileExecutorPollerTest {
         return fn.apply(context);
       }
     };
+  }
+
+  private static void await(CountDownLatch latch) {
+    try {
+      assertTrue(latch.await(5, TimeUnit.SECONDS));
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new RuntimeException(e);
+    }
   }
 
   private static RemoteLeasedJob leasedJob(String jobId, ReconcileJobKind jobKind) {
