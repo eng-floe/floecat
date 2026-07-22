@@ -25,7 +25,6 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
-import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.ColumnInfo;
@@ -33,12 +32,10 @@ import ai.floedb.floecat.query.rpc.ColumnResult;
 import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationPinIdentity;
-import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.ResolutionFailure;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
@@ -344,53 +341,6 @@ public class UserObjectBundleService {
       default:
         return null;
     }
-  }
-
-  private RelationPinSet collectChunkPins(
-      String correlationId,
-      QueryContext ctx,
-      List<ResolvedRelation> relations,
-      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
-      PhaseDiagnostics diagnostics,
-      BooleanSupplier cancelled) {
-    throwIfCancelled(cancelled);
-    if (relations == null || relations.isEmpty()) {
-      return RelationPinSet.getDefaultInstance();
-    }
-    diagnostics.add("pin.relations", relations.size());
-    List<QueryInput> inputs = new ArrayList<>(relations.size());
-    long buildInputsStartNs = System.nanoTime();
-    for (ResolvedRelation relation : relations) {
-      QueryInput input = buildCanonicalQueryInput(relation);
-      if (input != null) {
-        inputs.add(input);
-      }
-    }
-    diagnostics.nanos("pin.build_inputs", System.nanoTime() - buildInputsStartNs);
-    diagnostics.add("pin.inputs", inputs.size());
-    if (inputs.isEmpty()) {
-      return RelationPinSet.getDefaultInstance();
-    }
-    long asOfStartNs = System.nanoTime();
-    var asOfDefault = ctx.parseAsOfDefault(correlationId);
-    diagnostics.nanos("pin.asof_default", System.nanoTime() - asOfStartNs);
-    long resolverStartNs = System.nanoTime();
-    var resolution =
-        inputResolver.resolveInputs(
-            ctx.getQueryId(),
-            correlationId,
-            inputs,
-            asOfDefault,
-            Optional.of(ctx.getQueryDefaultCatalogId()),
-            currentSnapshotPinCache,
-            diagnostics,
-            cancelled);
-    diagnostics.nanos("pin.resolver", System.nanoTime() - resolverStartNs);
-    throwIfCancelled(cancelled);
-    RelationPinSet incoming = resolution.relationPinSet();
-    RelationPinSet pins = incoming == null ? RelationPinSet.getDefaultInstance() : incoming;
-    diagnostics.add("pin.output_pins", pins.getPinsCount());
-    return pins;
   }
 
   /**
@@ -722,39 +672,6 @@ public class UserObjectBundleService {
     return value == null ? "" : value;
   }
 
-  private QueryInput buildCanonicalQueryInput(ResolvedRelation relation) {
-    // Built-in system relations are not version-pinned in query context snapshots.
-    if (relation.node().origin() == GraphNodeOrigin.SYSTEM) {
-      return null;
-    }
-    QueryInput.Builder builder;
-    GraphNodeKind kind = relation.node().kind();
-    if (kind == GraphNodeKind.TABLE) {
-      builder = QueryInput.newBuilder().setTableId(relation.relationId());
-    } else if (kind == GraphNodeKind.VIEW) {
-      builder = QueryInput.newBuilder().setViewId(relation.relationId());
-    } else {
-      return null;
-    }
-    if (relation.selectedInput().hasSnapshot()) {
-      builder.setSnapshot(relation.selectedInput().getSnapshot());
-    }
-    return builder.build();
-  }
-
-  private QueryContext mergeRelationPins(
-      QueryContext existing, RelationPinSet incoming, String correlationId) {
-    if (incoming == null || incoming.getPinsCount() == 0) {
-      return existing;
-    }
-    RelationPinSet current = existing.parseRelationPins(correlationId);
-    RelationPinSet merged = QueryPins.mergeSets(current, incoming, correlationId);
-    if (current.equals(merged)) {
-      return existing;
-    }
-    return existing.toBuilder().relationPins(merged.toByteArray()).build();
-  }
-
   record ResolvedRelation(
       TableReferenceCandidate candidate,
       ResourceId relationId,
@@ -824,13 +741,12 @@ public class UserObjectBundleService {
     // selected inputs in the next chunk — so a resolution's position never depends on chunk size.
     private final ArrayDeque<PendingItem> resolvedSpillover = new ArrayDeque<>();
     private final Map<RelationCacheKey, RelationInfo> relationInfoCache = new HashMap<>();
-    private final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache =
-        new ConcurrentHashMap<>();
     private final TimingAccumulator timings = new TimingAccumulator();
     private final PhaseDiagnostics diagnostics = diagnostics("get_user_objects");
     private final long streamStartNs = System.nanoTime();
     private final Span parentSpan = Span.current();
-    private RelationPinSet pendingChunkPins = RelationPinSet.getDefaultInstance();
+    // Owns the per-request pin state and drives the collect→commit pin-durability transaction.
+    private final ChunkPinBarrier pinBarrier;
 
     private final BundleChunkStream stream;
     private int nextInputIndex = 0;
@@ -866,6 +782,7 @@ public class UserObjectBundleService {
               statsProvider);
       this.resolutionCache =
           new RelationResolutionCache(overlay, correlationId, requestEngine, timings);
+      this.pinBarrier = new ChunkPinBarrier(inputResolver, queryStore, ctx, correlationId, timings);
       initializeParentSpan();
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
@@ -975,26 +892,7 @@ public class UserObjectBundleService {
         }
       }
       if (!toPin.isEmpty()) {
-        long pinStartNs = System.nanoTime();
-        try {
-          RelationPinSet chunkPins =
-              collectChunkPins(
-                  correlationId,
-                  ctx,
-                  toPin,
-                  currentSnapshotPinCache,
-                  diagnostics,
-                  this::isCancelled);
-          throwIfCancelled(this::isCancelled);
-          long accumulateStartNs = System.nanoTime();
-          try {
-            accumulateChunkPins(chunkPins);
-          } finally {
-            diagnostics.nanos("pin.accumulate", System.nanoTime() - accumulateStartNs);
-          }
-        } finally {
-          timings.addPinCollectNanos(System.nanoTime() - pinStartNs);
-        }
+        pinBarrier.accumulate(toPin, diagnostics);
       }
     }
 
@@ -1306,13 +1204,11 @@ public class UserObjectBundleService {
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
             "Flushing resolution chunk query_id=%s seq=%d pending_items=%d pending_pins=%d",
-            ctx.getQueryId(), stream.seq(), chunkItems.size(), pendingChunkPins.getPinsCount());
+            ctx.getQueryId(), stream.seq(), chunkItems.size(), pinBarrier.pendingPinCount());
       }
       // Ensure pins are durable before accessing stats (which expect the QueryContext to be
       // pinned).
-      long pinCommitStartNs = System.nanoTime();
-      commitChunkPins();
-      timings.addPinCommitNanos(System.nanoTime() - pinCommitStartNs);
+      pinBarrier.commit();
       warmChunkStats(chunkItems);
       QueryContext liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
 
@@ -1616,53 +1512,6 @@ public class UserObjectBundleService {
 
       private EagerBaseCursor(ViewNode view) {
         this.view = view;
-      }
-    }
-
-    // Track every pin that must be durable before the next chunk is emitted.
-    private void accumulateChunkPins(RelationPinSet incomingPins) {
-      if (incomingPins == null || incomingPins.getPinsCount() == 0) {
-        return;
-      }
-      try {
-        pendingChunkPins = QueryPins.mergeSets(pendingChunkPins, incomingPins, correlationId);
-      } catch (RuntimeException | Error e) {
-        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(incomingPins));
-        throw e;
-      }
-    }
-
-    private void commitChunkPins() {
-      if (pendingChunkPins.getPinsCount() == 0) {
-        return;
-      }
-      if (LOG.isDebugEnabled()) {
-        LOG.debugf(
-            "Committing chunk pins query_id=%s pin_count=%d",
-            ctx.getQueryId(), pendingChunkPins.getPinsCount());
-      }
-      RelationPinSet toCommit = pendingChunkPins;
-      // The resolver registered these pins' blobs as transient GC roots at resolution, so they are
-      // protected across the collect→commit window; this update makes the context a durable root.
-      Optional<QueryContext> updated;
-      try {
-        updated =
-            queryStore.update(
-                ctx.getQueryId(), existing -> mergeRelationPins(existing, toCommit, correlationId));
-      } catch (RuntimeException | Error e) {
-        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
-        throw e;
-      }
-      pendingChunkPins = RelationPinSet.getDefaultInstance();
-      if (updated.isEmpty()) {
-        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
-        LOG.warnf(
-            "Failed to commit chunk pins query_id=%s query context missing", ctx.getQueryId());
-        throw GrpcErrors.notFound(
-            correlationId, QUERY_NOT_FOUND, Map.of("query_id", ctx.getQueryId()));
-      }
-      if (LOG.isDebugEnabled()) {
-        LOG.debugf("Committed chunk pins query_id=%s", ctx.getQueryId());
       }
     }
   }
