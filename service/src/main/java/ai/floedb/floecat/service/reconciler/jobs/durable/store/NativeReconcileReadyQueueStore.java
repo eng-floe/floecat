@@ -328,13 +328,13 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
 
   private List<ReadyIndexSelection> readyScanSelections(LeaseRequest request) {
     LeaseRequest effective = request == null ? LeaseRequest.all() : request;
-    List<ReadyIndexSelection> selections = new java.util.ArrayList<>(2);
-    choosePinnedSelection(effective).ifPresent(selections::add);
-    chooseUnpinnedSelection(effective).ifPresent(selections::add);
+    List<ReadyIndexSelection> selections = new java.util.ArrayList<>();
+    selections.addAll(pinnedSelections(effective));
+    selections.addAll(unpinnedSelections(effective));
     return List.copyOf(selections);
   }
 
-  private Optional<ReadyIndexSelection> choosePinnedSelection(LeaseRequest request) {
+  private List<ReadyIndexSelection> pinnedSelections(LeaseRequest request) {
     List<String> executorIds =
         request.executorIds.stream()
             .map(NativeReconcileReadyQueueStore::blankToEmpty)
@@ -342,16 +342,18 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
             .sorted()
             .toList();
     if (executorIds.isEmpty()) {
-      return Optional.empty();
+      return List.of();
     }
-    String executorId = executorIds.get(nextIndex(pinnedSelectionCursor, executorIds.size()));
-    return Optional.of(
-        new ReadyIndexSelection(
-            new ReconcileReadyQueueBackend.ReadyQueueSlice(
-                ReadyIndexType.PINNED_EXECUTOR, executorId)));
+    return rotate(executorIds, pinnedSelectionCursor).stream()
+        .map(
+            executorId ->
+                new ReadyIndexSelection(
+                    new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                        ReadyIndexType.PINNED_EXECUTOR, executorId)))
+        .toList();
   }
 
-  private Optional<ReadyIndexSelection> chooseUnpinnedSelection(LeaseRequest request) {
+  private List<ReadyIndexSelection> unpinnedSelections(LeaseRequest request) {
     List<String> lanes =
         request.lanes.stream()
             .map(NativeReconcileReadyQueueStore::blankToEmpty)
@@ -359,31 +361,43 @@ public class NativeReconcileReadyQueueStore implements ReconcileReadyQueueStore 
             .sorted()
             .toList();
     if (!lanes.isEmpty()) {
-      String lane = lanes.get(nextIndex(unpinnedSelectionCursor, lanes.size()));
-      return Optional.of(
-          new ReadyIndexSelection(
-              new ReconcileReadyQueueBackend.ReadyQueueSlice(ReadyIndexType.EXECUTION_LANE, lane)));
+      return selections(ReadyIndexType.EXECUTION_LANE, rotate(lanes, unpinnedSelectionCursor));
     }
     List<String> jobKinds = request.jobKinds.stream().sorted().map(Enum::name).toList();
     if (!jobKinds.isEmpty()) {
-      String jobKind = jobKinds.get(nextIndex(unpinnedSelectionCursor, jobKinds.size()));
-      return Optional.of(
-          new ReadyIndexSelection(
-              new ReconcileReadyQueueBackend.ReadyQueueSlice(ReadyIndexType.JOB_KIND, jobKind)));
+      return selections(ReadyIndexType.JOB_KIND, rotate(jobKinds, unpinnedSelectionCursor));
     }
     List<String> executionClasses =
         request.executionClasses.stream().sorted().map(Enum::name).toList();
     if (!executionClasses.isEmpty()) {
-      String executionClass =
-          executionClasses.get(nextIndex(unpinnedSelectionCursor, executionClasses.size()));
-      return Optional.of(
-          new ReadyIndexSelection(
-              new ReconcileReadyQueueBackend.ReadyQueueSlice(
-                  ReadyIndexType.EXECUTION_CLASS, executionClass)));
+      return selections(
+          ReadyIndexType.EXECUTION_CLASS, rotate(executionClasses, unpinnedSelectionCursor));
     }
-    return Optional.of(
+    return List.of(
         new ReadyIndexSelection(
             new ReconcileReadyQueueBackend.ReadyQueueSlice(ReadyIndexType.GLOBAL, "")));
+  }
+
+  private static List<ReadyIndexSelection> selections(
+      ReadyIndexType indexType, List<String> filterValues) {
+    return filterValues.stream()
+        .map(
+            filterValue ->
+                new ReadyIndexSelection(
+                    new ReconcileReadyQueueBackend.ReadyQueueSlice(indexType, filterValue)))
+        .toList();
+  }
+
+  private static List<String> rotate(List<String> values, AtomicInteger cursor) {
+    if (values.isEmpty()) {
+      return List.of();
+    }
+    int start = nextIndex(cursor, values.size());
+    List<String> rotated = new java.util.ArrayList<>(values.size());
+    for (int offset = 0; offset < values.size(); offset++) {
+      rotated.add(values.get((start + offset) % values.size()));
+    }
+    return List.copyOf(rotated);
   }
 
   private static int nextIndex(AtomicInteger cursor, int size) {

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -29,6 +30,7 @@ import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -46,6 +48,7 @@ public class RemoteReconcileExecutorPoller {
   private static final long MIN_CANCEL_CHECK_MS = 500L;
   private static final long HEARTBEAT_SHUTDOWN_WAIT_MS = 1_000L;
   private static final int DEFAULT_MAX_PARALLELISM = 1;
+  private static final int DEFAULT_RESERVED_CONTROL_SLOTS = 1;
 
   enum WorkerMode {
     LOCAL,
@@ -83,6 +86,8 @@ public class RemoteReconcileExecutorPoller {
   private final AtomicInteger leaseExecutorCursor = new AtomicInteger(0);
   private volatile WorkerMode workerMode = WorkerMode.LOCAL;
   private volatile int maxParallelism = DEFAULT_MAX_PARALLELISM;
+  private volatile int reservedControlSlots;
+  private volatile Semaphore fileGroupSlots;
   private volatile ExecutorService workers;
 
   @PostConstruct
@@ -96,6 +101,18 @@ public class RemoteReconcileExecutorPoller {
       maxParallelism = 0;
       return;
     }
+    boolean hasControlExecutor =
+        executorRegistry.orderedExecutors().stream()
+            .anyMatch(RemoteReconcileExecutorPoller::supportsControlWork);
+    int configuredReservedControlSlots =
+        config
+            .getOptionalValue("reconciler.reserved-control-slots", Integer.class)
+            .orElse(DEFAULT_RESERVED_CONTROL_SLOTS);
+    reservedControlSlots =
+        !hasControlExecutor || maxParallelism <= 1
+            ? 0
+            : Math.min(maxParallelism - 1, Math.max(0, configuredReservedControlSlots));
+    fileGroupSlots = new Semaphore(maxParallelism - reservedControlSlots);
     workers = Executors.newFixedThreadPool(maxParallelism);
   }
 
@@ -160,7 +177,7 @@ public class RemoteReconcileExecutorPoller {
   }
 
   private Optional<LeaseAssignment> leaseNextAssignment() {
-    var executors = executorRegistry.orderedExecutors();
+    List<ReconcileExecutor> executors = executorRegistry.orderedExecutors();
     if (executors.isEmpty()) {
       return Optional.empty();
     }
@@ -169,12 +186,26 @@ public class RemoteReconcileExecutorPoller {
       if (requestedExecutor.isEmpty()) {
         return Optional.empty();
       }
+      boolean fileGroupSlotReserved = false;
+      if (isFileGroupOnly(requestedExecutor.get())) {
+        Semaphore slots = fileGroupSlots;
+        if (slots == null || !slots.tryAcquire()) {
+          continue;
+        }
+        fileGroupSlotReserved = true;
+      }
       ReconcileJobStore.LeaseRequest request =
           executorRegistry.leaseRequestFor(requestedExecutor.get());
       Optional<RemoteLeasedJob> lease;
       try {
         lease = client.lease(request, workerLeaseSource());
       } catch (RuntimeException e) {
+        releaseFileGroupSlot(fileGroupSlotReserved);
+        if (isLeaseScanBackpressure(e)) {
+          LOG.debugf(
+              "Skipping reconcile poll cycle due to lease scan backpressure: %s", e.getMessage());
+          return Optional.empty();
+        }
         if (shouldIgnoreStartupUnavailable(e)) {
           LOG.debugf(
               "Skipping local reconcile poll cycle until gRPC server is ready: %s", e.getMessage());
@@ -183,19 +214,22 @@ public class RemoteReconcileExecutorPoller {
         throw e;
       }
       if (lease.isEmpty()) {
+        releaseFileGroupSlot(fileGroupSlotReserved);
         continue;
       }
       if (executorCanRun(requestedExecutor.get(), lease.get().lease())) {
-        return Optional.of(new LeaseAssignment(requestedExecutor.get(), lease.get()));
+        return Optional.of(
+            new LeaseAssignment(requestedExecutor.get(), lease.get(), fileGroupSlotReserved));
       }
       Optional<ReconcileExecutor> executor = executorRegistry.executorFor(lease.get().lease());
       if (executor.isEmpty()) {
+        releaseFileGroupSlot(fileGroupSlotReserved);
         LOG.warnf(
             "Leased reconcile job jobId=%s kind=%s but no eligible executor matched locally",
             lease.get().lease().jobId, lease.get().lease().jobKind);
         continue;
       }
-      return Optional.of(new LeaseAssignment(executor.get(), lease.get()));
+      return Optional.of(new LeaseAssignment(executor.get(), lease.get(), fileGroupSlotReserved));
     }
     return Optional.empty();
   }
@@ -234,11 +268,37 @@ public class RemoteReconcileExecutorPoller {
     }
   }
 
+  private static boolean supportsControlWork(ReconcileExecutor executor) {
+    return executor != null
+        && executor.supportedJobKinds().stream()
+            .anyMatch(jobKind -> jobKind != ReconcileJobKind.EXEC_FILE_GROUP);
+  }
+
+  private static boolean isFileGroupOnly(ReconcileExecutor executor) {
+    // Capacity reservation relies on executor-scoped leases and a dedicated file-group executor.
+    // A mixed control/file-group executor must split those lease requests before it is supported.
+    return executor != null
+        && !executor.supportedJobKinds().isEmpty()
+        && executor.supportedJobKinds().stream()
+            .allMatch(jobKind -> jobKind == ReconcileJobKind.EXEC_FILE_GROUP);
+  }
+
+  private void releaseFileGroupSlot(boolean reserved) {
+    if (reserved && fileGroupSlots != null) {
+      fileGroupSlots.release();
+    }
+  }
+
   private String workerLeaseSource() {
     return switch (workerMode) {
       case LOCAL -> "local-poller";
       case REMOTE -> "remote-poller";
     };
+  }
+
+  static boolean isLeaseScanBackpressure(RuntimeException error) {
+    return error instanceof StatusRuntimeException statusError
+        && statusError.getStatus().getCode() == Status.Code.RESOURCE_EXHAUSTED;
   }
 
   private boolean shouldIgnoreStartupUnavailable(RuntimeException error) {
@@ -258,11 +318,13 @@ public class RemoteReconcileExecutorPoller {
       executor.submit(
           () -> {
             boolean ranLease = false;
+            LeaseAssignment leasedAssignment = null;
             try {
               Optional<LeaseAssignment> assignment = leaseNextAssignment();
               if (assignment.isEmpty()) {
                 return;
               }
+              leasedAssignment = assignment.get();
               ranLease = true;
               LOG.infof(
                   "Leased remote reconcile job jobId=%s kind=%s executor=%s",
@@ -273,6 +335,9 @@ public class RemoteReconcileExecutorPoller {
             } catch (RuntimeException e) {
               LOG.errorf(e, "Remote reconcile worker task failed before outcome submission");
             } finally {
+              if (leasedAssignment != null) {
+                releaseFileGroupSlot(leasedAssignment.fileGroupSlotReserved());
+              }
               releaseWorkerSlot(ranLease);
             }
           });
@@ -1032,5 +1097,10 @@ public class RemoteReconcileExecutorPoller {
     }
   }
 
-  record LeaseAssignment(ReconcileExecutor executor, RemoteLeasedJob lease) {}
+  record LeaseAssignment(
+      ReconcileExecutor executor, RemoteLeasedJob lease, boolean fileGroupSlotReserved) {
+    LeaseAssignment(ReconcileExecutor executor, RemoteLeasedJob lease) {
+      this(executor, lease, false);
+    }
+  }
 }

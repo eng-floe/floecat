@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -31,6 +32,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeaseRequest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend.ReadyQueueSlice;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore.LeaseScanStats;
 import java.util.ArrayList;
 import java.util.List;
@@ -117,7 +119,7 @@ class NativeReconcileReadyQueueStoreBudgetTest {
   }
 
   @Test
-  void wildcardLaneJobKindRequestUsesOnePinnedBucketThenOneJobKindBucket() {
+  void wildcardLaneJobKindRequestUsesAllPinnedAndJobKindBuckets() {
     SliceRecordingBackend backend = new SliceRecordingBackend();
     NativeReconcileReadyQueueStore store = new NativeReconcileReadyQueueStore();
     store.bind(backend, null, null, 128, record -> true, record -> false);
@@ -134,20 +136,29 @@ class NativeReconcileReadyQueueStoreBudgetTest {
             new LeaseScanStats());
 
     assertTrue(leased.isEmpty());
-    assertEquals(2, backend.slices.size());
+    assertEquals(4, backend.slices.size());
     assertEquals(
         ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR, backend.slices.get(0).indexType());
     assertTrue(
         Set.of("remote_default_worker", "remote_planner_worker")
             .contains(backend.slices.get(0).filterValue()));
     assertEquals(
-        ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, backend.slices.get(1).indexType());
-    assertEquals(ReconcileJobKind.PLAN_CONNECTOR.name(), backend.slices.get(1).filterValue());
-    assertEquals(List.of(16, 16), backend.pageSizes);
+        ReconcileReadyQueueStore.ReadyIndexType.PINNED_EXECUTOR, backend.slices.get(1).indexType());
+    assertTrue(
+        Set.of("remote_default_worker", "remote_planner_worker")
+            .contains(backend.slices.get(1).filterValue()));
+    assertNotEquals(backend.slices.get(0).filterValue(), backend.slices.get(1).filterValue());
+    assertEquals(
+        ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, backend.slices.get(2).indexType());
+    assertEquals(ReconcileJobKind.PLAN_CONNECTOR.name(), backend.slices.get(2).filterValue());
+    assertEquals(
+        ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, backend.slices.get(3).indexType());
+    assertEquals(ReconcileJobKind.PLAN_TABLE.name(), backend.slices.get(3).filterValue());
+    assertEquals(List.of(16, 16, 16, 16), backend.pageSizes);
   }
 
   @Test
-  void wildcardLaneJobKindRequestRoundRobinsUnpinnedKindBuckets() {
+  void wildcardLaneJobKindRequestScansEveryKindAndRotatesTheStartingKind() {
     SliceRecordingBackend backend = new SliceRecordingBackend();
     NativeReconcileReadyQueueStore store = new NativeReconcileReadyQueueStore();
     store.bind(backend, null, null, 128, record -> true, record -> false);
@@ -163,13 +174,101 @@ class NativeReconcileReadyQueueStoreBudgetTest {
     assertTrue(
         store.leaseReadyDue(System.currentTimeMillis(), request, new LeaseScanStats()).isEmpty());
 
-    assertEquals(2, backend.slices.size());
+    assertEquals(4, backend.slices.size());
     assertEquals(
         ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, backend.slices.get(0).indexType());
     assertEquals(ReconcileJobKind.PLAN_CONNECTOR.name(), backend.slices.get(0).filterValue());
     assertEquals(
         ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, backend.slices.get(1).indexType());
     assertEquals(ReconcileJobKind.PLAN_TABLE.name(), backend.slices.get(1).filterValue());
+    assertEquals(
+        ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, backend.slices.get(2).indexType());
+    assertEquals(ReconcileJobKind.PLAN_TABLE.name(), backend.slices.get(2).filterValue());
+    assertEquals(
+        ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND, backend.slices.get(3).indexType());
+    assertEquals(ReconcileJobKind.PLAN_CONNECTOR.name(), backend.slices.get(3).filterValue());
+  }
+
+  @Test
+  void multiKindRequestLeasesFromLaterKindBeforeReturningEmpty() {
+    NativeReconcileReadyQueueStore store = new NativeReconcileReadyQueueStore();
+    ReconcileReadyQueueBackend backend = mock(ReconcileReadyQueueBackend.class);
+    ReconcileJobIndexStore jobIndexStore = mock(ReconcileJobIndexStore.class);
+    ReconcileLeaseStore leaseStore = mock(ReconcileLeaseStore.class);
+    store.bind(backend, jobIndexStore, leaseStore, 128, record -> true, record -> false);
+    long dueAtMs = System.currentTimeMillis();
+    StoredReconcileJob record = queuedRecord("job-table", dueAtMs, store);
+    record.jobKind = ReconcileJobKind.PLAN_TABLE.name();
+    String readyPointerKey =
+        store.readyPointerKeyFor(
+            record,
+            ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND,
+            dueAtMs,
+            ReconcileJobKind.PLAN_TABLE.name());
+    ReconcileReadyQueueStore.ReadyQueueEntry candidate =
+        new ReconcileReadyQueueStore.ReadyQueueEntry(
+            readyPointerKey,
+            "/canonical-table",
+            record.accountId,
+            record.jobId,
+            dueAtMs,
+            ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND,
+            ReconcileJobKind.PLAN_TABLE.name());
+    CanonicalPointerSnapshot snapshot =
+        new CanonicalPointerSnapshot("/canonical-table", "blob://job-table", 7L);
+    LeasedJob leasedJob = mock(LeasedJob.class);
+
+    when(backend.scanReadySlice(any(), eq(16), eq(""), any()))
+        .thenAnswer(
+            invocation -> {
+              ReadyQueueSlice slice = invocation.getArgument(0);
+              return new ReconcileReadyQueueStore.ReadyQueueScanPage(
+                  ReconcileJobKind.PLAN_TABLE.name().equals(slice.filterValue())
+                      ? List.of(candidate)
+                      : List.of(),
+                  "");
+            });
+    when(backend.loadCanonicalSnapshot(eq("/canonical-table"), any()))
+        .thenReturn(Optional.of(snapshot));
+    when(jobIndexStore.readRecord(snapshot)).thenReturn(Optional.of(record));
+    when(leaseStore.leaseCanonical(
+            eq("/canonical-table"),
+            eq(readyPointerKey),
+            anyLong(),
+            eq(snapshot),
+            eq(record),
+            any()))
+        .thenReturn(Optional.of(leasedJob));
+
+    Optional<LeasedJob> leased =
+        store.leaseReadyDue(
+            dueAtMs,
+            LeaseRequest.of(
+                Set.of(),
+                Set.of(LeaseRequest.anyLaneToken()),
+                Set.of(),
+                Set.of(ReconcileJobKind.PLAN_CONNECTOR, ReconcileJobKind.PLAN_TABLE)),
+            new LeaseScanStats());
+
+    assertEquals(Optional.of(leasedJob), leased);
+    verify(backend)
+        .scanReadySlice(
+            eq(
+                new ReadyQueueSlice(
+                    ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND,
+                    ReconcileJobKind.PLAN_CONNECTOR.name())),
+            eq(16),
+            eq(""),
+            any());
+    verify(backend)
+        .scanReadySlice(
+            eq(
+                new ReadyQueueSlice(
+                    ReconcileReadyQueueStore.ReadyIndexType.JOB_KIND,
+                    ReconcileJobKind.PLAN_TABLE.name())),
+            eq(16),
+            eq(""),
+            any());
   }
 
   @Test

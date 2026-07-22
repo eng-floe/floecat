@@ -1191,7 +1191,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             totalMs, scanStats.scanCount, scanStats.candidateCount, leased.isPresent());
       }
       observeLeaseNext(startedAtMs, scanStats, outcome);
+      if (scanStats.abortedByCaller) {
+        throw new CancellationException("reconcile lease scan cancelled by caller");
+      }
+      if (scanStats.abortedByDeadline) {
+        throw new LeaseScanCapacityExceededException(
+            "reconcile lease scan deadline exceeded budget_ms=" + leaseScanBudgetMs);
+      }
       return leased;
+    } catch (CancellationException | LeaseScanCapacityExceededException e) {
+      throw e;
     } catch (RuntimeException e) {
       observeLeaseNext(startedAtMs, scanStats, "error");
       throw e;
