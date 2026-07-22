@@ -122,9 +122,6 @@ final class DeltaSchemaMapper {
 
       if (dataType instanceof StructType nestedStruct) {
         walkDeltaStruct(cid_algo, sb, nestedStruct, physical, partitionKeys, ordinals);
-      } else if (dataType instanceof ArrayType arrayType
-          && arrayType.getElementType() instanceof StructType elementStruct) {
-        walkDeltaStruct(cid_algo, sb, elementStruct, physical + "[]", partitionKeys, ordinals);
       } else if (dataType instanceof MapType mapType
           && mapType.getValueType() instanceof StructType valueStruct) {
         walkDeltaStruct(cid_algo, sb, valueStruct, physical + "{}", partitionKeys, ordinals);
@@ -133,9 +130,8 @@ final class DeltaSchemaMapper {
   }
 
   private static boolean isContainerType(DataType dataType) {
-    return dataType instanceof StructType
-        || dataType instanceof ArrayType
-        || dataType instanceof MapType;
+    // Arrays are opaque variant leaves, not containers.
+    return dataType instanceof StructType || dataType instanceof MapType;
   }
 
   private static int extractFieldId(FieldMetadata metadata) {
@@ -167,7 +163,10 @@ final class DeltaSchemaMapper {
     if (dataType instanceof DateType) return LogicalType.of(LogicalKind.DATE);
     if (dataType instanceof TimestampType) return LogicalType.of(LogicalKind.TIMESTAMPTZ);
     if (dataType instanceof TimestampNTZType) return LogicalType.of(LogicalKind.TIMESTAMP);
-    if (dataType instanceof ArrayType) return LogicalType.of(LogicalKind.ARRAY);
+    // Lists surface as variant: the scan encodes list<T> rows as variant
+    // payloads regardless of table format (docs/sql/list_as_variant.md in
+    // core), so delta arrays map like iceberg lists.
+    if (dataType instanceof ArrayType) return LogicalType.of(LogicalKind.VARIANT);
     if (dataType instanceof MapType) return LogicalType.of(LogicalKind.MAP);
     if (dataType instanceof StructType) return LogicalType.of(LogicalKind.STRUCT);
     if (dataType instanceof VariantType) return LogicalType.of(LogicalKind.VARIANT);
@@ -221,11 +220,6 @@ final class DeltaSchemaMapper {
       }
       if ("struct".equals(typeNode.path("type").asText(""))) {
         walkFallbackStruct(cid_algo, sb, typeNode, physical, partitionKeys, ordinals);
-      } else if ("array".equals(typeNode.path("type").asText(""))) {
-        JsonNode elem = typeNode.get("elementType");
-        if (elem != null && elem.isObject() && "struct".equals(elem.path("type").asText(""))) {
-          walkFallbackStruct(cid_algo, sb, elem, physical + "[]", partitionKeys, ordinals);
-        }
       } else if ("map".equals(typeNode.path("type").asText(""))) {
         JsonNode value = typeNode.get("valueType");
         if (value != null && value.isObject() && "struct".equals(value.path("type").asText(""))) {
@@ -240,7 +234,7 @@ final class DeltaSchemaMapper {
       return false;
     }
     String typeTag = typeNode.path("type").asText("");
-    return "struct".equals(typeTag) || "array".equals(typeTag) || "map".equals(typeTag);
+    return "struct".equals(typeTag) || "map".equals(typeTag);
   }
 
   private static int fallbackFieldId(JsonNode field) {
@@ -268,7 +262,7 @@ final class DeltaSchemaMapper {
     if (typeNode.isObject()) {
       return switch (typeNode.path("type").asText("")) {
         case "struct" -> "STRUCT";
-        case "array" -> "ARRAY";
+        case "array" -> "VARIANT";
         case "map" -> "MAP";
         case "variant" -> "VARIANT";
         default ->

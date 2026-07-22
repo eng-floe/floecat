@@ -166,13 +166,37 @@ class IcebergSchemaMapperTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  void listFieldMapsToArrayAndIsNotLeaf() {
+  void listFieldMapsToVariantAndIsLeaf() {
+    // Lists surface as a single opaque variant column; the scan encodes each
+    // row as a variant list payload.
     SchemaColumn col =
         singleColumn(
             Types.NestedField.optional(
                 1, "items", Types.ListType.ofOptional(2, Types.StringType.get())));
-    assertThat(col.getLogicalType()).isEqualTo("ARRAY");
-    assertThat(col.getLeaf()).isFalse();
+    assertThat(col.getLogicalType()).isEqualTo("VARIANT");
+    assertThat(col.getLeaf()).isTrue();
+  }
+
+  @Test
+  void listOfStructDoesNotExpandChildColumns() {
+    Schema schema =
+        new Schema(
+            Types.NestedField.optional(
+                1,
+                "links",
+                Types.ListType.ofOptional(
+                    2,
+                    Types.StructType.of(
+                        Types.NestedField.optional(3, "trace_id", Types.StringType.get())))));
+    String json = SchemaParser.toJson(schema);
+    SchemaDescriptor desc = IcebergSchemaMapper.map(ColumnIdAlgorithm.CID_FIELD_ID, json, Set.of());
+
+    // Only the list column itself; element struct fields stay inside the
+    // variant payload rather than becoming separate columns.
+    assertThat(desc.getColumnsCount()).isEqualTo(1);
+    assertThat(desc.getColumns(0).getName()).isEqualTo("links");
+    assertThat(desc.getColumns(0).getLogicalType()).isEqualTo("VARIANT");
+    assertThat(desc.getColumns(0).getLeaf()).isTrue();
   }
 
   @Test

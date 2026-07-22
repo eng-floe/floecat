@@ -50,7 +50,10 @@ public final class IcebergTypeMappings {
       case STRING -> LogicalType.of(LogicalKind.STRING);
       case FIXED, BINARY -> LogicalType.of(LogicalKind.BINARY);
       case UUID -> LogicalType.of(LogicalKind.UUID);
-      case LIST -> LogicalType.of(LogicalKind.ARRAY);
+      // Lists surface as variant: the scan encodes list<T> rows as variant
+      // payloads, so the engine sees one opaque variant column regardless of
+      // element type or nesting depth (docs/sql/list_as_variant.md in core).
+      case LIST -> LogicalType.of(LogicalKind.VARIANT);
       case MAP -> LogicalType.of(LogicalKind.MAP);
       case STRUCT -> LogicalType.of(LogicalKind.STRUCT);
       case VARIANT -> LogicalType.of(LogicalKind.VARIANT);

@@ -171,7 +171,7 @@ class DeltaTypeMapperTest {
 
   @Test
   void arrayTypeMapsToArray() {
-    assertThat(kind(new ArrayType(StringType.STRING, true))).isEqualTo(LogicalKind.ARRAY);
+    assertThat(kind(new ArrayType(StringType.STRING, true))).isEqualTo(LogicalKind.VARIANT);
   }
 
   @Test

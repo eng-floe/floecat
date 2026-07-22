@@ -264,9 +264,9 @@ class LogicalSchemaMapperTest {
   }
 
   @Test
-  void icebergSchemaCanonicalizesElementPathsForPathOrdinal() {
-    // This test ensures that Iceberg list element paths (".element") are stable
-    // when later canonicalized by ColumnIdComputer.
+  void icebergListMapsToSingleVariantLeaf() {
+    // Lists surface as a single opaque variant column; element struct fields
+    // stay inside the variant payload rather than becoming child columns.
     String icebergJson =
         """
         {
@@ -299,36 +299,15 @@ class LogicalSchemaMapperTest {
     Table t = baseTable(icebergJson, upstream);
     SchemaDescriptor desc = mapper.map(t, icebergJson);
 
-    assertEquals(2, desc.getColumnsCount()); // arr, arr[].x (no explicit element container node)
+    assertEquals(1, desc.getColumnsCount());
     SchemaColumn arr = desc.getColumns(0);
     assertEquals("arr", arr.getPhysicalPath());
-    assertFalse(arr.getLeaf());
+    assertEquals("VARIANT", arr.getLogicalType());
+    assertTrue(arr.getLeaf());
     assertEquals(1, arr.getOrdinal());
-
-    SchemaColumn x = desc.getColumns(1);
-
-    // Depending on mapper style it may be "arr[].x" or "arr.element.x"
-    String p = x.getPhysicalPath();
-    assertTrue(p.equals("arr[].x") || p.equals("arr.element.x"), "unexpected path: " + p);
-
-    assertTrue(x.getLeaf());
-    assertEquals(1, x.getOrdinal());
 
     // Sanity: ids should be present under PATH_ORDINAL.
     assertNotEquals(0L, arr.getId());
-    assertNotEquals(0L, x.getId());
-
-    // Canonicalization should treat arr.element.x and arr[].x equivalently.
-    long canonical =
-        ColumnIdComputer.compute(ColumnIdAlgorithm.CID_PATH_ORDINAL, "x", "arr[].x", 1, 0);
-    long fromMapper =
-        ColumnIdComputer.compute(
-            ColumnIdAlgorithm.CID_PATH_ORDINAL,
-            x.getName(),
-            x.getPhysicalPath(),
-            x.getOrdinal(),
-            0);
-    assertEquals(canonical, fromMapper);
   }
 
   @Test

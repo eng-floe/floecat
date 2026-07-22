@@ -35,7 +35,7 @@ import org.apache.iceberg.types.Type;
  * <p><b>Integer collapsing:</b> Both Iceberg {@code INTEGER} (32-bit) and {@code LONG} (64-bit)
  * collapse to canonical {@link ai.floedb.floecat.types.LogicalKind#INT} (64-bit).
  *
- * <p><b>Complex types:</b> {@code LIST} → {@link ai.floedb.floecat.types.LogicalKind#ARRAY}, {@code
+ * <p><b>Complex types:</b> {@code LIST} → {@link ai.floedb.floecat.types.LogicalKind#VARIANT} (lists surface as opaque variant columns), {@code
  * MAP} → {@link ai.floedb.floecat.types.LogicalKind#MAP}, {@code STRUCT} → {@link
  * ai.floedb.floecat.types.LogicalKind#STRUCT}. Element/value/field types are captured by child
  * {@code SchemaColumn} rows with their own paths.
