@@ -19,7 +19,6 @@ package ai.floedb.floecat.service.connector.impl;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
@@ -44,9 +43,7 @@ import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorRequest;
 import ai.floedb.floecat.connector.rpc.ValidateConnectorResponse;
-import ai.floedb.floecat.connector.spi.AuthResolutionContext;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
-import ai.floedb.floecat.connector.spi.ConnectorConfig.Kind;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -55,7 +52,6 @@ import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
-import ai.floedb.floecat.service.credentials.AuthResolutionContexts;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
@@ -201,7 +197,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                       scopedConnectorId(
                           principalContext.getAccountId(), request.getConnectorId(), correlationId);
 
-                  var connector =
+                  Connector connector =
                       connectorRepo
                           .getById(connectorId)
                           .orElseThrow(
@@ -387,7 +383,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           GeneratedErrorMessages.MessageKey.CONNECTOR_ALREADY_EXISTS,
                           Map.of("display_name", display));
                     }
-                    boolean storedCredentials = hasAuthCredentials(spec.getAuth());
+                    boolean storedCredentials =
+                        ConnectorConfigSupport.hasAuthCredentials(spec.getAuth());
                     String secretId = connectorId.getId();
                     AuthConfig storedAuth =
                         storeAuthCredentials(spec.getAuth(), accountId, connectorId.getId());
@@ -423,7 +420,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                     AuthConfig storedAuth =
                                         storeAuthCredentials(
                                             spec.getAuth(), accountId, connectorId.getId());
-                                    boolean storedCredentials = hasAuthCredentials(spec.getAuth());
+                                    boolean storedCredentials =
+                                        ConnectorConfigSupport.hasAuthCredentials(spec.getAuth());
                                     String secretId = connectorId.getId();
                                     ensureNoStoredCredentials(storedAuth);
                                     var connector = builder.setAuth(storedAuth).build();
@@ -436,7 +434,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                       var existingOpt = connectorRepo.getByName(accountId, display);
                                       if (existingOpt.isPresent()) {
                                         var existingSpec = specFromConnector(existingOpt.get());
-                                        if (hasAuthCredentials(spec.getAuth())) {
+                                        if (ConnectorConfigSupport.hasAuthCredentials(
+                                            spec.getAuth())) {
                                           var existingAuth = existingSpec.getAuth();
                                           String existingSecretId =
                                               existingOpt.get().getResourceId().getId();
@@ -509,7 +508,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   MutationOps.BaseServiceChecks.enforcePreconditions(
                       corr, meta, request.getPrecondition());
 
-                  var current =
+                  Connector current =
                       connectorRepo
                           .getById(connectorId)
                           .orElseThrow(
@@ -534,7 +533,8 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   boolean authTouched =
                       maskTargets(normalizedMask, "auth")
                           || maskTargets(normalizedMask, "auth.credentials");
-                  boolean incomingHasCredentials = hasAuthCredentials(desired.getAuth());
+                  boolean incomingHasCredentials =
+                      ConnectorConfigSupport.hasAuthCredentials(desired.getAuth());
                   Optional<AuthCredentials> priorCredentials = Optional.empty();
                   AuthConfig storedAuth = desired.getAuth();
                   if (incomingHasCredentials) {
@@ -693,17 +693,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
                   var spec = request.getSpec();
 
-                  var kind =
-                      switch (spec.getKind()) {
-                        case CK_ICEBERG -> Kind.ICEBERG;
-                        case CK_DELTA -> Kind.DELTA;
-                        case CK_GLUE -> Kind.GLUE;
-                        case CK_UNITY -> Kind.UNITY;
-                        default ->
-                            throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "kind"));
-                      };
+                  var kind = ConnectorConfigSupport.resolveKind(spec.getKind(), corr);
 
-                  var auth = toConnectorAuth(spec.getAuth());
+                  var auth = ConnectorConfigSupport.toConnectorAuth(spec.getAuth());
 
                   var cfg =
                       new ConnectorConfig(
@@ -716,7 +708,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   validatePersistedAuthConfig(spec.getAuth(), corr);
                   validateReconcilePolicy(spec.getPolicy(), corr);
 
-                  var resolved = resolveCredentials(cfg, spec.getAuth());
+                  var resolved = ConnectorConfigSupport.resolveCredentials(cfg, spec.getAuth());
                   try (var connector = ConnectorFactory.create(resolved)) {
                     var namespaces = connector.listNamespaces();
 
@@ -766,14 +758,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         .invoke(L::ok);
   }
 
-  private static boolean hasAuthCredentials(AuthConfig auth) {
-    if (auth == null || !auth.hasCredentials()) {
-      return false;
-    }
-    return auth.getCredentials().getCredentialCase()
-        != AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET;
-  }
-
   private void restoreCredentials(
       String accountId, String secretId, Optional<AuthCredentials> priorCredentials) {
     if (priorCredentials != null && priorCredentials.isPresent()) {
@@ -785,7 +769,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
 
   private AuthConfig storeAuthCredentials(AuthConfig auth, String accountId, String connectorId) {
     AuthConfig safeAuth = auth == null ? AuthConfig.getDefaultInstance() : auth;
-    if (!hasAuthCredentials(safeAuth)) {
+    if (!ConnectorConfigSupport.hasAuthCredentials(safeAuth)) {
       return safeAuth;
     }
     credentialResolver.store(accountId, connectorId, safeAuth.getCredentials());
@@ -794,7 +778,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   }
 
   private static void ensureNoStoredCredentials(AuthConfig auth) {
-    if (hasAuthCredentials(auth)) {
+    if (ConnectorConfigSupport.hasAuthCredentials(auth)) {
       throw new IllegalStateException("AuthCredentials must not be stored in connector records");
     }
   }
@@ -812,7 +796,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
       return AuthConfig.getDefaultInstance();
     }
     var builder = auth.toBuilder();
-    if (hasAuthCredentials(auth)) {
+    if (ConnectorConfigSupport.hasAuthCredentials(auth)) {
       builder.setCredentials(maskAuthCredentials(auth.getCredentials()));
     } else {
       builder.clearCredentials();
@@ -967,19 +951,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   private static void validateSecretBearingMap(
       Map<String, String> values, String corr, String fieldName) {
     PersistedSecretPropertyValidator.validateNoSecretKeys(values, corr, fieldName);
-  }
-
-  private ConnectorConfig resolveCredentials(ConnectorConfig base, AuthConfig auth) {
-    if (hasAuthCredentials(auth)) {
-      AuthResolutionContext context = AuthResolutionContexts.fromInboundContext();
-      return CredentialResolverSupport.apply(base, auth.getCredentials(), context);
-    }
-    return base;
-  }
-
-  private static ConnectorConfig.Auth toConnectorAuth(AuthConfig auth) {
-    return new ConnectorConfig.Auth(
-        auth.getScheme(), auth.getPropertiesMap(), auth.getHeaderHintsMap());
   }
 
   static List<List<String>> toPaths(List<NamespacePath> in) {
@@ -1227,7 +1198,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         }
       }
       if (maskTargets(mask, "auth.credentials")) {
-        if (hasAuthCredentials(inAuth)) {
+        if (ConnectorConfigSupport.hasAuthCredentials(inAuth)) {
           ab.setCredentials(inAuth.getCredentials());
         } else {
           ab.clearCredentials();
