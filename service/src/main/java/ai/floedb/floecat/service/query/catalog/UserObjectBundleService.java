@@ -425,94 +425,216 @@ public class UserObjectBundleService {
     return UserObjectsBundleChunk.newBuilder().setQueryId(queryId).setSeq(seq).setEnd(end).build();
   }
 
+  /**
+   * The single in-flight telemetry tally for one GetUserObjects request: every phase timer plus
+   * every found/not-found and cache counter. The request-level instance lives on the driver; each
+   * parallel build task keeps its own instance (decoration/stats sub-phases) that the driver folds
+   * back in via {@link #mergeFrom} once the task has joined. Every slot is a {@link LongAdder} so
+   * the concurrent select-stage updates, the driver-stage updates, and the per-task merges are all
+   * lock-free and thread-safe. Cache-entry sizes are not held here; they are read live at emit.
+   */
   static final class TimingAccumulator {
-    private long statsLookupNanos;
-    private long decorateRelationNanos;
-    private long decorateViewNanos;
-    private long decorateColumnsNanos;
-    private long decorateColumnInvokeNanos;
-    private long decorateCompleteNanos;
-    private long decoratePersistRelationNanos;
-    private long decoratePersistColumnsNanos;
-    private long decorateColumnWarmHits;
+    // Decoration / stats sub-phases, accumulated by each build task then merged on the driver.
+    private final LongAdder statsLookupNanos = new LongAdder();
+    private final LongAdder decorateRelationNanos = new LongAdder();
+    private final LongAdder decorateViewNanos = new LongAdder();
+    private final LongAdder decorateColumnsNanos = new LongAdder();
+    private final LongAdder decorateColumnInvokeNanos = new LongAdder();
+    private final LongAdder decorateCompleteNanos = new LongAdder();
+    private final LongAdder decoratePersistRelationNanos = new LongAdder();
+    private final LongAdder decoratePersistColumnsNanos = new LongAdder();
+    private final LongAdder decorateColumnWarmHits = new LongAdder();
+    // Driver-stage wall-clock phase timers (single-thread writers on the driver).
+    private final LongAdder resolveNanos = new LongAdder();
+    private final LongAdder normalizeNanos = new LongAdder();
+    private final LongAdder defaultCatalogNanos = new LongAdder();
+    private final LongAdder baseInjectNanos = new LongAdder();
+    private final LongAdder pinCollectNanos = new LongAdder();
+    private final LongAdder pinCommitNanos = new LongAdder();
+    private final LongAdder relationBuildNanos = new LongAdder();
+    private final LongAdder decorationNanos = new LongAdder();
+    // Aggregate sub-totals written from the parallel select tasks.
+    private final LongAdder selectRelationNanos = new LongAdder();
+    private final LongAdder nameResolveNanos = new LongAdder();
+    private final LongAdder nodeResolveNanos = new LongAdder();
+    // Found/not-found and per-request cache counters.
+    private final LongAdder foundCount = new LongAdder();
+    private final LongAdder notFoundCount = new LongAdder();
+    private final LongAdder defaultCatalogLookups = new LongAdder();
+    private final LongAdder nameResolutionCacheHits = new LongAdder();
+    private final LongAdder nameResolutionCacheMisses = new LongAdder();
+    private final LongAdder nodeResolutionCacheHits = new LongAdder();
+    private final LongAdder nodeResolutionCacheMisses = new LongAdder();
 
     void addStatsLookupNanos(long nanos) {
-      statsLookupNanos += nanos;
+      statsLookupNanos.add(nanos);
     }
 
     long statsLookupNanos() {
-      return statsLookupNanos;
+      return statsLookupNanos.sum();
     }
 
     void addDecorateRelationNanos(long nanos) {
-      decorateRelationNanos += nanos;
-    }
-
-    long decorateRelationNanos() {
-      return decorateRelationNanos;
+      decorateRelationNanos.add(nanos);
     }
 
     void addDecorateViewNanos(long nanos) {
-      decorateViewNanos += nanos;
-    }
-
-    long decorateViewNanos() {
-      return decorateViewNanos;
+      decorateViewNanos.add(nanos);
     }
 
     void addDecorateColumnsNanos(long nanos) {
-      decorateColumnsNanos += nanos;
-    }
-
-    long decorateColumnsNanos() {
-      return decorateColumnsNanos;
+      decorateColumnsNanos.add(nanos);
     }
 
     void addDecorateColumnInvokeNanos(long nanos) {
-      decorateColumnInvokeNanos += nanos;
-    }
-
-    long decorateColumnInvokeNanos() {
-      return decorateColumnInvokeNanos;
+      decorateColumnInvokeNanos.add(nanos);
     }
 
     void addDecorateCompleteNanos(long nanos) {
-      decorateCompleteNanos += nanos;
-    }
-
-    long decorateCompleteNanos() {
-      return decorateCompleteNanos;
+      decorateCompleteNanos.add(nanos);
     }
 
     void addDecoratePersistRelationNanos(long nanos) {
-      decoratePersistRelationNanos += nanos;
-    }
-
-    long decoratePersistRelationNanos() {
-      return decoratePersistRelationNanos;
+      decoratePersistRelationNanos.add(nanos);
     }
 
     void addDecoratePersistColumnsNanos(long nanos) {
-      decoratePersistColumnsNanos += nanos;
-    }
-
-    long decoratePersistColumnsNanos() {
-      return decoratePersistColumnsNanos;
+      decoratePersistColumnsNanos.add(nanos);
     }
 
     void addDecorateColumnWarmHits(long warmHits) {
-      decorateColumnWarmHits += warmHits;
-    }
-
-    long decorateColumnWarmHits() {
-      return decorateColumnWarmHits;
+      decorateColumnWarmHits.add(warmHits);
     }
 
     long decorationTotalNanos() {
-      return decorateRelationNanos
-          + decorateViewNanos
-          + decorateColumnsNanos
-          + decorateCompleteNanos;
+      return decorateRelationNanos.sum()
+          + decorateViewNanos.sum()
+          + decorateColumnsNanos.sum()
+          + decorateCompleteNanos.sum();
+    }
+
+    void addResolveNanos(long nanos) {
+      resolveNanos.add(nanos);
+    }
+
+    void addNormalizeNanos(long nanos) {
+      normalizeNanos.add(nanos);
+    }
+
+    void addDefaultCatalogNanos(long nanos) {
+      defaultCatalogNanos.add(nanos);
+    }
+
+    void addBaseInjectNanos(long nanos) {
+      baseInjectNanos.add(nanos);
+    }
+
+    void addPinCollectNanos(long nanos) {
+      pinCollectNanos.add(nanos);
+    }
+
+    void addPinCommitNanos(long nanos) {
+      pinCommitNanos.add(nanos);
+    }
+
+    void addRelationBuildNanos(long nanos) {
+      relationBuildNanos.add(nanos);
+    }
+
+    void addDecorationNanos(long nanos) {
+      decorationNanos.add(nanos);
+    }
+
+    void addSelectRelationNanos(long nanos) {
+      selectRelationNanos.add(nanos);
+    }
+
+    void addNameResolveNanos(long nanos) {
+      nameResolveNanos.add(nanos);
+    }
+
+    void addNodeResolveNanos(long nanos) {
+      nodeResolveNanos.add(nanos);
+    }
+
+    void recordFound() {
+      foundCount.increment();
+    }
+
+    /** Undo a FOUND count: a relation counted FOUND at selection later built into an ERROR. */
+    void unrecordFound() {
+      foundCount.decrement();
+    }
+
+    int found() {
+      return (int) foundCount.sum();
+    }
+
+    void recordNotFound() {
+      notFoundCount.increment();
+    }
+
+    int notFound() {
+      return (int) notFoundCount.sum();
+    }
+
+    void recordDefaultCatalogLookup() {
+      defaultCatalogLookups.increment();
+    }
+
+    void recordNameCacheHit() {
+      nameResolutionCacheHits.increment();
+    }
+
+    void recordNameCacheMiss() {
+      nameResolutionCacheMisses.increment();
+    }
+
+    void recordNodeCacheHit() {
+      nodeResolutionCacheHits.increment();
+    }
+
+    void recordNodeCacheMiss() {
+      nodeResolutionCacheMisses.increment();
+    }
+
+    long resolveNanos() {
+      return resolveNanos.sum();
+    }
+
+    long baseInjectNanos() {
+      return baseInjectNanos.sum();
+    }
+
+    long relationBuildNanos() {
+      return relationBuildNanos.sum();
+    }
+
+    long decorationNanos() {
+      return decorationNanos.sum();
+    }
+
+    /** Sum of the two pin sub-phases; the {@code pin_ms} derived metric. */
+    long pinNanos() {
+      return pinCollectNanos.sum() + pinCommitNanos.sum();
+    }
+
+    /**
+     * Scheduling time: the request wall-clock left over once every measured phase is subtracted.
+     * Never negative. Keep this arithmetic in one place so the emitted {@code scheduling_ms} stays
+     * identical to the pre-consolidation hand-computed value.
+     */
+    long schedulingNanos(long totalNanos) {
+      return Math.max(
+          0L,
+          totalNanos
+              - resolveNanos.sum()
+              - baseInjectNanos.sum()
+              - pinCollectNanos.sum()
+              - pinCommitNanos.sum()
+              - relationBuildNanos.sum()
+              - decorationNanos.sum()
+              - statsLookupNanos.sum());
     }
 
     /**
@@ -520,17 +642,101 @@ public class UserObjectBundleService {
      * accumulator back into the request's on the driver thread once the task has joined.
      */
     void mergeFrom(TimingAccumulator other) {
-      statsLookupNanos += other.statsLookupNanos;
-      decorateRelationNanos += other.decorateRelationNanos;
-      decorateViewNanos += other.decorateViewNanos;
-      decorateColumnsNanos += other.decorateColumnsNanos;
-      decorateColumnInvokeNanos += other.decorateColumnInvokeNanos;
-      decorateCompleteNanos += other.decorateCompleteNanos;
-      decoratePersistRelationNanos += other.decoratePersistRelationNanos;
-      decoratePersistColumnsNanos += other.decoratePersistColumnsNanos;
-      decorateColumnWarmHits += other.decorateColumnWarmHits;
+      statsLookupNanos.add(other.statsLookupNanos.sum());
+      decorateRelationNanos.add(other.decorateRelationNanos.sum());
+      decorateViewNanos.add(other.decorateViewNanos.sum());
+      decorateColumnsNanos.add(other.decorateColumnsNanos.sum());
+      decorateColumnInvokeNanos.add(other.decorateColumnInvokeNanos.sum());
+      decorateCompleteNanos.add(other.decorateCompleteNanos.sum());
+      decoratePersistRelationNanos.add(other.decoratePersistRelationNanos.sum());
+      decoratePersistColumnsNanos.add(other.decoratePersistColumnsNanos.sum());
+      decorateColumnWarmHits.add(other.decorateColumnWarmHits.sum());
+      resolveNanos.add(other.resolveNanos.sum());
+      normalizeNanos.add(other.normalizeNanos.sum());
+      defaultCatalogNanos.add(other.defaultCatalogNanos.sum());
+      baseInjectNanos.add(other.baseInjectNanos.sum());
+      pinCollectNanos.add(other.pinCollectNanos.sum());
+      pinCommitNanos.add(other.pinCommitNanos.sum());
+      relationBuildNanos.add(other.relationBuildNanos.sum());
+      decorationNanos.add(other.decorationNanos.sum());
+      selectRelationNanos.add(other.selectRelationNanos.sum());
+      nameResolveNanos.add(other.nameResolveNanos.sum());
+      nodeResolveNanos.add(other.nodeResolveNanos.sum());
+      foundCount.add(other.foundCount.sum());
+      notFoundCount.add(other.notFoundCount.sum());
+      defaultCatalogLookups.add(other.defaultCatalogLookups.sum());
+      nameResolutionCacheHits.add(other.nameResolutionCacheHits.sum());
+      nameResolutionCacheMisses.add(other.nameResolutionCacheMisses.sum());
+      nodeResolutionCacheHits.add(other.nodeResolutionCacheHits.sum());
+      nodeResolutionCacheMisses.add(other.nodeResolutionCacheMisses.sum());
+    }
+
+    /**
+     * Write every summary metric onto {@code diagnostics} and emit the summary event. The request
+     * context ({@link SummaryContext}) carries the non-tally values (ids, chunk/candidate counts,
+     * live cache sizes, outcome) and the three derived durations. Every key and its write verb
+     * ({@code nanos} vs {@code put}) matches the pre-consolidation emit exactly — the
+     * docs/telemetry/diagnostics.md contract is unchanged.
+     */
+    void flushInto(PhaseDiagnostics diagnostics, SummaryContext ctx) {
+      diagnostics.put("query_id", ctx.queryId());
+      diagnostics.put("correlation_id", ctx.correlationId());
+      diagnostics.put("candidates", ctx.candidates());
+      diagnostics.put("chunks", ctx.chunks());
+      diagnostics.put("found", found());
+      diagnostics.put("not_found", notFound());
+      diagnostics.put("total_ms", ctx.totalMs());
+      diagnostics.nanos("resolve", resolveNanos.sum());
+      diagnostics.nanos("normalize", normalizeNanos.sum());
+      diagnostics.nanos("select_relation", selectRelationNanos.sum());
+      diagnostics.nanos("default_catalog", defaultCatalogNanos.sum());
+      diagnostics.nanos("name_resolve", nameResolveNanos.sum());
+      diagnostics.nanos("node_resolve", nodeResolveNanos.sum());
+      diagnostics.nanos("base_inject", baseInjectNanos.sum());
+      diagnostics.nanos("pin_collect", pinCollectNanos.sum());
+      diagnostics.nanos("pin_commit", pinCommitNanos.sum());
+      diagnostics.put("pin_ms", ctx.pinMs());
+      diagnostics.nanos("relation_build", relationBuildNanos.sum());
+      diagnostics.nanos("decoration", decorationNanos.sum());
+      diagnostics.nanos("stats_lookup", statsLookupNanos.sum());
+      diagnostics.nanos("decorate_relation", decorateRelationNanos.sum());
+      diagnostics.nanos("decorate_view", decorateViewNanos.sum());
+      diagnostics.nanos("decorate_columns", decorateColumnsNanos.sum());
+      diagnostics.nanos("decorate_column_invoke", decorateColumnInvokeNanos.sum());
+      diagnostics.nanos("decorate_complete", decorateCompleteNanos.sum());
+      diagnostics.put("scheduling_ms", ctx.schedulingMs());
+      diagnostics.put("decorator_warm_hits", decorateColumnWarmHits.sum());
+      diagnostics.nanos(
+          "hint_persist", decoratePersistRelationNanos.sum() + decoratePersistColumnsNanos.sum());
+      diagnostics.put("default_catalog_lookups", defaultCatalogLookups.sum());
+      diagnostics.put("name_cache_hits", nameResolutionCacheHits.sum());
+      diagnostics.put("name_cache_misses", nameResolutionCacheMisses.sum());
+      diagnostics.put("node_cache_hits", nodeResolutionCacheHits.sum());
+      diagnostics.put("node_cache_misses", nodeResolutionCacheMisses.sum());
+      diagnostics.put("name_cache_entries", ctx.nameCacheEntries());
+      diagnostics.put("node_cache_entries", ctx.nodeCacheEntries());
+      diagnostics.put("relation_cache_entries", ctx.relationCacheEntries());
+      diagnostics.put("outcome", ctx.outcome());
+      diagnostics.emit("floecat.get_user_objects.summary");
     }
   }
+
+  /**
+   * The non-tally context a {@link TimingAccumulator#flushInto} needs: request ids, candidate/chunk
+   * counts, the three derived durations, live cache-entry sizes, and the outcome label.
+   */
+  record SummaryContext(
+      String queryId,
+      String correlationId,
+      int candidates,
+      int chunks,
+      double totalMs,
+      double pinMs,
+      double schedulingMs,
+      int nameCacheEntries,
+      int nodeCacheEntries,
+      int relationCacheEntries,
+      String outcome) {}
 
   /*
    * The opaque pin identity for a resolved relation. Tables carry the query
@@ -850,8 +1056,6 @@ public class UserObjectBundleService {
 
     private int seq = 1;
     private int nextInputIndex = 0;
-    private int foundCount = 0;
-    private int notFoundCount = 0;
     private int emittedResolutionChunks = 0;
     private boolean headerEmitted = false;
     private boolean endEmitted = false;
@@ -859,26 +1063,6 @@ public class UserObjectBundleService {
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private boolean defaultCatalogResolved = false;
     private String defaultCatalogName = "";
-    // Driver-thread wall-clock of the resolve stage (the parallel select fan-out), not a per-input
-    // sum — under concurrency the sum would exceed the elapsed time and mislead.
-    private long resolveNanos = 0L;
-    private long normalizeNanos = 0L;
-    private long defaultCatalogNanos = 0L;
-    private long baseInjectNanos = 0L;
-    private long pinCollectNanos = 0L;
-    private long pinCommitNanos = 0L;
-    private long relationBuildNanos = 0L;
-    private long decorationNanos = 0L;
-    private long defaultCatalogLookups = 0L;
-    // Written from the parallel select tasks: LongAdder so the totals stay correct without locking.
-    // These are aggregate sub-totals (total time/count across relations), not wall-clock.
-    private final LongAdder selectRelationNanos = new LongAdder();
-    private final LongAdder nameResolveNanos = new LongAdder();
-    private final LongAdder nodeResolveNanos = new LongAdder();
-    private final LongAdder nameResolutionCacheHits = new LongAdder();
-    private final LongAdder nameResolutionCacheMisses = new LongAdder();
-    private final LongAdder nodeResolutionCacheHits = new LongAdder();
-    private final LongAdder nodeResolutionCacheMisses = new LongAdder();
 
     UserObjectBundleIterator(
         String correlationId,
@@ -945,9 +1129,10 @@ public class UserObjectBundleService {
         if (LOG.isDebugEnabled()) {
           LOG.debugf(
               "Emitting end chunk query_id=%s seq=%d resolutions=%d found=%d not_found=%d",
-              ctx.getQueryId(), seq, resolutionCount, foundCount, notFoundCount);
+              ctx.getQueryId(), seq, resolutionCount, timings.found(), timings.notFound());
         }
-        return endChunk(ctx.getQueryId(), seq++, resolutionCount, foundCount, notFoundCount);
+        return endChunk(
+            ctx.getQueryId(), seq++, resolutionCount, timings.found(), timings.notFound());
       }
 
       throw new NoSuchElementException();
@@ -1002,7 +1187,7 @@ public class UserObjectBundleService {
               },
               this::isCancelled);
         } finally {
-          resolveNanos += System.nanoTime() - selectStageStartNs;
+          timings.addResolveNanos(System.nanoTime() - selectStageStartNs);
         }
       }
       if (!toPin.isEmpty()) {
@@ -1024,7 +1209,7 @@ public class UserObjectBundleService {
             diagnostics.nanos("pin.accumulate", System.nanoTime() - accumulateStartNs);
           }
         } finally {
-          pinCollectNanos += System.nanoTime() - pinStartNs;
+          timings.addPinCollectNanos(System.nanoTime() - pinStartNs);
         }
       }
     }
@@ -1050,7 +1235,7 @@ public class UserObjectBundleService {
       }
       pending.add(item);
       if (item instanceof PendingFound found) {
-        foundCount++;
+        timings.recordFound();
         toPin.add(found.relation());
         if (found.relation().node() instanceof ViewNode view && !view.baseRelations().isEmpty()) {
           eagerBaseQueue.addLast(new EagerBaseCursor(view));
@@ -1058,7 +1243,7 @@ public class UserObjectBundleService {
         }
       } else if (item instanceof PendingResolved resolved
           && resolved.resolution().getStatus() == ResolutionStatus.RESOLUTION_STATUS_NOT_FOUND) {
-        notFoundCount++;
+        timings.recordNotFound();
       }
     }
 
@@ -1115,7 +1300,7 @@ public class UserObjectBundleService {
           // resolve to CURRENT and can overwrite AS-OF pins in the same batch.
           pending.add(new PendingFound(-1, syntheticRelation));
         } finally {
-          baseInjectNanos += System.nanoTime() - resolveStartNs;
+          timings.addBaseInjectNanos(System.nanoTime() - resolveStartNs);
         }
       }
       return cursor.nextBaseIndex >= baseRelations.size();
@@ -1150,7 +1335,7 @@ public class UserObjectBundleService {
             normalizeCandidates(correlationId, candidate, this::defaultCatalogName);
         return new PlannedInput(inputIndex, candidate, normalized, null);
       } finally {
-        normalizeNanos += System.nanoTime() - normalizeStartNs;
+        timings.addNormalizeNanos(System.nanoTime() - normalizeStartNs);
       }
     }
 
@@ -1176,7 +1361,7 @@ public class UserObjectBundleService {
                   this::resolveNameCached,
                   this::resolveNodeCached);
         } finally {
-          selectRelationNanos.add(System.nanoTime() - selectStartNs);
+          timings.addSelectRelationNanos(System.nanoTime() - selectStartNs);
         }
         if (resolved.isPresent()) {
           if (LOG.isTraceEnabled()) {
@@ -1343,7 +1528,7 @@ public class UserObjectBundleService {
       // pinned).
       long pinCommitStartNs = System.nanoTime();
       commitChunkPins();
-      pinCommitNanos += System.nanoTime() - pinCommitStartNs;
+      timings.addPinCommitNanos(System.nanoTime() - pinCommitStartNs);
       warmChunkStats(chunkItems);
       QueryContext liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
 
@@ -1388,7 +1573,7 @@ public class UserObjectBundleService {
           // (identity-build) time into relationBuildNanos so slim replies are not invisible.
           long buildNanos = System.nanoTime() - buildStartNs;
           long statsDeltaNanos = timings.statsLookupNanos() - statsBeforeNanos;
-          relationBuildNanos += Math.max(0L, buildNanos - statsDeltaNanos);
+          timings.addRelationBuildNanos(Math.max(0L, buildNanos - statsDeltaNanos));
           slots[i] = foundResolution(found.inputIndex(), slim);
           continue;
         }
@@ -1413,14 +1598,14 @@ public class UserObjectBundleService {
       for (int j = 0; j < outcomes.size(); j++) {
         BuildOutcome outcome = outcomes.get(j);
         timings.mergeFrom(outcome.taskTimings());
-        relationBuildNanos += outcome.relationBuildNanos();
-        decorationNanos += outcome.decorationNanos();
+        timings.addRelationBuildNanos(outcome.relationBuildNanos());
+        timings.addDecorationNanos(outcome.decorationNanos());
         PendingFound found = outcome.source();
         if (outcome.info() != null) {
           relationInfoCache.put(relationCacheKey(found.relation()), outcome.info());
           slots[buildSlots.get(j)] = foundResolution(found.inputIndex(), outcome.info());
         } else {
-          foundCount--;
+          timings.unrecordFound();
           slots[buildSlots.get(j)] = outcome.error();
         }
       }
@@ -1446,25 +1631,33 @@ public class UserObjectBundleService {
       return resolutionsChunk(ctx.getQueryId(), seq++, resolutions);
     }
 
+    // The GetUserObjects RPC has many internal sub-phases (resolve, decoration, ...). We do NOT
+    // emit a span per phase -- they are not RPCs and only add noise to the trace. Per-phase
+    // timings are attached as one summary event on the GetUserObjects RPC span (the single tally's
+    // flushInto), so Jaeger stays readable for small catalog lookups.
     private void publishStreamTelemetry(String outcome) {
       if (!telemetryPublished.compareAndSet(false, true)) {
         return;
       }
       long totalNanos = System.nanoTime() - streamStartNs;
-      long schedulingNanos =
-          Math.max(
-              0L,
-              totalNanos
-                  - resolveNanos
-                  - baseInjectNanos
-                  - pinCollectNanos
-                  - pinCommitNanos
-                  - relationBuildNanos
-                  - decorationNanos
-                  - timings.statsLookupNanos());
+      long schedulingNanos = timings.schedulingNanos(totalNanos);
       double totalMs = totalNanos / 1_000_000.0;
-      double pinMs = (pinCollectNanos + pinCommitNanos) / 1_000_000.0;
-      emitSummaryEvent(outcome, totalMs, pinMs, schedulingNanos / 1_000_000.0);
+      double pinMs = timings.pinNanos() / 1_000_000.0;
+      double schedulingMs = schedulingNanos / 1_000_000.0;
+      timings.flushInto(
+          diagnostics,
+          new SummaryContext(
+              ctx.getQueryId(),
+              correlationId,
+              resolutionCount,
+              emittedResolutionChunks,
+              totalMs,
+              pinMs,
+              schedulingMs,
+              nameResolutionCache.size(),
+              nodeResolutionCache.size(),
+              relationInfoCache.size(),
+              safe(outcome)));
       updateParentSpanSummary(outcome, totalMs);
 
       if (totalMs >= slowRpcMs) {
@@ -1476,17 +1669,17 @@ public class UserObjectBundleService {
             ctx.getQueryId(),
             correlationId,
             totalMs,
-            resolveNanos / 1_000_000.0,
-            baseInjectNanos / 1_000_000.0,
+            timings.resolveNanos() / 1_000_000.0,
+            timings.baseInjectNanos() / 1_000_000.0,
             pinMs,
-            relationBuildNanos / 1_000_000.0,
-            decorationNanos / 1_000_000.0,
+            timings.relationBuildNanos() / 1_000_000.0,
+            timings.decorationNanos() / 1_000_000.0,
             timings.statsLookupNanos() / 1_000_000.0,
-            schedulingNanos / 1_000_000.0,
+            schedulingMs,
             resolutionCount,
             emittedResolutionChunks,
-            foundCount,
-            notFoundCount,
+            timings.found(),
+            timings.notFound(),
             outcome);
       }
 
@@ -1498,8 +1691,8 @@ public class UserObjectBundleService {
             correlationId,
             resolutionCount,
             emittedResolutionChunks,
-            foundCount,
-            notFoundCount,
+            timings.found(),
+            timings.notFound(),
             outcome);
       }
     }
@@ -1523,56 +1716,8 @@ public class UserObjectBundleService {
       parentSpan.setAttribute("floecat.get_user_objects.outcome", safe(outcome));
       parentSpan.setAttribute("floecat.get_user_objects.duration_ms", totalMs);
       parentSpan.setAttribute("floecat.get_user_objects.chunks", emittedResolutionChunks);
-      parentSpan.setAttribute("floecat.get_user_objects.found", foundCount);
-      parentSpan.setAttribute("floecat.get_user_objects.not_found", notFoundCount);
-    }
-
-    // The GetUserObjects RPC has many internal sub-phases (resolve, decoration, ...). We do NOT
-    // emit a span per phase -- they are not RPCs and only add noise to the trace. Per-phase
-    // timings are attached as one summary event on the GetUserObjects RPC span, so Jaeger stays
-    // readable for small catalog lookups.
-    private void emitSummaryEvent(
-        String outcome, double totalMs, double pinMs, double schedulingMs) {
-      diagnostics.put("query_id", ctx.getQueryId());
-      diagnostics.put("correlation_id", correlationId);
-      diagnostics.put("candidates", resolutionCount);
-      diagnostics.put("chunks", emittedResolutionChunks);
-      diagnostics.put("found", foundCount);
-      diagnostics.put("not_found", notFoundCount);
-      diagnostics.put("total_ms", totalMs);
-      diagnostics.nanos("resolve", resolveNanos);
-      diagnostics.nanos("normalize", normalizeNanos);
-      diagnostics.nanos("select_relation", selectRelationNanos.sum());
-      diagnostics.nanos("default_catalog", defaultCatalogNanos);
-      diagnostics.nanos("name_resolve", nameResolveNanos.sum());
-      diagnostics.nanos("node_resolve", nodeResolveNanos.sum());
-      diagnostics.nanos("base_inject", baseInjectNanos);
-      diagnostics.nanos("pin_collect", pinCollectNanos);
-      diagnostics.nanos("pin_commit", pinCommitNanos);
-      diagnostics.put("pin_ms", pinMs);
-      diagnostics.nanos("relation_build", relationBuildNanos);
-      diagnostics.nanos("decoration", decorationNanos);
-      diagnostics.nanos("stats_lookup", timings.statsLookupNanos());
-      diagnostics.nanos("decorate_relation", timings.decorateRelationNanos());
-      diagnostics.nanos("decorate_view", timings.decorateViewNanos());
-      diagnostics.nanos("decorate_columns", timings.decorateColumnsNanos());
-      diagnostics.nanos("decorate_column_invoke", timings.decorateColumnInvokeNanos());
-      diagnostics.nanos("decorate_complete", timings.decorateCompleteNanos());
-      diagnostics.put("scheduling_ms", schedulingMs);
-      diagnostics.put("decorator_warm_hits", timings.decorateColumnWarmHits());
-      diagnostics.nanos(
-          "hint_persist",
-          timings.decoratePersistRelationNanos() + timings.decoratePersistColumnsNanos());
-      diagnostics.put("default_catalog_lookups", defaultCatalogLookups);
-      diagnostics.put("name_cache_hits", nameResolutionCacheHits.sum());
-      diagnostics.put("name_cache_misses", nameResolutionCacheMisses.sum());
-      diagnostics.put("node_cache_hits", nodeResolutionCacheHits.sum());
-      diagnostics.put("node_cache_misses", nodeResolutionCacheMisses.sum());
-      diagnostics.put("name_cache_entries", nameResolutionCache.size());
-      diagnostics.put("node_cache_entries", nodeResolutionCache.size());
-      diagnostics.put("relation_cache_entries", relationInfoCache.size());
-      diagnostics.put("outcome", safe(outcome));
-      diagnostics.emit("floecat.get_user_objects.summary");
+      parentSpan.setAttribute("floecat.get_user_objects.found", timings.found());
+      parentSpan.setAttribute("floecat.get_user_objects.not_found", timings.notFound());
     }
 
     private RelationCacheKey relationCacheKey(ResolvedRelation relation) {
@@ -1601,9 +1746,9 @@ public class UserObjectBundleService {
           defaultCatalogName =
               overlay.catalog(defaultCatalogId).map(CatalogNode::displayName).orElse("");
           defaultCatalogResolved = true;
-          defaultCatalogLookups++;
+          timings.recordDefaultCatalogLookup();
         } finally {
-          defaultCatalogNanos += System.nanoTime() - startNs;
+          timings.addDefaultCatalogNanos(System.nanoTime() - startNs);
         }
       }
       return defaultCatalogName;
@@ -1622,11 +1767,11 @@ public class UserObjectBundleService {
               nameResolutionCache,
               normalizedNameRef(ref),
               () -> overlay.resolveName(correlationId, ref, resolutionContext.engineContext()),
-              nameResolveNanos::add);
+              timings::addNameResolveNanos);
       if (m.resolved()) {
-        nameResolutionCacheMisses.increment();
+        timings.recordNameCacheMiss();
       } else {
-        nameResolutionCacheHits.increment();
+        timings.recordNameCacheHit();
       }
       return m.value();
     }
@@ -1637,11 +1782,11 @@ public class UserObjectBundleService {
               nodeResolutionCache,
               id,
               () -> overlay.resolve(id, resolutionContext.engineContext()),
-              nodeResolveNanos::add);
+              timings::addNodeResolveNanos);
       if (m.resolved()) {
-        nodeResolutionCacheMisses.increment();
+        timings.recordNodeCacheMiss();
       } else {
-        nodeResolutionCacheHits.increment();
+        timings.recordNodeCacheHit();
       }
       return m.value();
     }
