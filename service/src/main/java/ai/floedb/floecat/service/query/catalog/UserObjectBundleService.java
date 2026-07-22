@@ -2022,6 +2022,38 @@ public class UserObjectBundleService {
               .build());
     }
 
+    /**
+     * Warm the pinned table stats for this chunk's FOUND tables in one batched, parallel read after
+     * the pin barrier, so each relation's build reads its stats from the provider cache instead of
+     * a serial store round-trip (which can block on the sync-capture budget). Views carry no table
+     * stats and are skipped. Best-effort: a failure here is swallowed and the per-relation lookup
+     * during build resolves stats as before.
+     */
+    private void warmChunkStats(List<PendingItem> chunkItems) {
+      List<ResourceId> tableIds = new ArrayList<>(chunkItems.size());
+      for (PendingItem item : chunkItems) {
+        if (item instanceof PendingFound found
+            && found.relation().node().kind() == GraphNodeKind.TABLE) {
+          tableIds.add(found.relation().relationId());
+        }
+      }
+      if (tableIds.isEmpty()) {
+        return;
+      }
+      long startNs = System.nanoTime();
+      try {
+        statsProvider.tableStatsBatch(tableIds);
+      } catch (RuntimeException e) {
+        LOG.debugf(
+            e,
+            "stats batch warm failed query_id=%s; build will resolve stats per relation",
+            ctx.getQueryId());
+      } finally {
+        // The reads happen here; the per-relation tableStats during build then hits the cache.
+        timings.addStatsLookupNanos(System.nanoTime() - startNs);
+      }
+    }
+
     private UserObjectsBundleChunk flushResolutionChunk() {
       List<PendingItem> chunkItems = new ArrayList<>(pending);
       pending.clear();
@@ -2035,6 +2067,7 @@ public class UserObjectBundleService {
       long pinCommitStartNs = System.nanoTime();
       commitChunkPins();
       pinCommitNanos += System.nanoTime() - pinCommitStartNs;
+      warmChunkStats(chunkItems);
       QueryContext liveCtx = null;
       List<RelationResolution> resolutions = new ArrayList<>(chunkItems.size());
       for (PendingItem item : chunkItems) {

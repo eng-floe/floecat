@@ -18,6 +18,9 @@ package ai.floedb.floecat.scanner.spi;
 
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 
@@ -26,6 +29,21 @@ public interface StatsProvider {
 
   default Optional<TableStatsView> tableStats(ResourceId tableId) {
     return Optional.empty();
+  }
+
+  /**
+   * Resolve table stats for a set of relations at once, warming any provider-side memoization so
+   * later per-relation {@link #tableStats} calls are hits. The default resolves sequentially;
+   * implementations backed by remote reads should override to fetch in parallel. Never throws for a
+   * single table's failure — a missing entry means "not resolved".
+   */
+  default Map<ResourceId, Optional<TableStatsView>> tableStatsBatch(
+      Collection<ResourceId> tableIds) {
+    Map<ResourceId, Optional<TableStatsView>> out = new LinkedHashMap<>();
+    for (ResourceId tableId : tableIds) {
+      out.computeIfAbsent(tableId, this::tableStats);
+    }
+    return out;
   }
 
   default Optional<ColumnStatsView> columnStats(ResourceId tableId, long columnId) {
