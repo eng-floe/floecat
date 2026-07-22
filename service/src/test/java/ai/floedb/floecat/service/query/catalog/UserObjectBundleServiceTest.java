@@ -735,6 +735,48 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void concurrentSelectPreservesInputOrderAndCountsAcrossChunks() {
+    // Many mixed found/not-found inputs spanning multiple chunks: resolved concurrently, they must
+    // still emit strictly in request order, each input index once, with exact end counts.
+    int total = 40; // > 25 so it spans two chunks
+    List<TableReferenceCandidate> candidates = new ArrayList<>(total);
+    int expectedFound = 0;
+    for (int i = 0; i < total; i++) {
+      if (i % 2 == 0) {
+        candidates.add(
+            TableReferenceCandidate.newBuilder()
+                .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+                .build());
+        expectedFound++;
+      } else {
+        candidates.add(
+            TableReferenceCandidate.newBuilder()
+                .addCandidates(
+                    QueryInput.newBuilder()
+                        .setName(NameRef.newBuilder().setCatalog("cat").setName("missing_" + i)))
+                .build());
+      }
+    }
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, candidates).collect().asList().await().indefinitely();
+
+    List<Integer> emittedIndices =
+        chunks.stream()
+            .filter(UserObjectsBundleChunk::hasResolutions)
+            .flatMap(c -> c.getResolutions().getItemsList().stream())
+            .map(RelationResolution::getInputIndex)
+            .toList();
+    List<Integer> expectedIndices = java.util.stream.IntStream.range(0, total).boxed().toList();
+    assertThat(emittedIndices).isEqualTo(expectedIndices);
+
+    UserObjectsBundleChunk end = chunks.get(chunks.size() - 1);
+    assertThat(end.getEnd().getResolutionCount()).isEqualTo(total);
+    assertThat(end.getEnd().getFoundCount()).isEqualTo(expectedFound);
+    assertThat(end.getEnd().getNotFoundCount()).isEqualTo(total - expectedFound);
+  }
+
+  @Test
   void largeRequestSpansMultipleChunksInOrder() {
     int totalCandidates = 30;
     List<TableReferenceCandidate> candidates = new ArrayList<>(totalCandidates);

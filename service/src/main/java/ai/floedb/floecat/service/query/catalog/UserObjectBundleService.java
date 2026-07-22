@@ -58,6 +58,7 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.concurrent.BoundedFanout;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.PinValidator;
@@ -81,6 +82,7 @@ import ai.floedb.floecat.types.LogicalTypeFormat;
 import io.opentelemetry.api.trace.Span;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -100,12 +102,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Function;
 import java.util.function.LongConsumer;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.Config;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.eclipse.microprofile.context.ManagedExecutor;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -143,6 +147,21 @@ public class UserObjectBundleService {
   private final FlightEndpointRef floecatFlightEndpoint;
 
   @Inject Observability observability;
+
+  // Caps how many of a chunk's relations resolve concurrently. Each is an independent, mostly
+  // store-bound resolution; a small fan-out overlaps their round-trips without flooding the store.
+  private static final int MAX_PARALLEL_RELATION_TASKS = 8;
+
+  // Runs per-relation resolution off the request thread. The Quarkus ManagedExecutor is injected in
+  // init(); tests (and any wiring without one) fall back to the common pool.
+  private volatile Executor blockingExecutor = ForkJoinPool.commonPool();
+
+  @Inject
+  void init(Instance<ManagedExecutor> managedExecutors) {
+    if (managedExecutors != null) {
+      managedExecutors.stream().findFirst().ifPresent(e -> blockingExecutor = e);
+    }
+  }
 
   private static void warnFlightHost(String flightHost, String quarkusProfile) {
     if (flightHost == null) {
@@ -1635,22 +1654,26 @@ public class UserObjectBundleService {
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private boolean defaultCatalogResolved = false;
     private String defaultCatalogName = "";
+    // Driver-thread wall-clock of the resolve stage (the parallel select fan-out), not a per-input
+    // sum — under concurrency the sum would exceed the elapsed time and mislead.
     private long resolveNanos = 0L;
     private long normalizeNanos = 0L;
-    private long selectRelationNanos = 0L;
     private long defaultCatalogNanos = 0L;
-    private long nameResolveNanos = 0L;
-    private long nodeResolveNanos = 0L;
     private long baseInjectNanos = 0L;
     private long pinCollectNanos = 0L;
     private long pinCommitNanos = 0L;
     private long relationBuildNanos = 0L;
     private long decorationNanos = 0L;
     private long defaultCatalogLookups = 0L;
-    private long nameResolutionCacheHits = 0L;
-    private long nameResolutionCacheMisses = 0L;
-    private long nodeResolutionCacheHits = 0L;
-    private long nodeResolutionCacheMisses = 0L;
+    // Written from the parallel select tasks: LongAdder so the totals stay correct without locking.
+    // These are aggregate sub-totals (total time/count across relations), not wall-clock.
+    private final LongAdder selectRelationNanos = new LongAdder();
+    private final LongAdder nameResolveNanos = new LongAdder();
+    private final LongAdder nodeResolveNanos = new LongAdder();
+    private final LongAdder nameResolutionCacheHits = new LongAdder();
+    private final LongAdder nameResolutionCacheMisses = new LongAdder();
+    private final LongAdder nodeResolutionCacheHits = new LongAdder();
+    private final LongAdder nodeResolutionCacheMisses = new LongAdder();
 
     UserObjectBundleIterator(
         String correlationId,
@@ -1741,10 +1764,13 @@ public class UserObjectBundleService {
         }
         nextInputIndex += planCount;
         seedNameResolutions(plan);
-        List<PendingItem> selected = new ArrayList<>(plan.size());
-        for (PlannedInput planned : plan) {
-          selected.add(selectOne(planned));
-        }
+        // Resolve the planned inputs concurrently; results come back in plan order so the gather
+        // below stays deterministic. resolveNanos is the wall-clock of this stage.
+        long selectStageStartNs = System.nanoTime();
+        List<PendingItem> selected =
+            BoundedFanout.mapOrdered(
+                plan, MAX_PARALLEL_RELATION_TASKS, blockingExecutor, this::selectOne);
+        resolveNanos += System.nanoTime() - selectStageStartNs;
         for (PendingItem item : selected) {
           // A view gathered earlier in this loop can fill the chunk via its base tables; the
           // remaining already-selected inputs wait for the next chunk (their nodes are cached).
@@ -1896,7 +1922,7 @@ public class UserObjectBundleService {
             .resolveNames(correlationId, refs)
             .forEach((ref, id) -> nameResolutionCache.putIfAbsent(normalizedNameRef(ref), id));
       } finally {
-        nameResolveNanos += System.nanoTime() - startNs;
+        nameResolveNanos.add(System.nanoTime() - startNs);
       }
     }
 
@@ -1924,64 +1950,68 @@ public class UserObjectBundleService {
      */
     private PendingItem selectOne(PlannedInput planned) {
       int inputIndex = planned.inputIndex();
-      long resolveStartNs = System.nanoTime();
       try {
+        long selectStartNs = System.nanoTime();
+        Optional<ResolvedRelation> resolved;
         try {
-          long selectStartNs = System.nanoTime();
-          Optional<ResolvedRelation> resolved =
-              selectResolvedRelationTimed(
-                  correlationId, planned.candidate(), planned.normalized(), selectStartNs);
-          if (resolved.isPresent()) {
-            if (LOG.isTraceEnabled()) {
-              LOG.tracef(
-                  "Resolved candidate query_id=%s input_index=%d relation=%s",
-                  ctx.getQueryId(), inputIndex, resolved.get().relationId());
-            }
-            return new PendingFound(inputIndex, resolved.get());
-          }
-        } catch (GraphNodeMissingException e) {
-          if (LOG.isDebugEnabled()) {
-            LOG.debugf(
-                "Resolved candidate missing graph node query_id=%s input_index=%d resource_id=%s",
-                ctx.getQueryId(), inputIndex, e.relationId() == null ? "" : e.relationId().getId());
-          }
-          ResolutionFailure failure =
-              ResolutionFailure.newBuilder()
-                  .setCode("catalog_bundle.graph.missing_node")
-                  .setMessage("relation resolved but missing from graph")
-                  .putDetails("resource_id", e.relationId().getId())
-                  .putDetails("default_catalog", defaultCatalogForDiagnostics())
-                  .addAllAttempted(planned.normalized())
-                  .build();
-          return new PendingResolved(
-              RelationResolution.newBuilder()
-                  .setInputIndex(inputIndex)
-                  .setStatus(ResolutionStatus.RESOLUTION_STATUS_ERROR)
-                  .setFailure(failure)
-                  .build());
+          resolved =
+              selectResolvedRelation(
+                  correlationId,
+                  planned.candidate(),
+                  planned.normalized(),
+                  this::resolveNameCached,
+                  this::resolveNodeCached);
+        } finally {
+          selectRelationNanos.add(System.nanoTime() - selectStartNs);
         }
-        if (LOG.isTraceEnabled()) {
-          LOG.tracef(
-              "Candidate not found query_id=%s input_index=%d attempted=%d",
-              ctx.getQueryId(), inputIndex, planned.normalized().size());
+        if (resolved.isPresent()) {
+          if (LOG.isTraceEnabled()) {
+            LOG.tracef(
+                "Resolved candidate query_id=%s input_index=%d relation=%s",
+                ctx.getQueryId(), inputIndex, resolved.get().relationId());
+          }
+          return new PendingFound(inputIndex, resolved.get());
+        }
+      } catch (GraphNodeMissingException e) {
+        if (LOG.isDebugEnabled()) {
+          LOG.debugf(
+              "Resolved candidate missing graph node query_id=%s input_index=%d resource_id=%s",
+              ctx.getQueryId(), inputIndex, e.relationId() == null ? "" : e.relationId().getId());
         }
         ResolutionFailure failure =
             ResolutionFailure.newBuilder()
-                .setCode("catalog_bundle.relation_not_found")
-                .setMessage("relation not found")
-                .putDetails("candidate_count", Integer.toString(planned.normalized().size()))
+                .setCode("catalog_bundle.graph.missing_node")
+                .setMessage("relation resolved but missing from graph")
+                .putDetails("resource_id", e.relationId().getId())
                 .putDetails("default_catalog", defaultCatalogForDiagnostics())
                 .addAllAttempted(planned.normalized())
                 .build();
         return new PendingResolved(
             RelationResolution.newBuilder()
                 .setInputIndex(inputIndex)
-                .setStatus(ResolutionStatus.RESOLUTION_STATUS_NOT_FOUND)
+                .setStatus(ResolutionStatus.RESOLUTION_STATUS_ERROR)
                 .setFailure(failure)
                 .build());
-      } finally {
-        resolveNanos += System.nanoTime() - resolveStartNs;
       }
+      if (LOG.isTraceEnabled()) {
+        LOG.tracef(
+            "Candidate not found query_id=%s input_index=%d attempted=%d",
+            ctx.getQueryId(), inputIndex, planned.normalized().size());
+      }
+      ResolutionFailure failure =
+          ResolutionFailure.newBuilder()
+              .setCode("catalog_bundle.relation_not_found")
+              .setMessage("relation not found")
+              .putDetails("candidate_count", Integer.toString(planned.normalized().size()))
+              .putDetails("default_catalog", defaultCatalogForDiagnostics())
+              .addAllAttempted(planned.normalized())
+              .build();
+      return new PendingResolved(
+          RelationResolution.newBuilder()
+              .setInputIndex(inputIndex)
+              .setStatus(ResolutionStatus.RESOLUTION_STATUS_NOT_FOUND)
+              .setFailure(failure)
+              .build());
     }
 
     private UserObjectsBundleChunk flushResolutionChunk() {
@@ -2190,10 +2220,10 @@ public class UserObjectBundleService {
       diagnostics.put("total_ms", totalMs);
       diagnostics.nanos("resolve", resolveNanos);
       diagnostics.nanos("normalize", normalizeNanos);
-      diagnostics.nanos("select_relation", selectRelationNanos);
+      diagnostics.nanos("select_relation", selectRelationNanos.sum());
       diagnostics.nanos("default_catalog", defaultCatalogNanos);
-      diagnostics.nanos("name_resolve", nameResolveNanos);
-      diagnostics.nanos("node_resolve", nodeResolveNanos);
+      diagnostics.nanos("name_resolve", nameResolveNanos.sum());
+      diagnostics.nanos("node_resolve", nodeResolveNanos.sum());
       diagnostics.nanos("base_inject", baseInjectNanos);
       diagnostics.nanos("pin_collect", pinCollectNanos);
       diagnostics.nanos("pin_commit", pinCommitNanos);
@@ -2212,10 +2242,10 @@ public class UserObjectBundleService {
           "hint_persist",
           timings.decoratePersistRelationNanos() + timings.decoratePersistColumnsNanos());
       diagnostics.put("default_catalog_lookups", defaultCatalogLookups);
-      diagnostics.put("name_cache_hits", nameResolutionCacheHits);
-      diagnostics.put("name_cache_misses", nameResolutionCacheMisses);
-      diagnostics.put("node_cache_hits", nodeResolutionCacheHits);
-      diagnostics.put("node_cache_misses", nodeResolutionCacheMisses);
+      diagnostics.put("name_cache_hits", nameResolutionCacheHits.sum());
+      diagnostics.put("name_cache_misses", nameResolutionCacheMisses.sum());
+      diagnostics.put("node_cache_hits", nodeResolutionCacheHits.sum());
+      diagnostics.put("node_cache_misses", nodeResolutionCacheMisses.sum());
       diagnostics.put("name_cache_entries", nameResolutionCache.size());
       diagnostics.put("node_cache_entries", nodeResolutionCache.size());
       diagnostics.put("relation_cache_entries", relationInfoCache.size());
@@ -2270,11 +2300,11 @@ public class UserObjectBundleService {
               nameResolutionCache,
               normalizedNameRef(ref),
               () -> overlay.resolveName(correlationId, ref, resolutionContext.engineContext()),
-              nanos -> nameResolveNanos += nanos);
+              nameResolveNanos::add);
       if (m.resolved()) {
-        nameResolutionCacheMisses++;
+        nameResolutionCacheMisses.increment();
       } else {
-        nameResolutionCacheHits++;
+        nameResolutionCacheHits.increment();
       }
       return m.value();
     }
@@ -2285,11 +2315,11 @@ public class UserObjectBundleService {
               nodeResolutionCache,
               id,
               () -> overlay.resolve(id, resolutionContext.engineContext()),
-              nanos -> nodeResolveNanos += nanos);
+              nodeResolveNanos::add);
       if (m.resolved()) {
-        nodeResolutionCacheMisses++;
+        nodeResolutionCacheMisses.increment();
       } else {
-        nodeResolutionCacheHits++;
+        nodeResolutionCacheHits.increment();
       }
       return m.value();
     }
@@ -2321,19 +2351,6 @@ public class UserObjectBundleService {
                 }
               });
       return new Memoized<>(value, resolvedHere[0]);
-    }
-
-    private Optional<ResolvedRelation> selectResolvedRelationTimed(
-        String correlationId,
-        TableReferenceCandidate candidate,
-        List<QueryInput> normalized,
-        long selectStartNs) {
-      try {
-        return selectResolvedRelation(
-            correlationId, candidate, normalized, this::resolveNameCached, this::resolveNodeCached);
-      } finally {
-        selectRelationNanos += System.nanoTime() - selectStartNs;
-      }
     }
 
     private NormalizedNameRef normalizedNameRef(NameRef ref) {
