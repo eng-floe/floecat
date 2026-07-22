@@ -50,6 +50,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
+import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -64,6 +65,11 @@ public final class StatsProviderFactory {
   private final Duration syncLatencyBudget;
   private final Duration syncMaxLatencyBudget;
   private final boolean syncEnabled;
+  // Bound on concurrent stats warms per chunk. Local per-request bound; total store concurrency is
+  // bounded by the shared executor pool, not this. Read once here via ConfigProvider (not a
+  // @ConfigProperty ctor param) so the new-constructed test call sites keep compiling while prod
+  // still honors config.
+  private final int maxParallelStatsWarms;
 
   @Inject
   public StatsProviderFactory(
@@ -79,6 +85,10 @@ public final class StatsProviderFactory {
     this.syncMaxLatencyBudget = config.syncMaxLatencyBudget();
     this.syncLatencyBudget = clampToMax(config.syncLatencyBudget(), syncMaxLatencyBudget);
     this.syncEnabled = config.syncEnabled();
+    this.maxParallelStatsWarms =
+        ConfigProvider.getConfig()
+            .getOptionalValue("floecat.catalog.bundle.max_parallel_stats_warms", Integer.class)
+            .orElse(16);
   }
 
   public StatsProviderFactory(
@@ -98,7 +108,8 @@ public final class StatsProviderFactory {
         correlationId,
         false,
         syncLatencyBudget,
-        syncEnabled);
+        syncEnabled,
+        maxParallelStatsWarms);
   }
 
   public StatsProvider forSystemScan(QueryContext ctx, String correlationId) {
@@ -111,7 +122,8 @@ public final class StatsProviderFactory {
         correlationId,
         true,
         syncLatencyBudget,
-        syncEnabled);
+        syncEnabled,
+        maxParallelStatsWarms);
   }
 
   SnapshotPinLookup pinLookupForQuery(QueryContext ctx, String correlationId) {
@@ -120,7 +132,8 @@ public final class StatsProviderFactory {
 
   private static final class CachedStatsProvider implements StatsProvider {
     // Bound on concurrent stats warms per chunk (chunk cap is 25); virtual threads make this cheap.
-    private static final int MAX_PARALLEL_STATS_WARMS = 16;
+    // Local per-request bound; total store concurrency is bounded by the shared executor pool.
+    private final int maxParallelStatsWarms;
 
     private final StatsOrchestrator statsOrchestrator;
     private final TableRepository tableRepository;
@@ -144,13 +157,15 @@ public final class StatsProviderFactory {
         String correlationId,
         boolean allowUnpinnedLatestSnapshotFallback,
         Duration syncLatencyBudget,
-        boolean syncEnabled) {
+        boolean syncEnabled,
+        int maxParallelStatsWarms) {
       this.statsOrchestrator = statsOrchestrator;
       this.tableRepository = tableRepository;
       this.snapshotRepository = snapshotRepository;
       this.correlationId = correlationId == null ? "" : correlationId;
       this.syncLatencyBudget = syncLatencyBudget;
       this.syncEnabled = syncEnabled;
+      this.maxParallelStatsWarms = maxParallelStatsWarms;
       this.pinResolver = new SnapshotPinResolver(queryStore, ctx, correlationId);
       this.allowUnpinnedLatestSnapshotFallback = allowUnpinnedLatestSnapshotFallback;
     }
@@ -193,7 +208,7 @@ public final class StatsProviderFactory {
         List<Optional<StatsProvider.TableStatsView>> results =
             BoundedFanout.mapOrdered(
                 ids,
-                MAX_PARALLEL_STATS_WARMS,
+                maxParallelStatsWarms,
                 exec,
                 id -> {
                   try {

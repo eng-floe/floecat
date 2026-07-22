@@ -110,9 +110,11 @@ public class UserObjectBundleService {
 
   @Inject Observability observability;
 
-  // Caps how many of a chunk's relations resolve concurrently. Each is an independent, mostly
-  // store-bound resolution; a small fan-out overlaps their round-trips without flooding the store.
-  private static final int MAX_PARALLEL_RELATION_TASKS = 8;
+  // Caps how many of a chunk's relations resolve concurrently, across the select and build
+  // fan-outs. Each is an independent, mostly store-bound resolution; a small fan-out overlaps their
+  // round-trips without flooding the store. Local per-request bound; total store concurrency is
+  // bounded by the shared executor pool, not this.
+  private final int maxParallelRelations;
 
   // The stream driver blocks while it gathers this fan-out. Keep its blocking metadata work off
   // the application worker pool so concurrent drivers cannot starve the executor that runs them.
@@ -165,7 +167,9 @@ public class UserObjectBundleService {
       @ConfigProperty(name = "quarkus.grpc.server.plain-text", defaultValue = "true")
           boolean grpcPlainText,
       @ConfigProperty(name = "quarkus.profile", defaultValue = "prod") String quarkusProfile,
-      @ConfigProperty(name = "floecat.rpc.log.slow-ms", defaultValue = "250") long slowRpcMs) {
+      @ConfigProperty(name = "floecat.rpc.log.slow-ms", defaultValue = "250") long slowRpcMs,
+      @ConfigProperty(name = "floecat.catalog.bundle.max_parallel_relations", defaultValue = "8")
+          int maxParallelRelations) {
     this.overlay = overlay;
     this.inputResolver = inputResolver;
     this.queryStore = queryStore;
@@ -173,6 +177,7 @@ public class UserObjectBundleService {
     this.engineContext = engineContext;
     this.decorationEpoch = safe(decorationEpoch);
     this.slowRpcMs = Math.max(0L, slowRpcMs);
+    this.maxParallelRelations = maxParallelRelations;
     FlightEndpointRef advertisedFlightEndpoint =
         FlightEndpointRef.newBuilder()
             .setHost(flightHost)
@@ -225,7 +230,8 @@ public class UserObjectBundleService {
         flightPort,
         grpcPlainText,
         quarkusProfile,
-        250L);
+        250L,
+        8);
   }
 
   /** {@link #stream(String, QueryContext, List, Set)} with no possession hint. */
@@ -861,7 +867,7 @@ public class UserObjectBundleService {
         try {
           BoundedFanout.forEachOrdered(
               plan,
-              MAX_PARALLEL_RELATION_TASKS,
+              maxParallelRelations,
               blockingExecutor,
               this::selectOne,
               item -> {
@@ -1256,7 +1262,7 @@ public class UserObjectBundleService {
       List<BuildOutcome> outcomes =
           BoundedFanout.mapOrdered(
               indices,
-              MAX_PARALLEL_RELATION_TASKS,
+              maxParallelRelations,
               blockingExecutor,
               j -> buildOne(toBuild.get(j), liveCtx, buildIdentities.get(j)));
 
