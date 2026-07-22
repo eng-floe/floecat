@@ -1740,6 +1740,7 @@ public class UserObjectBundleService {
           plan.add(planInput(nextInputIndex + i));
         }
         nextInputIndex += planCount;
+        seedNameResolutions(plan);
         List<PendingItem> selected = new ArrayList<>(plan.size());
         for (PlannedInput planned : plan) {
           selected.add(selectOne(planned));
@@ -1870,6 +1871,34 @@ public class UserObjectBundleService {
     /** A requested input paired with its normalized candidates, ready to select against. */
     private record PlannedInput(
         int inputIndex, TableReferenceCandidate candidate, List<QueryInput> normalized) {}
+
+    /**
+     * Resolve every NAME candidate of the plan in one batch, seeding the name memo. Names sharing a
+     * catalog/namespace resolve their scope once here instead of once per candidate during select,
+     * and the memo turns each candidate's later resolveNameCached into a hit. Already-cached names
+     * (e.g. from a prior chunk's base-table drain) are left as they are.
+     */
+    private void seedNameResolutions(List<PlannedInput> plan) {
+      List<NameRef> refs = new ArrayList<>();
+      for (PlannedInput planned : plan) {
+        for (QueryInput candidate : planned.normalized()) {
+          if (candidate.getTargetCase() == QueryInput.TargetCase.NAME) {
+            refs.add(candidate.getName());
+          }
+        }
+      }
+      if (refs.isEmpty()) {
+        return;
+      }
+      long startNs = System.nanoTime();
+      try {
+        overlay
+            .resolveNames(correlationId, refs)
+            .forEach((ref, id) -> nameResolutionCache.putIfAbsent(normalizedNameRef(ref), id));
+      } finally {
+        nameResolveNanos += System.nanoTime() - startNs;
+      }
+    }
 
     /** Normalize one requested input's candidates. Pure with respect to resolution state. */
     private PlannedInput planInput(int inputIndex) {
