@@ -25,6 +25,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.ColumnFailureCode;
+import ai.floedb.floecat.query.rpc.ColumnInfo;
+import ai.floedb.floecat.query.rpc.ColumnResult;
 import ai.floedb.floecat.query.rpc.ColumnStatus;
 import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.FlightEndpointRef;
@@ -249,6 +251,33 @@ class RelationBundleBuilderTest {
     assertThat(result.info().hasFlightEndpoint()).isTrue();
     assertThat(result.info().getFlightEndpoint().getHost()).isEqualTo("node-declared");
     assertThat(result.info().getFlightEndpoint().getPort()).isEqualTo(4111);
+  }
+
+  @Test
+  void decorateColumnsMarksSchemaMismatchColumnsFailed() {
+    // pruned smaller than the served columns ⇒ every column is failed as a schema mismatch.
+    RelationBundleBuilder builder = builder(ctxIgnored -> Optional.empty(), false);
+    List<ColumnInfo> columns =
+        List.of(
+            ColumnInfo.newBuilder().setId(11).setName("c1").setOrdinal(1).build(),
+            ColumnInfo.newBuilder().setId(12).setName("c2").setOrdinal(2).build());
+    List<SchemaColumn> pruned =
+        List.of(SchemaColumn.newBuilder().setId(11).setName("c1").setOrdinal(1).build());
+
+    List<ColumnResult> results =
+        builder.decorateColumns(
+            columns, pruned, null, Optional.empty(), EngineContext.of("pg", "16.0"), true, TABLE);
+
+    assertThat(results).hasSize(2);
+    assertThat(results)
+        .allMatch(
+            c ->
+                c.getStatus() == ColumnStatus.COLUMN_STATUS_FAILED
+                    && c.hasFailure()
+                    && c.getFailure().getCode()
+                        == ColumnFailureCode.COLUMN_FAILURE_CODE_SCHEMA_MISMATCH
+                    && c.getFailure().getDetailsMap().get("relation_id").equals(TABLE.getId())
+                    && c.getFailure().getMessage().contains("Column/schema mismatch"));
   }
 
   @Test

@@ -27,15 +27,12 @@ import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
-import ai.floedb.floecat.query.rpc.ColumnInfo;
-import ai.floedb.floecat.query.rpc.ColumnResult;
 import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationPinIdentity;
 import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.ResolutionFailure;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
-import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
@@ -51,9 +48,7 @@ import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
-import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
-import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import io.opentelemetry.api.trace.Span;
@@ -655,18 +650,6 @@ public class UserObjectBundleService {
       int nodeCacheEntries,
       int relationCacheEntries,
       String outcome) {}
-
-  List<ColumnResult> decorateColumns(
-      List<ColumnInfo> columns,
-      List<SchemaColumn> pruned,
-      RelationDecoration relationDecoration,
-      Optional<EngineMetadataDecorator> decorator,
-      EngineContext ctx,
-      boolean decorationRequired,
-      ResourceId relationId) {
-    return relationBuilder.decorateColumns(
-        columns, pruned, relationDecoration, decorator, ctx, decorationRequired, relationId);
-  }
 
   private static String safe(String value) {
     return value == null ? "" : value;

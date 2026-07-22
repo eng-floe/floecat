@@ -29,8 +29,6 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.ColumnFailureCode;
-import ai.floedb.floecat.query.rpc.ColumnInfo;
-import ai.floedb.floecat.query.rpc.ColumnResult;
 import ai.floedb.floecat.query.rpc.ColumnStatus;
 import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.Origin;
@@ -1769,39 +1767,6 @@ class UserObjectBundleServiceTest {
                     && c.hasFailure()
                     && c.getFailure().getCode()
                         == ColumnFailureCode.COLUMN_FAILURE_CODE_DECORATOR_UNAVAILABLE);
-  }
-
-  @Test
-  @SuppressWarnings("unchecked")
-  void schemaMismatchPathMarksAllColumnsFailed() {
-    List<ColumnInfo> columns =
-        List.of(
-            ColumnInfo.newBuilder().setId(11).setName("c1").setOrdinal(1).build(),
-            ColumnInfo.newBuilder().setId(12).setName("c2").setOrdinal(2).build());
-    List<SchemaColumn> pruned =
-        List.of(SchemaColumn.newBuilder().setId(11).setName("c1").setOrdinal(1).build());
-    ResourceId relationId = TABLE_A;
-
-    List<ColumnResult> results =
-        service.decorateColumns(
-            columns,
-            pruned,
-            null,
-            Optional.empty(),
-            EngineContext.of("pg", "16.0"),
-            true,
-            relationId);
-
-    assertThat(results).hasSize(2);
-    assertThat(results)
-        .allMatch(
-            c ->
-                c.getStatus() == ColumnStatus.COLUMN_STATUS_FAILED
-                    && c.hasFailure()
-                    && c.getFailure().getCode()
-                        == ColumnFailureCode.COLUMN_FAILURE_CODE_SCHEMA_MISMATCH
-                    && c.getFailure().getDetailsMap().get("relation_id").equals(relationId.getId())
-                    && c.getFailure().getMessage().contains("Column/schema mismatch"));
   }
 
   @Test
