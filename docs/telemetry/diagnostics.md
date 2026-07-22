@@ -118,6 +118,11 @@ Emitted by `GetUserObjects`. This is the main planner metadata lookup summary fo
 | `name_cache_entries` / `node_cache_entries` / `relation_cache_entries` | Final request-local cache sizes. |
 | `outcome` | `completed`, `failed`, or cancellation-specific outcome where applicable. |
 
+Candidate selection and per-relation build run concurrently, so `resolve_ms` is the wall-clock
+span of the selection phase, while the per-relation timers (`relation_build_ms`, `decoration_ms`,
+`stats_lookup_ms`, and the `decorate_*` breakdown) sum the work done across all tasks and can exceed
+that span. `scheduling_ms` absorbs the difference between `total_ms` and the wall-clock phases.
+
 ### `floecat.flight.summary`
 
 Emitted by the Arrow Flight system-table stream worker.

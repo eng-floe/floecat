@@ -25,6 +25,14 @@ import java.util.Set;
  *
  * <p>Implementations are invoked during bundle construction and receive normalized engine kind +
  * version. Decoration remains optional and is not part of scanner implementations.
+ *
+ * <p><b>Thread-safety:</b> the decorator returned for an engine is a shared instance and may be
+ * invoked concurrently for different relations, both within one request and across requests. One
+ * relation's {@code decorate}/{@code completeRelation} sequence runs on a single thread, but
+ * different relations may run at the same time. Implementations must therefore hold no per-relation
+ * state in instance fields — stage anything that must survive from {@code decorateColumn} to {@code
+ * completeRelation} in the decoration's attribute bag (which is per-relation), never on the
+ * decorator itself.
  */
 public interface EngineMetadataDecorator {
 

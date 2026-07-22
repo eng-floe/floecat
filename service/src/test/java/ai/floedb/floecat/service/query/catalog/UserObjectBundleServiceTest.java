@@ -234,6 +234,44 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void oneRelationBuildFailureErrorsOnlyThatRelation() {
+    // A build failure is isolated to the relation that hit it: TABLE_A's schema read throws, so it
+    // resolves ERROR while TABLE_B still resolves FOUND. An ERROR counts toward neither found nor
+    // not_found, and the stream still completes with an end marker.
+    overlay.failSchemaFor(TABLE_A);
+
+    TableReferenceCandidate a =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .build();
+    TableReferenceCandidate b =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(a, b)).collect().asList().await().indefinitely();
+
+    assertThat(chunks).hasSize(3);
+    RelationResolution first = chunks.get(1).getResolutions().getItems(0);
+    RelationResolution second = chunks.get(1).getResolutions().getItems(1);
+
+    assertThat(first.getInputIndex()).isZero();
+    assertThat(first.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_ERROR);
+    assertThat(first.getFailure().getCode()).isEqualTo("catalog_bundle.build_failed");
+    assertThat(first.getFailure().getDetailsMap()).containsEntry("resource_id", TABLE_A.getId());
+
+    assertThat(second.getInputIndex()).isEqualTo(1);
+    assertThat(second.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(second.getRelation().getRelationId()).isEqualTo(TABLE_B);
+
+    UserObjectsBundleChunk end = chunks.get(2);
+    assertThat(end.getEnd().getResolutionCount()).isEqualTo(2);
+    assertThat(end.getEnd().getFoundCount()).isEqualTo(1);
+    assertThat(end.getEnd().getNotFoundCount()).isZero();
+  }
+
+  @Test
   void relationIncludesStatsWhenPinned() {
     TableValueStats stats = TableValueStats.newBuilder().setRowCount(22).build();
     statsRepository.putTargetStats(

@@ -536,6 +536,22 @@ public class UserObjectBundleService {
           + decorateColumnsNanos
           + decorateCompleteNanos;
     }
+
+    /**
+     * Add every total from {@code other} into this accumulator. Used to fold a build task's own
+     * accumulator back into the request's on the driver thread once the task has joined.
+     */
+    private void mergeFrom(TimingAccumulator other) {
+      statsLookupNanos += other.statsLookupNanos;
+      decorateRelationNanos += other.decorateRelationNanos;
+      decorateViewNanos += other.decorateViewNanos;
+      decorateColumnsNanos += other.decorateColumnsNanos;
+      decorateColumnInvokeNanos += other.decorateColumnInvokeNanos;
+      decorateCompleteNanos += other.decorateCompleteNanos;
+      decoratePersistRelationNanos += other.decoratePersistRelationNanos;
+      decoratePersistColumnsNanos += other.decoratePersistColumnsNanos;
+      decorateColumnWarmHits += other.decorateColumnWarmHits;
+    }
   }
 
   /**
@@ -2054,6 +2070,77 @@ public class UserObjectBundleService {
       }
     }
 
+    /** A built relation's outcome: exactly one of {@code info} / {@code error} is non-null. */
+    private record BuildOutcome(
+        PendingFound source,
+        RelationInfo info,
+        RelationResolution error,
+        long relationBuildNanos,
+        long decorationNanos,
+        TimingAccumulator taskTimings) {}
+
+    /**
+     * Build one relation's full payload, timing into a task-local accumulator so parallel builds
+     * need no shared-counter deltas. A build failure is isolated to this relation as an ERROR
+     * resolution — one relation's decoration/schema/stats fault must not sink the whole bundle.
+     */
+    private BuildOutcome buildOne(
+        PendingFound found, QueryContext liveCtx, Optional<RelationPinIdentity> scopedIdentity) {
+      TimingAccumulator taskTimings = new TimingAccumulator();
+      long buildStartNs = System.nanoTime();
+      try {
+        RelationInfo info =
+            buildRelation(
+                correlationId,
+                found.relation(),
+                liveCtx,
+                resolutionContext,
+                statsProvider,
+                taskTimings,
+                scopedIdentity);
+        long buildNanos = System.nanoTime() - buildStartNs;
+        long relationBuild =
+            Math.max(
+                0L,
+                buildNanos - taskTimings.statsLookupNanos() - taskTimings.decorationTotalNanos());
+        long decoration = Math.max(0L, taskTimings.decorationTotalNanos());
+        return new BuildOutcome(found, info, null, relationBuild, decoration, taskTimings);
+      } catch (RuntimeException e) {
+        if (LOG.isDebugEnabled()) {
+          LOG.debugf(
+              e,
+              "relation build failed query_id=%s input_index=%d resource_id=%s",
+              ctx.getQueryId(),
+              found.inputIndex(),
+              found.relation().relationId().getId());
+        }
+        return new BuildOutcome(found, null, buildErrorResolution(found, e), 0L, 0L, taskTimings);
+      }
+    }
+
+    private RelationResolution buildErrorResolution(PendingFound found, RuntimeException e) {
+      String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+      ResolutionFailure failure =
+          ResolutionFailure.newBuilder()
+              .setCode("catalog_bundle.build_failed")
+              .setMessage(message)
+              .putDetails("resource_id", found.relation().relationId().getId())
+              .build();
+      return RelationResolution.newBuilder()
+          .setInputIndex(found.inputIndex())
+          .setStatus(ResolutionStatus.RESOLUTION_STATUS_ERROR)
+          .setFailure(failure)
+          .build();
+    }
+
+    private static RelationResolution foundResolution(int inputIndex, RelationInfo relation) {
+      return RelationResolution.newBuilder()
+          .setInputIndex(inputIndex)
+          .setStatus(ResolutionStatus.RESOLUTION_STATUS_FOUND)
+          .setRelation(relation)
+          .build();
+    }
+
     private UserObjectsBundleChunk flushResolutionChunk() {
       List<PendingItem> chunkItems = new ArrayList<>(pending);
       pending.clear();
@@ -2068,83 +2155,87 @@ public class UserObjectBundleService {
       commitChunkPins();
       pinCommitNanos += System.nanoTime() - pinCommitStartNs;
       warmChunkStats(chunkItems);
-      QueryContext liveCtx = null;
-      List<RelationResolution> resolutions = new ArrayList<>(chunkItems.size());
-      for (PendingItem item : chunkItems) {
+      QueryContext liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
+
+      // Driver pre-pass: everything cheap and order/state-sensitive stays here — passthrough
+      // resolutions, cache hits, and the identity-only fast path (which reads the shared
+      // knownBlobVersions and timings). Relations needing a full build are collected for the
+      // parallel stage; their pin identity, computed here for the slim check, is carried forward so
+      // buildOne does not recompute it. slots keeps every resolution in chunk order.
+      RelationResolution[] slots = new RelationResolution[chunkItems.size()];
+      List<PendingFound> toBuild = new ArrayList<>();
+      List<Integer> buildSlots = new ArrayList<>();
+      List<Optional<RelationPinIdentity>> buildIdentities = new ArrayList<>();
+      for (int i = 0; i < chunkItems.size(); i++) {
+        PendingItem item = chunkItems.get(i);
         if (item instanceof PendingResolved resolved) {
-          resolutions.add(resolved.resolution());
+          slots[i] = resolved.resolution();
           continue;
         }
         PendingFound found = (PendingFound) item;
-        RelationCacheKey cacheKey = relationCacheKey(found.relation());
-        RelationInfo cachedInfo = relationInfoCache.get(cacheKey);
+        RelationInfo cachedInfo = relationInfoCache.get(relationCacheKey(found.relation()));
         if (cachedInfo != null) {
-          resolutions.add(
-              RelationResolution.newBuilder()
-                  .setInputIndex(found.inputIndex())
-                  .setStatus(ResolutionStatus.RESOLUTION_STATUS_FOUND)
-                  .setRelation(cachedInfo)
-                  .build());
+          slots[i] = foundResolution(found.inputIndex(), cachedInfo);
           continue;
         }
         long statsBeforeNanos = timings.statsLookupNanos();
-        long decorationBeforeNanos = timings.decorationTotalNanos();
         long buildStartNs = System.nanoTime();
-        if (liveCtx == null) {
-          liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
-        }
         // Compute the pin identity at most once per relation: the identity-only match consults it
-        // when the client sent hints, and the stamp reuses it — so a cache miss under a populated
-        // hint set does not hash the relation twice. Computed for EVERY pinned relation (not only
-        // full-schema ones), because the stamp now preserves the data identity even on a projected
-        // reply — it merely blanks the possession token there. The extra work for a projected,
-        // hint-less reply is one pin read plus a hash, off the warm path.
+        // when the client sent hints, and the full-build stamp reuses it — so a cache miss under a
+        // populated hint set does not hash the relation twice. Computed for EVERY pinned relation
+        // (not only full-schema ones): the stamp preserves the data identity even on a projected
+        // reply, merely blanking the possession token there.
         Optional<RelationPinIdentity> scopedIdentity =
             scopedPinIdentity(
                 correlationId, found.relation(), liveCtx, resolutionContext.engineContext());
-        /* Identity-only fast path: never cached — the info cache must only
-         * ever hold full payloads, or a later request that did NOT prove
-         * possession would be served a payload-less relation. */
+        // Identity-only fast path: never cached — the info cache must only ever hold full payloads,
+        // or a later request that did NOT prove possession would be served a payload-less relation.
         RelationInfo slim =
             identityOnlyOrNull(
                 found.relation(), scopedIdentity, statsProvider, knownBlobVersions, timings);
         if (slim != null) {
-          // Account the slim path symmetric with the full path below: its stats time already landed
-          // in timings via identityOnlyOrNull; fold the remaining (identity-build) time into
-          // relationBuildNanos so identity-only resolutions are not invisible to the summary event.
+          // Its stats time already landed in timings via identityOnlyOrNull; fold the remaining
+          // (identity-build) time into relationBuildNanos so slim replies are not invisible.
           long buildNanos = System.nanoTime() - buildStartNs;
           long statsDeltaNanos = timings.statsLookupNanos() - statsBeforeNanos;
           relationBuildNanos += Math.max(0L, buildNanos - statsDeltaNanos);
-          resolutions.add(
-              RelationResolution.newBuilder()
-                  .setInputIndex(found.inputIndex())
-                  .setStatus(ResolutionStatus.RESOLUTION_STATUS_FOUND)
-                  .setRelation(slim)
-                  .build());
+          slots[i] = foundResolution(found.inputIndex(), slim);
           continue;
         }
-        RelationInfo info =
-            buildRelation(
-                correlationId,
-                found.relation(),
-                liveCtx,
-                resolutionContext,
-                statsProvider,
-                timings,
-                scopedIdentity);
-        long buildNanos = System.nanoTime() - buildStartNs;
-        long statsDeltaNanos = timings.statsLookupNanos() - statsBeforeNanos;
-        long decorationDeltaNanos = timings.decorationTotalNanos() - decorationBeforeNanos;
-        relationBuildNanos += Math.max(0L, buildNanos - statsDeltaNanos - decorationDeltaNanos);
-        decorationNanos += Math.max(0L, decorationDeltaNanos);
-        relationInfoCache.put(cacheKey, info);
-        resolutions.add(
-            RelationResolution.newBuilder()
-                .setInputIndex(found.inputIndex())
-                .setStatus(ResolutionStatus.RESOLUTION_STATUS_FOUND)
-                .setRelation(info)
-                .build());
+        toBuild.add(found);
+        buildSlots.add(i);
+        buildIdentities.add(scopedIdentity);
       }
+
+      // Build the remaining relations concurrently; each task times itself into its own
+      // accumulator so the summary math needs no shared-counter deltas.
+      List<Integer> indices = java.util.stream.IntStream.range(0, toBuild.size()).boxed().toList();
+      List<BuildOutcome> outcomes =
+          BoundedFanout.mapOrdered(
+              indices,
+              MAX_PARALLEL_RELATION_TASKS,
+              blockingExecutor,
+              j -> buildOne(toBuild.get(j), liveCtx, buildIdentities.get(j)));
+
+      // Driver gather: fold each task's timings in, cache full payloads, and place resolutions in
+      // chunk order. A build that failed becomes an ERROR for that one relation (it was counted
+      // FOUND at selection, so undo that — an ERROR counts toward neither found nor not_found).
+      for (int j = 0; j < outcomes.size(); j++) {
+        BuildOutcome outcome = outcomes.get(j);
+        timings.mergeFrom(outcome.taskTimings());
+        relationBuildNanos += outcome.relationBuildNanos();
+        decorationNanos += outcome.decorationNanos();
+        PendingFound found = outcome.source();
+        if (outcome.info() != null) {
+          relationInfoCache.put(relationCacheKey(found.relation()), outcome.info());
+          slots[buildSlots.get(j)] = foundResolution(found.inputIndex(), outcome.info());
+        } else {
+          foundCount--;
+          slots[buildSlots.get(j)] = outcome.error();
+        }
+      }
+
+      List<RelationResolution> resolutions = List.of(slots);
       emittedResolutionChunks++;
       if (LOG.isDebugEnabled()) {
         int chunkFound = 0;
