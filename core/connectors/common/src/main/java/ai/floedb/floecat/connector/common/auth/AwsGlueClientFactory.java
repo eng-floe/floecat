@@ -83,13 +83,13 @@ public final class AwsGlueClientFactory {
   private static AwsCredentialsProvider resolveCredentials(
       Map<String, String> options, Map<String, String> authProps) {
     String providerId =
-        option(options, RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
+        option(options, RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID);
     if (providerId != null) {
-      return new RegistryBackedAwsCredentialsProvider(providerId);
+      return new RegistryBackedAwsCredentialsProvider(providerId, "catalog");
     }
-    String access = option(options, "s3.access-key-id");
-    String secret = option(options, "s3.secret-access-key");
-    String token = option(options, "s3.session-token");
+    String access = option(options, "rest.access-key-id");
+    String secret = option(options, "rest.secret-access-key");
+    String token = option(options, "rest.session-token");
     if (access != null && secret != null) {
       AwsCredentials credentials =
           token == null

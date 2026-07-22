@@ -21,33 +21,31 @@ import ai.floedb.floecat.connector.common.auth.AwsProfileSupport;
 import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
 import ai.floedb.floecat.connector.common.auth.RegistryBackedAwsCredentialsProvider;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
-import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.Catalog;
+import org.apache.iceberg.catalog.SessionCatalog;
+import org.apache.iceberg.catalog.SupportsNamespaces;
+import org.apache.iceberg.catalog.ViewCatalog;
 import org.apache.iceberg.io.FileIO;
-import org.apache.iceberg.rest.RESTCatalog;
+import org.apache.iceberg.rest.HTTPClient;
+import org.apache.iceberg.rest.RESTSessionCatalog;
+import org.apache.iceberg.rest.RESTUtil;
 import org.jboss.logging.Logger;
 
 final class IcebergConnectorFactory {
   private static final Logger LOG = Logger.getLogger(IcebergConnectorFactory.class);
-  private static final long REST_CATALOG_TTL_MS = Duration.ofMinutes(5).toMillis();
-  private static final ConcurrentMap<CatalogCacheKey, CatalogCacheEntry> REST_CATALOG_CACHE =
-      new ConcurrentHashMap<>();
   private static final String DEFAULT_S3_FILE_IO = "org.apache.iceberg.aws.s3.S3FileIO";
   private static final String CLIENT_CREDENTIALS_PROVIDER = "client.credentials-provider";
   private static final String CLIENT_CREDENTIALS_PROVIDER_PREFIX =
       CLIENT_CREDENTIALS_PROVIDER + ".";
-  private static final Set<String> ICEBERG_HEADER_KEYS =
-      Set.of("header.x-iceberg-access-delegation");
 
   private IcebergConnectorFactory() {}
 
@@ -113,110 +111,80 @@ final class IcebergConnectorFactory {
             fileIO);
       }
       case GLUE, REST -> {
-        Map<String, String> props = buildCatalogProperties(uri, baseProps);
-        applyCatalogAuth(props, authScheme, authProps);
-        applyStorageAuth(props, authScheme, authProps);
-
+        Map<String, String> catalogProps = buildCatalogProperties(uri, baseProps);
+        Map<String, String> storageProps = buildStorageProperties(baseProps, authScheme, authProps);
+        applyStorageProperties(catalogProps, storageProps);
+        applyCatalogAuth(catalogProps, authScheme, authProps);
         if (headerHints != null) {
-          headerHints.forEach((k, v) -> props.put("header." + k, v));
+          headerHints.forEach((k, v) -> catalogProps.put("header." + k, v));
         }
 
-        props.putIfAbsent("rest.client.user-agent", "floecat-connector-iceberg");
+        catalogProps.putIfAbsent("rest.client.user-agent", "floecat-connector-iceberg");
 
-        CatalogLease catalogLease = acquireRestCatalog(props);
-        RESTCatalog rawCatalog = catalogLease.rawCatalog();
-        Catalog tableCatalog = catalogLease.tableCatalog();
+        RESTSessionCatalog rawCatalog = createRestCatalog(catalogProps);
+        Runnable closeCatalog = closeOnce(rawCatalog);
         try {
+          SessionCatalog.SessionContext context = SessionCatalog.SessionContext.createEmpty();
+          Catalog catalog = rawCatalog.asCatalog(context);
+          SupportsNamespaces namespaceCatalog = (SupportsNamespaces) catalog;
+          ViewCatalog viewCatalog = rawCatalog.asViewCatalog(context);
           if (source == IcebergSource.GLUE) {
-            var glue = AwsGlueClientFactory.createRefreshing(props, authProps);
+            var glue = AwsGlueClientFactory.createRefreshing(catalogProps, authProps);
             var glueFilter = new GlueIcebergFilter(glue);
             yield new IcebergGlueConnector(
                 "iceberg-glue",
-                rawCatalog,
-                tableCatalog,
+                catalog,
+                namespaceCatalog,
+                viewCatalog,
+                catalog,
                 glueFilter,
                 ndvEnabled,
                 ndvSampleFraction,
                 ndvMaxFiles,
-                false,
-                catalogLease::release);
+                closeCatalog);
           }
           yield new IcebergRestConnector(
               "iceberg-rest",
-              rawCatalog,
-              tableCatalog,
+              catalog,
+              namespaceCatalog,
+              viewCatalog,
+              catalog,
               ndvEnabled,
               ndvSampleFraction,
               ndvMaxFiles,
-              false,
-              catalogLease::release);
-        } catch (RuntimeException e) {
-          catalogLease.release();
+              closeCatalog);
+        } catch (RuntimeException | Error e) {
+          closeCatalog.run();
           throw e;
         }
       }
     };
   }
 
-  private static CatalogLease acquireRestCatalog(Map<String, String> props) {
-    long now = System.currentTimeMillis();
-    evictExpiredCatalogs(now);
-    CatalogCacheKey key = CatalogCacheKey.of(props);
-    CatalogCacheEntry cached = REST_CATALOG_CACHE.get(key);
-    if (cached != null && !cached.isExpired(now)) {
-      CatalogLease lease = cached.tryAcquire(now + REST_CATALOG_TTL_MS);
-      if (lease != null) {
-        return lease;
-      }
-    }
-    while (true) {
-      CatalogCacheEntry entry =
-          REST_CATALOG_CACHE.compute(
-              key,
-              (ignored, existing) -> {
-                long refreshNow = System.currentTimeMillis();
-                if (existing != null && !existing.isExpired(refreshNow)) {
-                  existing.touch(refreshNow + REST_CATALOG_TTL_MS);
-                  return existing;
-                }
-                if (existing != null) {
-                  existing.retire();
-                }
-                RESTCatalog created = new RESTCatalog();
-                Map<String, String> catalogProps =
-                    Collections.unmodifiableMap(new HashMap<>(props));
-                created.initialize("floecat-iceberg", catalogProps);
-                LOG.infof(
-                    "created iceberg rest catalog uri=%s warehouse=%s accessDelegationHeader=%s"
-                        + " headerKeys=%s storageKeyPresent=%s cacheSize=%d",
-                    catalogProps.get("uri"),
-                    catalogProps.get("warehouse"),
-                    catalogProps.get("header.X-Iceberg-Access-Delegation"),
-                    headerKeys(catalogProps),
-                    catalogProps.containsKey("s3.access-key-id"),
-                    REST_CATALOG_CACHE.size() + 1);
-                return new CatalogCacheEntry(created, created, refreshNow + REST_CATALOG_TTL_MS);
-              });
-      CatalogLease lease = entry.tryAcquire(System.currentTimeMillis() + REST_CATALOG_TTL_MS);
-      if (lease != null) {
-        return lease;
-      }
-    }
+  private static RESTSessionCatalog createRestCatalog(Map<String, String> catalogProperties) {
+    Map<String, String> catalogProps =
+        Collections.unmodifiableMap(new HashMap<>(catalogProperties));
+    RESTSessionCatalog catalog =
+        new RESTSessionCatalog(
+            config ->
+                HTTPClient.builder(config)
+                    .uri(config.get(CatalogProperties.URI))
+                    .withHeaders(RESTUtil.configHeaders(config))
+                    .build(),
+            null);
+    catalog.initialize("floecat-iceberg", catalogProps);
+    LOG.infof(
+        "created iceberg rest catalog uri=%s warehouse=%s accessDelegationHeader=%s"
+            + " headerKeys=%s storageKeyPresent=%s",
+        catalogProps.get("uri"),
+        catalogProps.get("warehouse"),
+        catalogProps.get("header.X-Iceberg-Access-Delegation"),
+        headerKeys(catalogProps),
+        catalogProps.containsKey("s3.access-key-id"));
+    return catalog;
   }
 
-  private static void evictExpiredCatalogs(long now) {
-    for (Map.Entry<CatalogCacheKey, CatalogCacheEntry> entry : REST_CATALOG_CACHE.entrySet()) {
-      CatalogCacheEntry cached = entry.getValue();
-      if (!cached.isExpired(now)) {
-        continue;
-      }
-      if (REST_CATALOG_CACHE.remove(entry.getKey(), cached)) {
-        cached.retire();
-      }
-    }
-  }
-
-  private static void closeQuietly(RESTCatalog catalog) {
+  private static void closeQuietly(RESTSessionCatalog catalog) {
     if (catalog == null) {
       return;
     }
@@ -224,6 +192,15 @@ final class IcebergConnectorFactory {
       catalog.close();
     } catch (Exception ignore) {
     }
+  }
+
+  private static Runnable closeOnce(RESTSessionCatalog catalog) {
+    AtomicBoolean closed = new AtomicBoolean(false);
+    return () -> {
+      if (closed.compareAndSet(false, true)) {
+        closeQuietly(catalog);
+      }
+    };
   }
 
   private static Set<String> headerKeys(Map<String, String> props) {
@@ -248,7 +225,41 @@ final class IcebergConnectorFactory {
     if (baseProps != null && !baseProps.isEmpty()) {
       props.putAll(baseProps);
     }
+    copyIfAbsent(props, "s3.access-key-id", "rest.access-key-id");
+    copyIfAbsent(props, "s3.secret-access-key", "rest.secret-access-key");
+    copyIfAbsent(props, "s3.session-token", "rest.session-token");
+    String catalogProviderId =
+        props.get(RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID);
+    if (isBlank(catalogProviderId)) {
+      catalogProviderId = props.get(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
+      if (!isBlank(catalogProviderId)) {
+        props.put(
+            RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID, catalogProviderId);
+      }
+    }
+    props.remove(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
+    props.remove(RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID);
+    props.remove("s3.access-key-id");
+    props.remove("s3.secret-access-key");
+    props.remove("s3.session-token");
+    props.remove(CLIENT_CREDENTIALS_PROVIDER);
+    props
+        .keySet()
+        .removeIf(key -> key != null && key.startsWith(CLIENT_CREDENTIALS_PROVIDER_PREFIX));
+    if (!isBlank(catalogProviderId)) {
+      props.remove("rest.access-key-id");
+      props.remove("rest.secret-access-key");
+      props.remove("rest.session-token");
+    }
     return props;
+  }
+
+  private static void copyIfAbsent(
+      Map<String, String> properties, String sourceKey, String targetKey) {
+    String value = properties.get(sourceKey);
+    if (!isBlank(value)) {
+      properties.putIfAbsent(targetKey, value);
+    }
   }
 
   static Map<String, String> buildStorageProperties(
@@ -257,8 +268,19 @@ final class IcebergConnectorFactory {
     if (baseProps != null && !baseProps.isEmpty()) {
       props.putAll(baseProps);
     }
+    props.remove(RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID);
+    props.remove("rest.access-key-id");
+    props.remove("rest.secret-access-key");
+    props.remove("rest.session-token");
     applyStorageAuth(props, authScheme, authProps);
     return props;
+  }
+
+  static void applyStorageProperties(
+      Map<String, String> catalogProperties, Map<String, String> storageProperties) {
+    if (storageProperties != null && !storageProperties.isEmpty()) {
+      catalogProperties.putAll(storageProperties);
+    }
   }
 
   static void applyCatalogAuth(
@@ -267,13 +289,18 @@ final class IcebergConnectorFactory {
     String scheme = (authScheme == null ? "none" : authScheme.trim().toLowerCase(Locale.ROOT));
     switch (scheme) {
       case "aws-sigv4" -> {
+        props.remove("rest.sigv4-enabled");
         String signingName = safeAuthProps.getOrDefault("signing-name", "glue");
         String signingRegion =
             safeAuthProps.getOrDefault(
                 "signing-region",
                 props.getOrDefault(
                     "rest.signing-region", props.getOrDefault("s3.region", "us-east-1")));
-        props.put("rest.auth.type", "sigv4");
+        props.put(
+            "rest.auth.type",
+            isBlank(props.get(RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID))
+                ? "sigv4"
+                : CatalogSigV4AuthManager.class.getName());
         props.put("rest.signing-name", signingName);
         props.put("rest.signing-region", signingRegion);
       }
@@ -307,6 +334,10 @@ final class IcebergConnectorFactory {
           CLIENT_CREDENTIALS_PROVIDER_PREFIX
               + RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID,
           refreshProviderId);
+      props.put(
+          CLIENT_CREDENTIALS_PROVIDER_PREFIX
+              + RefreshingAwsCredentialsProviderRegistry.PROPERTY_CREDENTIAL_SCOPE,
+          "storage");
       props.remove("s3.access-key-id");
       props.remove("s3.secret-access-key");
       props.remove("s3.session-token");
@@ -409,201 +440,5 @@ final class IcebergConnectorFactory {
 
   private static boolean isBlank(String value) {
     return value == null || value.isBlank();
-  }
-
-  private record CatalogCacheKey(
-      String uri,
-      String warehouse,
-      String restFlavor,
-      String restAuthType,
-      String restSigningName,
-      String restSigningRegion,
-      String restClientUserAgent,
-      String ioImpl,
-      String s3Endpoint,
-      String s3PathStyleAccess,
-      String s3Region,
-      String clientRegion,
-      String awsRegion,
-      String s3RemoteSigningEnabled,
-      String awsProfile,
-      String awsProfilePath,
-      String storageAuthMode,
-      String staticAccessKeyFingerprint,
-      Map<String, String> icebergHeaders) {
-    static CatalogCacheKey of(Map<String, String> props) {
-      Map<String, String> safe = props == null ? Map.of() : props;
-      return new CatalogCacheKey(
-          normalizedValue(safe.get("uri")),
-          normalizedValue(safe.get("warehouse")),
-          normalizedValue(safe.get("rest.flavor")),
-          normalizedValue(safe.get("rest.auth.type")),
-          normalizedValue(safe.get("rest.signing-name")),
-          normalizedValue(safe.get("rest.signing-region")),
-          normalizedValue(safe.get("rest.client.user-agent")),
-          normalizedValue(safe.get("io-impl")),
-          normalizedValue(safe.get("s3.endpoint")),
-          normalizedValue(safe.get("s3.path-style-access")),
-          normalizedValue(safe.get("s3.region")),
-          normalizedValue(safe.get("client.region")),
-          normalizedValue(safe.get("aws.region")),
-          normalizedValue(safe.get("s3.remote-signing-enabled")),
-          normalizedValue(safe.get("aws.profile")),
-          normalizedValue(safe.get("aws.profile_path")),
-          catalogStorageAuthMode(safe),
-          catalogStaticAccessKeyFingerprint(safe),
-          stableIcebergHeaders(safe));
-    }
-  }
-
-  private static String catalogStorageAuthMode(Map<String, String> props) {
-    if (props == null || props.isEmpty()) {
-      return "none";
-    }
-    if (!isBlank(props.get(CLIENT_CREDENTIALS_PROVIDER))) {
-      return "provider";
-    }
-    if (!isBlank(props.get("s3.access-key-id")) || !isBlank(props.get("s3.secret-access-key"))) {
-      return "static-keys";
-    }
-    if (!isBlank(props.get("aws.profile"))) {
-      return "profile";
-    }
-    return "none";
-  }
-
-  private static String catalogStaticAccessKeyFingerprint(Map<String, String> props) {
-    if (props == null || props.isEmpty()) {
-      return null;
-    }
-    String accessKeyId = normalizedValue(props.get("s3.access-key-id"));
-    return accessKeyId == null ? null : fingerprintValue(accessKeyId);
-  }
-
-  private static Map<String, String> stableIcebergHeaders(Map<String, String> props) {
-    if (props == null || props.isEmpty()) {
-      return Map.of();
-    }
-    Map<String, String> headers = new HashMap<>();
-    props.forEach(
-        (key, value) -> {
-          String normalizedKey = normalizedValue(key);
-          String normalizedValue = normalizedValue(value);
-          if (normalizedKey == null
-              || normalizedValue == null
-              || !ICEBERG_HEADER_KEYS.contains(normalizedKey.toLowerCase(Locale.ROOT))) {
-            return;
-          }
-          headers.put(normalizedKey.toLowerCase(Locale.ROOT), normalizedValue);
-        });
-    return headers.isEmpty() ? Map.of() : Map.copyOf(headers);
-  }
-
-  private static String normalizedValue(String value) {
-    if (value == null || value.isBlank()) {
-      return null;
-    }
-    return value.trim();
-  }
-
-  private static String fingerprintValue(String value) {
-    String safe = value == null ? "" : value;
-    return "sha256:"
-        + ai.floedb.floecat.types.Hashing.sha256Hex(
-            safe.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-  }
-
-  private static final class CatalogCacheEntry {
-    private final RESTCatalog rawCatalog;
-    private final Catalog catalog;
-    private volatile long expiresAtMs;
-    private int activeLeases;
-    private boolean retired;
-    private boolean closed;
-
-    private CatalogCacheEntry(RESTCatalog rawCatalog, Catalog catalog, long expiresAtMs) {
-      this.rawCatalog = rawCatalog;
-      this.catalog = catalog;
-      this.expiresAtMs = expiresAtMs;
-    }
-
-    private RESTCatalog rawCatalog() {
-      return rawCatalog;
-    }
-
-    private Catalog tableCatalog() {
-      return catalog;
-    }
-
-    private boolean isExpired(long now) {
-      return now >= expiresAtMs;
-    }
-
-    private void touch(long nextExpiryMs) {
-      this.expiresAtMs = nextExpiryMs;
-    }
-
-    private CatalogLease tryAcquire(long nextExpiryMs) {
-      synchronized (this) {
-        if (retired || closed) {
-          return null;
-        }
-        this.expiresAtMs = nextExpiryMs;
-        activeLeases++;
-      }
-      return new CatalogLease(this);
-    }
-
-    private void release() {
-      RESTCatalog toClose = null;
-      synchronized (this) {
-        if (activeLeases > 0) {
-          activeLeases--;
-        }
-        if (retired && activeLeases == 0 && !closed) {
-          closed = true;
-          toClose = rawCatalog;
-        }
-      }
-      closeQuietly(toClose);
-    }
-
-    private void retire() {
-      RESTCatalog toClose = null;
-      synchronized (this) {
-        if (retired) {
-          return;
-        }
-        retired = true;
-        if (activeLeases == 0 && !closed) {
-          closed = true;
-          toClose = rawCatalog;
-        }
-      }
-      closeQuietly(toClose);
-    }
-  }
-
-  private static final class CatalogLease {
-    private final CatalogCacheEntry entry;
-    private final AtomicBoolean released = new AtomicBoolean(false);
-
-    private CatalogLease(CatalogCacheEntry entry) {
-      this.entry = entry;
-    }
-
-    private RESTCatalog rawCatalog() {
-      return entry.rawCatalog();
-    }
-
-    private Catalog tableCatalog() {
-      return entry.tableCatalog();
-    }
-
-    private void release() {
-      if (released.compareAndSet(false, true)) {
-        entry.release();
-      }
-    }
   }
 }

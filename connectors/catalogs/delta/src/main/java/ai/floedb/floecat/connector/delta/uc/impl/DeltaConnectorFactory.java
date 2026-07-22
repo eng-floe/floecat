@@ -44,6 +44,9 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3Configuration;
 
 final class DeltaConnectorFactory {
+  private static final String CLIENT_CREDENTIALS_PROVIDER = "client.credentials-provider";
+  private static final String CLIENT_CREDENTIALS_PROVIDER_PREFIX =
+      CLIENT_CREDENTIALS_PROVIDER + ".";
 
   private DeltaConnectorFactory() {}
 
@@ -104,7 +107,8 @@ final class DeltaConnectorFactory {
             tableName);
       }
       case GLUE -> {
-        var glue = AwsGlueClientFactory.createRefreshing(effectiveOptions, effectiveAuthProps);
+        Map<String, String> catalogOptions = buildGlueCatalogOptions(effectiveOptions);
+        var glue = AwsGlueClientFactory.createRefreshing(catalogOptions, effectiveAuthProps);
         yield new DeltaGlueConnector(
             "delta-glue",
             new GlueDeltaCatalog(glue),
@@ -134,6 +138,48 @@ final class DeltaConnectorFactory {
             ndvMaxFiles);
       }
     };
+  }
+
+  static Map<String, String> buildGlueCatalogOptions(Map<String, String> options) {
+    Map<String, String> catalogOptions =
+        options == null ? new LinkedHashMap<>() : new LinkedHashMap<>(options);
+    copyIfAbsent(catalogOptions, "s3.access-key-id", "rest.access-key-id");
+    copyIfAbsent(catalogOptions, "s3.secret-access-key", "rest.secret-access-key");
+    copyIfAbsent(catalogOptions, "s3.session-token", "rest.session-token");
+
+    String catalogProviderId =
+        resolveOption(
+            catalogOptions,
+            RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID,
+            null);
+    if (catalogProviderId == null) {
+      catalogProviderId =
+          resolveOption(
+              catalogOptions, RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID, null);
+      if (catalogProviderId != null) {
+        catalogOptions.put(
+            RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID, catalogProviderId);
+      }
+    }
+
+    catalogOptions.remove(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
+    catalogOptions.remove(RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID);
+    catalogOptions.remove("s3.access-key-id");
+    catalogOptions.remove("s3.secret-access-key");
+    catalogOptions.remove("s3.session-token");
+    catalogOptions.remove(CLIENT_CREDENTIALS_PROVIDER);
+    catalogOptions
+        .keySet()
+        .removeIf(key -> key != null && key.startsWith(CLIENT_CREDENTIALS_PROVIDER_PREFIX));
+    return Map.copyOf(catalogOptions);
+  }
+
+  private static void copyIfAbsent(
+      Map<String, String> properties, String sourceKey, String targetKey) {
+    String value = properties.get(sourceKey);
+    if (value != null && !value.isBlank()) {
+      properties.putIfAbsent(targetKey, value);
+    }
   }
 
   static DeltaSource selectSource(Map<String, String> options) {

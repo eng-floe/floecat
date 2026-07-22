@@ -45,6 +45,11 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @ApplicationScoped
 public class ServerSideStorageConfigResolver {
+  private enum InputProviderOwnership {
+    TAKE,
+    BORROW
+  }
+
   public record ResolvedConnectorConfig(ConnectorConfig config, Runnable closeAction)
       implements AutoCloseable {
     public ResolvedConnectorConfig {
@@ -130,7 +135,28 @@ public class ServerSideStorageConfigResolver {
         storageLocation,
         tableId,
         connector,
-        config);
+        config,
+        InputProviderOwnership.TAKE);
+  }
+
+  public ResolvedConnectorConfig resolveManagedBorrowingInputProvidersWithAuthorization(
+      Optional<String> authorizationToken,
+      Optional<String> executionJobId,
+      Optional<String> executionLeaseEpoch,
+      Optional<String> storageLocation,
+      Optional<ResourceId> tableId,
+      Connector connector,
+      ConnectorConfig config) {
+    return resolveManaged(
+        Optional.empty(),
+        authorizationToken,
+        executionJobId,
+        executionLeaseEpoch,
+        storageLocation,
+        tableId,
+        connector,
+        config,
+        InputProviderOwnership.BORROW);
   }
 
   private ResolvedConnectorConfig resolveManaged(
@@ -141,7 +167,14 @@ public class ServerSideStorageConfigResolver {
       Optional<String> storageLocation,
       Optional<ResourceId> tableId,
       Connector connector,
-      ConnectorConfig config) {
+      ConnectorConfig config,
+      InputProviderOwnership inputProviderOwnership) {
+    java.util.LinkedHashSet<String> inputProviderIds = new java.util.LinkedHashSet<>();
+    addProviderIds(inputProviderIds, config);
+    java.util.LinkedHashSet<String> providerIds = new java.util.LinkedHashSet<>();
+    if (inputProviderOwnership == InputProviderOwnership.TAKE) {
+      providerIds.addAll(inputProviderIds);
+    }
     ConnectorConfig resolved =
         resolve(
             correlationId,
@@ -153,16 +186,31 @@ public class ServerSideStorageConfigResolver {
             connector,
             config,
             true);
-    String providerId =
-        resolved == null
-            ? null
-            : resolved.options().get(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
-    if (!isNonBlank(providerId)) {
+    addProviderIds(providerIds, resolved);
+    if (inputProviderOwnership == InputProviderOwnership.BORROW) {
+      providerIds.removeAll(inputProviderIds);
+    }
+    if (providerIds.isEmpty()) {
       return new ResolvedConnectorConfig(resolved, () -> {});
     }
-    String capturedProviderId = providerId;
     return new ResolvedConnectorConfig(
-        resolved, () -> RefreshingAwsCredentialsProviderRegistry.unregister(capturedProviderId));
+        resolved, () -> providerIds.forEach(RefreshingAwsCredentialsProviderRegistry::unregister));
+  }
+
+  private static void addProviderIds(java.util.Set<String> providerIds, ConnectorConfig config) {
+    if (config == null || config.options() == null) {
+      return;
+    }
+    String storageProviderId =
+        config.options().get(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
+    if (isNonBlank(storageProviderId)) {
+      providerIds.add(storageProviderId);
+    }
+    String catalogProviderId =
+        config.options().get(RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID);
+    if (isNonBlank(catalogProviderId)) {
+      providerIds.add(catalogProviderId);
+    }
   }
 
   private ConnectorConfig resolve(
@@ -221,9 +269,10 @@ public class ServerSideStorageConfigResolver {
     if (response == null) {
       return config;
     }
+    Map<String, String> baseOptions = preserveCatalogCredentials(config);
     Map<String, String> merged =
         mergeResolvedStorageConfig(
-            config.options(),
+            baseOptions,
             response,
             true,
             refreshableExecutionCredentials
@@ -242,6 +291,38 @@ public class ServerSideStorageConfigResolver {
         ? config
         : new ConnectorConfig(
             config.kind(), config.displayName(), config.uri(), merged, config.auth());
+  }
+
+  static Map<String, String> preserveCatalogCredentials(ConnectorConfig config) {
+    if (config == null || config.options() == null) {
+      return config == null ? Map.of() : config.options();
+    }
+    boolean icebergCatalog =
+        config.kind() == ConnectorConfig.Kind.ICEBERG
+            && !"filesystem".equals(normalize(config.options().get("iceberg.source")));
+    boolean deltaGlue =
+        config.kind() == ConnectorConfig.Kind.DELTA
+            && "glue".equals(normalize(config.options().get("delta.source")));
+    if (!icebergCatalog && !deltaGlue) {
+      return config.options();
+    }
+    LinkedHashMap<String, String> preserved = new LinkedHashMap<>(config.options());
+    copyIfPresent(preserved, "s3.access-key-id", "rest.access-key-id");
+    copyIfPresent(preserved, "s3.secret-access-key", "rest.secret-access-key");
+    copyIfPresent(preserved, "s3.session-token", "rest.session-token");
+    copyIfPresent(
+        preserved,
+        RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
+        RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID);
+    return Map.copyOf(preserved);
+  }
+
+  private static void copyIfPresent(
+      Map<String, String> properties, String sourceKey, String targetKey) {
+    String value = properties.get(sourceKey);
+    if (isNonBlank(value)) {
+      properties.putIfAbsent(targetKey, value);
+    }
   }
 
   private static VendStorageCredentialsRequest resolveRequest(

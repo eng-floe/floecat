@@ -32,6 +32,7 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
+import ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials;
 import ai.floedb.floecat.connector.common.auth.TerminalCredentialRefreshException;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
@@ -48,6 +49,263 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class ServerSideStorageConfigResolverTest {
+
+  @Test
+  void preservesIcebergCatalogCredentialsBeforeStorageAuthorityReplacement() {
+    ConnectorConfig config =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.ICEBERG,
+            "glue",
+            "https://glue.us-east-1.amazonaws.com/iceberg/",
+            Map.of(
+                "iceberg.source",
+                "glue",
+                "s3.access-key-id",
+                "catalog-access",
+                "s3.secret-access-key",
+                "catalog-secret",
+                "s3.session-token",
+                "catalog-session",
+                RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
+                "catalog-provider"),
+            new ConnectorConfig.Auth("aws-sigv4", Map.of(), Map.of()));
+
+    Map<String, String> preserved =
+        ServerSideStorageConfigResolver.preserveCatalogCredentials(config);
+
+    assertEquals("catalog-access", preserved.get("rest.access-key-id"));
+    assertEquals("catalog-secret", preserved.get("rest.secret-access-key"));
+    assertEquals("catalog-session", preserved.get("rest.session-token"));
+    assertEquals(
+        "catalog-provider",
+        preserved.get(RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID));
+  }
+
+  @Test
+  void preservesDeltaGlueCatalogCredentialsBeforeStorageAuthorityReplacement() {
+    ConnectorConfig config =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "glue",
+            "https://glue.us-east-1.amazonaws.com",
+            Map.of(
+                "delta.source",
+                "glue",
+                "s3.access-key-id",
+                "catalog-access",
+                "s3.secret-access-key",
+                "catalog-secret",
+                "s3.session-token",
+                "catalog-session",
+                RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
+                "catalog-provider"),
+            new ConnectorConfig.Auth("aws-sigv4", Map.of(), Map.of()));
+
+    Map<String, String> preserved =
+        ServerSideStorageConfigResolver.preserveCatalogCredentials(config);
+
+    assertEquals("catalog-access", preserved.get("rest.access-key-id"));
+    assertEquals("catalog-secret", preserved.get("rest.secret-access-key"));
+    assertEquals("catalog-session", preserved.get("rest.session-token"));
+    assertEquals(
+        "catalog-provider",
+        preserved.get(RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID));
+  }
+
+  @Test
+  void doesNotCreateCatalogCredentialScopeForDeltaUnity() {
+    ConnectorConfig config =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.DELTA,
+            "unity",
+            "https://workspace.example.com",
+            Map.of(
+                "delta.source",
+                "unity",
+                RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
+                "storage-provider"),
+            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
+
+    Map<String, String> preserved =
+        ServerSideStorageConfigResolver.preserveCatalogCredentials(config);
+
+    assertFalse(
+        preserved.containsKey(RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID));
+  }
+
+  @Test
+  void managedConfigCleansUpCatalogAndStorageProviderRegistrations() {
+    String catalogProvider =
+        RefreshingAwsCredentialsProviderRegistry.register(
+            new ResolvedStorageCredentials(
+                "catalog-access",
+                "catalog-secret",
+                "catalog-session",
+                Instant.now().plusSeconds(900)),
+            () ->
+                new ResolvedStorageCredentials(
+                    "catalog-access",
+                    "catalog-secret",
+                    "catalog-session",
+                    Instant.now().plusSeconds(900)));
+    String storageProvider =
+        RefreshingAwsCredentialsProviderRegistry.register(
+            new ResolvedStorageCredentials(
+                "storage-access",
+                "storage-secret",
+                "storage-session",
+                Instant.now().plusSeconds(900)),
+            () ->
+                new ResolvedStorageCredentials(
+                    "storage-access",
+                    "storage-secret",
+                    "storage-session",
+                    Instant.now().plusSeconds(900)));
+    ConnectorConfig config =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.ICEBERG,
+            "glue",
+            "https://glue.us-east-1.amazonaws.com/iceberg/",
+            Map.of(
+                "iceberg.source",
+                "glue",
+                RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID,
+                catalogProvider,
+                RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
+                storageProvider),
+            new ConnectorConfig.Auth("aws-sigv4", Map.of(), Map.of()));
+    Connector connector =
+        Connector.newBuilder()
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setId("conn")
+                    .setKind(ResourceKind.RK_CONNECTOR))
+            .build();
+    ServerSideStorageConfigResolver resolver =
+        new ServerSideStorageConfigResolver(java.util.Optional.empty(), java.util.Optional.empty());
+
+    try (var ignored =
+        resolver.resolveManagedWithAuthorization(
+            java.util.Optional.empty(),
+            java.util.Optional.empty(),
+            java.util.Optional.empty(),
+            java.util.Optional.empty(),
+            java.util.Optional.empty(),
+            connector,
+            config)) {}
+
+    assertThrows(
+        IllegalStateException.class,
+        () -> RefreshingAwsCredentialsProviderRegistry.resolve(catalogProvider));
+    assertThrows(
+        IllegalStateException.class,
+        () -> RefreshingAwsCredentialsProviderRegistry.resolve(storageProvider));
+  }
+
+  @Test
+  void borrowedManagedConfigCleansUpOnlyItsNewStorageProvider() {
+    String catalogProvider =
+        RefreshingAwsCredentialsProviderRegistry.register(
+            new ResolvedStorageCredentials(
+                "catalog-access",
+                "catalog-secret",
+                "catalog-session",
+                Instant.now().plusSeconds(900)),
+            () ->
+                new ResolvedStorageCredentials(
+                    "catalog-access",
+                    "catalog-secret",
+                    "catalog-session",
+                    Instant.now().plusSeconds(900)));
+    String parentStorageProvider =
+        RefreshingAwsCredentialsProviderRegistry.register(
+            new ResolvedStorageCredentials(
+                "parent-access", "parent-secret", "parent-session", Instant.now().plusSeconds(900)),
+            () ->
+                new ResolvedStorageCredentials(
+                    "parent-access",
+                    "parent-secret",
+                    "parent-session",
+                    Instant.now().plusSeconds(900)));
+    String tableStorageProvider = null;
+    try {
+      ServerSideStorageConfigResolver resolver =
+          new ServerSideStorageConfigResolver(
+              java.util.Optional.empty(), java.util.Optional.empty());
+      resolver.storageAuthorities =
+          mock(StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub.class);
+      when(resolver.storageAuthorities.withInterceptors(any()))
+          .thenReturn(resolver.storageAuthorities);
+      when(resolver.storageAuthorities.vendStorageCredentials(any()))
+          .thenReturn(
+              ResolveStorageAuthorityResponse.newBuilder()
+                  .addStorageCredentials(
+                      VendedStorageCredential.newBuilder()
+                          .putConfig("s3.access-key-id", "table-access")
+                          .putConfig("s3.secret-access-key", "table-secret")
+                          .putConfig("s3.session-token", "table-session")
+                          .setExpiresAt(
+                              com.google.protobuf.util.Timestamps.fromMillis(
+                                  Instant.now().plusSeconds(900).toEpochMilli())))
+                  .build());
+      Connector connector =
+          Connector.newBuilder()
+              .setKind(ConnectorKind.CK_ICEBERG)
+              .setResourceId(
+                  ResourceId.newBuilder()
+                      .setAccountId("acct")
+                      .setId("conn")
+                      .setKind(ResourceKind.RK_CONNECTOR))
+              .build();
+      ConnectorConfig parentConfig =
+          new ConnectorConfig(
+              ConnectorConfig.Kind.ICEBERG,
+              "glue",
+              "https://glue.us-east-1.amazonaws.com/iceberg/",
+              Map.of(
+                  "iceberg.source",
+                  "glue",
+                  RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID,
+                  catalogProvider,
+                  RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
+                  parentStorageProvider),
+              new ConnectorConfig.Auth("aws-sigv4", Map.of(), Map.of()));
+
+      try (var tableScoped =
+          resolver.resolveManagedBorrowingInputProvidersWithAuthorization(
+              java.util.Optional.of("token"),
+              java.util.Optional.of("job-1"),
+              java.util.Optional.of("lease-1"),
+              java.util.Optional.of("s3://bucket/table"),
+              java.util.Optional.empty(),
+              connector,
+              parentConfig)) {
+        tableStorageProvider =
+            tableScoped
+                .config()
+                .options()
+                .get(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
+        assertFalse(parentStorageProvider.equals(tableStorageProvider));
+      }
+
+      assertEquals(
+          "catalog-access",
+          RefreshingAwsCredentialsProviderRegistry.resolve(catalogProvider).accessKeyId());
+      assertEquals(
+          "parent-access",
+          RefreshingAwsCredentialsProviderRegistry.resolve(parentStorageProvider).accessKeyId());
+      String closedTableStorageProvider = tableStorageProvider;
+      assertThrows(
+          IllegalStateException.class,
+          () -> RefreshingAwsCredentialsProviderRegistry.resolve(closedTableStorageProvider));
+    } finally {
+      RefreshingAwsCredentialsProviderRegistry.unregister(catalogProvider);
+      RefreshingAwsCredentialsProviderRegistry.unregister(parentStorageProvider);
+      RefreshingAwsCredentialsProviderRegistry.unregister(tableStorageProvider);
+    }
+  }
 
   @Test
   void onlyStructuredLeaseFailedPreconditionIsTerminalForCredentialRefresh() {

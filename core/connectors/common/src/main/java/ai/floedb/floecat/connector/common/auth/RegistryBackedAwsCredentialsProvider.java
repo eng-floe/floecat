@@ -22,12 +22,21 @@ import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 
 public final class RegistryBackedAwsCredentialsProvider implements AwsCredentialsProvider {
   private final String providerId;
+  private final String credentialScope;
 
   public RegistryBackedAwsCredentialsProvider(String providerId) {
+    this(providerId, "storage");
+  }
+
+  public RegistryBackedAwsCredentialsProvider(String providerId, String credentialScope) {
     if (providerId == null || providerId.isBlank()) {
       throw new IllegalArgumentException("providerId must be non-blank");
     }
     this.providerId = providerId.trim();
+    this.credentialScope =
+        credentialScope == null || credentialScope.isBlank()
+            ? "unspecified"
+            : credentialScope.trim();
   }
 
   public static AwsCredentialsProvider create(Map<String, String> properties) {
@@ -39,11 +48,13 @@ public final class RegistryBackedAwsCredentialsProvider implements AwsCredential
     if (providerId == null || providerId.isBlank()) {
       providerId = properties.get(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
     }
-    return new RegistryBackedAwsCredentialsProvider(providerId);
+    return new RegistryBackedAwsCredentialsProvider(
+        providerId,
+        properties.get(RefreshingAwsCredentialsProviderRegistry.PROPERTY_CREDENTIAL_SCOPE));
   }
 
   @Override
   public AwsCredentials resolveCredentials() {
-    return RefreshingAwsCredentialsProviderRegistry.resolve(providerId);
+    return RefreshingAwsCredentialsProviderRegistry.resolve(providerId, credentialScope);
   }
 }

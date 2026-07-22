@@ -17,11 +17,16 @@
 package ai.floedb.floecat.connector.common.auth;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 
+import java.time.Instant;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 
 class AwsGlueClientFactoryTest {
 
@@ -64,15 +69,79 @@ class AwsGlueClientFactoryTest {
   }
 
   @Test
-  void credentialsProviderFactoryBuildsFreshRegistryProviderForEachClientRefresh() {
+  void credentialsProviderFactoryDoesNotUseStorageRegistryProviderForGlue() {
     var factory =
         AwsGlueClientFactory.credentialsProviderFactory(
             Map.of(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID, "provider-1"),
             Map.of());
 
     AwsCredentialsProvider first = factory.get();
-    AwsCredentialsProvider second = factory.get();
 
-    assertNotSame(first, second);
+    assertInstanceOf(DefaultCredentialsProvider.class, first);
+  }
+
+  @Test
+  void credentialsProviderFactoryUsesCatalogRegistryProviderForGlue() {
+    var factory =
+        AwsGlueClientFactory.credentialsProviderFactory(
+            Map.of(
+                RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID, "provider-1"),
+            Map.of());
+
+    AwsCredentialsProvider provider = factory.get();
+
+    assertInstanceOf(RegistryBackedAwsCredentialsProvider.class, provider);
+  }
+
+  @Test
+  void credentialsProviderFactoryUsesCatalogStaticCredentialsForGlue() {
+    var factory =
+        AwsGlueClientFactory.credentialsProviderFactory(
+            Map.of(
+                "rest.access-key-id", "catalog-access",
+                "rest.secret-access-key", "catalog-secret",
+                "rest.session-token", "catalog-session",
+                "s3.access-key-id", "storage-access",
+                "s3.secret-access-key", "storage-secret"),
+            Map.of());
+
+    AwsCredentialsProvider provider = factory.get();
+
+    assertInstanceOf(StaticCredentialsProvider.class, provider);
+    assertEquals("catalog-access", provider.resolveCredentials().accessKeyId());
+  }
+
+  @Test
+  void catalogRegistryProviderRenewsExpiredCredentials() {
+    AtomicInteger refreshes = new AtomicInteger();
+    String providerId =
+        RefreshingAwsCredentialsProviderRegistry.register(
+            new ResolvedStorageCredentials(
+                "expired-access",
+                "expired-secret",
+                "expired-session",
+                Instant.now().minusSeconds(1)),
+            () -> {
+              refreshes.incrementAndGet();
+              return new ResolvedStorageCredentials(
+                  "renewed-access",
+                  "renewed-secret",
+                  "renewed-session",
+                  Instant.now().plusSeconds(900));
+            });
+    try {
+      AwsCredentialsProvider provider =
+          AwsGlueClientFactory.credentialsProviderFactory(
+                  Map.of(
+                      RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID,
+                      providerId),
+                  Map.of())
+              .get();
+
+      assertEquals("renewed-access", provider.resolveCredentials().accessKeyId());
+      assertEquals(1, refreshes.get());
+    } finally {
+      RefreshingAwsCredentialsProviderRegistry.unregister(providerId);
+    }
   }
 }
