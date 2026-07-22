@@ -50,7 +50,28 @@ public class RecursiveResourceDropper {
 
   /** Drops all descendants of {@code root}, leaving the root namespace for its caller to delete. */
   public DropSummary dropNamespaceContents(Namespace root) {
+    return dropNamespaceContents(root, true);
+  }
+
+  /**
+   * Drops all descendants of {@code root}, leaving the root namespace for its caller to delete.
+   *
+   * <p>When {@code guarded} is true, each descendant is verified empty and stable under the
+   * namespace-marker protocol before removal, so a concurrently created table or immediate child
+   * cannot be orphaned; the caller is expected to have advanced the root marker first. When false —
+   * account teardown, where the whole tree (and its account pointer) is going away — descendants
+   * are dropped unconditionally so cleanup never raises {@link
+   * BaseResourceRepository.AbortRetryableException}, which would otherwise retry the account delete
+   * after its pointer is gone and skip cleanup entirely.
+   *
+   * <p>In both modes, descendant removals never advance the root's own namespace marker (see {@link
+   * #deleteNamespace(Namespace, ResourceId)}), so a guarded caller can assert the root marker moved
+   * exactly once — its own advance — and still detect a genuine concurrent write to the root's
+   * immediate children.
+   */
+  public DropSummary dropNamespaceContents(Namespace root, boolean guarded) {
     var summary = new DropSummary();
+    var rootId = root.getResourceId();
     var rootPath = new ArrayList<>(root.getParentsList());
     rootPath.add(root.getDisplayName());
     // Scan only the root's subtree by its path prefix rather than the whole catalog; the by-path
@@ -75,7 +96,7 @@ public class RecursiveResourceDropper {
     } while (!cursor.isBlank());
     descendants.sort(Comparator.comparingInt(Namespace::getParentsCount).reversed());
     for (var descendant : descendants) {
-      dropNamespace(descendant, summary);
+      dropNamespace(descendant, summary, rootId, guarded);
     }
     dropNamespaceRelations(root, summary);
     return summary;
@@ -83,7 +104,10 @@ public class RecursiveResourceDropper {
 
   /** Drops a namespace and every object it owns, including descendant namespaces. */
   public DropSummary dropNamespaceTree(Namespace root) {
-    var summary = dropNamespaceContents(root);
+    // Account teardown: the whole tree is going away, so drop unconditionally rather than under the
+    // marker guard. A guarded drop can raise AbortRetryableException, which would retry the account
+    // delete after its pointer is already gone and skip cleanup entirely, orphaning resources.
+    var summary = dropNamespaceContents(root, false);
     deleteNamespace(root);
     summary.namespacesDeleted++;
     return summary;
@@ -114,10 +138,13 @@ public class RecursiveResourceDropper {
     pointerStore.delete(Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId()));
   }
 
-  private void dropNamespace(Namespace namespace, DropSummary summary) {
+  private void dropNamespace(
+      Namespace namespace, DropSummary summary, ResourceId rootId, boolean guarded) {
     dropNamespaceRelations(namespace, summary);
-    requireNamespaceEmptyAndStable(namespace);
-    deleteNamespace(namespace);
+    if (guarded) {
+      requireNamespaceEmptyAndStable(namespace);
+    }
+    deleteNamespace(namespace, rootId);
     summary.namespacesDeleted++;
   }
 
@@ -224,22 +251,33 @@ public class RecursiveResourceDropper {
   }
 
   private void deleteNamespace(Namespace namespace) {
+    deleteNamespace(namespace, null);
+  }
+
+  /**
+   * Deletes {@code namespace} and advances its ancestors' child markers, except {@code
+   * skipMarkerId} — the root of a recursive drop. Skipping the root keeps the dropper's own
+   * descendant removals from advancing the root marker, so the recursive-delete caller can
+   * distinguish its single intentional advance from a concurrent write to the root's children.
+   */
+  private void deleteNamespace(Namespace namespace, ResourceId skipMarkerId) {
     var namespaceId = namespace.getResourceId();
     namespaceRepo.delete(namespaceId);
     topology.evictRelationRefs(namespaceId);
     topology.evictNamespaceRefs(namespace.getCatalogId());
     metadataGraph.invalidate(namespaceId);
     markerStore.bumpCatalogMarker(namespace.getCatalogId());
-    bumpParentNamespaceMarkers(namespace);
+    bumpParentNamespaceMarkers(namespace, skipMarkerId);
   }
 
-  private void bumpParentNamespaceMarkers(Namespace namespace) {
+  private void bumpParentNamespaceMarkers(Namespace namespace, ResourceId skipMarkerId) {
     var catalogId = namespace.getCatalogId();
     var parents = namespace.getParentsList();
     for (int i = 0; i < parents.size(); i++) {
       namespaceRepo
           .getByPath(catalogId.getAccountId(), catalogId.getId(), parents.subList(0, i + 1))
           .map(Namespace::getResourceId)
+          .filter(id -> skipMarkerId == null || !id.equals(skipMarkerId))
           .ifPresent(markerStore::bumpNamespaceMarker);
     }
   }

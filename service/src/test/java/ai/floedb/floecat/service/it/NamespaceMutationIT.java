@@ -58,6 +58,9 @@ class NamespaceMutationIT {
   TableServiceGrpc.TableServiceBlockingStub table;
 
   @GrpcClient("floecat")
+  ViewServiceGrpc.ViewServiceBlockingStub view;
+
+  @GrpcClient("floecat")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   String namespacePrefix = this.getClass().getSimpleName() + "_";
@@ -326,6 +329,67 @@ class NamespaceMutationIT {
         () ->
             table.getTable(
                 GetTableRequest.newBuilder().setTableId(tableToDrop.getResourceId()).build()));
+  }
+
+  @Test
+  void namespaceDeleteRecursiveDropsNestedTreeTablesAndViews() throws Exception {
+    // Three levels (db/schema/sub) with relations at multiple depths exercises the marker protocol:
+    // deleting each descendant must not advance the root (db) marker, so the service's single
+    // advance holds and the delete succeeds without a spurious retry (regression for #397).
+    var cat =
+        TestSupport.createCatalog(catalog, namespacePrefix + "recursive_nested_cat", "nested");
+    var db = TestSupport.createNamespace(namespace, cat.getResourceId(), "db", List.of(), "");
+    var schema =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "schema", List.of("db"), "");
+    var sub =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "sub", List.of("db", "schema"), "");
+
+    var schemaTable =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            schema.getResourceId(),
+            "events",
+            "s3://bucket/events",
+            "{\"cols\":[]}",
+            "none");
+    var subTable =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            sub.getResourceId(),
+            "orders",
+            "s3://bucket/orders",
+            "{\"cols\":[]}",
+            "none");
+    var schemaView =
+        TestSupport.createView(
+            view, cat.getResourceId(), schema.getResourceId(), "events_view", "SELECT 1", "nested");
+
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder()
+            .setNamespaceId(db.getResourceId())
+            .setRecursive(true)
+            .build());
+
+    for (var ns : List.of(db, schema, sub)) {
+      assertThrows(
+          StatusRuntimeException.class,
+          () ->
+              namespace.getNamespace(
+                  GetNamespaceRequest.newBuilder().setNamespaceId(ns.getResourceId()).build()));
+    }
+    for (var t : List.of(schemaTable, subTable)) {
+      assertThrows(
+          StatusRuntimeException.class,
+          () -> table.getTable(GetTableRequest.newBuilder().setTableId(t.getResourceId()).build()));
+    }
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            view.getView(
+                GetViewRequest.newBuilder().setViewId(schemaView.getResourceId()).build()));
   }
 
   @Test

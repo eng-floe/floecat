@@ -484,8 +484,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   public Uni<DeleteNamespaceResponse> deleteNamespace(DeleteNamespaceRequest request) {
     var L = LogHelper.start(LOG, "DeleteNamespace");
 
+    // Recursive delete performs a large amount of blocking storage I/O and can raise
+    // AbortRetryableException; runWithRetryOnWorker keeps the retry re-subscription off the Vert.x
+    // event loop, where that blocking work would fail with "current thread cannot be blocked".
     return mapFailures(
-            runWithRetry(
+            runWithRetryOnWorker(
                 () -> {
                   var princ = principal.get();
                   var correlationId = princ.getCorrelationId();
