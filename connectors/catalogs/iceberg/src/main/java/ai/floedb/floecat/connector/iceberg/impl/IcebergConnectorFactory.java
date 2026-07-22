@@ -334,6 +334,10 @@ final class IcebergConnectorFactory {
           CLIENT_CREDENTIALS_PROVIDER_PREFIX
               + RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID,
           refreshProviderId);
+      props.put(
+          CLIENT_CREDENTIALS_PROVIDER_PREFIX
+              + RefreshingAwsCredentialsProviderRegistry.PROPERTY_CREDENTIAL_SCOPE,
+          "storage");
       props.remove("s3.access-key-id");
       props.remove("s3.secret-access-key");
       props.remove("s3.session-token");

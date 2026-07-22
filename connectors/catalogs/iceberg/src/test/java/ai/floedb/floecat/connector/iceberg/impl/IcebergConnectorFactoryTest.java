@@ -348,6 +348,12 @@ class IcebergConnectorFactoryTest {
             .get(
                 "client.credentials-provider."
                     + RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID));
+    assertEquals(
+        "catalog",
+        CatalogSigV4AuthManager.catalogAuthProperties(catalogProps)
+            .get(
+                "client.credentials-provider."
+                    + RefreshingAwsCredentialsProviderRegistry.PROPERTY_CREDENTIAL_SCOPE));
 
     assertEquals(
         RegistryBackedAwsCredentialsProvider.class.getName(),
@@ -357,6 +363,11 @@ class IcebergConnectorFactoryTest {
         storageProps.get(
             "client.credentials-provider."
                 + RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID));
+    assertEquals(
+        "storage",
+        storageProps.get(
+            "client.credentials-provider."
+                + RefreshingAwsCredentialsProviderRegistry.PROPERTY_CREDENTIAL_SCOPE));
     assertFalse(storageProps.containsKey("rest.access-key-id"));
     assertFalse(
         storageProps.containsKey(

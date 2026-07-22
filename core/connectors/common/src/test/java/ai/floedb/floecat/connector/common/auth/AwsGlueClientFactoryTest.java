@@ -20,7 +20,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 
+import java.time.Instant;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
@@ -107,5 +109,39 @@ class AwsGlueClientFactoryTest {
 
     assertInstanceOf(StaticCredentialsProvider.class, provider);
     assertEquals("catalog-access", provider.resolveCredentials().accessKeyId());
+  }
+
+  @Test
+  void catalogRegistryProviderRenewsExpiredCredentials() {
+    AtomicInteger refreshes = new AtomicInteger();
+    String providerId =
+        RefreshingAwsCredentialsProviderRegistry.register(
+            new ResolvedStorageCredentials(
+                "expired-access",
+                "expired-secret",
+                "expired-session",
+                Instant.now().minusSeconds(1)),
+            () -> {
+              refreshes.incrementAndGet();
+              return new ResolvedStorageCredentials(
+                  "renewed-access",
+                  "renewed-secret",
+                  "renewed-session",
+                  Instant.now().plusSeconds(900));
+            });
+    try {
+      AwsCredentialsProvider provider =
+          AwsGlueClientFactory.credentialsProviderFactory(
+                  Map.of(
+                      RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID,
+                      providerId),
+                  Map.of())
+              .get();
+
+      assertEquals("renewed-access", provider.resolveCredentials().accessKeyId());
+      assertEquals(1, refreshes.get());
+    } finally {
+      RefreshingAwsCredentialsProviderRegistry.unregister(providerId);
+    }
   }
 }

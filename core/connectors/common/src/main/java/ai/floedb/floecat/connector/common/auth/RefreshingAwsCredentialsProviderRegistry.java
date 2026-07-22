@@ -20,6 +20,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -37,6 +38,7 @@ public final class RefreshingAwsCredentialsProviderRegistry {
   public static final String CATALOG_OPTION_PROVIDER_ID =
       "floecat.catalog.aws.credentials-provider-id";
   public static final String PROPERTY_PROVIDER_ID = "floecat-provider-id";
+  public static final String PROPERTY_CREDENTIAL_SCOPE = "floecat-credential-scope";
   public static final String CLIENT_PROVIDER_CLASS =
       RegistryBackedAwsCredentialsProvider.class.getName();
   public static final String ICEBERG_CLIENT_CREDENTIALS_PROVIDER = "client.credentials-provider";
@@ -67,7 +69,12 @@ public final class RefreshingAwsCredentialsProviderRegistry {
         computeRefreshSkew(
             initialCredentials,
             refreshSkew == null || refreshSkew.isNegative() ? DEFAULT_REFRESH_SKEW : refreshSkew);
-    REGISTRY.put(normalizedProviderId, new Entry(initialCredentials, refresher, effectiveSkew));
+    Entry entry = new Entry(normalizedProviderId, initialCredentials, refresher, effectiveSkew);
+    REGISTRY.put(normalizedProviderId, entry);
+    LOG.log(
+        Level.INFO,
+        "Registered AWS credentials provider; providerRef={0}, expiresAt={1}, refreshSkewMs={2}",
+        new Object[] {entry.providerRef, initialCredentials.expiresAt(), effectiveSkew.toMillis()});
     return normalizedProviderId;
   }
 
@@ -75,15 +82,25 @@ public final class RefreshingAwsCredentialsProviderRegistry {
     if (providerId == null || providerId.isBlank()) {
       return;
     }
-    REGISTRY.remove(providerId.trim());
+    Entry removed = REGISTRY.remove(providerId.trim());
+    if (removed != null) {
+      LOG.log(
+          Level.INFO,
+          "Unregistered AWS credentials provider; providerRef={0}, observedScopes={1}",
+          new Object[] {removed.providerRef, removed.observedScopes});
+    }
   }
 
   public static AwsCredentials resolve(String providerId) {
+    return resolve(providerId, "direct");
+  }
+
+  public static AwsCredentials resolve(String providerId, String credentialScope) {
     Entry entry = REGISTRY.get(requireNonBlank(providerId, "providerId"));
     if (entry == null) {
       throw new IllegalStateException("Unknown AWS credentials provider id: " + providerId);
     }
-    return entry.resolveCredentials();
+    return entry.resolveCredentials(normalizeScope(credentialScope));
   }
 
   public static Map<String, String> propertiesFor(String providerId) {
@@ -148,22 +165,42 @@ public final class RefreshingAwsCredentialsProviderRegistry {
     return value == null || value.isBlank();
   }
 
+  private static String normalizeScope(String credentialScope) {
+    return isBlank(credentialScope) ? "unspecified" : credentialScope.trim().toLowerCase();
+  }
+
+  private static String providerRef(String providerId) {
+    return Integer.toUnsignedString(providerId.hashCode(), 16);
+  }
+
   private static final class Entry {
+    private final String providerRef;
     private final Supplier<ResolvedStorageCredentials> refresher;
     private final Duration refreshSkew;
+    private final Set<String> observedScopes = ConcurrentHashMap.newKeySet();
     private volatile ResolvedStorageCredentials current;
     private volatile TerminalCredentialRefreshException terminalFailure;
 
     private Entry(
+        String providerId,
         ResolvedStorageCredentials initialCredentials,
         Supplier<ResolvedStorageCredentials> refresher,
         Duration refreshSkew) {
+      this.providerRef = providerRef(providerId);
       this.current = initialCredentials;
       this.refresher = refresher;
       this.refreshSkew = refreshSkew;
     }
 
-    private AwsCredentials resolveCredentials() {
+    private AwsCredentials resolveCredentials(String credentialScope) {
+      if (observedScopes.add(credentialScope)) {
+        LOG.log(
+            Level.INFO,
+            "Resolved AWS credentials provider scope; providerRef={0}, scope={1}, expiresAt={2}",
+            new Object[] {
+              providerRef, credentialScope, current == null ? null : current.expiresAt()
+            });
+      }
       TerminalCredentialRefreshException terminal = terminalFailure;
       if (terminal != null) {
         throw terminal;
@@ -188,9 +225,13 @@ public final class RefreshingAwsCredentialsProviderRegistry {
               current = refreshed;
               LOG.log(
                   Level.INFO,
-                  "Refreshed AWS storage credentials; previousExpiresAt={0}, newExpiresAt={1}",
+                  "Refreshed AWS credentials; providerRef={0}, scope={1}, previousExpiresAt={2},"
+                      + " newExpiresAt={3}",
                   new Object[] {
-                    snapshot == null ? null : snapshot.expiresAt(), refreshed.expiresAt()
+                    providerRef,
+                    credentialScope,
+                    snapshot == null ? null : snapshot.expiresAt(),
+                    refreshed.expiresAt()
                   });
             } catch (RuntimeException e) {
               if (e instanceof TerminalCredentialRefreshException terminalRefresh) {

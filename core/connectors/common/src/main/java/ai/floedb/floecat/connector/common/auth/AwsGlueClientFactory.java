@@ -85,7 +85,7 @@ public final class AwsGlueClientFactory {
     String providerId =
         option(options, RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID);
     if (providerId != null) {
-      return new RegistryBackedAwsCredentialsProvider(providerId);
+      return new RegistryBackedAwsCredentialsProvider(providerId, "catalog");
     }
     String access = option(options, "rest.access-key-id");
     String secret = option(options, "rest.secret-access-key");

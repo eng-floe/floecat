@@ -77,7 +77,7 @@ class RefreshingAwsCredentialsProviderRegistryTest {
           public void publish(LogRecord record) {
             if (record != null
                 && record.getMessage() != null
-                && record.getMessage().startsWith("Refreshed AWS storage credentials")) {
+                && record.getMessage().startsWith("Refreshed AWS credentials")) {
               refreshLog.set(record);
             }
           }
@@ -96,13 +96,15 @@ class RefreshingAwsCredentialsProviderRegistryTest {
           () -> credentials("new", refreshedExpiry),
           Duration.ZERO);
 
-      RefreshingAwsCredentialsProviderRegistry.resolve(providerId);
+      RefreshingAwsCredentialsProviderRegistry.resolve(providerId, "catalog");
 
       LogRecord record = refreshLog.get();
       assertNotNull(record);
       assertEquals(Level.INFO, record.getLevel());
-      assertEquals(previousExpiry, record.getParameters()[0]);
-      assertEquals(refreshedExpiry, record.getParameters()[1]);
+      assertNotNull(record.getParameters()[0]);
+      assertEquals("catalog", record.getParameters()[1]);
+      assertEquals(previousExpiry, record.getParameters()[2]);
+      assertEquals(refreshedExpiry, record.getParameters()[3]);
     } finally {
       RefreshingAwsCredentialsProviderRegistry.unregister(providerId);
       logger.removeHandler(handler);

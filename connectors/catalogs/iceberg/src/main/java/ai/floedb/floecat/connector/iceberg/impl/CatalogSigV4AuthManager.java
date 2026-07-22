@@ -150,6 +150,10 @@ public final class CatalogSigV4AuthManager implements AuthManager {
         CLIENT_CREDENTIALS_PROVIDER_PREFIX
             + RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID,
         providerId);
+    authProperties.put(
+        CLIENT_CREDENTIALS_PROVIDER_PREFIX
+            + RefreshingAwsCredentialsProviderRegistry.PROPERTY_CREDENTIAL_SCOPE,
+        "catalog");
     authProperties.remove("rest.access-key-id");
     authProperties.remove("rest.secret-access-key");
     authProperties.remove("rest.session-token");
