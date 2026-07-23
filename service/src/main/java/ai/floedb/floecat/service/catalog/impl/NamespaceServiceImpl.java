@@ -54,6 +54,7 @@ import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -532,6 +533,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   long markerVersion = markerStore.namespaceMarkerVersion(namespaceId);
 
+                  RecursiveResourceDropper.DropSummary dropSummary = null;
                   if (request.getRecursive()) {
                     // Check the supplied condition before deleting descendants. The final delete
                     // below still uses the same condition to catch a concurrent root mutation.
@@ -544,7 +546,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           "namespace children changed before recursive delete: "
                               + namespaceId.getId());
                     }
-                    recursiveDropper.dropNamespaceContents(namespace);
+                    dropSummary = recursiveDropper.dropNamespaceContents(namespace);
                     if (markerStore.namespaceMarkerVersion(namespaceId) != markerVersion + 1) {
                       throw new BaseResourceRepository.AbortRetryableException(
                           "namespace children changed during recursive delete: "
@@ -626,6 +628,37 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                         correlationId,
                         GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
                         Map.of("display_name", pretty));
+                  }
+
+                  if (request.getRecursive()
+                      && dropSummary != null
+                      && (dropSummary.namespacesDeleted
+                              + dropSummary.tablesDeleted
+                              + dropSummary.viewsDeleted)
+                          > 0) {
+                    // Descendants are already irreversibly gone. If the caller's precondition on
+                    // the root no longer holds (a concurrent metadata bump, or a now-stale --etag),
+                    // the final delete below would report a generic precondition failure that reads
+                    // like a no-op. Surface the partial teardown with counts so callers can tell a
+                    // true no-op from a subtree that has actually been destroyed.
+                    try {
+                      MutationOps.BaseServiceChecks.enforcePreconditions(
+                          correlationId,
+                          namespaceRepo.metaForSafe(namespaceId),
+                          request.getPrecondition());
+                    } catch (StatusRuntimeException pfe) {
+                      throw GrpcErrors.preconditionFailed(
+                          correlationId,
+                          GeneratedErrorMessages.MessageKey.NAMESPACE_RECURSIVE_PARTIAL,
+                          Map.of(
+                              "deleted_namespaces",
+                              Integer.toString(dropSummary.namespacesDeleted),
+                              "deleted_tables",
+                              Integer.toString(dropSummary.tablesDeleted),
+                              "deleted_views",
+                              Integer.toString(dropSummary.viewsDeleted)),
+                          pfe);
+                    }
                   }
 
                   var meta =

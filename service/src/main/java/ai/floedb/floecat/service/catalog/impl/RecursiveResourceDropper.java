@@ -34,10 +34,16 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import org.jboss.logging.Logger;
 
 /** Removes the dependent state owned by tables and namespace trees. */
 @ApplicationScoped
 public class RecursiveResourceDropper {
+
+  // Per-resource audit trail for irreversible teardown (account delete and recursive namespace
+  // delete). Each purged namespace, table, view, and snapshot prefix is named so the destruction
+  // can be reconstructed after the fact.
+  private static final Logger CLEANUP_LOG = Logger.getLogger(RecursiveResourceDropper.class);
 
   @Inject NamespaceRepository namespaceRepo;
   @Inject TableRepository tableRepo;
@@ -98,7 +104,7 @@ public class RecursiveResourceDropper {
     for (var descendant : descendants) {
       dropNamespace(descendant, summary, rootId, guarded);
     }
-    dropNamespaceRelations(root, summary);
+    dropNamespaceRelations(root, summary, guarded);
     return summary;
   }
 
@@ -140,7 +146,7 @@ public class RecursiveResourceDropper {
 
   private void dropNamespace(
       Namespace namespace, DropSummary summary, ResourceId rootId, boolean guarded) {
-    dropNamespaceRelations(namespace, summary);
+    dropNamespaceRelations(namespace, summary, guarded);
     if (guarded) {
       requireNamespaceEmptyAndStable(namespace);
     }
@@ -206,7 +212,13 @@ public class RecursiveResourceDropper {
         "namespace children changed during recursive delete: " + namespaceId.getId());
   }
 
-  private void dropNamespaceRelations(Namespace namespace, DropSummary summary) {
+  private static BaseResourceRepository.AbortRetryableException relationChanged(
+      ResourceId relationId) {
+    return new BaseResourceRepository.AbortRetryableException(
+        "relation changed during recursive delete: " + relationId.getId());
+  }
+
+  private void dropNamespaceRelations(Namespace namespace, DropSummary summary, boolean guarded) {
     var namespaceId = namespace.getResourceId();
     var catalogId = namespace.getCatalogId();
     String tableToken = "";
@@ -220,12 +232,39 @@ public class RecursiveResourceDropper {
               200,
               tableToken,
               next)) {
-        tableRepo.delete(table.getResourceId());
-        // The enclosing namespace is about to be guarded and deleted. Do not make its own
-        // cleanup look like a concurrent child mutation to that marker protocol.
-        cleanupDeletedTable(table.getResourceId(), table.getNamespaceId(), false);
-        summary.tablesDeleted++;
-        summary.snapshotPrefixesDeleted++;
+        // Only purge a table's dependent state (snapshot prefix, table root, root-resync marker)
+        // after its own delete actually commits. tableRepo.delete returns false when a concurrent
+        // update/rename won the canonical-pointer CAS or the pointer already vanished — the table
+        // may still be alive, so cleaning up its owned state would silently corrupt it.
+        if (tableRepo.delete(table.getResourceId())) {
+          // The enclosing namespace is about to be guarded and deleted. Do not make its own
+          // cleanup look like a concurrent child mutation to that marker protocol.
+          cleanupDeletedTable(table.getResourceId(), table.getNamespaceId(), false);
+          summary.tablesDeleted++;
+          summary.snapshotPrefixesDeleted++;
+          CLEANUP_LOG.infof(
+              "recursive_drop_table account_id=%s catalog_id=%s namespace_id=%s table_id=%s snapshot_prefix_purged=true",
+              namespaceId.getAccountId(),
+              catalogId.getId(),
+              namespaceId.getId(),
+              table.getResourceId().getId());
+        } else if (guarded) {
+          // Recursive namespace delete: a concurrent writer holds the table alive. Abort and let
+          // runWithRetry re-read; retrying is safe because prior deletes in this pass are
+          // idempotent.
+          throw relationChanged(table.getResourceId());
+        } else {
+          // Account teardown: the whole account is going away and cleanup must never throw a
+          // retryable abort (that would re-run deleteAccount after the pointer is gone and skip
+          // cleanup). The table pointer already moved or vanished, so skip its owned-state purge
+          // rather than corrupt a survivor.
+          CLEANUP_LOG.warnf(
+              "recursive_drop_table_skipped_uncommitted account_id=%s catalog_id=%s namespace_id=%s table_id=%s",
+              namespaceId.getAccountId(),
+              catalogId.getId(),
+              namespaceId.getId(),
+              table.getResourceId().getId());
+        }
       }
       tableToken = next.toString();
     } while (!tableToken.isBlank());
@@ -241,10 +280,26 @@ public class RecursiveResourceDropper {
               200,
               viewToken,
               next)) {
-        viewRepo.delete(view.getResourceId());
-        topology.evict(view.getResourceId());
-        metadataGraph.invalidate(view.getResourceId());
-        summary.viewsDeleted++;
+        if (viewRepo.delete(view.getResourceId())) {
+          topology.evict(view.getResourceId());
+          metadataGraph.invalidate(view.getResourceId());
+          summary.viewsDeleted++;
+          CLEANUP_LOG.infof(
+              "recursive_drop_view account_id=%s catalog_id=%s namespace_id=%s view_id=%s",
+              namespaceId.getAccountId(),
+              catalogId.getId(),
+              namespaceId.getId(),
+              view.getResourceId().getId());
+        } else if (guarded) {
+          throw relationChanged(view.getResourceId());
+        } else {
+          CLEANUP_LOG.warnf(
+              "recursive_drop_view_skipped_uncommitted account_id=%s catalog_id=%s namespace_id=%s view_id=%s",
+              namespaceId.getAccountId(),
+              catalogId.getId(),
+              namespaceId.getId(),
+              view.getResourceId().getId());
+        }
       }
       viewToken = next.toString();
     } while (!viewToken.isBlank());
@@ -268,6 +323,12 @@ public class RecursiveResourceDropper {
     metadataGraph.invalidate(namespaceId);
     markerStore.bumpCatalogMarker(namespace.getCatalogId());
     bumpParentNamespaceMarkers(namespace, skipMarkerId);
+    CLEANUP_LOG.infof(
+        "recursive_drop_namespace account_id=%s catalog_id=%s namespace_id=%s display_name=%s",
+        namespaceId.getAccountId(),
+        namespace.getCatalogId().getId(),
+        namespaceId.getId(),
+        namespace.getDisplayName());
   }
 
   private void bumpParentNamespaceMarkers(Namespace namespace, ResourceId skipMarkerId) {
