@@ -54,6 +54,7 @@ import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -76,6 +77,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   @Inject UserGraph metadataGraph;
   @Inject TopologyGraph topology;
   @Inject MarkerStore markerStore;
+  @Inject RecursiveResourceDropper recursiveDropper;
 
   // Overlay gives access to system namespaces (and other system objects)
   @Inject CatalogOverlay overlay;
@@ -483,12 +485,26 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   public Uni<DeleteNamespaceResponse> deleteNamespace(DeleteNamespaceRequest request) {
     var L = LogHelper.start(LOG, "DeleteNamespace");
 
+    // Recursive delete performs a large amount of blocking storage I/O and can raise
+    // AbortRetryableException; runWithRetryOnWorker keeps the retry re-subscription off the Vert.x
+    // event loop, where that blocking work would fail with "current thread cannot be blocked".
     return mapFailures(
-            runWithRetry(
+            runWithRetryOnWorker(
                 () -> {
                   var princ = principal.get();
                   var correlationId = princ.getCorrelationId();
                   authz.require(princ, "namespace.write");
+
+                  if (request.getRecursive() && request.getRequireEmpty()) {
+                    throw GrpcErrors.invalidArgument(
+                        correlationId,
+                        null,
+                        Map.of("reason", "recursive and require_empty cannot be combined"));
+                  }
+                  if (request.getRecursive()) {
+                    authz.require(princ, "table.write");
+                    authz.require(princ, "view.write");
+                  }
 
                   var namespaceId = request.getNamespaceId();
                   catalogSurfaceWritePolicy().requireDeletableNamespace(namespaceId, correlationId);
@@ -517,6 +533,28 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   long markerVersion = markerStore.namespaceMarkerVersion(namespaceId);
 
+                  RecursiveResourceDropper.DropSummary dropSummary = null;
+                  if (request.getRecursive()) {
+                    // Check the supplied condition before deleting descendants. The final delete
+                    // below still uses the same condition to catch a concurrent root mutation.
+                    MutationOps.BaseServiceChecks.enforcePreconditions(
+                        correlationId,
+                        namespaceRepo.metaFor(namespaceId),
+                        request.getPrecondition());
+                    if (!markerStore.advanceNamespaceMarker(namespaceId, markerVersion)) {
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "namespace children changed before recursive delete: "
+                              + namespaceId.getId());
+                    }
+                    dropSummary = recursiveDropper.dropNamespaceContents(namespace);
+                    if (markerStore.namespaceMarkerVersion(namespaceId) != markerVersion + 1) {
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "namespace children changed during recursive delete: "
+                              + namespaceId.getId());
+                    }
+                    markerVersion++;
+                  }
+
                   if (tableRepo.count(
                           catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())
                       > 0) {
@@ -540,6 +578,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   }
 
                   if (!markerStore.advanceNamespaceMarker(namespaceId, markerVersion)) {
+                    if (request.getRecursive()) {
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "namespace children changed during recursive delete: "
+                              + namespaceId.getId());
+                    }
                     throw GrpcErrors.preconditionFailed(
                         correlationId,
                         GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
@@ -547,6 +590,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   }
                   var markerAfterAdvance = markerStore.namespaceMarkerVersion(namespaceId);
                   if (markerAfterAdvance != markerVersion + 1) {
+                    if (request.getRecursive()) {
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "namespace children changed during recursive delete: "
+                              + namespaceId.getId());
+                    }
                     throw GrpcErrors.preconditionFailed(
                         correlationId,
                         GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
@@ -555,6 +603,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   if (tableRepo.count(
                           catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())
                       > 0) {
+                    if (request.getRecursive()) {
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "namespace tables changed during recursive delete: "
+                              + namespaceId.getId());
+                    }
                     var pretty =
                         prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
                     throw GrpcErrors.conflict(
@@ -564,12 +617,48 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   }
                   if (hasImmediateChildren(
                       catalogId.getAccountId(), catalogId.getId(), parentPath)) {
+                    if (request.getRecursive()) {
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "namespace children changed during recursive delete: "
+                              + namespaceId.getId());
+                    }
                     var pretty =
                         prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
                     throw GrpcErrors.conflict(
                         correlationId,
                         GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
                         Map.of("display_name", pretty));
+                  }
+
+                  if (request.getRecursive()
+                      && dropSummary != null
+                      && (dropSummary.namespacesDeleted
+                              + dropSummary.tablesDeleted
+                              + dropSummary.viewsDeleted)
+                          > 0) {
+                    // Descendants are already irreversibly gone. If the caller's precondition on
+                    // the root no longer holds (a concurrent metadata bump, or a now-stale --etag),
+                    // the final delete below would report a generic precondition failure that reads
+                    // like a no-op. Surface the partial teardown with counts so callers can tell a
+                    // true no-op from a subtree that has actually been destroyed.
+                    try {
+                      MutationOps.BaseServiceChecks.enforcePreconditions(
+                          correlationId,
+                          namespaceRepo.metaForSafe(namespaceId),
+                          request.getPrecondition());
+                    } catch (StatusRuntimeException pfe) {
+                      throw GrpcErrors.preconditionFailed(
+                          correlationId,
+                          GeneratedErrorMessages.MessageKey.NAMESPACE_RECURSIVE_PARTIAL,
+                          Map.of(
+                              "deleted_namespaces",
+                              Integer.toString(dropSummary.namespacesDeleted),
+                              "deleted_tables",
+                              Integer.toString(dropSummary.tablesDeleted),
+                              "deleted_views",
+                              Integer.toString(dropSummary.viewsDeleted)),
+                          pfe);
+                    }
                   }
 
                   var meta =

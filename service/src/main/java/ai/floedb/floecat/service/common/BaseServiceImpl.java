@@ -189,6 +189,30 @@ public abstract class BaseServiceImpl {
         .atMost(RETRIES);
   }
 
+  /**
+   * Variant of {@link #runWithRetry} that pins every subscription — including the retry hop Mutiny
+   * performs after each backoff delay — to a worker thread via {@link
+   * Infrastructure#getDefaultExecutor()} (the same executor {@link #runStream} uses).
+   *
+   * <p>Plain {@code retry().withBackOff()} re-subscribes on the Vert.x event loop, so a retried
+   * body that performs blocking storage I/O throws {@code IllegalStateException: The current thread
+   * cannot be blocked}. The first attempt is unaffected (it already runs on a worker via the
+   * blocking interceptor); only the delayed re-subscriptions land on the event loop. Use for
+   * retryable mutations whose body blocks, e.g. recursive namespace deletion.
+   */
+  protected <T> Uni<T> runWithRetryOnWorker(Supplier<T> body) {
+    return run(body)
+        .runSubscriptionOn(Infrastructure.getDefaultExecutor())
+        .onFailure(
+            t ->
+                t instanceof BaseResourceRepository.AbortRetryableException
+                    || t instanceof StorageAbortRetryableException)
+        .retry()
+        .withBackOff(BACKOFF_MIN, BACKOFF_MAX)
+        .withJitter(JITTER)
+        .atMost(RETRIES);
+  }
+
   protected <T> Uni<T> mapFailures(Uni<T> u, String corrId) {
     return u.onFailure().transform(t -> toStatus(t, corrId));
   }
