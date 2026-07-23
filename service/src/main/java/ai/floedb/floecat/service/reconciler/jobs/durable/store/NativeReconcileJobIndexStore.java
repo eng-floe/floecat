@@ -460,6 +460,22 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     return new StoredJobPage(List.copyOf(out), page.nextPageToken());
   }
 
+  @Override
+  public StoredJobPage listStoredJobsPendingStatsCleanup(int pageSize, String pageToken) {
+    int limit = Math.max(1, pageSize);
+    String token = pageToken == null ? "" : pageToken;
+    var page =
+        jobIndexBackend.listGlobalStateEntries(
+            ReconcileJobIndexes.STATS_CLEANUP_PENDING_INDEX_STATE, limit, token);
+    List<StoredReconcileJob> out = new ArrayList<>(page.entries().size());
+    for (JobIndexEntrySnapshot ptr : page.entries()) {
+      readCurrentRecordFromIndexPointer(ptr)
+          .filter(record -> ptr.pointerKey().equals(indexes.statsCleanupPendingPointerKey(record)))
+          .ifPresent(out::add);
+    }
+    return new StoredJobPage(List.copyOf(out), page.nextPageToken());
+  }
+
   public StoredJobPage listStoredChildJobs(
       String accountId, String parentJobId, int pageSize, String pageToken) {
     if (blank(accountId) || blank(parentJobId)) {
@@ -534,6 +550,11 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         ops,
         previous == null ? List.of() : indexes.statePointerKeys(previous),
         indexes.statePointerKeys(current),
+        canonicalPointerKey);
+    appendReferenceTransition(
+        ops,
+        previous == null ? "" : indexes.statsCleanupPendingPointerKey(previous),
+        indexes.statsCleanupPendingPointerKey(current),
         canonicalPointerKey);
     String previousDedupePointerKey = previous == null ? "" : indexes.dedupePointerKey(previous);
     String currentDedupePointerKey = indexes.dedupePointerKey(current);
@@ -1152,6 +1173,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     }
     indexKeys.add(connectorIndexPointerKey(record));
     indexKeys.addAll(indexes.statePointerKeys(record));
+    indexKeys.add(indexes.statsCleanupPendingPointerKey(record));
     indexKeys.add(indexes.dedupePointerKey(record));
     indexKeys.removeIf(NativeReconcileJobIndexStore::blank);
     return List.copyOf(indexKeys);

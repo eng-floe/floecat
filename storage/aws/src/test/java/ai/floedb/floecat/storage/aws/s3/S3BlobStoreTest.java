@@ -206,6 +206,13 @@ class S3BlobStoreTest {
   }
 
   @Test
+  void mapsRuntimeClosedPoolFailureToRetryableForRangeGet() {
+    S3BlobStore store = closedPoolStore();
+
+    assertThrows(StorageAbortRetryableException.class, () -> store.getRange("key", 4, 8));
+  }
+
+  @Test
   void mapsRuntimeClosedPoolFailureToRetryableForPut() {
     S3BlobStore store = closedPoolStore();
 

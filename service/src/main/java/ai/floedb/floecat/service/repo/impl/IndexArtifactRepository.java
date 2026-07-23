@@ -35,9 +35,18 @@ import java.util.Optional;
 @ApplicationScoped
 public class IndexArtifactRepository {
   private final GenericResourceRepository<IndexArtifactRecord, IndexArtifactKey> repo;
+  private final SnapshotCaptureManifestReader captureManifests;
+
+  public IndexArtifactRepository(PointerStore pointerStore, BlobStore blobStore) {
+    this(pointerStore, blobStore, null);
+  }
 
   @Inject
-  public IndexArtifactRepository(PointerStore pointerStore, BlobStore blobStore) {
+  public IndexArtifactRepository(
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      SnapshotCaptureManifestReader captureManifests) {
+    this.captureManifests = captureManifests;
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -79,17 +88,47 @@ public class IndexArtifactRepository {
 
   public Optional<IndexArtifactRecord> getIndexArtifact(
       ResourceId tableId, long snapshotId, IndexTarget target) {
+    if (captureManifests != null
+        && captureManifests.activeManifestUri(tableId, snapshotId).isPresent()) {
+      return captureManifests.getIndexArtifact(tableId, snapshotId, target);
+    }
     return repo.getByKey(indexArtifactLookupKey(tableId, snapshotId, target));
   }
 
   public List<IndexArtifactRecord> listIndexArtifacts(
       ResourceId tableId, long snapshotId, int limit, String pageToken, StringBuilder nextOut) {
+    if (captureManifests != null
+        && captureManifests.activeManifestUri(tableId, snapshotId).isPresent()) {
+      List<IndexArtifactRecord> records = captureManifests.listIndexArtifacts(tableId, snapshotId);
+      int offset = parseOffset(pageToken);
+      int start = Math.min(offset, records.size());
+      int end = Math.min(records.size(), start + Math.max(1, limit));
+      if (nextOut != null && end < records.size()) {
+        nextOut.append(end);
+      }
+      return records.subList(start, end);
+    }
     return repo.listByPrefix(
         indexArtifactsPrefix(tableId, snapshotId), Math.max(1, limit), pageToken, nextOut);
   }
 
   public int countIndexArtifacts(ResourceId tableId, long snapshotId) {
+    if (captureManifests != null
+        && captureManifests.activeManifestUri(tableId, snapshotId).isPresent()) {
+      return captureManifests.listIndexArtifacts(tableId, snapshotId).size();
+    }
     return repo.countByPrefix(indexArtifactsPrefix(tableId, snapshotId));
+  }
+
+  private static int parseOffset(String pageToken) {
+    if (pageToken == null || pageToken.isBlank()) {
+      return 0;
+    }
+    try {
+      return Math.max(0, Integer.parseInt(pageToken));
+    } catch (NumberFormatException e) {
+      throw new IllegalArgumentException("invalid capture manifest page token", e);
+    }
   }
 
   public MutationMeta metaForIndexArtifact(

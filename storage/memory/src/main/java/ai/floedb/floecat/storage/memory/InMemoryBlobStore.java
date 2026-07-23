@@ -112,6 +112,22 @@ public class InMemoryBlobStore implements BlobStore {
   }
 
   @Override
+  public byte[] getRange(String uri, long offset, int length) {
+    if (offset < 0L || length < 0) {
+      throw new IllegalArgumentException("blob range offset and length must be non-negative");
+    }
+    Blob blob = map.get(normalize(uri));
+    if (blob == null) {
+      return null;
+    }
+    long end = offset + length;
+    if (end < offset || end > blob.data.length) {
+      throw new IllegalArgumentException("blob range is outside the object");
+    }
+    return Arrays.copyOfRange(blob.data, Math.toIntExact(offset), Math.toIntExact(end));
+  }
+
+  @Override
   public Optional<BlobHeader> head(String uri) {
     uri = normalize(uri);
     return Optional.ofNullable(map.get(uri)).map(bl -> bl.hdr);

@@ -19,6 +19,7 @@ package ai.floedb.floecat.reconciler.impl;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -61,9 +62,11 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             tableId(),
             55L,
             true,
+            0,
             "/snapshot-plan.json",
             2,
-            "/final-stats.pb");
+            "/final-stats.pb",
+            "/capture-manifest.pb");
 
     when(workerClient.getSnapshotFinalizeInput(remoteLease)).thenReturn(input);
     when(snapshotPlanBlobStore.loadFileGroupsByUri("/snapshot-plan.json"))
@@ -82,7 +85,9 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     verify(workerClient)
         .submitSnapshotFinalizeFailure(
             any(), any(), contains("unexpected snapshot file-group descriptor plan-1/group-c"));
-    verify(workerClient, never()).submitSnapshotFinalizeSuccess(any(), any(), any(), any());
+    verify(workerClient, never())
+        .submitSnapshotFinalizeSuccess(
+            any(), any(), any(), any(), anyInt(), any(), any(), any(), any());
   }
 
   private static ReconcileJobStore.LeasedJob leasedFinalizeJob() {

@@ -1351,6 +1351,13 @@ public final class Keys {
         + ".stats.pb";
   }
 
+  public static String reconcileSnapshotCaptureManifestUri(
+      String accountId, String parentJobId, String jobId, String leaseEpoch) {
+    String statsUri =
+        reconcileSnapshotFinalizeStatsPayloadUri(accountId, parentJobId, jobId, leaseEpoch);
+    return statsUri.substring(0, statsUri.length() - ".stats.pb".length()) + ".capture-manifest.pb";
+  }
+
   private static String sha256Hex(String value) {
     try {
       return HexFormat.of()

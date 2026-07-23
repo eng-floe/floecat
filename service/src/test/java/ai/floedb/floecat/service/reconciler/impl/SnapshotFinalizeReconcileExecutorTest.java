@@ -87,7 +87,7 @@ class SnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
-  void claimsNonEmptyFileGroupSnapshotsOnlyWhenRemoteFinalizationIsUnavailable() {
+  void neverClaimsNonEmptyFileGroupSnapshots() {
     var store = new InMemoryReconcileJobStore();
     var snapshotPlanBlobStore = snapshotPlanBlobStore();
     ReconcileFileGroupTask group =
@@ -130,10 +130,6 @@ class SnapshotFinalizeReconcileExecutorTest {
             snapshotPlanBlobStore);
 
     assertFalse(executor.supports(lease));
-
-    executor.remoteSnapshotFinalizeEnabled = false;
-
-    assertTrue(executor.supports(lease));
   }
 
   private static SnapshotPlanBlobStore snapshotPlanBlobStore() {

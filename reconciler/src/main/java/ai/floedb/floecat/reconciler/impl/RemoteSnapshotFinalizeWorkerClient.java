@@ -16,11 +16,20 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import java.util.List;
 
 interface RemoteSnapshotFinalizeWorkerClient {
+  record FileStatsRecordLocation(
+      TargetStatsRecord record,
+      String payloadUri,
+      int recordIndex,
+      long byteOffset,
+      int byteLength,
+      byte[] recordSha256) {}
+
   StandaloneSnapshotFinalizeExecutionPayload getSnapshotFinalizeInput(RemoteLeasedJob lease);
 
   List<ReconcileFileGroupResultDescriptor> listSnapshotFileGroupResults(RemoteLeasedJob lease);
@@ -29,7 +38,12 @@ interface RemoteSnapshotFinalizeWorkerClient {
       RemoteLeasedJob lease,
       String resultId,
       String statsPayloadUri,
-      List<TargetStatsRecord> statsRecords);
+      String captureManifestUri,
+      int sourceFileCount,
+      List<ReconcileFileGroupResultDescriptor> fileGroups,
+      List<FileStatsRecordLocation> fileStats,
+      List<TargetStatsRecord> finalStats,
+      List<IndexArtifactRecord> indexArtifacts);
 
   boolean submitSnapshotFinalizeFailure(RemoteLeasedJob lease, String resultId, String message);
 }

@@ -3590,28 +3590,25 @@ class DurableReconcileJobStoreTest {
     store.statsStore = statsStore;
     StoredReconcileJob skipped = new StoredReconcileJob();
 
-    Mockito.when(indexStore.listStoredJobsInState("JS_FAILED", 128, ""))
-        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(), "failed-page-2"));
-    Mockito.when(indexStore.listStoredJobsInState("JS_FAILED", 128, "failed-page-2"))
+    Mockito.when(indexStore.listStoredJobsPendingStatsCleanup(128, ""))
+        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(), "pending-page-2"));
+    Mockito.when(indexStore.listStoredJobsPendingStatsCleanup(128, "pending-page-2"))
         .thenAnswer(
             ignored -> {
               Thread.sleep(30L);
-              return new ReconcileJobIndexStore.StoredJobPage(List.of(skipped), "failed-page-3");
+              return new ReconcileJobIndexStore.StoredJobPage(List.of(skipped), "pending-page-3");
             });
-    Mockito.when(indexStore.listStoredJobsInState("JS_FAILED", 128, "failed-page-3"))
-        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(), ""));
-    Mockito.when(indexStore.listStoredJobsInState("JS_CANCELLED", 128, ""))
+    Mockito.when(indexStore.listStoredJobsPendingStatsCleanup(128, "pending-page-3"))
         .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(), ""));
 
     store.runAbandonedFullRescanStatsCleanupMaintenanceOnce(20L);
     store.runAbandonedFullRescanStatsCleanupMaintenanceOnce(1_000L);
 
-    Mockito.verify(indexStore, Mockito.times(1)).listStoredJobsInState("JS_FAILED", 128, "");
+    Mockito.verify(indexStore, Mockito.times(1)).listStoredJobsPendingStatsCleanup(128, "");
     Mockito.verify(indexStore, Mockito.times(1))
-        .listStoredJobsInState("JS_FAILED", 128, "failed-page-2");
+        .listStoredJobsPendingStatsCleanup(128, "pending-page-2");
     Mockito.verify(indexStore, Mockito.times(1))
-        .listStoredJobsInState("JS_FAILED", 128, "failed-page-3");
-    Mockito.verify(indexStore, Mockito.times(1)).listStoredJobsInState("JS_CANCELLED", 128, "");
+        .listStoredJobsPendingStatsCleanup(128, "pending-page-3");
     Mockito.verifyNoInteractions(statsStore);
   }
 

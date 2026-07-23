@@ -82,6 +82,7 @@ public class StatsRepository implements StatsStore {
   private final PointerStore pointerStore;
   private final BlobStore blobStore;
   private final TargetStatsStorage targetStatsStorage;
+  private final SnapshotCaptureManifestReader captureManifests;
 
   // Nullable (tests): decoded-content cache, used here for the immutable generation-manifest
   // blobs only. Target-stats RECORD blobs are deliberately not cached: they are written to
@@ -90,15 +91,24 @@ public class StatsRepository implements StatsStore {
   private final ImmutableBlobCache blobCache;
 
   public StatsRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null);
+    this(pointerStore, blobStore, null, null);
+  }
+
+  public StatsRepository(
+      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+    this(pointerStore, blobStore, blobCache, null);
   }
 
   @Inject
   public StatsRepository(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      ImmutableBlobCache blobCache,
+      SnapshotCaptureManifestReader captureManifests) {
     this.pointerStore = pointerStore;
     this.blobStore = blobStore;
     this.blobCache = blobCache;
+    this.captureManifests = captureManifests;
     this.targetStatsStorage = new TargetStatsStorage(pointerStore, blobStore);
   }
 
@@ -350,6 +360,10 @@ public class StatsRepository implements StatsStore {
   @Override
   public Optional<TargetStatsRecord> getTargetStats(
       ResourceId tableId, long snapshotId, StatsTarget target) {
+    if (captureManifests != null
+        && captureManifests.activeManifestUri(tableId, snapshotId).isPresent()) {
+      return captureManifests.getStats(tableId, snapshotId, target);
+    }
     return activeGeneration(tableId, snapshotId)
         .flatMap(
             active ->
@@ -377,6 +391,16 @@ public class StatsRepository implements StatsStore {
   @Override
   public Map<String, Optional<TargetStatsRecord>> getTargetStatsBatch(
       ResourceId tableId, long snapshotId, List<StatsTarget> targets) {
+    if (captureManifests != null
+        && captureManifests.activeManifestUri(tableId, snapshotId).isPresent()) {
+      Map<String, Optional<TargetStatsRecord>> out = new LinkedHashMap<>();
+      for (StatsTarget target : targets == null ? List.<StatsTarget>of() : targets) {
+        out.put(
+            StatsTargetIdentity.storageId(target),
+            captureManifests.getStats(tableId, snapshotId, target));
+      }
+      return Collections.unmodifiableMap(out);
+    }
     return getTargetStatsBatchInResolvedGeneration(
         tableId,
         snapshotId,
@@ -387,6 +411,11 @@ public class StatsRepository implements StatsStore {
   @Override
   public Optional<TargetStatsRecord> getTargetStatsInGeneration(
       ResourceId tableId, long snapshotId, String generationToken, StatsTarget target) {
+    if (captureManifests != null
+        && generationToken != null
+        && generationToken.endsWith(".capture-manifest.pb")) {
+      return captureManifests.getStats(generationToken, tableId, snapshotId, target);
+    }
     return readGenerationIdForFrozenToken(snapshotId, generationToken)
         .flatMap(
             generationId ->
@@ -397,6 +426,17 @@ public class StatsRepository implements StatsStore {
   @Override
   public Map<String, Optional<TargetStatsRecord>> getTargetStatsBatchInGeneration(
       ResourceId tableId, long snapshotId, String generationToken, List<StatsTarget> targets) {
+    if (captureManifests != null
+        && generationToken != null
+        && generationToken.endsWith(".capture-manifest.pb")) {
+      Map<String, Optional<TargetStatsRecord>> out = new LinkedHashMap<>();
+      for (StatsTarget target : targets == null ? List.<StatsTarget>of() : targets) {
+        out.put(
+            StatsTargetIdentity.storageId(target),
+            captureManifests.getStats(generationToken, tableId, snapshotId, target));
+      }
+      return Collections.unmodifiableMap(out);
+    }
     return getTargetStatsBatchInResolvedGeneration(
         tableId, snapshotId, targets, readGenerationIdForFrozenToken(snapshotId, generationToken));
   }
@@ -771,6 +811,14 @@ public class StatsRepository implements StatsStore {
       Optional<StatsTargetType> targetType,
       int limit,
       String pageToken) {
+    Optional<String> captureManifest =
+        captureManifests == null
+            ? Optional.empty()
+            : captureManifests.activeManifestUri(tableId, snapshotId);
+    if (captureManifest.isPresent()) {
+      return captureManifestPage(
+          captureManifests.listStats(tableId, snapshotId), targetType, limit, pageToken);
+    }
     Optional<ActiveSnapshotStats> active = activeGeneration(tableId, snapshotId);
     if (active.isEmpty()) {
       return new StatsStorePage(List.of(), "");
@@ -793,6 +841,15 @@ public class StatsRepository implements StatsStore {
       Optional<StatsTargetType> targetType,
       int limit,
       String pageToken) {
+    if (captureManifests != null
+        && generationToken != null
+        && generationToken.endsWith(".capture-manifest.pb")) {
+      return captureManifestPage(
+          captureManifests.listStats(generationToken, tableId, snapshotId),
+          targetType,
+          limit,
+          pageToken);
+    }
     // A missing frozen manifest is the broken-retention invariant this wants to surface loudly —
     // this per-page read IS the scan's retention guard, so it deliberately BYPASSES the decoded
     // cache: a cached generation id would keep a scan paging "successfully" over a reclaimed
@@ -809,6 +866,33 @@ public class StatsRepository implements StatsStore {
                             + ": "
                             + generationToken));
     return listInGeneration(tableId, snapshotId, generationId, targetType, limit, pageToken);
+  }
+
+  private StatsStorePage captureManifestPage(
+      List<TargetStatsRecord> manifestRecords,
+      Optional<StatsTargetType> targetType,
+      int limit,
+      String pageToken) {
+    List<TargetStatsRecord> records =
+        manifestRecords.stream()
+            .filter(
+                record ->
+                    targetType == null
+                        || targetType.isEmpty()
+                        || StatsTargetType.from(record.getTarget()) == targetType.get())
+            .toList();
+    int offset = 0;
+    if (pageToken != null && !pageToken.isBlank()) {
+      try {
+        offset = Integer.parseInt(pageToken);
+      } catch (NumberFormatException e) {
+        throw new IllegalArgumentException("invalid capture manifest page token", e);
+      }
+    }
+    int start = Math.min(Math.max(0, offset), records.size());
+    int end = Math.min(records.size(), start + Math.max(1, limit));
+    return new StatsStorePage(
+        records.subList(start, end), end < records.size() ? Integer.toString(end) : "");
   }
 
   private StatsStorePage listInGeneration(
@@ -844,6 +928,20 @@ public class StatsRepository implements StatsStore {
   @Override
   public int countTargetStats(
       ResourceId tableId, long snapshotId, Optional<StatsTargetType> targetType) {
+    Optional<String> captureManifest =
+        captureManifests == null
+            ? Optional.empty()
+            : captureManifests.activeManifestUri(tableId, snapshotId);
+    if (captureManifest.isPresent()) {
+      return (int)
+          captureManifests.listStats(tableId, snapshotId).stream()
+              .filter(
+                  record ->
+                      targetType == null
+                          || targetType.isEmpty()
+                          || StatsTargetType.from(record.getTarget()) == targetType.get())
+              .count();
+    }
     return activeGeneration(tableId, snapshotId)
         .map(
             active ->
@@ -1148,6 +1246,12 @@ public class StatsRepository implements StatsStore {
    */
   @Override
   public Optional<String> activeStatsGeneration(ResourceId tableId, long snapshotId) {
+    if (captureManifests != null) {
+      Optional<String> capture = captureManifests.activeManifestUri(tableId, snapshotId);
+      if (capture.isPresent()) {
+        return capture;
+      }
+    }
     String manifestPointer =
         Keys.snapshotTargetStatsManifestPointer(
             tableId.getAccountId(), tableId.getId(), snapshotId);

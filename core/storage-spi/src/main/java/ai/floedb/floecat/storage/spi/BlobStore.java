@@ -17,6 +17,7 @@
 package ai.floedb.floecat.storage.spi;
 
 import ai.floedb.floecat.common.rpc.BlobHeader;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,6 +25,24 @@ import java.util.Optional;
 
 public interface BlobStore {
   byte[] get(String uri);
+
+  /**
+   * Reads exactly {@code length} bytes beginning at the zero-based {@code offset}.
+   *
+   * <p>Stores with native range support should override this method. The default preserves
+   * compatibility for simple implementations by slicing a full read.
+   */
+  default byte[] getRange(String uri, long offset, int length) {
+    if (offset < 0L || length < 0) {
+      throw new IllegalArgumentException("blob range offset and length must be non-negative");
+    }
+    byte[] bytes = get(uri);
+    long end = Math.addExact(offset, length);
+    if (bytes == null || offset > bytes.length || end > bytes.length) {
+      throw new IllegalArgumentException("blob range is outside the object");
+    }
+    return Arrays.copyOfRange(bytes, Math.toIntExact(offset), Math.toIntExact(end));
+  }
 
   void put(String uri, byte[] bytes, String contentType);
 

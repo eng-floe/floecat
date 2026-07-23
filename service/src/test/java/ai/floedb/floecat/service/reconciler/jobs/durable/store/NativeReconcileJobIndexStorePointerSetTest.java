@@ -221,6 +221,65 @@ class NativeReconcileJobIndexStorePointerSetTest {
   }
 
   @Test
+  void statsCleanupPendingIndexIsRemovedWhenCleanupCompletes() {
+    StoredReconcileJob previous = record("JS_CANCELLED");
+    previous.statsCleanupState = "PENDING";
+    previous.statsCleanupUpdatedAtMs = 200L;
+    StoredReconcileJob current = store.cloneStoredRecord(previous);
+    current.statsCleanupState = "COMPLETED";
+    current.statsCleanupUpdatedAtMs = 300L;
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, JOB_ID);
+    String pendingKey = indexes.statsCleanupPendingPointerKey(previous);
+    StoredReconcileJob retried = store.cloneStoredRecord(previous);
+    retried.statsCleanupUpdatedAtMs = 250L;
+    assertEquals(pendingKey, indexes.statsCleanupPendingPointerKey(retried));
+
+    ReconcileJobIndexStore.JobIndexWriteBatch pendingBatch =
+        store.buildJobIndexWriteBatch(
+            new CanonicalPointerSnapshot(canonicalKey, "inline:reconcile-job:e30", 1L),
+            null,
+            previous);
+    assertTrue(
+        pendingBatch.writes().stream()
+            .anyMatch(
+                op ->
+                    op instanceof ReconcileJobIndexStore.JobIndexUpsert upsert
+                        && pendingKey.equals(upsert.pointerKey())));
+    ReconcileJobIndexStore.JobIndexUpsert canonicalUpsert =
+        pendingBatch.writes().stream()
+            .filter(ReconcileJobIndexStore.JobIndexUpsert.class::isInstance)
+            .map(ReconcileJobIndexStore.JobIndexUpsert.class::cast)
+            .filter(upsert -> canonicalKey.equals(upsert.pointerKey()))
+            .findFirst()
+            .orElseThrow();
+    assertTrue(canonicalUpsert.cleanupManifest().indexPointerKeys().contains(pendingKey));
+
+    ReconcileJobIndexStore.JobIndexWriteBatch completedBatch =
+        new ReconcileJobIndexStore.JobIndexWriteBatch(
+            List.of(
+                new ReconcileJobIndexStore.JobIndexUpsert(
+                    pendingKey,
+                    0L,
+                    canonicalKey,
+                    ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_POINTER_KEY)),
+            ReconcileJobIndexStore.ReadyQueueMutation.empty());
+    assertTrue(backend.compareAndSetBatch(completedBatch));
+
+    completedBatch =
+        store.buildJobIndexWriteBatch(
+            new CanonicalPointerSnapshot(canonicalKey, "inline:reconcile-job:e30", 2L),
+            previous,
+            current);
+    assertTrue(
+        completedBatch.writes().stream()
+            .anyMatch(
+                op ->
+                    op instanceof ReconcileJobIndexStore.JobIndexDelete delete
+                        && pendingKey.equals(delete.pointerKey())));
+    assertTrue(indexes.statsCleanupPendingPointerKey(current).isBlank());
+  }
+
+  @Test
   void chunkingPacksWholeJobsToOneHundredItemsAndSplitsOnlyBetweenJobs() {
     ReconcileJobIndexStore.JobWritePlan<String> sixty =
         new ReconcileJobIndexStore.JobWritePlan<>("a", batchWithDeletes("a", 60), List.of());

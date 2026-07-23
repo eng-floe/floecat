@@ -222,6 +222,8 @@ public interface ReconcileJobIndexStore {
 
   StoredJobPage listStoredJobsInState(String state, int pageSize, String pageToken);
 
+  StoredJobPage listStoredJobsPendingStatsCleanup(int pageSize, String pageToken);
+
   StoredJobPage listStoredChildJobs(
       String accountId, String parentJobId, int pageSize, String pageToken);
 

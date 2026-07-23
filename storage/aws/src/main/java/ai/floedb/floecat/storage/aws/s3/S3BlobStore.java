@@ -173,6 +173,39 @@ public class S3BlobStore implements BlobStore {
   }
 
   @Override
+  public byte[] getRange(String key, long offset, int length) {
+    if (offset < 0L || length < 0) {
+      throw new IllegalArgumentException("blob range offset and length must be non-negative");
+    }
+    if (length == 0) {
+      return new byte[0];
+    }
+    final String k = normalize(key);
+    final long end = Math.addExact(offset, length - 1L);
+    try {
+      return s3.call(
+              c ->
+                  c.getObject(
+                      GetObjectRequest.builder()
+                          .bucket(bucket)
+                          .key(k)
+                          .range("bytes=" + offset + "-" + end)
+                          .build(),
+                      ResponseTransformer.toBytes()))
+          .asByteArray();
+    } catch (S3Exception e) {
+      if (e.statusCode() == 404) {
+        throw new StorageNotFoundException(msg("GET_RANGE", k, "not found"));
+      }
+      throw mapAndWrap("GET_RANGE", k, e);
+    } catch (SdkClientException e) {
+      throw new StorageAbortRetryableException(msg("GET_RANGE", k, e.getMessage()));
+    } catch (RuntimeException e) {
+      throw mapClosedPoolOrRethrow("GET_RANGE", k, e);
+    }
+  }
+
+  @Override
   public void put(String key, byte[] bytes, String contentType) {
     final String k = normalize(key);
     try {

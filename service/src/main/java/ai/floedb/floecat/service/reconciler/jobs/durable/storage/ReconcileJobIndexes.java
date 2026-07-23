@@ -28,6 +28,8 @@ import java.util.function.Predicate;
 
 @ApplicationScoped
 public class ReconcileJobIndexes {
+  public static final String STATS_CLEANUP_PENDING_INDEX_STATE = "STATS_CLEANUP_PENDING";
+
   private PointerStore pointerStore;
   private Predicate<StoredReconcileJob> requiresReadyPointer;
   private Function<StoredReconcileJob, List<String>> readyPointerKeys;
@@ -109,6 +111,20 @@ public class ReconcileJobIndexes {
       keys.add(connectorStateKey);
     }
     return keys;
+  }
+
+  public String statsCleanupPendingPointerKey(StoredReconcileJob record) {
+    if (record == null
+        || !"PENDING".equals(record.statsCleanupState)
+        || blank(record.accountId)
+        || blank(record.jobId)) {
+      return "";
+    }
+    return Keys.reconcileJobByStatePointer(
+        STATS_CLEANUP_PENDING_INDEX_STATE,
+        Math.max(0L, record.createdAtMs),
+        record.accountId,
+        record.jobId);
   }
 
   public boolean hasValidStatePointer(StoredReconcileJob record, String canonicalPointerKey) {

@@ -26,9 +26,11 @@ public record StandaloneSnapshotFinalizeExecutionPayload(
     ResourceId tableId,
     long snapshotId,
     boolean fullRescan,
+    int sourceFileCount,
     String snapshotPlanUri,
     int fileGroupCount,
-    String statsPayloadUri) {
+    String statsPayloadUri,
+    String captureManifestUri) {
   public StandaloneSnapshotFinalizeExecutionPayload {
     jobId = trim(jobId);
     leaseEpoch = trim(leaseEpoch);
@@ -36,6 +38,8 @@ public record StandaloneSnapshotFinalizeExecutionPayload(
     tableId = tableId == null ? ResourceId.getDefaultInstance() : tableId;
     snapshotPlanUri = trim(snapshotPlanUri);
     statsPayloadUri = trim(statsPayloadUri);
+    captureManifestUri = trim(captureManifestUri);
+    sourceFileCount = Math.max(0, sourceFileCount);
     fileGroupCount = Math.max(0, fileGroupCount);
   }
 

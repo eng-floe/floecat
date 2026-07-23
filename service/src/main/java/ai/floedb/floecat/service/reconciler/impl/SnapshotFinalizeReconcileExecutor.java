@@ -54,11 +54,6 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       defaultValue = "true")
   boolean enabled;
 
-  @ConfigProperty(
-      name = "floecat.reconciler.executor.remote-snapshot-finalize.enabled",
-      defaultValue = "true")
-  boolean remoteSnapshotFinalizeEnabled = true;
-
   @Override
   public String id() {
     return "snapshot_finalize";
@@ -101,7 +96,7 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
             || (snapshotTask.fileGroupPlanRecorded()
                 && snapshotTask.fileGroupCount() == 0
                 && snapshotTask.fileGroups().isEmpty());
-    return locallyFinalizable || !remoteSnapshotFinalizeEnabled;
+    return locallyFinalizable;
   }
 
   @Override

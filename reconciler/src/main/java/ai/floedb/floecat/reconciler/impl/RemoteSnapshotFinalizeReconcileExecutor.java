@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
@@ -25,6 +26,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload;
+import ai.floedb.floecat.reconciler.rpc.FileGroupStatsPayload;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -170,11 +172,17 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
             "missing snapshot file-group descriptors " + remainingPlannedGroups);
       }
       List<TargetStatsRecord> partials = new ArrayList<>();
+      List<RemoteSnapshotFinalizeWorkerClient.FileStatsRecordLocation> fileStats =
+          new ArrayList<>();
+      List<IndexArtifactRecord> indexArtifacts = new ArrayList<>();
       for (ReconcileFileGroupResultDescriptor descriptor : descriptors) {
         if (context.shouldStop().getAsBoolean()) {
           return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
         }
-        partials.addAll(loadValidatedPartials(lease, input, descriptor));
+        ValidatedFileGroupArtifacts artifacts = loadValidatedArtifacts(lease, input, descriptor);
+        partials.addAll(artifacts.partialAggregates());
+        fileStats.addAll(artifacts.fileStats());
+        indexArtifacts.addAll(artifacts.indexArtifacts());
       }
       Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
       List<TargetStatsRecord> finalStats =
@@ -187,7 +195,15 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       context.beforeHandledCompletion().run();
       String resultId = resultId(lease, "success");
       if (!workerClient.submitSnapshotFinalizeSuccess(
-          remoteLease, resultId, input.statsPayloadUri(), finalStats)) {
+          remoteLease,
+          resultId,
+          input.statsPayloadUri(),
+          input.captureManifestUri(),
+          input.sourceFileCount(),
+          descriptors,
+          fileStats,
+          finalStats,
+          indexArtifacts)) {
         throw terminalSubmissionUncertain(
             "snapshot finalizer result submission was rejected", null);
       }
@@ -254,7 +270,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         cause);
   }
 
-  private List<TargetStatsRecord> loadValidatedPartials(
+  private ValidatedFileGroupArtifacts loadValidatedArtifacts(
       ReconcileJobStore.LeasedJob lease,
       StandaloneSnapshotFinalizeExecutionPayload input,
       ReconcileFileGroupResultDescriptor descriptor) {
@@ -300,7 +316,97 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         || descriptor.partialAggregateRecordCount() != payload.getPartialAggregateRecordsCount()) {
       throw new IllegalArgumentException("snapshot file-group result payload identity mismatch");
     }
-    return payload.getPartialAggregateRecordsList();
+    byte[] statsBytes = blobStore.get(descriptor.statsPayloadUri());
+    if (statsBytes.length != descriptor.statsPayloadBytes()) {
+      throw new IllegalArgumentException("snapshot file-group stats payload size mismatch");
+    }
+    String actualStatsSha256 = Base64.getEncoder().encodeToString(sha256(statsBytes));
+    if (!MessageDigest.isEqual(
+        actualStatsSha256.getBytes(StandardCharsets.US_ASCII),
+        descriptor.statsPayloadSha256().getBytes(StandardCharsets.US_ASCII))) {
+      throw new IllegalArgumentException("snapshot file-group stats payload sha256 mismatch");
+    }
+    final FileGroupStatsPayload statsPayload;
+    try {
+      statsPayload = FileGroupStatsPayload.parseFrom(statsBytes);
+    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+      throw new IllegalArgumentException("snapshot file-group stats payload is invalid", e);
+    }
+    if (statsPayload.getFormatVersion() != 1
+        || !descriptor.accountId().equals(statsPayload.getAccountId())
+        || !descriptor.connectorId().equals(statsPayload.getConnectorId())
+        || !descriptor.parentJobId().equals(statsPayload.getParentJobId())
+        || !descriptor.fileGroupJobId().equals(statsPayload.getFileGroupJobId())
+        || !descriptor.planId().equals(statsPayload.getPlanId())
+        || !descriptor.groupId().equals(statsPayload.getGroupId())
+        || !descriptor.tableId().equals(statsPayload.getTableId())
+        || descriptor.snapshotId() != statsPayload.getSnapshotId()
+        || !descriptor.leaseEpoch().equals(statsPayload.getLeaseEpoch())
+        || !descriptor.resultId().equals(statsPayload.getResultId())
+        || descriptor.fileStatsRecordCount() != statsPayload.getFileStatsCount()
+        || descriptor.indexArtifactCount() != payload.getIndexArtifactsCount()) {
+      throw new IllegalArgumentException("snapshot file-group stats payload identity mismatch");
+    }
+    Set<String> indexFiles = new HashSet<>();
+    for (IndexArtifactRecord artifact : payload.getIndexArtifactsList()) {
+      if (!input.tableId().equals(artifact.getTableId())
+          || input.snapshotId() != artifact.getSnapshotId()
+          || !artifact.hasTarget()
+          || !artifact.getTarget().hasFile()
+          || artifact.getArtifactUri().isBlank()
+          || artifact.getState() != ai.floedb.floecat.catalog.rpc.IndexArtifactState.IAS_READY
+          || !indexFiles.add(artifact.getTarget().getFile().getFilePath())) {
+        throw new IllegalArgumentException("snapshot file-group index artifact metadata mismatch");
+      }
+      var header =
+          blobStore
+              .head(artifact.getArtifactUri())
+              .orElseThrow(
+                  () ->
+                      new IllegalArgumentException(
+                          "snapshot index artifact is missing: " + artifact.getArtifactUri()));
+      if (header.getContentLength() <= 0L
+          || (!artifact.getContentEtag().isBlank()
+              && !artifact.getContentEtag().equals(header.getEtag()))) {
+        throw new IllegalArgumentException(
+            "snapshot index artifact does not match metadata: " + artifact.getArtifactUri());
+      }
+    }
+    Set<String> filePaths = new HashSet<>();
+    for (TargetStatsRecord record : statsPayload.getFileStatsList()) {
+      if (!record.hasFile()
+          || !input.tableId().equals(record.getTableId())
+          || input.snapshotId() != record.getSnapshotId()
+          || !filePaths.add(record.getFile().getFilePath())) {
+        throw new IllegalArgumentException("snapshot file-group stats coverage mismatch");
+      }
+    }
+    if (descriptor.fileStatsRecordCount() > 0
+        && filePaths.size() != descriptor.succeededFileCount()) {
+      throw new IllegalArgumentException("snapshot file-group stats do not cover successful files");
+    }
+    List<ProtobufMessageRanges.ByteRange> statsRanges =
+        ProtobufMessageRanges.locate(statsBytes, 12);
+    if (statsRanges.size() != statsPayload.getFileStatsCount()) {
+      throw new IllegalArgumentException("snapshot file-group stats range count mismatch");
+    }
+    List<RemoteSnapshotFinalizeWorkerClient.FileStatsRecordLocation> fileStatsLocations =
+        new ArrayList<>(statsRanges.size());
+    for (int recordIndex = 0; recordIndex < statsRanges.size(); recordIndex++) {
+      ProtobufMessageRanges.ByteRange range = statsRanges.get(recordIndex);
+      fileStatsLocations.add(
+          new RemoteSnapshotFinalizeWorkerClient.FileStatsRecordLocation(
+              statsPayload.getFileStats(recordIndex),
+              descriptor.statsPayloadUri(),
+              recordIndex,
+              range.offset(),
+              range.length(),
+              sha256(statsBytes, Math.toIntExact(range.offset()), range.length())));
+    }
+    return new ValidatedFileGroupArtifacts(
+        payload.getPartialAggregateRecordsList(),
+        fileStatsLocations,
+        payload.getIndexArtifactsList());
   }
 
   private static Set<FloecatConnector.StatsTargetKind> requestedAggregateKinds(
@@ -332,10 +438,25 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     }
   }
 
+  private static byte[] sha256(byte[] bytes, int offset, int length) {
+    try {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      digest.update(bytes, offset, length);
+      return digest.digest();
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 is unavailable", e);
+    }
+  }
+
   private record GroupKey(String planId, String groupId) {
     private GroupKey {
       planId = planId == null ? "" : planId.trim();
       groupId = groupId == null ? "" : groupId.trim();
     }
   }
+
+  private record ValidatedFileGroupArtifacts(
+      List<TargetStatsRecord> partialAggregates,
+      List<RemoteSnapshotFinalizeWorkerClient.FileStatsRecordLocation> fileStats,
+      List<IndexArtifactRecord> indexArtifacts) {}
 }

@@ -164,6 +164,31 @@ public class TableRootWriter {
   }
 
   /**
+   * Publishes a verified-by-finalizer capture manifest as the snapshot's query-visible stats
+   * generation. The manifest URI is immutable and its version is the declared SHA-256; attaching
+   * this ref is the only Floecat-side publication work for remote capture artifacts.
+   */
+  public void commitCaptureManifest(ResourceId tableId, long snapshotId, BlobRef manifestRef) {
+    if (manifestRef == null
+        || manifestRef.getUri().isBlank()
+        || manifestRef.getVersion().isBlank()) {
+      throw new IllegalArgumentException("capture manifest ref is required");
+    }
+    committer.commit(
+        tableId,
+        current -> {
+          Long committedCurrentSnapshotId =
+              snapshots
+                  .latestRegisteredSnapshotPointer(tableId)
+                  .map(CurrentSnapshotPointer::getSnapshotId)
+                  .orElse(null);
+          return TableRootMutations.setStatsGeneration(
+                  roots, tableId, snapshotId, manifestRef, committedCurrentSnapshotId)
+              .apply(current);
+        });
+  }
+
+  /**
    * Records the snapshot's constraints bundle on its manifest entry — called after any constraints
    * write. The ref is read back from the constraints family, so a delete clears it.
    */

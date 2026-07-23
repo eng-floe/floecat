@@ -19,11 +19,7 @@ package ai.floedb.floecat.service.reconciler.impl;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.CONNECTOR;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.TABLE;
 
-import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
-import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
-import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -46,24 +42,17 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
-import ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload;
-import ai.floedb.floecat.reconciler.rpc.FileGroupStatsPayload;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultResponse;
-import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
-import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
-import ai.floedb.floecat.service.statistics.StatsOrchestrator;
-import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
-import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.Status;
@@ -71,13 +60,7 @@ import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.Base64;
-import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 @ApplicationScoped
 public class LeasedFileGroupExecutionService extends BaseServiceImpl {
@@ -86,11 +69,8 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
   @Inject ConnectorRepository connectorRepo;
   @Inject SnapshotRepository snapshotRepo;
   @Inject CredentialResolver credentialResolver;
-  @Inject StatsStore statsStore;
-  @Inject IndexArtifactRepository indexArtifactRepo;
   @Inject BlobStore blobStore;
   @Inject IdempotencyRepository idempotencyStore;
-  @Inject StatsOrchestrator statsOrchestrator;
 
   public StandaloneFileGroupExecutionPayload resolve(
       PrincipalContext principalContext, String jobId, String leaseEpoch) {
@@ -265,28 +245,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                     resultIdempotencyKey(jobId, requiredResultId),
                     () -> requestBytes,
                     () -> {
-                      FileGroupResultPayload resultPayload =
-                          loadValidatedResultPayload(
-                              lease, plannedTask, requiredResultId, validated);
-                      persistIndexArtifacts(
-                          lease,
-                          tableId,
-                          plannedTask.snapshotId(),
-                          plannedTask,
-                          resultPayload.getIndexArtifactsList().stream()
-                              .map(
-                                  record ->
-                                      new ReconcilerBackend.StagedIndexArtifact(
-                                          record, new byte[0], ""))
-                              .toList());
-                      List<TargetStatsRecord> stagedFileStats =
-                          loadValidatedStatsPayload(
-                              lease, plannedTask, requiredResultId, validated);
-                      if (lease.fullRescan) {
-                        persistDraftFileGroupStats(lease, tableId, plannedTask, stagedFileStats);
-                      } else {
-                        persistTargetStats(tableId, plannedTask.snapshotId(), stagedFileStats);
-                      }
                       boolean accepted =
                           jobs.completeFileGroupSuccess(
                               lease.jobId,
@@ -419,125 +377,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         + descriptor.fileStatsRecordCount();
   }
 
-  private FileGroupResultPayload loadValidatedResultPayload(
-      ReconcileJobStore.LeasedJob lease,
-      ReconcileFileGroupTask plannedTask,
-      String resultId,
-      ReconcileFileGroupResultDescriptor descriptor) {
-    byte[] bytes = blobStore.get(descriptor.payloadUri());
-    if (bytes.length != descriptor.payloadBytes()) {
-      throw new IllegalArgumentException(
-          "file-group result payload size does not match descriptor");
-    }
-    String actualSha256 = Base64.getEncoder().encodeToString(sha256(bytes));
-    if (!MessageDigest.isEqual(
-        actualSha256.getBytes(StandardCharsets.US_ASCII),
-        descriptor.payloadSha256().getBytes(StandardCharsets.US_ASCII))) {
-      throw new IllegalArgumentException(
-          "file-group result payload sha256 does not match descriptor");
-    }
-    final FileGroupResultPayload payload;
-    try {
-      payload = FileGroupResultPayload.parseFrom(bytes);
-    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
-      throw new IllegalArgumentException("file-group result payload is not valid protobuf", e);
-    }
-    if (payload.getFormatVersion() != 1
-        || !lease.accountId.equals(payload.getAccountId())
-        || !lease.connectorId.equals(payload.getConnectorId())
-        || !lease.parentJobId.equals(payload.getParentJobId())
-        || !lease.jobId.equals(payload.getFileGroupJobId())
-        || !plannedTask.planId().equals(payload.getPlanId())
-        || !plannedTask.groupId().equals(payload.getGroupId())
-        || !plannedTask.tableId().equals(payload.getTableId())
-        || plannedTask.snapshotId() != payload.getSnapshotId()
-        || !lease.leaseEpoch.equals(payload.getLeaseEpoch())
-        || !resultId.equals(payload.getResultId())) {
-      throw new IllegalArgumentException("file-group result payload identity mismatch");
-    }
-    if (payload.getFileResultsCount() != descriptor.succeededFileCount()
-        || payload.getPartialAggregateRecordsCount() != descriptor.partialAggregateRecordCount()
-        || payload.getIndexArtifactsCount() != descriptor.indexArtifactCount()) {
-      throw new IllegalArgumentException(
-          "file-group result payload counts do not match descriptor");
-    }
-    Set<String> plannedPaths = new LinkedHashSet<>(plannedTask.filePaths());
-    Set<String> resultPaths = new LinkedHashSet<>();
-    for (var fileResult : payload.getFileResultsList()) {
-      if (fileResult.getState()
-              != ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_SUCCEEDED
-          || !plannedPaths.contains(fileResult.getFilePath())
-          || !resultPaths.add(fileResult.getFilePath())) {
-        throw new IllegalArgumentException(
-            "file-group result payload contains an invalid file result");
-      }
-    }
-    if (!resultPaths.equals(plannedPaths)) {
-      throw new IllegalArgumentException(
-          "file-group result payload does not cover the planned files");
-    }
-    return payload;
-  }
-
-  private List<TargetStatsRecord> loadValidatedStatsPayload(
-      ReconcileJobStore.LeasedJob lease,
-      ReconcileFileGroupTask plannedTask,
-      String resultId,
-      ReconcileFileGroupResultDescriptor descriptor) {
-    byte[] bytes = blobStore.get(descriptor.statsPayloadUri());
-    if (bytes.length != descriptor.statsPayloadBytes()) {
-      throw new IllegalArgumentException("file-group stats payload size does not match descriptor");
-    }
-    String actualSha256 = Base64.getEncoder().encodeToString(sha256(bytes));
-    if (!MessageDigest.isEqual(
-        actualSha256.getBytes(StandardCharsets.US_ASCII),
-        descriptor.statsPayloadSha256().getBytes(StandardCharsets.US_ASCII))) {
-      throw new IllegalArgumentException(
-          "file-group stats payload sha256 does not match descriptor");
-    }
-    final FileGroupStatsPayload payload;
-    try {
-      payload = FileGroupStatsPayload.parseFrom(bytes);
-    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
-      throw new IllegalArgumentException("file-group stats payload is not valid protobuf", e);
-    }
-    if (payload.getFormatVersion() != 1
-        || !lease.accountId.equals(payload.getAccountId())
-        || !lease.connectorId.equals(payload.getConnectorId())
-        || !lease.parentJobId.equals(payload.getParentJobId())
-        || !lease.jobId.equals(payload.getFileGroupJobId())
-        || !plannedTask.planId().equals(payload.getPlanId())
-        || !plannedTask.groupId().equals(payload.getGroupId())
-        || !plannedTask.tableId().equals(payload.getTableId())
-        || plannedTask.snapshotId() != payload.getSnapshotId()
-        || !lease.leaseEpoch.equals(payload.getLeaseEpoch())
-        || !resultId.equals(payload.getResultId())) {
-      throw new IllegalArgumentException("file-group stats payload identity mismatch");
-    }
-    if (payload.getFileStatsCount() != descriptor.fileStatsRecordCount()) {
-      throw new IllegalArgumentException(
-          "file-group stats payload record count does not match descriptor");
-    }
-    ResourceId tableId =
-        ResourceId.newBuilder()
-            .setAccountId(lease.accountId)
-            .setKind(ResourceKind.RK_TABLE)
-            .setId(plannedTask.tableId())
-            .build();
-    List<TargetStatsRecord> fileStats =
-        validateFileStats(tableId, plannedTask.snapshotId(), payload.getFileStatsList());
-    validateCompleteStagedFileStats(lease, plannedTask, fileStats);
-    return fileStats;
-  }
-
-  private static byte[] sha256(byte[] bytes) {
-    try {
-      return MessageDigest.getInstance("SHA-256").digest(bytes);
-    } catch (NoSuchAlgorithmException e) {
-      throw new IllegalStateException("SHA-256 is unavailable", e);
-    }
-  }
-
   private static void requireAcceptedLeaseOutcome(boolean accepted, String jobId) {
     if (!accepted) {
       throw ReconcileLeaseGrpcStatus.leasePreconditionFailed(
@@ -586,118 +425,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         .getAccepted();
   }
 
-  private void persistTargetStats(
-      ResourceId tableId, long snapshotId, List<TargetStatsRecord> statsRecords) {
-    List<TargetStatsRecord> nonNullStats =
-        statsRecords == null
-            ? List.of()
-            : statsRecords.stream().filter(java.util.Objects::nonNull).toList();
-    if (nonNullStats.isEmpty()) {
-      return;
-    }
-    List<TargetStatsRecord> created =
-        statsStore.putTargetStatsBatchIfAbsent(tableId, snapshotId, nonNullStats);
-    if (!created.isEmpty()) {
-      statsOrchestrator.invalidateStatsCache(tableId, snapshotId, created);
-    }
-  }
-
-  private void persistDraftFileGroupStats(
-      ReconcileJobStore.LeasedJob lease,
-      ResourceId tableId,
-      ReconcileFileGroupTask plannedTask,
-      List<TargetStatsRecord> fileStats) {
-    long snapshotId = plannedTask.snapshotId();
-    List<TargetStatsRecord> nonNullStats = validateFileStats(tableId, snapshotId, fileStats);
-    Set<String> plannedPaths = new LinkedHashSet<>(plannedTask.filePaths());
-    for (TargetStatsRecord record : nonNullStats) {
-      if (!plannedPaths.contains(record.getFile().getFilePath())) {
-        throw new IllegalArgumentException("file-group stats include an unplanned file");
-      }
-    }
-    List<StatsTarget> targetsToReplace =
-        plannedTask.filePaths().stream().map(path -> StatsTargetIdentity.fileTarget(path)).toList();
-    statsStore.replaceTargetStatsInGeneration(
-        tableId, snapshotId, statsGenerationId(lease), targetsToReplace, nonNullStats);
-  }
-
-  private static void validateCompleteStagedFileStats(
-      ReconcileJobStore.LeasedJob lease,
-      ReconcileFileGroupTask plannedTask,
-      List<TargetStatsRecord> fileStats) {
-    Set<String> plannedPaths = new LinkedHashSet<>(plannedTask.filePaths());
-    Set<String> stagedPaths =
-        nonNullStatsRecords(fileStats).stream()
-            .filter(TargetStatsRecord::hasFile)
-            .map(record -> record.getFile().getFilePath())
-            .filter(path -> path != null && !path.isBlank())
-            .collect(java.util.stream.Collectors.toSet());
-    if (!plannedPaths.containsAll(stagedPaths)) {
-      throw new IllegalArgumentException("file-group stats include an unplanned file");
-    }
-    boolean requestsStats =
-        !FileGroupExecutionSupport.requestedStatsTargetKinds(
-                FileGroupExecutionSupport.effectiveCapturePolicy(lease))
-            .isEmpty();
-    if (requestsStats && !stagedPaths.containsAll(plannedPaths)) {
-      throw new IllegalArgumentException("file-group stats are missing a planned file");
-    }
-  }
-
-  private static List<TargetStatsRecord> validateFileStats(
-      ResourceId tableId, long snapshotId, List<TargetStatsRecord> fileStats) {
-    List<TargetStatsRecord> nonNullStats = nonNullStatsRecords(fileStats);
-    for (TargetStatsRecord record : nonNullStats) {
-      if (!record.hasFile() || !record.hasTarget()) {
-        throw new IllegalArgumentException("file-group stats must be file-target records");
-      }
-      if (!tableId.equals(record.getTableId()) || record.getSnapshotId() != snapshotId) {
-        throw new IllegalArgumentException("file-group stats do not match file-group task");
-      }
-    }
-    return nonNullStats;
-  }
-
-  static String statsGenerationId(ReconcileJobStore.LeasedJob lease) {
-    String parentJobId = lease == null || lease.parentJobId == null ? "" : lease.parentJobId.trim();
-    if (parentJobId.isBlank()) {
-      throw new IllegalArgumentException(
-          "parent reconcile job id is required for stats generation");
-    }
-    return "full-rescan-" + parentJobId;
-  }
-
-  private void persistIndexArtifacts(
-      ReconcileJobStore.LeasedJob lease,
-      ResourceId tableId,
-      long snapshotId,
-      ReconcileFileGroupTask plannedTask,
-      List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
-    List<IndexArtifactRecord> persistedRecords = new java.util.ArrayList<>();
-    Set<String> artifactFiles = new LinkedHashSet<>();
-    for (ReconcilerBackend.StagedIndexArtifact stagedArtifact : stagedIndexArtifacts) {
-      if (stagedArtifact == null || stagedArtifact.record() == null) {
-        continue;
-      }
-      IndexArtifactRecord prepared =
-          prepareIndexArtifactRecord(tableId, snapshotId, plannedTask, stagedArtifact.record());
-      String filePath = prepared.getTarget().getFile().getFilePath();
-      if (!artifactFiles.add(filePath)) {
-        throw new IllegalArgumentException(
-            "file-group result contains duplicate index artifacts for " + filePath);
-      }
-      persistedRecords.add(prepared);
-    }
-    if (FileGroupExecutionSupport.effectiveCapturePolicy(lease).requestsIndexes()
-        && !artifactFiles.containsAll(plannedTask.filePaths())) {
-      throw new IllegalArgumentException("file-group index artifacts are missing a planned file");
-    }
-    if (persistedRecords.isEmpty()) {
-      return;
-    }
-    indexArtifactRepo.putIndexArtifactsBatch(persistedRecords);
-  }
-
   private static AuthConfig toAuthConfig(ConnectorConfig.Auth resolved) {
     return AuthConfig.newBuilder()
         .setScheme(resolved.scheme() == null ? "" : resolved.scheme())
@@ -724,53 +451,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         .resolve(connector.getResourceId().getAccountId(), connector.getResourceId().getId())
         .map(c -> CredentialResolverSupport.apply(base, c, AuthResolutionContext.empty()))
         .orElse(base);
-  }
-
-  private IndexArtifactRecord prepareIndexArtifactRecord(
-      ResourceId tableId,
-      long snapshotId,
-      ReconcileFileGroupTask plannedTask,
-      IndexArtifactRecord record) {
-    if (!tableId.equals(record.getTableId()) || snapshotId != record.getSnapshotId()) {
-      throw new IllegalArgumentException(
-          "index artifact descriptor does not match the leased table and snapshot");
-    }
-    if (!record.hasTarget() || !record.getTarget().hasFile()) {
-      throw new IllegalArgumentException("file-group index artifact must have a file target");
-    }
-    if (record.getArtifactUri().isBlank()
-        || record.getArtifactFormat().isBlank()
-        || record.getArtifactFormatVersion() == 0
-        || record.getState() != IndexArtifactState.IAS_READY) {
-      throw new IllegalArgumentException(
-          "file-group index artifact must reference a committed ready artifact");
-    }
-    String filePath = record.getTarget().getFile().getFilePath();
-    if (filePath == null
-        || filePath.isBlank()
-        || plannedTask == null
-        || !plannedTask.filePaths().contains(filePath)) {
-      throw new IllegalArgumentException("index artifact descriptor targets an unplanned file");
-    }
-    var header =
-        blobStore
-            .head(record.getArtifactUri())
-            .orElseThrow(
-                () ->
-                    new StorageAbortRetryableException(
-                        "index artifact object is not committed uri=" + record.getArtifactUri()));
-    if (header.getContentLength() <= 0L) {
-      throw new IllegalArgumentException(
-          "file-group index artifact object is empty uri=" + record.getArtifactUri());
-    }
-    return record.toBuilder().setContentEtag(header.getEtag()).build();
-  }
-
-  private static List<TargetStatsRecord> nonNullStatsRecords(List<TargetStatsRecord> statsRecords) {
-    if (statsRecords == null || statsRecords.isEmpty()) {
-      return List.of();
-    }
-    return statsRecords.stream().filter(java.util.Objects::nonNull).toList();
   }
 
   private static SubmitLeasedFileGroupExecutionResultRequest.Failure failurePayload(

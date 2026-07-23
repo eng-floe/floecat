@@ -268,8 +268,9 @@ message FileGroupResultPayload {
   repeated ai.floedb.floecat.catalog.IndexArtifactRecord index_artifacts = 14;
 }
 
-// Immutable file-scoped stats pack written directly by a file-group executor. Floecat validates
-// and adopts these records into its authoritative stats store without carrying them over gRPC.
+// Immutable file-scoped stats pack written directly by a file-group executor. The snapshot
+// finalizer validates it and publishes record ranges in the capture manifest; records are not
+// carried over gRPC or exploded into individual objects.
 message FileGroupStatsPayload {
   uint32 format_version = 1;
   string account_id = 2;
@@ -314,6 +315,62 @@ message SnapshotFinalizeStatsDescriptor {
   uint64 payload_bytes = 11;
   bytes payload_sha256 = 12;
   uint32 stats_record_count = 13;
+}
+
+// Immutable publication unit produced by the snapshot-finalize executor after it has verified all
+// child artifacts. Readers resolve stats and index metadata through this manifest; Floecat only
+// registers its fenced descriptor on the table root.
+message SnapshotCaptureManifest {
+  message StatsRecordLocation {
+    string target_storage_id = 1;
+    string payload_uri = 2;
+    uint32 record_index = 3;
+    bool final_aggregate = 4;
+    uint64 byte_offset = 5;
+    uint32 byte_length = 6;
+    bytes record_sha256 = 7;
+  }
+
+  uint32 format_version = 1;
+  string account_id = 2;
+  string connector_id = 3;
+  string parent_job_id = 4;
+  string finalize_job_id = 5;
+  string table_id = 6;
+  uint64 snapshot_id = 7;
+  string lease_epoch = 8;
+  string result_id = 9;
+  CapturePolicy capture_policy = 10;
+  repeated FileGroupResultDescriptor file_groups = 11;
+  SnapshotFinalizeStatsDescriptor final_stats = 12;
+  repeated ai.floedb.floecat.catalog.IndexArtifactRecord index_artifacts = 13;
+  repeated StatsRecordLocation stats_index = 14;
+  uint32 source_file_count = 15;
+  uint32 file_stats_record_count = 16;
+  uint32 partial_aggregate_record_count = 17;
+  uint32 final_stats_record_count = 18;
+  uint32 index_artifact_count = 19;
+}
+
+// Compact reference to a committed SnapshotCaptureManifest at the URI allocated for this fenced
+// finalizer execution.
+message SnapshotCaptureManifestDescriptor {
+  uint32 format_version = 1;
+  string account_id = 2;
+  string connector_id = 3;
+  string parent_job_id = 4;
+  string finalize_job_id = 5;
+  string table_id = 6;
+  uint64 snapshot_id = 7;
+  string lease_epoch = 8;
+  string result_id = 9;
+  string manifest_uri = 10;
+  uint64 manifest_bytes = 11;
+  bytes manifest_sha256 = 12;
+  uint32 file_group_count = 13;
+  uint32 source_file_count = 14;
+  uint32 stats_record_count = 15;
+  uint32 index_artifact_count = 16;
 }
 
 // Compact durable reference to one committed FileGroupResultPayload object. Floecat persists and
@@ -577,6 +634,8 @@ message LeasedSnapshotFinalizeInput {
   uint32 file_group_count = 12;
   // Server-allocated immutable object URI for this fenced finalizer's stats pack.
   string stats_payload_uri = 13;
+  // Server-allocated immutable object URI for this fenced finalizer's capture manifest.
+  string capture_manifest_uri = 14;
 }
 
 message GetLeasedSnapshotFinalizeInputResponse {
@@ -875,7 +934,7 @@ message SubmitLeasedFileGroupExecutionResultResponse {
 message SubmitLeasedSnapshotFinalizeResultRequest {
   message Success {
     string result_id = 1;
-    SnapshotFinalizeStatsDescriptor stats_descriptor = 2;
+    SnapshotCaptureManifestDescriptor manifest_descriptor = 2;
   }
 
   message Failure {

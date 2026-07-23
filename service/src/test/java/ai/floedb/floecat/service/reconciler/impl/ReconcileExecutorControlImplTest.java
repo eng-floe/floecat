@@ -51,7 +51,7 @@ import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryClass;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryDisposition;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
-import ai.floedb.floecat.reconciler.rpc.SnapshotFinalizeStatsDescriptor;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
 import ai.floedb.floecat.service.reconciler.jobs.LeaseScanCapacityExceededException;
@@ -592,7 +592,8 @@ class ReconcileExecutorControlImplTest {
                 4,
                 "/accounts/acct/reconcile/jobs/parent-1/snapshot-plan/blob.json",
                 1,
-                "/accounts/acct/reconcile/result-payloads/finalize.stats.pb"));
+                "/accounts/acct/reconcile/result-payloads/finalize.stats.pb",
+                "/accounts/acct/reconcile/result-payloads/finalize.capture-manifest.pb"));
 
     var response =
         service
@@ -621,6 +622,9 @@ class ReconcileExecutorControlImplTest {
     assertEquals(
         "/accounts/acct/reconcile/result-payloads/finalize.stats.pb",
         response.getInput().getStatsPayloadUri());
+    assertEquals(
+        "/accounts/acct/reconcile/result-payloads/finalize.capture-manifest.pb",
+        response.getInput().getCaptureManifestUri());
   }
 
   @Test
@@ -644,7 +648,8 @@ class ReconcileExecutorControlImplTest {
                 6,
                 "",
                 0,
-                "/accounts/acct/reconcile/result-payloads/finalize.stats.pb"));
+                "/accounts/acct/reconcile/result-payloads/finalize.stats.pb",
+                "/accounts/acct/reconcile/result-payloads/finalize.capture-manifest.pb"));
 
     var response =
         service
@@ -673,10 +678,10 @@ class ReconcileExecutorControlImplTest {
     when(service.leasedSnapshotFinalizeExecutionService.persistSuccess(
             any(), eq("job-1"), eq("lease-1"), eq("result-1"), any()))
         .thenReturn(true);
-    SnapshotFinalizeStatsDescriptor descriptor =
-        SnapshotFinalizeStatsDescriptor.newBuilder()
+    SnapshotCaptureManifestDescriptor descriptor =
+        SnapshotCaptureManifestDescriptor.newBuilder()
             .setFormatVersion(1)
-            .setPayloadUri("/accounts/acct/reconcile/result-payloads/finalize.stats.pb")
+            .setManifestUri("/accounts/acct/reconcile/result-payloads/capture-manifest.pb")
             .build();
 
     var response =
@@ -688,7 +693,7 @@ class ReconcileExecutorControlImplTest {
                     .setSuccess(
                         SubmitLeasedSnapshotFinalizeResultRequest.Success.newBuilder()
                             .setResultId("result-1")
-                            .setStatsDescriptor(descriptor)
+                            .setManifestDescriptor(descriptor)
                             .build())
                     .build())
             .await()

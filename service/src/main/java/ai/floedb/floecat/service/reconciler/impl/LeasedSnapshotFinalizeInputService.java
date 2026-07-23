@@ -46,7 +46,8 @@ public class LeasedSnapshotFinalizeInputService {
       int sourceFileCount,
       String snapshotPlanUri,
       int fileGroupCount,
-      String statsPayloadUri) {}
+      String statsPayloadUri,
+      String captureManifestUri) {}
 
   enum FinalizeMode {
     FILE_GROUPS_NON_EMPTY,
@@ -104,7 +105,8 @@ public class LeasedSnapshotFinalizeInputService {
           snapshotTask.sourceFileCount(),
           snapshotTask.fileGroupPlanBlobUri(),
           snapshotTask.fileGroupCount(),
-          statsPayloadUri(lease));
+          statsPayloadUri(lease),
+          captureManifestUri(lease));
     }
     if (snapshotTask.fileGroupCount() == 0) {
       requireNoUnexpectedChildren(lease.accountId, lease.parentJobId, lease.jobId);
@@ -121,7 +123,8 @@ public class LeasedSnapshotFinalizeInputService {
           snapshotTask.sourceFileCount(),
           snapshotTask.fileGroupPlanBlobUri(),
           0,
-          statsPayloadUri(lease));
+          statsPayloadUri(lease),
+          captureManifestUri(lease));
     }
     SnapshotFinalizeChildStateService.ChildState childState =
         childStateService.compactChildState(
@@ -140,11 +143,17 @@ public class LeasedSnapshotFinalizeInputService {
         snapshotTask.sourceFileCount(),
         snapshotTask.fileGroupPlanBlobUri(),
         snapshotTask.fileGroupCount(),
-        statsPayloadUri(lease));
+        statsPayloadUri(lease),
+        captureManifestUri(lease));
   }
 
   private static String statsPayloadUri(ReconcileJobStore.LeasedJob lease) {
     return Keys.reconcileSnapshotFinalizeStatsPayloadUri(
+        lease.accountId, lease.parentJobId, lease.jobId, lease.leaseEpoch);
+  }
+
+  private static String captureManifestUri(ReconcileJobStore.LeasedJob lease) {
+    return Keys.reconcileSnapshotCaptureManifestUri(
         lease.accountId, lease.parentJobId, lease.jobId, lease.leaseEpoch);
   }
 

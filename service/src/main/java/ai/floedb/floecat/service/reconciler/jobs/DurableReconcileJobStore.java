@@ -133,7 +133,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private static final Logger LOG = Logger.getLogger(DurableReconcileJobStore.class);
   private static final String STATS_CLEANUP_PENDING = "PENDING";
   private static final String STATS_CLEANUP_COMPLETED = "COMPLETED";
-  private static final List<String> STATS_CLEANUP_STATES = List.of("JS_FAILED", "JS_CANCELLED");
 
   private static final int DEFAULT_MAX_ATTEMPTS = 8;
   private static final long DEFAULT_BASE_BACKOFF_MS = 500L;
@@ -202,7 +201,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   long leaseAcquireTimeoutMs = DEFAULT_LEASE_ACQUIRE_TIMEOUT_MS;
   private long leaseScanBudgetMs = DEFAULT_LEASE_SCAN_BUDGET_MS;
   volatile Semaphore leaseScanPermits = new Semaphore(DEFAULT_LEASE_MAX_CONCURRENCY, true);
-  private volatile int statsCleanupStateIndex;
   private volatile String statsCleanupScanToken = "";
 
   private ReconcilePayloadStore payloads() {
@@ -5137,27 +5135,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     int attempted = 0;
     int completed = 0;
     int pages = 0;
-    int stateIndex = statsCleanupStateIndex;
-    if (stateIndex < 0 || stateIndex >= STATS_CLEANUP_STATES.size()) {
-      resetStatsCleanupScanCursor();
-      stateIndex = 0;
-    }
     String token = blankToEmpty(statsCleanupScanToken);
-    while (stateIndex < STATS_CLEANUP_STATES.size()) {
+    while (true) {
       if (System.currentTimeMillis() >= deadlineMs) {
         logStatsCleanupMaintenance(startedAtMs, scanned, attempted, completed, false);
         return;
       }
-      String state = STATS_CLEANUP_STATES.get(stateIndex);
       ReconcileJobIndexStore.StoredJobPage page =
-          jobIndexStore().listStoredJobsInState(state, readyScanLimit, token);
+          jobIndexStore().listStoredJobsPendingStatsCleanup(readyScanLimit, token);
       String nextToken = blankToEmpty(page.nextPageToken());
       for (StoredReconcileJob job : page.records()) {
-        if (System.currentTimeMillis() >= deadlineMs) {
-          checkpointStatsCleanupAfterPage(stateIndex, token, nextToken);
-          logStatsCleanupMaintenance(startedAtMs, scanned, attempted, completed, false);
-          return;
-        }
         scanned++;
         if (!needsAbandonedFullRescanStatsCleanup(job)) {
           continue;
@@ -5168,11 +5155,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         }
       }
       if (nextToken.isBlank()) {
-        stateIndex++;
-        token = "";
-        statsCleanupStateIndex = stateIndex;
-        statsCleanupScanToken = "";
-        continue;
+        resetStatsCleanupScanCursor();
+        logStatsCleanupMaintenance(startedAtMs, scanned, attempted, completed, true);
+        return;
       }
       if (nextToken.equals(token)) {
         LOG.warn(
@@ -5192,37 +5177,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         return;
       }
     }
-    resetStatsCleanupScanCursor();
-    logStatsCleanupMaintenance(startedAtMs, scanned, attempted, completed, true);
   }
 
   private void resetStatsCleanupScanCursor() {
-    statsCleanupStateIndex = 0;
     statsCleanupScanToken = "";
-  }
-
-  private void checkpointStatsCleanupAfterPage(
-      int stateIndex, String currentToken, String nextToken) {
-    String next = blankToEmpty(nextToken);
-    if (next.isBlank()) {
-      int nextStateIndex = stateIndex + 1;
-      if (nextStateIndex >= STATS_CLEANUP_STATES.size()) {
-        resetStatsCleanupScanCursor();
-      } else {
-        statsCleanupStateIndex = nextStateIndex;
-        statsCleanupScanToken = "";
-      }
-      return;
-    }
-    if (next.equals(blankToEmpty(currentToken))) {
-      LOG.warn(
-          "Reconcile abandoned-stats cleanup pagination token did not advance while"
-              + " checkpointing an expired tick; resetting scan to avoid livelock");
-      resetStatsCleanupScanCursor();
-      return;
-    }
-    statsCleanupStateIndex = stateIndex;
-    statsCleanupScanToken = next;
   }
 
   private void logStatsCleanupMaintenance(

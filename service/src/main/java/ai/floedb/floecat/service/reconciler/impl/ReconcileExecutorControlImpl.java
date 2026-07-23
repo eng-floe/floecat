@@ -931,7 +931,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       .setSnapshotPlanUri(payload.snapshotPlanUri())
                       .setFullRescan(payload.fullRescan())
                       .setFileGroupCount(payload.fileGroupCount())
-                      .setStatsPayloadUri(payload.statsPayloadUri());
+                      .setStatsPayloadUri(payload.statsPayloadUri())
+                      .setCaptureManifestUri(payload.captureManifestUri());
               return GetLeasedSnapshotFinalizeInputResponse.newBuilder()
                   .setInput(inputBuilder.build())
                   .build();
@@ -1102,7 +1103,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         jobId,
                         leaseEpoch,
                         request.getSuccess().getResultId(),
-                        request.getSuccess().getStatsDescriptor());
+                        request.getSuccess().getManifestDescriptor());
                 return SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();
