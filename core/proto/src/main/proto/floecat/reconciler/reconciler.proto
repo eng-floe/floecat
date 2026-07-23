@@ -195,8 +195,7 @@ message ReconcileSnapshotTask {
   string source_namespace = 3;
   // Upstream source table name.
   string source_table = 4;
-  // Immutable grouped file plan persisted on the PLAN_SNAPSHOT job after planning completes.
-  repeated ReconcileFileGroupTask file_groups = 5;
+  reserved 5;
   // True when the snapshot planner explicitly persisted the file-group plan, including a
   // legitimate zero-group plan.
   bool file_group_plan_recorded = 6;
@@ -247,14 +246,104 @@ message ReconcileFileGroupTask {
   uint64 snapshot_id = 4;
   // Files assigned to this execution group.
   repeated string file_paths = 5;
-  // Per-file execution results persisted on the EXEC_FILE_GROUP job.
-  repeated ReconcileFileResult file_results = 6;
-  // Engine-produced partial table/column aggregate stats for this file group.
-  //
-  // These records are opaque to Floecat. They are carried through snapshot finalization so the
-  // capture engine can merge engine-owned sketch formats without requiring standalone Floecat to
-  // understand those formats.
-  repeated ai.floedb.floecat.catalog.TargetStatsRecord partial_aggregate_records = 7;
+  reserved 6, 7;
+}
+
+// Immutable packed result written directly by a file-group executor. The payload is stored as one
+// object (multipart upload is allowed) so snapshots do not create one object per record or sketch.
+message FileGroupResultPayload {
+  uint32 format_version = 1;
+  string account_id = 2;
+  string connector_id = 3;
+  string parent_job_id = 4;
+  string file_group_job_id = 5;
+  string plan_id = 6;
+  string group_id = 7;
+  string table_id = 8;
+  uint64 snapshot_id = 9;
+  string lease_epoch = 10;
+  string result_id = 11;
+  repeated ReconcileFileResult file_results = 12;
+  repeated ai.floedb.floecat.catalog.TargetStatsRecord partial_aggregate_records = 13;
+  repeated ai.floedb.floecat.catalog.IndexArtifactRecord index_artifacts = 14;
+}
+
+// Immutable file-scoped stats pack written directly by a file-group executor. Floecat validates
+// and adopts these records into its authoritative stats store without carrying them over gRPC.
+message FileGroupStatsPayload {
+  uint32 format_version = 1;
+  string account_id = 2;
+  string connector_id = 3;
+  string parent_job_id = 4;
+  string file_group_job_id = 5;
+  string plan_id = 6;
+  string group_id = 7;
+  string table_id = 8;
+  uint64 snapshot_id = 9;
+  string lease_epoch = 10;
+  string result_id = 11;
+  repeated ai.floedb.floecat.catalog.TargetStatsRecord file_stats = 12;
+}
+
+// Immutable final stats pack written directly by a snapshot-finalize executor.
+message SnapshotFinalizeStatsPayload {
+  uint32 format_version = 1;
+  string account_id = 2;
+  string connector_id = 3;
+  string parent_job_id = 4;
+  string finalize_job_id = 5;
+  string table_id = 6;
+  uint64 snapshot_id = 7;
+  string lease_epoch = 8;
+  string result_id = 9;
+  repeated ai.floedb.floecat.catalog.TargetStatsRecord stats_records = 10;
+}
+
+// Compact reference to one committed SnapshotFinalizeStatsPayload object.
+message SnapshotFinalizeStatsDescriptor {
+  uint32 format_version = 1;
+  string account_id = 2;
+  string connector_id = 3;
+  string parent_job_id = 4;
+  string finalize_job_id = 5;
+  string table_id = 6;
+  uint64 snapshot_id = 7;
+  string lease_epoch = 8;
+  string result_id = 9;
+  string payload_uri = 10;
+  uint64 payload_bytes = 11;
+  bytes payload_sha256 = 12;
+  uint32 stats_record_count = 13;
+}
+
+// Compact durable reference to one committed FileGroupResultPayload object. Floecat persists and
+// pages this descriptor without deserializing the payload object.
+message FileGroupResultDescriptor {
+  uint32 format_version = 1;
+  string account_id = 2;
+  string connector_id = 3;
+  string parent_job_id = 4;
+  string file_group_job_id = 5;
+  string plan_id = 6;
+  string group_id = 7;
+  string table_id = 8;
+  uint64 snapshot_id = 9;
+  string lease_epoch = 10;
+  string result_id = 11;
+  string payload_uri = 12;
+  uint64 payload_bytes = 13;
+  bytes payload_sha256 = 14;
+  uint32 planned_file_count = 15;
+  uint32 succeeded_file_count = 16;
+  uint32 failed_file_count = 17;
+  uint32 skipped_file_count = 18;
+  uint32 partial_aggregate_record_count = 19;
+  uint32 index_artifact_count = 20;
+  google.protobuf.Timestamp created_at = 21;
+  string stats_payload_uri = 22;
+  uint64 stats_payload_bytes = 23;
+  bytes stats_payload_sha256 = 24;
+  uint32 file_stats_record_count = 25;
 }
 
 // Scheduler hints that influence where and how a reconcile job should run.
@@ -482,14 +571,28 @@ message LeasedSnapshotFinalizeInput {
   string direct_stats_blob_uri = 7;
   uint32 direct_stats_record_count = 8;
   uint32 source_file_count = 9;
-  // Effective snapshot task for this finalize execution. For file-group snapshots this includes
-  // completed child group results and engine-produced partial aggregate stats.
-  ReconcileSnapshotTask snapshot_task = 10;
+  // Immutable snapshot plan object. File-group results are obtained from the paged descriptor RPC.
+  string snapshot_plan_uri = 10;
   bool full_rescan = 11;
+  uint32 file_group_count = 12;
+  // Server-allocated immutable object URI for this fenced finalizer's stats pack.
+  string stats_payload_uri = 13;
 }
 
 message GetLeasedSnapshotFinalizeInputResponse {
   LeasedSnapshotFinalizeInput input = 1;
+}
+
+message ListLeasedSnapshotFileGroupResultsRequest {
+  string job_id = 1;
+  string lease_epoch = 2;
+  uint32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListLeasedSnapshotFileGroupResultsResponse {
+  repeated FileGroupResultDescriptor descriptors = 1;
+  string next_page_token = 2;
 }
 
 message GetLeasedPlanConnectorInputRequest {
@@ -733,32 +836,21 @@ message LeasedFileGroupExecution {
   repeated string file_paths = 11;
   CapturePolicy capture_policy = 12;
   string storage_location = 13;
+  // Server-allocated immutable object URI for this fenced execution's packed result.
+  string result_payload_uri = 14;
+  // Server-allocated immutable object URI for this fenced execution's file-stats pack.
+  string stats_payload_uri = 15;
 }
 
 message GetLeasedFileGroupExecutionResponse {
   LeasedFileGroupExecution execution = 1;
 }
 
-message LeasedFileGroupIndexArtifact {
-  ai.floedb.floecat.catalog.IndexArtifactRecord record = 1;
-  bytes content = 2;
-  string content_type = 3;
-}
-
 message SubmitLeasedFileGroupExecutionResultRequest {
-  message Chunk {
-    string result_id = 1;
-    uint32 chunk_index = 2;
-    repeated ai.floedb.floecat.catalog.TargetStatsRecord stats_records = 3;
-    repeated LeasedFileGroupIndexArtifact index_artifacts = 4;
-  }
-
   message Success {
     string result_id = 1;
-    repeated ReconcileFileResult file_results = 2;
-    // Number of chunk messages successfully staged before this completion.
-    // Floecat reloads exactly these chunks and commits their aggregate state once.
-    uint32 chunk_count = 3;
+    FileGroupResultDescriptor result_descriptor = 2;
+    reserved 3;
   }
 
   message Failure {
@@ -770,10 +862,10 @@ message SubmitLeasedFileGroupExecutionResultRequest {
   string lease_epoch = 2;
 
   oneof outcome {
-    Chunk chunk = 3;
-    Success success = 4;
-    Failure failure = 5;
+    Success success = 3;
+    Failure failure = 4;
   }
+  reserved 5;
 }
 
 message SubmitLeasedFileGroupExecutionResultResponse {
@@ -781,14 +873,9 @@ message SubmitLeasedFileGroupExecutionResultResponse {
 }
 
 message SubmitLeasedSnapshotFinalizeResultRequest {
-  message Chunk {
-    string result_id = 1;
-    uint32 chunk_index = 2;
-    repeated ai.floedb.floecat.catalog.TargetStatsRecord stats_records = 3;
-  }
-
   message Success {
     string result_id = 1;
+    SnapshotFinalizeStatsDescriptor stats_descriptor = 2;
   }
 
   message Failure {
@@ -800,10 +887,10 @@ message SubmitLeasedSnapshotFinalizeResultRequest {
   string lease_epoch = 2;
 
   oneof outcome {
-    Chunk chunk = 3;
     Success success = 4;
     Failure failure = 5;
   }
+  reserved 3;
 }
 
 message SubmitLeasedSnapshotFinalizeResultResponse {
@@ -1040,6 +1127,9 @@ service ReconcileExecutorControl {
   // Returns compact child-result manifests for one leased FINALIZE_SNAPSHOT_CAPTURE job.
   rpc GetLeasedSnapshotFinalizeInput(GetLeasedSnapshotFinalizeInputRequest)
       returns (GetLeasedSnapshotFinalizeInputResponse);
+  // Pages compact committed file-group payload descriptors without hydrating result objects.
+  rpc ListLeasedSnapshotFileGroupResults(ListLeasedSnapshotFileGroupResultsRequest)
+      returns (ListLeasedSnapshotFileGroupResultsResponse);
   // Persists one standalone worker execution result for a leased FINALIZE_SNAPSHOT_CAPTURE job.
   rpc SubmitLeasedSnapshotFinalizeResult(SubmitLeasedSnapshotFinalizeResultRequest)
       returns (SubmitLeasedSnapshotFinalizeResultResponse);

@@ -346,6 +346,8 @@ public interface ReconcileJobStore {
     return get(jobId);
   }
 
+  Optional<ReconcileJob> getCompactLeaseView(String jobId);
+
   ReconcileJobPage list(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states);
 
@@ -393,6 +395,9 @@ public interface ReconcileJobStore {
     } while (nextToken != null && !nextToken.isBlank());
     return new ReconcileJobPage(out, "");
   }
+
+  FileGroupResultDescriptorPage childFileGroupResultDescriptorsPage(
+      String accountId, String parentJobId, int pageSize, String pageToken);
 
   default List<ReconcileJob> childJobs(String accountId, String parentJobId) {
     return childJobsPage(accountId, parentJobId, Integer.MAX_VALUE, "").jobs;
@@ -688,15 +693,12 @@ public interface ReconcileJobStore {
       String manifestUri,
       boolean allowExpiredWithinGrace);
 
-  void persistFileGroupResult(
-      String jobId, String leaseEpoch, ReconcileFileGroupTask fileGroupTask);
-
-  void persistSnapshotFinalizeDirectStatsProgress(
+  boolean completeFileGroupSuccess(
       String jobId,
       String leaseEpoch,
-      boolean fullRescan,
-      int chunkIndex,
-      int directStatsPersistedRecordCount);
+      ReconcileFileGroupResultDescriptor descriptor,
+      long finishedAtMs,
+      String message);
 
   void markCancelled(
       String jobId,
@@ -1877,6 +1879,17 @@ public interface ReconcileJobStore {
 
     public ReconcileJobPage(List<ReconcileJob> jobs, String nextPageToken) {
       this.jobs = jobs == null ? List.of() : List.copyOf(jobs);
+      this.nextPageToken = nextPageToken == null ? "" : nextPageToken;
+    }
+  }
+
+  final class FileGroupResultDescriptorPage {
+    public final List<ReconcileFileGroupResultDescriptor> descriptors;
+    public final String nextPageToken;
+
+    public FileGroupResultDescriptorPage(
+        List<ReconcileFileGroupResultDescriptor> descriptors, String nextPageToken) {
+      this.descriptors = descriptors == null ? List.of() : List.copyOf(descriptors);
       this.nextPageToken = nextPageToken == null ? "" : nextPageToken;
     }
   }

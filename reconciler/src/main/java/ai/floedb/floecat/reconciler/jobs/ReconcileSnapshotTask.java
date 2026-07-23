@@ -17,9 +17,7 @@
 package ai.floedb.floecat.reconciler.jobs;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 public record ReconcileSnapshotTask(
     String tableId,
@@ -33,8 +31,7 @@ public record ReconcileSnapshotTask(
     int fileGroupCount,
     int sourceFileCount,
     String directStatsBlobUri,
-    int directStatsRecordCount,
-    Map<Integer, Integer> directStatsPersistedRecordCountsByChunk) {
+    int directStatsRecordCount) {
 
   public enum CompletionMode {
     FILE_GROUPS,
@@ -67,23 +64,6 @@ public record ReconcileSnapshotTask(
     sourceFileCount = Math.max(0, sourceFileCount);
     directStatsBlobUri = directStatsBlobUri == null ? "" : directStatsBlobUri.trim();
     directStatsRecordCount = Math.max(0, directStatsRecordCount);
-    directStatsPersistedRecordCountsByChunk =
-        directStatsPersistedRecordCountsByChunk == null
-            ? Map.of()
-            : directStatsPersistedRecordCountsByChunk.entrySet().stream()
-                .filter(
-                    entry ->
-                        entry != null
-                            && entry.getKey() != null
-                            && entry.getKey() >= 0
-                            && entry.getValue() != null
-                            && entry.getValue() > 0)
-                .collect(
-                    java.util.stream.Collectors.toMap(
-                        Map.Entry::getKey,
-                        Map.Entry::getValue,
-                        (left, right) -> right,
-                        LinkedHashMap::new));
     if (fileGroupCount == 0 && !fileGroups.isEmpty()) {
       fileGroupCount = fileGroups.size();
     }
@@ -103,8 +83,7 @@ public record ReconcileSnapshotTask(
         0,
         0,
         "",
-        0,
-        Map.of());
+        0);
   }
 
   public static ReconcileSnapshotTask of(
@@ -125,8 +104,7 @@ public record ReconcileSnapshotTask(
         0,
         0,
         "",
-        0,
-        Map.of());
+        0);
   }
 
   public static ReconcileSnapshotTask of(
@@ -148,8 +126,7 @@ public record ReconcileSnapshotTask(
         fileGroups == null ? 0 : fileGroups.size(),
         0,
         "",
-        0,
-        Map.of());
+        0);
   }
 
   public static ReconcileSnapshotTask of(
@@ -174,8 +151,7 @@ public record ReconcileSnapshotTask(
         fileGroupCount,
         0,
         "",
-        0,
-        Map.of());
+        0);
   }
 
   public static ReconcileSnapshotTask of(
@@ -198,8 +174,7 @@ public record ReconcileSnapshotTask(
         fileGroups == null ? 0 : fileGroups.size(),
         0,
         "",
-        0,
-        Map.of());
+        0);
   }
 
   public static ReconcileSnapshotTask of(
@@ -215,36 +190,6 @@ public record ReconcileSnapshotTask(
       int sourceFileCount,
       String directStatsBlobUri,
       int directStatsRecordCount) {
-    return of(
-        tableId,
-        snapshotId,
-        sourceNamespace,
-        sourceTable,
-        fileGroups,
-        fileGroupPlanRecorded,
-        completionMode,
-        fileGroupPlanBlobUri,
-        fileGroupCount,
-        sourceFileCount,
-        directStatsBlobUri,
-        directStatsRecordCount,
-        Map.of());
-  }
-
-  public static ReconcileSnapshotTask of(
-      String tableId,
-      long snapshotId,
-      String sourceNamespace,
-      String sourceTable,
-      List<ReconcileFileGroupTask> fileGroups,
-      boolean fileGroupPlanRecorded,
-      CompletionMode completionMode,
-      String fileGroupPlanBlobUri,
-      int fileGroupCount,
-      int sourceFileCount,
-      String directStatsBlobUri,
-      int directStatsRecordCount,
-      Map<Integer, Integer> directStatsPersistedRecordCountsByChunk) {
     if ((tableId == null || tableId.isBlank())
         && snapshotId < 0L
         && (sourceNamespace == null || sourceNamespace.isBlank())
@@ -256,9 +201,7 @@ public record ReconcileSnapshotTask(
         && fileGroupCount <= 0
         && sourceFileCount <= 0
         && (directStatsBlobUri == null || directStatsBlobUri.isBlank())
-        && directStatsRecordCount <= 0
-        && (directStatsPersistedRecordCountsByChunk == null
-            || directStatsPersistedRecordCountsByChunk.isEmpty())) {
+        && directStatsRecordCount <= 0) {
       return empty();
     }
     return new ReconcileSnapshotTask(
@@ -273,13 +216,12 @@ public record ReconcileSnapshotTask(
         fileGroupCount,
         sourceFileCount,
         directStatsBlobUri,
-        directStatsRecordCount,
-        directStatsPersistedRecordCountsByChunk);
+        directStatsRecordCount);
   }
 
   public static ReconcileSnapshotTask empty() {
     return new ReconcileSnapshotTask(
-        "", -1L, "", "", List.of(), false, CompletionMode.FILE_GROUPS, "", 0, 0, "", 0, Map.of());
+        "", -1L, "", "", List.of(), false, CompletionMode.FILE_GROUPS, "", 0, 0, "", 0);
   }
 
   @JsonIgnore
@@ -295,58 +237,6 @@ public record ReconcileSnapshotTask(
         && fileGroupCount <= 0
         && sourceFileCount <= 0
         && directStatsBlobUri.isBlank()
-        && directStatsRecordCount <= 0
-        && directStatsPersistedRecordCountsByChunk.isEmpty();
-  }
-
-  @JsonIgnore
-  public int directStatsPersistedRecordCount() {
-    return directStatsPersistedRecordCountsByChunk.values().stream()
-        .mapToInt(value -> Math.max(0, value == null ? 0 : value))
-        .sum();
-  }
-
-  public ReconcileSnapshotTask withDirectStatsPersistedRecordCountForChunk(
-      int chunkIndex, int persistedRecordCount) {
-    LinkedHashMap<Integer, Integer> persistedByChunk =
-        new LinkedHashMap<>(directStatsPersistedRecordCountsByChunk);
-    int normalizedChunkIndex = Math.max(0, chunkIndex);
-    int normalizedPersistedRecordCount = Math.max(0, persistedRecordCount);
-    if (normalizedPersistedRecordCount == 0) {
-      persistedByChunk.remove(normalizedChunkIndex);
-    } else {
-      persistedByChunk.put(normalizedChunkIndex, normalizedPersistedRecordCount);
-    }
-    return ReconcileSnapshotTask.of(
-        tableId,
-        snapshotId,
-        sourceNamespace,
-        sourceTable,
-        fileGroups,
-        fileGroupPlanRecorded,
-        completionMode,
-        fileGroupPlanBlobUri,
-        fileGroupCount,
-        sourceFileCount,
-        directStatsBlobUri,
-        directStatsRecordCount,
-        persistedByChunk);
-  }
-
-  public ReconcileSnapshotTask withoutDirectStatsPersistedRecordCounts() {
-    return ReconcileSnapshotTask.of(
-        tableId,
-        snapshotId,
-        sourceNamespace,
-        sourceTable,
-        fileGroups,
-        fileGroupPlanRecorded,
-        completionMode,
-        fileGroupPlanBlobUri,
-        fileGroupCount,
-        sourceFileCount,
-        directStatsBlobUri,
-        directStatsRecordCount,
-        Map.of());
+        && directStatsRecordCount <= 0;
   }
 }

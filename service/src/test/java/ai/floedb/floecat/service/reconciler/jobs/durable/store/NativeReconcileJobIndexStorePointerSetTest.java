@@ -85,7 +85,6 @@ class NativeReconcileJobIndexStorePointerSetTest {
                 List.of(),
                 stateKeys,
                 "",
-                "",
                 record)));
 
     List<String> expectedIndexes = new ArrayList<>();
@@ -415,7 +414,6 @@ class NativeReconcileJobIndexStorePointerSetTest {
               List.of(),
               List.of(),
               child.connectorIndexPointerKey,
-              "",
               child));
     }
     StoredReconcileJob previousParent = record("JS_RUNNING");
@@ -460,7 +458,6 @@ class NativeReconcileJobIndexStorePointerSetTest {
               "",
               List.of(),
               List.of(),
-              "",
               "",
               record));
     }

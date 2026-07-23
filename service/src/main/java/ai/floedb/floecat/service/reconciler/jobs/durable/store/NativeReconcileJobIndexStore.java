@@ -851,19 +851,33 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     copy.snapshotTaskSourceTable = source.snapshotTaskSourceTable;
     copy.snapshotTaskFileGroupPlanRecorded = source.snapshotTaskFileGroupPlanRecorded;
     copy.snapshotTaskCompletionMode = source.snapshotTaskCompletionMode;
+    copy.snapshotTaskFileGroupCount = source.snapshotTaskFileGroupCount;
     copy.snapshotTaskSourceFileCount = source.snapshotTaskSourceFileCount;
     copy.snapshotTaskDirectStatsBlobUri = source.snapshotTaskDirectStatsBlobUri;
     copy.snapshotTaskDirectStatsRecordCount = source.snapshotTaskDirectStatsRecordCount;
-    copy.snapshotTaskDirectStatsPersistedRecordCountsByChunk =
-        source.snapshotTaskDirectStatsPersistedRecordCountsByChunk == null
-            ? java.util.Map.of()
-            : java.util.Map.copyOf(source.snapshotTaskDirectStatsPersistedRecordCountsByChunk);
     copy.fileGroupPlanId = source.fileGroupPlanId;
     copy.fileGroupGroupId = source.fileGroupGroupId;
     copy.fileGroupTableId = source.fileGroupTableId;
     copy.fileGroupSnapshotId = source.fileGroupSnapshotId;
     copy.fileGroupFileCount = source.fileGroupFileCount;
-    copy.fileGroupResultBlobUri = source.fileGroupResultBlobUri;
+    copy.fileGroupResultFormatVersion = source.fileGroupResultFormatVersion;
+    copy.fileGroupResultLeaseEpoch = source.fileGroupResultLeaseEpoch;
+    copy.fileGroupResultId = source.fileGroupResultId;
+    copy.fileGroupResultPayloadUri = source.fileGroupResultPayloadUri;
+    copy.fileGroupResultPayloadBytes = source.fileGroupResultPayloadBytes;
+    copy.fileGroupResultPayloadSha256 = source.fileGroupResultPayloadSha256;
+    copy.fileGroupResultPlannedFileCount = source.fileGroupResultPlannedFileCount;
+    copy.fileGroupResultSucceededFileCount = source.fileGroupResultSucceededFileCount;
+    copy.fileGroupResultFailedFileCount = source.fileGroupResultFailedFileCount;
+    copy.fileGroupResultSkippedFileCount = source.fileGroupResultSkippedFileCount;
+    copy.fileGroupResultPartialAggregateRecordCount =
+        source.fileGroupResultPartialAggregateRecordCount;
+    copy.fileGroupResultIndexArtifactCount = source.fileGroupResultIndexArtifactCount;
+    copy.fileGroupStatsPayloadUri = source.fileGroupStatsPayloadUri;
+    copy.fileGroupStatsPayloadBytes = source.fileGroupStatsPayloadBytes;
+    copy.fileGroupStatsPayloadSha256 = source.fileGroupStatsPayloadSha256;
+    copy.fileGroupStatsRecordCount = source.fileGroupStatsRecordCount;
+    copy.fileGroupResultCreatedAtMs = source.fileGroupResultCreatedAtMs;
     copy.definition = cloneDefinition(source.definition);
     copy.snapshotPlanBlobUri = source.snapshotPlanBlobUri;
     copy.state = source.state;

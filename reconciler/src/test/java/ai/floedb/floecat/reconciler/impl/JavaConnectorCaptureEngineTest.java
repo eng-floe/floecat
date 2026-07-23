@@ -43,6 +43,8 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.apache.datasketches.theta.UpdateSketch;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -102,7 +104,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            Optional.empty());
+            Optional.empty(),
+            () -> false);
 
     assertThat(engine.supports(missingPlannedFiles)).isFalse();
   }
@@ -132,7 +135,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            Optional.empty());
+            Optional.empty(),
+            () -> false);
 
     assertThat(engine.capture(request)).isEmpty();
     verify(connector, never())
@@ -192,7 +196,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.of("worker-token"),
             Optional.of("job-1"),
-            Optional.of("lease-1"));
+            Optional.of("lease-1"),
+            () -> false);
 
     assertThat(engine.capture(request)).isPresent();
     verify(storageResolver)
@@ -231,7 +236,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            Optional.empty());
+            Optional.empty(),
+            () -> false);
 
     S3Exception expiredToken =
         (S3Exception)
@@ -330,7 +336,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            Optional.empty());
+            Optional.empty(),
+            () -> false);
 
     var result = engine.capture(request);
 
@@ -408,7 +415,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            Optional.empty());
+            Optional.empty(),
+            () -> false);
 
     var result = engine.capture(request);
 
@@ -436,16 +444,28 @@ class JavaConnectorCaptureEngineTest {
             eq("events"),
             eq(tableId),
             eq(55L),
-            eq(Set.of(fileOne, fileTwo)),
+            eq(Set.of(fileOne)),
             eq(Set.of("id")),
             eq(Set.of(FloecatConnector.StatsTargetKind.COLUMN)),
             eq(false),
             eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
-                List.of(
-                    fileRecordWithColumnNdv(tableId, 55L, fileOne, ndvWithThetaSketch(1L, 2L)),
-                    fileRecordWithColumnNdv(tableId, 55L, fileTwo, ndvWithThetaSketch(2L, 3L))),
+                List.of(fileRecordWithColumnNdv(tableId, 55L, fileOne, ndvWithThetaSketch(1L, 2L))),
+                List.of()));
+    when(connector.capturePlannedFileGroup(
+            eq("db"),
+            eq("events"),
+            eq(tableId),
+            eq(55L),
+            eq(Set.of(fileTwo)),
+            eq(Set.of("id")),
+            eq(Set.of(FloecatConnector.StatsTargetKind.COLUMN)),
+            eq(false),
+            eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
+        .thenReturn(
+            FloecatConnector.FileGroupCaptureResult.of(
+                List.of(fileRecordWithColumnNdv(tableId, 55L, fileTwo, ndvWithThetaSketch(2L, 3L))),
                 List.of()));
 
     CaptureEngineRequest request =
@@ -466,7 +486,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            Optional.empty());
+            Optional.empty(),
+            () -> false);
 
     var result = engine.capture(request);
 
@@ -488,6 +509,69 @@ class JavaConnectorCaptureEngineTest {
               assertThat(ndv.getApprox().getMethod()).isEqualTo("apache-datasketches-theta");
               assertThat(ndv.getApprox().getEstimate()).isGreaterThan(0d);
             });
+  }
+
+  @Test
+  void captureStopsBeforeStartingTheNextPlannedFile() {
+    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
+    engine.connectorOpener = ignored -> connector;
+    AtomicBoolean shouldStop = new AtomicBoolean();
+
+    when(connector.capturePlannedFileGroup(
+            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
+        .thenAnswer(
+            ignored -> {
+              shouldStop.set(true);
+              return FloecatConnector.FileGroupCaptureResult.of(List.of(), List.of());
+            });
+
+    CaptureEngineRequest request =
+        new CaptureEngineRequest(
+            SOURCE_CONNECTOR,
+            "db",
+            "events",
+            ResourceId.newBuilder().setAccountId("acct").setId("table-1").build(),
+            55L,
+            "plan-1",
+            "group-1",
+            List.of("s3://bucket/path/file-1.parquet", "s3://bucket/path/file-2.parquet"),
+            Set.of(),
+            Set.of(),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
+            Set.of(FloecatConnector.StatsTargetKind.FILE),
+            false,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            shouldStop::get);
+
+    assertThatThrownBy(() -> engine.capture(request))
+        .isInstanceOf(CancellationException.class)
+        .hasMessage("file-group execution cancelled");
+    verify(connector)
+        .capturePlannedFileGroup(
+            any(),
+            any(),
+            any(),
+            anyLong(),
+            eq(Set.of("s3://bucket/path/file-1.parquet")),
+            any(),
+            any(),
+            anyBoolean(),
+            any());
+    verify(connector, never())
+        .capturePlannedFileGroup(
+            any(),
+            any(),
+            any(),
+            anyLong(),
+            eq(Set.of("s3://bucket/path/file-2.parquet")),
+            any(),
+            any(),
+            anyBoolean(),
+            any());
   }
 
   @Test
@@ -588,7 +672,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            Optional.empty());
+            Optional.empty(),
+            () -> false);
 
     var result = engine.capture(request);
 
@@ -736,7 +821,7 @@ class JavaConnectorCaptureEngineTest {
             eq("events"),
             eq(tableId),
             eq(55L),
-            eq(Set.of(fileOne, fileTwo)),
+            eq(Set.of(fileOne)),
             eq(Set.of()),
             eq(
                 Set.of(
@@ -745,9 +830,22 @@ class JavaConnectorCaptureEngineTest {
                     FloecatConnector.StatsTargetKind.FILE)),
             eq(false),
             eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
-        .thenReturn(
-            FloecatConnector.FileGroupCaptureResult.of(
-                List.of(fileRecordOne, fileRecordTwo), List.of()));
+        .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(fileRecordOne), List.of()));
+    when(connector.capturePlannedFileGroup(
+            eq("db"),
+            eq("events"),
+            eq(tableId),
+            eq(55L),
+            eq(Set.of(fileTwo)),
+            eq(Set.of()),
+            eq(
+                Set.of(
+                    FloecatConnector.StatsTargetKind.TABLE,
+                    FloecatConnector.StatsTargetKind.COLUMN,
+                    FloecatConnector.StatsTargetKind.FILE)),
+            eq(false),
+            eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
+        .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(fileRecordTwo), List.of()));
 
     CaptureEngineRequest request =
         new CaptureEngineRequest(
@@ -770,7 +868,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            Optional.empty());
+            Optional.empty(),
+            () -> false);
 
     var result = engine.capture(request);
 

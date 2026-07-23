@@ -201,16 +201,12 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
           ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.empty();
           if (current.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
               || current.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
-            long snapshotTaskStartMs = System.currentTimeMillis();
-            snapshotTask = executionLoader.snapshotTask(current);
-            snapshotTaskElapsedMs = System.currentTimeMillis() - snapshotTaskStartMs;
+            snapshotTask = executionLoader.compactSnapshotTask(current);
           }
           long fileGroupTaskElapsedMs = 0L;
           ReconcileFileGroupTask fileGroupTask = ReconcileFileGroupTask.empty();
           if (current.jobKind() == ReconcileJobKind.EXEC_FILE_GROUP) {
-            long fileGroupTaskStartMs = System.currentTimeMillis();
-            fileGroupTask = executionLoader.fileGroupTask(current);
-            fileGroupTaskElapsedMs = System.currentTimeMillis() - fileGroupTaskStartMs;
+            fileGroupTask = executionLoader.compactFileGroupTask(current);
           }
           LOG.debugf(
               "leaseCanonical breakdown jobId=%s kind=%s mutate_ms=%d load_definition_ms=%d"

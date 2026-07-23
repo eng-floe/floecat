@@ -33,25 +33,28 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
-import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.rpc.SnapshotFinalizeStatsDescriptor;
+import ai.floedb.floecat.reconciler.rpc.SnapshotFinalizeStatsPayload;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.storage.spi.BlobStore;
+import com.google.protobuf.ByteString;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import java.security.MessageDigest;
 import java.util.EnumSet;
 import java.util.List;
-import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -68,6 +71,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   private SnapshotFinalizeCoverageService coverageService;
   private SnapshotFinalizeChildStateService childStateService;
   private CurrentSnapshotPointerService currentSnapshotPointerService;
+  private BlobStore blobStore;
   private PrincipalContext principal;
 
   @BeforeEach
@@ -78,12 +82,13 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     coverageService = mock(SnapshotFinalizeCoverageService.class);
     childStateService = mock(SnapshotFinalizeChildStateService.class);
     currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
+    blobStore = mock(BlobStore.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
     service.persistence = persistence;
-    service.coverageService = coverageService;
     service.childStateService = childStateService;
     service.currentSnapshotPointerService = currentSnapshotPointerService;
+    service.blobStore = blobStore;
     when(principal.getCorrelationId()).thenReturn("corr");
   }
 
@@ -118,21 +123,20 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                service.persistStatsChunk(
+                service.persistStatsPayload(
                     leasedJobWithStatsOutputs(false),
                     explicitEmptyTask,
                     tableId,
                     SNAPSHOT_ID,
-                    0,
                     List.of(mock(TargetStatsRecord.class))));
 
     assertEquals(
-        "INVALID_ARGUMENT: snapshot finalize chunk must not include stats records for this submission",
+        "INVALID_ARGUMENT: snapshot finalize payload must not include stats records for this submission",
         error.getMessage());
   }
 
   @Test
-  void persistStatsChunkRejectsStatsPayloadWhenNoStatsOutputsRequested() {
+  void persistStatsPayloadRejectsStatsPayloadWhenNoStatsOutputsRequested() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -162,16 +166,15 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                service.persistStatsChunk(
+                service.persistStatsPayload(
                     leasedJob(false),
                     snapshotTask,
                     tableId,
                     SNAPSHOT_ID,
-                    0,
                     List.of(mock(TargetStatsRecord.class))));
 
     assertEquals(
-        "INVALID_ARGUMENT: snapshot finalize chunk must not include stats records for this submission",
+        "INVALID_ARGUMENT: snapshot finalize payload must not include stats records for this submission",
         error.getMessage());
   }
 
@@ -196,7 +199,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
             0);
     when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
-    when(jobs.getLeaseView(FINALIZE_JOB_ID))
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
         .thenReturn(java.util.Optional.of(finalizeJobView(snapshotTask)));
     when(coverageService.expectedCoverage(snapshotTask))
         .thenReturn(
@@ -223,7 +226,13 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     StatusRuntimeException error =
         assertThrows(
             StatusRuntimeException.class,
-            () -> service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1"));
+            () ->
+                service.persistSuccess(
+                    principal,
+                    FINALIZE_JOB_ID,
+                    LEASE_EPOCH,
+                    "result-1",
+                    statsDescriptor(List.of())));
 
     assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
     verify(idempotencyStore, never())
@@ -252,7 +261,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
             0);
     when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
-    when(jobs.getLeaseView(FINALIZE_JOB_ID))
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
         .thenReturn(java.util.Optional.of(finalizeJobView(snapshotTask)));
     when(coverageService.expectedCoverage(snapshotTask))
         .thenReturn(
@@ -270,7 +279,13 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     StatusRuntimeException error =
         assertThrows(
             StatusRuntimeException.class,
-            () -> service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1"));
+            () ->
+                service.persistSuccess(
+                    principal,
+                    FINALIZE_JOB_ID,
+                    LEASE_EPOCH,
+                    "result-1",
+                    statsDescriptor(List.of())));
 
     assertEquals(Status.Code.NOT_FOUND, error.getStatus().getCode());
     verify(jobs, never())
@@ -293,7 +308,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
-  void finalizeChunkedSuccessReplacesFileGroupStatsForFullRescan() {
+  void finalizeStatsPublicationReplacesFileGroupStatsForFullRescan() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -319,12 +334,12 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                 List.of(),
                 List.of("s3://bucket/file-1.parquet"),
                 ""));
-    when(childStateService.childState(lease.accountId, lease.parentJobId, lease.jobId, List.of()))
+    when(childStateService.compactChildState(lease.accountId, lease.parentJobId, lease.jobId, 1))
         .thenReturn(
             new SnapshotFinalizeChildStateService.ChildState(
                 0, 0, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()));
 
-    service.finalizeChunkedSuccess(lease, snapshotTask, tableId, SNAPSHOT_ID);
+    service.finalizeStatsPublication(lease, snapshotTask, tableId, SNAPSHOT_ID, 0);
 
     verify(persistence)
         .publishFileGroupStatsGeneration(tableId, SNAPSHOT_ID, "full-rescan-parent-job", List.of());
@@ -332,82 +347,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
-  void finalizeChunkedSuccessReplacesMergedAggregatesForFullRescanRemoteFinalize() {
-    ReconcileSnapshotTask snapshotTask =
-        ReconcileSnapshotTask.of(
-            TABLE_ID,
-            SNAPSHOT_ID,
-            "db",
-            "events",
-            List.of(),
-            true,
-            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
-            1);
-    ReconcileJobStore.LeasedJob lease = leasedJobWithAggregateOutputs(true);
-    ResourceId tableId =
-        ResourceId.newBuilder()
-            .setAccountId(ACCOUNT_ID)
-            .setKind(ResourceKind.RK_TABLE)
-            .setId(TABLE_ID)
-            .build();
-    TargetStatsRecord aggregateRecord = mock(TargetStatsRecord.class);
-    when(aggregateRecord.hasTarget()).thenReturn(true);
-    ReconcileFileGroupTask completedGroup =
-        ReconcileFileGroupTask.of(
-                "plan-1",
-                "group-1",
-                TABLE_ID,
-                SNAPSHOT_ID,
-                List.of("s3://bucket/file-1.parquet"),
-                List.of(ReconcileFileResult.succeeded("s3://bucket/file-1.parquet", 0L)))
-            .withPartialAggregateRecords(List.of(aggregateRecord));
-    when(coverageService.expectedCoverage(snapshotTask))
-        .thenReturn(
-            new SnapshotFinalizeCoverageService.ExpectedCoverage(
-                SnapshotFinalizeCoverageService.PlannedCoverageState.NON_EMPTY,
-                List.of(completedGroup.asReference()),
-                List.of("s3://bucket/file-1.parquet"),
-                ""));
-    when(childStateService.childState(
-            lease.accountId, lease.parentJobId, lease.jobId, List.of(completedGroup.asReference())))
-        .thenReturn(
-            new SnapshotFinalizeChildStateService.ChildState(
-                1,
-                1,
-                List.of(),
-                List.of(),
-                List.of(),
-                List.of(),
-                List.of(),
-                List.of(),
-                List.of(completedGroup)));
-    when(persistence.mergeCompletedGroupPartials(
-            tableId,
-            SNAPSHOT_ID,
-            Set.of(FloecatConnector.StatsTargetKind.TABLE, FloecatConnector.StatsTargetKind.COLUMN),
-            List.of(completedGroup)))
-        .thenReturn(List.of(aggregateRecord));
-
-    service.finalizeChunkedSuccess(lease, snapshotTask, tableId, SNAPSHOT_ID);
-
-    verify(persistence)
-        .publishFileGroupStatsGeneration(
-            tableId, SNAPSHOT_ID, "full-rescan-parent-job", List.of(aggregateRecord));
-    verify(persistence)
-        .mergeCompletedGroupPartials(
-            eq(tableId),
-            eq(SNAPSHOT_ID),
-            eq(
-                Set.of(
-                    FloecatConnector.StatsTargetKind.TABLE,
-                    FloecatConnector.StatsTargetKind.COLUMN)),
-            eq(List.of(completedGroup)));
-    verify(persistence, never()).persistStats(anyList());
-  }
-
-  @Test
-  void persistStatsChunkPersistsFinalizerAggregateStatsForIncrementalFileGroupSnapshot() {
+  void persistStatsPayloadPersistsFinalizerAggregateStatsForIncrementalFileGroupSnapshot() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -437,18 +377,14 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     when(persistence.validateAggregateStats(List.of(aggregateRecord), tableId, SNAPSHOT_ID))
         .thenReturn(List.of(aggregateRecord));
 
-    service.persistStatsChunk(
-        lease, snapshotTask, tableId, SNAPSHOT_ID, 0, List.of(aggregateRecord));
+    service.persistStatsPayload(
+        lease, snapshotTask, tableId, SNAPSHOT_ID, List.of(aggregateRecord));
 
     verify(persistence).persistStats(List.of(aggregateRecord));
-    verify(jobs)
-        .persistSnapshotFinalizeDirectStatsProgress(
-            lease.jobId, lease.leaseEpoch, lease.fullRescan, 0, 1);
-    verify(persistence, never()).mergeCompletedGroupPartials(any(), anyLong(), anySet(), anyList());
   }
 
   @Test
-  void persistStatsChunkDoesNotPersistFinalizerAggregateStatsForFullFileGroupSnapshot() {
+  void persistStatsPayloadStagesFinalizerAggregateStatsForFullFileGroupSnapshot() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -478,30 +414,28 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     when(persistence.validateAggregateStats(List.of(aggregateRecord), tableId, SNAPSHOT_ID))
         .thenReturn(List.of(aggregateRecord));
 
-    service.persistStatsChunk(
-        lease, snapshotTask, tableId, SNAPSHOT_ID, 0, List.of(aggregateRecord));
+    service.persistStatsPayload(
+        lease, snapshotTask, tableId, SNAPSHOT_ID, List.of(aggregateRecord));
 
     verify(persistence, never()).persistStats(anyList());
-    verify(jobs, never())
-        .persistSnapshotFinalizeDirectStatsProgress(
-            lease.jobId, lease.leaseEpoch, lease.fullRescan, 0, 1);
-    verify(persistence, never()).mergeCompletedGroupPartials(any(), anyLong(), anySet(), anyList());
+    verify(persistence)
+        .stageStatsGenerationChunk(
+            tableId, SNAPSHOT_ID, "full-rescan-parent-job", List.of(aggregateRecord));
   }
 
   @Test
-  void finalizeChunkedSuccessSkipsJavaRollupWhenFinalizerAggregatesWereSubmitted() {
+  void finalizeStatsPublicationSkipsJavaRollupWhenFinalizerAggregatesWereSubmitted() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
-                TABLE_ID,
-                SNAPSHOT_ID,
-                "db",
-                "events",
-                List.of(),
-                true,
-                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-                "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
-                1)
-            .withDirectStatsPersistedRecordCountForChunk(0, 1);
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            1);
     ReconcileJobStore.LeasedJob lease = leasedJobWithAggregateOutputs(false);
     ResourceId tableId =
         ResourceId.newBuilder()
@@ -516,16 +450,19 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                 List.of(),
                 List.of("s3://bucket/file-1.parquet"),
                 ""));
+    when(childStateService.compactChildState(lease.accountId, lease.parentJobId, lease.jobId, 1))
+        .thenReturn(
+            new SnapshotFinalizeChildStateService.ChildState(
+                1, 1, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()));
 
-    service.finalizeChunkedSuccess(lease, snapshotTask, tableId, SNAPSHOT_ID);
+    service.finalizeStatsPublication(lease, snapshotTask, tableId, SNAPSHOT_ID, 1);
 
-    verify(childStateService, never()).childState(any(), any(), any(), anyList());
-    verify(persistence, never()).mergeCompletedGroupPartials(any(), anyLong(), anySet(), anyList());
+    verify(childStateService).compactChildState(lease.accountId, lease.parentJobId, lease.jobId, 1);
     verify(persistence, never()).persistStats(anyList());
   }
 
   @Test
-  void finalizeChunkedSuccessRejectsDirectStatsWhenPlannerCountDoesNotMatch() {
+  void finalizeStatsPublicationRejectsDirectStatsWhenPlannerCountDoesNotMatch() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -540,8 +477,6 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             0,
             "blob://planner-direct-stats",
             2);
-    ReconcileSnapshotTask persistedCountTask =
-        snapshotTask.withDirectStatsPersistedRecordCountForChunk(0, 1);
     ReconcileJobStore.LeasedJob lease = leasedJobWithStatsOutputs(true);
     ResourceId tableId =
         ResourceId.newBuilder()
@@ -552,7 +487,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     TargetStatsRecord tableRecord = mock(TargetStatsRecord.class);
     when(persistence.validateReplacementStats(List.of(tableRecord), tableId, SNAPSHOT_ID))
         .thenReturn(List.of(tableRecord));
-    when(coverageService.expectedCoverage(persistedCountTask))
+    when(coverageService.expectedCoverage(snapshotTask))
         .thenReturn(
             new SnapshotFinalizeCoverageService.ExpectedCoverage(
                 SnapshotFinalizeCoverageService.PlannedCoverageState.DIRECT_STATS,
@@ -563,7 +498,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     StatusRuntimeException error =
         assertThrows(
             StatusRuntimeException.class,
-            () -> service.finalizeChunkedSuccess(lease, persistedCountTask, tableId, SNAPSHOT_ID));
+            () -> service.finalizeStatsPublication(lease, snapshotTask, tableId, SNAPSHOT_ID, 1));
 
     assertEquals(
         "FAILED_PRECONDITION: snapshot finalize direct stats record count mismatch expected=2 actual=1",
@@ -574,25 +509,21 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
-  void fullRescanEmptyDirectStatsChunkResetsProgressAndBlocksSuccessUntilRepersisted() {
+  void fullRescanEmptyDirectStatsPayloadPublishesEmptyGenerationAndRejectsWrongCount() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
-                TABLE_ID,
-                SNAPSHOT_ID,
-                "db",
-                "events",
-                List.of(),
-                true,
-                ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
-                "",
-                0,
-                0,
-                "blob://planner-direct-stats",
-                3)
-            .withDirectStatsPersistedRecordCountForChunk(0, 1)
-            .withDirectStatsPersistedRecordCountForChunk(1, 1)
-            .withDirectStatsPersistedRecordCountForChunk(2, 1);
-    ReconcileSnapshotTask resetTask = snapshotTask.withoutDirectStatsPersistedRecordCounts();
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
+            "",
+            0,
+            0,
+            "blob://planner-direct-stats",
+            3);
     ReconcileJobStore.LeasedJob lease = leasedJobWithStatsOutputs(true);
     ResourceId tableId =
         ResourceId.newBuilder()
@@ -607,15 +538,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                 List.of(),
                 List.of(),
                 ""));
-    when(coverageService.expectedCoverage(resetTask))
-        .thenReturn(
-            new SnapshotFinalizeCoverageService.ExpectedCoverage(
-                SnapshotFinalizeCoverageService.PlannedCoverageState.DIRECT_STATS,
-                List.of(),
-                List.of(),
-                ""));
-
-    service.persistStatsChunk(lease, snapshotTask, tableId, SNAPSHOT_ID, 0, List.of());
+    service.persistStatsPayload(lease, snapshotTask, tableId, SNAPSHOT_ID, List.of());
 
     // A full-rescan finalize that finds no files re-finalizes a LIVE snapshot: it publishes an
     // empty generation via replaceAllStatsForSnapshot (which RETAINS superseded generations for
@@ -623,13 +546,10 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     // actual snapshot deletion).
     verify(persistence).replaceAllStatsForSnapshot(tableId, SNAPSHOT_ID, List.of());
     verify(persistence, never()).deleteAllStatsForSnapshot(tableId, SNAPSHOT_ID);
-    verify(jobs)
-        .persistSnapshotFinalizeDirectStatsProgress(lease.jobId, lease.leaseEpoch, true, 0, 0);
-
     StatusRuntimeException error =
         assertThrows(
             StatusRuntimeException.class,
-            () -> service.finalizeChunkedSuccess(lease, resetTask, tableId, SNAPSHOT_ID));
+            () -> service.finalizeStatsPublication(lease, snapshotTask, tableId, SNAPSHOT_ID, 0));
 
     assertEquals(
         "FAILED_PRECONDITION: snapshot finalize direct stats record count mismatch expected=3 actual=0",
@@ -637,7 +557,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
-  void finalizeChunkedSuccessDoesNotBuildAggregatesForDirectStats() {
+  void finalizeStatsPublicationDoesNotBuildAggregatesForDirectStats() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -652,7 +572,6 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             0,
             "blob://planner-direct-stats",
             1);
-    snapshotTask = snapshotTask.withDirectStatsPersistedRecordCountForChunk(0, 1);
     ReconcileJobStore.LeasedJob lease = leasedJobWithAggregateOutputs(false);
     ResourceId tableId =
         ResourceId.newBuilder()
@@ -668,7 +587,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                 List.of(),
                 ""));
 
-    service.finalizeChunkedSuccess(lease, snapshotTask, tableId, SNAPSHOT_ID);
+    service.finalizeStatsPublication(lease, snapshotTask, tableId, SNAPSHOT_ID, 1);
 
     verify(persistence, never()).persistStats(anyList());
     verify(persistence, never())
@@ -676,7 +595,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
-  void persistStatsChunkRejectsFileGroupStatsPayloadsWhenNoStatsOutputsRequested() {
+  void persistStatsPayloadRejectsFileGroupStatsPayloadsWhenNoStatsOutputsRequested() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -706,18 +625,64 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                service.persistStatsChunk(
+                service.persistStatsPayload(
                     leasedJob(false),
                     snapshotTask,
                     tableId,
                     SNAPSHOT_ID,
-                    0,
                     List.of(mock(TargetStatsRecord.class))));
 
     assertEquals(
-        "INVALID_ARGUMENT: snapshot finalize chunk must not include stats records for this submission",
+        "INVALID_ARGUMENT: snapshot finalize payload must not include stats records for this submission",
         error.getMessage());
     verify(persistence, never()).persistStats(anyList());
+  }
+
+  private SnapshotFinalizeStatsDescriptor statsDescriptor(List<TargetStatsRecord> records) {
+    String resultId = "result-1";
+    String payloadUri =
+        Keys.reconcileSnapshotFinalizeStatsPayloadUri(
+            ACCOUNT_ID, "parent-job", FINALIZE_JOB_ID, LEASE_EPOCH);
+    SnapshotFinalizeStatsPayload payload =
+        SnapshotFinalizeStatsPayload.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(ACCOUNT_ID)
+            .setConnectorId("connector")
+            .setParentJobId("parent-job")
+            .setFinalizeJobId(FINALIZE_JOB_ID)
+            .setTableId(TABLE_ID)
+            .setSnapshotId(SNAPSHOT_ID)
+            .setLeaseEpoch(LEASE_EPOCH)
+            .setResultId(resultId)
+            .addAllStatsRecords(records)
+            .build();
+    byte[] bytes = payload.toByteArray();
+    when(blobStore.head(payloadUri))
+        .thenReturn(
+            java.util.Optional.of(
+                ai.floedb.floecat.common.rpc.BlobHeader.newBuilder()
+                    .setContentLength(bytes.length)
+                    .build()));
+    when(blobStore.get(payloadUri)).thenReturn(bytes);
+    try {
+      return SnapshotFinalizeStatsDescriptor.newBuilder()
+          .setFormatVersion(1)
+          .setAccountId(ACCOUNT_ID)
+          .setConnectorId("connector")
+          .setParentJobId("parent-job")
+          .setFinalizeJobId(FINALIZE_JOB_ID)
+          .setTableId(TABLE_ID)
+          .setSnapshotId(SNAPSHOT_ID)
+          .setLeaseEpoch(LEASE_EPOCH)
+          .setResultId(resultId)
+          .setPayloadUri(payloadUri)
+          .setPayloadBytes(bytes.length)
+          .setPayloadSha256(ByteString.copyFrom(MessageDigest.getInstance("SHA-256").digest(bytes)))
+          .setStatsRecordCount(records.size())
+          .build();
+    } catch (java.security.NoSuchAlgorithmException e) {
+      throw new AssertionError(e);
+    }
   }
 
   private static ReconcileJobStore.LeasedJob leasedJob(boolean fullRescan) {

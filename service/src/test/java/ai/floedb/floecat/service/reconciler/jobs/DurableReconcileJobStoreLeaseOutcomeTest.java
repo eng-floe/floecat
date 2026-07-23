@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -47,6 +48,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import java.net.URI;
+import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.UUID;
@@ -56,6 +58,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
@@ -546,6 +549,68 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     assertEquals(previousExpiresAtMs, readStoredLease(ACCOUNT_ID, jobId).expiresAtMs);
   }
 
+  @Test
+  void completeFileGroupSuccessCommitsDescriptorAndTerminalStateInOneMutation() {
+    String jobId = enqueueFileGroup();
+    ReconcileJobStore.LeasedJob lease = leaseJob(jobId);
+    store.markRunning(jobId, lease.leaseEpoch, 1_000L, "executor-1");
+    ReconcileFileGroupResultDescriptor descriptor = fileGroupDescriptor(jobId, lease.leaseEpoch);
+    var observed = Mockito.spy(store.jobIndexStore);
+    store.jobIndexStore = observed;
+
+    assertTrue(
+        store.completeFileGroupSuccess(
+            jobId, lease.leaseEpoch, descriptor, 2_000L, "Executed file group group-1"));
+
+    StoredReconcileJob completed =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    assertEquals("JS_SUCCEEDED", completed.state);
+    assertEquals(2_000L, completed.finishedAtMs);
+    assertEquals(descriptor.payloadUri(), completed.fileGroupResultPayloadUri);
+    assertEquals(descriptor.statsPayloadUri(), completed.fileGroupStatsPayloadUri);
+    assertEquals(3L, completed.statsProcessed);
+    assertEquals(1L, completed.indexesProcessed);
+    Mockito.verify(observed, Mockito.times(1))
+        .mutateByJobIdReturningRecord(Mockito.eq(jobId), Mockito.any());
+  }
+
+  @Test
+  void completeFileGroupSuccessRejectsStaleLeaseWithoutPersistingDescriptor() {
+    String jobId = enqueueFileGroup();
+    ReconcileJobStore.LeasedJob lease = leaseJob(jobId);
+    store.markRunning(jobId, lease.leaseEpoch, 1_000L, "executor-1");
+    String staleLeaseEpoch = "stale-" + lease.leaseEpoch;
+
+    assertFalse(
+        store.completeFileGroupSuccess(
+            jobId,
+            staleLeaseEpoch,
+            fileGroupDescriptor(jobId, staleLeaseEpoch),
+            2_000L,
+            "Executed file group group-1"));
+
+    StoredReconcileJob current = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    assertEquals("JS_RUNNING", current.state);
+    assertTrue(
+        current.fileGroupResultPayloadUri == null || current.fileGroupResultPayloadUri.isBlank());
+  }
+
+  @Test
+  void completeFileGroupSuccessAcceptsExactTerminalRetry() {
+    String jobId = enqueueFileGroup();
+    ReconcileJobStore.LeasedJob lease = leaseJob(jobId);
+    store.markRunning(jobId, lease.leaseEpoch, 1_000L, "executor-1");
+    ReconcileFileGroupResultDescriptor descriptor = fileGroupDescriptor(jobId, lease.leaseEpoch);
+
+    assertTrue(
+        store.completeFileGroupSuccess(
+            jobId, lease.leaseEpoch, descriptor, 2_000L, "Executed file group group-1"));
+    assertTrue(
+        store.completeFileGroupSuccess(
+            jobId, lease.leaseEpoch, descriptor, 3_000L, "Executed file group group-1"));
+    assertEquals("JS_SUCCEEDED", store.getLeaseView(jobId).orElseThrow().state);
+  }
+
   private String enqueueRoot() {
     String connectorId = CONNECTOR_ID + "-" + UUID.randomUUID();
     String pinnedExecutorId = "lease-outcome-" + UUID.randomUUID();
@@ -563,6 +628,53 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
         ReconcileExecutionPolicy.defaults(),
         "",
         pinnedExecutorId);
+  }
+
+  private String enqueueFileGroup() {
+    return store.enqueue(
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        ReconcileJobKind.EXEC_FILE_GROUP,
+        ReconcileTableTask.empty(),
+        ReconcileViewTask.empty(),
+        ReconcileSnapshotTask.empty(),
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet")),
+        ReconcileExecutionPolicy.defaults(),
+        "",
+        "file-group-" + UUID.randomUUID());
+  }
+
+  private ReconcileFileGroupResultDescriptor fileGroupDescriptor(String jobId, String leaseEpoch) {
+    return new ReconcileFileGroupResultDescriptor(
+        1,
+        ACCOUNT_ID,
+        CONNECTOR_ID,
+        "",
+        jobId,
+        "plan-1",
+        "group-1",
+        "table-1",
+        55L,
+        leaseEpoch,
+        "result-" + jobId,
+        "/results/" + jobId + ".pb",
+        100L,
+        "result-sha256",
+        1,
+        1,
+        0,
+        0,
+        2,
+        1,
+        "/results/" + jobId + ".stats.pb",
+        200L,
+        "stats-sha256",
+        1,
+        1_500L);
   }
 
   private <T> T waitForValue(

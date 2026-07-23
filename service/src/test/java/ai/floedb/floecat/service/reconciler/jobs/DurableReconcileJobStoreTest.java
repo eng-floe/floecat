@@ -1366,9 +1366,8 @@ class DurableReconcileJobStoreTest {
     assertEquals(ReconcileJobKind.EXEC_FILE_GROUP, secondLease.orElseThrow().jobKind);
     assertEquals("plan-1", secondLease.orElseThrow().fileGroupTask.planId());
     assertEquals("group-1", secondLease.orElseThrow().fileGroupTask.groupId());
-    assertEquals(
-        List.of("s3://bucket/data/file-1.parquet"),
-        secondLease.orElseThrow().fileGroupTask.filePaths());
+    assertEquals(1, secondLease.orElseThrow().fileGroupTask.fileCount());
+    assertTrue(secondLease.orElseThrow().fileGroupTask.filePaths().isEmpty());
   }
 
   @Test
@@ -1978,7 +1977,7 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob connectorCanonical =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
     assertEquals("JS_SUCCEEDED", connectorProjection.state());
-    assertEquals("JS_WAITING", tableProjection.state());
+    assertEquals("JS_SUCCEEDED", tableProjection.state());
     assertEquals("JS_SUCCEEDED", connectorCanonical.state);
   }
 
@@ -4007,7 +4006,8 @@ class DurableReconcileJobStoreTest {
 
     var execLease = leaseJob(execJobId);
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         execJobId,
         execLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -4022,10 +4022,12 @@ class DurableReconcileJobStoreTest {
                     2L,
                     ReconcileIndexArtifactResult.of("s3://bucket/index/file-1.idx", "parquet", 1)),
                 ReconcileFileResult.failed("s3://bucket/data/file-2.parquet", "boom"))));
-    store.markSucceeded(execJobId, execLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 0L, 0L);
-    runProjectionMaintenance();
-    runProjectionMaintenance();
-    runProjectionMaintenance();
+    refreshProjectedParent(tableJobId);
+    assertEquals(
+        0L, projectionStore().load(ACCOUNT_ID, tableJobId).orElseThrow().indexesProcessed());
+    refreshProjectedParent(snapshotJobId);
+    refreshProjectedParent(tableJobId);
+    refreshProjectedParent(connectorJobId);
 
     StoredReconcileJobProjection snapshotProjection =
         projectionStore().load(ACCOUNT_ID, snapshotJobId).orElseThrow();
@@ -4161,7 +4163,8 @@ class DurableReconcileJobStoreTest {
 
     var execLease = leaseJob(execJobId);
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         execJobId,
         execLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -4171,8 +4174,6 @@ class DurableReconcileJobStoreTest {
             55L,
             List.of("s3://bucket/data/file-1.parquet"),
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 2L))));
-    store.markSucceeded(execJobId, execLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 0L, 2L);
-
     ReconcileJob finalizer =
         store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs.stream()
             .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
@@ -4199,7 +4200,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void persistedFileGroupContributionRollsIntoProjectionBeforeTerminalCompletion() {
+  void atomicFileGroupCompletionRollsContributionIntoProjection() {
     String snapshotJobId =
         store.enqueueSnapshotPlan(
             ACCOUNT_ID,
@@ -4256,7 +4257,8 @@ class DurableReconcileJobStoreTest {
             .pointerStore
             .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, snapshotJobId))
             .isEmpty());
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         execJobId,
         execLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -4280,11 +4282,11 @@ class DurableReconcileJobStoreTest {
 
     StoredReconcileJobProjection snapshotProjection =
         projectionStore().load(ACCOUNT_ID, snapshotJobId).orElseThrow();
-    assertEquals("JS_WAITING", snapshotProjection.state());
+    assertEquals("JS_SUCCEEDED", snapshotProjection.state());
     assertEquals(1L, snapshotProjection.completedFileGroups());
     assertEquals(2L, snapshotProjection.completedFiles());
     assertEquals(1L, snapshotProjection.indexesProcessed());
-    assertEquals(5L, snapshotProjection.statsProcessed());
+    assertEquals(2L, snapshotProjection.statsProcessed());
   }
 
   @Test
@@ -4390,7 +4392,8 @@ class DurableReconcileJobStoreTest {
 
     var execLease = leaseJob(execJobId);
     store.markRunning(execJobId, execLease.leaseEpoch, 150L, "executor-exec");
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         execJobId,
         execLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -4417,7 +4420,7 @@ class DurableReconcileJobStoreTest {
 
     StoredReconcileJob tableAfterSnapshotProjection =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId));
-    assertEquals(5L, tableAfterSnapshotProjection.statsProcessed);
+    assertEquals(2L, tableAfterSnapshotProjection.statsProcessed);
     assertEquals(1L, tableAfterSnapshotProjection.indexesProcessed);
     assertEquals(1L, tableAfterSnapshotProjection.completedFileGroups);
     assertEquals(2L, tableAfterSnapshotProjection.completedFiles);
@@ -4448,12 +4451,12 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob connectorAfterTablePatch =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
 
-    assertEquals("JS_WAITING", tableProjection.state());
-    assertEquals(5L, tableProjection.statsProcessed());
+    assertEquals("JS_SUCCEEDED", tableProjection.state());
+    assertEquals(2L, tableProjection.statsProcessed());
     assertEquals(1L, tableProjection.indexesProcessed());
     assertEquals(1L, tableProjection.completedFileGroups());
     assertEquals(2L, tableProjection.completedFiles());
-    assertEquals(5L, connectorAfterTablePatch.statsProcessed);
+    assertEquals(2L, connectorAfterTablePatch.statsProcessed);
     assertEquals(1L, connectorAfterTablePatch.indexesProcessed);
     assertEquals(1L, connectorAfterTablePatch.completedFileGroups);
     assertEquals(2L, connectorAfterTablePatch.completedFiles);
@@ -4952,55 +4955,6 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void persistSnapshotFinalizeDirectStatsProgressResetsLaterChunksOnFullRescanRestart() {
-    ReconcileSnapshotTask snapshotTask =
-        ReconcileSnapshotTask.of(
-            "table-1",
-            55L,
-            "db",
-            "orders",
-            List.of(),
-            true,
-            ReconcileSnapshotTask.CompletionMode.DIRECT_STATS,
-            "blob://planner-direct-stats",
-            0,
-            0,
-            "blob://planner-direct-stats",
-            3);
-
-    String jobId =
-        store.enqueueSnapshotFinalization(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.of(List.of(), "table-1"),
-            snapshotTask,
-            ReconcileExecutionPolicy.defaults(),
-            "",
-            "");
-
-    var lease = leaseJob(jobId);
-    store.markRunning(jobId, lease.leaseEpoch, 100L, "executor-finalizer");
-
-    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 0, 1);
-    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 1, 1);
-    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, false, 2, 1);
-
-    ReconcileJob beforeRetry = store.getLeaseView(jobId).orElseThrow();
-    assertEquals(3, beforeRetry.snapshotTask.directStatsPersistedRecordCount());
-    assertEquals(
-        Map.of(0, 1, 1, 1, 2, 1),
-        beforeRetry.snapshotTask.directStatsPersistedRecordCountsByChunk());
-
-    store.persistSnapshotFinalizeDirectStatsProgress(jobId, lease.leaseEpoch, true, 0, 1);
-
-    ReconcileJob afterRetry = store.getLeaseView(jobId).orElseThrow();
-    assertEquals(1, afterRetry.snapshotTask.directStatsPersistedRecordCount());
-    assertEquals(Map.of(0, 1), afterRetry.snapshotTask.directStatsPersistedRecordCountsByChunk());
-  }
-
-  @Test
   void remoteApplyLeaseOutcomeSucceededRecordsFinalizedSnapshotAfterWaitingPass() {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
@@ -5126,9 +5080,13 @@ class DurableReconcileJobStoreTest {
         0L,
         0L);
 
+    ReconcileJobIndexStore observedJobIndexStore = Mockito.spy(store.jobIndexStore);
+    store.jobIndexStore = observedJobIndexStore;
+
     var firstLease = leaseJob(firstExecJobId);
     store.markRunning(firstExecJobId, firstLease.leaseEpoch, 100L, "executor-exec-1");
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         firstExecJobId,
         firstLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -5138,17 +5096,27 @@ class DurableReconcileJobStoreTest {
             55L,
             List.of("s3://bucket/data/file-1.parquet"),
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
-    store.markSucceeded(firstExecJobId, firstLease.leaseEpoch, 150L, 0L, 0L, 0L, 0L, 0L, 1L);
-
+    assertEquals(
+        1L,
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId))
+            .completedFileGroups);
+    Mockito.verify(observedJobIndexStore, Mockito.never())
+        .listStoredChildJobs(
+            Mockito.eq(ACCOUNT_ID),
+            Mockito.eq(snapshotJobId),
+            Mockito.anyInt(),
+            Mockito.anyString());
     assertEquals(
         0L,
         store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs.stream()
             .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
             .count());
+    Mockito.clearInvocations(observedJobIndexStore);
 
     var secondLease = leaseJob(secondExecJobId);
     store.markRunning(secondExecJobId, secondLease.leaseEpoch, 200L, "executor-exec-2");
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         secondExecJobId,
         secondLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -5158,8 +5126,16 @@ class DurableReconcileJobStoreTest {
             55L,
             List.of("s3://bucket/data/file-2.parquet"),
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 1L))));
-    store.markSucceeded(secondExecJobId, secondLease.leaseEpoch, 250L, 0L, 0L, 0L, 0L, 0L, 1L);
-
+    assertEquals(
+        2L,
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId))
+            .completedFileGroups);
+    Mockito.verify(observedJobIndexStore, Mockito.times(1))
+        .listStoredChildJobs(
+            Mockito.eq(ACCOUNT_ID),
+            Mockito.eq(snapshotJobId),
+            Mockito.anyInt(),
+            Mockito.anyString());
     List<ReconcileJob> children = store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs;
     List<ReconcileJob> finalizers =
         children.stream()
@@ -5167,6 +5143,14 @@ class DurableReconcileJobStoreTest {
             .toList();
     assertEquals(1, finalizers.size());
     assertEquals("JS_QUEUED", finalizers.get(0).state);
+    assertEquals(2, finalizers.get(0).snapshotTask.fileGroupCount());
+    assertEquals(
+        2,
+        store
+            .getCompactLeaseView(finalizers.get(0).jobId)
+            .orElseThrow()
+            .snapshotTask
+            .fileGroupCount());
   }
 
   @Test
@@ -5267,7 +5251,8 @@ class DurableReconcileJobStoreTest {
 
     var firstLease = leaseJob(firstExecJobId);
     store.markRunning(firstExecJobId, firstLease.leaseEpoch, 100L, "executor-exec-1");
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         firstExecJobId,
         firstLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -5277,11 +5262,10 @@ class DurableReconcileJobStoreTest {
             55L,
             List.of("s3://bucket/data/file-1.parquet"),
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
-    store.markSucceeded(firstExecJobId, firstLease.leaseEpoch, 150L, 0L, 0L, 0L, 0L, 0L, 1L);
-
     var secondLease = leaseJob(secondExecJobId);
     store.markRunning(secondExecJobId, secondLease.leaseEpoch, 200L, "executor-exec-2");
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         secondExecJobId,
         secondLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -5291,8 +5275,6 @@ class DurableReconcileJobStoreTest {
             55L,
             List.of("s3://bucket/data/file-2.parquet"),
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 1L))));
-    store.markSucceeded(secondExecJobId, secondLease.leaseEpoch, 250L, 0L, 0L, 0L, 0L, 0L, 1L);
-
     List<ReconcileJob> children = store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs;
     List<ReconcileJob> finalizers =
         children.stream()
@@ -5425,7 +5407,8 @@ class DurableReconcileJobStoreTest {
 
     var execLease = leaseJob(execJobId);
     store.markRunning(execJobId, execLease.leaseEpoch, 100L, "executor-exec");
-    store.persistFileGroupResult(
+    persistFileGroupResult(
+        store,
         execJobId,
         execLease.leaseEpoch,
         ReconcileFileGroupTask.of(
@@ -5443,7 +5426,6 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob execCanonical =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, execJobId));
     store.blobStore.delete(snapshotCanonical.snapshotPlanBlobUri);
-    store.blobStore.delete(execCanonical.fileGroupResultBlobUri);
 
     ReconcileJob snapshotJob =
         assertDoesNotThrow(() -> store.get(ACCOUNT_ID, snapshotJobId).orElseThrow());
@@ -5594,6 +5576,17 @@ class DurableReconcileJobStoreTest {
 
   private void runProjectionMaintenance() {
     store.runProjectionMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
+  }
+
+  private void refreshProjectedParent(String parentJobId) {
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "refreshProjectedParent",
+                new Class<?>[] {String.class, String.class},
+                ACCOUNT_ID,
+                parentJobId));
   }
 
   private void runCancellationMaintenance() {
@@ -6030,6 +6023,61 @@ class DurableReconcileJobStoreTest {
       }
       startKey = response.lastEvaluatedKey();
     } while (startKey != null && !startKey.isEmpty());
+  }
+
+  private static void persistFileGroupResult(
+      ReconcileJobStore store, String jobId, String leaseEpoch, ReconcileFileGroupTask task) {
+    ReconcileJobStore.ReconcileJob job = store.getLeaseView(jobId).orElseThrow();
+    int succeeded =
+        (int)
+            task.fileResults().stream()
+                .filter(result -> result.state() == ReconcileFileResult.State.SUCCEEDED)
+                .count();
+    int failed =
+        (int)
+            task.fileResults().stream()
+                .filter(result -> result.state() == ReconcileFileResult.State.FAILED)
+                .count();
+    int skipped =
+        (int)
+            task.fileResults().stream()
+                .filter(result -> result.state() == ReconcileFileResult.State.SKIPPED)
+                .count();
+    int indexArtifacts =
+        task.fileResults().stream()
+            .mapToInt(result -> result.indexArtifact().isEmpty() ? 0 : 1)
+            .sum();
+    store.completeFileGroupSuccess(
+        jobId,
+        leaseEpoch,
+        new ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor(
+            1,
+            job.accountId,
+            job.connectorId,
+            job.parentJobId,
+            jobId,
+            task.planId(),
+            task.groupId(),
+            task.tableId(),
+            task.snapshotId(),
+            leaseEpoch,
+            "test-result-" + jobId,
+            "/test-results/" + jobId + ".pb",
+            1L,
+            "dGVzdA==",
+            task.fileCount(),
+            succeeded,
+            failed,
+            skipped,
+            task.partialAggregateRecords().size(),
+            indexArtifacts,
+            "/test-results/" + jobId + ".stats.pb",
+            1L,
+            "dGVzdA==",
+            task.fileCount(),
+            System.currentTimeMillis()),
+        System.currentTimeMillis(),
+        "Succeeded");
   }
 
   private static ResourceId connectorResourceId() {

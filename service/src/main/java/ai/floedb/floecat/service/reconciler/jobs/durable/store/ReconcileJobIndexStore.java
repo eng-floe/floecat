@@ -162,7 +162,6 @@ public interface ReconcileJobIndexStore {
       List<String> readyKeys,
       List<String> stateKeys,
       String connectorIndexKey,
-      String resultBlobUri,
       StoredReconcileJob record) {}
 
   final class BulkEnqueueCommitException extends RuntimeException {

@@ -26,6 +26,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -123,7 +124,8 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
             "Skipped file group " + payload.groupId() + " (no capture outputs requested)");
       }
       var captured =
-          StandaloneJavaFileGroupExecutionRunner.PersistableResult.of(runner.execute(payload));
+          StandaloneJavaFileGroupExecutionRunner.PersistableResult.of(
+              runner.execute(payload, context.shouldStop()));
       String successResultId = successResultId(lease, payload);
       var result =
           new StandaloneFileGroupExecutionResult(
@@ -159,6 +161,8 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
           result,
           statsProcessed,
           "Executed file group " + payload.groupId());
+    } catch (CancellationException e) {
+      return stopRequestedResult(payload);
     } catch (ReconcileFailureException e) {
       throw e;
     } catch (RuntimeException e) {

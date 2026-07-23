@@ -225,18 +225,8 @@ final class IcebergConnectorFactory {
     if (baseProps != null && !baseProps.isEmpty()) {
       props.putAll(baseProps);
     }
-    copyIfAbsent(props, "s3.access-key-id", "rest.access-key-id");
-    copyIfAbsent(props, "s3.secret-access-key", "rest.secret-access-key");
-    copyIfAbsent(props, "s3.session-token", "rest.session-token");
     String catalogProviderId =
         props.get(RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID);
-    if (isBlank(catalogProviderId)) {
-      catalogProviderId = props.get(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
-      if (!isBlank(catalogProviderId)) {
-        props.put(
-            RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID, catalogProviderId);
-      }
-    }
     props.remove(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID);
     props.remove(RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID);
     props.remove("s3.access-key-id");
@@ -252,14 +242,6 @@ final class IcebergConnectorFactory {
       props.remove("rest.session-token");
     }
     return props;
-  }
-
-  private static void copyIfAbsent(
-      Map<String, String> properties, String sourceKey, String targetKey) {
-    String value = properties.get(sourceKey);
-    if (!isBlank(value)) {
-      properties.putIfAbsent(targetKey, value);
-    }
   }
 
   static Map<String, String> buildStorageProperties(
@@ -296,11 +278,7 @@ final class IcebergConnectorFactory {
                 "signing-region",
                 props.getOrDefault(
                     "rest.signing-region", props.getOrDefault("s3.region", "us-east-1")));
-        props.put(
-            "rest.auth.type",
-            isBlank(props.get(RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID))
-                ? "sigv4"
-                : CatalogSigV4AuthManager.class.getName());
+        props.put("rest.auth.type", CatalogSigV4AuthManager.class.getName());
         props.put("rest.signing-name", signingName);
         props.put("rest.signing-region", signingRegion);
       }

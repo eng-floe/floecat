@@ -24,6 +24,8 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @ApplicationScoped
@@ -34,7 +36,8 @@ public class StandaloneJavaFileGroupExecutionRunner {
   @ConfigProperty(name = "floecat.reconciler.worker.auth.required", defaultValue = "true")
   boolean workerAuthRequired = true;
 
-  public CaptureEngineResult execute(StandaloneFileGroupExecutionPayload payload) {
+  public CaptureEngineResult execute(
+      StandaloneFileGroupExecutionPayload payload, BooleanSupplier shouldStop) {
     if (payload == null
         || payload.tableId() == null
         || payload.sourceConnector() == null
@@ -43,6 +46,12 @@ public class StandaloneJavaFileGroupExecutionRunner {
         || payload.plannedFilePaths().isEmpty()) {
       return CaptureEngineResult.empty();
     }
+    BooleanSupplier stop = shouldStop == null ? () -> false : shouldStop;
+    throwIfCancellationRequested(stop);
+    var requestedStatsKinds =
+        FileGroupExecutionSupport.requestedFileGroupStatsTargetKinds(payload.capturePolicy());
+    java.util.Optional<String> authorizationHeader =
+        workerAuthorizationHeader(payload.tableId().getAccountId());
     CaptureEngineResult capture =
         captureEngineRegistry.capture(
             new CaptureEngineRequest(
@@ -57,18 +66,19 @@ public class StandaloneJavaFileGroupExecutionRunner {
                 payload.statsColumns(),
                 payload.indexColumns(),
                 FileGroupExecutionSupport.columnSelectorPolicy(payload.capturePolicy()),
-                FileGroupExecutionSupport.requestedFileGroupStatsTargetKinds(
-                    payload.capturePolicy()),
+                requestedStatsKinds,
                 payload.capturePageIndex(),
                 java.util.Optional.of(payload.storageLocation())
                     .filter(location -> !location.isBlank()),
-                workerAuthorizationHeader(
-                    payload.tableId() == null ? "" : payload.tableId().getAccountId()),
+                authorizationHeader,
                 java.util.Optional.of(payload.jobId()),
-                java.util.Optional.of(payload.leaseEpoch())));
+                java.util.Optional.of(payload.leaseEpoch()),
+                stop));
+    throwIfCancellationRequested(stop);
     if (!payload.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
       return capture;
     }
+
     return CaptureEngineResult.of(
         capture.statsRecords(),
         List.of(),
@@ -78,6 +88,12 @@ public class StandaloneJavaFileGroupExecutionRunner {
             payload.plannedFilePaths(),
             capture.statsRecords(),
             capture.pageIndexEntries()));
+  }
+
+  private static void throwIfCancellationRequested(BooleanSupplier shouldStop) {
+    if (shouldStop.getAsBoolean()) {
+      throw new CancellationException("file-group execution cancelled");
+    }
   }
 
   public record PersistableResult(

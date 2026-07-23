@@ -47,6 +47,7 @@ import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultResponse;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -290,7 +291,6 @@ class GrpcRemoteReconcileExecutorClientTest {
         .isEqualTo(
             SnapshotPlanManifestIds.manifestBlobUri("acct", "job-lease", List.of(fileGroupTask)));
     assertThat(success.getSnapshotTask().getFileGroupCount()).isEqualTo(1);
-    assertThat(success.getSnapshotTask().getFileGroupsCount()).isZero();
     assertThat(success.getChunkCount()).isEqualTo(1);
   }
 
@@ -625,34 +625,27 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
-  void submitFileGroupSuccessDoesNotRetryWhenResultIdIsBlank() throws Exception {
+  void submitFileGroupSuccessRejectsBlankResultIdBeforeRpc() {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ManagedChannel channel = mock(ManagedChannel.class);
     ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     client.enqueueTransport(channel, stub);
     when(stub.withInterceptors(any())).thenReturn(stub);
-    when(stub.submitLeasedFileGroupExecutionResult(any()))
-        .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE));
-    when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
-
     assertThrows(
-        StatusRuntimeException.class,
+        IllegalArgumentException.class,
         () ->
             client.submitSuccess(
                 remoteFileGroupLease(),
                 fileGroupPayload("s3://bucket/file.parquet"),
                 StandaloneFileGroupExecutionResult.empty("  ")));
 
-    verify(stub).submitLeasedFileGroupExecutionResult(any());
-    verify(channel).shutdown();
-    verify(channel).awaitTermination(5, TimeUnit.SECONDS);
-    assertThat(client.transportFailureLogs())
-        .containsExactly("submitLeasedFileGroupExecutionResult@cached#1");
+    verify(stub, org.mockito.Mockito.never()).submitLeasedFileGroupExecutionResult(any());
+    assertThat(client.transportFailureLogs()).isEmpty();
   }
 
   @Test
-  void submitFileGroupSuccessSendsInlineManifestFields() throws Exception {
+  void submitFileGroupSuccessSendsResultDescriptor() throws Exception {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ManagedChannel channel = mock(ManagedChannel.class);
     ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
@@ -676,8 +669,9 @@ class GrpcRemoteReconcileExecutorClientTest {
     verify(stub).submitLeasedFileGroupExecutionResult(requestCaptor.capture());
     var success = requestCaptor.getValue().getSuccess();
     assertThat(success.getResultId()).isEqualTo("result-1");
-    assertThat(success.getFileResultsCount()).isEqualTo(1);
-    assertThat(success.getFileResults(0).getFilePath()).isEqualTo("s3://bucket/file.parquet");
+    assertThat(success.getResultDescriptor().getPlannedFileCount()).isEqualTo(1);
+    assertThat(success.getResultDescriptor().getSucceededFileCount()).isEqualTo(1);
+    assertThat(success.getResultDescriptor().getPayloadUri()).isEqualTo("/result.pb");
   }
 
   @Test
@@ -720,24 +714,15 @@ class GrpcRemoteReconcileExecutorClientTest {
 
     ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
         ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
-    verify(stub, org.mockito.Mockito.atLeastOnce())
-        .submitLeasedFileGroupExecutionResult(requestCaptor.capture());
-    assertThat(
-            requestCaptor.getAllValues().stream()
-                .anyMatch(SubmitLeasedFileGroupExecutionResultRequest::hasChunk))
-        .isTrue();
-    var success =
-        requestCaptor.getAllValues().stream()
-            .filter(SubmitLeasedFileGroupExecutionResultRequest::hasSuccess)
-            .findFirst()
-            .orElseThrow()
-            .getSuccess();
+    verify(stub).submitLeasedFileGroupExecutionResult(requestCaptor.capture());
+    var success = requestCaptor.getValue().getSuccess();
     assertThat(success.getResultId()).isEqualTo("result-1");
-    assertThat(success.getChunkCount()).isEqualTo(1);
+    assertThat(success.getResultDescriptor().getFileStatsRecordCount()).isEqualTo(1);
+    assertThat(success.getResultDescriptor().getStatsPayloadUri()).isEqualTo("/stats.pb");
   }
 
   @Test
-  void submitFileGroupSuccessSplitsLargeResultsIntoMultipleChunks() throws Exception {
+  void submitFileGroupSuccessDoesNotSendLargeStatsOverGrpc() throws Exception {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ManagedChannel channel = mock(ManagedChannel.class);
     ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
@@ -773,20 +758,9 @@ class GrpcRemoteReconcileExecutorClientTest {
 
     ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
         ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
-    verify(stub, org.mockito.Mockito.atLeast(3))
-        .submitLeasedFileGroupExecutionResult(requestCaptor.capture());
-    long chunkCount =
-        requestCaptor.getAllValues().stream()
-            .filter(SubmitLeasedFileGroupExecutionResultRequest::hasChunk)
-            .count();
-    assertThat(chunkCount).isGreaterThan(1L);
-    var success =
-        requestCaptor.getAllValues().stream()
-            .filter(SubmitLeasedFileGroupExecutionResultRequest::hasSuccess)
-            .findFirst()
-            .orElseThrow()
-            .getSuccess();
-    assertThat(success.getChunkCount()).isEqualTo((int) chunkCount);
+    verify(stub).submitLeasedFileGroupExecutionResult(requestCaptor.capture());
+    var success = requestCaptor.getValue().getSuccess();
+    assertThat(success.getResultDescriptor().getFileStatsRecordCount()).isEqualTo(12);
   }
 
   private static ResourceId connectorId() {
@@ -877,6 +851,8 @@ class GrpcRemoteReconcileExecutorClientTest {
         55L,
         "plan-1",
         "group-1",
+        "/result.pb",
+        "/stats.pb",
         List.of(filePaths),
         ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.empty());
   }
@@ -893,6 +869,7 @@ class GrpcRemoteReconcileExecutorClientTest {
           "worker-host",
           9100,
           ignored -> java.util.Optional.of("Bearer worker-token"));
+      blobStore = mock(BlobStore.class);
     }
 
     private void enqueueTransport(

@@ -19,20 +19,19 @@ package ai.floedb.floecat.service.reconciler.impl;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.service.repo.model.Keys;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.List;
 
 @ApplicationScoped
 public class LeasedSnapshotFinalizeInputService {
   @Inject ReconcileJobStore jobs;
   @Inject SnapshotFinalizeChildStateService childStateService;
-  @Inject SnapshotFinalizeCoverageService coverageService;
 
   record SnapshotFinalizeInput(
       String jobId,
@@ -45,12 +44,34 @@ public class LeasedSnapshotFinalizeInputService {
       String directStatsBlobUri,
       int directStatsRecordCount,
       int sourceFileCount,
-      ReconcileSnapshotTask snapshotTask) {}
+      String snapshotPlanUri,
+      int fileGroupCount,
+      String statsPayloadUri) {}
 
   enum FinalizeMode {
     FILE_GROUPS_NON_EMPTY,
     DIRECT_STATS,
     EXPLICIT_EMPTY
+  }
+
+  record DescriptorPage(
+      java.util.List<ReconcileFileGroupResultDescriptor> descriptors, String nextPageToken) {}
+
+  public DescriptorPage descriptorPage(
+      PrincipalContext principalContext,
+      String jobId,
+      String leaseEpoch,
+      int pageSize,
+      String pageToken) {
+    ReconcileJobStore.LeasedJob lease =
+        requireLeasedSnapshotFinalizeJob(principalContext.getCorrelationId(), jobId, leaseEpoch);
+    ReconcileJobStore.FileGroupResultDescriptorPage page =
+        jobs.childFileGroupResultDescriptorsPage(
+            lease.accountId,
+            lease.parentJobId,
+            Math.min(500, Math.max(1, pageSize)),
+            pageToken == null ? "" : pageToken);
+    return new DescriptorPage(page.descriptors, page.nextPageToken);
   }
 
   public SnapshotFinalizeInput resolve(
@@ -64,12 +85,12 @@ public class LeasedSnapshotFinalizeInputService {
           .withDescription("snapshot finalization requires parent snapshot plan job")
           .asRuntimeException();
     }
-    SnapshotFinalizeCoverageService.ExpectedCoverage coverage =
-        coverageService.expectedCoverage(snapshotTask);
-    if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.UNKNOWN) {
-      throw Status.FAILED_PRECONDITION.withDescription(coverage.message()).asRuntimeException();
+    if (!snapshotTask.fileGroupPlanRecorded()) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription("snapshot finalization requires explicit snapshot coverage metadata")
+          .asRuntimeException();
     }
-    if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.DIRECT_STATS) {
+    if (snapshotTask.completionMode() == ReconcileSnapshotTask.CompletionMode.DIRECT_STATS) {
       return new SnapshotFinalizeInput(
           lease.jobId,
           lease.leaseEpoch,
@@ -81,9 +102,11 @@ public class LeasedSnapshotFinalizeInputService {
           requireDirectStatsBlobUri(snapshotTask),
           snapshotTask.directStatsRecordCount(),
           snapshotTask.sourceFileCount(),
-          snapshotTask);
+          snapshotTask.fileGroupPlanBlobUri(),
+          snapshotTask.fileGroupCount(),
+          statsPayloadUri(lease));
     }
-    if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.EXPLICIT_EMPTY) {
+    if (snapshotTask.fileGroupCount() == 0) {
       requireNoUnexpectedChildren(lease.accountId, lease.parentJobId, lease.jobId);
       return new SnapshotFinalizeInput(
           lease.jobId,
@@ -96,14 +119,14 @@ public class LeasedSnapshotFinalizeInputService {
           "",
           0,
           snapshotTask.sourceFileCount(),
-          snapshotTask);
+          snapshotTask.fileGroupPlanBlobUri(),
+          0,
+          statsPayloadUri(lease));
     }
     SnapshotFinalizeChildStateService.ChildState childState =
-        childStateService.childState(
-            lease.accountId, lease.parentJobId, lease.jobId, coverage.expectedGroups());
+        childStateService.compactChildState(
+            lease.accountId, lease.parentJobId, lease.jobId, snapshotTask.fileGroupCount());
     requireReadyForFinalize(childState);
-    ReconcileSnapshotTask effectiveSnapshotTask =
-        withCompletedFileGroups(snapshotTask, childState.completedGroupTasks());
     return new SnapshotFinalizeInput(
         lease.jobId,
         lease.leaseEpoch,
@@ -115,26 +138,14 @@ public class LeasedSnapshotFinalizeInputService {
         "",
         0,
         snapshotTask.sourceFileCount(),
-        effectiveSnapshotTask);
+        snapshotTask.fileGroupPlanBlobUri(),
+        snapshotTask.fileGroupCount(),
+        statsPayloadUri(lease));
   }
 
-  private static ReconcileSnapshotTask withCompletedFileGroups(
-      ReconcileSnapshotTask snapshotTask, List<ReconcileFileGroupTask> completedGroups) {
-    ReconcileSnapshotTask effective =
-        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
-    return ReconcileSnapshotTask.of(
-        effective.tableId(),
-        effective.snapshotId(),
-        effective.sourceNamespace(),
-        effective.sourceTable(),
-        completedGroups == null ? List.of() : completedGroups,
-        effective.fileGroupPlanRecorded(),
-        effective.completionMode(),
-        effective.fileGroupPlanBlobUri(),
-        effective.fileGroupCount(),
-        effective.sourceFileCount(),
-        effective.directStatsBlobUri(),
-        effective.directStatsRecordCount());
+  private static String statsPayloadUri(ReconcileJobStore.LeasedJob lease) {
+    return Keys.reconcileSnapshotFinalizeStatsPayloadUri(
+        lease.accountId, lease.parentJobId, lease.jobId, lease.leaseEpoch);
   }
 
   private static ResourceId tableId(
@@ -168,7 +179,7 @@ public class LeasedSnapshotFinalizeInputService {
           .asRuntimeException();
     }
     ReconcileJobStore.ReconcileJob job =
-        jobs.getLeaseView(jobId)
+        jobs.getCompactLeaseView(jobId)
             .orElseThrow(
                 () ->
                     Status.NOT_FOUND
@@ -260,7 +271,7 @@ public class LeasedSnapshotFinalizeInputService {
 
   private void requireNoUnexpectedChildren(
       String accountId, String parentJobId, String finalizerJobId) {
-    List<String> unexpectedChildren = new java.util.ArrayList<>();
+    java.util.List<String> unexpectedChildren = new java.util.ArrayList<>();
     for (ReconcileJobStore.ReconcileJob child :
         childStateService.childJobs(accountId, parentJobId)) {
       if (child == null

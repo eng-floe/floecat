@@ -145,13 +145,21 @@ public class SnapshotPlanBlobStore {
       throw new IllegalStateException(
           "Missing snapshot plan blob URI for planned file-group snapshot task");
     }
+    return loadPlanJobs(effective.fileGroupPlanBlobUri());
+  }
+
+  public List<PlannedFileGroupJob> loadPlanJobs(String snapshotPlanUri) {
+    String effectiveSnapshotPlanUri = snapshotPlanUri == null ? "" : snapshotPlanUri.trim();
+    if (effectiveSnapshotPlanUri.isBlank()) {
+      throw new IllegalStateException("Missing snapshot plan blob URI");
+    }
     try {
       return mapper
-          .readValue(blobStore.get(effective.fileGroupPlanBlobUri()), SnapshotPlanBlob.class)
+          .readValue(blobStore.get(effectiveSnapshotPlanUri), SnapshotPlanBlob.class)
           .toPlannedFileGroupJobs();
     } catch (Exception e) {
       throw new IllegalStateException(
-          "Failed to load snapshot plan blob " + effective.fileGroupPlanBlobUri(), e);
+          "Failed to load snapshot plan blob " + effectiveSnapshotPlanUri, e);
     }
   }
 
@@ -159,6 +167,10 @@ public class SnapshotPlanBlobStore {
     ReconcileSnapshotTask effective =
         snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
     return loadPlanJobs(effective).stream().map(PlannedFileGroupJob::fileGroupTask).toList();
+  }
+
+  public List<ReconcileFileGroupTask> loadFileGroupsByUri(String snapshotPlanUri) {
+    return loadPlanJobs(snapshotPlanUri).stream().map(PlannedFileGroupJob::fileGroupTask).toList();
   }
 
   public List<TargetStatsRecord> loadDirectStats(ReconcileSnapshotTask snapshotTask) {
@@ -306,8 +318,6 @@ public class SnapshotPlanBlobStore {
     public String tableId = "";
     public long snapshotId = -1L;
     public int fileCount = 0;
-    public String fileStatsBlobUri = "";
-    public int fileStatsRecordCount = 0;
     public List<String> filePaths = List.of();
 
     static StoredFileGroupTask from(ReconcileFileGroupTask task) {
@@ -318,8 +328,6 @@ public class SnapshotPlanBlobStore {
       stored.tableId = effective.tableId();
       stored.snapshotId = effective.snapshotId();
       stored.fileCount = effective.fileCount();
-      stored.fileStatsBlobUri = effective.fileStatsBlobUri();
-      stored.fileStatsRecordCount = effective.fileStatsRecordCount();
       stored.filePaths = effective.filePaths();
       return stored;
     }
@@ -329,17 +337,7 @@ public class SnapshotPlanBlobStore {
     }
 
     ReconcileFileGroupTask toTask() {
-      return ReconcileFileGroupTask.of(
-          planId,
-          groupId,
-          tableId,
-          snapshotId,
-          fileCount,
-          fileStatsBlobUri,
-          fileStatsRecordCount,
-          filePaths,
-          List.of(),
-          List.of());
+      return ReconcileFileGroupTask.of(planId, groupId, tableId, snapshotId, fileCount, filePaths);
     }
   }
 

@@ -54,6 +54,14 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     this.pointerStore = pointerStore;
   }
 
+  public synchronized void clearInMemoryState() {
+    cleanupManifests.clear();
+    cleanupLocks.clear();
+    legacyMigrationStates.clear();
+    completedLegacyMigrations.clear();
+    legacyMigrationFence = 0L;
+  }
+
   @Override
   public Optional<JobIndexEntrySnapshot> loadIndexEntry(String pointerKey) {
     return pointerStore

@@ -117,6 +117,18 @@ public class PointerStoreContractTest {
   }
 
   @Test
+  void listPointersByPrefix_accepts_unbounded_limit_without_preallocating_it() {
+    store.compareAndSet(key(1), 0L, pointer(key(1), 1L));
+    store.compareAndSet(key(2), 0L, pointer(key(2), 1L));
+
+    StringBuilder next = new StringBuilder();
+    List<Pointer> page = store.listPointersByPrefix(prefix(), Integer.MAX_VALUE, "", next);
+
+    assertEquals(keysOf(List.of(pointer(key(1), 1L), pointer(key(2), 1L))), keysOf(page));
+    assertTrue(next.isEmpty());
+  }
+
+  @Test
   void deleteByPrefix_empty_or_root_deletes_all() {
     store.compareAndSet(key(1), 0L, pointer(key(1), 1L));
     store.compareAndSet(key(2), 0L, pointer(key(2), 1L));

@@ -23,6 +23,7 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 
 /**
  * Adapts the current Java connector SPI to the unified file-group capture contract.
@@ -34,21 +35,35 @@ import java.util.Set;
  */
 final class JavaConnectorFileGroupCaptureAdapter {
   CaptureEngineResult capture(FloecatConnector source, CaptureEngineRequest request) {
-    FloecatConnector.FileGroupCaptureResult captured =
-        source.capturePlannedFileGroup(
-            request.sourceNamespace(),
-            request.sourceTable(),
-            request.tableId(),
-            request.snapshotId(),
-            Set.copyOf(request.plannedFilePaths()),
-            request.statsColumns(),
-            request.requestedStatsTargetKinds(),
-            request.capturePageIndex(),
-            request.columnSelectorPolicy());
+    List<TargetStatsRecord> capturedStats = new ArrayList<>();
+    List<FloecatConnector.ParquetPageIndexEntry> capturedPageIndexes = new ArrayList<>();
+    for (String filePath : request.plannedFilePaths()) {
+      throwIfCancellationRequested(request);
+      FloecatConnector.FileGroupCaptureResult captured =
+          source.capturePlannedFileGroup(
+              request.sourceNamespace(),
+              request.sourceTable(),
+              request.tableId(),
+              request.snapshotId(),
+              Set.of(filePath),
+              request.statsColumns(),
+              request.requestedStatsTargetKinds(),
+              request.capturePageIndex(),
+              request.columnSelectorPolicy());
+      capturedStats.addAll(captured.statsRecords());
+      capturedPageIndexes.addAll(captured.pageIndexEntries());
+      throwIfCancellationRequested(request);
+    }
     return CaptureEngineResult.of(
-        completeStats(request, captured.statsRecords()),
-        filterPageIndexEntries(captured.pageIndexEntries(), request.indexColumns()),
+        completeStats(request, capturedStats),
+        filterPageIndexEntries(capturedPageIndexes, request.indexColumns()),
         List.of());
+  }
+
+  private static void throwIfCancellationRequested(CaptureEngineRequest request) {
+    if (request.shouldStop().getAsBoolean()) {
+      throw new CancellationException("file-group execution cancelled");
+    }
   }
 
   private List<TargetStatsRecord> completeStats(

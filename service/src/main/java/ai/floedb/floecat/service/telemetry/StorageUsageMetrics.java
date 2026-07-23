@@ -53,9 +53,6 @@ public class StorageUsageMetrics {
   private StoreMetrics storeMetrics;
   @Inject Tracer tracer;
 
-  @ConfigProperty(name = "floecat.metrics.storage.refresh", defaultValue = "30s")
-  String refreshEvery;
-
   @ConfigProperty(name = "floecat.metrics.storage.page-size", defaultValue = "200")
   int pageSize;
 
@@ -70,7 +67,9 @@ public class StorageUsageMetrics {
     storeMetrics = new StoreMetrics(observability, "service", "storage.refresh");
   }
 
-  @Scheduled(every = "${floecat.metrics.storage.refresh:30s}")
+  @Scheduled(
+      every = "${floecat.metrics.storage.refresh:30s}",
+      concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
   void refresh() {
     Span refreshSpan =
         tracer
@@ -153,24 +152,27 @@ public class StorageUsageMetrics {
 
     long sampleBytes = 0L;
     int sampleCount = 0;
+    int headAttempts = 0;
+    int maxHeadAttempts = Math.max(0, sampleMax);
 
     String token = "";
-    while (sampleCount < sampleMax) {
+    while (headAttempts < maxHeadAttempts) {
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers =
-          pointerStore.listPointersByPrefix(accountPrefix, pageSize, token, next);
+          pointerStore.listPointersByPrefix(accountPrefix, Math.max(1, pageSize), token, next);
       if (pointers.isEmpty()) {
         break;
       }
 
       for (Pointer pointer : pointers) {
-        if (sampleCount >= sampleMax) {
+        if (headAttempts >= maxHeadAttempts) {
           break;
         }
         if (!PointerReferences.isBlobPointer(pointer)) {
           continue;
         }
 
+        headAttempts++;
         try {
           var hdrOpt = blobStore.head(pointer.getBlobUri());
           if (hdrOpt.isPresent()) {

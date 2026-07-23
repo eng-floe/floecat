@@ -21,7 +21,6 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.impl.FileGroupTargetStatsRollup;
-import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -30,7 +29,6 @@ import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -61,6 +59,18 @@ public class SnapshotFinalizePersistenceService {
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
     commitGenerationToRoot(tableId, snapshotId);
     return canonicalAggregates.size();
+  }
+
+  public long stageStatsGenerationChunk(
+      ResourceId tableId, long snapshotId, String generationId, List<TargetStatsRecord> records) {
+    List<TargetStatsRecord> canonical = canonicalize(records);
+    statsStore.replaceTargetStatsInGeneration(
+        tableId,
+        snapshotId,
+        generationId,
+        canonical.stream().map(TargetStatsRecord::getTarget).toList(),
+        canonical);
+    return canonical.size();
   }
 
   public boolean deleteAllStatsForSnapshot(ResourceId tableId, long snapshotId) {
@@ -182,29 +192,6 @@ public class SnapshotFinalizePersistenceService {
         .stream()
         .map(TargetStatsRecords::canonicalize)
         .toList();
-  }
-
-  public List<TargetStatsRecord> mergeCompletedGroupPartials(
-      ResourceId tableId,
-      long snapshotId,
-      Set<FloecatConnector.StatsTargetKind> aggregateKinds,
-      List<ReconcileFileGroupTask> completedGroups) {
-    if (aggregateKinds == null
-        || aggregateKinds.isEmpty()
-        || completedGroups == null
-        || completedGroups.isEmpty()) {
-      return List.of();
-    }
-    List<TargetStatsRecord> normalizedGroupPartials = new ArrayList<>();
-    for (ReconcileFileGroupTask group : completedGroups) {
-      if (group == null || group.partialAggregateRecords().isEmpty()) {
-        continue;
-      }
-      normalizedGroupPartials.addAll(
-          FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(
-              tableId, snapshotId, aggregateKinds, group.partialAggregateRecords()));
-    }
-    return mergeAggregatePartials(tableId, snapshotId, aggregateKinds, normalizedGroupPartials);
   }
 
   public List<TargetStatsRecord> validateAggregateStats(

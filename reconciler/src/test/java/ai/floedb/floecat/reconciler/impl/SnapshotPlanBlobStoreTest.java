@@ -97,6 +97,7 @@ class SnapshotPlanBlobStoreTest {
     assertEquals(scope.capturePolicy().outputs(), roundTrippedScope.capturePolicy().outputs());
     assertEquals(scope.snapshotSelection(), roundTrippedScope.snapshotSelection());
     assertEquals(group, roundTripped.getFirst().fileGroupTask());
+    assertEquals(List.of(group), store.loadFileGroupsByUri(persistedTask.fileGroupPlanBlobUri()));
   }
 
   @Test

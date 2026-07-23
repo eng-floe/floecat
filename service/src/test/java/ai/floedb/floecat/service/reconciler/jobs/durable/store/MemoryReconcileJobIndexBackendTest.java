@@ -32,6 +32,39 @@ import org.junit.jupiter.api.Test;
 class MemoryReconcileJobIndexBackendTest {
 
   @Test
+  void clearInMemoryStateDropsCleanupMetadataAndMigrationState() {
+    String canonicalKey = Keys.reconcileJobPointerById("acct", "job");
+    String lookupKey = Keys.reconcileJobLookupPointerById("job");
+    MemoryReconcileJobIndexBackend backend =
+        new MemoryReconcileJobIndexBackend(new InMemoryPointerStore());
+    assertTrue(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        canonicalKey,
+                        0L,
+                        "inline:reconcile-job:e30",
+                        PointerReferenceKind.PRK_INLINE_JSON,
+                        new ReconcileJobIndexCleanupManifest(List.of(lookupKey), List.of()))),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+    assertTrue(
+        backend
+            .acquireLegacyMigrationLease(
+                ReconcileJobIndexBackend.LegacyMigration.CLEANUP, "owner", 1L, 100L)
+            .isPresent());
+
+    backend.clearInMemoryState();
+
+    assertTrue(backend.loadCleanupManifest(canonicalKey).isEmpty());
+    assertTrue(
+        backend
+            .acquireLegacyMigrationLease(
+                ReconcileJobIndexBackend.LegacyMigration.CLEANUP, "new-owner", 2L, 100L)
+            .isPresent());
+  }
+
+  @Test
   void rejectsTransactionOverDynamoPhysicalItemLimit() {
     MemoryReconcileJobIndexBackend backend =
         new MemoryReconcileJobIndexBackend(new InMemoryPointerStore());

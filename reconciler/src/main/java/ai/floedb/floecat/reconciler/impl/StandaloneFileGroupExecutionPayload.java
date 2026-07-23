@@ -34,6 +34,8 @@ public record StandaloneFileGroupExecutionPayload(
     long snapshotId,
     String planId,
     String groupId,
+    String resultPayloadUri,
+    String statsPayloadUri,
     List<String> plannedFilePaths,
     ReconcileCapturePolicy capturePolicy) {
   public StandaloneFileGroupExecutionPayload {
@@ -46,6 +48,8 @@ public record StandaloneFileGroupExecutionPayload(
     storageLocation = storageLocation == null ? "" : storageLocation.trim();
     planId = planId == null ? "" : planId.trim();
     groupId = groupId == null ? "" : groupId.trim();
+    resultPayloadUri = resultPayloadUri == null ? "" : resultPayloadUri.trim();
+    statsPayloadUri = statsPayloadUri == null ? "" : statsPayloadUri.trim();
     plannedFilePaths =
         plannedFilePaths == null
             ? List.of()

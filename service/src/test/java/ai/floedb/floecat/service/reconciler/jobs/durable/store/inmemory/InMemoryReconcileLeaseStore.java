@@ -16,8 +16,10 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store.inmemory;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
@@ -174,8 +176,13 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
                   current.jobKind(),
                   definition.tableTask(),
                   definition.viewTask(),
-                  executionLoader.snapshotTask(current),
-                  executionLoader.fileGroupTask(current),
+                  current.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
+                          || current.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+                      ? executionLoader.compactSnapshotTask(current)
+                      : ReconcileSnapshotTask.empty(),
+                  current.jobKind() == ReconcileJobKind.EXEC_FILE_GROUP
+                      ? executionLoader.compactFileGroupTask(current)
+                      : ReconcileFileGroupTask.empty(),
                   current.parentJobId()));
         } catch (RuntimeException e) {
           if (isMissingRequiredJobDefinition(e)) {

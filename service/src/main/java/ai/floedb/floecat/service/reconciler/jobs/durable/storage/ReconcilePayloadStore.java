@@ -18,9 +18,7 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.storage;
 
 import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.SnapshotPlanBlob;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
-import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
-import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredFileGroupResultPayload;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
@@ -162,45 +160,6 @@ public class ReconcilePayloadStore {
         .orElse(List.of());
   }
 
-  List<ReconcileFileGroupTask> loadSnapshotFileGroupsForExecution(StoredReconcileJob state) {
-    if (state == null || blank(state.snapshotPlanBlobUri)) {
-      return List.of();
-    }
-    return requireBlob(
-            state.snapshotPlanBlobUri, SnapshotPlanBlob.class, "snapshot plan payload", state.jobId)
-        .fileGroups();
-  }
-
-  List<ReconcileFileResult> loadFileGroupResultsForDetail(StoredReconcileJob state) {
-    if (state == null) {
-      return List.of();
-    }
-    return loadFileGroupResultPayloadForDetail(state)
-        .map(StoredFileGroupResultPayload::fileResults)
-        .orElse(List.of());
-  }
-
-  Optional<StoredFileGroupResultPayload> loadFileGroupResultPayloadForDetail(
-      StoredReconcileJob state) {
-    if (state == null || blank(state.fileGroupResultBlobUri)) {
-      return Optional.empty();
-    }
-    return readBlob(state.fileGroupResultBlobUri, StoredFileGroupResultPayload.class);
-  }
-
-  Optional<StoredFileGroupResultPayload> loadFileGroupResultPayloadForExecution(
-      StoredReconcileJob state) {
-    if (state == null || blank(state.fileGroupResultBlobUri)) {
-      return Optional.empty();
-    }
-    return Optional.of(
-        requireBlob(
-            state.fileGroupResultBlobUri,
-            StoredFileGroupResultPayload.class,
-            "file-group result payload",
-            state.jobId));
-  }
-
   ReconcileSnapshotTask snapshotTaskForDetail(StoredReconcileJob state) {
     if (state == null) {
       return ReconcileSnapshotTask.empty();
@@ -209,36 +168,17 @@ public class ReconcilePayloadStore {
     return buildSnapshotTask(state, fileGroups);
   }
 
-  ReconcileSnapshotTask snapshotTaskForExecution(StoredReconcileJob state) {
-    if (state == null) {
-      return ReconcileSnapshotTask.empty();
-    }
-    List<ReconcileFileGroupTask> fileGroups = loadSnapshotFileGroupsForExecution(state);
-    return buildSnapshotTask(state, fileGroups);
-  }
-
   ReconcileFileGroupTask fileGroupTaskForDetail(StoredReconcileJob state) {
     if (state == null) {
       return ReconcileFileGroupTask.empty();
     }
-    StoredFileGroupResultPayload resultPayload =
-        loadFileGroupResultPayloadForDetail(state).orElse(null);
-    return buildFileGroupTask(state, resultPayload);
-  }
-
-  ReconcileFileGroupTask fileGroupTaskForExecution(StoredReconcileJob state) {
-    if (state == null) {
-      return ReconcileFileGroupTask.empty();
-    }
-    StoredFileGroupResultPayload resultPayload =
-        loadFileGroupResultPayloadForExecution(state).orElse(null);
-    return buildFileGroupTask(state, resultPayload);
+    return buildFileGroupTask(state);
   }
 
   private ReconcileSnapshotTask buildSnapshotTask(
       StoredReconcileJob state, List<ReconcileFileGroupTask> fileGroups) {
     int fileGroupCount =
-        fileGroups.isEmpty() ? (int) Math.max(0L, state.plannedFileGroups) : fileGroups.size();
+        fileGroups.isEmpty() ? Math.max(0, state.snapshotTaskFileGroupCount) : fileGroups.size();
     return ReconcileSnapshotTask.of(
         state.snapshotTaskTableId,
         state.snapshotTaskSnapshotId,
@@ -251,23 +191,21 @@ public class ReconcilePayloadStore {
         fileGroupCount,
         state.snapshotTaskSourceFileCount,
         blankToEmpty(state.snapshotTaskDirectStatsBlobUri),
-        state.snapshotTaskDirectStatsRecordCount,
-        state.snapshotTaskDirectStatsPersistedRecordCountsByChunk);
+        state.snapshotTaskDirectStatsRecordCount);
   }
 
-  private ReconcileFileGroupTask buildFileGroupTask(
-      StoredReconcileJob state, StoredFileGroupResultPayload resultPayload) {
+  private ReconcileFileGroupTask buildFileGroupTask(StoredReconcileJob state) {
     return ReconcileFileGroupTask.of(
         state.fileGroupPlanId,
         state.fileGroupGroupId,
         state.fileGroupTableId,
         state.fileGroupSnapshotId,
         state.fileGroupFileCount,
-        resultPayload == null ? "" : resultPayload.fileStatsBlobUri(),
-        resultPayload == null ? 0 : resultPayload.fileStatsRecordCount(),
-        resultPayload == null ? List.of() : resultPayload.filePaths(),
-        resultPayload == null ? List.of() : resultPayload.fileResults(),
-        resultPayload == null ? List.of() : resultPayload.partialAggregateRecords());
+        "",
+        0,
+        List.of(),
+        List.of(),
+        List.of());
   }
 
   private <T> String encodeInlineJson(String prefix, T payload) {

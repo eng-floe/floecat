@@ -1120,7 +1120,6 @@ public class ReconcileJobGc {
     stored.connectorId = text(record, "connectorId");
     stored.parentJobId = text(record, "parentJobId");
     stored.state = text(record, "state");
-    stored.fileGroupResultBlobUri = text(record, "fileGroupResultBlobUri");
     stored.createdAtMs = longValue(record, "createdAtMs", 0L);
     stored.updatedAtMs = longValue(record, "updatedAtMs", 0L);
     stored.nextAttemptAtMs = longValue(record, "nextAttemptAtMs", 0L);

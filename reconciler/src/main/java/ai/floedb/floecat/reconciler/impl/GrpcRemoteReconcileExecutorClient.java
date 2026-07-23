@@ -24,6 +24,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
@@ -35,14 +36,18 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
+import ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor;
+import ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload;
+import ai.floedb.floecat.reconciler.rpc.FileGroupStatsPayload;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedFileGroupExecutionRequest;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanConnectorInputRequest;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanSnapshotInputRequest;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanTableInputRequest;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanViewInputRequest;
+import ai.floedb.floecat.reconciler.rpc.GetLeasedSnapshotFinalizeInputRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileCancellationRequest;
 import ai.floedb.floecat.reconciler.rpc.LeaseReconcileJobRequest;
-import ai.floedb.floecat.reconciler.rpc.LeasedFileGroupIndexArtifact;
+import ai.floedb.floecat.reconciler.rpc.ListLeasedSnapshotFileGroupResultsRequest;
 import ai.floedb.floecat.reconciler.rpc.ReconcileCompletionState;
 import ai.floedb.floecat.reconciler.rpc.ReconcileExecutorControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureKind;
@@ -50,6 +55,8 @@ import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryClass;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryDisposition;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
+import ai.floedb.floecat.reconciler.rpc.SnapshotFinalizeStatsDescriptor;
+import ai.floedb.floecat.reconciler.rpc.SnapshotFinalizeStatsPayload;
 import ai.floedb.floecat.reconciler.rpc.StartLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanConnectorResultRequest;
@@ -58,8 +65,10 @@ import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanViewResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanViewResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.MessageLite;
+import com.google.protobuf.util.Timestamps;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
@@ -69,6 +78,8 @@ import io.grpc.stub.MetadataUtils;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -91,10 +102,6 @@ class GrpcRemoteReconcileExecutorClient
       Metadata.Key.of("x-floe-account", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORRELATION_ID =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
-  // File-group result chunks drive per-record persistence and partial aggregate merges on the
-  // service side, so they need a lower target than finalize-result chunks.
-  private static final int FILE_GROUP_RESULT_CHUNK_TARGET_BYTES = 128 * 1024;
-  private static final int SNAPSHOT_FINALIZE_RESULT_CHUNK_TARGET_BYTES = 512 * 1024;
   private static final int PLAN_CHILD_JOB_CHUNK_TARGET_BYTES = 128 * 1024;
   private static final int DEFAULT_PLAN_TABLE_CHILD_JOB_CHUNK_MAX_COUNT = 8;
 
@@ -298,6 +305,7 @@ class GrpcRemoteReconcileExecutorClient
   }
 
   @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
+  @Inject BlobStore blobStore;
 
   @PreDestroy
   void destroy() {
@@ -942,6 +950,8 @@ class GrpcRemoteReconcileExecutorClient
         execution.getSnapshotId(),
         execution.getPlanId(),
         execution.getGroupId(),
+        execution.getResultPayloadUri(),
+        execution.getStatsPayloadUri(),
         execution.getFilePathsList(),
         execution.hasCapturePolicy()
             ? ReconcileCapturePolicy.of(
@@ -967,61 +977,112 @@ class GrpcRemoteReconcileExecutorClient
       StandaloneFileGroupExecutionPayload payload,
       StandaloneFileGroupExecutionResult result) {
     String resultId = result.resultId() == null ? "" : result.resultId().trim();
-    List<LeasedFileGroupIndexArtifact> indexArtifacts = toProtoIndexArtifacts(result);
-    List<SubmitLeasedFileGroupExecutionResultRequest.Chunk> chunks =
-        chunkFileGroupResult(resultId, result.statsRecords(), indexArtifacts);
-    boolean retryable = !resultId.isBlank();
-    for (SubmitLeasedFileGroupExecutionResultRequest.Chunk chunk : chunks) {
-      boolean accepted =
-          invokeWorkerControl(
-              "submitLeasedFileGroupExecutionResult",
-              correlationId(lease),
-              lease.lease().accountId,
-              retryable,
-              stub ->
-                  stub.submitLeasedFileGroupExecutionResult(
-                          SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
-                              .setJobId(lease.lease().jobId)
-                              .setLeaseEpoch(lease.lease().leaseEpoch)
-                              .setChunk(chunk)
-                              .build())
-                      .getAccepted());
-      if (!accepted) {
-        return false;
-      }
+    if (resultId.isBlank()) {
+      throw new IllegalArgumentException("file-group result_id is required");
     }
+    if (payload == null
+        || payload.resultPayloadUri().isBlank()
+        || payload.statsPayloadUri().isBlank()) {
+      throw new IllegalArgumentException(
+          "leased file-group result_payload_uri and stats_payload_uri are required");
+    }
+    List<ai.floedb.floecat.catalog.rpc.IndexArtifactRecord> indexArtifacts =
+        publishIndexArtifacts(result);
+    List<TargetStatsRecord> fileStats =
+        result.statsRecords().stream().filter(TargetStatsRecord::hasFile).toList();
+    List<TargetStatsRecord> partialAggregates =
+        result.statsRecords().stream().filter(record -> !record.hasFile()).toList();
     ReconcileFileGroupTask plannedTask =
-        payload == null
-            ? (lease.lease().fileGroupTask == null
-                ? ReconcileFileGroupTask.empty()
-                : lease.lease().fileGroupTask)
-            : ReconcileFileGroupTask.of(
-                payload.planId(),
-                payload.groupId(),
-                payload.tableId() == null ? "" : payload.tableId().getId(),
-                payload.snapshotId(),
-                payload.plannedFilePaths());
-    SubmitLeasedFileGroupExecutionResultRequest.Success.Builder success =
+        ReconcileFileGroupTask.of(
+            payload.planId(),
+            payload.groupId(),
+            payload.tableId() == null ? "" : payload.tableId().getId(),
+            payload.snapshotId(),
+            payload.plannedFilePaths());
+    List<ReconcileFileResult> fileResults =
+        FileGroupExecutionSupport.fileResultsForSuccess(
+            plannedTask, result.statsRecords(), result.stagedIndexArtifacts());
+    FileGroupResultPayload packedPayload =
+        FileGroupResultPayload.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(lease.lease().accountId)
+            .setConnectorId(lease.lease().connectorId)
+            .setParentJobId(lease.lease().parentJobId)
+            .setFileGroupJobId(lease.lease().jobId)
+            .setPlanId(payload.planId())
+            .setGroupId(payload.groupId())
+            .setTableId(payload.tableId() == null ? "" : payload.tableId().getId())
+            .setSnapshotId(payload.snapshotId())
+            .setLeaseEpoch(lease.lease().leaseEpoch)
+            .setResultId(resultId)
+            .addAllFileResults(
+                fileResults.stream()
+                    .map(GrpcRemoteReconcileExecutorClient::toProtoFileResult)
+                    .toList())
+            .addAllPartialAggregateRecords(partialAggregates)
+            .addAllIndexArtifacts(indexArtifacts)
+            .build();
+    byte[] packedBytes = packedPayload.toByteArray();
+    blobStore.put(payload.resultPayloadUri(), packedBytes, "application/x-protobuf");
+    FileGroupStatsPayload statsPayload =
+        FileGroupStatsPayload.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(lease.lease().accountId)
+            .setConnectorId(lease.lease().connectorId)
+            .setParentJobId(lease.lease().parentJobId)
+            .setFileGroupJobId(lease.lease().jobId)
+            .setPlanId(payload.planId())
+            .setGroupId(payload.groupId())
+            .setTableId(payload.tableId() == null ? "" : payload.tableId().getId())
+            .setSnapshotId(payload.snapshotId())
+            .setLeaseEpoch(lease.lease().leaseEpoch)
+            .setResultId(resultId)
+            .addAllFileStats(fileStats)
+            .build();
+    byte[] statsBytes = statsPayload.toByteArray();
+    blobStore.put(payload.statsPayloadUri(), statsBytes, "application/x-protobuf");
+    FileGroupResultDescriptor descriptor =
+        FileGroupResultDescriptor.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(lease.lease().accountId)
+            .setConnectorId(lease.lease().connectorId)
+            .setParentJobId(lease.lease().parentJobId)
+            .setFileGroupJobId(lease.lease().jobId)
+            .setPlanId(payload.planId())
+            .setGroupId(payload.groupId())
+            .setTableId(payload.tableId() == null ? "" : payload.tableId().getId())
+            .setSnapshotId(payload.snapshotId())
+            .setLeaseEpoch(lease.lease().leaseEpoch)
+            .setResultId(resultId)
+            .setPayloadUri(payload.resultPayloadUri())
+            .setPayloadBytes(packedBytes.length)
+            .setPayloadSha256(ByteString.copyFrom(sha256(packedBytes)))
+            .setPlannedFileCount(plannedTask.filePaths().size())
+            .setSucceededFileCount(fileResults.size())
+            .setPartialAggregateRecordCount(partialAggregates.size())
+            .setIndexArtifactCount(indexArtifacts.size())
+            .setStatsPayloadUri(payload.statsPayloadUri())
+            .setStatsPayloadBytes(statsBytes.length)
+            .setStatsPayloadSha256(ByteString.copyFrom(sha256(statsBytes)))
+            .setFileStatsRecordCount(fileStats.size())
+            .setCreatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
+            .build();
+    SubmitLeasedFileGroupExecutionResultRequest.Success success =
         SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
             .setResultId(resultId)
-            .setChunkCount(chunks.size())
-            .addAllFileResults(
-                FileGroupExecutionSupport.fileResultsForSuccess(
-                        plannedTask, result.statsRecords(), result.stagedIndexArtifacts())
-                    .stream()
-                    .map(GrpcRemoteReconcileExecutorClient::toProtoFileResult)
-                    .toList());
+            .setResultDescriptor(descriptor)
+            .build();
     return invokeWorkerControl(
         "submitLeasedFileGroupExecutionResult",
         correlationId(lease),
         lease.lease().accountId,
-        retryable,
+        true,
         stub ->
             stub.submitLeasedFileGroupExecutionResult(
                     SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
                         .setJobId(lease.lease().jobId)
                         .setLeaseEpoch(lease.lease().leaseEpoch)
-                        .setSuccess(success.build())
+                        .setSuccess(success)
                         .build())
                 .getAccepted());
   }
@@ -1065,30 +1126,150 @@ class GrpcRemoteReconcileExecutorClient
   }
 
   @Override
-  public boolean submitSnapshotFinalizeSuccess(
-      RemoteLeasedJob lease, String resultId, List<TargetStatsRecord> statsRecords) {
-    String stableResultId = resultId == null ? "" : resultId.trim();
-    boolean retryable = !stableResultId.isBlank();
-    for (SubmitLeasedSnapshotFinalizeResultRequest.Chunk chunk :
-        chunkSnapshotFinalizeResult(stableResultId, statsRecords)) {
-      boolean accepted =
-          invokeWorkerControl(
-              "submitLeasedSnapshotFinalizeResult",
+  public StandaloneSnapshotFinalizeExecutionPayload getSnapshotFinalizeInput(
+      RemoteLeasedJob lease) {
+    var response =
+        invokeWorkerControlRetryable(
+            "getLeasedSnapshotFinalizeInput",
+            correlationId(lease),
+            lease.lease().accountId,
+            stub ->
+                stub.getLeasedSnapshotFinalizeInput(
+                    GetLeasedSnapshotFinalizeInputRequest.newBuilder()
+                        .setJobId(lease.lease().jobId)
+                        .setLeaseEpoch(lease.lease().leaseEpoch)
+                        .build()));
+    var input = response.getInput();
+    if (input.getFinalizeMode()
+        != ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput.FinalizeMode
+            .FZM_FILE_GROUPS_NON_EMPTY) {
+      throw new IllegalArgumentException(
+          "remote descriptor finalizer requires non-empty file-group input");
+    }
+    return new StandaloneSnapshotFinalizeExecutionPayload(
+        input.getJobId(),
+        input.getLeaseEpoch(),
+        input.getParentJobId(),
+        input.getTableId(),
+        input.getSnapshotId(),
+        input.getFullRescan(),
+        input.getSnapshotPlanUri(),
+        input.getFileGroupCount(),
+        input.getStatsPayloadUri());
+  }
+
+  @Override
+  public List<ReconcileFileGroupResultDescriptor> listSnapshotFileGroupResults(
+      RemoteLeasedJob lease) {
+    List<ReconcileFileGroupResultDescriptor> descriptors = new ArrayList<>();
+    String pageToken = "";
+    do {
+      String requestedPageToken = pageToken;
+      var response =
+          invokeWorkerControlRetryable(
+              "listLeasedSnapshotFileGroupResults",
               correlationId(lease),
               lease.lease().accountId,
-              retryable,
               stub ->
-                  stub.submitLeasedSnapshotFinalizeResult(
-                          SubmitLeasedSnapshotFinalizeResultRequest.newBuilder()
-                              .setJobId(lease.lease().jobId)
-                              .setLeaseEpoch(lease.lease().leaseEpoch)
-                              .setChunk(chunk)
-                              .build())
-                      .getAccepted());
-      if (!accepted) {
-        return false;
-      }
+                  stub.listLeasedSnapshotFileGroupResults(
+                      ListLeasedSnapshotFileGroupResultsRequest.newBuilder()
+                          .setJobId(lease.lease().jobId)
+                          .setLeaseEpoch(lease.lease().leaseEpoch)
+                          .setPageSize(200)
+                          .setPageToken(requestedPageToken)
+                          .build()));
+      descriptors.addAll(
+          response.getDescriptorsList().stream()
+              .map(GrpcRemoteReconcileExecutorClient::fromProtoFileGroupResultDescriptor)
+              .toList());
+      pageToken = response.getNextPageToken();
+    } while (!pageToken.isBlank());
+    return List.copyOf(descriptors);
+  }
+
+  private static ReconcileFileGroupResultDescriptor fromProtoFileGroupResultDescriptor(
+      FileGroupResultDescriptor descriptor) {
+    return new ReconcileFileGroupResultDescriptor(
+        descriptor.getFormatVersion(),
+        descriptor.getAccountId(),
+        descriptor.getConnectorId(),
+        descriptor.getParentJobId(),
+        descriptor.getFileGroupJobId(),
+        descriptor.getPlanId(),
+        descriptor.getGroupId(),
+        descriptor.getTableId(),
+        descriptor.getSnapshotId(),
+        descriptor.getLeaseEpoch(),
+        descriptor.getResultId(),
+        descriptor.getPayloadUri(),
+        descriptor.getPayloadBytes(),
+        java.util.Base64.getEncoder().encodeToString(descriptor.getPayloadSha256().toByteArray()),
+        descriptor.getPlannedFileCount(),
+        descriptor.getSucceededFileCount(),
+        descriptor.getFailedFileCount(),
+        descriptor.getSkippedFileCount(),
+        descriptor.getPartialAggregateRecordCount(),
+        descriptor.getIndexArtifactCount(),
+        descriptor.getStatsPayloadUri(),
+        descriptor.getStatsPayloadBytes(),
+        java.util.Base64.getEncoder()
+            .encodeToString(descriptor.getStatsPayloadSha256().toByteArray()),
+        descriptor.getFileStatsRecordCount(),
+        descriptor.hasCreatedAt() ? Timestamps.toMillis(descriptor.getCreatedAt()) : 0L);
+  }
+
+  @Override
+  public boolean submitSnapshotFinalizeSuccess(
+      RemoteLeasedJob lease,
+      String resultId,
+      String statsPayloadUri,
+      List<TargetStatsRecord> statsRecords) {
+    String stableResultId = resultId == null ? "" : resultId.trim();
+    String stablePayloadUri = statsPayloadUri == null ? "" : statsPayloadUri.trim();
+    if (stableResultId.isBlank()) {
+      throw new IllegalArgumentException("resultId is required");
     }
+    if (stablePayloadUri.isBlank()) {
+      throw new IllegalArgumentException("statsPayloadUri is required");
+    }
+    ReconcileJobStore.LeasedJob leasedJob = lease.lease();
+    ReconcileSnapshotTask snapshotTask = leasedJob.snapshotTask;
+    List<TargetStatsRecord> records =
+        statsRecords == null
+            ? List.of()
+            : statsRecords.stream().filter(java.util.Objects::nonNull).toList();
+    SnapshotFinalizeStatsPayload payload =
+        SnapshotFinalizeStatsPayload.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(leasedJob.accountId)
+            .setConnectorId(leasedJob.connectorId)
+            .setParentJobId(leasedJob.parentJobId)
+            .setFinalizeJobId(leasedJob.jobId)
+            .setTableId(snapshotTask.tableId())
+            .setSnapshotId(snapshotTask.snapshotId())
+            .setLeaseEpoch(leasedJob.leaseEpoch)
+            .setResultId(stableResultId)
+            .addAllStatsRecords(records)
+            .build();
+    byte[] payloadBytes = payload.toByteArray();
+    blobStore.put(stablePayloadUri, payloadBytes, "application/x-protobuf");
+    SnapshotFinalizeStatsDescriptor descriptor =
+        SnapshotFinalizeStatsDescriptor.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(leasedJob.accountId)
+            .setConnectorId(leasedJob.connectorId)
+            .setParentJobId(leasedJob.parentJobId)
+            .setFinalizeJobId(leasedJob.jobId)
+            .setTableId(snapshotTask.tableId())
+            .setSnapshotId(snapshotTask.snapshotId())
+            .setLeaseEpoch(leasedJob.leaseEpoch)
+            .setResultId(stableResultId)
+            .setPayloadUri(stablePayloadUri)
+            .setPayloadBytes(payloadBytes.length)
+            .setPayloadSha256(ByteString.copyFrom(sha256(payloadBytes)))
+            .setStatsRecordCount(records.size())
+            .build();
+    boolean retryable = !stableResultId.isBlank();
     return invokeWorkerControl(
         "submitLeasedSnapshotFinalizeResult",
         correlationId(lease),
@@ -1102,124 +1283,45 @@ class GrpcRemoteReconcileExecutorClient
                         .setSuccess(
                             SubmitLeasedSnapshotFinalizeResultRequest.Success.newBuilder()
                                 .setResultId(stableResultId)
+                                .setStatsDescriptor(descriptor)
                                 .build())
                         .build())
                 .getAccepted());
   }
 
-  private static List<LeasedFileGroupIndexArtifact> toProtoIndexArtifacts(
+  private List<ai.floedb.floecat.catalog.rpc.IndexArtifactRecord> publishIndexArtifacts(
       StandaloneFileGroupExecutionResult result) {
-    List<LeasedFileGroupIndexArtifact> out = new ArrayList<>();
+    List<ai.floedb.floecat.catalog.rpc.IndexArtifactRecord> out = new ArrayList<>();
     for (var artifact : result.stagedIndexArtifacts()) {
       if (artifact == null || artifact.record() == null) {
         continue;
       }
-      out.add(
-          LeasedFileGroupIndexArtifact.newBuilder()
-              .setRecord(artifact.record())
-              .setContent(
-                  artifact.content() == null
-                      ? ByteString.EMPTY
-                      : ByteString.copyFrom(artifact.content()))
-              .setContentType(artifact.contentType() == null ? "" : artifact.contentType())
-              .build());
+      String uri = artifact.record().getArtifactUri();
+      if (uri == null || uri.isBlank()) {
+        throw new IllegalArgumentException("index artifact_uri is required for direct publication");
+      }
+      byte[] content = artifact.content();
+      if (content != null && content.length > 0) {
+        blobStore.put(
+            uri,
+            content,
+            artifact.contentType() == null || artifact.contentType().isBlank()
+                ? "application/x-parquet"
+                : artifact.contentType());
+      } else if (blobStore.head(uri).isEmpty()) {
+        throw new IllegalArgumentException("index artifact object is not committed: " + uri);
+      }
+      out.add(artifact.record());
     }
     return List.copyOf(out);
   }
 
-  private static List<SubmitLeasedFileGroupExecutionResultRequest.Chunk> chunkFileGroupResult(
-      String resultId,
-      List<TargetStatsRecord> statsRecords,
-      List<LeasedFileGroupIndexArtifact> indexArtifacts) {
-    List<SubmitLeasedFileGroupExecutionResultRequest.Chunk> out = new ArrayList<>();
-    int chunkIndex = 0;
-    List<TargetStatsRecord> currentStats = new ArrayList<>();
-    List<LeasedFileGroupIndexArtifact> currentArtifacts = new ArrayList<>();
-    int currentBytes = 0;
-    for (TargetStatsRecord record :
-        statsRecords == null ? List.<TargetStatsRecord>of() : statsRecords) {
-      if (record == null) {
-        continue;
-      }
-      int itemBytes = estimatedChunkItemBytes(record);
-      if (currentBytes > 0 && currentBytes + itemBytes > FILE_GROUP_RESULT_CHUNK_TARGET_BYTES) {
-        out.add(buildFileGroupChunk(resultId, chunkIndex++, currentStats, currentArtifacts));
-        currentStats = new ArrayList<>();
-        currentArtifacts = new ArrayList<>();
-        currentBytes = 0;
-      }
-      currentStats.add(record);
-      currentBytes += itemBytes;
+  private static byte[] sha256(byte[] bytes) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(bytes);
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 is unavailable", e);
     }
-    for (LeasedFileGroupIndexArtifact artifact :
-        indexArtifacts == null ? List.<LeasedFileGroupIndexArtifact>of() : indexArtifacts) {
-      if (artifact == null) {
-        continue;
-      }
-      int itemBytes = estimatedChunkItemBytes(artifact);
-      if (currentBytes > 0 && currentBytes + itemBytes > FILE_GROUP_RESULT_CHUNK_TARGET_BYTES) {
-        out.add(buildFileGroupChunk(resultId, chunkIndex++, currentStats, currentArtifacts));
-        currentStats = new ArrayList<>();
-        currentArtifacts = new ArrayList<>();
-        currentBytes = 0;
-      }
-      currentArtifacts.add(artifact);
-      currentBytes += itemBytes;
-    }
-    if (!currentStats.isEmpty() || !currentArtifacts.isEmpty()) {
-      out.add(buildFileGroupChunk(resultId, chunkIndex, currentStats, currentArtifacts));
-    }
-    return List.copyOf(out);
-  }
-
-  private static SubmitLeasedFileGroupExecutionResultRequest.Chunk buildFileGroupChunk(
-      String resultId,
-      int chunkIndex,
-      List<TargetStatsRecord> statsRecords,
-      List<LeasedFileGroupIndexArtifact> indexArtifacts) {
-    return SubmitLeasedFileGroupExecutionResultRequest.Chunk.newBuilder()
-        .setResultId(resultId)
-        .setChunkIndex(chunkIndex)
-        .addAllStatsRecords(statsRecords)
-        .addAllIndexArtifacts(indexArtifacts)
-        .build();
-  }
-
-  private static List<SubmitLeasedSnapshotFinalizeResultRequest.Chunk> chunkSnapshotFinalizeResult(
-      String resultId, List<TargetStatsRecord> statsRecords) {
-    List<SubmitLeasedSnapshotFinalizeResultRequest.Chunk> out = new ArrayList<>();
-    int chunkIndex = 0;
-    List<TargetStatsRecord> current = new ArrayList<>();
-    int currentBytes = 0;
-    for (TargetStatsRecord record :
-        statsRecords == null ? List.<TargetStatsRecord>of() : statsRecords) {
-      if (record == null) {
-        continue;
-      }
-      int itemBytes = estimatedChunkItemBytes(record);
-      if (currentBytes > 0
-          && currentBytes + itemBytes > SNAPSHOT_FINALIZE_RESULT_CHUNK_TARGET_BYTES) {
-        out.add(
-            SubmitLeasedSnapshotFinalizeResultRequest.Chunk.newBuilder()
-                .setResultId(resultId)
-                .setChunkIndex(chunkIndex++)
-                .addAllStatsRecords(current)
-                .build());
-        current = new ArrayList<>();
-        currentBytes = 0;
-      }
-      current.add(record);
-      currentBytes += itemBytes;
-    }
-    if (!current.isEmpty()) {
-      out.add(
-          SubmitLeasedSnapshotFinalizeResultRequest.Chunk.newBuilder()
-              .setResultId(resultId)
-              .setChunkIndex(chunkIndex)
-              .addAllStatsRecords(current)
-              .build());
-    }
-    return List.copyOf(out);
   }
 
   private static <T extends MessageLite> List<List<T>> chunksBySerializedSize(
@@ -1592,10 +1694,6 @@ class GrpcRemoteReconcileExecutorClient
                   ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
                       .RSCM_FILE_GROUPS;
             })
-        .addAllFileGroups(
-            effective.fileGroups().stream()
-                .map(GrpcRemoteReconcileExecutorClient::toProtoFileGroupTask)
-                .toList())
         .build();
   }
 
@@ -1609,11 +1707,6 @@ class GrpcRemoteReconcileExecutorClient
         .setTableId(effective.tableId())
         .setSnapshotId(effective.snapshotId())
         .addAllFilePaths(effective.filePaths())
-        .addAllFileResults(
-            effective.fileResults().stream()
-                .map(GrpcRemoteReconcileExecutorClient::toProtoFileResult)
-                .toList())
-        .addAllPartialAggregateRecords(effective.partialAggregateRecords())
         .build();
   }
 
@@ -1777,9 +1870,7 @@ class GrpcRemoteReconcileExecutorClient
         snapshotTask.getSnapshotId(),
         snapshotTask.getSourceNamespace(),
         snapshotTask.getSourceTable(),
-        snapshotTask.getFileGroupsList().stream()
-            .map(GrpcRemoteReconcileExecutorClient::fromProtoFileGroupTask)
-            .toList(),
+        List.of(),
         snapshotTask.getFileGroupPlanRecorded(),
         switch (snapshotTask.getCompletionMode()) {
           case RSCM_DIRECT_STATS -> ReconcileSnapshotTask.CompletionMode.DIRECT_STATS;
@@ -1804,41 +1895,7 @@ class GrpcRemoteReconcileExecutorClient
         fileGroupTask.getTableId(),
         fileGroupTask.getSnapshotId(),
         0,
-        fileGroupTask.getFilePathsList(),
-        fileGroupTask.getFileResultsList().stream()
-            .map(GrpcRemoteReconcileExecutorClient::fromProtoFileResult)
-            .toList(),
-        fileGroupTask.getPartialAggregateRecordsList());
-  }
-
-  private static ReconcileFileResult fromProtoFileResult(
-      ai.floedb.floecat.reconciler.rpc.ReconcileFileResult fileResult) {
-    if (fileResult == null) {
-      return ReconcileFileResult.empty();
-    }
-    return ReconcileFileResult.of(
-        fileResult.getFilePath(),
-        switch (fileResult.getState()) {
-          case RFRS_SUCCEEDED -> ReconcileFileResult.State.SUCCEEDED;
-          case RFRS_FAILED -> ReconcileFileResult.State.FAILED;
-          case RFRS_SKIPPED -> ReconcileFileResult.State.SKIPPED;
-          case RFRS_UNSPECIFIED, UNRECOGNIZED -> ReconcileFileResult.State.UNSPECIFIED;
-        },
-        fileResult.getStatsProcessed(),
-        fileResult.getMessage(),
-        fromProtoIndexArtifact(fileResult.getIndexArtifact()));
-  }
-
-  private static ReconcileIndexArtifactResult fromProtoIndexArtifact(
-      ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.ReconcileIndexArtifactResult
-          indexArtifact) {
-    if (indexArtifact == null) {
-      return ReconcileIndexArtifactResult.empty();
-    }
-    return ReconcileIndexArtifactResult.of(
-        indexArtifact.getArtifactUri(),
-        indexArtifact.getArtifactFormat(),
-        indexArtifact.getArtifactFormatVersion());
+        fileGroupTask.getFilePathsList());
   }
 
   private ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub controlStub() {

@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
-import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -31,17 +31,34 @@ import java.util.List;
 public class SnapshotFinalizeChildStateService {
   @Inject ReconcileJobStore jobs;
 
-  public ChildState childState(
-      String accountId,
-      String parentJobId,
-      String finalizerJobId,
-      List<ReconcileFileGroupTask> expectedGroups) {
-    if (parentJobId == null || parentJobId.isBlank()) {
-      return new ChildState(
-          0, 0, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+  public ChildState compactChildState(
+      String accountId, String parentJobId, String finalizerJobId, int expectedGroupCount) {
+    LinkedHashMap<String, ReconcileFileGroupResultDescriptor> descriptorByGroupKey =
+        new LinkedHashMap<>();
+    for (ReconcileFileGroupResultDescriptor descriptor : childDescriptors(accountId, parentJobId)) {
+      String key = groupKey(descriptor);
+      if (!key.isBlank() && descriptorByGroupKey.putIfAbsent(key, descriptor) != null) {
+        return new ChildState(
+            expectedGroupCount,
+            0,
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(descriptor.planId() + "/" + descriptor.groupId()),
+            List.of(),
+            List.of(),
+            List.of());
+      }
     }
-    LinkedHashMap<String, ReconcileJobStore.ReconcileJob> childByGroupKey = new LinkedHashMap<>();
-    LinkedHashSet<String> duplicateGroups = new LinkedHashSet<>();
+    int completed = 0;
+    int childCount = 0;
+    List<String> pending = new ArrayList<>();
+    List<String> failed = new ArrayList<>();
+    List<String> cancelled = new ArrayList<>();
+    List<String> duplicates = new ArrayList<>();
+    List<String> invalid = new ArrayList<>();
+    List<ReconcileFileGroupResultDescriptor> completedDescriptors = new ArrayList<>();
+    LinkedHashSet<String> seen = new LinkedHashSet<>();
     for (ReconcileJobStore.ReconcileJob child : childJobs(accountId, parentJobId)) {
       if (child == null
           || child.jobId == null
@@ -49,62 +66,51 @@ public class SnapshotFinalizeChildStateService {
           || child.jobKind != ReconcileJobKind.EXEC_FILE_GROUP) {
         continue;
       }
-      String groupKey = groupKey(child.fileGroupTask);
-      if (groupKey.isBlank()) {
-        duplicateGroups.add("unkeyed-child:" + child.jobId);
-        continue;
-      }
-      ReconcileJobStore.ReconcileJob previous = childByGroupKey.putIfAbsent(groupKey, child);
-      if (previous != null) {
-        duplicateGroups.add(describeGroup(child.fileGroupTask));
-      }
-    }
-    int completedGroups = 0;
-    List<ReconcileFileGroupTask> completedGroupTasks = new ArrayList<>();
-    LinkedHashSet<String> pendingGroups = new LinkedHashSet<>();
-    LinkedHashSet<String> failedGroups = new LinkedHashSet<>();
-    LinkedHashSet<String> cancelledGroups = new LinkedHashSet<>();
-    LinkedHashSet<String> missingGroups = new LinkedHashSet<>();
-    LinkedHashSet<String> invalidSucceededGroups = new LinkedHashSet<>();
-    List<ReconcileFileGroupTask> groups =
-        expectedGroups == null ? List.<ReconcileFileGroupTask>of() : expectedGroups;
-    for (ReconcileFileGroupTask expectedGroup : groups) {
-      String groupKey = groupKey(expectedGroup);
-      String description = describeGroup(expectedGroup);
-      if (groupKey.isBlank()) {
-        missingGroups.add(description);
-        continue;
-      }
-      ReconcileJobStore.ReconcileJob child = childByGroupKey.get(groupKey);
-      if (child == null) {
-        missingGroups.add(description);
+      childCount++;
+      String key = groupKey(child.fileGroupTask);
+      String description = describeGroup(child.fileGroupTask);
+      if (key.isBlank() || !seen.add(key)) {
+        duplicates.add(description);
         continue;
       }
       if ("JS_SUCCEEDED".equals(child.state)) {
-        if (hasPersistedSuccessResults(expectedGroup, child.fileGroupTask)) {
-          completedGroups++;
-          completedGroupTasks.add(child.fileGroupTask);
+        ReconcileFileGroupResultDescriptor descriptor = descriptorByGroupKey.get(key);
+        int planned = Math.max(0, child.fileGroupTask.fileCount());
+        if (descriptor != null
+            && descriptor.plannedFileCount() == planned
+            && descriptor.succeededFileCount() == planned
+            && descriptor.failedFileCount() == 0
+            && descriptor.skippedFileCount() == 0) {
+          completed++;
+          completedDescriptors.add(descriptor);
         } else {
-          invalidSucceededGroups.add(description);
+          invalid.add(description);
         }
       } else if ("JS_FAILED".equals(child.state)) {
-        failedGroups.add(describeFailure(child, expectedGroup));
+        failed.add(describeFailure(child, child.fileGroupTask));
       } else if ("JS_CANCELLED".equals(child.state)) {
-        cancelledGroups.add(describeFailure(child, expectedGroup));
+        cancelled.add(describeFailure(child, child.fileGroupTask));
       } else {
-        pendingGroups.add(description + "(" + blankToUnknown(child.state) + ")");
+        pending.add(description + "(" + blankToUnknown(child.state) + ")");
       }
     }
+    List<String> missing =
+        childCount < expectedGroupCount
+            ? List.of("expected=" + expectedGroupCount + " actual=" + childCount)
+            : List.of();
+    if (childCount > expectedGroupCount) {
+      duplicates.add("expected=" + expectedGroupCount + " actual=" + childCount);
+    }
     return new ChildState(
-        groups.size(),
-        completedGroups,
-        List.copyOf(pendingGroups),
-        List.copyOf(failedGroups),
-        List.copyOf(cancelledGroups),
-        List.copyOf(duplicateGroups),
-        List.copyOf(missingGroups),
-        List.copyOf(invalidSucceededGroups),
-        List.copyOf(completedGroupTasks));
+        expectedGroupCount,
+        completed,
+        List.copyOf(pending),
+        List.copyOf(failed),
+        List.copyOf(cancelled),
+        List.copyOf(duplicates),
+        missing,
+        List.copyOf(invalid),
+        List.copyOf(completedDescriptors));
   }
 
   List<ReconcileJobStore.ReconcileJob> childJobs(String accountId, String parentJobId) {
@@ -125,27 +131,31 @@ public class SnapshotFinalizeChildStateService {
     return List.copyOf(out);
   }
 
-  static boolean hasPersistedSuccessResults(
-      ReconcileFileGroupTask expectedGroup, ReconcileFileGroupTask persistedGroup) {
-    if (expectedGroup == null || persistedGroup == null) {
-      return false;
+  List<ReconcileFileGroupResultDescriptor> childDescriptors(String accountId, String parentJobId) {
+    if (accountId == null || accountId.isBlank() || parentJobId == null || parentJobId.isBlank()) {
+      return List.of();
     }
-    if (!groupKey(expectedGroup).equals(groupKey(persistedGroup))) {
-      return false;
-    }
-    LinkedHashMap<String, ReconcileFileResult.State> statesByFile = new LinkedHashMap<>();
-    for (ReconcileFileResult result : persistedGroup.fileResults()) {
-      if (result == null || result.filePath().isBlank()) {
-        continue;
+    List<ReconcileFileGroupResultDescriptor> out = new ArrayList<>();
+    String pageToken = "";
+    do {
+      ReconcileJobStore.FileGroupResultDescriptorPage page =
+          jobs.childFileGroupResultDescriptorsPage(accountId, parentJobId, 200, pageToken);
+      if (page == null) {
+        break;
       }
-      statesByFile.put(result.filePath(), result.state());
+      out.addAll(page.descriptors);
+      pageToken = page.nextPageToken;
+    } while (pageToken != null && !pageToken.isBlank());
+    return List.copyOf(out);
+  }
+
+  static String groupKey(ReconcileFileGroupResultDescriptor descriptor) {
+    if (descriptor == null) {
+      return "";
     }
-    for (String filePath : expectedGroup.filePaths()) {
-      if (statesByFile.get(filePath) != ReconcileFileResult.State.SUCCEEDED) {
-        return false;
-      }
-    }
-    return !expectedGroup.filePaths().isEmpty() || !persistedGroup.fileResults().isEmpty();
+    String planId = descriptor.planId() == null ? "" : descriptor.planId().trim();
+    String groupId = descriptor.groupId() == null ? "" : descriptor.groupId().trim();
+    return planId.isBlank() || groupId.isBlank() ? "" : planId + "|" + groupId;
   }
 
   static String groupKey(ReconcileFileGroupTask fileGroupTask) {
@@ -193,5 +203,5 @@ public class SnapshotFinalizeChildStateService {
       List<String> duplicateGroups,
       List<String> missingGroups,
       List<String> invalidSucceededGroups,
-      List<ReconcileFileGroupTask> completedGroupTasks) {}
+      List<ReconcileFileGroupResultDescriptor> completedGroupDescriptors) {}
 }

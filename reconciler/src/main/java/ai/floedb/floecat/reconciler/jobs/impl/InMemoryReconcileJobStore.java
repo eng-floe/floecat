@@ -19,6 +19,7 @@ package ai.floedb.floecat.reconciler.jobs.impl;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -57,6 +58,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private static final long CANCEL_POKE_MAX_DELAY_MS = 1_000L;
 
   private final Map<String, ReconcileJob> jobs = new ConcurrentHashMap<>();
+  private final Map<String, ReconcileFileGroupResultDescriptor> fileGroupResultDescriptors =
+      new ConcurrentHashMap<>();
   private final Map<String, Long> createdAtMs = new ConcurrentHashMap<>();
   private final Map<String, String> leaseEpochs = new ConcurrentHashMap<>();
   private final Map<String, Long> leaseExpiresAtMs = new ConcurrentHashMap<>();
@@ -553,18 +556,12 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     return "JS_SUCCEEDED";
   }
 
-  private static long indexesProcessedSelf(ReconcileJob job) {
-    if (job == null || job.fileGroupTask == null) {
+  private long indexesProcessedSelf(ReconcileJob job) {
+    if (job == null) {
       return 0L;
     }
-    return job.fileGroupTask.fileResults().stream()
-        .filter(result -> result != null && result.indexArtifact() != null)
-        .filter(
-            result ->
-                !result.indexArtifact().artifactUri().isBlank()
-                    || !result.indexArtifact().artifactFormat().isBlank()
-                    || result.indexArtifact().artifactFormatVersion() > 0)
-        .count();
+    ReconcileFileGroupResultDescriptor descriptor = fileGroupResultDescriptors.get(job.jobId);
+    return descriptor == null ? 0L : Math.max(0, descriptor.indexArtifactCount());
   }
 
   @Override
@@ -664,8 +661,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                   effective.fileGroupCount(),
                   effective.sourceFileCount(),
                   effective.directStatsBlobUri(),
-                  effective.directStatsRecordCount(),
-                  effective.directStatsPersistedRecordCountsByChunk());
+                  effective.directStatsRecordCount());
           if (existing.snapshotTask.equals(adoptedTask)) {
             return existing;
           }
@@ -700,105 +696,61 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
-  public void persistFileGroupResult(
-      String jobId, String leaseEpoch, ReconcileFileGroupTask fileGroupTask) {
-    ReconcileFileGroupTask effective =
-        fileGroupTask == null ? ReconcileFileGroupTask.empty() : fileGroupTask;
-    jobs.computeIfPresent(
-        jobId,
-        (id, existing) -> {
-          String currentLeaseEpoch = leaseEpochs.getOrDefault(jobId, "");
-          if (!"JS_RUNNING".equals(existing.state)
-              || leaseEpoch == null
-              || leaseEpoch.isBlank()
-              || !leaseEpoch.equals(currentLeaseEpoch)) {
-            return existing;
-          }
-          return new ReconcileJob(
-              existing.jobId,
-              existing.accountId,
-              existing.connectorId,
-              existing.state,
-              existing.message,
-              existing.startedAtMs,
-              existing.finishedAtMs,
-              existing.tablesScanned,
-              existing.tablesChanged,
-              existing.viewsScanned,
-              existing.viewsChanged,
-              existing.errors,
-              existing.fullRescan,
-              existing.captureMode,
-              existing.snapshotsProcessed,
-              existing.statsProcessed,
-              existing.scope,
-              existing.executionPolicy,
-              existing.executorId,
-              existing.jobKind,
-              existing.tableTask,
-              existing.viewTask,
-              existing.snapshotTask,
-              effective,
-              existing.parentJobId);
-        });
+  public Optional<ReconcileJob> getCompactLeaseView(String jobId) {
+    return getLeaseView(jobId);
   }
 
   @Override
-  public void persistSnapshotFinalizeDirectStatsProgress(
+  public synchronized boolean completeFileGroupSuccess(
       String jobId,
       String leaseEpoch,
-      boolean fullRescan,
-      int chunkIndex,
-      int directStatsPersistedRecordCount) {
-    final boolean[] updated = {false};
-    jobs.computeIfPresent(
-        jobId,
-        (id, existing) -> {
-          String currentLeaseEpoch = leaseEpochs.getOrDefault(jobId, "");
-          if (!"JS_RUNNING".equals(existing.state)
-              || leaseEpoch == null
-              || leaseEpoch.isBlank()
-              || !leaseEpoch.equals(currentLeaseEpoch)
-              || existing.jobKind != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
-            return existing;
-          }
-          updated[0] = true;
-          ReconcileSnapshotTask updatedSnapshotTask =
-              ((fullRescan && Math.max(0, chunkIndex) == 0)
-                      ? existing.snapshotTask.withoutDirectStatsPersistedRecordCounts()
-                      : existing.snapshotTask)
-                  .withDirectStatsPersistedRecordCountForChunk(
-                      Math.max(0, chunkIndex), Math.max(0, directStatsPersistedRecordCount));
-          return new ReconcileJob(
-              existing.jobId,
-              existing.accountId,
-              existing.connectorId,
-              existing.state,
-              existing.message,
-              existing.startedAtMs,
-              existing.finishedAtMs,
-              existing.tablesScanned,
-              existing.tablesChanged,
-              existing.viewsScanned,
-              existing.viewsChanged,
-              existing.errors,
-              existing.fullRescan,
-              existing.captureMode,
-              existing.snapshotsProcessed,
-              existing.statsProcessed,
-              existing.scope,
-              existing.executionPolicy,
-              existing.executorId,
-              existing.jobKind,
-              existing.tableTask,
-              existing.viewTask,
-              updatedSnapshotTask,
-              existing.fileGroupTask,
-              existing.parentJobId);
-        });
-    if (!updated[0]) {
-      throw new IllegalStateException("Failed to persist snapshot finalize direct stats progress");
+      ReconcileFileGroupResultDescriptor descriptor,
+      long finishedAtMs,
+      String message) {
+    if (descriptor == null
+        || !java.util.Objects.equals(
+            leaseEpoch == null ? "" : leaseEpoch, descriptor.leaseEpoch())) {
+      throw new IllegalArgumentException(
+          "file-group result descriptor lease epoch does not match completion lease");
     }
+    ReconcileJob existing = jobs.get(jobId);
+    String currentLeaseEpoch = leaseEpochs.getOrDefault(jobId, "");
+    if (existing == null
+        || !"JS_RUNNING".equals(existing.state)
+        || leaseEpoch == null
+        || leaseEpoch.isBlank()
+        || !leaseEpoch.equals(currentLeaseEpoch)) {
+      return existing != null
+          && "JS_SUCCEEDED".equals(existing.state)
+          && java.util.Objects.equals(fileGroupResultDescriptors.get(jobId), descriptor);
+    }
+    fileGroupResultDescriptors.put(jobId, descriptor);
+    markSucceeded(
+        jobId,
+        leaseEpoch,
+        finishedAtMs,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        (long) descriptor.fileStatsRecordCount() + (long) descriptor.partialAggregateRecordCount());
+    return "JS_SUCCEEDED".equals(jobs.get(jobId).state);
+  }
+
+  @Override
+  public FileGroupResultDescriptorPage childFileGroupResultDescriptorsPage(
+      String accountId, String parentJobId, int pageSize, String pageToken) {
+    ReconcileJobPage page =
+        ReconcileJobStore.super.childJobsPage(accountId, parentJobId, pageSize, pageToken);
+    List<ReconcileFileGroupResultDescriptor> descriptors =
+        page.jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP)
+            .filter(job -> "JS_SUCCEEDED".equals(job.state))
+            .map(job -> fileGroupResultDescriptors.get(job.jobId))
+            .filter(java.util.Objects::nonNull)
+            .toList();
+    return new FileGroupResultDescriptorPage(descriptors, page.nextPageToken);
   }
 
   @Override

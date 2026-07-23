@@ -110,6 +110,7 @@ floecat.reconciler.executor.remote-planner.enabled
 floecat.reconciler.executor.remote-default.enabled
 floecat.reconciler.executor.remote-snapshot-planner.enabled
 floecat.reconciler.executor.remote-file-group.enabled
+floecat.reconciler.executor.remote-snapshot-finalize.enabled
 floecat.reconciler.executor.snapshot-finalize.enabled
 floecat.reconciler.authorization.header
 floecat.reconciler.oidc.issuer

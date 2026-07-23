@@ -17,6 +17,9 @@
 package ai.floedb.floecat.service.repo.model;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 
@@ -1311,6 +1314,51 @@ public final class Keys {
         + "/result-"
         + encode(s)
         + ".json";
+  }
+
+  public static String reconcileFileGroupResultPayloadUri(
+      String accountId, String parentJobId, String jobId, String leaseEpoch) {
+    String tid = req("account_id", accountId);
+    String pid = req("parent_job_id", parentJobId);
+    String jid = req("job_id", jobId);
+    String epoch = req("lease_epoch", leaseEpoch);
+    return reconcileJobBlobPrefix(tid, jid)
+        + "result-payloads/v1/snapshot-plans/"
+        + encode(pid)
+        + "/executions/"
+        + sha256Hex(epoch)
+        + ".pb";
+  }
+
+  public static String reconcileFileGroupStatsPayloadUri(
+      String accountId, String parentJobId, String jobId, String leaseEpoch) {
+    String resultUri =
+        reconcileFileGroupResultPayloadUri(accountId, parentJobId, jobId, leaseEpoch);
+    return resultUri.substring(0, resultUri.length() - ".pb".length()) + ".stats.pb";
+  }
+
+  public static String reconcileSnapshotFinalizeStatsPayloadUri(
+      String accountId, String parentJobId, String jobId, String leaseEpoch) {
+    String tid = req("account_id", accountId);
+    String pid = req("parent_job_id", parentJobId);
+    String jid = req("job_id", jobId);
+    String epoch = req("lease_epoch", leaseEpoch);
+    return reconcileJobBlobPrefix(tid, jid)
+        + "result-payloads/v1/snapshot-plans/"
+        + encode(pid)
+        + "/executions/"
+        + sha256Hex(epoch)
+        + ".stats.pb";
+  }
+
+  private static String sha256Hex(String value) {
+    try {
+      return HexFormat.of()
+          .formatHex(
+              MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 unavailable", e);
+    }
   }
 
   public static String reconcileReadyPointerPrefix() {
