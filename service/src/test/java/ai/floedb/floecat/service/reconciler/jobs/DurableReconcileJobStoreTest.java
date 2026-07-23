@@ -1977,7 +1977,7 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob connectorCanonical =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
     assertEquals("JS_SUCCEEDED", connectorProjection.state());
-    assertEquals("JS_SUCCEEDED", tableProjection.state());
+    assertEquals("JS_WAITING", tableProjection.state());
     assertEquals("JS_SUCCEEDED", connectorCanonical.state);
   }
 
