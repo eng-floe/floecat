@@ -135,7 +135,11 @@ class RelationBundleBuilderTest {
       ResourceId id, TableReferenceCandidate candidate) {
     RelationNode node = (RelationNode) overlay.resolve(id).orElseThrow();
     return new UserObjectBundleService.ResolvedRelation(
-        candidate, id, node, QueryInput.newBuilder().setTableId(id).build());
+        candidate,
+        id,
+        node,
+        QueryInput.newBuilder().setTableId(id).build(),
+        overlay.tableName(id).orElse(NameRef.newBuilder().setName(node.displayName()).build()));
   }
 
   private static TableReferenceCandidate fullCandidate() {

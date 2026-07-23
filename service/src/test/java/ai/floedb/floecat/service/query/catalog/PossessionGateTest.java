@@ -106,7 +106,8 @@ class PossessionGateTest {
             .build(),
         TABLE,
         node,
-        QueryInput.newBuilder().setTableId(TABLE).build());
+        QueryInput.newBuilder().setTableId(TABLE).build(),
+        overlay.tableName(TABLE).orElse(NameRef.newBuilder().setName(node.displayName()).build()));
   }
 
   private static QueryContext pinnedWith(TablePin pin) {

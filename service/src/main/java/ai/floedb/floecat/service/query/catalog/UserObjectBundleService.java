@@ -304,7 +304,8 @@ public class UserObjectBundleService {
       TableReferenceCandidate candidate,
       List<QueryInput> normalizedCandidates,
       Function<NameRef, Optional<ResourceId>> nameResolver,
-      Function<ResourceId, Optional<GraphNode>> nodeResolver) {
+      Function<ResourceId, Optional<GraphNode>> nodeResolver,
+      Function<RelationNode, NameRef> canonicalNameResolver) {
     for (QueryInput input : normalizedCandidates) {
       ResourceId relationId = extractResourceId(input, nameResolver);
       if (relationId == null) {
@@ -324,7 +325,9 @@ public class UserObjectBundleService {
             relationId,
             "Resolved id " + relationId + " maps to non-relation node kind=" + gn.kind());
       }
-      return Optional.of(new ResolvedRelation(candidate, relationId, rel, input));
+      return Optional.of(
+          new ResolvedRelation(
+              candidate, relationId, rel, input, canonicalNameResolver.apply(rel)));
     }
     return Optional.empty();
   }
@@ -664,7 +667,10 @@ public class UserObjectBundleService {
       TableReferenceCandidate candidate,
       ResourceId relationId,
       RelationNode node,
-      QueryInput selectedInput) {}
+      QueryInput selectedInput,
+      // Resolved once here (through the request node memo) so the concurrent build fan-out does not
+      // each re-walk the shared namespace/catalog; see RelationResolutionCache#canonicalName.
+      NameRef canonicalName) {}
 
   /** A requested input paired with its normalized candidates, ready to select against. */
   record PlannedInput(
@@ -970,7 +976,11 @@ public class UserObjectBundleService {
           QueryInput syntheticInput = QueryInput.newBuilder().setTableId(baseId).build();
           ResolvedRelation syntheticRelation =
               new ResolvedRelation(
-                  TableReferenceCandidate.getDefaultInstance(), baseId, rel, syntheticInput);
+                  TableReferenceCandidate.getDefaultInstance(),
+                  baseId,
+                  rel,
+                  syntheticInput,
+                  resolutionCache.canonicalName(rel));
           // Base-table pins are already derived from the parent view candidate (including AS-OF
           // overrides). Avoid re-adding a synthetic TABLE_ID pin here, which would otherwise
           // resolve to CURRENT and can overwrite AS-OF pins in the same batch.
@@ -1035,7 +1045,8 @@ public class UserObjectBundleService {
                   planned.candidate(),
                   planned.normalized(),
                   resolutionCache::resolveName,
-                  resolutionCache::resolveNode);
+                  resolutionCache::resolveNode,
+                  resolutionCache::canonicalName);
         } finally {
           timings.addSelectRelationNanos(System.nanoTime() - selectStartNs);
         }

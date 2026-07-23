@@ -768,15 +768,7 @@ public final class UserGraph {
 
   private NameRef buildRelationNameRef(
       String relName, ResourceId id, NamespaceNode ns, String catalogName) {
-    NameRef.Builder b = NameRef.newBuilder();
-    b.setCatalog(catalogName);
-    for (String p : ns.pathSegments()) {
-      b.addPath(p);
-    }
-    b.addPath(ns.displayName());
-    b.setName(relName);
-    b.setResourceId(id);
-    return b.build();
+    return ns.relationNameRef(relName, id, catalogName);
   }
 
   // ----------------------------------------------------------------------

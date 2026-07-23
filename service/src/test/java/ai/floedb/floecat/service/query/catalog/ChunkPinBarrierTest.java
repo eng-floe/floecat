@@ -179,7 +179,8 @@ class ChunkPinBarrierTest {
             .build(),
         table,
         node,
-        QueryInput.newBuilder().setTableId(table).build());
+        QueryInput.newBuilder().setTableId(table).build(),
+        overlay.tableName(table).orElse(NameRef.newBuilder().setName(node.displayName()).build()));
   }
 
   private TestQueryContextStore seededStore() {

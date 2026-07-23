@@ -16,11 +16,9 @@
 
 package ai.floedb.floecat.service.query.catalog;
 
-import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
-import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
@@ -465,7 +463,7 @@ final class RelationBundleBuilder {
   private RelationInfo.Builder baseRelationInfo(UserObjectBundleService.ResolvedRelation relation) {
     return RelationInfo.newBuilder()
         .setRelationId(relation.relationId())
-        .setName(canonicalName(relation.relationId(), relation.node()))
+        .setName(relation.canonicalName())
         .setKind(mapKind(relation.node().kind(), relation.node().origin()))
         .setOrigin(mapOrigin(relation.node().origin()));
   }
@@ -958,16 +956,6 @@ final class RelationBundleBuilder {
             pin.get().getTableBlobUri(),
             pin.get().getSnapshotBlobUri());
     return logicalSchemaMapper.map(resolved.table(), resolved.schemaJson());
-  }
-
-  private NameRef canonicalName(ResourceId id, GraphNode node) {
-    return switch (node.kind()) {
-      case TABLE ->
-          overlay.tableName(id).orElse(NameRef.newBuilder().setName(node.displayName()).build());
-      case VIEW ->
-          overlay.viewName(id).orElse(NameRef.newBuilder().setName(node.displayName()).build());
-      default -> NameRef.newBuilder().setName(node.displayName()).build();
-    };
   }
 
   private ViewDefinition.Builder viewDefinitionBuilder(ViewNode view) {
