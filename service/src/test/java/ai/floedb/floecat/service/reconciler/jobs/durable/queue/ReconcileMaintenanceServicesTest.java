@@ -329,7 +329,7 @@ class ReconcileMaintenanceServicesTest {
 
     service.bind(
         pointerStore,
-        (request, childPageSize) -> {
+        (request, childPageSize, deadlineMs) -> {
           cursors.add(request.childPageToken());
           if (request.childPageToken().isBlank()) {
             return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
@@ -338,7 +338,7 @@ class ReconcileMaintenanceServicesTest {
           return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
               true, "", false, false, false);
         },
-        request -> false,
+        (request, deadlineMs) -> false,
         10);
 
     service.runCancellationMaintenanceOnce(200L);
@@ -369,12 +369,12 @@ class ReconcileMaintenanceServicesTest {
 
     service.bind(
         pointerStore,
-        (request, childPageSize) -> {
+        (request, childPageSize, deadlineMs) -> {
           calls.incrementAndGet();
           return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
               true, "", false, false, false);
         },
-        request -> false,
+        (request, deadlineMs) -> false,
         10);
 
     service.runCancellationMaintenanceOnce(200L);
@@ -397,12 +397,12 @@ class ReconcileMaintenanceServicesTest {
 
     service.bind(
         pointerStore,
-        (request, childPageSize) -> {
+        (request, childPageSize, deadlineMs) -> {
           calls.incrementAndGet();
           return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
               true, "", false, false, false);
         },
-        request -> true,
+        (request, deadlineMs) -> true,
         10);
 
     Object stats = cleanupCancellationMarkers(service, System.currentTimeMillis() + 200L);

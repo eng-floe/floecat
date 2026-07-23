@@ -283,6 +283,22 @@ public interface StatsStore {
   }
 
   /**
+   * Publishes an unpublished generation, optionally enriching it from the active generation.
+   *
+   * <p>Full rescans pass {@code false}: their output is authoritative and must not read payloads
+   * from the generation being replaced. Incremental publication retains the default enrichment
+   * behavior.
+   */
+  default void publishStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<TargetStatsRecord> finalRecords,
+      boolean carryForwardSupersededSketches) {
+    publishStatsGeneration(tableId, snapshotId, generationId, finalRecords);
+  }
+
+  /**
    * Deletes an unpublished stats generation.
    *
    * <p>Implementations must not delete a generation that has already been published as the active
@@ -318,6 +334,15 @@ public interface StatsStore {
     for (TargetStatsRecord record : records == null ? List.<TargetStatsRecord>of() : records) {
       putTargetStats(record);
     }
+  }
+
+  /** Replaces a snapshot generation, optionally enriching it from the generation being replaced. */
+  default void replaceAllStatsForSnapshot(
+      ResourceId tableId,
+      long snapshotId,
+      List<TargetStatsRecord> records,
+      boolean carryForwardSupersededSketches) {
+    replaceAllStatsForSnapshot(tableId, snapshotId, records);
   }
 
   /**

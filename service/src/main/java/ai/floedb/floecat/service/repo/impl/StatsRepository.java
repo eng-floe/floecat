@@ -220,6 +220,16 @@ public class StatsRepository implements StatsStore {
       long snapshotId,
       String generationId,
       List<TargetStatsRecord> finalRecords) {
+    publishStatsGeneration(tableId, snapshotId, generationId, finalRecords, true);
+  }
+
+  @Override
+  public void publishStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<TargetStatsRecord> finalRecords,
+      boolean carryForwardSupersededSketches) {
     String effectiveGenerationId = requireGenerationId(generationId);
     List<TargetStatsRecord> canonicalRecords =
         (finalRecords == null ? List.<TargetStatsRecord>of() : finalRecords)
@@ -229,7 +239,10 @@ public class StatsRepository implements StatsStore {
                 .peek(record -> requireRecordForSnapshot(tableId, snapshotId, record))
                 .toList();
     Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
-    canonicalRecords = carrySketchesFromSuperseded(tableId, snapshotId, canonicalRecords, current);
+    if (carryForwardSupersededSketches) {
+      canonicalRecords =
+          carrySketchesFromSuperseded(tableId, snapshotId, canonicalRecords, current);
+    }
     markGenerationPublishing(tableId, snapshotId, effectiveGenerationId);
     List<TargetStatsWrite> writes = new ArrayList<>(canonicalRecords.size());
     for (TargetStatsRecord record : canonicalRecords) {
@@ -870,6 +883,15 @@ public class StatsRepository implements StatsStore {
   @Override
   public void replaceAllStatsForSnapshot(
       ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {
+    replaceAllStatsForSnapshot(tableId, snapshotId, records, true);
+  }
+
+  @Override
+  public void replaceAllStatsForSnapshot(
+      ResourceId tableId,
+      long snapshotId,
+      List<TargetStatsRecord> records,
+      boolean carryForwardSupersededSketches) {
     List<TargetStatsRecord> canonicalRecords =
         (records == null ? List.<TargetStatsRecord>of() : records)
             .stream()
@@ -877,11 +899,13 @@ public class StatsRepository implements StatsStore {
                 .peek(record -> requireRecordForSnapshot(tableId, snapshotId, record))
                 .toList();
     Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
-    // Generations only enrich: fold the superseded generation's sketch payloads into same-target
-    // records before writing, so a scalar-only republish (e.g. a file-group rollup) never loses
-    // sketches an earlier capture already published for this unchanged snapshot. See
-    // StatsGenerationEnrichment for the contract and its deliberate boundaries.
-    canonicalRecords = carrySketchesFromSuperseded(tableId, snapshotId, canonicalRecords, current);
+    if (carryForwardSupersededSketches) {
+      // Incremental generations only enrich: fold the superseded generation's sketch payloads into
+      // same-target records before writing, so a scalar-only republish never loses sketches an
+      // earlier capture already published for this unchanged snapshot.
+      canonicalRecords =
+          carrySketchesFromSuperseded(tableId, snapshotId, canonicalRecords, current);
+    }
     String generationId = newGenerationId();
 
     try {

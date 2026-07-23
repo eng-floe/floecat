@@ -3571,12 +3571,49 @@ class DurableReconcileJobStoreTest {
     Mockito.verify(statsStore, Mockito.times(1))
         .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
 
-    runCancellationMaintenance();
+    runProjectionMaintenance();
+    Mockito.verify(statsStore, Mockito.times(1))
+        .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
+
+    runStatsCleanupMaintenance();
     Mockito.verify(statsStore, Mockito.times(2))
         .deleteUnpublishedStatsGeneration(tableId, 55L, "full-rescan-" + snapshotJobId);
 
-    runCancellationMaintenance();
+    runStatsCleanupMaintenance();
     Mockito.verifyNoMoreInteractions(statsStore);
+  }
+
+  @Test
+  void abandonedStatsCleanupAdvancesPastPartialPageOnNextRun() throws Exception {
+    ReconcileJobIndexStore indexStore = Mockito.mock(ReconcileJobIndexStore.class);
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    store.jobIndexStore = indexStore;
+    store.statsStore = statsStore;
+    StoredReconcileJob skipped = new StoredReconcileJob();
+
+    Mockito.when(indexStore.listStoredJobsInState("JS_FAILED", 128, ""))
+        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(), "failed-page-2"));
+    Mockito.when(indexStore.listStoredJobsInState("JS_FAILED", 128, "failed-page-2"))
+        .thenAnswer(
+            ignored -> {
+              Thread.sleep(30L);
+              return new ReconcileJobIndexStore.StoredJobPage(List.of(skipped), "failed-page-3");
+            });
+    Mockito.when(indexStore.listStoredJobsInState("JS_FAILED", 128, "failed-page-3"))
+        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(), ""));
+    Mockito.when(indexStore.listStoredJobsInState("JS_CANCELLED", 128, ""))
+        .thenReturn(new ReconcileJobIndexStore.StoredJobPage(List.of(), ""));
+
+    store.runAbandonedFullRescanStatsCleanupMaintenanceOnce(20L);
+    store.runAbandonedFullRescanStatsCleanupMaintenanceOnce(1_000L);
+
+    Mockito.verify(indexStore, Mockito.times(1)).listStoredJobsInState("JS_FAILED", 128, "");
+    Mockito.verify(indexStore, Mockito.times(1))
+        .listStoredJobsInState("JS_FAILED", 128, "failed-page-2");
+    Mockito.verify(indexStore, Mockito.times(1))
+        .listStoredJobsInState("JS_FAILED", 128, "failed-page-3");
+    Mockito.verify(indexStore, Mockito.times(1)).listStoredJobsInState("JS_CANCELLED", 128, "");
+    Mockito.verifyNoInteractions(statsStore);
   }
 
   @Test
@@ -4603,6 +4640,139 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void cancelledFinalizedParentStillCancelsQueuedCanonicalChildren() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId),
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.state = "JS_CANCELLED";
+                      current.message = "Cancelled";
+                      current.startedAtMs = Math.max(current.startedAtMs, 50L);
+                      current.finishedAtMs = Math.max(current.finishedAtMs, 100L);
+                      current.childrenFinalized = true;
+                      current.expectedDirectChildren = Math.max(1L, current.expectedDirectChildren);
+                      current.readyPointerKey = null;
+                      current.nextAttemptAtMs = 0L;
+                      return current;
+                    }));
+
+    store.cancel(ACCOUNT_ID, connectorJobId, "Cancelled");
+
+    String cleanupKey = Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId);
+    assertTrue(store.pointerStore.get(cleanupKey).isPresent());
+
+    runCancellationMaintenance();
+
+    assertEquals("JS_CANCELLED", store.getLeaseView(connectorJobId).orElseThrow().state);
+    assertEquals("JS_CANCELLED", store.getLeaseView(tableJobId).orElseThrow().state);
+    assertTrue(store.pointerStore.get(cleanupKey).isEmpty());
+    assertTrue(store.leaseNext(ReconcileJobStore.LeaseRequest.all()).isEmpty());
+  }
+
+  @Test
+  void cancelledFinalizedHierarchyStillCancelsQueuedGrandchildren() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileSnapshotTask.of("table-1", 1L, "db", "orders", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            tableJobId,
+            "");
+
+    for (String jobId : List.of(connectorJobId, tableJobId)) {
+      assertDoesNotThrow(
+          () ->
+              invokePrivateMethod(
+                  store,
+                  "mutateByCanonicalPointerReturningRecord",
+                  new Class<?>[] {String.class, UnaryOperator.class},
+                  Keys.reconcileJobPointerById(ACCOUNT_ID, jobId),
+                  (UnaryOperator<StoredReconcileJob>)
+                      current -> {
+                        current.state = "JS_CANCELLED";
+                        current.message = "Cancelled";
+                        current.startedAtMs = Math.max(current.startedAtMs, 50L);
+                        current.finishedAtMs = Math.max(current.finishedAtMs, 100L);
+                        current.childrenFinalized = true;
+                        current.expectedDirectChildren =
+                            Math.max(1L, current.expectedDirectChildren);
+                        current.readyPointerKey = null;
+                        current.nextAttemptAtMs = 0L;
+                        return current;
+                      }));
+    }
+
+    store.cancel(ACCOUNT_ID, connectorJobId, "Cancelled");
+
+    runCancellationMaintenance();
+    runCancellationMaintenance();
+    runCancellationMaintenance();
+
+    assertEquals("JS_CANCELLED", store.getLeaseView(connectorJobId).orElseThrow().state);
+    assertEquals("JS_CANCELLED", store.getLeaseView(tableJobId).orElseThrow().state);
+    assertEquals("JS_CANCELLED", store.getLeaseView(snapshotJobId).orElseThrow().state);
+    assertTrue(
+        store
+            .pointerStore
+            .get(Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId))
+            .isEmpty());
+    assertTrue(
+        store
+            .pointerStore
+            .get(Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, tableJobId))
+            .isEmpty());
+    assertTrue(store.leaseNext(ReconcileJobStore.LeaseRequest.all()).isEmpty());
+  }
+
+  @Test
   void enqueueDoesNotDedupeToStaleCancellingRoot() {
     String connectorJobId =
         store.enqueue(
@@ -5428,6 +5598,10 @@ class DurableReconcileJobStoreTest {
 
   private void runCancellationMaintenance() {
     store.runCancellationMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
+  }
+
+  private void runStatsCleanupMaintenance() {
+    store.runAbandonedFullRescanStatsCleanupMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
   }
 
   private void requestCancellationCleanup(String accountId, String rootJobId) {

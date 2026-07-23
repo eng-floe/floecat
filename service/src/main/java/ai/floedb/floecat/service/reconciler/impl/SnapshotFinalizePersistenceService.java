@@ -44,7 +44,7 @@ public class SnapshotFinalizePersistenceService {
   public long replaceAllStatsForSnapshot(
       ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {
     List<TargetStatsRecord> canonical = canonicalize(records);
-    statsStore.replaceAllStatsForSnapshot(tableId, snapshotId, canonical);
+    statsStore.replaceAllStatsForSnapshot(tableId, snapshotId, canonical, false);
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
     commitGenerationToRoot(tableId, snapshotId);
     return canonical.size();
@@ -56,7 +56,8 @@ public class SnapshotFinalizePersistenceService {
       String generationId,
       List<TargetStatsRecord> aggregateRecords) {
     List<TargetStatsRecord> canonicalAggregates = canonicalize(aggregateRecords);
-    statsStore.publishStatsGeneration(tableId, snapshotId, generationId, canonicalAggregates);
+    statsStore.publishStatsGeneration(
+        tableId, snapshotId, generationId, canonicalAggregates, false);
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
     commitGenerationToRoot(tableId, snapshotId);
     return canonicalAggregates.size();
@@ -111,7 +112,7 @@ public class SnapshotFinalizePersistenceService {
             null);
     if (fullRescan) {
       statsStore.replaceAllStatsForSnapshot(
-          tableId, snapshotId, List.of(TargetStatsRecords.canonicalize(zeroMarker)));
+          tableId, snapshotId, List.of(TargetStatsRecords.canonicalize(zeroMarker)), false);
       statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
       commitGenerationToRoot(tableId, snapshotId);
       return 1L;
