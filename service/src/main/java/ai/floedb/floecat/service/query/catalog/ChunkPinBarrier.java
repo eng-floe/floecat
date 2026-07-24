@@ -183,10 +183,14 @@ final class ChunkPinBarrier {
     if (incomingPins == null || incomingPins.getPinsCount() == 0) {
       return;
     }
+    RelationPinSet accumulatedPins = pendingChunkPins;
     try {
-      pendingChunkPins = QueryPins.mergeSets(pendingChunkPins, incomingPins, correlationId);
+      pendingChunkPins = QueryPins.mergeSets(accumulatedPins, incomingPins, correlationId);
     } catch (RuntimeException | Error e) {
-      queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(incomingPins));
+      List<String> rootsToRelease = new ArrayList<>(QueryPins.gcRootUris(accumulatedPins));
+      rootsToRelease.addAll(QueryPins.gcRootUris(incomingPins));
+      pendingChunkPins = RelationPinSet.getDefaultInstance();
+      queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), rootsToRelease);
       throw e;
     }
   }

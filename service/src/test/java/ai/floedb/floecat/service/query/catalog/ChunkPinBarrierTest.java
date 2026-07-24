@@ -24,10 +24,13 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.RelationNode;
+import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.ResolvedRelation;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.TimingAccumulator;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
@@ -35,10 +38,16 @@ import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestS
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.TestQueryContextStore;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.TestQueryInputResolver;
 import ai.floedb.floecat.service.query.impl.QueryContext;
+import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
+import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
+import com.google.protobuf.Timestamp;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -151,6 +160,27 @@ class ChunkPinBarrierTest {
   }
 
   @Test
+  void accumulateMergeFailureReleasesPriorAndIncomingPinBlobs() {
+    RecordingReleaseStore store = new RecordingReleaseStore();
+    store.seed(ctx());
+    ChunkPinBarrier barrier =
+        new ChunkPinBarrier(new SnapshotAwareResolver(), store, ctx(), CID, timings);
+
+    barrier.accumulate(List.of(resolved(TABLE_A, selected(TABLE_A, 1L))), PhaseDiagnostics.NOOP);
+
+    assertThatThrownBy(
+            () ->
+                barrier.accumulate(
+                    List.of(resolved(TABLE_A, selected(TABLE_A, 2L))), PhaseDiagnostics.NOOP))
+        .isInstanceOf(RuntimeException.class);
+
+    assertThat(barrier.pendingPinCount()).isZero();
+    assertThat(store.releasedQueryIds()).containsExactly(QID);
+    assertThat(store.releasedBlobUris())
+        .contains("s3://TABLE_A/snap-1.pb", "s3://TABLE_A/snap-2.pb");
+  }
+
+  @Test
   void emptyAccumulateThenCommitIsANoOp() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
@@ -172,6 +202,10 @@ class ChunkPinBarrierTest {
   }
 
   private ResolvedRelation resolved(ResourceId table) {
+    return resolved(table, QueryInput.newBuilder().setTableId(table).build());
+  }
+
+  private ResolvedRelation resolved(ResourceId table, QueryInput selectedInput) {
     RelationNode node = (RelationNode) overlay.resolve(table).orElseThrow();
     return new ResolvedRelation(
         TableReferenceCandidate.newBuilder()
@@ -179,8 +213,15 @@ class ChunkPinBarrierTest {
             .build(),
         table,
         node,
-        QueryInput.newBuilder().setTableId(table).build(),
+        selectedInput,
         overlay.tableName(table).orElse(NameRef.newBuilder().setName(node.displayName()).build()));
+  }
+
+  private static QueryInput selected(ResourceId table, long snapshotId) {
+    return QueryInput.newBuilder()
+        .setTableId(table)
+        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
+        .build();
   }
 
   private TestQueryContextStore seededStore() {
@@ -205,6 +246,37 @@ class ChunkPinBarrierTest {
         .version(1)
         .queryDefaultCatalogId(CATALOG)
         .build();
+  }
+
+  private static final class SnapshotAwareResolver extends QueryInputResolver {
+    private SnapshotAwareResolver() {
+      super(null);
+    }
+
+    @Override
+    public ResolutionResult resolveInputs(
+        String queryId,
+        String correlationId,
+        List<QueryInput> inputs,
+        Optional<Timestamp> asOfDefault,
+        Optional<ResourceId> defaultCatalogId,
+        Map<ResourceId, CompletableFuture<ai.floedb.floecat.query.rpc.TablePin>>
+            currentSnapshotPinCache,
+        PhaseDiagnostics diagnostics) {
+      RelationPinSet.Builder pins = RelationPinSet.newBuilder();
+      List<ResourceId> resolved = new ArrayList<>(inputs.size());
+      for (QueryInput input : inputs) {
+        ResourceId tableId = input.getTableId();
+        long snapshotId = input.getSnapshot().getSnapshotId();
+        resolved.add(tableId);
+        pins.addPins(
+            QueryPins.ofTable(
+                SnapshotTestSupport.blobBackedPin(tableId, snapshotId).toBuilder()
+                    .setPinKind(PinKind.PIN_KIND_SNAPSHOT_ID)
+                    .build()));
+      }
+      return new ResolutionResult(resolved, pins.build(), null);
+    }
   }
 
   /**
