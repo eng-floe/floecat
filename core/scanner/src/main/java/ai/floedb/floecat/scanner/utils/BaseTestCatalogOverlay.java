@@ -128,6 +128,12 @@ public abstract class BaseTestCatalogOverlay implements CatalogOverlay {
   }
 
   @Override
+  public Optional<ResourceId> resolveName(
+      String correlationId, NameRef ref, EngineContext engineContext) {
+    throw unsupported();
+  }
+
+  @Override
   public TablePin tablePinFor(
       String correlationId,
       ResourceId tableId,

@@ -205,6 +205,25 @@ public interface CatalogOverlay {
   }
 
   /**
+   * Batch name resolution with an explicit engine context. Prefer this wherever the caller already
+   * holds the request's engine context (e.g. across an executor/thread hop, where the ambient
+   * context may be absent or different): resolving a system relation under the wrong context yields
+   * a spurious NOT_FOUND that a name memo would then cache permanently. The default loops the
+   * explicit-context {@link #resolveName(String, NameRef, EngineContext)}; overlays backed by
+   * per-name storage reads should override so names sharing a catalog/namespace resolve their scope
+   * once per batch. The default preserves compatibility for overlays that resolve names without
+   * engine context; override to enable engine-specific resolution.
+   */
+  default java.util.Map<NameRef, Optional<ResourceId>> resolveNames(
+      String correlationId, List<NameRef> refs, EngineContext engineContext) {
+    var out = new java.util.LinkedHashMap<NameRef, Optional<ResourceId>>(refs.size());
+    for (NameRef ref : refs) {
+      out.computeIfAbsent(ref, r -> resolveName(correlationId, r, engineContext));
+    }
+    return out;
+  }
+
+  /**
    * Resolves a relation (table or view) by name reference using an explicit engine context.
    *
    * <p>Prefer this overload wherever the caller already holds the request's engine context — see
