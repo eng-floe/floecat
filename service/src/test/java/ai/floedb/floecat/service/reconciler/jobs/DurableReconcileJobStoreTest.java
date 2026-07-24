@@ -1455,7 +1455,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void terminalChildCommitDoesNotSynchronouslyRollUpParentBeforeDirtyProjectionSignal() {
+  void terminalChildCommitAtomicallyQueuesDirtyParentProjection() {
     String connectorJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -1495,16 +1495,7 @@ class DurableReconcileJobStoreTest {
     var tableLease = leaseJob(tableJobId);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
 
-    PointerStore originalPointerStore = store.pointerStore;
-    store.pointerStore = new DirtyParentFailingPointerStore(originalPointerStore);
-
-    IllegalStateException thrown =
-        assertThrows(
-            IllegalStateException.class,
-            () ->
-                store.markSucceeded(
-                    tableJobId, tableLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L, 0L, 0L));
-    assertTrue(thrown.getMessage().contains("Failed to mark reconcile parent dirty"));
+    store.markSucceeded(tableJobId, tableLease.leaseEpoch, 200L, 1L, 1L, 0L, 0L, 0L, 0L);
 
     StoredReconcileJob connectorCanonical =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
@@ -1513,6 +1504,11 @@ class DurableReconcileJobStoreTest {
 
     assertEquals("JS_SUCCEEDED", tableCanonical.state);
     assertEquals("JS_WAITING", connectorCanonical.state);
+    assertTrue(
+        store
+            .pointerStore
+            .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, connectorJobId))
+            .isPresent());
   }
 
   @Test
@@ -4883,6 +4879,46 @@ class DurableReconcileJobStoreTest {
     assertTrue(secondFinalized.isPresent());
     assertEquals(secondJobId, secondFinalized.orElseThrow().finalizerJobId);
     assertEquals(400L, secondFinalized.orElseThrow().finalizedAtMs);
+  }
+
+  @Test
+  void atomicSnapshotFinalizeSuccessRecordsFinalizedSnapshot() {
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
+
+    String jobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    var lease = leaseJob(jobId);
+    store.markRunning(jobId, lease.leaseEpoch, 100L, "executor-finalizer");
+    assertTrue(
+        store.completeSnapshotFinalizeSuccess(
+            jobId,
+            lease.leaseEpoch,
+            "result-1",
+            "s3://bucket/capture-manifest.pb",
+            123L,
+            "manifest-sha256",
+            1,
+            3,
+            4L,
+            200L,
+            "Finalized snapshot capture 55"));
+
+    Optional<ReconcileJobStore.FinalizedSnapshotEvent> finalized =
+        store.getFinalizedSnapshot(ACCOUNT_ID, "table-1", 55L);
+    assertTrue(finalized.isPresent());
+    assertEquals(jobId, finalized.orElseThrow().finalizerJobId);
+    assertEquals(200L, finalized.orElseThrow().finalizedAtMs);
   }
 
   @Test

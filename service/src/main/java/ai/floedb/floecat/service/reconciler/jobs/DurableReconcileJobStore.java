@@ -1787,24 +1787,32 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                       },
                       this::projectionRefreshMarkerTouchesForRecord)
                   .map(env -> new StoredEnvelope(env.canonicalPointerKey(), env.record()));
+          boolean accepted;
           if (updated.isPresent()) {
             projectionMaintenance().signalWork();
-            return true;
+            accepted = true;
+          } else {
+            StoredEnvelope terminal = loadByAnyAccount(jobId).orElse(null);
+            StoredReconcileJob record = terminal == null ? null : terminal.record;
+            accepted =
+                record != null
+                    && "JS_SUCCEEDED".equals(blankToEmpty(record.state))
+                    && blankToEmpty(leaseEpoch)
+                        .equals(blankToEmpty(record.snapshotFinalizeResultLeaseEpoch))
+                    && blankToEmpty(resultId).equals(blankToEmpty(record.snapshotFinalizeResultId))
+                    && blankToEmpty(manifestUri)
+                        .equals(blankToEmpty(record.snapshotFinalizeManifestUri))
+                    && manifestBytes == record.snapshotFinalizeManifestBytes
+                    && blankToEmpty(manifestSha256)
+                        .equals(blankToEmpty(record.snapshotFinalizeManifestSha256))
+                    && fileGroupCount == record.snapshotFinalizeFileGroupCount
+                    && sourceFileCount == record.snapshotFinalizeSourceFileCount
+                    && statsRecordCount == record.snapshotFinalizeStatsRecordCount;
           }
-          StoredEnvelope terminal = loadByAnyAccount(jobId).orElse(null);
-          StoredReconcileJob record = terminal == null ? null : terminal.record;
-          return record != null
-              && "JS_SUCCEEDED".equals(blankToEmpty(record.state))
-              && blankToEmpty(leaseEpoch)
-                  .equals(blankToEmpty(record.snapshotFinalizeResultLeaseEpoch))
-              && blankToEmpty(resultId).equals(blankToEmpty(record.snapshotFinalizeResultId))
-              && blankToEmpty(manifestUri).equals(blankToEmpty(record.snapshotFinalizeManifestUri))
-              && manifestBytes == record.snapshotFinalizeManifestBytes
-              && blankToEmpty(manifestSha256)
-                  .equals(blankToEmpty(record.snapshotFinalizeManifestSha256))
-              && fileGroupCount == record.snapshotFinalizeFileGroupCount
-              && sourceFileCount == record.snapshotFinalizeSourceFileCount
-              && statsRecordCount == record.snapshotFinalizeStatsRecordCount;
+          if (accepted) {
+            recordFinalizedSnapshotIfEligible(jobId);
+          }
+          return accepted;
         });
   }
 

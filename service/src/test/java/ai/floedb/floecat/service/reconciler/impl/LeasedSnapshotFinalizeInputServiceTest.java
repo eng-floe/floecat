@@ -100,10 +100,14 @@ class LeasedSnapshotFinalizeInputServiceTest {
                 List.of(plannedGroup),
                 List.of("s3://bucket/file-1.parquet"),
                 ""));
-    when(jobs.childJobsPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
+    when(jobs.childJobStatesPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
         .thenReturn(
-            new ReconcileJobStore.ReconcileJobPage(
-                List.of(childJob("JS_RUNNING", plannedGroup, ReconcileFileGroupTask.empty())), ""));
+            new ReconcileJobStore.ChildJobStatePage(
+                List.of(
+                    new ReconcileJobStore.ChildJobState(
+                        childJob("JS_RUNNING", plannedGroup, ReconcileFileGroupTask.empty()),
+                        null)),
+                ""));
 
     StatusRuntimeException error =
         assertThrows(
@@ -157,14 +161,14 @@ class LeasedSnapshotFinalizeInputServiceTest {
                 List.of(plannedGroup),
                 List.of("s3://bucket/file-1.parquet"),
                 ""));
-    when(jobs.childJobsPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
+    when(jobs.childJobStatesPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
         .thenReturn(
-            new ReconcileJobStore.ReconcileJobPage(
-                List.of(childJob("JS_SUCCEEDED", plannedGroup, persistedGroup)), ""));
-    when(jobs.childFileGroupResultDescriptorsPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
-        .thenReturn(
-            new ReconcileJobStore.FileGroupResultDescriptorPage(
-                List.of(resultDescriptor(plannedGroup)), ""));
+            new ReconcileJobStore.ChildJobStatePage(
+                List.of(
+                    new ReconcileJobStore.ChildJobState(
+                        childJob("JS_SUCCEEDED", plannedGroup, persistedGroup),
+                        resultDescriptor(plannedGroup))),
+                ""));
 
     var payload = service.resolve(principal, FINALIZE_JOB_ID, LEASE_EPOCH);
 
@@ -256,14 +260,14 @@ class LeasedSnapshotFinalizeInputServiceTest {
                 List.of(plannedGroup),
                 List.of("s3://bucket/file-1.parquet"),
                 ""));
-    when(jobs.childJobsPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
+    when(jobs.childJobStatesPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
         .thenReturn(
-            new ReconcileJobStore.ReconcileJobPage(
-                List.of(childJob("JS_SUCCEEDED", plannedGroup, persistedGroup)), ""));
-    when(jobs.childFileGroupResultDescriptorsPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
-        .thenReturn(
-            new ReconcileJobStore.FileGroupResultDescriptorPage(
-                List.of(resultDescriptor(plannedGroup)), ""));
+            new ReconcileJobStore.ChildJobStatePage(
+                List.of(
+                    new ReconcileJobStore.ChildJobState(
+                        childJob("JS_SUCCEEDED", plannedGroup, persistedGroup),
+                        resultDescriptor(plannedGroup))),
+                ""));
 
     var payload = service.resolve(principal, FINALIZE_JOB_ID, LEASE_EPOCH);
 
