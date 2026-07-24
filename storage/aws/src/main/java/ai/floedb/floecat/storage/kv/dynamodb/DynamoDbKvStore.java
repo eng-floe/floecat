@@ -440,6 +440,11 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
         tx.add(TransactWriteItem.builder().put(put.build()).build());
 
+      } else if (op instanceof TxnPutUnconditional p) {
+        tx.add(
+            TransactWriteItem.builder()
+                .put(Put.builder().tableName(table).item(recordToAv(p.record())).build())
+                .build());
       } else if (op instanceof TxnDelete d) {
         var del =
             Delete.builder()

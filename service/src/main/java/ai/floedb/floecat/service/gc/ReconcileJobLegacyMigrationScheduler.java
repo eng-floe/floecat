@@ -45,7 +45,6 @@ public class ReconcileJobLegacyMigrationScheduler {
   Duration leaseDuration = Duration.ofMinutes(5);
 
   private GcMetrics metrics;
-  private volatile boolean cleanupComplete;
   private volatile boolean lookupComplete;
   String ownerId = UUID.randomUUID().toString();
   LongSupplier currentTimeMillis = System::currentTimeMillis;
@@ -85,161 +84,9 @@ public class ReconcileJobLegacyMigrationScheduler {
         metrics.recordError(1, Tag.of(TagKey.RESULT, "lookup-failed"));
         LOG.warnf(t, "reconcile job legacy lookup migration tick failed");
       }
-      try {
-        runCleanupSlice(gc);
-      } catch (Throwable t) {
-        metrics.recordError(1, Tag.of(TagKey.RESULT, "cleanup-failed"));
-        LOG.warnf(t, "reconcile job legacy cleanup migration tick failed");
-      }
     } finally {
       metrics.recordPause(
           Duration.ofNanos(System.nanoTime() - started), Tag.of(TagKey.RESULT, "tick"));
-    }
-  }
-
-  private void runCleanupSlice(ReconcileJobGc gc) {
-    if (cleanupComplete) {
-      return;
-    }
-    if (!gc.legacyMigrationComplete(ReconcileJobIndexBackend.LegacyMigration.LOOKUP)) {
-      return;
-    }
-    if (gc.legacyMigrationComplete(ReconcileJobIndexBackend.LegacyMigration.CLEANUP)) {
-      cleanupComplete = true;
-      return;
-    }
-    long nowMs = currentTimeMillis.getAsLong();
-    long leaseDurationMs = Math.max(1L, leaseDuration.toMillis());
-    var lease =
-        gc.acquireLegacyMigrationLease(
-                ReconcileJobIndexBackend.LegacyMigration.CLEANUP, ownerId, nowMs, leaseDurationMs)
-            .orElse(null);
-    if (lease == null) {
-      return;
-    }
-    var stored = lease.progress();
-    if (stored.quietPassComplete()) {
-      cleanupComplete =
-          gc.completeLegacyMigration(
-              ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
-              ownerId,
-              lease.fence(),
-              currentTimeMillis.getAsLong());
-      if (cleanupComplete) {
-        recordCleanupResiduals(stored.unresolvable(), stored.conflicted());
-      }
-      return;
-    }
-
-    // Persist a conservative change before doing side effects. If the slice succeeds, the
-    // checkpoint below replaces it with the real count. If the process or lease is lost, the
-    // sentinel survives and forces a full quiet verification pass.
-    var inFlight =
-        new ReconcileJobIndexBackend.LegacyMigrationProgress(
-            stored.pageToken(),
-            Math.max(1, stored.changed()),
-            stored.unresolvable(),
-            stored.conflicted(),
-            stored.retryable(),
-            false);
-    if (!gc.checkpointLegacyMigration(
-        ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
-        ownerId,
-        lease.fence(),
-        inFlight,
-        currentTimeMillis.getAsLong(),
-        leaseDurationMs)) {
-      recordCheckpointRejected(
-          ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
-          "pre-slice",
-          lease.fence(),
-          leaseDurationMs);
-      return;
-    }
-
-    var result = gc.runLegacyCleanupMigrationSlice(stored.pageToken());
-    int passUnresolvable = add(stored.unresolvable(), result.unresolvable());
-    int passConflicted = add(stored.conflicted(), result.conflicted());
-    int passRetryable = add(stored.retryable(), result.retryable());
-    int passChanged =
-        add(stored.changed(), add(result.manifestsUpdated(), result.indexesBackfilled()));
-    String nextToken = blankToEmpty(result.nextToken());
-    String previousToken = blankToEmpty(stored.pageToken());
-    metrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "cleanup-scanned"));
-    metrics.recordCollection(
-        result.manifestsUpdated(), Tag.of(TagKey.RESULT, "cleanup-manifests-updated"));
-    metrics.recordCollection(
-        result.indexesBackfilled(), Tag.of(TagKey.RESULT, "cleanup-indexes-backfilled"));
-    metrics.recordCollection(result.unresolvable(), Tag.of(TagKey.RESULT, "cleanup-unresolvable"));
-    metrics.recordCollection(result.conflicted(), Tag.of(TagKey.RESULT, "cleanup-conflicted"));
-    metrics.recordCollection(result.retryable(), Tag.of(TagKey.RESULT, "cleanup-retryable"));
-    if (!nextToken.isBlank() && nextToken.equals(previousToken)) {
-      metrics.recordError(1, Tag.of(TagKey.RESULT, "cleanup-non-advancing-token"));
-      LOG.warnf(
-          "reconcile job legacy cleanup migration returned a non-advancing page token; canonical GC remains gated until migration progress resumes");
-    }
-    boolean passEnded = nextToken.isBlank();
-    boolean quietPass = passEnded && passRetryable == 0 && passChanged == 0;
-    var checkpoint =
-        passEnded && !quietPass
-            ? ReconcileJobIndexBackend.LegacyMigrationProgress.empty()
-            : new ReconcileJobIndexBackend.LegacyMigrationProgress(
-                nextToken, passChanged, passUnresolvable, passConflicted, passRetryable, quietPass);
-    boolean checkpointed =
-        gc.checkpointLegacyMigration(
-            ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
-            ownerId,
-            lease.fence(),
-            checkpoint,
-            currentTimeMillis.getAsLong(),
-            leaseDurationMs);
-    if (!checkpointed) {
-      recordCheckpointRejected(
-          ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
-          "post-slice",
-          lease.fence(),
-          leaseDurationMs);
-      return;
-    }
-    if (quietPass) {
-      cleanupComplete =
-          gc.completeLegacyMigration(
-              ReconcileJobIndexBackend.LegacyMigration.CLEANUP,
-              ownerId,
-              lease.fence(),
-              currentTimeMillis.getAsLong());
-      if (cleanupComplete) {
-        recordCleanupResiduals(passUnresolvable, passConflicted);
-      }
-    }
-    if (!passEnded) {
-      return;
-    }
-    if (passRetryable > 0) {
-      metrics.recordError(1, Tag.of(TagKey.RESULT, "cleanup-blocked-retryable"));
-      LOG.warnf(
-          "reconcile job legacy cleanup migration pass will retry retryable=%d conflicted=%d; canonical GC remains gated until a quiet pass completes",
-          passRetryable, passConflicted);
-    } else if (passChanged > 0) {
-      LOG.infof(
-          "reconcile job legacy cleanup migration changed rows=%d; running a quiet verification pass",
-          passChanged);
-    }
-  }
-
-  private void recordCleanupResiduals(int unresolvable, int conflicted) {
-    if (unresolvable > 0) {
-      metrics.recordCollection(
-          unresolvable, Tag.of(TagKey.RESULT, "cleanup-completed-unresolvable"));
-      LOG.warnf(
-          "reconcile job legacy cleanup migration completed with unresolvable rows=%d; affected rows require operator review",
-          unresolvable);
-    }
-    if (conflicted > 0) {
-      metrics.recordCollection(conflicted, Tag.of(TagKey.RESULT, "cleanup-completed-conflicted"));
-      LOG.warnf(
-          "reconcile job legacy cleanup migration completed with conflicts=%d; affected legacy rows require operator review",
-          conflicted);
     }
   }
 
@@ -355,8 +202,7 @@ public class ReconcileJobLegacyMigrationScheduler {
       String phase,
       long fence,
       long leaseDurationMs) {
-    String migrationName =
-        migration == ReconcileJobIndexBackend.LegacyMigration.CLEANUP ? "cleanup" : "lookup";
+    String migrationName = "lookup";
     metrics.recordError(
         1, Tag.of(TagKey.RESULT, migrationName + "-" + phase + "-checkpoint-rejected"));
     LOG.warnf(

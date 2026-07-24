@@ -399,6 +399,9 @@ public interface ReconcileJobStore {
   FileGroupResultDescriptorPage childFileGroupResultDescriptorsPage(
       String accountId, String parentJobId, int pageSize, String pageToken);
 
+  ChildJobStatePage childJobStatesPage(
+      String accountId, String parentJobId, int pageSize, String pageToken);
+
   default List<ReconcileJob> childJobs(String accountId, String parentJobId) {
     return childJobsPage(accountId, parentJobId, Integer.MAX_VALUE, "").jobs;
   }
@@ -1880,6 +1883,16 @@ public interface ReconcileJobStore {
     public ReconcileJobPage(List<ReconcileJob> jobs, String nextPageToken) {
       this.jobs = jobs == null ? List.of() : List.copyOf(jobs);
       this.nextPageToken = nextPageToken == null ? "" : nextPageToken;
+    }
+  }
+
+  record ChildJobState(
+      ReconcileJob job, ReconcileFileGroupResultDescriptor fileGroupResultDescriptor) {}
+
+  record ChildJobStatePage(List<ChildJobState> states, String nextPageToken) {
+    public ChildJobStatePage {
+      states = states == null ? List.of() : List.copyOf(states);
+      nextPageToken = nextPageToken == null ? "" : nextPageToken;
     }
   }
 

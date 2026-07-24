@@ -312,6 +312,7 @@ public class ReconcileAncestorRollupService {
     String currentChildExecutorId = blankToEmpty(currentProjected.executorId());
     boolean leaseOwnsCanonicalState =
         !ignoreParentLeaseLiveness
+            && "JS_RUNNING".equals(blankToEmpty(parent.state))
             && leaseLiveness.hasLiveLease(parent, true, System.currentTimeMillis());
     String state = blankToEmpty(parent.state);
     String message = blankToEmpty(parent.message);

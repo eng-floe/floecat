@@ -16,17 +16,10 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.queue;
 
-import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReadyQueuePruneSupport;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReadyQueuePruneSupport.ReadyEntryPruneReason;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileJobIndexStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileLeaseStore;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueBackend;
-import ai.floedb.floecat.service.reconciler.jobs.durable.store.ReconcileReadyQueueStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.function.Predicate;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -41,34 +34,21 @@ public class ReconcileLeaseMaintenanceService {
   }
 
   private ReconcileLeaseStore leaseStore;
-  private ReconcileReadyQueueBackend readyQueueBackend;
-  private ReconcileReadyQueueStore readyQueueStore;
-  private ReconcileJobIndexStore jobIndexStore;
   private ReclaimCanonicalJob reclaimExpiredLeaseFromCanonicalPointer;
-  private Predicate<StoredReconcileJob> blockedByCancellation;
   private int readyScanLimit;
   private long reclaimIntervalMs;
 
   private volatile long lastReclaimAtMs;
   private volatile String leaseExpiryScanToken = "";
-  private volatile String readyQueueScanToken = "";
   private final ReentrantLock reclaimLock = new ReentrantLock();
 
   public void bind(
       ReconcileLeaseStore leaseStore,
-      ReconcileReadyQueueBackend readyQueueBackend,
-      ReconcileReadyQueueStore readyQueueStore,
-      ReconcileJobIndexStore jobIndexStore,
       ReclaimCanonicalJob reclaimExpiredLeaseFromCanonicalPointer,
-      Predicate<StoredReconcileJob> blockedByCancellation,
       int readyScanLimit,
       long reclaimIntervalMs) {
     this.leaseStore = leaseStore;
-    this.readyQueueBackend = readyQueueBackend;
-    this.readyQueueStore = readyQueueStore;
-    this.jobIndexStore = jobIndexStore;
     this.reclaimExpiredLeaseFromCanonicalPointer = reclaimExpiredLeaseFromCanonicalPointer;
-    this.blockedByCancellation = blockedByCancellation;
     this.readyScanLimit = readyScanLimit;
     this.reclaimIntervalMs = reclaimIntervalMs;
   }
@@ -77,8 +57,7 @@ public class ReconcileLeaseMaintenanceService {
     long startedAtMs = System.currentTimeMillis();
     long deadlineMs = maxMillis <= 0L ? startedAtMs : startedAtMs + Math.max(1L, maxMillis);
     LeaseReclaimStats reclaimStats = reclaimExpiredLeasesIfDue(startedAtMs, deadlineMs);
-    ReadyPruneStats readyStats = pruneStaleReadyPointers(deadlineMs);
-    logMaintenanceSummary(startedAtMs, reclaimStats, readyStats);
+    logMaintenanceSummary(startedAtMs, reclaimStats);
   }
 
   private LeaseReclaimStats reclaimExpiredLeasesIfDue(long nowMs, long deadlineMs) {
@@ -150,125 +129,39 @@ public class ReconcileLeaseMaintenanceService {
     }
   }
 
-  private ReadyPruneStats pruneStaleReadyPointers(long deadlineMs) {
-    if (readyQueueBackend == null || readyQueueStore == null || jobIndexStore == null) {
-      return ReadyPruneStats.empty();
-    }
-    String token = blankToEmpty(readyQueueScanToken);
-    int pages = 0;
-    int scanned = 0;
-    int pruned = 0;
-    int blockedPruned = 0;
-    while (true) {
-      if (System.currentTimeMillis() > deadlineMs) {
-        return new ReadyPruneStats(false, pages, scanned, pruned, blockedPruned);
-      }
-      ReconcileReadyQueueBackend.ReadyQueueScanPage page =
-          readyQueueBackend.scanAllReadyEntries(readyScanLimit, token);
-      if (page.entries().isEmpty()) {
-        readyQueueScanToken = "";
-        return new ReadyPruneStats(true, pages, scanned, pruned, blockedPruned);
-      }
-      for (ReconcileReadyQueueStore.ReadyQueueEntry readyEntry : page.entries()) {
-        if (System.currentTimeMillis() > deadlineMs) {
-          return new ReadyPruneStats(false, pages, scanned, pruned, blockedPruned);
-        }
-        scanned++;
-        ReadyEntryPruneReason pruneReason =
-            ReadyQueuePruneSupport.readyEntryPruneReason(
-                readyEntry,
-                readyQueueBackend,
-                readyQueueStore,
-                jobIndexStore,
-                blockedByCancellation,
-                null);
-        if (pruneReason != ReadyEntryPruneReason.NONE
-            && readyQueueBackend.deleteReadyEntry(readyEntry.readyPointerKey())) {
-          pruned++;
-          if (pruneReason == ReadyEntryPruneReason.CANCELLATION_BLOCKED) {
-            blockedPruned++;
-          }
-        }
-      }
-
-      String nextToken = blankToEmpty(page.nextPageToken());
-      if (nextToken.isBlank()) {
-        readyQueueScanToken = "";
-        return new ReadyPruneStats(true, pages + 1, scanned, pruned, blockedPruned);
-      }
-      if (nextToken.equals(token)) {
-        LOG.warn(
-            "Reconcile ready maintenance pagination token did not advance; aborting scan to avoid"
-                + " livelock");
-        readyQueueScanToken = "";
-        return new ReadyPruneStats(true, pages + 1, scanned, pruned, blockedPruned);
-      }
-      readyQueueScanToken = nextToken;
-      token = nextToken;
-      pages++;
-      if (pages >= 10_000) {
-        LOG.warn("Reconcile ready maintenance pagination hit safety page cap; aborting scan");
-        readyQueueScanToken = "";
-        return new ReadyPruneStats(true, pages, scanned, pruned, blockedPruned);
-      }
-    }
-  }
-
-  private void logMaintenanceSummary(
-      long startedAtMs, LeaseReclaimStats reclaimStats, ReadyPruneStats readyStats) {
+  private void logMaintenanceSummary(long startedAtMs, LeaseReclaimStats reclaimStats) {
     long elapsedMs = System.currentTimeMillis() - startedAtMs;
     boolean noteworthy =
         !reclaimStats.completed()
             || reclaimStats.reclaimed() > 0
-            || !readyStats.completed()
-            || readyStats.pruned() > 0
-            || readyStats.blockedPruned() > 0
             || elapsedMs >= SLOW_MAINTENANCE_LOG_THRESHOLD_MS;
     if (!noteworthy) {
       LOG.debugf(
           "runLeaseMaintenanceOnce total_ms=%d"
               + " lease_reclaim_skipped=%s lease_reclaim_completed=%s lease_reclaim_pages=%d"
-              + " lease_reclaim_scanned=%d lease_reclaimed=%d"
-              + " ready_completed=%s ready_pages=%d ready_scanned=%d ready_pruned=%d"
-              + " ready_blocked_pruned=%d",
+              + " lease_reclaim_scanned=%d lease_reclaimed=%d",
           Long.valueOf(elapsedMs),
           Boolean.valueOf(reclaimStats.skipped()),
           Boolean.valueOf(reclaimStats.completed()),
           Integer.valueOf(reclaimStats.pages()),
           Integer.valueOf(reclaimStats.scanned()),
-          Integer.valueOf(reclaimStats.reclaimed()),
-          Boolean.valueOf(readyStats.completed()),
-          Integer.valueOf(readyStats.pages()),
-          Integer.valueOf(readyStats.scanned()),
-          Integer.valueOf(readyStats.pruned()),
-          Integer.valueOf(readyStats.blockedPruned()));
+          Integer.valueOf(reclaimStats.reclaimed()));
       return;
     }
     LOG.infof(
         "runLeaseMaintenanceOnce total_ms=%d"
             + " lease_reclaim_skipped=%s lease_reclaim_completed=%s lease_reclaim_pages=%d"
-            + " lease_reclaim_scanned=%d lease_reclaimed=%d"
-            + " ready_completed=%s ready_pages=%d ready_scanned=%d ready_pruned=%d"
-            + " ready_blocked_pruned=%d",
+            + " lease_reclaim_scanned=%d lease_reclaimed=%d",
         Long.valueOf(elapsedMs),
         Boolean.valueOf(reclaimStats.skipped()),
         Boolean.valueOf(reclaimStats.completed()),
         Integer.valueOf(reclaimStats.pages()),
         Integer.valueOf(reclaimStats.scanned()),
-        Integer.valueOf(reclaimStats.reclaimed()),
-        Boolean.valueOf(readyStats.completed()),
-        Integer.valueOf(readyStats.pages()),
-        Integer.valueOf(readyStats.scanned()),
-        Integer.valueOf(readyStats.pruned()),
-        Integer.valueOf(readyStats.blockedPruned()));
+        Integer.valueOf(reclaimStats.reclaimed()));
   }
 
   private static String blankToEmpty(String value) {
     return value == null ? "" : value.trim();
-  }
-
-  private static boolean blank(String value) {
-    return value == null || value.isBlank();
   }
 
   private record LeaseReclaimStats(
@@ -279,17 +172,6 @@ public class ReconcileLeaseMaintenanceService {
 
     boolean active() {
       return !completed || scanned > 0 || reclaimed > 0;
-    }
-  }
-
-  private record ReadyPruneStats(
-      boolean completed, int pages, int scanned, int pruned, int blockedPruned) {
-    static ReadyPruneStats empty() {
-      return new ReadyPruneStats(true, 0, 0, 0, 0);
-    }
-
-    boolean active() {
-      return !completed || scanned > 0 || pruned > 0 || blockedPruned > 0;
     }
   }
 }

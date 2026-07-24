@@ -25,12 +25,13 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
 
 @ApplicationScoped
 public class ReconcileJobProjectionStore {
   private static final int CAS_MAX = 8;
+
+  public record ProjectionSnapshot(StoredReconcileJobProjection projection, long pointerVersion) {}
 
   private PointerStore pointerStore;
   private ReconcilePayloadStore payloadStore;
@@ -46,12 +47,21 @@ public class ReconcileJobProjectionStore {
   }
 
   public Optional<StoredReconcileJobProjection> load(String accountId, String jobId) {
+    return Optional.ofNullable(loadSnapshot(accountId, jobId).projection());
+  }
+
+  public ProjectionSnapshot loadSnapshot(String accountId, String jobId) {
     if (blank(accountId) || blank(jobId)) {
-      return Optional.empty();
+      return new ProjectionSnapshot(null, 0L);
     }
-    return pointerStore
-        .get(Keys.reconcileJobProjectionPointer(accountId, jobId))
-        .flatMap(pointer -> payloadStore.readInlineJobProjection(pointer.getBlobUri()));
+    Pointer pointer =
+        pointerStore.get(Keys.reconcileJobProjectionPointer(accountId, jobId)).orElse(null);
+    if (pointer == null) {
+      return new ProjectionSnapshot(null, 0L);
+    }
+    return new ProjectionSnapshot(
+        payloadStore.readInlineJobProjection(pointer.getBlobUri()).orElse(null),
+        pointer.getVersion());
   }
 
   public void upsert(StoredReconcileJobProjection projection) {
@@ -71,7 +81,7 @@ public class ReconcileJobProjectionStore {
           && currentProjection.appliedGeneration() > projection.appliedGeneration()) {
         return;
       }
-      // Same-generation writers are allowed to converge via last-writer-wins; reads self-heal.
+      // Same-generation writers converge via last-writer-wins.
       if (current != null && blobUri.equals(current.getBlobUri())) {
         return;
       }
@@ -85,30 +95,26 @@ public class ReconcileJobProjectionStore {
   }
 
   public boolean upsertWithCanonicalMutation(
-      StoredReconcileJobProjection expectedProjection,
+      ProjectionSnapshot expected,
       StoredReconcileJobProjection projection,
-      ReconcileJobIndexStore.JobIndexWriteBatch canonicalMutation) {
+      ReconcileJobIndexStore.JobIndexWriteBatch canonicalMutation,
+      List<PointerStore.CasOp> additionalPointerOps) {
     if (projection == null || blank(projection.accountId()) || blank(projection.jobId())) {
       return true;
     }
     String key = Keys.reconcileJobProjectionPointer(projection.accountId(), projection.jobId());
     String blobUri = payloadStore.encodeInlineJobProjection(projection);
-    Pointer current = pointerStore.get(key).orElse(null);
-    long expectedVersion = current == null ? 0L : current.getVersion();
-    StoredReconcileJobProjection currentProjection =
-        current == null
-            ? null
-            : payloadStore.readInlineJobProjection(current.getBlobUri()).orElse(null);
-    if (!Objects.equals(currentProjection, expectedProjection)) {
-      return false;
+    long expectedVersion = expected == null ? 0L : expected.pointerVersion();
+    java.util.ArrayList<PointerStore.CasOp> pointerOps = new java.util.ArrayList<>();
+    pointerOps.add(
+        new PointerStore.CasUpsert(
+            key,
+            expectedVersion,
+            PointerReferences.inlineJsonPointer(key, blobUri, expectedVersion + 1L)));
+    if (additionalPointerOps != null) {
+      pointerOps.addAll(additionalPointerOps);
     }
-    return jobIndexStore.compareAndSetBatchWithPointerOps(
-        canonicalMutation,
-        List.of(
-            new PointerStore.CasUpsert(
-                key,
-                expectedVersion,
-                PointerReferences.inlineJsonPointer(key, blobUri, expectedVersion + 1L))));
+    return jobIndexStore.compareAndSetBatchWithPointerOps(canonicalMutation, pointerOps);
   }
 
   public void delete(String accountId, String jobId) {

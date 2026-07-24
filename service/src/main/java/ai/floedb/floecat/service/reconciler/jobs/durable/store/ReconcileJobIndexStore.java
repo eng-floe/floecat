@@ -242,13 +242,13 @@ public interface ReconcileJobIndexStore {
 
   JobIndexWriteBatch buildJobDeleteBatch(CanonicalPointerSnapshot currentSnapshot);
 
-  JobIndexWriteBatch buildReadableLegacyJobDeleteBatch(
-      CanonicalPointerSnapshot currentSnapshot, StoredReconcileJob readableRecord);
-
-  JobIndexWriteBatch buildDiscoveredLegacyJobDeleteBatch(
-      CanonicalPointerSnapshot currentSnapshot, ReconcileJobIndexCleanupManifest manifest);
-
   IndexBackfillResult backfillStoredJobIndexes(String canonicalPointerKey);
+
+  IndexBackfillResult backfillStoredJobIndexes(
+      CanonicalPointerSnapshot snapshot, StoredReconcileJob record);
+
+  IndexBackfillResult backfillTerminalRetentionIndex(
+      CanonicalPointerSnapshot snapshot, StoredReconcileJob record);
 
   int writeItemCount(JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps);
 

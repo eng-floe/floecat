@@ -58,7 +58,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
@@ -555,8 +554,6 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     ReconcileJobStore.LeasedJob lease = leaseJob(jobId);
     store.markRunning(jobId, lease.leaseEpoch, 1_000L, "executor-1");
     ReconcileFileGroupResultDescriptor descriptor = fileGroupDescriptor(jobId, lease.leaseEpoch);
-    var observed = Mockito.spy(store.jobIndexStore);
-    store.jobIndexStore = observed;
 
     assertTrue(
         store.completeFileGroupSuccess(
@@ -570,8 +567,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     assertEquals(descriptor.statsPayloadUri(), completed.fileGroupStatsPayloadUri);
     assertEquals(3L, completed.statsProcessed);
     assertEquals(1L, completed.indexesProcessed);
-    Mockito.verify(observed, Mockito.times(1))
-        .mutateByJobIdReturningRecord(Mockito.eq(jobId), Mockito.any());
+    assertTrue(store.leaseStore.loadLease(ACCOUNT_ID, jobId).isEmpty());
   }
 
   @Test

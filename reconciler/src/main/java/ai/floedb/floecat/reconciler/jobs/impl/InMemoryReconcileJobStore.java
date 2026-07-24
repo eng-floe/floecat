@@ -754,6 +754,25 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
+  public ChildJobStatePage childJobStatesPage(
+      String accountId, String parentJobId, int pageSize, String pageToken) {
+    ReconcileJobPage page =
+        ReconcileJobStore.super.childJobsPage(accountId, parentJobId, pageSize, pageToken);
+    List<ChildJobState> states =
+        page.jobs.stream()
+            .map(
+                job ->
+                    new ChildJobState(
+                        job,
+                        job.jobKind == ReconcileJobKind.EXEC_FILE_GROUP
+                                && "JS_SUCCEEDED".equals(job.state)
+                            ? fileGroupResultDescriptors.get(job.jobId)
+                            : null))
+            .toList();
+    return new ChildJobStatePage(states, page.nextPageToken);
+  }
+
+  @Override
   public Optional<LeasedJob> leaseNext(LeaseRequest request) {
     long now = System.currentTimeMillis();
     reclaimExpiredLeasesIfDue(now);

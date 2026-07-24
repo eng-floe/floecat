@@ -24,6 +24,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -139,5 +140,22 @@ class CurrentSnapshotPointerServiceTest {
             .orElseThrow();
     assertEquals("s3://tbl/snap-7.pb", entry.getSnapshotRef().getUri());
     assertEquals("etag-s7", entry.getSnapshotRef().getVersion());
+  }
+
+  @Test
+  void publishCaptureManifestUsesOneCombinedRootCommit() {
+    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
+    var manifestRef =
+        BlobRef.newBuilder().setUri("s3://tbl/capture.pb").setVersion("sha256").build();
+    service.rootWriter = mock(TableRootWriter.class);
+    when(service.snapshotRepo.getById(tableId, 7L)).thenReturn(Optional.of(candidate));
+    when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
+        .thenReturn(CurrentSnapshotPointerUpdateResult.UPDATED);
+
+    service.publishCaptureManifest(tableId, 7L, manifestRef, "finalize-job");
+
+    verify(service.rootWriter).commitSnapshotCapture(tableId, candidate, manifestRef);
+    verify(service.rootWriter, never()).commitSnapshotEntry(any(), any());
+    verify(service.rootWriter, never()).commitStatsGeneration(any(), anyLong());
   }
 }

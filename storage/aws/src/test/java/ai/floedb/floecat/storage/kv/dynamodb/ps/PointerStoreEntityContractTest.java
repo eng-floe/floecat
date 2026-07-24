@@ -289,6 +289,46 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
     assertEquals(1L, got.getVersion());
   }
 
+  @Test
+  void compareAndSetBatch_unconditionalUpsertProtectsReplacementFromStaleDelete() {
+    String key = "/accounts/by-id/502/reconcile/dirty-parent/marker";
+    assertTrue(
+        pointers
+            .compareAndSetBatch(
+                List.of(
+                    new PointerStore.UnconditionalUpsert(
+                        key,
+                        Pointer.newBuilder()
+                            .setKey(key)
+                            .setVersion(17L)
+                            .setBlobUri("marker/one")
+                            .build())))
+            .await()
+            .indefinitely());
+    assertTrue(
+        pointers
+            .compareAndSetBatch(
+                List.of(
+                    new PointerStore.UnconditionalUpsert(
+                        key,
+                        Pointer.newBuilder()
+                            .setKey(key)
+                            .setVersion(23L)
+                            .setBlobUri("marker/two")
+                            .build())))
+            .await()
+            .indefinitely());
+
+    assertFalse(
+        pointers
+            .compareAndSetBatch(List.of(new PointerStore.CasDelete(key, 17L)))
+            .await()
+            .indefinitely());
+    Pointer current = pointers.get(key).await().indefinitely().orElseThrow();
+    assertEquals("marker/two", current.getBlobUri());
+    assertEquals(23L, current.getVersion());
+  }
+
   // ---- TTL mapping
 
   @Test

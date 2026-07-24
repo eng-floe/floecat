@@ -259,15 +259,7 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
             expected.canonicalPointerKey(), ReconcileJobIndexCleanupManifest.EMPTY);
     ReconcileJobIndexCleanupManifest manifest = mergeManifests(stored, fallbackManifest);
     if (manifest.isEmpty() || !validCleanupManifest(manifest)) {
-      ReconcileJobIndexCleanupManifest discovered =
-          discoverLegacyCleanupManifest(expected.canonicalPointerKey());
-      manifest =
-          validCleanupManifest(fallbackManifest)
-              ? mergeManifests(discovered, fallbackManifest)
-              : discovered;
-      if (manifest.isEmpty() || !validCleanupManifest(manifest)) {
-        return Optional.empty();
-      }
+      return Optional.empty();
     }
     if (!cleanupLocks.containsKey(expected.canonicalPointerKey())) {
       var canonicalPointer = pointerStore.get(expected.canonicalPointerKey()).orElse(null);
@@ -335,6 +327,12 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   @Override
   public JobIndexQueryPage listDedupeEntries(String accountId, int limit, String pageToken) {
     return listPointers(Keys.reconcileDedupePointerPrefix(accountId), limit, pageToken);
+  }
+
+  @Override
+  public JobIndexQueryPage listTerminalRetentionEntries(
+      String accountId, int limit, String pageToken) {
+    return listPointers(Keys.reconcileTerminalRetentionPointerPrefix(accountId), limit, pageToken);
   }
 
   @Override

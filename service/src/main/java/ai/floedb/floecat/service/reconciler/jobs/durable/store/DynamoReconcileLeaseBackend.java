@@ -22,6 +22,7 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -155,10 +156,13 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
 
   @Override
   public boolean compareAndSetBatch(
-      ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch, LeaseWriteBatch leaseBatch) {
+      ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch,
+      LeaseWriteBatch leaseBatch,
+      List<PointerStore.UnconditionalUpsert> pointerTouches) {
     if ((jobIndexBatch == null
             || (jobIndexBatch.writes().isEmpty() && jobIndexBatch.readyMutation().isEmpty()))
-        && (leaseBatch == null || leaseBatch.writes().isEmpty())) {
+        && (leaseBatch == null || leaseBatch.writes().isEmpty())
+        && (pointerTouches == null || pointerTouches.isEmpty())) {
       return true;
     }
     List<TransactWriteItem> tx = new ArrayList<>();
@@ -231,6 +235,13 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
         } else if (write instanceof LeaseOwnerDelete delete) {
           tx.add(buildLeaseOwnerDelete(delete));
         }
+      }
+    }
+    if (pointerTouches != null) {
+      for (PointerStore.UnconditionalUpsert pointerTouch : pointerTouches) {
+        tx.add(
+            DynamoReconcileJobIndexBackend.buildGenericPointerUnconditionalUpsert(
+                table, pointerTouch));
       }
     }
     ReconcileJobWriteLimits.requireWithinTransactionLimit(tx.size());
@@ -535,6 +546,18 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
       return;
     }
+    var terminalRetentionKey =
+        JobIndexBackendSupport.parseTerminalRetentionKey(upsert.pointerKey());
+    if (terminalRetentionKey != null) {
+      tx.add(
+          buildJobIndexReferenceUpsert(
+              JobIndexBackendSupport.terminalRetentionPartitionKey(terminalRetentionKey),
+              JobIndexBackendSupport.terminalRetentionSortKey(terminalRetentionKey),
+              JobIndexBackendSupport.KIND_TERMINAL_RETENTION,
+              upsert,
+              JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
+      return;
+    }
     throw new IllegalArgumentException(
         "Unsupported reconcile job index upsert key: " + upsert.pointerKey());
   }
@@ -613,6 +636,16 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
           buildReferenceDelete(
               JobIndexBackendSupport.dedupePartitionKey(dedupeKey),
               JobIndexBackendSupport.dedupeSortKey(dedupeKey),
+              delete));
+      return;
+    }
+    var terminalRetentionKey =
+        JobIndexBackendSupport.parseTerminalRetentionKey(delete.pointerKey());
+    if (terminalRetentionKey != null) {
+      tx.add(
+          buildReferenceDelete(
+              JobIndexBackendSupport.terminalRetentionPartitionKey(terminalRetentionKey),
+              JobIndexBackendSupport.terminalRetentionSortKey(terminalRetentionKey),
               delete));
       return;
     }

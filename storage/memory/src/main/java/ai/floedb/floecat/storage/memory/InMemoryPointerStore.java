@@ -179,6 +179,8 @@ public class InMemoryPointerStore implements PointerStore {
           } else if (cur.getVersion() != upsert.expectedVersion()) {
             return false;
           }
+        } else if (op instanceof UnconditionalUpsert) {
+          // No precondition.
         } else if (op instanceof CasDelete delete) {
           Pointer cur = map.get(delete.key());
           if (cur == null || cur.getVersion() != delete.expectedVersion()) {
@@ -204,6 +206,8 @@ public class InMemoryPointerStore implements PointerStore {
                   .setKey(upsert.key())
                   .setVersion(upsert.expectedVersion() + 1L)
                   .build());
+        } else if (op instanceof UnconditionalUpsert upsert) {
+          map.put(upsert.key(), upsert.next().toBuilder().setKey(upsert.key()).build());
         } else if (op instanceof CasDelete delete) {
           map.remove(delete.key());
         }

@@ -31,11 +31,14 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
+import java.util.function.LongSupplier;
+import java.util.function.LongUnaryOperator;
 import org.eclipse.microprofile.config.Config;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -49,6 +52,8 @@ public class RemoteReconcileExecutorPoller {
   private static final long HEARTBEAT_SHUTDOWN_WAIT_MS = 1_000L;
   private static final int DEFAULT_MAX_PARALLELISM = 1;
   private static final int DEFAULT_RESERVED_CONTROL_SLOTS = 1;
+  private static final long DEFAULT_EMPTY_POLL_BACKOFF_INITIAL_MS = 500L;
+  private static final long DEFAULT_EMPTY_POLL_BACKOFF_MAX_MS = 5_000L;
 
   enum WorkerMode {
     LOCAL,
@@ -82,13 +87,21 @@ public class RemoteReconcileExecutorPoller {
 
   private final AtomicBoolean polling = new AtomicBoolean(false);
   private final AtomicBoolean repollRequested = new AtomicBoolean(false);
+  private final AtomicBoolean idle = new AtomicBoolean(true);
+  private final AtomicBoolean idleProbeInFlight = new AtomicBoolean(false);
   private final AtomicInteger inFlight = new AtomicInteger(0);
   private final AtomicInteger leaseExecutorCursor = new AtomicInteger(0);
+  private final AtomicInteger consecutiveEmptyPolls = new AtomicInteger(0);
+  private final AtomicLong nextIdleProbeAtMs = new AtomicLong(0L);
   private volatile WorkerMode workerMode = WorkerMode.LOCAL;
   private volatile int maxParallelism = DEFAULT_MAX_PARALLELISM;
   private volatile int reservedControlSlots;
+  private volatile long emptyPollBackoffInitialMs = DEFAULT_EMPTY_POLL_BACKOFF_INITIAL_MS;
+  private volatile long emptyPollBackoffMaxMs = DEFAULT_EMPTY_POLL_BACKOFF_MAX_MS;
   private volatile Semaphore fileGroupSlots;
   private volatile ExecutorService workers;
+  LongSupplier currentTimeMillis = System::currentTimeMillis;
+  LongUnaryOperator idleBackoffJitter = RemoteReconcileExecutorPoller::jitteredBackoffMs;
 
   @PostConstruct
   void init() {
@@ -97,6 +110,18 @@ public class RemoteReconcileExecutorPoller {
         config
             .getOptionalValue("reconciler.max-parallelism", Integer.class)
             .orElse(DEFAULT_MAX_PARALLELISM);
+    emptyPollBackoffInitialMs =
+        Math.max(
+            1L,
+            config
+                .getOptionalValue("reconciler.empty-poll-backoff-initial-ms", Long.class)
+                .orElse(DEFAULT_EMPTY_POLL_BACKOFF_INITIAL_MS));
+    emptyPollBackoffMaxMs =
+        Math.max(
+            emptyPollBackoffInitialMs,
+            config
+                .getOptionalValue("reconciler.empty-poll-backoff-max-ms", Long.class)
+                .orElse(DEFAULT_EMPTY_POLL_BACKOFF_MAX_MS));
     if (maxParallelism <= 0 || !workerMode.runsWorkers()) {
       maxParallelism = 0;
       return;
@@ -156,12 +181,11 @@ public class RemoteReconcileExecutorPoller {
     try {
       while (true) {
         repollRequested.set(false);
-        while (reserveWorkerSlot()) {
-          try {
-            submitAssignment();
-          } catch (RuntimeException e) {
-            inFlight.decrementAndGet();
-            throw e;
+        if (idle.get()) {
+          submitIdleProbeIfDue();
+        } else {
+          while (reserveWorkerSlot()) {
+            submitAssignment(false);
           }
         }
         if (!repollRequested.get()) {
@@ -174,6 +198,18 @@ public class RemoteReconcileExecutorPoller {
         requestDrain();
       }
     }
+  }
+
+  private void submitIdleProbeIfDue() {
+    if (currentTimeMillis.getAsLong() < nextIdleProbeAtMs.get()
+        || !idleProbeInFlight.compareAndSet(false, true)) {
+      return;
+    }
+    if (!reserveWorkerSlot()) {
+      idleProbeInFlight.set(false);
+      return;
+    }
+    submitAssignment(true);
   }
 
   private Optional<LeaseAssignment> leaseNextAssignment() {
@@ -308,9 +344,12 @@ public class RemoteReconcileExecutorPoller {
     return statusError.getStatus().getCode() == Status.Code.UNAVAILABLE;
   }
 
-  private void submitAssignment() {
+  private void submitAssignment(boolean idleProbe) {
     ExecutorService executor = workers;
     if (executor == null) {
+      if (idleProbe) {
+        idleProbeInFlight.set(false);
+      }
       releaseWorkerSlot(false);
       return;
     }
@@ -320,10 +359,20 @@ public class RemoteReconcileExecutorPoller {
             boolean ranLease = false;
             LeaseAssignment leasedAssignment = null;
             try {
-              Optional<LeaseAssignment> assignment = leaseNextAssignment();
+              Optional<LeaseAssignment> assignment;
+              try {
+                assignment = leaseNextAssignment();
+              } catch (RuntimeException e) {
+                if (idleProbe) {
+                  idleProbeInFlight.set(false);
+                }
+                throw e;
+              }
               if (assignment.isEmpty()) {
+                recordEmptyPoll(idleProbe);
                 return;
               }
+              recordLeaseFound(idleProbe);
               leasedAssignment = assignment.get();
               ranLease = true;
               LOG.infof(
@@ -342,9 +391,62 @@ public class RemoteReconcileExecutorPoller {
             }
           });
     } catch (RuntimeException e) {
+      if (idleProbe) {
+        idleProbeInFlight.set(false);
+      }
       releaseWorkerSlot(false);
       throw e;
     }
+  }
+
+  private void recordLeaseFound(boolean idleProbe) {
+    if (idleProbe) {
+      idleProbeInFlight.set(false);
+    }
+    consecutiveEmptyPolls.set(0);
+    nextIdleProbeAtMs.set(0L);
+    idle.set(false);
+    repollRequested.set(true);
+    requestDrain();
+  }
+
+  private void recordEmptyPoll(boolean idleProbe) {
+    if (idleProbe) {
+      idleProbeInFlight.set(false);
+    }
+    boolean enteredIdle = idleProbe || idle.compareAndSet(false, true);
+    if (!enteredIdle) {
+      return;
+    }
+    int emptyCount = consecutiveEmptyPolls.updateAndGet(value -> Math.min(31, value + 1));
+    long backoffCeilingMs = exponentialBackoffCeilingMs(emptyCount);
+    long delayMs =
+        Math.max(1L, Math.min(backoffCeilingMs, idleBackoffJitter.applyAsLong(backoffCeilingMs)));
+    nextIdleProbeAtMs.set(saturatedAdd(currentTimeMillis.getAsLong(), delayMs));
+  }
+
+  private long exponentialBackoffCeilingMs(int emptyCount) {
+    int shift = Math.max(0, Math.min(30, emptyCount - 1));
+    if (emptyPollBackoffInitialMs > (emptyPollBackoffMaxMs >> shift)) {
+      return emptyPollBackoffMaxMs;
+    }
+    return Math.min(emptyPollBackoffMaxMs, emptyPollBackoffInitialMs << shift);
+  }
+
+  private static long jitteredBackoffMs(long ceilingMs) {
+    if (ceilingMs <= 1L) {
+      return Math.max(1L, ceilingMs);
+    }
+    long floorMs = Math.max(1L, ceilingMs / 2L);
+    long spreadMs = ceilingMs - floorMs;
+    return floorMs + ThreadLocalRandom.current().nextLong(spreadMs + 1L);
+  }
+
+  private static long saturatedAdd(long left, long right) {
+    if (right > 0L && left > Long.MAX_VALUE - right) {
+      return Long.MAX_VALUE;
+    }
+    return left + right;
   }
 
   private void releaseWorkerSlot(boolean requestDrain) {

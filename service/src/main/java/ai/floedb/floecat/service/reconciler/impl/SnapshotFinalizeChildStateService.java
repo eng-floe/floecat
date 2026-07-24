@@ -35,19 +35,15 @@ public class SnapshotFinalizeChildStateService {
       String accountId, String parentJobId, String finalizerJobId, int expectedGroupCount) {
     LinkedHashMap<String, ReconcileFileGroupResultDescriptor> descriptorByGroupKey =
         new LinkedHashMap<>();
-    for (ReconcileFileGroupResultDescriptor descriptor : childDescriptors(accountId, parentJobId)) {
+    List<ReconcileJobStore.ChildJobState> childStates = childStates(accountId, parentJobId);
+    for (ReconcileJobStore.ChildJobState childState : childStates) {
+      ReconcileFileGroupResultDescriptor descriptor = childState.fileGroupResultDescriptor();
+      if (descriptor == null) {
+        continue;
+      }
       String key = groupKey(descriptor);
       if (!key.isBlank() && descriptorByGroupKey.putIfAbsent(key, descriptor) != null) {
-        return new ChildState(
-            expectedGroupCount,
-            0,
-            List.of(),
-            List.of(),
-            List.of(),
-            List.of(descriptor.planId() + "/" + descriptor.groupId()),
-            List.of(),
-            List.of(),
-            List.of());
+        return duplicateDescriptorState(expectedGroupCount, descriptor);
       }
     }
     int completed = 0;
@@ -59,7 +55,8 @@ public class SnapshotFinalizeChildStateService {
     List<String> invalid = new ArrayList<>();
     List<ReconcileFileGroupResultDescriptor> completedDescriptors = new ArrayList<>();
     LinkedHashSet<String> seen = new LinkedHashSet<>();
-    for (ReconcileJobStore.ReconcileJob child : childJobs(accountId, parentJobId)) {
+    for (ReconcileJobStore.ChildJobState childState : childStates) {
+      ReconcileJobStore.ReconcileJob child = childState.job();
       if (child == null
           || child.jobId == null
           || child.jobId.equals(finalizerJobId)
@@ -113,40 +110,42 @@ public class SnapshotFinalizeChildStateService {
         List.copyOf(completedDescriptors));
   }
 
-  List<ReconcileJobStore.ReconcileJob> childJobs(String accountId, String parentJobId) {
+  private static ChildState duplicateDescriptorState(
+      int expectedGroupCount, ReconcileFileGroupResultDescriptor descriptor) {
+    return new ChildState(
+        expectedGroupCount,
+        0,
+        List.of(),
+        List.of(),
+        List.of(),
+        List.of(descriptor.planId() + "/" + descriptor.groupId()),
+        List.of(),
+        List.of(),
+        List.of());
+  }
+
+  List<ReconcileJobStore.ChildJobState> childStates(String accountId, String parentJobId) {
     if (accountId == null || accountId.isBlank() || parentJobId == null || parentJobId.isBlank()) {
       return List.of();
     }
-    List<ReconcileJobStore.ReconcileJob> out = new ArrayList<>();
+    List<ReconcileJobStore.ChildJobState> out = new ArrayList<>();
     String pageToken = "";
     do {
-      ReconcileJobStore.ReconcileJobPage page =
-          jobs.childJobsPage(accountId, parentJobId, 200, pageToken);
-      if (page == null || page.jobs == null || page.jobs.isEmpty()) {
+      ReconcileJobStore.ChildJobStatePage page =
+          jobs.childJobStatesPage(accountId, parentJobId, 200, pageToken);
+      if (page == null || page.states().isEmpty()) {
         break;
       }
-      out.addAll(page.jobs);
-      pageToken = page.nextPageToken == null ? "" : page.nextPageToken;
+      out.addAll(page.states());
+      pageToken = page.nextPageToken();
     } while (!pageToken.isBlank());
     return List.copyOf(out);
   }
 
-  List<ReconcileFileGroupResultDescriptor> childDescriptors(String accountId, String parentJobId) {
-    if (accountId == null || accountId.isBlank() || parentJobId == null || parentJobId.isBlank()) {
-      return List.of();
-    }
-    List<ReconcileFileGroupResultDescriptor> out = new ArrayList<>();
-    String pageToken = "";
-    do {
-      ReconcileJobStore.FileGroupResultDescriptorPage page =
-          jobs.childFileGroupResultDescriptorsPage(accountId, parentJobId, 200, pageToken);
-      if (page == null) {
-        break;
-      }
-      out.addAll(page.descriptors);
-      pageToken = page.nextPageToken;
-    } while (pageToken != null && !pageToken.isBlank());
-    return List.copyOf(out);
+  List<ReconcileJobStore.ReconcileJob> childJobs(String accountId, String parentJobId) {
+    return childStates(accountId, parentJobId).stream()
+        .map(ReconcileJobStore.ChildJobState::job)
+        .toList();
   }
 
   static String groupKey(ReconcileFileGroupResultDescriptor descriptor) {

@@ -139,6 +139,20 @@ public final class Keys {
     return accountRootPrefix(accountId) + "account/";
   }
 
+  public static String accountStorageUsagePointer(String accountId) {
+    String tid = req("account_id", accountId);
+    return accountRootPrefix() + encode(tid) + "/metrics/storage-usage";
+  }
+
+  public static String accountStorageUsageRebuildPointer(String accountId) {
+    String tid = req("account_id", accountId);
+    return accountRootPrefix() + encode(tid) + "/metrics/storage-usage-rebuild";
+  }
+
+  public static String storageUsageRebuildCompletePointer() {
+    return "/accounts/by-id/metrics/storage-usage-rebuild-complete";
+  }
+
   public static String accountPointerByName(String displayName) {
     String name = req("display_name", displayName);
     return "/accounts/by-name/" + encode(name);
@@ -1235,6 +1249,24 @@ public final class Keys {
     String jid = req("job_id", jobId);
     return String.format(
         "%s%019d/%s", reconcileJobByAccountStatePointerPrefix(accountId, state), ts, encode(jid));
+  }
+
+  public static String reconcileTerminalRetentionPointerPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/terminal-retention/";
+  }
+
+  public static String reconcileTerminalRetentionPointer(
+      String accountId, long terminalAtMs, String jobId) {
+    String jid = req("job_id", jobId);
+    long ts = reqNonNegative("terminal_at_ms", terminalAtMs);
+    return String.format(
+        "%s%019d/%s", reconcileTerminalRetentionPointerPrefix(accountId), ts, encode(jid));
+  }
+
+  public static String reconcileTerminalRetentionBackfillPointer(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/terminal-retention-backfill-complete";
   }
 
   public static String reconcileJobByConnectorStatePointerPrefix(

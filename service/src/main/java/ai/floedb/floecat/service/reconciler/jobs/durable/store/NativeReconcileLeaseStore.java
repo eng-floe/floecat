@@ -26,6 +26,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJo
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobExecutionLoader;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileLeaseStateCodec;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
 import java.util.List;
@@ -35,6 +36,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
+import java.util.function.Function;
 import java.util.function.IntToLongFunction;
 import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
@@ -673,6 +675,99 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
       expired.add(entry);
     }
     return new LeaseExpiryScanPage(expired, scanPage.nextPageToken());
+  }
+
+  @Override
+  public Optional<ReconcileJobIndexStore.CanonicalEnvelope> completeLeaseTransition(
+      String jobId,
+      String leaseEpoch,
+      UnaryOperator<StoredReconcileJob> mutator,
+      Function<StoredReconcileJob, List<PointerStore.UnconditionalUpsert>> pointerTouches) {
+    if (blank(jobId) || blank(leaseEpoch) || mutator == null || pointerTouches == null) {
+      return Optional.empty();
+    }
+    for (int attempt = 0; attempt < casMax; attempt++) {
+      var loaded = jobIndexStore.loadByAnyAccount(jobId).orElse(null);
+      if (loaded == null || loaded.record() == null) {
+        return Optional.empty();
+      }
+      CanonicalPointerSnapshot snapshot =
+          jobIndexStore.loadCanonicalSnapshot(loaded.canonicalPointerKey()).orElse(null);
+      if (snapshot == null) {
+        continue;
+      }
+      StoredReconcileJob current = jobIndexStore.readRecord(snapshot).orElse(null);
+      if (current == null) {
+        continue;
+      }
+      var leaseSnapshot = leaseBackend.loadLease(current.accountId, current.jobId).orElse(null);
+      if (leaseSnapshot == null) {
+        return Optional.empty();
+      }
+      StoredJobLease lease =
+          leaseStateCodec
+              .decode(leaseSnapshot.encodedLease())
+              .orElse(StoredJobLease.empty(current.accountId, current.jobId));
+      if (!leaseEpoch.equals(lease.epoch)) {
+        return Optional.empty();
+      }
+
+      StoredReconcileJob previous = jobIndexStore.cloneStoredRecord(current);
+      StoredReconcileJob next = mutator.apply(jobIndexStore.cloneStoredRecord(current));
+      if (next == null) {
+        return Optional.empty();
+      }
+      next.canonicalPointerKey = loaded.canonicalPointerKey();
+      assertImmutableJobIdentityPreserved.accept(previous, next);
+      ReconcileJobIndexStore.JobIndexWriteBatch jobBatch =
+          jobIndexStore.buildJobIndexWriteBatch(snapshot, previous, next);
+      ReconcileLeaseBackend.LeaseWriteBatch leaseBatch =
+          completionReleaseBatch(
+              previous, loaded.canonicalPointerKey(), lease, leaseSnapshot.version());
+      List<PointerStore.UnconditionalUpsert> atomicPointerTouches =
+          pointerTouches.apply(jobIndexStore.cloneStoredRecord(next));
+      if (leaseBackend.compareAndSetBatch(
+          jobBatch,
+          leaseBatch,
+          atomicPointerTouches == null ? List.of() : List.copyOf(atomicPointerTouches))) {
+        return Optional.of(
+            new ReconcileJobIndexStore.CanonicalEnvelope(
+                loaded.canonicalPointerKey(), jobIndexStore.cloneStoredRecord(next)));
+      }
+    }
+    return Optional.empty();
+  }
+
+  private ReconcileLeaseBackend.LeaseWriteBatch completionReleaseBatch(
+      StoredReconcileJob record,
+      String canonicalPointerKey,
+      StoredJobLease lease,
+      long leaseVersion) {
+    List<ReconcileLeaseBackend.LeaseWriteOp> writes = new ArrayList<>();
+    writes.add(
+        new ReconcileLeaseBackend.LeaseRecordDelete(record.accountId, record.jobId, leaseVersion));
+    String expiryKey = leaseExpiryPointerKey(lease);
+    if (!expiryKey.isBlank()) {
+      var expiry = leaseBackend.loadLeaseExpiry(expiryKey).orElse(null);
+      if (expiry != null && canonicalPointerKey.equals(expiry.canonicalPointerKey())) {
+        writes.add(new ReconcileLeaseBackend.LeaseExpiryDelete(expiryKey, expiry.version()));
+      }
+    }
+    java.util.LinkedHashSet<String> ownerKeys = new java.util.LinkedHashSet<>();
+    if (!blank(record.laneKey)) {
+      ownerKeys.add(Keys.reconcileLaneLeasePointer(record.accountId, record.laneKey));
+    }
+    String snapshotOwnerKey = snapshotLeasePointerKey(record);
+    if (!snapshotOwnerKey.isBlank()) {
+      ownerKeys.add(snapshotOwnerKey);
+    }
+    for (String ownerKey : ownerKeys) {
+      var owner = leaseBackend.loadOwner(ownerKey).orElse(null);
+      if (owner != null && canonicalPointerKey.equals(owner.canonicalPointerKey())) {
+        writes.add(new ReconcileLeaseBackend.LeaseOwnerDelete(ownerKey, owner.version()));
+      }
+    }
+    return new ReconcileLeaseBackend.LeaseWriteBatch(List.copyOf(writes));
   }
 
   public boolean clearLeaseIfEpochMatches(String accountId, String jobId, String leaseEpoch) {

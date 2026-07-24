@@ -935,7 +935,7 @@
     "unit": "bytes",
     "since": "v1",
     "origin": "service",
-    "description": "Estimated per-account storage byte consumption (sampled, not exact).",
+    "description": "Per-account storage byte consumption maintained by the storage accounting ledger.",
     "requiredTags": ["account"],
     "allowedTags": ["account"]
   },
@@ -950,6 +950,16 @@
     "allowedTags": ["account"]
   },
   {
+    "name": "floecat.service.storage.failures.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Storage accounting refresh and rebuild failures.",
+    "requiredTags": ["operation"],
+    "allowedTags": ["account", "operation"]
+  },
+  {
     "name": "floecat.service.storage.partial_state.total",
     "type": "COUNTER",
     "unit": "",
@@ -958,5 +968,35 @@
     "description": "Stored partial-pointer-state anomalies surfaced (non-retryably) by the repository layer: a canonical/secondary pointer mismatch that an atomic create/createIfAbsent can never itself produce and that must be reconciled out of band.",
     "requiredTags": ["operation", "resource"],
     "allowedTags": ["operation", "resource"]
+  },
+  {
+    "name": "floecat.service.storage.rebuild.duration",
+    "type": "TIMER",
+    "unit": "ms",
+    "since": "v1",
+    "origin": "service",
+    "description": "Time spent in a bounded storage accounting rebuild tick.",
+    "requiredTags": ["operation"],
+    "allowedTags": ["operation"]
+  },
+  {
+    "name": "floecat.service.storage.rebuild.objects_sampled",
+    "type": "SUMMARY",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Legacy storage objects sampled by a bounded storage accounting rebuild tick.",
+    "requiredTags": [],
+    "allowedTags": []
+  },
+  {
+    "name": "floecat.service.storage.refresh.duration",
+    "type": "TIMER",
+    "unit": "ms",
+    "since": "v1",
+    "origin": "service",
+    "description": "Time spent refreshing per-account storage gauges from accounting counters.",
+    "requiredTags": ["operation"],
+    "allowedTags": ["operation"]
   }
 ]

@@ -17,56 +17,134 @@
 package ai.floedb.floecat.service.telemetry;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
-import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
+import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.telemetry.TestObservability;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class StorageUsageMetricsTest {
 
   @Test
-  void failedBlobHeadsConsumeTheAttemptBudget() {
-    StorageUsageMetrics metrics = new StorageUsageMetrics();
-    metrics.pointerStore = mock(PointerStore.class);
-    metrics.blobStore = mock(BlobStore.class);
-    metrics.pageSize = 20;
-    metrics.sampleMax = 3;
-    metrics.defaultAvgBytes = 17L;
-    List<Pointer> pointers =
-        List.of(
-            blobPointer("one"),
-            blobPointer("two"),
-            blobPointer("three"),
-            blobPointer("four"),
-            blobPointer("five"));
-    when(metrics.pointerStore.listPointersByPrefix(
-            anyString(),
-            org.mockito.ArgumentMatchers.anyInt(),
-            anyString(),
-            org.mockito.ArgumentMatchers.any()))
-        .thenAnswer(
-            invocation -> {
-              StringBuilder next = invocation.getArgument(3);
-              next.setLength(0);
-              return pointers;
-            });
-    when(metrics.blobStore.head(anyString())).thenThrow(new IllegalStateException("unavailable"));
+  void pointerMutationsMaintainExactIncrementalUsageWithoutRefreshScans() {
+    InMemoryPointerStore delegate = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    StorageAccountingPointerStore accounting = accounting(delegate, blobs);
+    blobs.put("/accounts/acct/blobs/one", new byte[5], "application/octet-stream");
+    blobs.put("/accounts/acct/blobs/two", new byte[4], "application/octet-stream");
 
-    long estimate = metrics.estimateBytesForAccount("acct", 10);
+    assertTrue(
+        accounting.compareAndSet(
+            "/accounts/acct/one",
+            0L,
+            PointerReferences.blobPointer("/accounts/acct/one", "/accounts/acct/blobs/one", 1L)));
+    assertTrue(
+        accounting.compareAndSet(
+            "/accounts/acct/two",
+            0L,
+            PointerReferences.blobPointer("/accounts/acct/two", "/accounts/acct/blobs/one", 1L)));
+    assertEquals(new StorageAccountingPointerStore.AccountUsage(2L, 10L), usage(delegate));
 
-    assertEquals(170L, estimate);
-    verify(metrics.blobStore, times(3)).head(anyString());
+    assertTrue(
+        accounting.compareAndSet(
+            "/accounts/acct/two",
+            1L,
+            PointerReferences.blobPointer("/accounts/acct/two", "/accounts/acct/blobs/two", 2L)));
+    assertEquals(new StorageAccountingPointerStore.AccountUsage(2L, 9L), usage(delegate));
+
+    assertTrue(accounting.compareAndDelete("/accounts/acct/two", 2L));
+    assertEquals(new StorageAccountingPointerStore.AccountUsage(1L, 5L), usage(delegate));
   }
 
-  private static Pointer blobPointer(String id) {
-    return PointerReferences.blobPointer("/accounts/acct/pointers/" + id, "s3://bucket/" + id, 1L);
+  @Test
+  void batchAccountingIsAppliedOnlyAfterSuccessfulBatch() {
+    InMemoryPointerStore delegate = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    StorageAccountingPointerStore accounting = accounting(delegate, blobs);
+    blobs.put("/accounts/acct/blobs/value", new byte[7], "application/octet-stream");
+
+    assertTrue(
+        accounting.compareAndSetBatch(
+            List.of(
+                new PointerStore.CasUpsert(
+                    "/accounts/acct/a",
+                    0L,
+                    PointerReferences.blobPointer(
+                        "/accounts/acct/a", "/accounts/acct/blobs/value", 1L)),
+                new PointerStore.CasUpsert(
+                    "/accounts/acct/b",
+                    0L,
+                    PointerReferences.blobPointer(
+                        "/accounts/acct/b", "/accounts/acct/blobs/value", 1L)))));
+
+    assertEquals(new StorageAccountingPointerStore.AccountUsage(2L, 14L), usage(delegate));
+  }
+
+  @Test
+  void rebuildStateAndUsagePayloadsRoundTrip() {
+    var state = new StorageUsageMetrics.RebuildState("cursor", 12L, 345L, true);
+    var pointer =
+        PointerReferences.opaqueMarkerPointer(
+            "/accounts/acct/metrics/storage-usage-rebuild",
+            StorageUsageMetrics.encodeRebuildState(state),
+            1L);
+
+    assertEquals(state, StorageUsageMetrics.decodeRebuildState(pointer));
+    assertEquals(
+        new StorageAccountingPointerStore.AccountUsage(12L, 345L),
+        StorageAccountingPointerStore.decodeUsage(
+            PointerReferences.opaqueMarkerPointer(
+                "/accounts/acct/metrics/storage-usage",
+                StorageAccountingPointerStore.encodeUsage(
+                    new StorageAccountingPointerStore.AccountUsage(12L, 345L)),
+                1L)));
+  }
+
+  @Test
+  void completedRebuildMarkerIsReadOnlyOncePerProcess() {
+    CountingPointerStore pointers = new CountingPointerStore();
+    String completionKey = Keys.storageUsageRebuildCompletePointer();
+    assertTrue(
+        pointers.compareAndSet(
+            completionKey, 0L, PointerReferences.opaqueMarkerPointer(completionKey, "v1", 1L)));
+    pointers.gets.set(0);
+
+    StorageUsageMetrics metrics = new StorageUsageMetrics();
+    metrics.pointerStore = pointers;
+    metrics.observability = new TestObservability();
+
+    metrics.rebuildExistingUsage();
+    metrics.rebuildExistingUsage();
+
+    assertEquals(1, pointers.gets.get());
+  }
+
+  private static StorageAccountingPointerStore accounting(
+      InMemoryPointerStore delegate, InMemoryBlobStore blobs) {
+    StorageAccountingPointerStore accounting = new StorageAccountingPointerStore() {};
+    accounting.delegate = delegate;
+    accounting.blobStore = blobs;
+    return accounting;
+  }
+
+  private static StorageAccountingPointerStore.AccountUsage usage(InMemoryPointerStore delegate) {
+    return StorageAccountingPointerStore.decodeUsage(
+        delegate.get(Keys.accountStorageUsagePointer("acct")).orElse(null));
+  }
+
+  private static final class CountingPointerStore extends InMemoryPointerStore {
+    private final AtomicInteger gets = new AtomicInteger();
+
+    @Override
+    public java.util.Optional<ai.floedb.floecat.common.rpc.Pointer> get(String key) {
+      gets.incrementAndGet();
+      return super.get(key);
+    }
   }
 }

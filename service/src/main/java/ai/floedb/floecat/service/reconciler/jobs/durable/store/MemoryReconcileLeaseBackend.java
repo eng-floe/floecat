@@ -94,7 +94,9 @@ public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
 
   @Override
   public synchronized boolean compareAndSetBatch(
-      ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch, LeaseWriteBatch leaseBatch) {
+      ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch,
+      LeaseWriteBatch leaseBatch,
+      List<PointerStore.UnconditionalUpsert> pointerTouches) {
     List<CasOp> ops = new ArrayList<>();
     if (leaseBatch != null) {
       for (LeaseWriteOp write : leaseBatch.writes()) {
@@ -151,6 +153,9 @@ public class MemoryReconcileLeaseBackend implements ReconcileLeaseBackend {
           ops.add(new CasDelete(delete.ownerKey(), delete.expectedVersion()));
         }
       }
+    }
+    if (pointerTouches != null) {
+      ops.addAll(pointerTouches);
     }
     if (jobIndexBackend == null) {
       throw new IllegalStateException("memory reconcile job index backend is not bound");

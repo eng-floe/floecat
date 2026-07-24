@@ -181,6 +181,28 @@ public class ReconcileJobIndexes {
         record.jobId);
   }
 
+  public String terminalRetentionPointerKey(StoredReconcileJob record) {
+    if (record == null
+        || !isTerminalState(record.state)
+        || blank(record.accountId)
+        || blank(record.jobId)) {
+      return "";
+    }
+    long terminalAtMs =
+        Math.max(
+            0L,
+            record.updatedAtMs > 0L
+                ? record.updatedAtMs
+                : record.finishedAtMs > 0L ? record.finishedAtMs : record.createdAtMs);
+    return Keys.reconcileTerminalRetentionPointer(record.accountId, terminalAtMs, record.jobId);
+  }
+
+  private static boolean isTerminalState(String state) {
+    return "JS_SUCCEEDED".equals(state)
+        || "JS_FAILED".equals(state)
+        || "JS_CANCELLED".equals(state);
+  }
+
   private static String connectorSortableJobToken(long createdAtMs, String jobId) {
     long created = Math.max(0L, createdAtMs);
     long reversedCreated = Long.MAX_VALUE - created;

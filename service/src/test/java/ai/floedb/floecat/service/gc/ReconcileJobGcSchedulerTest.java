@@ -54,22 +54,6 @@ class ReconcileJobGcSchedulerTest {
     assertEquals(List.of("acct-a", "acct-b"), gc.accountIds);
   }
 
-  @Test
-  void accountGcDoesNotWaitForLegacyCleanupMigration() {
-    AccountRepository accounts = mock(AccountRepository.class);
-    when(accounts.list(anyInt(), anyString(), any()))
-        .thenReturn(List.of(account("acct-a")), List.of());
-    RecordingGc gc = new RecordingGc();
-    ReconcileJobGcScheduler scheduler = new ReconcileJobGcScheduler();
-    scheduler.accounts = () -> accounts;
-    scheduler.reconcileJobGc = () -> gc;
-    scheduler.observability = new TestObservability();
-    scheduler.initMeters();
-
-    scheduler.tick();
-    assertEquals(List.of("acct-a"), gc.accountIds);
-  }
-
   private static Account account(String accountId) {
     return Account.newBuilder()
         .setResourceId(
@@ -83,23 +67,18 @@ class ReconcileJobGcSchedulerTest {
     private String failAccountId;
 
     @Override
-    public GlobalResult runReadySlice(String pageToken) {
-      return new GlobalResult(0, 0, 0, "");
+    public boolean terminalRetentionBackfillComplete(String accountId) {
+      return true;
     }
 
     @Override
     public AccountResult runAccountSlice(
-        String accountId,
-        String pageToken,
-        String canonicalQuarantinePageToken,
-        String dedupePageToken,
-        String rootSummaryPageToken,
-        String connectorRootSummaryPageToken) {
+        String accountId, String pageToken, String canonicalQuarantinePageToken, long deadlineMs) {
       accountIds.add(accountId);
       if (accountId.equals(failAccountId)) {
         throw new RuntimeException("failed account");
       }
-      return new AccountResult(0, 0, 0, 0, 0, 0, 0, 0, 0, "", "", "", "", "");
+      return new AccountResult(0, 0, 0, 0, 0, 0, "", "", 0, 0, 0L, 0L);
     }
   }
 }

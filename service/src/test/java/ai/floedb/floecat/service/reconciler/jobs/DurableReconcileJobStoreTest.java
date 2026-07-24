@@ -417,7 +417,7 @@ class DurableReconcileJobStoreTest {
     var secondSnapshotLease = leaseJob(second);
     store.markRunning(second, secondSnapshotLease.leaseEpoch, 160L, "executor-snapshot-2");
     store.markSucceeded(second, secondSnapshotLease.leaseEpoch, 170L, 0L, 0L, 0L, 0L, 0L, 0L);
-    runProjectionMaintenance();
+    runProjectionMaintenance(4);
 
     assertEquals(
         "JS_SUCCEEDED",
@@ -698,7 +698,11 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob parentRecord =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
     assertEquals(1L, parentRecord.expectedDirectChildren);
-    assertTrue(parentRecord.projectionRequestedGeneration > 0L);
+    assertTrue(
+        store
+            .pointerStore
+            .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, connectorJobId))
+            .isPresent());
     assertEquals("JS_WAITING", parentRecord.state);
     assertEquals(1, store.childJobs(ACCOUNT_ID, connectorJobId).size());
   }
@@ -1021,6 +1025,7 @@ class DurableReconcileJobStoreTest {
         });
 
     store.markSucceeded(firstChild.jobId, firstLease.leaseEpoch, 400L, 1L, 1L, 0L, 0L, 0L, 0L);
+    runProjectionMaintenance(4);
 
     StoredReconcileJob parentRecord =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
@@ -1961,14 +1966,8 @@ class DurableReconcileJobStoreTest {
                 "",
                 true));
 
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                connectorJobId));
+    requestProjectionRefresh(connectorJobId);
+    runProjectionMaintenance(4);
 
     StoredReconcileJobProjection connectorProjection =
         projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
@@ -1977,7 +1976,7 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob connectorCanonical =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
     assertEquals("JS_SUCCEEDED", connectorProjection.state());
-    assertEquals("JS_WAITING", tableProjection.state());
+    assertEquals("JS_SUCCEEDED", tableProjection.state());
     assertEquals("JS_SUCCEEDED", connectorCanonical.state);
   }
 
@@ -2035,14 +2034,8 @@ class DurableReconcileJobStoreTest {
                 "executor-projection",
                 true));
 
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                connectorJobId));
+    requestProjectionRefresh(connectorJobId);
+    runProjectionMaintenance(2);
 
     StoredReconcileJob after =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
@@ -2107,7 +2100,7 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJob connectorAfterProgress =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
 
-    assertTrue(tableAfterProgress.projectionRequestedGeneration > tableGenerationBefore);
+    assertEquals(tableGenerationBefore, tableAfterProgress.projectionRequestedGeneration);
     assertEquals(connectorGenerationBefore, connectorAfterProgress.projectionRequestedGeneration);
     assertTrue(
         store
@@ -2115,8 +2108,7 @@ class DurableReconcileJobStoreTest {
             .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, tableJobId))
             .isPresent());
 
-    store.runProjectionMaintenanceOnce(1_000L);
-    store.runProjectionMaintenanceOnce(1_000L);
+    runProjectionMaintenance(4);
 
     StoredReconcileJobProjection connectorProjection =
         projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
@@ -2164,8 +2156,7 @@ class DurableReconcileJobStoreTest {
     var tableLease = leaseJob(tableJobId);
     store.markRunning(tableJobId, tableLease.leaseEpoch, 100L, "executor-table");
     store.markProgress(tableJobId, tableLease.leaseEpoch, 0L, 0L, 0L, 0L, 0L, 1L, 0L, "progress");
-    runProjectionMaintenance();
-    runProjectionMaintenance();
+    runProjectionMaintenance(4);
     assertTrue(
         store
             .pointerStore
@@ -2194,28 +2185,10 @@ class DurableReconcileJobStoreTest {
                       return current;
                     }));
 
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                tableJobId));
+    requestProjectionRefresh(tableJobId);
+    runProjectionMaintenance(2);
 
-    assertTrue(
-        store
-            .pointerStore
-            .get(Keys.reconcileDirtyParentPointer(ACCOUNT_ID, connectorJobId))
-            .isPresent());
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                connectorJobId));
+    runProjectionMaintenance(2);
     assertEquals(
         7L, projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow().snapshotsProcessed());
     assertEquals(
@@ -2365,27 +2338,18 @@ class DurableReconcileJobStoreTest {
                 "",
                 true));
 
-    StoredReconcileJob connectorRecord =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+    requestProjectionRefresh(connectorJobId);
+    runProjectionMaintenance(2);
     StoredReconcileJobProjection projection =
-        (StoredReconcileJobProjection)
-            assertDoesNotThrow(
-                () ->
-                    invokePrivateMethod(
-                        store,
-                        "recomputeSummaryProjection",
-                        new Class<?>[] {StoredReconcileJob.class, boolean.class, boolean.class},
-                        connectorRecord,
-                        false,
-                        true));
+        projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
 
     assertEquals(1L, projection.tablesScanned());
     assertEquals(1L, projection.tablesChanged());
-    assertEquals(1L, projection.snapshotsProcessed());
+    assertEquals(0L, projection.snapshotsProcessed());
   }
 
   @Test
-  void ancestorRefreshUsesCurrentTerminalChildProjectionWithoutRecomputingSubtree() {
+  void ancestorRefreshIgnoresStoredChildProjection() {
     String connectorJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -2505,26 +2469,17 @@ class DurableReconcileJobStoreTest {
                 "",
                 true));
 
-    StoredReconcileJob connectorRecord =
-        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+    requestProjectionRefresh(connectorJobId);
+    runProjectionMaintenance(2);
     StoredReconcileJobProjection projection =
-        (StoredReconcileJobProjection)
-            assertDoesNotThrow(
-                () ->
-                    invokePrivateMethod(
-                        store,
-                        "recomputeSummaryProjection",
-                        new Class<?>[] {StoredReconcileJob.class, boolean.class, boolean.class},
-                        connectorRecord,
-                        true,
-                        true));
+        projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
 
-    assertEquals(7L, projection.statsProcessed());
-    assertEquals(7L, projection.indexesProcessed());
+    assertEquals(0L, projection.statsProcessed());
+    assertEquals(0L, projection.indexesProcessed());
   }
 
   @Test
-  void parentRefreshAdvancesGenerationWithoutScanningWhenCanonicalProjectionFieldsMatch() {
+  void parentRefreshRecomputesFromCanonicalChildren() {
     String tableJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -2629,18 +2584,12 @@ class DurableReconcileJobStoreTest {
                 "",
                 true));
 
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                tableJobId));
+    requestProjectionRefresh(tableJobId);
+    runProjectionMaintenance(2);
 
     StoredReconcileJobProjection projection =
         projectionStore().load(ACCOUNT_ID, tableJobId).orElseThrow();
-    assertEquals(796L, projection.appliedGeneration());
+    assertTrue(projection.appliedGeneration() > 796L);
     assertEquals(86L, projection.tablesScanned());
     assertEquals(86L, projection.tablesChanged());
     assertEquals(1208L, projection.statsProcessed());
@@ -2791,25 +2740,39 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void requestProjectionRefreshSkipsObsoleteMissingParent() {
+  void projectionMaintenanceDeletesMarkerForMissingParent() {
     String missingParentJobId = "missing-parent";
     String dirtyMarkerKey = Keys.reconcileDirtyParentPointer(ACCOUNT_ID, missingParentJobId);
 
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "requestProjectionRefresh",
-                new Class<?>[] {String.class, String.class, long.class},
-                ACCOUNT_ID,
-                missingParentJobId,
-                0L));
-
+    requestProjectionRefresh(missingParentJobId);
+    assertTrue(store.pointerStore.get(dirtyMarkerKey).isPresent());
+    runProjectionMaintenance();
     assertTrue(store.pointerStore.get(dirtyMarkerKey).isEmpty());
   }
 
   @Test
-  void requestProjectionRefreshRevertsGenerationAdvanceWhenMarkerWriteFails() {
+  void projectionRefreshTouchCannotBeConsumedWithAnOlderMarkerToken() {
+    String parentJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String markerKey = Keys.reconcileDirtyParentPointer(ACCOUNT_ID, parentJobId);
+
+    requestProjectionRefresh(parentJobId);
+    Pointer first = store.pointerStore.get(markerKey).orElseThrow();
+    requestProjectionRefresh(parentJobId);
+    Pointer replacement = store.pointerStore.get(markerKey).orElseThrow();
+
+    assertNotEquals(first.getVersion(), replacement.getVersion());
+    assertFalse(store.pointerStore.compareAndDelete(markerKey, first.getVersion()));
+    assertEquals(replacement, store.pointerStore.get(markerKey).orElseThrow());
+  }
+
+  @Test
+  void requestProjectionRefreshDoesNotMutateCanonicalParentWhenMarkerWriteFails() {
     String parentJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -2831,10 +2794,9 @@ class DurableReconcileJobStoreTest {
                 invokePrivateMethod(
                     store,
                     "requestProjectionRefresh",
-                    new Class<?>[] {String.class, String.class, long.class},
+                    new Class<?>[] {String.class, String.class},
                     ACCOUNT_ID,
-                    parentJobId,
-                    1L));
+                    parentJobId));
 
     assertTrue(failure.getCause() instanceof IllegalStateException);
     StoredReconcileJob after =
@@ -3264,16 +3226,14 @@ class DurableReconcileJobStoreTest {
     store.markRunning(tableJobId, firstTableLease.leaseEpoch, 100L, "executor-table");
     store.markFailed(
         tableJobId, firstTableLease.leaseEpoch, 110L, "transient", 1L, 0L, 0L, 0L, 1L, 0L, 0L);
-    runProjectionMaintenance();
-    runProjectionMaintenance();
+    runProjectionMaintenance(4);
 
     assertEquals(1L, projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow().errors());
 
     var secondTableLease = leaseJob(tableJobId);
     store.markRunning(tableJobId, secondTableLease.leaseEpoch, 120L, "executor-table");
     store.markSucceeded(tableJobId, secondTableLease.leaseEpoch, 130L, 1L, 1L, 0L, 0L, 0L, 0L);
-    runProjectionMaintenance();
-    runProjectionMaintenance();
+    runProjectionMaintenance(4);
 
     assertEquals(0L, projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow().errors());
   }
@@ -3693,7 +3653,9 @@ class DurableReconcileJobStoreTest {
     runCancellationMaintenance();
     runProjectionMaintenance();
 
-    assertEquals("JS_CANCELLING", store.getLeaseView(parentJobId).orElseThrow().state);
+    assertTrue(
+        Set.of("JS_CANCELLING", "JS_CANCELLED")
+            .contains(store.getLeaseView(parentJobId).orElseThrow().state));
     assertEquals("JS_RUNNING", store.getLeaseView(childJobId).orElseThrow().state);
     Optional<StoredReconcileJobProjection> parentProjection =
         projectionStore().load(ACCOUNT_ID, parentJobId);
@@ -3705,7 +3667,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void projectionMaintenanceSkipsDescendantRefreshWhenAncestorCancelled() {
+  void projectionMaintenanceDoesNotScanAncestorsBeforeRefreshingDescendant() {
     String parentJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -3739,15 +3701,12 @@ class DurableReconcileJobStoreTest {
 
     store.cancel(ACCOUNT_ID, parentJobId, "stop");
 
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                grandchildJobId));
-    assertTrue(projectionStore().load(ACCOUNT_ID, grandchildJobId).isEmpty());
+    requestProjectionRefresh(grandchildJobId);
+    runProjectionMaintenance();
+    assertTrue(projectionStore().load(ACCOUNT_ID, grandchildJobId).isPresent());
+    assertTrue(
+        Set.of("JS_CANCELLING", "JS_CANCELLED")
+            .contains(store.getLeaseView(parentJobId).orElseThrow().state));
   }
 
   @Test
@@ -4019,12 +3978,13 @@ class DurableReconcileJobStoreTest {
                     2L,
                     ReconcileIndexArtifactResult.of("s3://bucket/index/file-1.idx", "parquet", 1)),
                 ReconcileFileResult.failed("s3://bucket/data/file-2.parquet", "boom"))));
-    refreshProjectedParent(tableJobId);
     assertEquals(
-        0L, projectionStore().load(ACCOUNT_ID, tableJobId).orElseThrow().indexesProcessed());
-    refreshProjectedParent(snapshotJobId);
-    refreshProjectedParent(tableJobId);
-    refreshProjectedParent(connectorJobId);
+        0L,
+        projectionStore()
+            .load(ACCOUNT_ID, tableJobId)
+            .map(StoredReconcileJobProjection::indexesProcessed)
+            .orElse(0L));
+    runProjectionMaintenance(8);
 
     StoredReconcileJobProjection snapshotProjection =
         projectionStore().load(ACCOUNT_ID, snapshotJobId).orElseThrow();
@@ -4051,7 +4011,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void finalizerSuccessSynchronouslyAdvancesNestedCanonicalParents() {
+  void finalizerSuccessAdvancesNestedCanonicalParentsThroughMaintenance() {
     String connectorJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -4171,6 +4131,7 @@ class DurableReconcileJobStoreTest {
             55L,
             List.of("s3://bucket/data/file-1.parquet"),
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 2L))));
+    runProjectionMaintenance(4);
     ReconcileJob finalizer =
         store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs.stream()
             .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
@@ -4184,6 +4145,7 @@ class DurableReconcileJobStoreTest {
     var finalizerLease = leaseJob(finalizer.jobId);
     store.markRunning(finalizer.jobId, finalizerLease.leaseEpoch, 250L, "executor-finalizer");
     store.markSucceeded(finalizer.jobId, finalizerLease.leaseEpoch, 300L, 0L, 0L, 0L, 0L, 1L, 2L);
+    runProjectionMaintenance(8);
 
     assertEquals(
         "JS_SUCCEEDED",
@@ -4287,7 +4249,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void childProjectionDeltaAdvancesParentCanonicalAggregatesBeforeFullRollup() {
+  void deferredProjectionMaintenanceAdvancesParentCanonicalAggregates() {
     String connectorJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -4406,14 +4368,7 @@ class DurableReconcileJobStoreTest {
                     ReconcileIndexArtifactResult.of("s3://bucket/index/file-1.idx", "parquet", 1)),
                 ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 3L))));
 
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                snapshotJobId));
+    runProjectionMaintenance(8);
 
     StoredReconcileJob tableAfterSnapshotProjection =
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId));
@@ -4421,27 +4376,6 @@ class DurableReconcileJobStoreTest {
     assertEquals(1L, tableAfterSnapshotProjection.indexesProcessed);
     assertEquals(1L, tableAfterSnapshotProjection.completedFileGroups);
     assertEquals(2L, tableAfterSnapshotProjection.completedFiles);
-
-    projectionStore()
-        .upsert(
-            projection(
-                tableJobId,
-                Math.max(0L, tableAfterSnapshotProjection.projectionAppliedGeneration),
-                "JS_WAITING",
-                "Waiting on child work",
-                1L,
-                1L,
-                0L,
-                0L));
-
-    assertDoesNotThrow(
-        () ->
-            invokePrivateMethod(
-                store,
-                "refreshProjectedParent",
-                new Class<?>[] {String.class, String.class},
-                ACCOUNT_ID,
-                tableJobId));
 
     StoredReconcileJobProjection tableProjection =
         projectionStore().load(ACCOUNT_ID, tableJobId).orElseThrow();
@@ -5094,7 +5028,7 @@ class DurableReconcileJobStoreTest {
             List.of("s3://bucket/data/file-1.parquet"),
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-1.parquet", 1L))));
     assertEquals(
-        1L,
+        0L,
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId))
             .completedFileGroups);
     Mockito.verify(observedJobIndexStore, Mockito.never())
@@ -5124,10 +5058,17 @@ class DurableReconcileJobStoreTest {
             List.of("s3://bucket/data/file-2.parquet"),
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 1L))));
     assertEquals(
-        2L,
+        0L,
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId))
             .completedFileGroups);
-    Mockito.verify(observedJobIndexStore, Mockito.times(1))
+    Mockito.verify(observedJobIndexStore, Mockito.never())
+        .listStoredChildJobs(
+            Mockito.eq(ACCOUNT_ID),
+            Mockito.eq(snapshotJobId),
+            Mockito.anyInt(),
+            Mockito.anyString());
+    runProjectionMaintenance();
+    Mockito.verify(observedJobIndexStore, Mockito.atLeastOnce())
         .listStoredChildJobs(
             Mockito.eq(ACCOUNT_ID),
             Mockito.eq(snapshotJobId),
@@ -5272,6 +5213,7 @@ class DurableReconcileJobStoreTest {
             55L,
             List.of("s3://bucket/data/file-2.parquet"),
             List.of(ReconcileFileResult.succeeded("s3://bucket/data/file-2.parquet", 1L))));
+    runProjectionMaintenance(2);
     List<ReconcileJob> children = store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs;
     List<ReconcileJob> finalizers =
         children.stream()
@@ -5575,12 +5517,18 @@ class DurableReconcileJobStoreTest {
     store.runProjectionMaintenanceOnce(isDynamoMode() ? 10_000L : 100L);
   }
 
-  private void refreshProjectedParent(String parentJobId) {
+  private void runProjectionMaintenance(int passes) {
+    for (int pass = 0; pass < passes; pass++) {
+      runProjectionMaintenance();
+    }
+  }
+
+  private void requestProjectionRefresh(String parentJobId) {
     assertDoesNotThrow(
         () ->
             invokePrivateMethod(
                 store,
-                "refreshProjectedParent",
+                "requestProjectionRefresh",
                 new Class<?>[] {String.class, String.class},
                 ACCOUNT_ID,
                 parentJobId));
@@ -5697,6 +5645,14 @@ class DurableReconcileJobStoreTest {
 
     @Override
     public boolean compareAndSetBatch(List<CasOp> ops) {
+      if (ops != null
+          && ops.stream()
+              .filter(UnconditionalUpsert.class::isInstance)
+              .map(UnconditionalUpsert.class::cast)
+              .anyMatch(
+                  upsert -> upsert.key().startsWith(Keys.reconcileDirtyParentPointerPrefix()))) {
+        return false;
+      }
       return delegate.compareAndSetBatch(ops);
     }
 

@@ -240,6 +240,30 @@ public class PointerStoreContractTest {
     assertEquals(1L, store.get(key(1)).orElseThrow().getVersion());
   }
 
+  @Test
+  void unconditionalUpsertReplacesMarkerAndProtectsNewTokenFromStaleDelete() {
+    assertTrue(
+        store.compareAndSetBatch(
+            List.of(
+                new PointerStore.UnconditionalUpsert(
+                    key(1),
+                    pointerWithBlob(key(1), "marker/one").toBuilder().setVersion(17L).build()))));
+    Pointer first = store.get(key(1)).orElseThrow();
+    assertEquals(17L, first.getVersion());
+
+    assertTrue(
+        store.compareAndSetBatch(
+            List.of(
+                new PointerStore.UnconditionalUpsert(
+                    key(1),
+                    pointerWithBlob(key(1), "marker/two").toBuilder().setVersion(23L).build()))));
+
+    assertFalse(store.compareAndSetBatch(List.of(new PointerStore.CasDelete(key(1), 17L))));
+    Pointer current = store.get(key(1)).orElseThrow();
+    assertEquals("marker/two", current.getBlobUri());
+    assertEquals(23L, current.getVersion());
+  }
+
   private static Pointer pointer(String key, long version) {
     return Pointer.newBuilder().setKey(key).setVersion(version).build();
   }

@@ -29,7 +29,6 @@ import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultResponse;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
-import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.MutationOps;
@@ -40,15 +39,17 @@ import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.HexFormat;
+import org.jboss.logging.Logger;
 
 /** Registers fenced snapshot capture manifests without ingesting their artifact payloads. */
 @ApplicationScoped
 public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
+  private static final Logger LOG = Logger.getLogger(LeasedSnapshotFinalizeExecutionService.class);
+
   @Inject ReconcileJobStore jobs;
   @Inject ai.floedb.floecat.service.repo.IdempotencyRepository idempotencyStore;
   @Inject SnapshotFinalizeChildStateService childStateService;
   @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
-  @Inject TableRootWriter rootWriter;
   @Inject BlobStore blobStore;
 
   public boolean persistSuccess(
@@ -57,66 +58,189 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       String leaseEpoch,
       String resultId,
       SnapshotCaptureManifestDescriptor descriptor) {
-    ReconcileJobStore.LeasedJob lease =
-        requireLeasedSnapshotFinalizeJob(principalContext.getCorrelationId(), jobId, leaseEpoch);
-    ReconcileSnapshotTask snapshotTask = requireSnapshotTask(lease);
-    ResourceId tableId = tableId(lease, snapshotTask);
-    String requiredResultId = requireResultId(resultId);
-    SnapshotCaptureManifestDescriptor validated =
-        validateManifestDescriptor(lease, snapshotTask, requiredResultId, descriptor);
-    byte[] requestBytes = successPayload(requiredResultId, validated).toByteArray();
-    return runIdempotentCreate(
-            () ->
-                MutationOps.createProto(
-                    principalContext.getAccountId(),
-                    "SubmitLeasedSnapshotFinalizeResult",
-                    resultIdempotencyKey(jobId, requiredResultId),
-                    () -> requestBytes,
-                    () -> {
-                      requireReadyChildState(lease, snapshotTask);
-                      currentSnapshotPointerService.maybeAdvance(
-                          tableId, snapshotTask.snapshotId(), lease.jobId);
-                      rootWriter.commitCaptureManifest(
-                          tableId,
-                          snapshotTask.snapshotId(),
-                          BlobRef.newBuilder()
-                              .setUri(validated.getManifestUri())
-                              .setVersion(
-                                  HexFormat.of()
-                                      .formatHex(validated.getManifestSha256().toByteArray()))
-                              .build());
-                      boolean accepted =
-                          jobs.applyLeaseOutcome(
-                              lease.jobId,
-                              lease.leaseEpoch,
-                              ReconcileJobStore.CompletionKind.SUCCEEDED,
-                              System.currentTimeMillis(),
-                              "Registered snapshot capture manifest " + snapshotTask.snapshotId(),
-                              0L,
-                              0L,
-                              0L,
-                              0L,
-                              0L,
-                              1L,
-                              validated.getStatsRecordCount());
-                      requireAcceptedLeaseOutcome(accepted, lease.jobId);
-                      return new IdempotencyGuard.CreateResult<>(
-                          SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
-                              .setAccepted(true)
-                              .build(),
-                          tableId);
-                    },
-                    ignored -> MutationMeta.getDefaultInstance(),
-                    idempotencyStore,
-                    nowTs(),
-                    idempotencyTtlSeconds(),
-                    principalContext::getCorrelationId,
-                    SubmitLeasedSnapshotFinalizeResultResponse::parseFrom))
-        .body
-        .getAccepted();
+    long totalStartNanos = System.nanoTime();
+    long[] leaseNanos = {0L};
+    long[] validateNanos = {0L};
+    long[] manifestHeadNanos = {0L};
+    long[] childScanNanos = {0L};
+    long[] idempotencyNanos = {0L};
+    long[] publishNanos = {0L};
+    long[] leaseOutcomeNanos = {0L};
+    long[] rpcRequestBytes = {0L};
+    long[] manifestBytes = {descriptor == null ? 0L : descriptor.getManifestBytes()};
+    String[] outcome = {"failed"};
+    try {
+      long leaseStartNanos = System.nanoTime();
+      ReconcileJobStore.LeasedJob lease;
+      try {
+        lease =
+            requireLeasedSnapshotFinalizeJob(
+                principalContext.getCorrelationId(), jobId, leaseEpoch);
+      } finally {
+        leaseNanos[0] = System.nanoTime() - leaseStartNanos;
+      }
+
+      long validateStartNanos = System.nanoTime();
+      ReconcileSnapshotTask snapshotTask;
+      ResourceId tableId;
+      String requiredResultId;
+      SnapshotCaptureManifestDescriptor validated;
+      try {
+        snapshotTask = requireSnapshotTask(lease);
+        tableId = tableId(lease, snapshotTask);
+        requiredResultId = requireResultId(resultId);
+        validated =
+            validateManifestDescriptorIdentity(lease, snapshotTask, requiredResultId, descriptor);
+      } finally {
+        validateNanos[0] = System.nanoTime() - validateStartNanos;
+      }
+      long manifestHeadStartNanos = System.nanoTime();
+      try {
+        validateManifestObject(lease, validated);
+      } finally {
+        manifestHeadNanos[0] = System.nanoTime() - manifestHeadStartNanos;
+      }
+      var successPayload = successPayload(requiredResultId, validated);
+      byte[] requestBytes = successPayload.toByteArray();
+      rpcRequestBytes[0] =
+          SubmitLeasedSnapshotFinalizeResultRequest.newBuilder()
+              .setJobId(jobId)
+              .setLeaseEpoch(leaseEpoch)
+              .setSuccess(successPayload)
+              .build()
+              .getSerializedSize();
+
+      long idempotencyStartNanos = System.nanoTime();
+      boolean accepted;
+      try {
+        accepted =
+            runIdempotentCreate(
+                    () ->
+                        MutationOps.createProto(
+                            principalContext.getAccountId(),
+                            "SubmitLeasedSnapshotFinalizeResult",
+                            resultIdempotencyKey(jobId, requiredResultId),
+                            () -> requestBytes,
+                            () -> {
+                              long childStartNanos = System.nanoTime();
+                              try {
+                                requireReadyChildState(lease, snapshotTask);
+                              } finally {
+                                childScanNanos[0] = System.nanoTime() - childStartNanos;
+                              }
+
+                              long publishStartNanos = System.nanoTime();
+                              try {
+                                currentSnapshotPointerService.publishCaptureManifest(
+                                    tableId,
+                                    snapshotTask.snapshotId(),
+                                    BlobRef.newBuilder()
+                                        .setUri(validated.getManifestUri())
+                                        .setVersion(
+                                            HexFormat.of()
+                                                .formatHex(
+                                                    validated.getManifestSha256().toByteArray()))
+                                        .build(),
+                                    lease.jobId);
+                              } finally {
+                                publishNanos[0] = System.nanoTime() - publishStartNanos;
+                              }
+
+                              long leaseOutcomeStartNanos = System.nanoTime();
+                              boolean leaseAccepted;
+                              try {
+                                leaseAccepted =
+                                    jobs.applyLeaseOutcome(
+                                        lease.jobId,
+                                        lease.leaseEpoch,
+                                        ReconcileJobStore.CompletionKind.SUCCEEDED,
+                                        System.currentTimeMillis(),
+                                        "Registered snapshot capture manifest "
+                                            + snapshotTask.snapshotId(),
+                                        0L,
+                                        0L,
+                                        0L,
+                                        0L,
+                                        0L,
+                                        1L,
+                                        validated.getStatsRecordCount());
+                                requireAcceptedLeaseOutcome(leaseAccepted, lease.jobId);
+                              } finally {
+                                leaseOutcomeNanos[0] = System.nanoTime() - leaseOutcomeStartNanos;
+                              }
+                              return new IdempotencyGuard.CreateResult<>(
+                                  SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
+                                      .setAccepted(true)
+                                      .build(),
+                                  tableId);
+                            },
+                            ignored -> MutationMeta.getDefaultInstance(),
+                            idempotencyStore,
+                            nowTs(),
+                            idempotencyTtlSeconds(),
+                            principalContext::getCorrelationId,
+                            SubmitLeasedSnapshotFinalizeResultResponse::parseFrom))
+                .body
+                .getAccepted();
+      } finally {
+        idempotencyNanos[0] = System.nanoTime() - idempotencyStartNanos;
+      }
+      outcome[0] = accepted ? "accepted" : "rejected";
+      return accepted;
+    } finally {
+      logFinalizeTiming(
+          jobId,
+          outcome[0],
+          totalStartNanos,
+          leaseNanos[0],
+          validateNanos[0],
+          manifestHeadNanos[0],
+          childScanNanos[0],
+          idempotencyNanos[0],
+          publishNanos[0],
+          leaseOutcomeNanos[0],
+          rpcRequestBytes[0],
+          manifestBytes[0]);
+    }
   }
 
-  private SnapshotCaptureManifestDescriptor validateManifestDescriptor(
+  private static void logFinalizeTiming(
+      String jobId,
+      String outcome,
+      long totalStartNanos,
+      long leaseNanos,
+      long validateNanos,
+      long manifestHeadNanos,
+      long childScanNanos,
+      long idempotencyNanos,
+      long publishNanos,
+      long leaseOutcomeNanos,
+      long rpcRequestBytes,
+      long manifestBytes) {
+    long totalNanos = System.nanoTime() - totalStartNanos;
+    long accountedNanos = leaseNanos + validateNanos + manifestHeadNanos + idempotencyNanos;
+    long otherNanos = Math.max(0L, totalNanos - accountedNanos);
+    LOG.infof(
+        "snapshot_finalize_submission_timing jobId=%s outcome=%s totalMs=%.3f leaseMs=%.3f"
+            + " validateMs=%.3f manifestHeadMs=%.3f idempotencyMs=%.3f childScanMs=%.3f"
+            + " publishMs=%.3f leaseOutcomeMs=%.3f otherMs=%.3f rpcRequestBytes=%d"
+            + " manifestBytes=%d",
+        jobId,
+        outcome,
+        totalNanos / 1_000_000.0,
+        leaseNanos / 1_000_000.0,
+        validateNanos / 1_000_000.0,
+        manifestHeadNanos / 1_000_000.0,
+        idempotencyNanos / 1_000_000.0,
+        childScanNanos / 1_000_000.0,
+        publishNanos / 1_000_000.0,
+        leaseOutcomeNanos / 1_000_000.0,
+        otherNanos / 1_000_000.0,
+        rpcRequestBytes,
+        manifestBytes);
+  }
+
+  private SnapshotCaptureManifestDescriptor validateManifestDescriptorIdentity(
       ReconcileJobStore.LeasedJob lease,
       ReconcileSnapshotTask snapshotTask,
       String resultId,
@@ -148,6 +272,12 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         || descriptor.getSourceFileCount() != snapshotTask.sourceFileCount()) {
       throw new IllegalArgumentException("snapshot capture manifest coverage mismatch");
     }
+    return descriptor;
+  }
+
+  private void validateManifestObject(
+      ReconcileJobStore.LeasedJob lease, SnapshotCaptureManifestDescriptor descriptor) {
+    String expectedUri = descriptor.getManifestUri();
     var header =
         blobStore
             .head(expectedUri)
@@ -161,7 +291,6 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     if (header.getContentLength() != descriptor.getManifestBytes()) {
       throw new IllegalArgumentException("snapshot capture manifest object size mismatch");
     }
-    return descriptor;
   }
 
   private void requireReadyChildState(

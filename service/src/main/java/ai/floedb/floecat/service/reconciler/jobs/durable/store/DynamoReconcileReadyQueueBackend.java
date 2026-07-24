@@ -86,7 +86,7 @@ public class DynamoReconcileReadyQueueBackend implements ReconcileReadyQueueBack
     QueryRequest.Builder query =
         QueryRequest.builder()
             .tableName(table)
-            .consistentRead(true)
+            .consistentRead(false)
             .limit(Math.max(1, pageSize))
             .expressionAttributeNames(Map.of("#pk", ATTR_PARTITION_KEY))
             .keyConditionExpression("#pk = :pk")

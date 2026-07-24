@@ -221,6 +221,50 @@ class NativeReconcileJobIndexStorePointerSetTest {
   }
 
   @Test
+  void terminalTransitionMaintainsRetentionIndexInCanonicalBatch() {
+    StoredReconcileJob running = record("JS_RUNNING");
+    StoredReconcileJob terminal = record("JS_SUCCEEDED");
+    terminal.updatedAtMs = running.updatedAtMs + 10L;
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, JOB_ID);
+
+    ReconcileJobIndexStore.JobIndexWriteBatch toTerminal =
+        store.buildJobIndexWriteBatch(
+            new CanonicalPointerSnapshot(canonicalKey, "inline:reconcile-job:e30", 1L),
+            running,
+            terminal);
+    String retentionKey = indexes.terminalRetentionPointerKey(terminal);
+    assertTrue(
+        toTerminal.writes().stream()
+            .anyMatch(
+                op ->
+                    op instanceof ReconcileJobIndexStore.JobIndexUpsert upsert
+                        && retentionKey.equals(upsert.pointerKey())
+                        && canonicalKey.equals(upsert.blobUri())));
+    assertTrue(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        retentionKey,
+                        0L,
+                        canonicalKey,
+                        ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_POINTER_KEY)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+
+    ReconcileJobIndexStore.JobIndexWriteBatch toRunning =
+        store.buildJobIndexWriteBatch(
+            new CanonicalPointerSnapshot(canonicalKey, "inline:reconcile-job:e30", 2L),
+            terminal,
+            running);
+    assertTrue(
+        toRunning.writes().stream()
+            .anyMatch(
+                op ->
+                    op instanceof ReconcileJobIndexStore.JobIndexDelete delete
+                        && retentionKey.equals(delete.pointerKey())));
+  }
+
+  @Test
   void statsCleanupPendingIndexIsRemovedWhenCleanupCompletes() {
     StoredReconcileJob previous = record("JS_CANCELLED");
     previous.statsCleanupState = "PENDING";
@@ -444,6 +488,47 @@ class NativeReconcileJobIndexStorePointerSetTest {
       assertEquals(canonicalKey, backend.loadIndexEntry(stateKey).orElseThrow().blobUri());
     }
     assertFalse(store.backfillStoredJobIndexes(canonicalKey).updated());
+  }
+
+  @Test
+  void migrationBackfillInstallsManifestWhenSecondaryIndexesAlreadyExist() {
+    StoredReconcileJob legacy = record("JS_SUCCEEDED");
+    legacy.jobId = "legacy-manifest-backfill";
+    legacy.connectorIndexPointerKey = "";
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, legacy.jobId);
+    String encoded = payloadStore().encodeInlineJobState(legacy);
+    assertTrue(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        canonicalKey,
+                        0L,
+                        encoded,
+                        ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_INLINE_JSON,
+                        ReconcileJobIndexCleanupManifest.EMPTY)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+    assertTrue(store.backfillStoredJobIndexes(canonicalKey).updated());
+
+    JobIndexEntrySnapshot canonical = backend.loadIndexEntry(canonicalKey).orElseThrow();
+    assertTrue(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        canonicalKey,
+                        canonical.version(),
+                        canonical.blobUri(),
+                        ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_INLINE_JSON,
+                        ReconcileJobIndexCleanupManifest.EMPTY)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+
+    ReconcileJobIndexStore.IndexBackfillResult result =
+        store.backfillStoredJobIndexes(canonicalKey);
+
+    assertTrue(result.updated());
+    assertFalse(result.retryable());
+    assertFalse(backend.loadCleanupManifest(canonicalKey).isEmpty());
   }
 
   @Test

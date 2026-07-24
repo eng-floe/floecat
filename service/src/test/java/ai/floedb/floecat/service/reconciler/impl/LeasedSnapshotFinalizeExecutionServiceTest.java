@@ -40,7 +40,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
-import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -60,7 +59,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   private LeasedSnapshotFinalizeExecutionService service;
   private ReconcileJobStore jobs;
   private BlobStore blobs;
-  private TableRootWriter rootWriter;
+  private CurrentSnapshotPointerService currentSnapshotPointerService;
   private PrincipalContext principal;
 
   @BeforeEach
@@ -68,13 +67,12 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     service = new LeasedSnapshotFinalizeExecutionService();
     jobs = mock(ReconcileJobStore.class);
     blobs = mock(BlobStore.class);
-    rootWriter = mock(TableRootWriter.class);
+    currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
     service.blobStore = blobs;
-    service.rootWriter = rootWriter;
     service.childStateService = mock(SnapshotFinalizeChildStateService.class);
-    service.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
+    service.currentSnapshotPointerService = currentSnapshotPointerService;
     service.idempotencyStore = mock(IdempotencyRepository.class);
     when(principal.getCorrelationId()).thenReturn("corr");
     when(principal.getAccountId()).thenReturn(ACCOUNT_ID);
@@ -109,15 +107,16 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor);
 
     verify(blobs, never()).get(anyString());
-    verify(rootWriter)
-        .commitCaptureManifest(
+    verify(currentSnapshotPointerService)
+        .publishCaptureManifest(
             any(),
             eq(SNAPSHOT_ID),
             eq(
                 BlobRef.newBuilder()
                     .setUri(manifestUri())
                     .setVersion("0000000000000000000000000000000000000000000000000000000000000000")
-                    .build()));
+                    .build()),
+            eq(FINALIZE_JOB_ID));
   }
 
   @Test
@@ -133,7 +132,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                 descriptor("s3://other/manifest.pb")));
 
     verify(blobs, never()).head(anyString());
-    verify(rootWriter, never()).commitCaptureManifest(any(), anyLong(), any());
+    verify(currentSnapshotPointerService, never())
+        .publishCaptureManifest(any(), anyLong(), any(), anyString());
   }
 
   private static SnapshotCaptureManifestDescriptor descriptor(String uri) {

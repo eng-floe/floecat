@@ -39,6 +39,7 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.eclipse.microprofile.config.Config;
 import org.eclipse.microprofile.config.ConfigProvider;
@@ -480,6 +481,176 @@ class RemoteReconcileExecutorPollerTest {
     poller.pollOnce();
 
     verify(client, times(0)).lease(any(), any());
+  }
+
+  @Test
+  void emptyQueueUsesOneProbeAndExponentialBackoffRegardlessOfParallelism() throws Exception {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    ReconcileExecutor executor =
+        remoteExecutor(
+            "planner",
+            Set.of(ReconcileJobKind.PLAN_CONNECTOR),
+            context -> ReconcileExecutor.ExecutionResult.success(0, 0, 0, 0, 0, "planner"));
+    Config pollerConfig = mock(Config.class);
+    when(pollerConfig.getOptionalValue("reconciler.max-parallelism", Integer.class))
+        .thenReturn(java.util.Optional.of(8));
+    when(pollerConfig.getOptionalValue(anyString(), eq(Long.class)))
+        .thenReturn(java.util.Optional.empty());
+    when(pollerConfig.getOptionalValue("reconciler.empty-poll-backoff-initial-ms", Long.class))
+        .thenReturn(java.util.Optional.of(100L));
+    when(pollerConfig.getOptionalValue("reconciler.empty-poll-backoff-max-ms", Long.class))
+        .thenReturn(java.util.Optional.of(800L));
+    when(client.lease(any(), eq("local-poller"))).thenReturn(java.util.Optional.empty());
+
+    AtomicLong nowMs = new AtomicLong(1_000L);
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
+    poller.config = pollerConfig;
+    poller.workerModeValue = "local";
+    poller.currentTimeMillis = nowMs::get;
+    poller.idleBackoffJitter = ceilingMs -> ceilingMs;
+    poller.init();
+
+    poller.pollOnce();
+    verify(client, org.mockito.Mockito.timeout(5_000L).times(1)).lease(any(), eq("local-poller"));
+    poller.drainAndAwaitIdle(1_000L);
+
+    poller.pollOnce();
+    verify(client, org.mockito.Mockito.after(100L).times(1)).lease(any(), eq("local-poller"));
+
+    nowMs.set(1_100L);
+    poller.pollOnce();
+    verify(client, org.mockito.Mockito.timeout(5_000L).times(2)).lease(any(), eq("local-poller"));
+    poller.drainAndAwaitIdle(1_000L);
+
+    nowMs.set(1_299L);
+    poller.pollOnce();
+    verify(client, org.mockito.Mockito.after(100L).times(2)).lease(any(), eq("local-poller"));
+
+    nowMs.set(1_300L);
+    poller.pollOnce();
+    verify(client, org.mockito.Mockito.timeout(5_000L).times(3)).lease(any(), eq("local-poller"));
+  }
+
+  @Test
+  void successfulIdleProbeImmediatelyFillsWorkerCapacity() throws Exception {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    CountDownLatch executionsStarted = new CountDownLatch(4);
+    CountDownLatch releaseExecutions = new CountDownLatch(1);
+    ReconcileExecutor executor =
+        remoteExecutor(
+            "planner",
+            Set.of(ReconcileJobKind.PLAN_CONNECTOR),
+            context -> {
+              executionsStarted.countDown();
+              await(releaseExecutions);
+              return ReconcileExecutor.ExecutionResult.success(0, 0, 0, 0, 0, "planner");
+            });
+    Config pollerConfig = mock(Config.class);
+    when(pollerConfig.getOptionalValue("reconciler.max-parallelism", Integer.class))
+        .thenReturn(java.util.Optional.of(4));
+    when(pollerConfig.getOptionalValue(anyString(), eq(Long.class)))
+        .thenReturn(java.util.Optional.empty());
+    AtomicInteger leaseAttempts = new AtomicInteger();
+    when(client.lease(any(), eq("local-poller")))
+        .thenAnswer(
+            ignored -> {
+              int attempt = leaseAttempts.incrementAndGet();
+              return attempt <= 4
+                  ? java.util.Optional.of(
+                      leasedJob("capacity-" + attempt, ReconcileJobKind.PLAN_CONNECTOR))
+                  : java.util.Optional.empty();
+            });
+    when(client.renew(any()))
+        .thenReturn(new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false));
+    when(client.cancellationRequested(any())).thenReturn(false);
+    when(client.complete(
+            any(), any(), any(), any(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(),
+            anyLong(), anyLong(), any()))
+        .thenReturn(new RemoteReconcileExecutorClient.CompletionResult(true));
+
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
+    poller.config = pollerConfig;
+    poller.workerModeValue = "local";
+    poller.init();
+
+    poller.pollOnce();
+
+    assertTrue(executionsStarted.await(5, TimeUnit.SECONDS));
+    assertEquals(4, leaseAttempts.get());
+    releaseExecutions.countDown();
+  }
+
+  @Test
+  void findingWorkResetsEmptyBackoffBeforeQueueReturnsToIdle() throws Exception {
+    RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
+    CountDownLatch returnedToIdle = new CountDownLatch(1);
+    ReconcileExecutor executor =
+        remoteExecutor(
+            "planner",
+            Set.of(ReconcileJobKind.PLAN_CONNECTOR),
+            context -> ReconcileExecutor.ExecutionResult.success(0, 0, 0, 0, 0, "planner"));
+    Config pollerConfig = mock(Config.class);
+    when(pollerConfig.getOptionalValue("reconciler.max-parallelism", Integer.class))
+        .thenReturn(java.util.Optional.of(1));
+    when(pollerConfig.getOptionalValue(anyString(), eq(Long.class)))
+        .thenReturn(java.util.Optional.empty());
+    when(pollerConfig.getOptionalValue("reconciler.empty-poll-backoff-initial-ms", Long.class))
+        .thenReturn(java.util.Optional.of(100L));
+    when(pollerConfig.getOptionalValue("reconciler.empty-poll-backoff-max-ms", Long.class))
+        .thenReturn(java.util.Optional.of(800L));
+    AtomicInteger leaseAttempts = new AtomicInteger();
+    when(client.lease(any(), eq("local-poller")))
+        .thenAnswer(
+            ignored -> {
+              int attempt = leaseAttempts.incrementAndGet();
+              if (attempt == 2) {
+                return java.util.Optional.of(
+                    leasedJob("reset-backoff", ReconcileJobKind.PLAN_CONNECTOR));
+              }
+              if (attempt == 3) {
+                returnedToIdle.countDown();
+              }
+              return java.util.Optional.empty();
+            });
+    when(client.renew(any()))
+        .thenReturn(new RemoteReconcileExecutorClient.LeaseHeartbeat(true, false));
+    when(client.cancellationRequested(any())).thenReturn(false);
+    when(client.complete(
+            any(), any(), any(), any(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(),
+            anyLong(), anyLong(), any()))
+        .thenReturn(new RemoteReconcileExecutorClient.CompletionResult(true));
+
+    AtomicLong nowMs = new AtomicLong(1_000L);
+    poller = new RemoteReconcileExecutorPoller();
+    poller.client = client;
+    poller.executorRegistry = new ReconcileExecutorRegistry(List.of(executor));
+    poller.config = pollerConfig;
+    poller.workerModeValue = "local";
+    poller.currentTimeMillis = nowMs::get;
+    poller.idleBackoffJitter = ceilingMs -> ceilingMs;
+    poller.init();
+
+    poller.pollOnce();
+    verify(client, org.mockito.Mockito.timeout(5_000L).times(1)).lease(any(), eq("local-poller"));
+    poller.drainAndAwaitIdle(1_000L);
+
+    nowMs.set(1_100L);
+    poller.pollOnce();
+    assertTrue(returnedToIdle.await(5, TimeUnit.SECONDS));
+    verify(client, org.mockito.Mockito.timeout(5_000L).times(3)).lease(any(), eq("local-poller"));
+    poller.drainAndAwaitIdle(1_000L);
+
+    nowMs.set(1_199L);
+    poller.pollOnce();
+    verify(client, org.mockito.Mockito.after(100L).times(3)).lease(any(), eq("local-poller"));
+
+    nowMs.set(1_200L);
+    poller.pollOnce();
+    verify(client, org.mockito.Mockito.timeout(5_000L).times(4)).lease(any(), eq("local-poller"));
   }
 
   @Test
