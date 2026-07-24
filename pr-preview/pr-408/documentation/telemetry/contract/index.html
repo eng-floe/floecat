@@ -2646,7 +2646,7 @@
 <td>COUNTER</td>
 <td></td>
 <td>v1</td>
-<td>Storage accounting refresh and rebuild failures.</td>
+<td>Storage accounting refresh failures.</td>
 <td>operation</td>
 <td>account, operation</td>
 </tr>
@@ -2658,24 +2658,6 @@
 <td>Stored partial-pointer-state anomalies surfaced (non-retryably) by the repository layer: a canonical/secondary pointer mismatch that an atomic create/createIfAbsent can never itself produce and that must be reconciled out of band.</td>
 <td>operation, resource</td>
 <td>operation, resource</td>
-</tr>
-<tr>
-<td>floecat.service.storage.rebuild.duration</td>
-<td>TIMER</td>
-<td>ms</td>
-<td>v1</td>
-<td>Time spent in a bounded storage accounting rebuild tick.</td>
-<td>operation</td>
-<td>operation</td>
-</tr>
-<tr>
-<td>floecat.service.storage.rebuild.objects_sampled</td>
-<td>SUMMARY</td>
-<td>count</td>
-<td>v1</td>
-<td>Legacy storage objects sampled by a bounded storage accounting rebuild tick.</td>
-<td></td>
-<td></td>
 </tr>
 <tr>
 <td>floecat.service.storage.refresh.duration</td>

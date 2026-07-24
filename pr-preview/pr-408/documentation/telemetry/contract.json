@@ -955,7 +955,7 @@
     "unit": "",
     "since": "v1",
     "origin": "service",
-    "description": "Storage accounting refresh and rebuild failures.",
+    "description": "Storage accounting refresh failures.",
     "requiredTags": ["operation"],
     "allowedTags": ["account", "operation"]
   },
@@ -968,26 +968,6 @@
     "description": "Stored partial-pointer-state anomalies surfaced (non-retryably) by the repository layer: a canonical/secondary pointer mismatch that an atomic create/createIfAbsent can never itself produce and that must be reconciled out of band.",
     "requiredTags": ["operation", "resource"],
     "allowedTags": ["operation", "resource"]
-  },
-  {
-    "name": "floecat.service.storage.rebuild.duration",
-    "type": "TIMER",
-    "unit": "ms",
-    "since": "v1",
-    "origin": "service",
-    "description": "Time spent in a bounded storage accounting rebuild tick.",
-    "requiredTags": ["operation"],
-    "allowedTags": ["operation"]
-  },
-  {
-    "name": "floecat.service.storage.rebuild.objects_sampled",
-    "type": "SUMMARY",
-    "unit": "count",
-    "since": "v1",
-    "origin": "service",
-    "description": "Legacy storage objects sampled by a bounded storage accounting rebuild tick.",
-    "requiredTags": [],
-    "allowedTags": []
   },
   {
     "name": "floecat.service.storage.refresh.duration",
