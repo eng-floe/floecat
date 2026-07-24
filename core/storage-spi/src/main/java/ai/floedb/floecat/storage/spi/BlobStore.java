@@ -77,7 +77,7 @@ public interface BlobStore {
     throw new UnsupportedOperationException("versioned deletes not supported by this store");
   }
 
-  void deletePrefix(String prefix);
+  int deletePrefix(String prefix);
 
   default Map<String, byte[]> getBatch(List<String> uris) {
     Map<String, byte[]> out = new HashMap<>(uris.size());

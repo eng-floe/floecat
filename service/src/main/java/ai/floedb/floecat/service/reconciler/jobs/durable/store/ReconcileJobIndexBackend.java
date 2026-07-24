@@ -138,38 +138,6 @@ public interface ReconcileJobIndexBackend {
     return true;
   }
 
-  default boolean ensureTerminalRetentionBackfill(
-      CanonicalPointerSnapshot snapshot,
-      String retentionPointerKey,
-      ReconcileJobIndexCleanupManifest cleanupManifest) {
-    if (snapshot == null || retentionPointerKey == null || retentionPointerKey.isBlank()) {
-      return false;
-    }
-    JobIndexEntrySnapshot existing = loadIndexEntry(retentionPointerKey).orElse(null);
-    if (existing != null && !snapshot.canonicalPointerKey().equals(existing.blobUri())) {
-      return false;
-    }
-    List<ReconcileJobIndexStore.JobIndexWriteOp> writes = new java.util.ArrayList<>();
-    writes.add(
-        new ReconcileJobIndexStore.JobIndexUpsert(
-            snapshot.canonicalPointerKey(),
-            snapshot.version(),
-            snapshot.blobUri(),
-            ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_INLINE_JSON,
-            cleanupManifest));
-    if (existing == null) {
-      writes.add(
-          new ReconcileJobIndexStore.JobIndexUpsert(
-              retentionPointerKey,
-              0L,
-              snapshot.canonicalPointerKey(),
-              ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_POINTER_KEY));
-    }
-    return compareAndSetBatch(
-        new ReconcileJobIndexStore.JobIndexWriteBatch(
-            List.copyOf(writes), ReconcileJobIndexStore.ReadyQueueMutation.empty()));
-  }
-
   default Optional<JobCleanupSession> beginJobCleanup(
       CanonicalPointerSnapshot expected, ReconcileJobIndexCleanupManifest fallbackManifest) {
     if (expected == null) {

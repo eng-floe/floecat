@@ -1264,11 +1264,6 @@ public final class Keys {
         "%s%019d/%s", reconcileTerminalRetentionPointerPrefix(accountId), ts, encode(jid));
   }
 
-  public static String reconcileTerminalRetentionBackfillPointer(String accountId) {
-    String tid = req("account_id", accountId);
-    return "/accounts/" + encode(tid) + "/reconcile/jobs/terminal-retention-backfill-complete";
-  }
-
   public static String reconcileJobByConnectorStatePointerPrefix(
       String accountId, String connectorId) {
     String tid = req("account_id", accountId);
@@ -1531,6 +1526,17 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
     return "/accounts/" + encode(tid) + "/reconcile/jobs/" + encode(jid) + "/";
+  }
+
+  public static String reconcileJobBlobCleanupPointer(String accountId, String jobId) {
+    String tid = req("account_id", accountId);
+    String jid = req("job_id", jobId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-blob-cleanup/" + encode(jid);
+  }
+
+  public static String reconcileJobBlobCleanupPointerPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-blob-cleanup/";
   }
 
   /**

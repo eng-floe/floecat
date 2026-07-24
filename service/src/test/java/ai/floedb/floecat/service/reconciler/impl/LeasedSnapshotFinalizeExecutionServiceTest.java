@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.reconciler.impl;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -82,19 +83,18 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         .thenReturn(true);
     when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getCompactLeaseView(FINALIZE_JOB_ID)).thenReturn(Optional.of(finalizeJobView()));
-    when(jobs.applyLeaseOutcome(
+    when(jobs.completeSnapshotFinalizeSuccess(
             eq(FINALIZE_JOB_ID),
             eq(LEASE_EPOCH),
-            eq(ReconcileJobStore.CompletionKind.SUCCEEDED),
-            anyLong(),
+            anyString(),
             anyString(),
             anyLong(),
+            anyString(),
+            anyInt(),
+            anyInt(),
             anyLong(),
             anyLong(),
-            anyLong(),
-            anyLong(),
-            anyLong(),
-            anyLong()))
+            anyString()))
         .thenReturn(true);
   }
 
@@ -107,6 +107,11 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor);
 
     verify(blobs, never()).get(anyString());
+    verify(service.idempotencyStore, never())
+        .createPending(anyString(), anyString(), anyString(), anyString(), any(), any());
+    verify(service.idempotencyStore, never())
+        .finalizeSuccess(
+            anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
     verify(currentSnapshotPointerService)
         .publishCaptureManifest(
             any(),
@@ -131,6 +136,20 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                 "result-1",
                 descriptor("s3://other/manifest.pb")));
 
+    verify(blobs, never()).head(anyString());
+    verify(currentSnapshotPointerService, never())
+        .publishCaptureManifest(any(), anyLong(), any(), anyString());
+  }
+
+  @Test
+  void exactTerminalReplayUsesCanonicalResultWithoutLeaseOrPublicationReads() {
+    SnapshotCaptureManifestDescriptor descriptor = descriptor(manifestUri());
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJobView("JS_SUCCEEDED")));
+
+    service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor);
+
+    verify(jobs, never()).renewLease(anyString(), anyString());
     verify(blobs, never()).head(anyString());
     verify(currentSnapshotPointerService, never())
         .publishCaptureManifest(any(), anyLong(), any(), anyString());
@@ -162,6 +181,10 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   private static ReconcileJobStore.ReconcileJob finalizeJobView() {
+    return finalizeJobView("JS_RUNNING");
+  }
+
+  private static ReconcileJobStore.ReconcileJob finalizeJobView(String state) {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -177,7 +200,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         FINALIZE_JOB_ID,
         ACCOUNT_ID,
         "connector",
-        "JS_RUNNING",
+        state,
         "",
         0L,
         0L,

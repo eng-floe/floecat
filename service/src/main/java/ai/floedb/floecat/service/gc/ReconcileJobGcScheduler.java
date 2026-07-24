@@ -36,7 +36,6 @@ import jakarta.inject.Provider;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -63,8 +62,6 @@ public class ReconcileJobGcScheduler {
 
   private final Map<String, String> jobTokenByAccount = new ConcurrentHashMap<>();
   private final Map<String, String> canonicalQuarantineTokenByAccount = new ConcurrentHashMap<>();
-  private final Map<String, String> retentionBackfillTokenByAccount = new ConcurrentHashMap<>();
-  private final Set<String> retentionBackfillCompleteAccounts = ConcurrentHashMap.newKeySet();
   private volatile String accountToken = "";
   private volatile List<Account> accountPage = List.of();
   private volatile int accountPageIndex = 0;
@@ -162,10 +159,10 @@ public class ReconcileJobGcScheduler {
 
     final long maxTickMillis =
         cfg.getOptionalValue("floecat.gc.reconcile-jobs.max-tick-millis", Long.class)
-            .orElse(30_000L);
+            .orElse(2_000L);
     final int accountsPageSize =
         cfg.getOptionalValue("floecat.gc.reconcile-jobs.accounts-page-size", Integer.class)
-            .orElse(200);
+            .orElse(50);
     final long deadline = now + maxTickMillis;
 
     long tickStart = System.nanoTime();
@@ -176,10 +173,6 @@ public class ReconcileJobGcScheduler {
     int totalBlobDeleted = 0;
     int totalReadyDeleted = 0;
     int totalQuarantined = 0;
-    int totalBackfillScanned = 0;
-    int totalBackfillIndexed = 0;
-    int totalBackfillRetryable = 0;
-    long totalBackfillNanos = 0L;
     try {
       while (System.currentTimeMillis() < deadline && !stopping) {
         if (accountPageIndex >= accountPage.size()) {
@@ -204,44 +197,7 @@ public class ReconcileJobGcScheduler {
 
         long sliceStart = System.nanoTime();
         try {
-          boolean backfillComplete = retentionBackfillCompleteAccounts.contains(accountId);
-          if (!backfillComplete) {
-            long backfillStart = System.nanoTime();
-            try {
-              var backfill =
-                  gc.runTerminalRetentionBackfillSlice(
-                      accountId,
-                      retentionBackfillTokenByAccount.getOrDefault(accountId, ""),
-                      deadline);
-              if (backfill != null) {
-                totalBackfillScanned += backfill.scanned();
-                totalBackfillIndexed += backfill.indexed();
-                totalBackfillRetryable += backfill.retryable();
-                gcMetrics.recordCollection(
-                    backfill.scanned(), Tag.of(TagKey.RESULT, "retention-backfill-scanned"));
-                gcMetrics.recordCollection(
-                    backfill.indexed(), Tag.of(TagKey.RESULT, "retention-backfill-indexed"));
-                gcMetrics.recordCollection(
-                    backfill.retryable(), Tag.of(TagKey.RESULT, "retention-backfill-retryable"));
-                if (backfill.complete()) {
-                  retentionBackfillCompleteAccounts.add(accountId);
-                  retentionBackfillTokenByAccount.remove(accountId);
-                } else {
-                  retentionBackfillTokenByAccount.put(accountId, backfill.nextToken());
-                }
-                backfillComplete = backfill.complete();
-              }
-            } catch (Throwable t) {
-              gcMetrics.recordError(1, Tag.of(TagKey.RESULT, "retention-backfill-failed"));
-              LOG.warnf(t, "reconcile job retention backfill slice failed accountId=%s", accountId);
-            } finally {
-              totalBackfillNanos += System.nanoTime() - backfillStart;
-              gcMetrics.recordPause(
-                  Duration.ofNanos(System.nanoTime() - backfillStart),
-                  Tag.of(TagKey.RESULT, "retention-backfill-slice"));
-            }
-          }
-          if (backfillComplete && System.currentTimeMillis() < deadline) {
+          if (System.currentTimeMillis() < deadline) {
             var result =
                 gc.runAccountSlice(accountId, jobToken, canonicalQuarantineToken, deadline);
             accountsProcessed++;
@@ -301,9 +257,7 @@ public class ReconcileJobGcScheduler {
       LOG.infof(
           "reconcile job gc tick summary accounts=%d accountScanned=%d expired=%d"
               + " ptrDeleted=%d blobDeleted=%d readyPointerDeleted=%d quarantined=%d accountPageIndex=%d"
-              + " accountPageSize=%d accountTokenPresent=%s activeAccountTokens=%d"
-              + " backfillScanned=%d backfillIndexed=%d backfillRetryable=%d backfillMs=%d"
-              + " durationMs=%d",
+              + " accountPageSize=%d accountTokenPresent=%s activeAccountTokens=%d durationMs=%d",
           accountsProcessed,
           totalAccountScanned,
           totalExpired,
@@ -315,10 +269,6 @@ public class ReconcileJobGcScheduler {
           accountPage.size(),
           accountToken != null && !accountToken.isBlank(),
           jobTokenByAccount.size() + canonicalQuarantineTokenByAccount.size(),
-          totalBackfillScanned,
-          totalBackfillIndexed,
-          totalBackfillRetryable,
-          Duration.ofNanos(totalBackfillNanos).toMillis(),
           Duration.ofNanos(System.nanoTime() - tickStart).toMillis());
     }
   }

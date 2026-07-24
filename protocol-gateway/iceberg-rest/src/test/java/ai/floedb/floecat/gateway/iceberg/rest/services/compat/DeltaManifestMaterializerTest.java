@@ -615,7 +615,7 @@ class DeltaManifestMaterializerTest {
     }
 
     @Override
-    public void deletePrefix(String prefix) {
+    public int deletePrefix(String prefix) {
       throw new UnsupportedOperationException();
     }
 

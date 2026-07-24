@@ -694,28 +694,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   }
 
   @Override
-  public IndexBackfillResult backfillTerminalRetentionIndex(
-      CanonicalPointerSnapshot snapshot, StoredReconcileJob record) {
-    if (snapshot == null || record == null || blank(snapshot.canonicalPointerKey())) {
-      return IndexBackfillResult.unchanged();
-    }
-    final String retentionPointerKey;
-    final ReconcileJobIndexCleanupManifest manifest;
-    try {
-      retentionPointerKey = indexes.terminalRetentionPointerKey(record);
-      manifest = cleanupManifest(record);
-    } catch (RuntimeException invalidRecord) {
-      return new IndexBackfillResult(false, true);
-    }
-    if (blank(retentionPointerKey)) {
-      return IndexBackfillResult.unchanged();
-    }
-    boolean committed =
-        jobIndexBackend.ensureTerminalRetentionBackfill(snapshot, retentionPointerKey, manifest);
-    return committed ? new IndexBackfillResult(true, false) : new IndexBackfillResult(false, true);
-  }
-
-  @Override
   public int writeItemCount(JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps) {
     return physicalWriteItemCount(batch) + (extraPointerOps == null ? 0 : extraPointerOps.size());
   }

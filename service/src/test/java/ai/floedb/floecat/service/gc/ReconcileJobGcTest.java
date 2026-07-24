@@ -44,7 +44,6 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Base64;
-import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -91,9 +90,9 @@ class ReconcileJobGcTest {
     System.clearProperty("floecat.gc.reconcile-jobs.page-size");
     System.clearProperty("floecat.gc.reconcile-jobs.batch-limit");
     System.clearProperty("floecat.gc.reconcile-jobs.slice-millis");
+    System.clearProperty("floecat.gc.reconcile-jobs.blob-prefixes-per-slice");
     System.clearProperty("floecat.gc.reconcile-jobs.retention-ms");
     System.clearProperty("floecat.gc.reconcile-jobs.canonical-quarantine-retention-ms");
-    System.clearProperty("floecat.gc.reconcile-jobs.retention-backfill-page-size");
   }
 
   @Test
@@ -119,14 +118,20 @@ class ReconcileJobGcTest {
         historyBlob,
         "{\"old\":true}".getBytes(StandardCharsets.UTF_8),
         "application/json; charset=UTF-8");
-    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
+    var metadataResult = gc.runAccountSlice(ACCOUNT_ID, "", "");
 
-    assertTrue(result.expired() >= 1);
-    assertTrue(result.blobDeleted() >= 1);
+    assertTrue(metadataResult.expired() >= 1);
     assertTrue(pointers.get(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId)).isEmpty());
     assertTrue(pointers.get(Keys.reconcileJobLookupPointerById(jobId)).isEmpty());
     assertTrue(pointers.get(dedupePointer).isEmpty());
     assertTrue(pointers.get(readyPointer).isEmpty());
+    assertTrue(pointers.get(Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, jobId)).isPresent());
+    assertTrue(blobs.head(historyBlob).isPresent());
+
+    var blobResult = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertTrue(blobResult.blobDeleted() >= 1);
+    assertTrue(pointers.get(Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, jobId)).isEmpty());
     assertFalse(blobs.head(historyBlob).isPresent());
   }
 
@@ -148,55 +153,6 @@ class ReconcileJobGcTest {
         jobIndexBackend
             .loadIndexEntry(Keys.reconcileJobPointerById(ACCOUNT_ID, record.jobId))
             .isPresent());
-  }
-
-  @Test
-  void terminalRetentionBackfillIsBoundedAndCompletesOnce() {
-    System.setProperty("floecat.gc.reconcile-jobs.retention-backfill-page-size", "1");
-    StoredReconcileJob first = storedJob("legacy-terminal-a", "JS_SUCCEEDED", 100L, "", "", "");
-    StoredReconcileJob second = storedJob("legacy-terminal-b", "JS_FAILED", 200L, "", "", "");
-    putNativeJobIndexRows(first, false);
-    putNativeJobIndexRows(second, false);
-    assertTrue(
-        jobIndexBackend.compareAndSetBatch(
-            new ReconcileJobIndexStore.JobIndexWriteBatch(
-                List.of(
-                    new ReconcileJobIndexStore.JobIndexDelete(
-                        gc.jobIndexes.terminalRetentionPointerKey(first),
-                        1L,
-                        Keys.reconcileJobPointerById(ACCOUNT_ID, first.jobId),
-                        "")),
-                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
-    assertTrue(
-        jobIndexBackend.compareAndSetBatch(
-            new ReconcileJobIndexStore.JobIndexWriteBatch(
-                List.of(
-                    new ReconcileJobIndexStore.JobIndexDelete(
-                        gc.jobIndexes.terminalRetentionPointerKey(second),
-                        1L,
-                        Keys.reconcileJobPointerById(ACCOUNT_ID, second.jobId),
-                        "")),
-                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
-
-    var firstSlice = gc.runTerminalRetentionBackfillSlice(ACCOUNT_ID, "");
-    assertEquals(1, firstSlice.scanned());
-    assertFalse(firstSlice.complete());
-    assertFalse(firstSlice.nextToken().isBlank());
-
-    var secondSlice = gc.runTerminalRetentionBackfillSlice(ACCOUNT_ID, firstSlice.nextToken());
-    assertEquals(1, secondSlice.scanned());
-    assertTrue(secondSlice.complete());
-    assertTrue(gc.terminalRetentionBackfillComplete(ACCOUNT_ID));
-    assertTrue(
-        jobIndexBackend
-            .loadIndexEntry(gc.jobIndexes.terminalRetentionPointerKey(first))
-            .isPresent());
-    assertTrue(
-        jobIndexBackend
-            .loadIndexEntry(gc.jobIndexes.terminalRetentionPointerKey(second))
-            .isPresent());
-
-    assertEquals(0, gc.runTerminalRetentionBackfillSlice(ACCOUNT_ID, "").scanned());
   }
 
   @Test
@@ -1074,55 +1030,6 @@ class ReconcileJobGcTest {
     assertEquals(0, result.ptrDeleted());
     assertTrue(pointers.get(canonicalKey).isPresent());
     assertTrue(pointers.get(lookupKey).isPresent());
-  }
-
-  @Test
-  void accountSliceDeletesHistoricalReadyPointersForTerminalInlineJobs() {
-    System.setProperty("floecat.gc.reconcile-jobs.retention-ms", "1");
-    long finishedAtMs = System.currentTimeMillis() - 10_000L;
-    String jobId = "job-inline-terminal-ready-cleanup";
-    String laneKey = "lane";
-    String executionClass = "BATCH";
-    String executionLane = "connector:lane";
-    String jobKind = "PLAN_TABLE";
-    String readyKey = Keys.reconcileReadyPointerByDue(finishedAtMs, ACCOUNT_ID, laneKey, jobId);
-    String executionClassReadyKey =
-        Keys.reconcileReadyByExecutionClassPointerByDue(
-            finishedAtMs, executionClass, ACCOUNT_ID, jobId);
-    String executionLaneReadyKey =
-        Keys.reconcileReadyByExecutionLanePointerByDue(
-            finishedAtMs, executionLane, ACCOUNT_ID, jobId);
-    String jobKindReadyKey =
-        Keys.reconcileReadyByJobKindPointerByDue(finishedAtMs, jobKind, ACCOUNT_ID, jobId);
-    String canonicalKey =
-        putInlineReconcileJob(
-            jobId,
-            "JS_SUCCEEDED",
-            finishedAtMs,
-            "",
-            readyKey,
-            laneKey,
-            executionClass,
-            executionLane,
-            "",
-            jobKind,
-            finishedAtMs);
-    putPointer(readyKey, canonicalKey);
-    putPointer(executionClassReadyKey, canonicalKey);
-    putPointer(executionLaneReadyKey, canonicalKey);
-    putPointer(jobKindReadyKey, canonicalKey);
-    putPointer(
-        Keys.reconcileJobByAccountStatePointer(ACCOUNT_ID, "JS_SUCCEEDED", finishedAtMs, jobId),
-        canonicalKey);
-    gc.runTerminalRetentionBackfillSlice(ACCOUNT_ID, "");
-
-    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
-
-    assertTrue(result.readyDeleted() >= 4);
-    assertTrue(pointers.get(readyKey).isEmpty());
-    assertTrue(pointers.get(executionClassReadyKey).isEmpty());
-    assertTrue(pointers.get(executionLaneReadyKey).isEmpty());
-    assertTrue(pointers.get(jobKindReadyKey).isEmpty());
   }
 
   @Test

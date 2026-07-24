@@ -1993,8 +1993,8 @@ class StatsRepositoryTargetStorageTest {
     }
 
     @Override
-    public void deletePrefix(String prefix) {
-      delegate.deletePrefix(prefix);
+    public int deletePrefix(String prefix) {
+      return delegate.deletePrefix(prefix);
     }
 
     @Override

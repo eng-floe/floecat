@@ -67,11 +67,6 @@ class ReconcileJobGcSchedulerTest {
     private String failAccountId;
 
     @Override
-    public boolean terminalRetentionBackfillComplete(String accountId) {
-      return true;
-    }
-
-    @Override
     public AccountResult runAccountSlice(
         String accountId, String pageToken, String canonicalQuarantinePageToken, long deadlineMs) {
       accountIds.add(accountId);

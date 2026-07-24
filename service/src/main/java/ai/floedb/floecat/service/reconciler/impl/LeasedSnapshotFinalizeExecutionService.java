@@ -63,13 +63,37 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     long[] validateNanos = {0L};
     long[] manifestHeadNanos = {0L};
     long[] childScanNanos = {0L};
-    long[] idempotencyNanos = {0L};
+    long[] commitNanos = {0L};
     long[] publishNanos = {0L};
     long[] leaseOutcomeNanos = {0L};
     long[] rpcRequestBytes = {0L};
     long[] manifestBytes = {descriptor == null ? 0L : descriptor.getManifestBytes()};
     String[] outcome = {"failed"};
     try {
+      String requiredResultId = requireResultId(resultId);
+      String manifestSha256 =
+          descriptor == null
+              ? ""
+              : HexFormat.of().formatHex(descriptor.getManifestSha256().toByteArray());
+      ReconcileJobStore.ReconcileJob existing = jobs.getCompactLeaseView(jobId).orElse(null);
+      if (existing != null && "JS_SUCCEEDED".equals(existing.state)) {
+        boolean replayed =
+            jobs.completeSnapshotFinalizeSuccess(
+                jobId,
+                leaseEpoch,
+                requiredResultId,
+                descriptor == null ? "" : descriptor.getManifestUri(),
+                descriptor == null ? 0L : descriptor.getManifestBytes(),
+                manifestSha256,
+                descriptor == null ? 0 : descriptor.getFileGroupCount(),
+                descriptor == null ? 0 : descriptor.getSourceFileCount(),
+                descriptor == null ? 0L : descriptor.getStatsRecordCount(),
+                System.currentTimeMillis(),
+                "Registered snapshot capture manifest");
+        requireAcceptedLeaseOutcome(replayed, jobId);
+        outcome[0] = "replayed";
+        return true;
+      }
       long leaseStartNanos = System.nanoTime();
       ReconcileJobStore.LeasedJob lease;
       try {
@@ -83,12 +107,10 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       long validateStartNanos = System.nanoTime();
       ReconcileSnapshotTask snapshotTask;
       ResourceId tableId;
-      String requiredResultId;
       SnapshotCaptureManifestDescriptor validated;
       try {
         snapshotTask = requireSnapshotTask(lease);
         tableId = tableId(lease, snapshotTask);
-        requiredResultId = requireResultId(resultId);
         validated =
             validateManifestDescriptorIdentity(lease, snapshotTask, requiredResultId, descriptor);
       } finally {
@@ -101,7 +123,6 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         manifestHeadNanos[0] = System.nanoTime() - manifestHeadStartNanos;
       }
       var successPayload = successPayload(requiredResultId, validated);
-      byte[] requestBytes = successPayload.toByteArray();
       rpcRequestBytes[0] =
           SubmitLeasedSnapshotFinalizeResultRequest.newBuilder()
               .setJobId(jobId)
@@ -110,80 +131,49 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
               .build()
               .getSerializedSize();
 
-      long idempotencyStartNanos = System.nanoTime();
-      boolean accepted;
+      long commitStartNanos = System.nanoTime();
+      boolean accepted = false;
       try {
-        accepted =
-            runIdempotentCreate(
-                    () ->
-                        MutationOps.createProto(
-                            principalContext.getAccountId(),
-                            "SubmitLeasedSnapshotFinalizeResult",
-                            resultIdempotencyKey(jobId, requiredResultId),
-                            () -> requestBytes,
-                            () -> {
-                              long childStartNanos = System.nanoTime();
-                              try {
-                                requireReadyChildState(lease, snapshotTask);
-                              } finally {
-                                childScanNanos[0] = System.nanoTime() - childStartNanos;
-                              }
-
-                              long publishStartNanos = System.nanoTime();
-                              try {
-                                currentSnapshotPointerService.publishCaptureManifest(
-                                    tableId,
-                                    snapshotTask.snapshotId(),
-                                    BlobRef.newBuilder()
-                                        .setUri(validated.getManifestUri())
-                                        .setVersion(
-                                            HexFormat.of()
-                                                .formatHex(
-                                                    validated.getManifestSha256().toByteArray()))
-                                        .build(),
-                                    lease.jobId);
-                              } finally {
-                                publishNanos[0] = System.nanoTime() - publishStartNanos;
-                              }
-
-                              long leaseOutcomeStartNanos = System.nanoTime();
-                              boolean leaseAccepted;
-                              try {
-                                leaseAccepted =
-                                    jobs.applyLeaseOutcome(
-                                        lease.jobId,
-                                        lease.leaseEpoch,
-                                        ReconcileJobStore.CompletionKind.SUCCEEDED,
-                                        System.currentTimeMillis(),
-                                        "Registered snapshot capture manifest "
-                                            + snapshotTask.snapshotId(),
-                                        0L,
-                                        0L,
-                                        0L,
-                                        0L,
-                                        0L,
-                                        1L,
-                                        validated.getStatsRecordCount());
-                                requireAcceptedLeaseOutcome(leaseAccepted, lease.jobId);
-                              } finally {
-                                leaseOutcomeNanos[0] = System.nanoTime() - leaseOutcomeStartNanos;
-                              }
-                              return new IdempotencyGuard.CreateResult<>(
-                                  SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
-                                      .setAccepted(true)
-                                      .build(),
-                                  tableId);
-                            },
-                            ignored -> MutationMeta.getDefaultInstance(),
-                            idempotencyStore,
-                            nowTs(),
-                            idempotencyTtlSeconds(),
-                            principalContext::getCorrelationId,
-                            SubmitLeasedSnapshotFinalizeResultResponse::parseFrom))
-                .body
-                .getAccepted();
+        long childStartNanos = System.nanoTime();
+        try {
+          requireReadyChildState(lease, snapshotTask);
+        } finally {
+          childScanNanos[0] = System.nanoTime() - childStartNanos;
+        }
+        long publishStartNanos = System.nanoTime();
+        try {
+          currentSnapshotPointerService.publishCaptureManifest(
+              tableId,
+              snapshotTask.snapshotId(),
+              BlobRef.newBuilder()
+                  .setUri(validated.getManifestUri())
+                  .setVersion(manifestSha256)
+                  .build(),
+              lease.jobId);
+        } finally {
+          publishNanos[0] = System.nanoTime() - publishStartNanos;
+        }
+        long leaseOutcomeStartNanos = System.nanoTime();
+        try {
+          accepted =
+              jobs.completeSnapshotFinalizeSuccess(
+                  lease.jobId,
+                  lease.leaseEpoch,
+                  requiredResultId,
+                  validated.getManifestUri(),
+                  validated.getManifestBytes(),
+                  manifestSha256,
+                  validated.getFileGroupCount(),
+                  validated.getSourceFileCount(),
+                  validated.getStatsRecordCount(),
+                  System.currentTimeMillis(),
+                  "Registered snapshot capture manifest " + snapshotTask.snapshotId());
+          requireAcceptedLeaseOutcome(accepted, lease.jobId);
+        } finally {
+          leaseOutcomeNanos[0] = System.nanoTime() - leaseOutcomeStartNanos;
+        }
       } finally {
-        idempotencyNanos[0] = System.nanoTime() - idempotencyStartNanos;
+        commitNanos[0] = System.nanoTime() - commitStartNanos;
       }
       outcome[0] = accepted ? "accepted" : "rejected";
       return accepted;
@@ -196,7 +186,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           validateNanos[0],
           manifestHeadNanos[0],
           childScanNanos[0],
-          idempotencyNanos[0],
+          commitNanos[0],
           publishNanos[0],
           leaseOutcomeNanos[0],
           rpcRequestBytes[0],
@@ -212,17 +202,17 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       long validateNanos,
       long manifestHeadNanos,
       long childScanNanos,
-      long idempotencyNanos,
+      long commitNanos,
       long publishNanos,
       long leaseOutcomeNanos,
       long rpcRequestBytes,
       long manifestBytes) {
     long totalNanos = System.nanoTime() - totalStartNanos;
-    long accountedNanos = leaseNanos + validateNanos + manifestHeadNanos + idempotencyNanos;
+    long accountedNanos = leaseNanos + validateNanos + manifestHeadNanos + commitNanos;
     long otherNanos = Math.max(0L, totalNanos - accountedNanos);
     LOG.infof(
         "snapshot_finalize_submission_timing jobId=%s outcome=%s totalMs=%.3f leaseMs=%.3f"
-            + " validateMs=%.3f manifestHeadMs=%.3f idempotencyMs=%.3f childScanMs=%.3f"
+            + " validateMs=%.3f manifestHeadMs=%.3f commitMs=%.3f childScanMs=%.3f"
             + " publishMs=%.3f leaseOutcomeMs=%.3f otherMs=%.3f rpcRequestBytes=%d"
             + " manifestBytes=%d",
         jobId,
@@ -231,7 +221,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         leaseNanos / 1_000_000.0,
         validateNanos / 1_000_000.0,
         manifestHeadNanos / 1_000_000.0,
-        idempotencyNanos / 1_000_000.0,
+        commitNanos / 1_000_000.0,
         childScanNanos / 1_000_000.0,
         publishNanos / 1_000_000.0,
         leaseOutcomeNanos / 1_000_000.0,

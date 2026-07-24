@@ -205,15 +205,18 @@ public class InMemoryBlobStore implements BlobStore {
   }
 
   @Override
-  public void deletePrefix(String prefix) {
+  public int deletePrefix(String prefix) {
     final String p = normalize(prefix);
+    int deleted = 0;
     var it = map.keySet().iterator();
     while (it.hasNext()) {
       String k = it.next();
       if (k.startsWith(p)) {
         it.remove();
+        deleted++;
       }
     }
+    return deleted;
   }
 
   private static final class PageImpl implements BlobStore.Page {

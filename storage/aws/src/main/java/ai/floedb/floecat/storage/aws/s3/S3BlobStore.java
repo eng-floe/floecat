@@ -398,9 +398,10 @@ public class S3BlobStore implements BlobStore {
   }
 
   @Override
-  public void deletePrefix(String prefix) {
+  public int deletePrefix(String prefix) {
     final String p = normalize(prefix);
     String ct = null;
+    int deleted = 0;
 
     try {
       do {
@@ -421,6 +422,7 @@ public class S3BlobStore implements BlobStore {
             var dels =
                 slice.stream().map(o -> ObjectIdentifier.builder().key(o.key()).build()).toList();
             s3.call(c -> c.deleteObjects(b -> b.bucket(bucket).delete(d -> d.objects(dels))));
+            deleted += slice.size();
           }
         }
 
@@ -434,6 +436,7 @@ public class S3BlobStore implements BlobStore {
         } catch (Throwable ignore) {
         }
       }
+      return deleted;
 
     } catch (S3Exception e) {
       throw mapAndWrap("DELETE_PREFIX", p, e);

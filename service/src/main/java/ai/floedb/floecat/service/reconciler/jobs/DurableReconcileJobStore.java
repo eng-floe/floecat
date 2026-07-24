@@ -1735,6 +1735,79 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         });
   }
 
+  @Override
+  public boolean completeSnapshotFinalizeSuccess(
+      String jobId,
+      String leaseEpoch,
+      String resultId,
+      String manifestUri,
+      long manifestBytes,
+      String manifestSha256,
+      int fileGroupCount,
+      int sourceFileCount,
+      long statsRecordCount,
+      long finishedAtMs,
+      String message) {
+    return onHotPath(
+        () -> {
+          Optional<StoredEnvelope> updated =
+              leaseManager()
+                  .completeLeaseTransition(
+                      jobId,
+                      leaseEpoch,
+                      existing -> {
+                        if (existing == null
+                            || existing.jobKind() != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
+                          return null;
+                        }
+                        existing.snapshotFinalizeResultLeaseEpoch = blankToEmpty(leaseEpoch);
+                        existing.snapshotFinalizeResultId = blankToEmpty(resultId);
+                        existing.snapshotFinalizeManifestUri = blankToEmpty(manifestUri);
+                        existing.snapshotFinalizeManifestBytes = manifestBytes;
+                        existing.snapshotFinalizeManifestSha256 = blankToEmpty(manifestSha256);
+                        existing.snapshotFinalizeFileGroupCount = fileGroupCount;
+                        existing.snapshotFinalizeSourceFileCount = sourceFileCount;
+                        existing.snapshotFinalizeStatsRecordCount = statsRecordCount;
+                        return applyLeaseOutcomeToRecord(
+                            existing.canonicalPointerKey,
+                            existing,
+                            jobId,
+                            leaseEpoch,
+                            CompletionKind.SUCCEEDED,
+                            finishedAtMs,
+                            message,
+                            0L,
+                            0L,
+                            0L,
+                            0L,
+                            0L,
+                            1L,
+                            statsRecordCount,
+                            0L);
+                      },
+                      this::projectionRefreshMarkerTouchesForRecord)
+                  .map(env -> new StoredEnvelope(env.canonicalPointerKey(), env.record()));
+          if (updated.isPresent()) {
+            projectionMaintenance().signalWork();
+            return true;
+          }
+          StoredEnvelope terminal = loadByAnyAccount(jobId).orElse(null);
+          StoredReconcileJob record = terminal == null ? null : terminal.record;
+          return record != null
+              && "JS_SUCCEEDED".equals(blankToEmpty(record.state))
+              && blankToEmpty(leaseEpoch)
+                  .equals(blankToEmpty(record.snapshotFinalizeResultLeaseEpoch))
+              && blankToEmpty(resultId).equals(blankToEmpty(record.snapshotFinalizeResultId))
+              && blankToEmpty(manifestUri).equals(blankToEmpty(record.snapshotFinalizeManifestUri))
+              && manifestBytes == record.snapshotFinalizeManifestBytes
+              && blankToEmpty(manifestSha256)
+                  .equals(blankToEmpty(record.snapshotFinalizeManifestSha256))
+              && fileGroupCount == record.snapshotFinalizeFileGroupCount
+              && sourceFileCount == record.snapshotFinalizeSourceFileCount
+              && statsRecordCount == record.snapshotFinalizeStatsRecordCount;
+        });
+  }
+
   private static void applyFileGroupResultDescriptor(
       StoredReconcileJob existing, ReconcileFileGroupResultDescriptor descriptor) {
     existing.fileGroupResultFormatVersion = descriptor.formatVersion();
@@ -2137,10 +2210,25 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     ReconcileJobProjectionStore.ProjectionSnapshot previousProjection =
         projections().loadSnapshot(accountId, parentJobId);
     long projectionLoadedNanos = System.nanoTime();
+    if (sameExternallyVisibleProjection(previousProjection.projection(), nextProjection)
+        && sameCanonicalAggregate(parent, nextParent)) {
+      if (!pointerStore.compareAndDelete(markerKey, markerVersion)) {
+        return RefreshResult.MARKER_ACK_CONFLICT;
+      }
+      LOG.debugf(
+          "reconcile projection unchanged accountId=%s jobId=%s kind=%s children=%d"
+              + " projectionGeneration=%d total_ms=%d",
+          accountId,
+          parentJobId,
+          parent.jobKind(),
+          Integer.valueOf(directChildren.size()),
+          Long.valueOf(nextProjection.appliedGeneration()),
+          Long.valueOf((System.nanoTime() - startedNanos) / 1_000_000L));
+      return RefreshResult.COMMITTED;
+    }
     var batch = jobIndexStore().buildJobIndexWriteBatch(canonicalSnapshot, parent, nextParent);
     long batchPreparedNanos = System.nanoTime();
     List<PointerStore.CasOp> pointerOps = new ArrayList<>();
-    pointerOps.add(new PointerStore.CasDelete(markerKey, markerVersion));
     PointerStore.UnconditionalUpsert ancestorMarker =
         projectionRefreshMarkerTouch(
             nextParent.accountId,
@@ -2151,12 +2239,20 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     int transactionItems = jobIndexStore().writeItemCount(batch, pointerOps) + 1;
     long markerPreparedNanos = System.nanoTime();
+    // The dirty marker is a generation-bearing wake-up signal, not part of the projection state.
+    // A child may replace it while this refresh scans children. Committing the projection first
+    // lets that newer marker survive instead of invalidating all completed projection work.
     if (!projections()
         .upsertWithCanonicalMutation(
             previousProjection, nextProjection, batch, List.copyOf(pointerOps))) {
-      return RefreshResult.RETRY;
+      return RefreshResult.PROJECTION_CONFLICT;
     }
     long projectionCommittedNanos = System.nanoTime();
+    // Delete only the generation that was projected. A failed acknowledgement means newer work is
+    // already queued (or another projector acknowledged it), so the committed projection remains
+    // valid and maintenance can converge on a later pass.
+    boolean markerAcknowledged = pointerStore.compareAndDelete(markerKey, markerVersion);
+    long markerAcknowledgedNanos = System.nanoTime();
     if (ancestorMarker != null) {
       projectionMaintenance().signalWork();
     }
@@ -2175,7 +2271,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             + " transaction_items=%d"
             + " load_ms=%d child_scan_ms=%d aggregate_ms=%d finalizer_enqueue_ms=%d"
             + " canonical_prepare_ms=%d projection_load_ms=%d batch_prepare_ms=%d"
-            + " marker_prepare_ms=%d projection_commit_ms=%d root_summary_ms=%d total_ms=%d",
+            + " marker_prepare_ms=%d projection_commit_ms=%d marker_ack_ms=%d"
+            + " marker_acknowledged=%s root_summary_ms=%d total_ms=%d",
         accountId,
         parentJobId,
         parent.jobKind(),
@@ -2201,9 +2298,43 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         Long.valueOf((batchPreparedNanos - projectionLoadedNanos) / 1_000_000L),
         Long.valueOf((markerPreparedNanos - batchPreparedNanos) / 1_000_000L),
         Long.valueOf((projectionCommittedNanos - markerPreparedNanos) / 1_000_000L),
+        Long.valueOf((markerAcknowledgedNanos - projectionCommittedNanos) / 1_000_000L),
+        Boolean.valueOf(markerAcknowledged),
         Long.valueOf((finishedNanos - rootSummaryStartedNanos) / 1_000_000L),
         Long.valueOf((finishedNanos - startedNanos) / 1_000_000L));
-    return RefreshResult.COMMITTED;
+    return markerAcknowledged ? RefreshResult.COMMITTED : RefreshResult.MARKER_ACK_CONFLICT;
+  }
+
+  private boolean sameExternallyVisibleProjection(
+      StoredReconcileJobProjection current, StoredReconcileJobProjection next) {
+    return current != null
+        && next != null
+        && Objects.equals(withProjectionGeneration(current, next.appliedGeneration()), next);
+  }
+
+  private static boolean sameCanonicalAggregate(
+      StoredReconcileJob current, StoredReconcileJob next) {
+    return current != null
+        && next != null
+        && Objects.equals(current.state, next.state)
+        && Objects.equals(current.message, next.message)
+        && Objects.equals(current.executorId, next.executorId)
+        && current.startedAtMs == next.startedAtMs
+        && current.finishedAtMs == next.finishedAtMs
+        && current.tablesScanned == next.tablesScanned
+        && current.tablesChanged == next.tablesChanged
+        && current.viewsScanned == next.viewsScanned
+        && current.viewsChanged == next.viewsChanged
+        && current.errors == next.errors
+        && current.snapshotsProcessed == next.snapshotsProcessed
+        && current.statsProcessed == next.statsProcessed
+        && current.indexesProcessed == next.indexesProcessed
+        && current.plannedFileGroups == next.plannedFileGroups
+        && current.plannedFiles == next.plannedFiles
+        && current.completedFileGroups == next.completedFileGroups
+        && current.failedFileGroups == next.failedFileGroups
+        && current.completedFiles == next.completedFiles
+        && current.failedFiles == next.failedFiles;
   }
 
   private List<StoredReconcileJob> listAllStoredChildJobs(String accountId, String parentJobId) {

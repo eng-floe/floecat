@@ -59,7 +59,6 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 @ApplicationScoped
@@ -225,48 +224,29 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       String resultId,
       ReconcileFileGroupResultDescriptor descriptor) {
     String corr = principalContext.getCorrelationId();
+    String requiredResultId = requireResultId(resultId);
+    ReconcileJobStore.ReconcileJob existing = jobs.getCompactLeaseView(jobId).orElse(null);
+    if (existing != null
+        && ("JS_SUCCEEDED".equals(existing.state) || "JS_CANCELLED".equals(existing.state))) {
+      boolean replayed =
+          jobs.completeFileGroupSuccess(
+              jobId, leaseEpoch, descriptor, System.currentTimeMillis(), "Executed file group");
+      requireAcceptedLeaseOutcome(replayed, jobId);
+      return true;
+    }
     ReconcileJobStore.LeasedJob lease = requireLeasedFileGroupJob(corr, jobId, leaseEpoch);
     ReconcileFileGroupTask plannedTask = resolvePlannedTask(lease);
-    ResourceId tableId =
-        ResourceId.newBuilder()
-            .setAccountId(lease.accountId)
-            .setKind(ResourceKind.RK_TABLE)
-            .setId(plannedTask.tableId())
-            .build();
-    String requiredResultId = requireResultId(resultId);
     ReconcileFileGroupResultDescriptor validated =
         validateResultDescriptor(lease, plannedTask, requiredResultId, descriptor);
-    byte[] requestBytes = descriptorFingerprint(validated).getBytes(StandardCharsets.UTF_8);
-    return runIdempotentCreate(
-            () ->
-                MutationOps.createProto(
-                    principalContext.getAccountId(),
-                    "SubmitLeasedFileGroupExecutionResult",
-                    resultIdempotencyKey(jobId, requiredResultId),
-                    () -> requestBytes,
-                    () -> {
-                      boolean accepted =
-                          jobs.completeFileGroupSuccess(
-                              lease.jobId,
-                              lease.leaseEpoch,
-                              validated,
-                              System.currentTimeMillis(),
-                              "Executed file group " + plannedTask.groupId());
-                      requireAcceptedLeaseOutcome(accepted, lease.jobId);
-                      return new IdempotencyGuard.CreateResult<>(
-                          SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
-                              .setAccepted(true)
-                              .build(),
-                          tableId);
-                    },
-                    ignored -> MutationMeta.getDefaultInstance(),
-                    idempotencyStore,
-                    nowTs(),
-                    idempotencyTtlSeconds(),
-                    principalContext::getCorrelationId,
-                    SubmitLeasedFileGroupExecutionResultResponse::parseFrom))
-        .body
-        .getAccepted();
+    boolean accepted =
+        jobs.completeFileGroupSuccess(
+            lease.jobId,
+            lease.leaseEpoch,
+            validated,
+            System.currentTimeMillis(),
+            "Executed file group " + plannedTask.groupId());
+    requireAcceptedLeaseOutcome(accepted, lease.jobId);
+    return true;
   }
 
   private ReconcileFileGroupResultDescriptor validateResultDescriptor(
@@ -353,28 +333,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
               + expectedStatsUri);
     }
     return descriptor;
-  }
-
-  private static String descriptorFingerprint(ReconcileFileGroupResultDescriptor descriptor) {
-    return descriptor.fileGroupJobId()
-        + "\n"
-        + descriptor.leaseEpoch()
-        + "\n"
-        + descriptor.resultId()
-        + "\n"
-        + descriptor.payloadUri()
-        + "\n"
-        + descriptor.payloadBytes()
-        + "\n"
-        + descriptor.payloadSha256()
-        + "\n"
-        + descriptor.statsPayloadUri()
-        + "\n"
-        + descriptor.statsPayloadBytes()
-        + "\n"
-        + descriptor.statsPayloadSha256()
-        + "\n"
-        + descriptor.fileStatsRecordCount();
   }
 
   private static void requireAcceptedLeaseOutcome(boolean accepted, String jobId) {

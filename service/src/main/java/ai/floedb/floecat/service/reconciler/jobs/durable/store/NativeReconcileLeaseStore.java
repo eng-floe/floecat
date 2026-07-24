@@ -686,6 +686,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     if (blank(jobId) || blank(leaseEpoch) || mutator == null || pointerTouches == null) {
       return Optional.empty();
     }
+    long totalStartedNanos = System.nanoTime();
+    int optimisticCancellations = 0;
     for (int attempt = 0; attempt < casMax; attempt++) {
       var loaded = jobIndexStore.loadByAnyAccount(jobId).orElse(null);
       if (loaded == null || loaded.record() == null) {
@@ -726,15 +728,37 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
               previous, loaded.canonicalPointerKey(), lease, leaseSnapshot.version());
       List<PointerStore.UnconditionalUpsert> atomicPointerTouches =
           pointerTouches.apply(jobIndexStore.cloneStoredRecord(next));
-      if (leaseBackend.compareAndSetBatch(
-          jobBatch,
-          leaseBatch,
-          atomicPointerTouches == null ? List.of() : List.copyOf(atomicPointerTouches))) {
+      List<PointerStore.UnconditionalUpsert> effectivePointerTouches =
+          atomicPointerTouches == null ? List.of() : List.copyOf(atomicPointerTouches);
+      int transactionItems =
+          jobIndexStore.writeItemCount(jobBatch, List.of())
+              + leaseBatch.writes().size()
+              + effectivePointerTouches.size();
+      long attemptStartedNanos = System.nanoTime();
+      if (leaseBackend.compareAndSetBatch(jobBatch, leaseBatch, effectivePointerTouches)) {
+        LOG.infof(
+            "reconcile_lease_completion outcome=committed jobId=%s attempts=%d"
+                + " optimistic_cancellations=%d items=%d successful_latency_ms=%.3f"
+                + " total_retry_latency_ms=%.3f",
+            jobId,
+            Integer.valueOf(attempt + 1),
+            Integer.valueOf(optimisticCancellations),
+            Integer.valueOf(transactionItems),
+            (System.nanoTime() - attemptStartedNanos) / 1_000_000.0,
+            (System.nanoTime() - totalStartedNanos) / 1_000_000.0);
         return Optional.of(
             new ReconcileJobIndexStore.CanonicalEnvelope(
                 loaded.canonicalPointerKey(), jobIndexStore.cloneStoredRecord(next)));
       }
+      optimisticCancellations++;
     }
+    LOG.infof(
+        "reconcile_lease_completion outcome=contention_exhausted jobId=%s attempts=%d"
+            + " optimistic_cancellations=%d total_retry_latency_ms=%.3f",
+        jobId,
+        Integer.valueOf(casMax),
+        Integer.valueOf(optimisticCancellations),
+        (System.nanoTime() - totalStartedNanos) / 1_000_000.0);
     return Optional.empty();
   }
 

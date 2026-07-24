@@ -55,8 +55,6 @@ public class ReconcileJobGc {
   private static final String INLINE_JOB_STATE_PREFIX = "inline:reconcile-job:";
   private static final Set<String> TERMINAL_STATES =
       Set.of("JS_SUCCEEDED", "JS_FAILED", "JS_CANCELLED");
-  private static final List<String> TERMINAL_BACKFILL_STATES =
-      List.of("JS_SUCCEEDED", "JS_FAILED", "JS_CANCELLED");
   private static final long INVALID_ORDERED_POINTER_MS = Long.MIN_VALUE;
 
   @Inject BlobStore blobStore;
@@ -92,160 +90,6 @@ public class ReconcileJobGc {
 
   public record LookupMigrationResult(
       int scanned, int migrated, int conflicted, int retryable, String nextToken) {}
-
-  public record RetentionBackfillResult(
-      int scanned, int indexed, int retryable, String nextToken, boolean complete) {}
-
-  public boolean terminalRetentionBackfillComplete(String accountId) {
-    return pointerStore != null
-        && pointerStore.get(Keys.reconcileTerminalRetentionBackfillPointer(accountId)).isPresent();
-  }
-
-  public RetentionBackfillResult runTerminalRetentionBackfillSlice(
-      String accountId, String pageTokenIn) {
-    return runTerminalRetentionBackfillSlice(accountId, pageTokenIn, Long.MAX_VALUE);
-  }
-
-  public RetentionBackfillResult runTerminalRetentionBackfillSlice(
-      String accountId, String pageTokenIn, long deadlineMs) {
-    if (terminalRetentionBackfillComplete(accountId)) {
-      return new RetentionBackfillResult(0, 0, 0, "", true);
-    }
-    int pageSize =
-        ConfigProvider.getConfig()
-            .getOptionalValue(
-                "floecat.gc.reconcile-jobs.retention-backfill-page-size", Integer.class)
-            .orElse(100);
-    RetentionBackfillCursor cursor = decodeRetentionBackfillCursor(pageTokenIn);
-    int scanned = 0;
-    int indexed = 0;
-    int retryable = 0;
-    String nextToken = encodeRetentionBackfillCursor(cursor);
-    boolean complete = false;
-    while (cursor.stateIndex() < TERMINAL_BACKFILL_STATES.size()) {
-      String pageStartToken = cursor.pageToken();
-      var page =
-          jobIndexBackend.listAccountStateEntries(
-              accountId,
-              TERMINAL_BACKFILL_STATES.get(cursor.stateIndex()),
-              Math.max(1, pageSize),
-              pageStartToken);
-      String lastProcessedToken = pageStartToken;
-      int pageScanned = 0;
-      for (var stateEntry : page.entries()) {
-        if (scanned >= Math.max(1, pageSize) || (scanned > 0 && clock.getAsLong() >= deadlineMs)) {
-          break;
-        }
-        scanned++;
-        pageScanned++;
-        JobIndexEntrySnapshot canonical =
-            jobIndexBackend.loadIndexEntry(stateEntry.blobUri()).orElse(null);
-        if (canonical == null) {
-          lastProcessedToken = stateEntry.pointerKey();
-          continue;
-        }
-        JsonNode record = readRecordByReference(canonical.blobUri());
-        if (record == null) {
-          lastProcessedToken = stateEntry.pointerKey();
-          continue;
-        }
-        StoredReconcileJob storedRecord;
-        try {
-          storedRecord = mapper.treeToValue(record, StoredReconcileJob.class);
-        } catch (Exception invalidRecord) {
-          lastProcessedToken = stateEntry.pointerKey();
-          continue;
-        }
-        var result =
-            jobIndexStore.backfillTerminalRetentionIndex(
-                new CanonicalPointerSnapshot(
-                    canonical.pointerKey(), canonical.blobUri(), canonical.version()),
-                storedRecord);
-        if (result.updated()) {
-          indexed++;
-        }
-        if (result.retryable()) {
-          retryable++;
-          nextToken =
-              encodeRetentionBackfillCursor(
-                  new RetentionBackfillCursor(cursor.stateIndex(), pageStartToken));
-          break;
-        }
-        lastProcessedToken = stateEntry.pointerKey();
-      }
-      if (retryable > 0) {
-        break;
-      }
-      if (pageScanned < page.entries().size()) {
-        nextToken =
-            encodeRetentionBackfillCursor(
-                new RetentionBackfillCursor(cursor.stateIndex(), lastProcessedToken));
-        break;
-      }
-      String pageNextToken = page.nextPageToken() == null ? "" : page.nextPageToken();
-      if (!pageNextToken.isBlank()) {
-        nextToken =
-            encodeRetentionBackfillCursor(
-                new RetentionBackfillCursor(cursor.stateIndex(), pageNextToken));
-        break;
-      }
-      cursor = new RetentionBackfillCursor(cursor.stateIndex() + 1, "");
-      nextToken = encodeRetentionBackfillCursor(cursor);
-      if (clock.getAsLong() >= deadlineMs
-          && cursor.stateIndex() < TERMINAL_BACKFILL_STATES.size()) {
-        break;
-      }
-    }
-    complete =
-        cursor.stateIndex() >= TERMINAL_BACKFILL_STATES.size()
-            && retryable == 0
-            && nextToken.isBlank();
-    if (complete) {
-      String markerKey = Keys.reconcileTerminalRetentionBackfillPointer(accountId);
-      Pointer marker = PointerReferences.opaqueMarkerPointer(markerKey, "v1", 1L);
-      complete =
-          pointerStore.compareAndSet(markerKey, 0L, marker)
-              || pointerStore.get(markerKey).isPresent();
-      if (!complete) {
-        nextToken = encodeRetentionBackfillCursor(cursor);
-      }
-    }
-    return new RetentionBackfillResult(scanned, indexed, retryable, nextToken, complete);
-  }
-
-  private record RetentionBackfillCursor(int stateIndex, String pageToken) {}
-
-  private static RetentionBackfillCursor decodeRetentionBackfillCursor(String token) {
-    if (token == null || token.isBlank()) {
-      return new RetentionBackfillCursor(0, "");
-    }
-    int separator = token.indexOf(':');
-    if (separator <= 0) {
-      return new RetentionBackfillCursor(0, token);
-    }
-    try {
-      int stateIndex = Integer.parseInt(token.substring(0, separator));
-      String pageToken =
-          new String(
-              Base64.getUrlDecoder().decode(token.substring(separator + 1)),
-              StandardCharsets.UTF_8);
-      return new RetentionBackfillCursor(
-          Math.max(0, Math.min(stateIndex, TERMINAL_BACKFILL_STATES.size())), pageToken);
-    } catch (RuntimeException invalidToken) {
-      return new RetentionBackfillCursor(0, "");
-    }
-  }
-
-  private static String encodeRetentionBackfillCursor(RetentionBackfillCursor cursor) {
-    if (cursor == null || cursor.stateIndex() >= TERMINAL_BACKFILL_STATES.size()) {
-      return "";
-    }
-    String encodedPageToken =
-        Base64.getUrlEncoder()
-            .withoutPadding()
-            .encodeToString(cursor.pageToken().getBytes(StandardCharsets.UTF_8));
-    return cursor.stateIndex() + ":" + encodedPageToken;
-  }
 
   public LookupMigrationResult runLegacyLookupMigrationSlice(String pageTokenIn) {
     int pageSize =
@@ -291,6 +135,8 @@ public class ReconcileJobGc {
   private record JobCleanupResult(
       int expired, int ptrDeleted, int blobDeleted, int readyDeleted, int failed) {}
 
+  private record BlobCleanupResult(int scanned, int deleted) {}
+
   private static final class CleanupWriteBudget {
     private boolean attempted;
 
@@ -315,11 +161,14 @@ public class ReconcileJobGc {
       long absoluteDeadlineMs) {
     var cfg = ConfigProvider.getConfig();
     final int pageSize =
-        cfg.getOptionalValue("floecat.gc.reconcile-jobs.page-size", Integer.class).orElse(200);
+        cfg.getOptionalValue("floecat.gc.reconcile-jobs.page-size", Integer.class).orElse(50);
     final int batchLimit =
-        cfg.getOptionalValue("floecat.gc.reconcile-jobs.batch-limit", Integer.class).orElse(1000);
+        cfg.getOptionalValue("floecat.gc.reconcile-jobs.batch-limit", Integer.class).orElse(50);
     final long sliceMillis =
-        cfg.getOptionalValue("floecat.gc.reconcile-jobs.slice-millis", Long.class).orElse(4000L);
+        cfg.getOptionalValue("floecat.gc.reconcile-jobs.slice-millis", Long.class).orElse(1000L);
+    final int blobPrefixesPerSlice =
+        cfg.getOptionalValue("floecat.gc.reconcile-jobs.blob-prefixes-per-slice", Integer.class)
+            .orElse(1);
     final long retentionMs =
         Math.max(
             1L,
@@ -352,6 +201,10 @@ public class ReconcileJobGc {
     int canonicalQuarantined = 0;
     int retentionScanned = 0;
     int quarantineScanned = 0;
+
+    BlobCleanupResult blobCleanup =
+        cleanupJobBlobMarkers(accountId, deadline, Math.max(1, blobPrefixesPerSlice));
+    blobDeleted += blobCleanup.deleted();
 
     List<ReconcileJobIndexStore.JobWritePlan<String>> deletePlans = new ArrayList<>();
     List<ReconcileJobIndexStore.JobWritePlan<String>> quarantinedDeletePlans = new ArrayList<>();
@@ -657,6 +510,7 @@ public class ReconcileJobGc {
     if (marker != null) {
       pointerDeletes.add(new PointerStore.CasDelete(marker.getKey(), marker.getVersion()));
     }
+    appendBlobCleanupMarker(pointerDeletes, accountId, jobId);
     return new ReconcileJobIndexStore.JobWritePlan<>(jobId, deleteBatch, pointerDeletes);
   }
 
@@ -767,6 +621,7 @@ public class ReconcileJobGc {
     appendPointerDeleteIfPresent(
         pointerDeletes,
         Keys.reconcileCanonicalQuarantinePointer(accountId, hashValue(canonical.pointerKey())));
+    appendBlobCleanupMarker(pointerDeletes, accountId, jobId);
     String projectionPointerKey = Keys.reconcileJobProjectionPointer(accountId, jobId);
     appendPointerDeleteIfPresent(pointerDeletes, projectionPointerKey);
     ReconcileJobIndexCleanupManifest cleanupManifest =
@@ -817,6 +672,7 @@ public class ReconcileJobGc {
     appendPointerDeleteIfPresent(
         pointerDeletes,
         Keys.reconcileCanonicalQuarantinePointer(accountId, hashValue(canonical.pointerKey())));
+    appendBlobCleanupMarker(pointerDeletes, accountId, jobId);
     if (record != null) {
       appendPointerDeleteIfPresent(
           pointerDeletes, Keys.reconcileJobProjectionPointer(accountId, jobId));
@@ -881,9 +737,6 @@ public class ReconcileJobGc {
         expired++;
         ptrDeleted++;
         readyDeleted += plan.indexBatch().readyMutation().deletes().size();
-        if (plan.subject() != null && !plan.subject().isBlank()) {
-          blobDeleted += deleteJobBlobs(accountId, plan.subject());
-        }
       }
     }
     regularChunks:
@@ -898,9 +751,6 @@ public class ReconcileJobGc {
           expired++;
           ptrDeleted++;
           readyDeleted += plan.indexBatch().readyMutation().deletes().size();
-          if (plan.subject() != null && !plan.subject().isBlank()) {
-            blobDeleted += deleteJobBlobs(accountId, plan.subject());
-          }
         }
         continue;
       }
@@ -913,9 +763,6 @@ public class ReconcileJobGc {
           expired++;
           ptrDeleted++;
           readyDeleted += plan.indexBatch().readyMutation().deletes().size();
-          if (plan.subject() != null && !plan.subject().isBlank()) {
-            blobDeleted += deleteJobBlobs(accountId, plan.subject());
-          }
         }
       }
     }
@@ -962,11 +809,53 @@ public class ReconcileJobGc {
             ReconcileJobIndexStore.ReadyQueueMutation.empty()));
   }
 
-  private int deleteJobBlobs(String accountId, String jobId) {
-    String prefix = Keys.reconcileJobBlobPrefix(accountId, jobId);
-    boolean hadBlob = !blobStore.list(prefix, 1, "").keys().isEmpty();
-    blobStore.deletePrefix(prefix);
-    return hadBlob ? 1 : 0;
+  private void appendBlobCleanupMarker(
+      List<PointerStore.CasOp> pointerOps, String accountId, String jobId) {
+    if (pointerOps == null || pointerStore == null || jobId == null || jobId.isBlank()) {
+      return;
+    }
+    String markerKey = Keys.reconcileJobBlobCleanupPointer(accountId, jobId);
+    Pointer marker =
+        PointerReferences.opaqueMarkerPointer(
+            markerKey, Keys.reconcileJobBlobPrefix(accountId, jobId), 1L);
+    // Queue blob cleanup in the same transaction that makes the job unreachable. S3 deletion is
+    // deliberately performed by a later bounded slice so a successful metadata batch cannot run
+    // past its deadline while deleting every job prefix serially.
+    pointerOps.add(new PointerStore.UnconditionalUpsert(markerKey, marker));
+  }
+
+  private BlobCleanupResult cleanupJobBlobMarkers(
+      String accountId, long deadline, int maxPrefixes) {
+    if (pointerStore == null || blobStore == null || maxPrefixes <= 0) {
+      return new BlobCleanupResult(0, 0);
+    }
+    List<Pointer> markers =
+        pointerStore.listPointersByPrefix(
+            Keys.reconcileJobBlobCleanupPointerPrefix(accountId),
+            maxPrefixes,
+            "",
+            new StringBuilder());
+    int scanned = 0;
+    int deleted = 0;
+    for (Pointer marker : markers) {
+      if (scanned > 0 && clock.getAsLong() >= deadline) {
+        break;
+      }
+      scanned++;
+      String blobPrefix = marker == null ? "" : marker.getBlobUri();
+      if (blobPrefix == null || blobPrefix.isBlank()) {
+        if (marker != null) {
+          pointerStore.compareAndDelete(marker.getKey(), marker.getVersion());
+        }
+        continue;
+      }
+      int deletedObjects = blobStore.deletePrefix(blobPrefix);
+      if (pointerStore.compareAndDelete(marker.getKey(), marker.getVersion())
+          && deletedObjects > 0) {
+        deleted++;
+      }
+    }
+    return new BlobCleanupResult(scanned, deleted);
   }
 
   private StoredReconcileJob storedJob(JsonNode record) {

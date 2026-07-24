@@ -280,7 +280,7 @@ class ReconcileMaintenanceServicesTest {
 
   @Test
   void dirtyParentRefreshDebouncesUntilMarkerIsDue() {
-    PointerStore pointerStore = new TestPointerStore();
+    TestPointerStore pointerStore = new TestPointerStore();
     ReconcileProjectionMaintenanceService service = new ReconcileProjectionMaintenanceService();
     List<String> events = new ArrayList<>();
     putDirtyMarker(pointerStore, "acct", "parent", 7L, System.currentTimeMillis() + 60_000L);
@@ -293,8 +293,11 @@ class ReconcileMaintenanceServicesTest {
         10);
 
     service.runProjectionMaintenanceOnce(200L);
+    int readsAfterFirstTick = pointerStore.prefixReads.get();
+    service.runProjectionMaintenanceOnce(200L);
 
     assertTrue(events.isEmpty());
+    assertEquals(readsAfterFirstTick, pointerStore.prefixReads.get());
     assertTrue(pointerStore.get(Keys.reconcileDirtyParentPointer("acct", "parent")).isPresent());
   }
 
@@ -332,7 +335,35 @@ class ReconcileMaintenanceServicesTest {
     service.bind(
         pointerStore,
         (accountId, parentJobId, generation, key, markerVersion) ->
-            attempts.incrementAndGet() == 1 ? RefreshResult.RETRY : RefreshResult.OBSOLETE,
+            attempts.incrementAndGet() == 1
+                ? RefreshResult.PROJECTION_CONFLICT
+                : RefreshResult.OBSOLETE,
+        10);
+
+    service.runProjectionMaintenanceOnce(200L);
+    assertTrue(pointerStore.get(markerKey).isPresent());
+
+    service.runProjectionMaintenanceOnce(200L);
+    assertEquals(2, attempts.get());
+    assertTrue(pointerStore.get(markerKey).isEmpty());
+  }
+
+  @Test
+  void markerAcknowledgementConflictDefersNewerMarkerWithoutRetryingProjectionCommit() {
+    PointerStore pointerStore = new TestPointerStore();
+    ReconcileProjectionMaintenanceService service = new ReconcileProjectionMaintenanceService();
+    AtomicInteger attempts = new AtomicInteger();
+    String markerKey = Keys.reconcileDirtyParentPointer("acct", "parent");
+    putDirtyMarker(pointerStore, "acct", "parent", 1L, 0L);
+    service.bind(
+        pointerStore,
+        (accountId, parentJobId, generation, key, markerVersion) -> {
+          if (attempts.incrementAndGet() == 1) {
+            putDirtyMarker(pointerStore, accountId, parentJobId, 2L, 0L);
+            return RefreshResult.MARKER_ACK_CONFLICT;
+          }
+          return RefreshResult.OBSOLETE;
+        },
         10);
 
     service.runProjectionMaintenanceOnce(200L);

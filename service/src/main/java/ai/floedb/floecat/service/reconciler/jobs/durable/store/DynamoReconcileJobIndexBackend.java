@@ -221,50 +221,6 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   }
 
   @Override
-  public boolean ensureTerminalRetentionBackfill(
-      CanonicalPointerSnapshot snapshot,
-      String retentionPointerKey,
-      ReconcileJobIndexCleanupManifest cleanupManifest) {
-    var canonicalKey =
-        snapshot == null
-            ? null
-            : JobIndexBackendSupport.parseCanonicalJobKey(snapshot.canonicalPointerKey());
-    var retentionKey = JobIndexBackendSupport.parseTerminalRetentionKey(retentionPointerKey);
-    if (canonicalKey == null || retentionKey == null) {
-      return false;
-    }
-    var canonicalUpsert =
-        new ReconcileJobIndexStore.JobIndexUpsert(
-            snapshot.canonicalPointerKey(),
-            snapshot.version(),
-            snapshot.blobUri(),
-            ai.floedb.floecat.common.rpc.PointerReferenceKind.PRK_INLINE_JSON,
-            cleanupManifest);
-    TransactWriteItem ensureRetention =
-        buildEnsureIndexReference(
-            JobIndexBackendSupport.terminalRetentionPartitionKey(retentionKey),
-            JobIndexBackendSupport.terminalRetentionSortKey(retentionKey),
-            JobIndexBackendSupport.KIND_TERMINAL_RETENTION,
-            retentionPointerKey,
-            snapshot.canonicalPointerKey(),
-            JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY);
-    try {
-      dynamoCaller.callVoid(
-          dynamoDbClientManager,
-          client ->
-              client.transactWriteItems(
-                  TransactWriteItemsRequest.builder()
-                      .transactItems(
-                          List.of(
-                              buildCanonicalUpsert(canonicalKey, canonicalUpsert), ensureRetention))
-                      .build()));
-      return true;
-    } catch (TransactionCanceledException e) {
-      return false;
-    }
-  }
-
-  @Override
   public JobIndexQueryPage listCanonicalEntries(String accountId, int limit, String pageToken) {
     if (blank(accountId)) {
       return new JobIndexQueryPage(List.of(), "");

@@ -703,6 +703,33 @@ public interface ReconcileJobStore {
       long finishedAtMs,
       String message);
 
+  default boolean completeSnapshotFinalizeSuccess(
+      String jobId,
+      String leaseEpoch,
+      String resultId,
+      String manifestUri,
+      long manifestBytes,
+      String manifestSha256,
+      int fileGroupCount,
+      int sourceFileCount,
+      long statsRecordCount,
+      long finishedAtMs,
+      String message) {
+    return applyLeaseOutcome(
+        jobId,
+        leaseEpoch,
+        CompletionKind.SUCCEEDED,
+        finishedAtMs,
+        message,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        1L,
+        statsRecordCount);
+  }
+
   void markCancelled(
       String jobId,
       String leaseEpoch,

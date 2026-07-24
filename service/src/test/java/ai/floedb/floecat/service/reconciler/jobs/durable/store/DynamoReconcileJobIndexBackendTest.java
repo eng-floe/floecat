@@ -371,32 +371,6 @@ class DynamoReconcileJobIndexBackendTest {
   }
 
   @Test
-  void terminalRetentionBackfillUsesOneTransactionWithoutExistenceReads() {
-    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
-    when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
-        .thenReturn(TransactWriteItemsResponse.builder().build());
-    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
-    backend.bind(() -> dynamoDb, TABLE);
-    String retentionKey = Keys.reconcileTerminalRetentionPointer(ACCOUNT_ID, 1_234L, JOB_ID);
-
-    assertTrue(
-        backend.ensureTerminalRetentionBackfill(
-            new CanonicalPointerSnapshot(CANONICAL_KEY, "inline:reconcile-job:e30", 3L),
-            retentionKey,
-            new ReconcileJobIndexCleanupManifest(List.of(LOOKUP_KEY), List.of())));
-
-    verify(dynamoDb, never()).getItem(any(GetItemRequest.class));
-    ArgumentCaptor<TransactWriteItemsRequest> tx =
-        ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
-    verify(dynamoDb).transactWriteItems(tx.capture());
-    assertEquals(2, tx.getValue().transactItems().size());
-    var retentionUpdate = tx.getValue().transactItems().get(1).update();
-    assertEquals(
-        "attribute_not_exists(#ref) OR #ref = :ref", retentionUpdate.conditionExpression());
-    assertEquals(CANONICAL_KEY, retentionUpdate.expressionAttributeValues().get(":ref").s());
-  }
-
-  @Test
   void malformedLegacyLookupRowDoesNotTruncatePaginatedMigration() {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
     Map<String, AttributeValue> physicalKey =

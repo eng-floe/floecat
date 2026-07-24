@@ -67,6 +67,14 @@ public class StoredReconcileJob {
   public String fileGroupStatsPayloadSha256;
   public int fileGroupStatsRecordCount;
   public long fileGroupResultCreatedAtMs;
+  public String snapshotFinalizeResultLeaseEpoch;
+  public String snapshotFinalizeResultId;
+  public String snapshotFinalizeManifestUri;
+  public long snapshotFinalizeManifestBytes;
+  public String snapshotFinalizeManifestSha256;
+  public int snapshotFinalizeFileGroupCount;
+  public int snapshotFinalizeSourceFileCount;
+  public long snapshotFinalizeStatsRecordCount;
   public StoredJobDefinition definition = new StoredJobDefinition();
   public String snapshotPlanBlobUri;
   public String state;

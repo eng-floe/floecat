@@ -247,9 +247,6 @@ public interface ReconcileJobIndexStore {
   IndexBackfillResult backfillStoredJobIndexes(
       CanonicalPointerSnapshot snapshot, StoredReconcileJob record);
 
-  IndexBackfillResult backfillTerminalRetentionIndex(
-      CanonicalPointerSnapshot snapshot, StoredReconcileJob record);
-
   int writeItemCount(JobIndexWriteBatch batch, List<PointerStore.CasOp> extraPointerOps);
 
   int maxWriteItemsPerBatch();

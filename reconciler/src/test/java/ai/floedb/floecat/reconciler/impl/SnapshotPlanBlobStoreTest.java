@@ -167,8 +167,10 @@ class SnapshotPlanBlobStoreTest {
     }
 
     @Override
-    public void deletePrefix(String prefix) {
+    public int deletePrefix(String prefix) {
+      int before = bytesByUri.size();
       bytesByUri.keySet().removeIf(key -> key.startsWith(prefix));
+      return before - bytesByUri.size();
     }
 
     @Override

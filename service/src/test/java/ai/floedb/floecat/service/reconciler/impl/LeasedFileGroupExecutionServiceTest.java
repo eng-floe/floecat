@@ -232,6 +232,11 @@ class LeasedFileGroupExecutionServiceTest {
     assertEquals(1, persisted.getValue().succeededFileCount());
     assertEquals(resultPayloadUri(), persisted.getValue().payloadUri());
     verify(service.blobStore, never()).get(anyString());
+    verify(idempotencyStore, never())
+        .createPending(anyString(), anyString(), anyString(), anyString(), any(), any());
+    verify(idempotencyStore, never())
+        .finalizeSuccess(
+            anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
   }
 
   @Test
