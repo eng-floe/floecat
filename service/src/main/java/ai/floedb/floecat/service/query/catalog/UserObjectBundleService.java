@@ -545,8 +545,11 @@ public class UserObjectBundleService {
 
     /**
      * Scheduling time: the request wall-clock left over once every measured phase is subtracted.
-     * Never negative. Keep this arithmetic in one place so the emitted {@code scheduling_ms} stays
-     * identical to the pre-consolidation hand-computed value.
+     * Never negative. Keep this arithmetic in one place. stats_warm is subtracted alongside
+     * stats_lookup: the warm pass is its own wall-clock interval, so leaving it in would count it
+     * twice -- once as {@code stats_warm_ms} and again in the residual. (Pre-consolidation the warm
+     * time lived inside stats_lookup and was already excluded here; splitting it out must not put
+     * it back into the residual.)
      */
     long schedulingNanos(long totalNanos) {
       return Math.max(
@@ -558,7 +561,8 @@ public class UserObjectBundleService {
               - pinCommitNanos.sum()
               - relationBuildNanos.sum()
               - decorationNanos.sum()
-              - statsLookupNanos.sum());
+              - statsLookupNanos.sum()
+              - statsWarmNanos.sum());
     }
 
     /**
@@ -1484,6 +1488,11 @@ public class UserObjectBundleService {
       return defaultCatalogName;
     }
 
+    // Reads the plain defaultCatalog* fields from selectOne failure builders, which run on fan-out
+    // threads. Safe without volatile: the driver resolves the default catalog in the serial
+    // planInput loop before mapOrdered submits any task, and task submission happens-before the
+    // task body -- so a fan-out thread sees the resolved value or the initial false/"" (never a
+    // torn write). Diagnostic-only; do not read these fields on a path that can precede the loop.
     private String defaultCatalogForDiagnostics() {
       return defaultCatalogResolved ? defaultCatalogName : "";
     }

@@ -78,6 +78,58 @@ class StatsProviderBatchTest {
     assertThat(calls.get(id("b"))).isEqualTo(1);
   }
 
+  /**
+   * The no-throw contract: a provider that overrides only tableStats() and fails for one id still
+   * gets an entry for every other id -- one table's failure is a missing entry, not a batch abort
+   * that skips every table queued behind it.
+   */
+  @Test
+  void defaultBatchIsolatesAPerTableFailure() {
+    StatsProvider provider =
+        new StatsProvider() {
+          @Override
+          public Optional<TableStatsView> tableStats(ResourceId tableId) {
+            if (tableId.equals(id("boom"))) {
+              throw new IllegalStateException("provider blew up on one table");
+            }
+            return Optional.of(view(tableId));
+          }
+        };
+
+    Map<ResourceId, Optional<StatsProvider.TableStatsView>> out =
+        provider.tableStatsBatch(List.of(id("a"), id("boom"), id("b")));
+
+    assertThat(out.keySet()).containsExactlyInAnyOrder(id("a"), id("boom"), id("b"));
+    assertThat(out.get(id("boom"))).isEmpty();
+    // The failure between them must not skip either neighbor.
+    assertThat(out.get(id("a"))).isPresent();
+    assertThat(out.get(id("b"))).isPresent();
+  }
+
+  private static StatsProvider.TableStatsView view(ResourceId tableId) {
+    return new StatsProvider.TableStatsView() {
+      @Override
+      public ResourceId tableId() {
+        return tableId;
+      }
+
+      @Override
+      public long snapshotId() {
+        return 1L;
+      }
+
+      @Override
+      public OptionalLong rowCountValue() {
+        return OptionalLong.of(7L);
+      }
+
+      @Override
+      public OptionalLong totalSizeBytesValue() {
+        return OptionalLong.empty();
+      }
+    };
+  }
+
   /** NONE (and any provider that returns empty) yields an empty Optional per id, never null. */
   @Test
   void noneProviderReturnsEmptyPerId() {

@@ -41,7 +41,18 @@ public interface StatsProvider {
       Collection<ResourceId> tableIds) {
     Map<ResourceId, Optional<TableStatsView>> out = new LinkedHashMap<>();
     for (ResourceId tableId : tableIds) {
-      out.computeIfAbsent(tableId, this::tableStats);
+      out.computeIfAbsent(
+          tableId,
+          id -> {
+            // Honor the no-throw contract for a provider that overrides only tableStats(): one
+            // table's failure is a missing entry, not a batch abort that skips every table after
+            // it.
+            try {
+              return tableStats(id);
+            } catch (RuntimeException e) {
+              return Optional.empty();
+            }
+          });
     }
     return out;
   }

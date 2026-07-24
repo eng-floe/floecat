@@ -255,6 +255,21 @@ class TimingAccumulatorTest {
     assertThat(rec.get("node_cache_misses")).isEqualTo(1L);
   }
 
+  /**
+   * The stats warm pass is its own wall-clock interval emitted as stats_warm; the residual
+   * scheduling time must exclude it, or the same interval is counted twice (once as stats_warm,
+   * again in scheduling). Regression guard for the split of stats_warm out of stats_lookup.
+   */
+  @Test
+  void schedulingExcludesTheStatsWarmInterval() {
+    TimingAccumulator tally = new TimingAccumulator();
+    tally.addStatsWarmNanos(1_000_000L); // 1 ms warming
+    tally.addStatsLookupNanos(500_000L); // 0.5 ms of per-relation reads
+    // total = warm + lookup + a 0.4 ms residual; only the residual is scheduling.
+    long total = 1_000_000L + 500_000L + 400_000L;
+    assertThat(tally.schedulingNanos(total)).isEqualTo(400_000L);
+  }
+
   private static SummaryContext context(String outcome) {
     return new SummaryContext("q", "c", 0, 0, 0.0, 0.0, 0.0, 0, 0, 0, outcome);
   }
