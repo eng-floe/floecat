@@ -42,7 +42,6 @@ import org.jboss.logging.Logger;
 public abstract class StorageAccountingPointerStore implements PointerStore {
   private static final Logger LOG = Logger.getLogger(StorageAccountingPointerStore.class);
   private static final String USAGE_SUFFIX = "/metrics/storage-usage";
-  private static final String REBUILD_SUFFIX = "/metrics/storage-usage-rebuild";
   private static final String PAYLOAD_VERSION = "v1";
   private static final int CAS_MAX = 32;
 
@@ -273,8 +272,7 @@ public abstract class StorageAccountingPointerStore implements PointerStore {
         || !pointerKey.startsWith("/accounts/")
         || pointerKey.startsWith("/accounts/by-id/")
         || pointerKey.startsWith("/accounts/by-name/")
-        || pointerKey.endsWith(USAGE_SUFFIX)
-        || pointerKey.endsWith(REBUILD_SUFFIX)) {
+        || pointerKey.endsWith(USAGE_SUFFIX)) {
       return null;
     }
     int accountEnd = pointerKey.indexOf('/', "/accounts/".length());

@@ -25,6 +25,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultResponse;
@@ -38,6 +39,8 @@ import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import org.jboss.logging.Logger;
 
@@ -61,7 +64,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     long totalStartNanos = System.nanoTime();
     long[] leaseNanos = {0L};
     long[] validateNanos = {0L};
-    long[] manifestHeadNanos = {0L};
+    long[] manifestValidationNanos = {0L};
     long[] childScanNanos = {0L};
     long[] commitNanos = {0L};
     long[] publishNanos = {0L};
@@ -116,11 +119,11 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       } finally {
         validateNanos[0] = System.nanoTime() - validateStartNanos;
       }
-      long manifestHeadStartNanos = System.nanoTime();
+      long manifestValidationStartNanos = System.nanoTime();
       try {
         validateManifestObject(lease, validated);
       } finally {
-        manifestHeadNanos[0] = System.nanoTime() - manifestHeadStartNanos;
+        manifestValidationNanos[0] = System.nanoTime() - manifestValidationStartNanos;
       }
       var successPayload = successPayload(requiredResultId, validated);
       rpcRequestBytes[0] =
@@ -140,6 +143,8 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         } finally {
           childScanNanos[0] = System.nanoTime() - childStartNanos;
         }
+        requireAcceptedLeaseOutcome(
+            jobs.beginSnapshotFinalizeCommit(lease.jobId, lease.leaseEpoch), lease.jobId);
         long publishStartNanos = System.nanoTime();
         try {
           currentSnapshotPointerService.publishCaptureManifest(
@@ -184,7 +189,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           totalStartNanos,
           leaseNanos[0],
           validateNanos[0],
-          manifestHeadNanos[0],
+          manifestValidationNanos[0],
           childScanNanos[0],
           commitNanos[0],
           publishNanos[0],
@@ -200,7 +205,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       long totalStartNanos,
       long leaseNanos,
       long validateNanos,
-      long manifestHeadNanos,
+      long manifestValidationNanos,
       long childScanNanos,
       long commitNanos,
       long publishNanos,
@@ -208,11 +213,11 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       long rpcRequestBytes,
       long manifestBytes) {
     long totalNanos = System.nanoTime() - totalStartNanos;
-    long accountedNanos = leaseNanos + validateNanos + manifestHeadNanos + commitNanos;
+    long accountedNanos = leaseNanos + validateNanos + manifestValidationNanos + commitNanos;
     long otherNanos = Math.max(0L, totalNanos - accountedNanos);
     LOG.infof(
         "snapshot_finalize_submission_timing jobId=%s outcome=%s totalMs=%.3f leaseMs=%.3f"
-            + " validateMs=%.3f manifestHeadMs=%.3f commitMs=%.3f childScanMs=%.3f"
+            + " validateMs=%.3f manifestValidationMs=%.3f commitMs=%.3f childScanMs=%.3f"
             + " publishMs=%.3f leaseOutcomeMs=%.3f otherMs=%.3f rpcRequestBytes=%d"
             + " manifestBytes=%d",
         jobId,
@@ -220,7 +225,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         totalNanos / 1_000_000.0,
         leaseNanos / 1_000_000.0,
         validateNanos / 1_000_000.0,
-        manifestHeadNanos / 1_000_000.0,
+        manifestValidationNanos / 1_000_000.0,
         commitNanos / 1_000_000.0,
         childScanNanos / 1_000_000.0,
         publishNanos / 1_000_000.0,
@@ -268,18 +273,48 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
   private void validateManifestObject(
       ReconcileJobStore.LeasedJob lease, SnapshotCaptureManifestDescriptor descriptor) {
     String expectedUri = descriptor.getManifestUri();
-    var header =
-        blobStore
-            .head(expectedUri)
-            .orElseThrow(
-                () ->
-                    new StorageAbortRetryableException(
-                        "snapshot capture manifest is not committed jobId="
-                            + lease.jobId
-                            + " uri="
-                            + expectedUri));
-    if (header.getContentLength() != descriptor.getManifestBytes()) {
+    byte[] bytes = blobStore.get(expectedUri);
+    if (bytes == null) {
+      throw new StorageAbortRetryableException(
+          "snapshot capture manifest is not committed jobId="
+              + lease.jobId
+              + " uri="
+              + expectedUri);
+    }
+    if (bytes.length != descriptor.getManifestBytes()) {
       throw new IllegalArgumentException("snapshot capture manifest object size mismatch");
+    }
+    if (!MessageDigest.isEqual(sha256(bytes), descriptor.getManifestSha256().toByteArray())) {
+      throw new IllegalArgumentException("snapshot capture manifest object sha256 mismatch");
+    }
+    SnapshotCaptureManifest manifest;
+    try {
+      manifest = SnapshotCaptureManifest.parseFrom(bytes);
+    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+      throw new IllegalArgumentException("snapshot capture manifest object is invalid", e);
+    }
+    if (manifest.getFormatVersion() != 1
+        || !descriptor.getAccountId().equals(manifest.getAccountId())
+        || !descriptor.getConnectorId().equals(manifest.getConnectorId())
+        || !descriptor.getParentJobId().equals(manifest.getParentJobId())
+        || !descriptor.getFinalizeJobId().equals(manifest.getFinalizeJobId())
+        || !descriptor.getTableId().equals(manifest.getTableId())
+        || descriptor.getSnapshotId() != manifest.getSnapshotId()
+        || !descriptor.getLeaseEpoch().equals(manifest.getLeaseEpoch())
+        || !descriptor.getResultId().equals(manifest.getResultId())
+        || descriptor.getFileGroupCount() != manifest.getFileGroupsCount()
+        || descriptor.getSourceFileCount() != manifest.getSourceFileCount()
+        || descriptor.getStatsRecordCount() != manifest.getStatsIndexCount()
+        || descriptor.getIndexArtifactCount() != manifest.getIndexArtifactsCount()) {
+      throw new IllegalArgumentException("snapshot capture manifest object identity mismatch");
+    }
+  }
+
+  private static byte[] sha256(byte[] bytes) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(bytes);
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 is unavailable", e);
     }
   }
 

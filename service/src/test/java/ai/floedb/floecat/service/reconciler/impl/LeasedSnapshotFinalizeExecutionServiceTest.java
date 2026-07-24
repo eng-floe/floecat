@@ -28,7 +28,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
-import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -39,12 +38,14 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.ByteString;
+import java.security.MessageDigest;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -82,6 +83,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             anyString(), anyString(), anyString(), anyString(), any(), any()))
         .thenReturn(true);
     when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.beginSnapshotFinalizeCommit(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getCompactLeaseView(FINALIZE_JOB_ID)).thenReturn(Optional.of(finalizeJobView()));
     when(jobs.completeSnapshotFinalizeSuccess(
             eq(FINALIZE_JOB_ID),
@@ -99,14 +101,13 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
-  void successRegistersManifestWithoutReadingIt() {
+  void successVerifiesAndRegistersManifest() {
     SnapshotCaptureManifestDescriptor descriptor = descriptor(manifestUri());
-    when(blobs.head(manifestUri()))
-        .thenReturn(Optional.of(BlobHeader.newBuilder().setContentLength(123).build()));
+    when(blobs.get(manifestUri())).thenReturn(manifestBytes());
 
     service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor);
 
-    verify(blobs, never()).get(anyString());
+    verify(blobs).get(manifestUri());
     verify(service.idempotencyStore, never())
         .createPending(anyString(), anyString(), anyString(), anyString(), any(), any());
     verify(service.idempotencyStore, never())
@@ -119,7 +120,9 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             eq(
                 BlobRef.newBuilder()
                     .setUri(manifestUri())
-                    .setVersion("0000000000000000000000000000000000000000000000000000000000000000")
+                    .setVersion(
+                        java.util.HexFormat.of()
+                            .formatHex(descriptor.getManifestSha256().toByteArray()))
                     .build()),
             eq(FINALIZE_JOB_ID));
   }
@@ -136,7 +139,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                 "result-1",
                 descriptor("s3://other/manifest.pb")));
 
-    verify(blobs, never()).head(anyString());
+    verify(blobs, never()).get(anyString());
     verify(currentSnapshotPointerService, never())
         .publishCaptureManifest(any(), anyLong(), any(), anyString());
   }
@@ -156,6 +159,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   private static SnapshotCaptureManifestDescriptor descriptor(String uri) {
+    byte[] manifest = manifestBytes();
     return SnapshotCaptureManifestDescriptor.newBuilder()
         .setFormatVersion(1)
         .setAccountId(ACCOUNT_ID)
@@ -167,12 +171,35 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         .setLeaseEpoch(LEASE_EPOCH)
         .setResultId("result-1")
         .setManifestUri(uri)
-        .setManifestBytes(123)
-        .setManifestSha256(ByteString.copyFrom(new byte[32]))
+        .setManifestBytes(manifest.length)
+        .setManifestSha256(ByteString.copyFrom(sha256(manifest)))
         .setFileGroupCount(0)
         .setSourceFileCount(0)
-        .setStatsRecordCount(2)
+        .setStatsRecordCount(0)
         .build();
+  }
+
+  private static byte[] manifestBytes() {
+    return SnapshotCaptureManifest.newBuilder()
+        .setFormatVersion(1)
+        .setAccountId(ACCOUNT_ID)
+        .setConnectorId("connector")
+        .setParentJobId("parent-job")
+        .setFinalizeJobId(FINALIZE_JOB_ID)
+        .setTableId(TABLE_ID)
+        .setSnapshotId(SNAPSHOT_ID)
+        .setLeaseEpoch(LEASE_EPOCH)
+        .setResultId("result-1")
+        .build()
+        .toByteArray();
+  }
+
+  private static byte[] sha256(byte[] bytes) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(bytes);
+    } catch (java.security.NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e);
+    }
   }
 
   private static String manifestUri() {

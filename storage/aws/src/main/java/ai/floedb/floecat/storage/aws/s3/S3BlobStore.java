@@ -421,7 +421,23 @@ public class S3BlobStore implements BlobStore {
             var slice = objs.subList(i, Math.min(i + 1000, objs.size()));
             var dels =
                 slice.stream().map(o -> ObjectIdentifier.builder().key(o.key()).build()).toList();
-            s3.call(c -> c.deleteObjects(b -> b.bucket(bucket).delete(d -> d.objects(dels))));
+            var deleteResponse =
+                s3.call(c -> c.deleteObjects(b -> b.bucket(bucket).delete(d -> d.objects(dels))));
+            if (deleteResponse.hasErrors()) {
+              String failures =
+                  deleteResponse.errors().stream()
+                      .limit(10)
+                      .map(error -> error.key() + ":" + error.code())
+                      .collect(java.util.stream.Collectors.joining(","));
+              throw new StorageAbortRetryableException(
+                  msg(
+                      "DELETE_PREFIX",
+                      p,
+                      "S3 rejected "
+                          + deleteResponse.errors().size()
+                          + " object delete(s): "
+                          + failures));
+            }
             deleted += slice.size();
           }
         }
@@ -431,10 +447,7 @@ public class S3BlobStore implements BlobStore {
       } while (ct != null);
 
       if (p.endsWith("/")) {
-        try {
-          s3.call(c -> c.deleteObject(b -> b.bucket(bucket).key(p)));
-        } catch (Throwable ignore) {
-        }
+        s3.call(c -> c.deleteObject(b -> b.bucket(bucket).key(p)));
       }
       return deleted;
 

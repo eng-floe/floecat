@@ -75,6 +75,7 @@ public class StoredReconcileJob {
   public int snapshotFinalizeFileGroupCount;
   public int snapshotFinalizeSourceFileCount;
   public long snapshotFinalizeStatsRecordCount;
+  public boolean snapshotFinalizeCommitStarted;
   public StoredJobDefinition definition = new StoredJobDefinition();
   public String snapshotPlanBlobUri;
   public String state;

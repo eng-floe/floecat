@@ -49,20 +49,6 @@ public final class ServiceMetrics {
             "ms",
             CONTRACT,
             "service");
-    public static final MetricId REBUILD_OBJECTS_SAMPLED =
-        new MetricId(
-            "floecat.service.storage.rebuild.objects_sampled",
-            MetricType.SUMMARY,
-            "count",
-            CONTRACT,
-            "service");
-    public static final MetricId REBUILD_DURATION =
-        new MetricId(
-            "floecat.service.storage.rebuild.duration",
-            MetricType.TIMER,
-            "ms",
-            CONTRACT,
-            "service");
     public static final MetricId FAILURES =
         new MetricId(
             "floecat.service.storage.failures.total", MetricType.COUNTER, "", CONTRACT, "service");

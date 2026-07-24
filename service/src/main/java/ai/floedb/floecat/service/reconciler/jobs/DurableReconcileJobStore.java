@@ -1736,6 +1736,34 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
+  public boolean beginSnapshotFinalizeCommit(String jobId, String leaseEpoch) {
+    return onHotPath(
+        () ->
+            mutateByJobIdReturningRecord(
+                    jobId,
+                    existing -> {
+                      if (existing == null
+                          || existing.jobKind() != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+                          || !"JS_RUNNING".equals(existing.state)
+                          || !leaseManager()
+                              .hasActiveLease(
+                                  jobId,
+                                  leaseEpoch,
+                                  existing,
+                                  "beginSnapshotFinalizeCommit",
+                                  true,
+                                  true,
+                                  false)) {
+                        return null;
+                      }
+                      existing.snapshotFinalizeCommitStarted = true;
+                      existing.updatedAtMs = System.currentTimeMillis();
+                      return existing;
+                    })
+                .isPresent());
+  }
+
+  @Override
   public boolean completeSnapshotFinalizeSuccess(
       String jobId,
       String leaseEpoch,
@@ -4142,6 +4170,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     existing.indexesProcessed = Math.max(existing.indexesProcessed, indexesProcessed);
     existing.lastError = message == null ? "Failed" : message;
     existing.childrenFinalized = false;
+    existing.snapshotFinalizeCommitStarted = false;
 
     if (existing.attempt >= maxAttempts) {
       existing.state = "JS_FAILED";

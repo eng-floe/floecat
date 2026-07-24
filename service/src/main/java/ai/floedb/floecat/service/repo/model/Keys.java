@@ -144,15 +144,6 @@ public final class Keys {
     return accountRootPrefix() + encode(tid) + "/metrics/storage-usage";
   }
 
-  public static String accountStorageUsageRebuildPointer(String accountId) {
-    String tid = req("account_id", accountId);
-    return accountRootPrefix() + encode(tid) + "/metrics/storage-usage-rebuild";
-  }
-
-  public static String storageUsageRebuildCompletePointer() {
-    return "/accounts/by-id/metrics/storage-usage-rebuild-complete";
-  }
-
   public static String accountPointerByName(String displayName) {
     String name = req("display_name", displayName);
     return "/accounts/by-name/" + encode(name);

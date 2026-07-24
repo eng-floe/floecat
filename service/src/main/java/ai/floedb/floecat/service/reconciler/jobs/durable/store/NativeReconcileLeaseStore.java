@@ -1107,6 +1107,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
                   }
                   expiredEpoch.set(currentLease.epoch);
                   boolean wasCancelling = "JS_CANCELLING".equals(record.state);
+                  record.snapshotFinalizeCommitStarted = false;
                   if (wasCancelling) {
                     record.state = "JS_CANCELLED";
                     record.message =

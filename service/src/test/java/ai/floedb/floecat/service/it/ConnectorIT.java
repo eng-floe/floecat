@@ -1269,18 +1269,25 @@ public class ConnectorIT {
       assertTrue(
           fileGroupJobs.stream().mapToLong(job -> job.statsProcessed).sum() > 0,
           "expected file-group jobs to persist file-target stats");
+      var resultDescriptors =
+          snapshotPlanJobs.stream()
+              .flatMap(
+                  job -> childFileGroupResultDescriptors(accountId.getId(), job.jobId).stream())
+              .toList();
+      assertEquals(
+          fileGroupJobs.size(),
+          resultDescriptors.size(),
+          "expected one immutable result descriptor per successful file-group job");
       assertTrue(
-          fileGroupJobs.stream()
+          resultDescriptors.stream()
               .allMatch(
-                  job ->
-                      !job.fileGroupTask.fileResults().isEmpty()
-                          && job.fileGroupTask.fileResults().stream()
-                              .allMatch(
-                                  file ->
-                                      file.state()
-                                          == ai.floedb.floecat.reconciler.jobs.ReconcileFileResult
-                                              .State.SUCCEEDED)),
-          "expected file-group jobs to persist per-file success results");
+                  descriptor ->
+                      !descriptor.payloadUri().isBlank()
+                          && !descriptor.statsPayloadUri().isBlank()
+                          && descriptor.succeededFileCount() == descriptor.plannedFileCount()
+                          && descriptor.failedFileCount() == 0
+                          && descriptor.skippedFileCount() == 0),
+          "expected successful file-group manifests referencing result and stats payloads");
 
       var selectedSnapshotPlan = snapshotPlanJobs.getFirst();
       var selectedSnapshotFileGroups =

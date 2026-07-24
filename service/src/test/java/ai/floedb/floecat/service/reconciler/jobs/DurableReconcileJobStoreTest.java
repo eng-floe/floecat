@@ -285,6 +285,34 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void enqueuePlanDoesNotDedupeAcrossDifferentExecutionAttributes() {
+    ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
+
+    String first =
+        store.enqueuePlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            ReconcileExecutionPolicy.of(
+                ReconcileExecutionClass.DEFAULT, "", Map.of("post_commit_transaction_id", "tx-1")),
+            "");
+    String second =
+        store.enqueuePlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            ReconcileExecutionPolicy.of(
+                ReconcileExecutionClass.DEFAULT, "", Map.of("post_commit_transaction_id", "tx-2")),
+            "");
+
+    assertNotEquals(first, second);
+  }
+
+  @Test
   void enqueuePlanDoesNotDedupeAcrossDifferentExplicitSnapshotSelections() {
     ReconcileScope firstScope =
         ReconcileScope.of(

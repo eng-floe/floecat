@@ -24,9 +24,7 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
-import ai.floedb.floecat.telemetry.TestObservability;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class StorageUsageMetricsTest {
@@ -86,45 +84,6 @@ class StorageUsageMetricsTest {
     assertEquals(new StorageAccountingPointerStore.AccountUsage(2L, 14L), usage(delegate));
   }
 
-  @Test
-  void rebuildStateAndUsagePayloadsRoundTrip() {
-    var state = new StorageUsageMetrics.RebuildState("cursor", 12L, 345L, true);
-    var pointer =
-        PointerReferences.opaqueMarkerPointer(
-            "/accounts/acct/metrics/storage-usage-rebuild",
-            StorageUsageMetrics.encodeRebuildState(state),
-            1L);
-
-    assertEquals(state, StorageUsageMetrics.decodeRebuildState(pointer));
-    assertEquals(
-        new StorageAccountingPointerStore.AccountUsage(12L, 345L),
-        StorageAccountingPointerStore.decodeUsage(
-            PointerReferences.opaqueMarkerPointer(
-                "/accounts/acct/metrics/storage-usage",
-                StorageAccountingPointerStore.encodeUsage(
-                    new StorageAccountingPointerStore.AccountUsage(12L, 345L)),
-                1L)));
-  }
-
-  @Test
-  void completedRebuildMarkerIsReadOnlyOncePerProcess() {
-    CountingPointerStore pointers = new CountingPointerStore();
-    String completionKey = Keys.storageUsageRebuildCompletePointer();
-    assertTrue(
-        pointers.compareAndSet(
-            completionKey, 0L, PointerReferences.opaqueMarkerPointer(completionKey, "v1", 1L)));
-    pointers.gets.set(0);
-
-    StorageUsageMetrics metrics = new StorageUsageMetrics();
-    metrics.pointerStore = pointers;
-    metrics.observability = new TestObservability();
-
-    metrics.rebuildExistingUsage();
-    metrics.rebuildExistingUsage();
-
-    assertEquals(1, pointers.gets.get());
-  }
-
   private static StorageAccountingPointerStore accounting(
       InMemoryPointerStore delegate, InMemoryBlobStore blobs) {
     StorageAccountingPointerStore accounting = new StorageAccountingPointerStore() {};
@@ -136,15 +95,5 @@ class StorageUsageMetricsTest {
   private static StorageAccountingPointerStore.AccountUsage usage(InMemoryPointerStore delegate) {
     return StorageAccountingPointerStore.decodeUsage(
         delegate.get(Keys.accountStorageUsagePointer("acct")).orElse(null));
-  }
-
-  private static final class CountingPointerStore extends InMemoryPointerStore {
-    private final AtomicInteger gets = new AtomicInteger();
-
-    @Override
-    public java.util.Optional<ai.floedb.floecat.common.rpc.Pointer> get(String key) {
-      gets.incrementAndGet();
-      return super.get(key);
-    }
   }
 }

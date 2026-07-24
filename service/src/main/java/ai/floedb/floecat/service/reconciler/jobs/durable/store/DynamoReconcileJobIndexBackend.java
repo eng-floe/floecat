@@ -2235,45 +2235,6 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     return buildPut(item, upsert.expectedVersion());
   }
 
-  private TransactWriteItem buildEnsureIndexReference(
-      String partitionKey,
-      String sortKey,
-      String kind,
-      String pointerKey,
-      String reference,
-      String referenceAttributeName) {
-    Map<String, String> names =
-        Map.of(
-            "#kind", ATTR_KIND,
-            "#v", ATTR_VERSION,
-            "#pointer", JobIndexBackendSupport.ATTR_POINTER_KEY,
-            "#ref", referenceAttributeName);
-    Map<String, AttributeValue> values =
-        Map.of(
-            ":kind", AttributeValue.fromS(kind),
-            ":one", AttributeValue.fromN("1"),
-            ":pointer", AttributeValue.fromS(pointerKey),
-            ":ref", AttributeValue.fromS(reference));
-    return TransactWriteItem.builder()
-        .update(
-            Update.builder()
-                .tableName(table)
-                .key(
-                    Map.of(
-                        ATTR_PARTITION_KEY,
-                        AttributeValue.fromS(partitionKey),
-                        ATTR_SORT_KEY,
-                        AttributeValue.fromS(sortKey)))
-                .updateExpression(
-                    "SET #kind = :kind, #v = if_not_exists(#v, :one), "
-                        + "#pointer = :pointer, #ref = :ref")
-                .conditionExpression("attribute_not_exists(#ref) OR #ref = :ref")
-                .expressionAttributeNames(names)
-                .expressionAttributeValues(values)
-                .build())
-        .build();
-  }
-
   private TransactWriteItem buildPut(Map<String, AttributeValue> item, long expectedVersion) {
     Put.Builder put = Put.builder().tableName(table).item(item);
     if (expectedVersion == 0L) {

@@ -38,6 +38,7 @@ import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -111,6 +112,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   private static final int APPLY_OPS_FOR_TRANSACTION_FINALIZE = 1;
   private static final int TABLE_NAME_REPLAY_SCAN_PAGE_SIZE = 200;
   private static final String CAPTURE_STATISTICS_PROPERTY = "floecat.connector.capture-statistics";
+  private static final String POST_COMMIT_CAPTURE_GENERATION_ATTRIBUTE =
+      "post_commit_transaction_id";
   private static final String PREPARED_INTENT_COUNT_PROPERTY =
       "floecat.transaction.prepared-intent-count";
   static final String APPLY_FAILURE_STATUS_PROPERTY = "floecat.transaction.apply-failure-status";
@@ -1272,7 +1275,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             snapshotId != null && snapshotId >= 0L
                 ? ReconcileSnapshotSelection.explicit(List.of(snapshotId))
                 : ReconcileSnapshotSelection.current()),
-        ReconcileExecutionPolicy.defaults(),
+        ReconcileExecutionPolicy.of(
+            ReconcileExecutionClass.DEFAULT,
+            "",
+            Map.of(POST_COMMIT_CAPTURE_GENERATION_ATTRIBUTE, txId)),
         "");
     LOG.infof(
         "Enqueued post-commit capture tx=%s connector=%s table=%s",

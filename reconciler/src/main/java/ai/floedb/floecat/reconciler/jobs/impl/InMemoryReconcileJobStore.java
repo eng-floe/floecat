@@ -63,6 +63,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private final Map<String, Long> createdAtMs = new ConcurrentHashMap<>();
   private final Map<String, String> leaseEpochs = new ConcurrentHashMap<>();
   private final Map<String, Long> leaseExpiresAtMs = new ConcurrentHashMap<>();
+  private final Set<String> snapshotFinalizeCommits = ConcurrentHashMap.newKeySet();
   private final Map<String, String> pinnedExecutors = new ConcurrentHashMap<>();
   private final Map<String, String> dedupeKeysByJobId = new ConcurrentHashMap<>();
   private final Map<String, String> activeJobIdByDedupeKey = new ConcurrentHashMap<>();
@@ -896,6 +897,24 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
+  public boolean beginSnapshotFinalizeCommit(String jobId, String leaseEpoch) {
+    java.util.concurrent.atomic.AtomicBoolean accepted =
+        new java.util.concurrent.atomic.AtomicBoolean();
+    jobs.computeIfPresent(
+        jobId,
+        (id, job) -> {
+          if ("JS_RUNNING".equals(job.state)
+              && job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+              && hasActiveLease(jobId, leaseEpoch, System.currentTimeMillis())) {
+            snapshotFinalizeCommits.add(id);
+            accepted.set(true);
+          }
+          return job;
+        });
+    return accepted.get();
+  }
+
+  @Override
   public Optional<LeasedJob> getCompletionLeaseView(
       String jobId, String leaseEpoch, boolean allowExpiredWithinGrace) {
     long now = System.currentTimeMillis();
@@ -1127,6 +1146,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               snapshotsProcessed,
               statsProcessed);
     }
+    snapshotFinalizeCommits.remove(jobId);
     return true;
   }
 
@@ -1408,6 +1428,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
               || "JS_CANCELLING".equals(job.state)) {
             return job;
           }
+          if ("JS_RUNNING".equals(job.state) && snapshotFinalizeCommits.contains(id)) {
+            return job;
+          }
           if ("JS_RUNNING".equals(job.state)) {
             long now = System.currentTimeMillis();
             long cancelPokeExpiry = now + CANCEL_POKE_MAX_DELAY_MS;
@@ -1592,6 +1615,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
             }
             releaseLane(id);
             releaseSnapshotLease(id);
+            snapshotFinalizeCommits.remove(id);
             leaseEpochs.remove(id);
             leaseExpiresAtMs.remove(id);
             if ("JS_RUNNING".equals(job.state)) {

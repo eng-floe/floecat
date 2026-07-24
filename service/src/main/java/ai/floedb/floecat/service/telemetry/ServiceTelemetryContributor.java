@@ -95,22 +95,10 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         "Time spent refreshing per-account storage gauges from accounting counters.");
     add(
         defs,
-        Storage.REBUILD_OBJECTS_SAMPLED,
-        Set.of(),
-        Set.of(),
-        "Legacy storage objects sampled by a bounded storage accounting rebuild tick.");
-    add(
-        defs,
-        Storage.REBUILD_DURATION,
-        storageOperationTag,
-        storageOperationTag,
-        "Time spent in a bounded storage accounting rebuild tick.");
-    add(
-        defs,
         Storage.FAILURES,
         storageOperationTag,
         Set.of(TagKey.OPERATION, TagKey.ACCOUNT),
-        "Storage accounting refresh and rebuild failures.");
+        "Storage accounting refresh failures.");
     Set<String> partialStateTags = Set.of(TagKey.OPERATION, TagKey.RESOURCE);
     add(
         defs,

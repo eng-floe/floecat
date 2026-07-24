@@ -703,6 +703,16 @@ public interface ReconcileJobStore {
       long finishedAtMs,
       String message);
 
+  /**
+   * Atomically establishes the point of no return for snapshot publication.
+   *
+   * <p>Once accepted, cancellation must not move the job to {@code JS_CANCELLING}. A failed or
+   * expired attempt clears the claim before the job is retried.
+   */
+  default boolean beginSnapshotFinalizeCommit(String jobId, String leaseEpoch) {
+    return renewLease(jobId, leaseEpoch);
+  }
+
   default boolean completeSnapshotFinalizeSuccess(
       String jobId,
       String leaseEpoch,

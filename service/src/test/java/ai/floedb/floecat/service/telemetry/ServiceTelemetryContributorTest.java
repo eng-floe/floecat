@@ -244,9 +244,6 @@ class ServiceTelemetryContributorTest {
 
     MetricDef accountBytes = registry.metric(ServiceMetrics.Storage.ACCOUNT_BYTES.name());
     MetricDef refreshDuration = registry.metric(ServiceMetrics.Storage.REFRESH_DURATION.name());
-    MetricDef rebuildObjects =
-        registry.metric(ServiceMetrics.Storage.REBUILD_OBJECTS_SAMPLED.name());
-    MetricDef rebuildDuration = registry.metric(ServiceMetrics.Storage.REBUILD_DURATION.name());
     MetricDef failures = registry.metric(ServiceMetrics.Storage.FAILURES.name());
 
     assertThat(accountBytes).isNotNull();
@@ -255,12 +252,6 @@ class ServiceTelemetryContributorTest {
     assertThat(refreshDuration).isNotNull();
     assertThat(refreshDuration.requiredTags()).containsExactly(TagKey.OPERATION);
     assertThat(refreshDuration.allowedTags()).containsExactly(TagKey.OPERATION);
-    assertThat(rebuildObjects).isNotNull();
-    assertThat(rebuildObjects.requiredTags()).isEmpty();
-    assertThat(rebuildObjects.allowedTags()).isEmpty();
-    assertThat(rebuildDuration).isNotNull();
-    assertThat(rebuildDuration.requiredTags()).containsExactly(TagKey.OPERATION);
-    assertThat(rebuildDuration.allowedTags()).containsExactly(TagKey.OPERATION);
     assertThat(failures).isNotNull();
     assertThat(failures.requiredTags()).containsExactly(TagKey.OPERATION);
     assertThat(failures.allowedTags()).containsExactlyInAnyOrder(TagKey.OPERATION, TagKey.ACCOUNT);
