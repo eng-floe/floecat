@@ -1810,8 +1810,8 @@ file-scoped execution work do not block public gRPC threads. The service submits
   persists per-file execution results, and does not commit snapshot-wide aggregate outputs.</li>
 <li><strong><code>FINALIZE_SNAPSHOT_CAPTURE</code></strong>: child finalization job. Validates the persisted snapshot
   coverage, waits for all planned <code>EXEC_FILE_GROUP</code> children to finish with persisted success
-  results, verifies that the stats store contains exactly the expected file-target records for the
-  snapshot, and then writes snapshot-wide aggregate outputs such as table/column stats.</li>
+  results, and publishes the immutable capture manifest containing file-target and snapshot-wide
+  aggregate outputs. Explicit-empty snapshots publish a zero-group manifest.</li>
 </ul>
 <h2 id="architecture-responsibilities">Architecture &amp; Responsibilities<a class="headerlink" href="#architecture-responsibilities" title="Permanent link">&para;</a></h2>
 <ul>
@@ -1846,7 +1846,10 @@ file-scoped execution work do not block public gRPC threads. The service submits
 <li><code>RemoteDefaultReconcileExecutor</code> handles <code>PLAN_TABLE</code> and <code>PLAN_VIEW</code>.</li>
 <li><code>RemoteSnapshotPlanningReconcileExecutor</code> handles <code>PLAN_SNAPSHOT</code>.</li>
 <li><code>RemoteFileGroupReconcileExecutor</code> handles <code>EXEC_FILE_GROUP</code>.</li>
-<li><code>SnapshotFinalizeReconcileExecutor</code> handles <code>FINALIZE_SNAPSHOT_CAPTURE</code>.</li>
+<li><code>RemoteSnapshotFinalizeReconcileExecutor</code> handles file-group
+    <code>FINALIZE_SNAPSHOT_CAPTURE</code> jobs, including explicit-empty coverage.</li>
+<li><code>SnapshotFinalizeReconcileExecutor</code> handles direct-stats finalization and remains the local
+    fallback for explicit-empty coverage.</li>
 <li><strong><code>GrpcClients</code></strong>: provides blocking stubs for all service RPCs (Catalog, Namespace, Table,
   Snapshot, Statistics, Directory, Connectors, ReconcileExecutorControl).</li>
 <li><strong><code>FloecatConnector</code></strong>: remains the only component allowed to touch upstream catalogs, table
@@ -2049,9 +2052,10 @@ perform a post-completion final lease confirmation after that RPC has durably co
 <li><code>floecat.reconciler.executor.remote-file-group.enabled</code></li>
 <li><code>floecat.reconciler.executor.remote-snapshot-finalize.enabled</code></li>
 <li><code>floecat.reconciler.executor.snapshot-finalize.enabled</code></li>
-<li>Non-empty file-group snapshots use the descriptor-driven
-    <code>RemoteSnapshotFinalizeReconcileExecutor</code>; direct-stats and explicit-empty snapshots use the
-    service-local <code>SnapshotFinalizeReconcileExecutor</code>.</li>
+<li>File-group snapshots, including explicit-empty snapshots, use the descriptor-driven
+    <code>RemoteSnapshotFinalizeReconcileExecutor</code>; direct-stats snapshots use the service-local
+    <code>SnapshotFinalizeReconcileExecutor</code>. The local executor retains explicit-empty support as a
+    fallback.</li>
 <li>Swap out <code>ReconcileJobStore</code> for additional backends by providing a CDI alternative (job ID
   references must remain stable for <code>GetReconcileJob</code>).</li>
 <li>Extend <code>FloecatConnector</code> to add richer snapshot planning or file execution behavior. Query scan
