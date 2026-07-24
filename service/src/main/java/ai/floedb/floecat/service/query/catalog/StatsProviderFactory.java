@@ -85,10 +85,15 @@ public final class StatsProviderFactory {
     this.syncMaxLatencyBudget = config.syncMaxLatencyBudget();
     this.syncLatencyBudget = clampToMax(config.syncLatencyBudget(), syncMaxLatencyBudget);
     this.syncEnabled = config.syncEnabled();
+    // Clamp to >=1: a 0/negative value reaches BoundedFanout and throws, which warmChunkStats
+    // swallows -- silently disabling the batch warm path with no startup signal. Match the sibling
+    // caps (max_parallel_relations) and clamp here.
     this.maxParallelStatsWarms =
-        ConfigProvider.getConfig()
-            .getOptionalValue("floecat.catalog.bundle.max_parallel_stats_warms", Integer.class)
-            .orElse(16);
+        Math.max(
+            1,
+            ConfigProvider.getConfig()
+                .getOptionalValue("floecat.catalog.bundle.max_parallel_stats_warms", Integer.class)
+                .orElse(16));
   }
 
   public StatsProviderFactory(

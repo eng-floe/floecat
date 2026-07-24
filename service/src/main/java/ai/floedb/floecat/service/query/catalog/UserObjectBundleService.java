@@ -263,6 +263,8 @@ public class UserObjectBundleService {
                   new UserObjectBundleIterator(correlationId, ctx, candidates, knownBlobVersions);
               return Multi.createFrom()
                   .iterable(() -> iterator)
+                  .onCancellation()
+                  .invoke(iterator::markCancelled)
                   .onFailure()
                   .invoke(ignored -> iterator.publishStreamTelemetry("failed"))
                   .onCancellation()
@@ -756,6 +758,17 @@ public class UserObjectBundleService {
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private boolean defaultCatalogResolved = false;
     private String defaultCatalogName = "";
+    // Set when the subscriber cancels; polled by the select/build fan-outs so a cancelled stream
+    // stops draining in-flight tasks promptly instead of running the whole chunk to completion.
+    private final AtomicBoolean cancelled = new AtomicBoolean(false);
+
+    void markCancelled() {
+      cancelled.set(true);
+    }
+
+    boolean isCancelled() {
+      return cancelled.get();
+    }
 
     UserObjectBundleIterator(
         String correlationId,
@@ -1291,7 +1304,8 @@ public class UserObjectBundleService {
               indices,
               maxParallelRelations,
               blockingExecutor,
-              j -> buildOne(toBuild.get(j), liveCtx, buildIdentities.get(j)));
+              j -> buildOne(toBuild.get(j), liveCtx, buildIdentities.get(j)),
+              this::isCancelled);
 
       // Driver gather: fold each task's timings in, cache full payloads, and place resolutions in
       // chunk order. A build that failed becomes an ERROR for that one relation (it was counted
