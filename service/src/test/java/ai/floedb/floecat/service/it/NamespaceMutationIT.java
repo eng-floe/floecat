@@ -393,6 +393,30 @@ class NamespaceMutationIT {
   }
 
   @Test
+  void namespaceWithOnlyViewsIsNotEmptyWithoutRecursive() throws Exception {
+    // Views are namespace-owned relations: a namespace holding only a view must be rejected as
+    // non-empty on a plain delete, not silently deleted leaving orphaned view pointers (#397).
+    var cat = TestSupport.createCatalog(catalog, namespacePrefix + "views_only_cat", "views");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "reports", List.of(), "");
+    TestSupport.createView(
+        view, cat.getResourceId(), ns.getResourceId(), "daily", "SELECT 1", "views");
+
+    var ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                namespace.deleteNamespace(
+                    DeleteNamespaceRequest.newBuilder()
+                        .setNamespaceId(ns.getResourceId())
+                        .build()));
+    TestSupport.assertGrpcAndMc(ex, Status.Code.ABORTED, ErrorCode.MC_CONFLICT, "views");
+
+    // The namespace and its view survive the rejected delete.
+    namespace.getNamespace(
+        GetNamespaceRequest.newBuilder().setNamespaceId(ns.getResourceId()).build());
+  }
+
+  @Test
   void namespaceCreateIdempotent() throws Exception {
     var cat = TestSupport.createCatalog(catalog, namespacePrefix + "cat3", "cat3");
 

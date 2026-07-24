@@ -2212,6 +2212,21 @@ public class StatsRepository implements StatsStore {
     }
   }
 
+  /**
+   * Purges every table-scoped stats artifact for a deleted table: the table-level and per-target
+   * "latest committed snapshot" pointers and their blobs under {@code /tables/{t}/stats/}, plus the
+   * target-stats record blobs under {@code /tables/{t}/target-stats/}. These live outside the
+   * {@code /tables/{t}/snapshots/} subtree that snapshot cleanup removes, so without this call they
+   * would outlive the table as durable orphans. Best-effort like the rest of stats teardown.
+   */
+  public void deleteAllStatsForTable(ResourceId tableId) {
+    String accountId = tableId.getAccountId();
+    String tid = tableId.getId();
+    deleteQuietly(() -> pointerStore.deleteByPrefix(Keys.tableStatsPrefix(accountId, tid)));
+    deleteQuietly(() -> blobStore.deletePrefix(Keys.tableStatsPrefix(accountId, tid)));
+    deleteQuietly(() -> blobStore.deletePrefix(Keys.snapshotTargetStatsBlobPrefix(accountId, tid)));
+  }
+
   private void deleteGeneration(
       String accountId, String tableId, long snapshotId, String generationId) {
     deleteQuietly(

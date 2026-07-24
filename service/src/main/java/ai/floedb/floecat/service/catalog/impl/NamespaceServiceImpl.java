@@ -49,6 +49,7 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -71,6 +72,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   @Inject CatalogRepository catalogRepo;
   @Inject NamespaceRepository namespaceRepo;
   @Inject TableRepository tableRepo;
+  @Inject ViewRepository viewRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
@@ -555,9 +557,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     markerVersion++;
                   }
 
-                  if (tableRepo.count(
-                          catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())
-                      > 0) {
+                  if (hasRelations(
+                      catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())) {
                     var pretty =
                         prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
                     throw GrpcErrors.conflict(
@@ -600,12 +601,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                         GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
                         Map.of());
                   }
-                  if (tableRepo.count(
-                          catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())
-                      > 0) {
+                  if (hasRelations(
+                      catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())) {
                     if (request.getRecursive()) {
                       throw new BaseResourceRepository.AbortRetryableException(
-                          "namespace tables changed during recursive delete: "
+                          "namespace relations changed during recursive delete: "
                               + namespaceId.getId());
                     }
                     var pretty =
@@ -684,6 +684,16 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  /**
+   * A namespace is non-empty if it owns any table or view. Views are namespace-owned relations just
+   * like tables, so both must be counted — otherwise a namespace containing only views passes the
+   * emptiness check and is deleted without {@code --recursive}, orphaning its view pointers.
+   */
+  private boolean hasRelations(String accountId, String catalogId, String namespaceId) {
+    return tableRepo.count(accountId, catalogId, namespaceId) > 0
+        || viewRepo.count(accountId, catalogId, namespaceId) > 0;
   }
 
   private boolean hasImmediateChildren(

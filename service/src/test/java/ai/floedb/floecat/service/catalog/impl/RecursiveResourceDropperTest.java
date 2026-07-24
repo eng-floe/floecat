@@ -33,6 +33,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
+import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
@@ -44,10 +45,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Guards the phantom-cleanup hazard: {@code tableRepo.delete} returning {@code false} (a concurrent
- * update/rename won the canonical-pointer CAS, so the table is still alive) must never trigger the
- * table's owned-state purge. In the guarded recursive path this aborts for retry; in the unguarded
- * account-teardown path it is skipped so cleanup never raises a retryable abort.
+ * Behavior when {@code tableRepo.delete} returns {@code false} (a concurrent update/rename won the
+ * canonical-pointer CAS). The guarded recursive path aborts for retry and never purges — the table
+ * may still be alive under a namespace that survives. The unguarded account-teardown path purges
+ * unconditionally — the whole account is going away, so a lost CAS must not leave the table pointer
+ * and its root-resync marker as durable orphans — and never raises a retryable abort.
  */
 class RecursiveResourceDropperTest {
 
@@ -74,6 +76,7 @@ class RecursiveResourceDropperTest {
   private TableRepository tableRepo;
   private TableRootRepository tableRoots;
   private ViewRepository viewRepo;
+  private StatsRepository statsRepo;
   private PointerStore pointerStore;
   private RecursiveResourceDropper dropper;
 
@@ -97,6 +100,7 @@ class RecursiveResourceDropperTest {
     tableRepo = mock(TableRepository.class);
     tableRoots = mock(TableRootRepository.class);
     viewRepo = mock(ViewRepository.class);
+    statsRepo = mock(StatsRepository.class);
     pointerStore = mock(PointerStore.class);
 
     dropper = new RecursiveResourceDropper();
@@ -104,6 +108,7 @@ class RecursiveResourceDropperTest {
     dropper.tableRepo = tableRepo;
     dropper.tableRoots = tableRoots;
     dropper.viewRepo = viewRepo;
+    dropper.statsRepo = statsRepo;
     dropper.metadataGraph = mock(UserGraph.class);
     dropper.topology = mock(TopologyGraph.class);
     dropper.markerStore = mock(MarkerStore.class);
@@ -133,20 +138,21 @@ class RecursiveResourceDropperTest {
   }
 
   @Test
-  void unguardedDropSkipsCleanupWhenTableDeleteDoesNotCommit() {
+  void unguardedDropPurgesOwnedStateEvenWhenTableDeleteDoesNotCommit() {
     when(tableRepo.delete(eq(TABLE_ID))).thenReturn(false);
 
+    // Account teardown: no retryable abort, and owned state is purged unconditionally so a table
+    // that lost the CAS is not left orphaned along with its root-resync marker and stats.
     var summary = dropper.dropNamespaceContents(root, false);
 
-    // No retryable abort (account teardown must not re-enter deleteAccount), and no phantom purge.
-    assertEquals(0, summary.tablesDeleted);
-    assertEquals(0, summary.snapshotPrefixesDeleted);
-    verify(pointerStore, never()).deleteByPrefix(anyString());
-    verify(tableRoots, never()).purgeRoot(any());
+    assertEquals(1, summary.tablesDeleted);
+    assertEquals(1, summary.snapshotPrefixesDeleted);
+    verify(tableRoots).purgeRoot(eq(TABLE_ID));
+    verify(statsRepo).deleteAllStatsForTable(eq(TABLE_ID));
   }
 
   @Test
-  void committedTableDeletePurgesOwnedState() {
+  void committedTableDeletePurgesOwnedStateIncludingStats() {
     when(tableRepo.delete(eq(TABLE_ID))).thenReturn(true);
 
     var summary = dropper.dropNamespaceContents(root, true);
@@ -154,5 +160,6 @@ class RecursiveResourceDropperTest {
     assertEquals(1, summary.tablesDeleted);
     assertEquals(1, summary.snapshotPrefixesDeleted);
     verify(tableRoots).purgeRoot(eq(TABLE_ID));
+    verify(statsRepo).deleteAllStatsForTable(eq(TABLE_ID));
   }
 }

@@ -599,6 +599,30 @@ public final class Keys {
   }
 
   /**
+   * Prefix covering every table-scoped stats pointer and blob under {@code /tables/{t}/stats/} —
+   * the table-level "latest committed snapshot" pointer and its blobs plus the per-target ({@code
+   * /stats/targets/...}) pointers and blobs. Used to purge stats state on table deletion.
+   * Per-snapshot stats live under {@code /tables/{t}/snapshots/} and are covered by {@link
+   * #snapshotRootPrefix(String, String)} instead.
+   */
+  public static String tableStatsPrefix(String accountId, String tableId) {
+    return "/accounts/"
+        + encode(req("account_id", accountId))
+        + "/tables/"
+        + encode(req("table_id", tableId))
+        + "/stats/";
+  }
+
+  public static String tableStatsLatestSnapshotBlobUri(
+      String accountId, String tableId, long snapshotId) {
+    return String.format(
+        "/accounts/%s/tables/%s/stats/latest-snapshot/%019d.pb",
+        encode(req("account_id", accountId)),
+        encode(req("table_id", tableId)),
+        reqNonNegative("snapshot_id", snapshotId));
+  }
+
+  /**
    * Pointer key for the latest snapshot that has committed stats for a specific target (column).
    *
    * <p>Set on every write of a per-target stats record; enables O(1) per-column stale lookups for
@@ -756,6 +780,17 @@ public final class Keys {
     long sid = reqNonNegative("snapshot_id", snapshotId);
     return String.format(
         "/accounts/%s/tables/%s/target-stats/%019d/", encode(tid), encode(tbid), sid);
+  }
+
+  /**
+   * The same prefix without the snapshot component: every target-stats blob a table owns, across all
+   * of its snapshots. For table teardown, which must reach them all — they live outside {@code
+   * /tables/{t}/snapshots/} and would otherwise outlive the table as durable orphans.
+   */
+  public static String snapshotTargetStatsBlobPrefix(String accountId, String tableId) {
+    return String.format(
+        "/accounts/%s/tables/%s/target-stats/",
+        encode(req("account_id", accountId)), encode(req("table_id", tableId)));
   }
 
   public static String snapshotIndexArtifactDirectoryPointer(

@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
+import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
@@ -32,8 +33,11 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
 import org.jboss.logging.Logger;
 
 /** Removes the dependent state owned by tables and namespace trees. */
@@ -49,6 +53,7 @@ public class RecursiveResourceDropper {
   @Inject TableRepository tableRepo;
   @Inject TableRootRepository tableRoots;
   @Inject ViewRepository viewRepo;
+  @Inject StatsRepository statsRepo;
   @Inject UserGraph metadataGraph;
   @Inject TopologyGraph topology;
   @Inject MarkerStore markerStore;
@@ -83,23 +88,20 @@ public class RecursiveResourceDropper {
     // Scan only the root's subtree by its path prefix rather than the whole catalog; the by-path
     // prefix over-returns the root itself, which isDescendant filters out.
     var descendants = new ArrayList<Namespace>();
-    String cursor = "";
-    do {
-      var next = new StringBuilder();
-      for (var namespace :
-          namespaceRepo.list(
-              root.getResourceId().getAccountId(),
-              root.getCatalogId().getId(),
-              rootPath,
-              200,
-              cursor,
-              next)) {
-        if (isDescendant(namespace, rootPath)) {
-          descendants.add(namespace);
-        }
-      }
-      cursor = next.toString();
-    } while (!cursor.isBlank());
+    drainPages(
+        (token, next) ->
+            namespaceRepo.list(
+                root.getResourceId().getAccountId(),
+                root.getCatalogId().getId(),
+                rootPath,
+                200,
+                token,
+                next),
+        namespace -> {
+          if (isDescendant(namespace, rootPath)) {
+            descendants.add(namespace);
+          }
+        });
     descendants.sort(Comparator.comparingInt(Namespace::getParentsCount).reversed());
     for (var descendant : descendants) {
       dropNamespace(descendant, summary, rootId, guarded);
@@ -140,6 +142,10 @@ public class RecursiveResourceDropper {
       markerStore.bumpNamespaceMarker(namespaceId);
     }
     pointerStore.deleteByPrefix(Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId()));
+    // Per-snapshot stats live under /snapshots/ (removed by the prefix above); the table-level and
+    // per-target "latest committed" stats pointers/blobs live outside it and must be purged too, or
+    // they outlive the deleted table as durable orphans.
+    statsRepo.deleteAllStatsForTable(tableId);
     tableRoots.purgeRoot(tableId);
     pointerStore.delete(Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId()));
   }
@@ -184,21 +190,11 @@ public class RecursiveResourceDropper {
   }
 
   private boolean hasImmediateChildren(ResourceId catalogId, List<String> parentPath) {
-    String cursor = "";
-    while (true) {
-      var next = new StringBuilder();
-      for (var child :
-          namespaceRepo.list(
-              catalogId.getAccountId(), catalogId.getId(), parentPath, 200, cursor, next)) {
-        if (isImmediateChildOf(child, parentPath)) {
-          return true;
-        }
-      }
-      cursor = next.toString();
-      if (cursor.isBlank()) {
-        return false;
-      }
-    }
+    return anyPage(
+        (token, next) ->
+            namespaceRepo.list(
+                catalogId.getAccountId(), catalogId.getId(), parentPath, 200, token, next),
+        child -> isImmediateChildOf(child, parentPath));
   }
 
   private static boolean isImmediateChildOf(Namespace namespace, List<String> parentPath) {
@@ -218,91 +214,141 @@ public class RecursiveResourceDropper {
         "relation changed during recursive delete: " + relationId.getId());
   }
 
+  @FunctionalInterface
+  private interface PageFetcher<T> {
+    List<T> fetch(String pageToken, StringBuilder nextOut);
+  }
+
+  /**
+   * Drains a key-paginated listing, invoking {@code consumer} for every item across all pages.
+   *
+   * <p>Guards against a {@link PointerStore} that returns a non-advancing page token: a repeated
+   * cursor is treated as a hard error rather than spinning the worker thread forever with no
+   * observable failure. This preserves the stagnant-token protection the replaced {@code
+   * AccountServiceImpl.listAllPages} provided.
+   */
+  private static <T> void drainPages(PageFetcher<T> fetcher, Consumer<T> consumer) {
+    var seenTokens = new HashSet<String>();
+    String token = "";
+    while (true) {
+      var next = new StringBuilder();
+      for (var item : fetcher.fetch(token, next)) {
+        consumer.accept(item);
+      }
+      token = advanceToken(next, seenTokens);
+      if (token.isBlank()) {
+        return;
+      }
+    }
+  }
+
+  /** Like {@link #drainPages} but short-circuits, returning true on the first matching item. */
+  private static <T> boolean anyPage(PageFetcher<T> fetcher, Predicate<T> match) {
+    var seenTokens = new HashSet<String>();
+    String token = "";
+    while (true) {
+      var next = new StringBuilder();
+      for (var item : fetcher.fetch(token, next)) {
+        if (match.test(item)) {
+          return true;
+        }
+      }
+      token = advanceToken(next, seenTokens);
+      if (token.isBlank()) {
+        return false;
+      }
+    }
+  }
+
+  private static String advanceToken(StringBuilder next, HashSet<String> seenTokens) {
+    String token = next.toString();
+    if (!token.isBlank() && !seenTokens.add(token)) {
+      throw new IllegalStateException(
+          "recursive delete pagination did not advance; repeated page token: " + token);
+    }
+    return token;
+  }
+
   private void dropNamespaceRelations(Namespace namespace, DropSummary summary, boolean guarded) {
     var namespaceId = namespace.getResourceId();
     var catalogId = namespace.getCatalogId();
-    String tableToken = "";
-    do {
-      var next = new StringBuilder();
-      for (var table :
-          tableRepo.list(
-              namespaceId.getAccountId(),
-              catalogId.getId(),
-              namespaceId.getId(),
-              200,
-              tableToken,
-              next)) {
-        // Only purge a table's dependent state (snapshot prefix, table root, root-resync marker)
-        // after its own delete actually commits. tableRepo.delete returns false when a concurrent
-        // update/rename won the canonical-pointer CAS or the pointer already vanished — the table
-        // may still be alive, so cleaning up its owned state would silently corrupt it.
-        if (tableRepo.delete(table.getResourceId())) {
-          // The enclosing namespace is about to be guarded and deleted. Do not make its own
-          // cleanup look like a concurrent child mutation to that marker protocol.
-          cleanupDeletedTable(table.getResourceId(), table.getNamespaceId(), false);
-          summary.tablesDeleted++;
-          summary.snapshotPrefixesDeleted++;
-          CLEANUP_LOG.infof(
-              "recursive_drop_table account_id=%s catalog_id=%s namespace_id=%s table_id=%s snapshot_prefix_purged=true",
-              namespaceId.getAccountId(),
-              catalogId.getId(),
-              namespaceId.getId(),
-              table.getResourceId().getId());
-        } else if (guarded) {
-          // Recursive namespace delete: a concurrent writer holds the table alive. Abort and let
-          // runWithRetry re-read; retrying is safe because prior deletes in this pass are
-          // idempotent.
-          throw relationChanged(table.getResourceId());
-        } else {
-          // Account teardown: the whole account is going away and cleanup must never throw a
-          // retryable abort (that would re-run deleteAccount after the pointer is gone and skip
-          // cleanup). The table pointer already moved or vanished, so skip its owned-state purge
-          // rather than corrupt a survivor.
-          CLEANUP_LOG.warnf(
-              "recursive_drop_table_skipped_uncommitted account_id=%s catalog_id=%s namespace_id=%s table_id=%s",
-              namespaceId.getAccountId(),
-              catalogId.getId(),
-              namespaceId.getId(),
-              table.getResourceId().getId());
-        }
-      }
-      tableToken = next.toString();
-    } while (!tableToken.isBlank());
 
-    String viewToken = "";
-    do {
-      var next = new StringBuilder();
-      for (var view :
-          viewRepo.list(
-              namespaceId.getAccountId(),
-              catalogId.getId(),
-              namespaceId.getId(),
-              200,
-              viewToken,
-              next)) {
-        if (viewRepo.delete(view.getResourceId())) {
-          topology.evict(view.getResourceId());
-          metadataGraph.invalidate(view.getResourceId());
-          summary.viewsDeleted++;
-          CLEANUP_LOG.infof(
-              "recursive_drop_view account_id=%s catalog_id=%s namespace_id=%s view_id=%s",
-              namespaceId.getAccountId(),
-              catalogId.getId(),
-              namespaceId.getId(),
-              view.getResourceId().getId());
-        } else if (guarded) {
-          throw relationChanged(view.getResourceId());
-        } else {
-          CLEANUP_LOG.warnf(
-              "recursive_drop_view_skipped_uncommitted account_id=%s catalog_id=%s namespace_id=%s view_id=%s",
-              namespaceId.getAccountId(),
-              catalogId.getId(),
-              namespaceId.getId(),
-              view.getResourceId().getId());
-        }
-      }
-      viewToken = next.toString();
-    } while (!viewToken.isBlank());
+    drainPages(
+        (token, next) ->
+            tableRepo.list(
+                namespaceId.getAccountId(),
+                catalogId.getId(),
+                namespaceId.getId(),
+                200,
+                token,
+                next),
+        table ->
+            dropTable(namespace, table.getResourceId(), table.getNamespaceId(), summary, guarded));
+
+    drainPages(
+        (token, next) ->
+            viewRepo.list(
+                namespaceId.getAccountId(),
+                catalogId.getId(),
+                namespaceId.getId(),
+                200,
+                token,
+                next),
+        view -> dropView(namespace, view.getResourceId(), summary, guarded));
+  }
+
+  private void dropTable(
+      Namespace namespace,
+      ResourceId tableId,
+      ResourceId tableNamespaceId,
+      DropSummary summary,
+      boolean guarded) {
+    var namespaceId = namespace.getResourceId();
+    var catalogId = namespace.getCatalogId();
+    boolean committed = tableRepo.delete(tableId);
+    if (!committed && guarded) {
+      // Recursive namespace delete: tableRepo.delete returned false, so a concurrent update/rename
+      // won the canonical-pointer CAS and the table may still be alive. Do not purge its owned
+      // state; abort and let runWithRetry re-read (prior deletes this pass are idempotent).
+      throw relationChanged(tableId);
+    }
+    // Committed delete, or unguarded account teardown. In teardown there is no survivor to protect
+    // —
+    // the account, its catalogs, and namespaces are all going away — so purge owned state
+    // unconditionally even when delete lost the CAS, or the table pointer and its root-resync
+    // marker
+    // outlive account deletion as durable orphans. The enclosing namespace is about to be deleted,
+    // so cleanup must not bump its marker (false) and look like a concurrent child mutation.
+    cleanupDeletedTable(tableId, tableNamespaceId, false);
+    summary.tablesDeleted++;
+    summary.snapshotPrefixesDeleted++;
+    CLEANUP_LOG.infof(
+        "recursive_drop_table account_id=%s catalog_id=%s namespace_id=%s table_id=%s committed=%s",
+        namespaceId.getAccountId(),
+        catalogId.getId(),
+        namespaceId.getId(),
+        tableId.getId(),
+        committed);
+  }
+
+  private void dropView(
+      Namespace namespace, ResourceId viewId, DropSummary summary, boolean guarded) {
+    var namespaceId = namespace.getResourceId();
+    var catalogId = namespace.getCatalogId();
+    boolean committed = viewRepo.delete(viewId);
+    if (!committed && guarded) {
+      throw relationChanged(viewId);
+    }
+    topology.evict(viewId);
+    metadataGraph.invalidate(viewId);
+    summary.viewsDeleted++;
+    CLEANUP_LOG.infof(
+        "recursive_drop_view account_id=%s catalog_id=%s namespace_id=%s view_id=%s committed=%s",
+        namespaceId.getAccountId(),
+        catalogId.getId(),
+        namespaceId.getId(),
+        viewId.getId(),
+        committed);
   }
 
   private void deleteNamespace(Namespace namespace) {
