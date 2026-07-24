@@ -4939,6 +4939,7 @@ class DurableReconcileJobStoreTest {
             1,
             3,
             4L,
+            2L,
             200L,
             "Finalized snapshot capture 55"));
 
@@ -4947,6 +4948,9 @@ class DurableReconcileJobStoreTest {
     assertTrue(finalized.isPresent());
     assertEquals(jobId, finalized.orElseThrow().finalizerJobId);
     assertEquals(200L, finalized.orElseThrow().finalizedAtMs);
+    var completedJob = store.get(ACCOUNT_ID, jobId).orElseThrow();
+    assertEquals(4L, completedJob.statsProcessed);
+    assertEquals(2L, completedJob.indexesProcessed);
   }
 
   @Test

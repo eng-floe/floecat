@@ -96,6 +96,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             anyInt(),
             anyLong(),
             anyLong(),
+            anyLong(),
             anyString()))
         .thenReturn(true);
   }

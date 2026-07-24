@@ -91,6 +91,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                 descriptor == null ? 0 : descriptor.getFileGroupCount(),
                 descriptor == null ? 0 : descriptor.getSourceFileCount(),
                 descriptor == null ? 0L : descriptor.getStatsRecordCount(),
+                descriptor == null ? 0L : descriptor.getIndexArtifactCount(),
                 System.currentTimeMillis(),
                 "Registered snapshot capture manifest");
         requireAcceptedLeaseOutcome(replayed, jobId);
@@ -171,6 +172,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                   validated.getFileGroupCount(),
                   validated.getSourceFileCount(),
                   validated.getStatsRecordCount(),
+                  validated.getIndexArtifactCount(),
                   System.currentTimeMillis(),
                   "Registered snapshot capture manifest " + snapshotTask.snapshotId());
           requireAcceptedLeaseOutcome(accepted, lease.jobId);

@@ -101,6 +101,7 @@ public class ReconcileAncestorRollupService {
     }
     ChildAggregate aggregate = ChildAggregate.empty();
     StoredReconcileJob representativeChild = null;
+    StoredReconcileJob successfulSnapshotFinalizer = null;
 
     long startedAtMs = Math.max(0L, parent.startedAtMs);
     for (StoredReconcileJob child : effectiveDirectChildren) {
@@ -109,6 +110,11 @@ public class ReconcileAncestorRollupService {
       }
       ChildContribution contribution = contributionForParent(parent, child);
       aggregate = aggregate.add(contribution);
+      if (parent.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
+          && child.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+          && "JS_SUCCEEDED".equals(blankToEmpty(child.state))) {
+        successfulSnapshotFinalizer = child;
+      }
       if (contribution.startedAtMs() > 0L) {
         startedAtMs = earliestPositive(startedAtMs, contribution.startedAtMs());
       }
@@ -135,6 +141,11 @@ public class ReconcileAncestorRollupService {
     long failedFileGroups = selfFailedFileGroups + aggregate.failedFileGroups();
     long completedFiles = selfCompletedFiles + aggregate.completedFiles();
     long failedFiles = selfFailedFiles + aggregate.failedFiles();
+
+    if (parent.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT && successfulSnapshotFinalizer != null) {
+      statsProcessed = Math.max(0L, successfulSnapshotFinalizer.statsProcessed);
+      indexesProcessed = Math.max(0L, successfulSnapshotFinalizer.indexesProcessed);
+    }
 
     if (parent.jobKind() == ReconcileJobKind.PLAN_TABLE) {
       tablesScanned = Math.max(selfTablesScanned, aggregate.tablesScanned());

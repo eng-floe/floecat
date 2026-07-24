@@ -64,6 +64,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private final Map<String, String> leaseEpochs = new ConcurrentHashMap<>();
   private final Map<String, Long> leaseExpiresAtMs = new ConcurrentHashMap<>();
   private final Set<String> snapshotFinalizeCommits = ConcurrentHashMap.newKeySet();
+  private final Map<String, SnapshotFinalizeCompletion> snapshotFinalizeCompletions =
+      new ConcurrentHashMap<>();
   private final Map<String, String> pinnedExecutors = new ConcurrentHashMap<>();
   private final Map<String, String> dedupeKeysByJobId = new ConcurrentHashMap<>();
   private final Map<String, String> activeJobIdByDedupeKey = new ConcurrentHashMap<>();
@@ -345,6 +347,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         job.captureMode,
         job.snapshotsProcessed,
         job.statsProcessed,
+        Math.max(job.indexesProcessed, indexesProcessedSelf(job)),
+        job.aggregateSummaryPresent,
         job.scope,
         job.executionPolicy,
         pinnedExecutors.getOrDefault(job.jobId, ""),
@@ -354,6 +358,12 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         job.viewTask,
         job.snapshotTask,
         job.fileGroupTask,
+        job.plannedFileGroups,
+        job.plannedFiles,
+        job.completedFileGroups,
+        job.failedFileGroups,
+        job.completedFiles,
+        job.failedFiles,
         job.parentJobId);
   }
 
@@ -439,6 +449,29 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         job.jobKind == ReconcileJobKind.PLAN_TABLE
             ? aggregatePlanTableChanged(children)
             : children.stream().mapToLong(child -> child.tablesChanged).sum();
+    Optional<ReconcileJob> successfulSnapshotFinalizer =
+        job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT
+            ? children.stream()
+                .filter(
+                    child ->
+                        child.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+                            && "JS_SUCCEEDED".equals(child.state))
+                .findFirst()
+            : Optional.empty();
+    long aggregateStatsProcessed =
+        successfulSnapshotFinalizer
+            .map(child -> child.statsProcessed)
+            .orElseGet(
+                () ->
+                    job.statsProcessed
+                        + children.stream().mapToLong(child -> child.statsProcessed).sum());
+    long aggregateIndexesProcessed =
+        successfulSnapshotFinalizer
+            .map(child -> child.indexesProcessed)
+            .orElseGet(
+                () ->
+                    selfIndexes
+                        + children.stream().mapToLong(child -> child.indexesProcessed).sum());
     return new ReconcileJob(
         job.jobId,
         job.accountId,
@@ -456,8 +489,8 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         job.captureMode,
         job.snapshotsProcessed
             + children.stream().mapToLong(child -> child.snapshotsProcessed).sum(),
-        job.statsProcessed + children.stream().mapToLong(child -> child.statsProcessed).sum(),
-        selfIndexes + children.stream().mapToLong(child -> child.indexesProcessed).sum(),
+        aggregateStatsProcessed,
+        aggregateIndexesProcessed,
         true,
         job.scope,
         job.executionPolicy,
@@ -562,7 +595,11 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       return 0L;
     }
     ReconcileFileGroupResultDescriptor descriptor = fileGroupResultDescriptors.get(job.jobId);
-    return descriptor == null ? 0L : Math.max(0, descriptor.indexArtifactCount());
+    if (descriptor != null) {
+      return Math.max(0, descriptor.indexArtifactCount());
+    }
+    SnapshotFinalizeCompletion completion = snapshotFinalizeCompletions.get(job.jobId);
+    return completion == null ? 0L : Math.max(0L, completion.indexArtifactCount());
   }
 
   @Override
@@ -736,6 +773,48 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
         0L,
         0L,
         (long) descriptor.fileStatsRecordCount() + (long) descriptor.partialAggregateRecordCount());
+    return "JS_SUCCEEDED".equals(jobs.get(jobId).state);
+  }
+
+  @Override
+  public synchronized boolean completeSnapshotFinalizeSuccess(
+      String jobId,
+      String leaseEpoch,
+      String resultId,
+      String manifestUri,
+      long manifestBytes,
+      String manifestSha256,
+      int fileGroupCount,
+      int sourceFileCount,
+      long statsRecordCount,
+      long indexArtifactCount,
+      long finishedAtMs,
+      String message) {
+    ReconcileJob existing = jobs.get(jobId);
+    SnapshotFinalizeCompletion completion =
+        new SnapshotFinalizeCompletion(
+            blankToEmpty(leaseEpoch),
+            blankToEmpty(resultId),
+            blankToEmpty(manifestUri),
+            manifestBytes,
+            blankToEmpty(manifestSha256),
+            fileGroupCount,
+            sourceFileCount,
+            statsRecordCount,
+            indexArtifactCount);
+    if (existing != null && "JS_SUCCEEDED".equals(existing.state)) {
+      return existing.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+          && completion.equals(snapshotFinalizeCompletions.get(jobId));
+    }
+    if (existing == null
+        || existing.jobKind != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+        || !renewLease(jobId, leaseEpoch)) {
+      return false;
+    }
+    snapshotFinalizeCompletions.put(jobId, completion);
+    markSucceeded(
+        jobId, leaseEpoch, finishedAtMs, 0L, 0L, 0L, 0L, 1L, Math.max(0L, statsRecordCount));
+    snapshotFinalizeCommits.remove(jobId);
     return "JS_SUCCEEDED".equals(jobs.get(jobId).state);
   }
 
@@ -2112,6 +2191,17 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
   private static String blankToEmpty(String value) {
     return value == null ? "" : value.trim();
   }
+
+  private record SnapshotFinalizeCompletion(
+      String leaseEpoch,
+      String resultId,
+      String manifestUri,
+      long manifestBytes,
+      String manifestSha256,
+      int fileGroupCount,
+      int sourceFileCount,
+      long statsRecordCount,
+      long indexArtifactCount) {}
 
   private static boolean blank(String value) {
     return value == null || value.isBlank();

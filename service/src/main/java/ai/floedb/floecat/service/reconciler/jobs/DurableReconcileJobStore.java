@@ -1774,6 +1774,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       int fileGroupCount,
       int sourceFileCount,
       long statsRecordCount,
+      long indexArtifactCount,
       long finishedAtMs,
       String message) {
     return onHotPath(
@@ -1811,7 +1812,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                             0L,
                             1L,
                             statsRecordCount,
-                            0L);
+                            indexArtifactCount);
                       },
                       this::projectionRefreshMarkerTouchesForRecord)
                   .map(env -> new StoredEnvelope(env.canonicalPointerKey(), env.record()));
@@ -1835,7 +1836,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                         .equals(blankToEmpty(record.snapshotFinalizeManifestSha256))
                     && fileGroupCount == record.snapshotFinalizeFileGroupCount
                     && sourceFileCount == record.snapshotFinalizeSourceFileCount
-                    && statsRecordCount == record.snapshotFinalizeStatsRecordCount;
+                    && statsRecordCount == record.snapshotFinalizeStatsRecordCount
+                    && indexArtifactCount == record.indexesProcessed;
           }
           if (accepted) {
             recordFinalizedSnapshotIfEligible(jobId);

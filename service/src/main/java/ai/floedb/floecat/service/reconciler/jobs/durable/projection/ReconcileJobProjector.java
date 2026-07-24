@@ -325,7 +325,8 @@ public class ReconcileJobProjector {
     if (stored == null) {
       return JobProjection.empty();
     }
-    if (stored.jobKind() == ReconcileJobKind.EXEC_FILE_GROUP) {
+    if (stored.jobKind() == ReconcileJobKind.EXEC_FILE_GROUP
+        || stored.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
       return inlineSummaryProjection(stored);
     }
     if (stored.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT) {
@@ -372,6 +373,9 @@ public class ReconcileJobProjector {
           failedFileGroups,
           completedFiles,
           failedFiles);
+    }
+    if (stored.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
+      return new JobProjection(Math.max(0L, stored.indexesProcessed), 0L, 0L, 0L, 0L, 0L, 0L);
     }
     return JobProjection.empty();
   }

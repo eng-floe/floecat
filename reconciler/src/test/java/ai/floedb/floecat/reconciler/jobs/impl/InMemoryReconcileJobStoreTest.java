@@ -315,6 +315,132 @@ class InMemoryReconcileJobStoreTest {
   }
 
   @Test
+  void snapshotRollupUsesFinalizedManifestArtifactCounts() {
+    var store = new InMemoryReconcileJobStore();
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            "table-job",
+            "");
+    store.enqueueFileGroupExecution(
+        "acct",
+        "conn",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        ReconcileFileGroupTask.of(
+            snapshotJobId, "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet")),
+        ReconcileExecutionPolicy.defaults(),
+        snapshotJobId,
+        "");
+    store.enqueueFileGroupExecution(
+        "acct",
+        "conn",
+        false,
+        CaptureMode.METADATA_AND_CAPTURE,
+        ReconcileScope.empty(),
+        ReconcileFileGroupTask.of(
+            snapshotJobId, "group-2", "table-1", 55L, List.of("s3://bucket/data/file-2.parquet")),
+        ReconcileExecutionPolicy.defaults(),
+        snapshotJobId,
+        "");
+    String finalizerJobId =
+        store.enqueueSnapshotFinalization(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events", List.of(), true),
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+
+    for (long statsProcessed : List.of(6L, 8L)) {
+      var lease =
+          store
+              .leaseNext(
+                  new ReconcileJobStore.LeaseRequest(
+                      null, null, null, EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP)))
+              .orElseThrow();
+      assertTrue(
+          store.applyLeaseOutcome(
+              lease.jobId,
+              lease.leaseEpoch,
+              ReconcileJobStore.CompletionKind.SUCCEEDED,
+              100L,
+              "Succeeded",
+              0L,
+              0L,
+              0L,
+              0L,
+              0L,
+              0L,
+              statsProcessed));
+    }
+    var finalizerLease =
+        store
+            .leaseNext(
+                new ReconcileJobStore.LeaseRequest(
+                    null, null, null, EnumSet.of(ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)))
+            .orElseThrow();
+    assertEquals(finalizerJobId, finalizerLease.jobId);
+    assertTrue(store.beginSnapshotFinalizeCommit(finalizerJobId, finalizerLease.leaseEpoch));
+    assertTrue(
+        store.completeSnapshotFinalizeSuccess(
+            finalizerJobId,
+            finalizerLease.leaseEpoch,
+            "result-1",
+            "/capture-manifest.pb",
+            100L,
+            "sha256",
+            2,
+            2,
+            9L,
+            7L,
+            200L,
+            "Succeeded"));
+    assertTrue(
+        store.completeSnapshotFinalizeSuccess(
+            finalizerJobId,
+            finalizerLease.leaseEpoch,
+            "result-1",
+            "/capture-manifest.pb",
+            100L,
+            "sha256",
+            2,
+            2,
+            9L,
+            7L,
+            300L,
+            "Replayed"));
+    assertFalse(
+        store.completeSnapshotFinalizeSuccess(
+            finalizerJobId,
+            finalizerLease.leaseEpoch,
+            "result-1",
+            "/different-capture-manifest.pb",
+            100L,
+            "sha256",
+            2,
+            2,
+            9L,
+            7L,
+            300L,
+            "Conflicting replay"));
+
+    var snapshot = store.get("acct", snapshotJobId).orElseThrow();
+    assertEquals(9L, snapshot.statsProcessed);
+    assertEquals(7L, snapshot.indexesProcessed);
+  }
+
+  @Test
   void directEnqueueRejectsImplicitSnapshotCoverageForFinalization() {
     var store = new InMemoryReconcileJobStore();
 

@@ -26,7 +26,7 @@ import org.junit.jupiter.api.Test;
 
 class ReconcileAncestorRollupServiceTest {
   @Test
-  void parentRollupDoesNotAddCopiedAggregateCountersBackIntoChildren() {
+  void snapshotRollupUsesFinalizedManifestArtifactCounts() {
     ReconcileAncestorRollupService rollups = rollups();
     StoredReconcileJob parent =
         job("snapshot-plan", ReconcileJobKind.PLAN_SNAPSHOT, "", "JS_WAITING");
@@ -49,13 +49,40 @@ class ReconcileAncestorRollupServiceTest {
         job("finalizer", ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE, parent.jobId, "JS_SUCCEEDED");
     finalizer.snapshotsProcessed = 1L;
     finalizer.statsProcessed = 9L;
+    finalizer.indexesProcessed = 7L;
 
     var projection = rollups.recomputeParentProjection(parent, List.of(fileGroup, finalizer));
 
     assertEquals("JS_SUCCEEDED", projection.state());
     assertEquals(1L, projection.snapshotsProcessed());
-    assertEquals(27L, projection.statsProcessed());
-    assertEquals(18L, projection.indexesProcessed());
+    assertEquals(9L, projection.statsProcessed());
+    assertEquals(7L, projection.indexesProcessed());
+  }
+
+  @Test
+  void snapshotRollupShowsFileGroupProgressUntilFinalizerSucceeds() {
+    ReconcileAncestorRollupService rollups = rollups();
+    StoredReconcileJob parent =
+        job("snapshot-plan", ReconcileJobKind.PLAN_SNAPSHOT, "", "JS_WAITING");
+    parent.childrenFinalized = true;
+    parent.expectedDirectChildren = 3L;
+
+    StoredReconcileJob fileGroupOne =
+        job("file-group-1", ReconcileJobKind.EXEC_FILE_GROUP, parent.jobId, "JS_SUCCEEDED");
+    fileGroupOne.statsProcessed = 6L;
+    fileGroupOne.indexesProcessed = 2L;
+    StoredReconcileJob fileGroupTwo =
+        job("file-group-2", ReconcileJobKind.EXEC_FILE_GROUP, parent.jobId, "JS_SUCCEEDED");
+    fileGroupTwo.statsProcessed = 8L;
+    fileGroupTwo.indexesProcessed = 3L;
+    StoredReconcileJob finalizer =
+        job("finalizer", ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE, parent.jobId, "JS_RUNNING");
+
+    var projection =
+        rollups.recomputeParentProjection(parent, List.of(fileGroupOne, fileGroupTwo, finalizer));
+
+    assertEquals(14L, projection.statsProcessed());
+    assertEquals(5L, projection.indexesProcessed());
   }
 
   @Test

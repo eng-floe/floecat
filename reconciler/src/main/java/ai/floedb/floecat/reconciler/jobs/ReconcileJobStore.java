@@ -713,7 +713,7 @@ public interface ReconcileJobStore {
     return renewLease(jobId, leaseEpoch);
   }
 
-  default boolean completeSnapshotFinalizeSuccess(
+  boolean completeSnapshotFinalizeSuccess(
       String jobId,
       String leaseEpoch,
       String resultId,
@@ -723,22 +723,9 @@ public interface ReconcileJobStore {
       int fileGroupCount,
       int sourceFileCount,
       long statsRecordCount,
+      long indexArtifactCount,
       long finishedAtMs,
-      String message) {
-    return applyLeaseOutcome(
-        jobId,
-        leaseEpoch,
-        CompletionKind.SUCCEEDED,
-        finishedAtMs,
-        message,
-        0L,
-        0L,
-        0L,
-        0L,
-        0L,
-        1L,
-        statsRecordCount);
-  }
+      String message);
 
   void markCancelled(
       String jobId,
