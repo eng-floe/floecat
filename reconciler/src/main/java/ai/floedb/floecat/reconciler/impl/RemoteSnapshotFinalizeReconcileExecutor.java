@@ -371,19 +371,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
           || !indexFiles.add(artifact.getTarget().getFile().getFilePath())) {
         throw new IllegalArgumentException("snapshot file-group index artifact metadata mismatch");
       }
-      var header =
-          blobStore
-              .head(artifact.getArtifactUri())
-              .orElseThrow(
-                  () ->
-                      new IllegalArgumentException(
-                          "snapshot index artifact is missing: " + artifact.getArtifactUri()));
-      if (header.getContentLength() <= 0L
-          || (!artifact.getContentEtag().isBlank()
-              && !artifact.getContentEtag().equals(header.getEtag()))) {
-        throw new IllegalArgumentException(
-            "snapshot index artifact does not match metadata: " + artifact.getArtifactUri());
-      }
     }
     Set<String> filePaths = new HashSet<>();
     for (TargetStatsRecord record : statsPayload.getFileStatsList()) {
