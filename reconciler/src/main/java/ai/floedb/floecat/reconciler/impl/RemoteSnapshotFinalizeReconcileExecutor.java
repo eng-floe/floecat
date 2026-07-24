@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
+import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
@@ -27,6 +28,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload;
 import ai.floedb.floecat.reconciler.rpc.FileGroupStatsPayload;
+import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -43,7 +45,7 @@ import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
-/** Finalizes non-empty snapshots by reading immutable file-group payload manifests from storage. */
+/** Finalizes file-group snapshots by reading immutable result manifests from storage. */
 @ApplicationScoped
 public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   private static final Logger LOG = Logger.getLogger(RemoteSnapshotFinalizeReconcileExecutor.class);
@@ -107,7 +109,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     ReconcileSnapshotTask task =
         lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
     return task.completionMode() == ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
-        && task.fileGroupCount() > 0;
+        && task.fileGroupPlanRecorded();
   }
 
   @Override
@@ -123,7 +125,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
           0,
           0,
           "Unsupported snapshot finalize job",
-          new IllegalArgumentException("non-empty file-group snapshot task is required"));
+          new IllegalArgumentException("file-group snapshot task is required"));
     }
     RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
     if (context.shouldStop().getAsBoolean()) {
@@ -133,43 +135,52 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     boolean terminalSubmissionStarted = false;
     try {
       input = workerClient.getSnapshotFinalizeInput(remoteLease);
-      Set<GroupKey> remainingPlannedGroups = loadPlannedGroupKeys(input);
-      List<ReconcileFileGroupResultDescriptor> descriptors =
-          workerClient.listSnapshotFileGroupResults(remoteLease);
-      if (descriptors.size() != input.fileGroupCount()) {
-        throw new IllegalStateException(
-            "snapshot finalizer descriptor count mismatch expected="
-                + input.fileGroupCount()
-                + " actual="
-                + descriptors.size());
-      }
-      Set<GroupKey> descriptorGroupKeys = new HashSet<>();
-      for (ReconcileFileGroupResultDescriptor descriptor : descriptors) {
-        if (context.shouldStop().getAsBoolean()) {
-          return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
-        }
-        if (descriptor == null) {
-          throw new IllegalStateException("null snapshot file-group descriptor");
-        }
-        GroupKey groupKey = new GroupKey(descriptor.planId(), descriptor.groupId());
-        if (!descriptorGroupKeys.add(groupKey)) {
+      List<ReconcileFileGroupResultDescriptor> descriptors;
+      if (input.fileGroupCount() == 0) {
+        if (input.sourceFileCount() != 0) {
           throw new IllegalStateException(
-              "duplicate snapshot file-group descriptor "
-                  + descriptor.planId()
-                  + "/"
-                  + descriptor.groupId());
+              "explicit-empty snapshot finalizer has non-zero source file count "
+                  + input.sourceFileCount());
         }
-        if (!remainingPlannedGroups.remove(groupKey)) {
+        descriptors = List.of();
+      } else {
+        Set<GroupKey> remainingPlannedGroups = loadPlannedGroupKeys(input);
+        descriptors = workerClient.listSnapshotFileGroupResults(remoteLease);
+        if (descriptors.size() != input.fileGroupCount()) {
           throw new IllegalStateException(
-              "unexpected snapshot file-group descriptor "
-                  + descriptor.planId()
-                  + "/"
-                  + descriptor.groupId());
+              "snapshot finalizer descriptor count mismatch expected="
+                  + input.fileGroupCount()
+                  + " actual="
+                  + descriptors.size());
         }
-      }
-      if (!remainingPlannedGroups.isEmpty()) {
-        throw new IllegalStateException(
-            "missing snapshot file-group descriptors " + remainingPlannedGroups);
+        Set<GroupKey> descriptorGroupKeys = new HashSet<>();
+        for (ReconcileFileGroupResultDescriptor descriptor : descriptors) {
+          if (context.shouldStop().getAsBoolean()) {
+            return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
+          }
+          if (descriptor == null) {
+            throw new IllegalStateException("null snapshot file-group descriptor");
+          }
+          GroupKey groupKey = new GroupKey(descriptor.planId(), descriptor.groupId());
+          if (!descriptorGroupKeys.add(groupKey)) {
+            throw new IllegalStateException(
+                "duplicate snapshot file-group descriptor "
+                    + descriptor.planId()
+                    + "/"
+                    + descriptor.groupId());
+          }
+          if (!remainingPlannedGroups.remove(groupKey)) {
+            throw new IllegalStateException(
+                "unexpected snapshot file-group descriptor "
+                    + descriptor.planId()
+                    + "/"
+                    + descriptor.groupId());
+          }
+        }
+        if (!remainingPlannedGroups.isEmpty()) {
+          throw new IllegalStateException(
+              "missing snapshot file-group descriptors " + remainingPlannedGroups);
+        }
       }
       List<TargetStatsRecord> partials = new ArrayList<>();
       List<RemoteSnapshotFinalizeWorkerClient.FileStatsRecordLocation> fileStats =
@@ -186,8 +197,10 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       }
       Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
       List<TargetStatsRecord> finalStats =
-          FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(
-              input.tableId(), input.snapshotId(), aggregateKinds, partials);
+          input.fileGroupCount() == 0
+              ? emptySnapshotStats(lease, input)
+              : FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(
+                  input.tableId(), input.snapshotId(), aggregateKinds, partials);
       if (context.shouldStop().getAsBoolean()) {
         return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
       }
@@ -424,6 +437,31 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       kinds.add(FloecatConnector.StatsTargetKind.COLUMN);
     }
     return kinds;
+  }
+
+  private static List<TargetStatsRecord> emptySnapshotStats(
+      ReconcileJobStore.LeasedJob lease, StandaloneSnapshotFinalizeExecutionPayload input) {
+    if (!requestsStatsOutputs(lease)) {
+      return List.of();
+    }
+    return List.of(
+        TargetStatsRecords.tableRecord(
+            input.tableId(),
+            input.snapshotId(),
+            TableValueStats.newBuilder()
+                .setRowCount(0L)
+                .setDataFileCount(0L)
+                .setTotalSizeBytes(0L)
+                .build(),
+            null));
+  }
+
+  private static boolean requestsStatsOutputs(ReconcileJobStore.LeasedJob lease) {
+    ReconcileCapturePolicy policy =
+        lease == null || lease.scope == null
+            ? ReconcileCapturePolicy.empty()
+            : lease.scope.capturePolicy();
+    return policy.requestsStats();
   }
 
   private static String resultId(ReconcileJobStore.LeasedJob lease, String outcome) {

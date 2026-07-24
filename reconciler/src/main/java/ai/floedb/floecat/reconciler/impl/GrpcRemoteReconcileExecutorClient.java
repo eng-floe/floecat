@@ -1146,11 +1146,25 @@ class GrpcRemoteReconcileExecutorClient
                         .setLeaseEpoch(lease.lease().leaseEpoch)
                         .build()));
     var input = response.getInput();
-    if (input.getFinalizeMode()
-        != ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput.FinalizeMode
-            .FZM_FILE_GROUPS_NON_EMPTY) {
+    var finalizeMode = input.getFinalizeMode();
+    if (finalizeMode
+            != ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput.FinalizeMode
+                .FZM_FILE_GROUPS_NON_EMPTY
+        && finalizeMode
+            != ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput.FinalizeMode
+                .FZM_EXPLICIT_EMPTY) {
+      throw new IllegalArgumentException("remote descriptor finalizer requires file-group input");
+    }
+    if ((finalizeMode
+                == ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput.FinalizeMode
+                    .FZM_FILE_GROUPS_NON_EMPTY
+            && input.getFileGroupCount() == 0)
+        || (finalizeMode
+                == ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput.FinalizeMode
+                    .FZM_EXPLICIT_EMPTY
+            && (input.getFileGroupCount() != 0 || input.getSourceFileCount() != 0))) {
       throw new IllegalArgumentException(
-          "remote descriptor finalizer requires non-empty file-group input");
+          "snapshot finalize mode does not match file-group coverage");
     }
     return new StandaloneSnapshotFinalizeExecutionPayload(
         input.getJobId(),

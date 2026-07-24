@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -37,16 +38,20 @@ import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanConnectorInputResponse;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanTableInputResponse;
+import ai.floedb.floecat.reconciler.rpc.GetLeasedSnapshotFinalizeInputResponse;
 import ai.floedb.floecat.reconciler.rpc.LeasedPlanConnectorInput;
 import ai.floedb.floecat.reconciler.rpc.LeasedPlanTableInput;
+import ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput;
 import ai.floedb.floecat.reconciler.rpc.ReconcileExecutorControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseResponse;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultResponse;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultResponse;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
@@ -215,6 +220,72 @@ class GrpcRemoteReconcileExecutorClientTest {
     assertEquals(
         ReconcileSnapshotSelection.Kind.CURRENT, payload.scope().snapshotSelection().kind());
     assertEquals("table-1", payload.scope().destinationTableId());
+  }
+
+  @Test
+  void snapshotFinalizeInputAcceptsExplicitEmptyCoverage() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.getLeasedSnapshotFinalizeInput(any()))
+        .thenReturn(
+            GetLeasedSnapshotFinalizeInputResponse.newBuilder()
+                .setInput(
+                    LeasedSnapshotFinalizeInput.newBuilder()
+                        .setJobId("finalize-job")
+                        .setLeaseEpoch("lease-epoch")
+                        .setParentJobId("snapshot-job")
+                        .setTableId(tableId())
+                        .setSnapshotId(55L)
+                        .setFinalizeMode(
+                            LeasedSnapshotFinalizeInput.FinalizeMode.FZM_EXPLICIT_EMPTY)
+                        .setFileGroupCount(0)
+                        .setSourceFileCount(0)
+                        .setStatsPayloadUri("/stats.pb")
+                        .setCaptureManifestUri("/manifest.pb")
+                        .build())
+                .build());
+
+    StandaloneSnapshotFinalizeExecutionPayload payload =
+        client.getSnapshotFinalizeInput(remoteSnapshotFinalizeLease());
+
+    assertEquals(0, payload.fileGroupCount());
+    assertEquals(0, payload.sourceFileCount());
+    assertEquals("/manifest.pb", payload.captureManifestUri());
+  }
+
+  @Test
+  void submitSnapshotFinalizeSuccessPublishesZeroGroupManifest() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.submitLeasedSnapshotFinalizeResult(any()))
+        .thenReturn(
+            SubmitLeasedSnapshotFinalizeResultResponse.newBuilder().setAccepted(true).build());
+
+    assertThat(
+            client.submitSnapshotFinalizeSuccess(
+                remoteSnapshotFinalizeLease(),
+                "result-1",
+                "/stats.pb",
+                "/manifest.pb",
+                0,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of()))
+        .isTrue();
+
+    ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
+    verify(client.blobStore)
+        .put(eq("/manifest.pb"), manifestBytes.capture(), eq("application/x-protobuf"));
+    SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
+    assertEquals(0, manifest.getFileGroupsCount());
+    assertEquals(0, manifest.getSourceFileCount());
   }
 
   @Test
@@ -771,6 +842,14 @@ class GrpcRemoteReconcileExecutorClientTest {
         .build();
   }
 
+  private static ResourceId tableId() {
+    return ResourceId.newBuilder()
+        .setAccountId("acct")
+        .setKind(ResourceKind.RK_TABLE)
+        .setId("table-1")
+        .build();
+  }
+
   private static RemoteLeasedJob remoteLease() {
     return new RemoteLeasedJob(
         new ReconcileJobStore.LeasedJob(
@@ -832,6 +911,36 @@ class GrpcRemoteReconcileExecutorClientTest {
             null,
             ReconcileFileGroupTask.of("plan-1", "group-1", "table-1", 55L, List.of()),
             ""));
+  }
+
+  private static RemoteLeasedJob remoteSnapshotFinalizeLease() {
+    return new RemoteLeasedJob(
+        new ReconcileJobStore.LeasedJob(
+            "finalize-job",
+            "acct",
+            "connector-1",
+            false,
+            ReconcilerService.CaptureMode.CAPTURE_ONLY,
+            ReconcileScope.empty(),
+            null,
+            "lease-epoch",
+            "",
+            "",
+            ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,
+            null,
+            null,
+            ReconcileSnapshotTask.of(
+                "table-1",
+                55L,
+                "db",
+                "events",
+                List.of(),
+                true,
+                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                "",
+                0),
+            null,
+            "snapshot-job"));
   }
 
   private static StandaloneFileGroupExecutionPayload fileGroupPayload(String... filePaths) {

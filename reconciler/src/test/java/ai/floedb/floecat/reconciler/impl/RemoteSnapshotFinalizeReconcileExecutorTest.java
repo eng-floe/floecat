@@ -16,18 +16,22 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -39,9 +43,76 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class RemoteSnapshotFinalizeReconcileExecutorTest {
+
+  @Test
+  void finalizesExplicitEmptySnapshotRemotely() {
+    RemoteSnapshotFinalizeWorkerClient workerClient =
+        mock(RemoteSnapshotFinalizeWorkerClient.class);
+    BlobStore blobStore = mock(BlobStore.class);
+    SnapshotPlanBlobStore snapshotPlanBlobStore = mock(SnapshotPlanBlobStore.class);
+    RemoteSnapshotFinalizeReconcileExecutor executor =
+        new RemoteSnapshotFinalizeReconcileExecutor(
+            workerClient, blobStore, snapshotPlanBlobStore, true);
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), Set.of(ReconcileCapturePolicy.Output.TABLE_STATS)));
+    ReconcileJobStore.LeasedJob lease = leasedFinalizeJob(0, scope);
+    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
+    StandaloneSnapshotFinalizeExecutionPayload input =
+        new StandaloneSnapshotFinalizeExecutionPayload(
+            "finalize-job",
+            "lease-1",
+            "snapshot-job",
+            tableId(),
+            55L,
+            true,
+            0,
+            "",
+            0,
+            "/final-stats.pb",
+            "/capture-manifest.pb");
+
+    when(workerClient.getSnapshotFinalizeInput(remoteLease)).thenReturn(input);
+    when(workerClient.submitSnapshotFinalizeSuccess(
+            any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList()))
+        .thenReturn(true);
+
+    assertTrue(executor.supports(lease));
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertTrue(result.ok());
+    assertEquals(1L, result.statsProcessed);
+    verify(snapshotPlanBlobStore, never()).loadFileGroupsByUri(any());
+    verify(workerClient, never()).listSnapshotFileGroupResults(any());
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<TargetStatsRecord>> finalStats = ArgumentCaptor.forClass(List.class);
+    verify(workerClient)
+        .submitSnapshotFinalizeSuccess(
+            any(),
+            any(),
+            any(),
+            any(),
+            anyInt(),
+            anyList(),
+            anyList(),
+            finalStats.capture(),
+            anyList());
+    assertEquals(1, finalStats.getValue().size());
+    assertTrue(finalStats.getValue().get(0).hasTable());
+    assertEquals(0L, finalStats.getValue().get(0).getTable().getRowCount());
+  }
 
   @Test
   void rejectsDescriptorThatWasNotInImmutableSnapshotPlan() {
@@ -91,6 +162,11 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
   }
 
   private static ReconcileJobStore.LeasedJob leasedFinalizeJob() {
+    return leasedFinalizeJob(2, ReconcileScope.empty());
+  }
+
+  private static ReconcileJobStore.LeasedJob leasedFinalizeJob(
+      int fileGroupCount, ReconcileScope scope) {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             "table-1",
@@ -101,14 +177,14 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             true,
             ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
             "/snapshot-plan.json",
-            2);
+            fileGroupCount);
     return new ReconcileJobStore.LeasedJob(
         "finalize-job",
         "acct",
         "connector-1",
         true,
         ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
-        ReconcileScope.empty(),
+        scope,
         ReconcileExecutionPolicy.defaults(),
         "lease-1",
         "",
