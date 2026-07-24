@@ -63,6 +63,7 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
   static final String ATTR_RESOURCE_ID = "rid";
   static final String ATTR_RESOURCE_KIND = "rk";
   static final String ATTR_DISPLAY_NAME = "dn";
+  static final String ATTR_REFERENCED_OBJECT_SIZE_BYTES = "object_size_bytes";
 
   @Inject
   public PointerStoreEntity(@KvTable("floecat") KvStore kv) {
@@ -174,6 +175,13 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     if (dn != null && !dn.isEmpty()) {
       builder.setDisplayName(dn);
     }
+    String objectSizeBytes = r.attrs().get(ATTR_REFERENCED_OBJECT_SIZE_BYTES);
+    if (objectSizeBytes != null && !objectSizeBytes.isBlank()) {
+      try {
+        builder.setReferencedObjectSizeBytes(Math.max(0L, Long.parseLong(objectSizeBytes)));
+      } catch (NumberFormatException ignored) {
+      }
+    }
 
     return builder.buildPartial();
   }
@@ -259,6 +267,20 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
             new KvStore.Record(
                 pointerKey(upsert.key()), KIND_POINTER, new byte[0], attrs, nextVersion);
         txOps.add(new KvStore.TxnPut(rec, upsert.expectedVersion()));
+      } else if (op instanceof PointerStore.UnconditionalUpsert upsert) {
+        var attrs = attrsFor(upsert.next());
+        if (upsert.next().hasExpiresAt()) {
+          long ttl = Timestamps.toMillis(upsert.next().getExpiresAt()) / 1000L;
+          attrs.put(ATTR_EXPIRES_AT, Long.toString(ttl));
+        }
+        var rec =
+            new KvStore.Record(
+                pointerKey(upsert.key()),
+                KIND_POINTER,
+                new byte[0],
+                attrs,
+                upsert.next().getVersion());
+        txOps.add(new KvStore.TxnPutUnconditional(rec));
       } else if (op instanceof PointerStore.CasDelete delete) {
         txOps.add(new KvStore.TxnDelete(pointerKey(delete.key()), delete.expectedVersion()));
       } else if (op instanceof PointerStore.CasCheck check) {
@@ -282,6 +304,10 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     }
     if (!pointer.getDisplayName().isEmpty()) {
       attrs.put(ATTR_DISPLAY_NAME, pointer.getDisplayName());
+    }
+    if (pointer.hasReferencedObjectSizeBytes()) {
+      attrs.put(
+          ATTR_REFERENCED_OBJECT_SIZE_BYTES, Long.toString(pointer.getReferencedObjectSizeBytes()));
     }
     return attrs;
   }

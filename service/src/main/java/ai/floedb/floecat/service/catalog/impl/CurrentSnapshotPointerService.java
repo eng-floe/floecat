@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.catalog.impl;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.SNAPSHOT;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.TABLE;
 
+import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -26,15 +27,72 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Map;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class CurrentSnapshotPointerService {
+  private static final Logger LOG = Logger.getLogger(CurrentSnapshotPointerService.class);
 
   @Inject SnapshotRepository snapshotRepo;
   @Inject TableRootWriter rootWriter;
 
   public void maybeAdvance(ResourceId tableId, long snapshotId, String corr) {
     maybeAdvance(tableId, loadCandidate(tableId, snapshotId, corr), corr);
+  }
+
+  public void publishCaptureManifest(
+      ResourceId tableId, long snapshotId, BlobRef manifestRef, String corr) {
+    long totalStartNanos = System.nanoTime();
+    long loadNanos = 0L;
+    long pointerNanos = 0L;
+    long rootNanos = 0L;
+    String outcome = "failed";
+    try {
+      long loadStartNanos = System.nanoTime();
+      Snapshot candidate;
+      try {
+        candidate = loadCandidate(tableId, snapshotId, corr);
+      } finally {
+        loadNanos = System.nanoTime() - loadStartNanos;
+      }
+      long pointerStartNanos = System.nanoTime();
+      SnapshotRepository.CurrentSnapshotPointerUpdateResult result;
+      try {
+        result = snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate);
+      } finally {
+        pointerNanos = System.nanoTime() - pointerStartNanos;
+      }
+      if (result == null) {
+        outcome = "no_result";
+        return;
+      }
+      switch (result) {
+        case TABLE_MISSING -> throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
+        case CONFLICT -> throw GrpcErrors.aborted(corr, Map.of("id", tableId.getId()));
+        default -> {}
+      }
+      long rootStartNanos = System.nanoTime();
+      try {
+        rootWriter.commitSnapshotCapture(tableId, candidate, manifestRef);
+      } finally {
+        rootNanos = System.nanoTime() - rootStartNanos;
+      }
+      outcome = result.name().toLowerCase(java.util.Locale.ROOT);
+    } finally {
+      long totalNanos = System.nanoTime() - totalStartNanos;
+      long otherNanos = Math.max(0L, totalNanos - loadNanos - pointerNanos - rootNanos);
+      LOG.infof(
+          "snapshot_capture_publish_timing jobId=%s snapshotId=%d outcome=%s totalMs=%.3f"
+              + " snapshotLoadMs=%.3f pointerAdvanceMs=%.3f rootCommitMs=%.3f otherMs=%.3f",
+          corr,
+          snapshotId,
+          outcome,
+          totalNanos / 1_000_000.0,
+          loadNanos / 1_000_000.0,
+          pointerNanos / 1_000_000.0,
+          rootNanos / 1_000_000.0,
+          otherNanos / 1_000_000.0);
+    }
   }
 
   private Snapshot loadCandidate(ResourceId tableId, long snapshotId, String corr) {

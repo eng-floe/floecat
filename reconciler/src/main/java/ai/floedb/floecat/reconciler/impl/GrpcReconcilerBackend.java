@@ -586,7 +586,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       Optional.of(sourceCtx.storageLocation()),
                       ctx.authorizationToken(),
                       ctx.executionJobId(),
-                      ctx.executionLeaseEpoch()));
+                      ctx.executionLeaseEpoch(),
+                      () -> false));
           if (!request.capturePageIndex() || !capture.stagedIndexArtifacts().isEmpty()) {
             return capture;
           }

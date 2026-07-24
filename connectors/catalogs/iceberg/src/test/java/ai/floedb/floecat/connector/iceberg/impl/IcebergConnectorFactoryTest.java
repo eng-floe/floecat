@@ -115,7 +115,7 @@ class IcebergConnectorFactoryTest {
     props.put("s3.region", "us-east-2");
 
     assertDoesNotThrow(() -> method.invoke(null, props, "aws-sigv4", null));
-    assertEquals("sigv4", props.get("rest.auth.type"));
+    assertEquals(CatalogSigV4AuthManager.class.getName(), props.get("rest.auth.type"));
     assertEquals("glue", props.get("rest.signing-name"));
     assertEquals("us-east-2", props.get("rest.signing-region"));
   }
@@ -261,7 +261,7 @@ class IcebergConnectorFactoryTest {
   }
 
   @Test
-  void restCatalogPropsUseRefreshingProviderWhenPresent() {
+  void leaseScopedStorageProviderIsNotPromotedToCatalogProvider() {
     Map<String, String> baseProps =
         IcebergConnectorFactory.buildBaseIcebergProperties(
             Map.of(
@@ -298,6 +298,55 @@ class IcebergConnectorFactoryTest {
     assertFalse(props.containsKey("s3.access-key-id"));
     assertFalse(props.containsKey("s3.secret-access-key"));
     assertFalse(props.containsKey("s3.session-token"));
+    assertFalse(
+        props.containsKey(RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID));
+    Map<String, String> catalogAuthProps = CatalogSigV4AuthManager.catalogAuthProperties(props);
+    assertFalse(catalogAuthProps.containsKey("client.credentials-provider"));
+    assertFalse(
+        catalogAuthProps.containsKey(
+            "client.credentials-provider."
+                + RefreshingAwsCredentialsProviderRegistry.PROPERTY_PROVIDER_ID));
+  }
+
+  @Test
+  void explicitCatalogCredentialsWinOverLeaseScopedStorageProvider() {
+    Map<String, String> baseProps =
+        IcebergConnectorFactory.buildBaseIcebergProperties(
+            Map.of(
+                "iceberg.source",
+                "glue",
+                "s3.region",
+                "us-east-1",
+                "rest.access-key-id",
+                "connector-access",
+                "rest.secret-access-key",
+                "connector-secret",
+                "rest.session-token",
+                "connector-session",
+                RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID,
+                "lease-scoped-storage-provider"));
+
+    Map<String, String> catalogProps =
+        IcebergConnectorFactory.buildCatalogProperties(
+            "https://glue.us-east-1.amazonaws.com/iceberg/", baseProps);
+    Map<String, String> storageProps =
+        IcebergConnectorFactory.buildStorageProperties(baseProps, "aws-sigv4", Map.of());
+    IcebergConnectorFactory.applyStorageProperties(catalogProps, storageProps);
+    IcebergConnectorFactory.applyCatalogAuth(catalogProps, "aws-sigv4", Map.of());
+
+    assertEquals(CatalogSigV4AuthManager.class.getName(), catalogProps.get("rest.auth.type"));
+    Map<String, String> catalogAuthProps =
+        CatalogSigV4AuthManager.catalogAuthProperties(catalogProps);
+    assertEquals("connector-access", catalogAuthProps.get("rest.access-key-id"));
+    assertEquals("connector-secret", catalogAuthProps.get("rest.secret-access-key"));
+    assertEquals("connector-session", catalogAuthProps.get("rest.session-token"));
+    assertFalse(catalogAuthProps.containsKey("client.credentials-provider"));
+    assertFalse(
+        catalogAuthProps.containsKey(
+            RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID));
+    assertEquals(
+        "lease-scoped-storage-provider",
+        storageProps.get(RefreshingAwsCredentialsProviderRegistry.OPTION_PROVIDER_ID));
   }
 
   @Test

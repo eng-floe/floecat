@@ -150,7 +150,8 @@ class CaptureEngineRegistryTest {
             java.util.Optional.empty(),
             java.util.Optional.empty(),
             java.util.Optional.empty(),
-            java.util.Optional.empty());
+            java.util.Optional.empty(),
+            () -> false);
     CaptureEngineRequest columnSelectors =
         new CaptureEngineRequest(
             request(false, Set.of(FloecatConnector.StatsTargetKind.FILE)).sourceConnector(),
@@ -173,7 +174,8 @@ class CaptureEngineRegistryTest {
             java.util.Optional.empty(),
             java.util.Optional.empty(),
             java.util.Optional.empty(),
-            java.util.Optional.empty());
+            java.util.Optional.empty(),
+            () -> false);
 
     assertThat(capabilities.supports(missingPlannedFiles)).isFalse();
     assertThat(capabilities.supports(columnSelectors)).isFalse();
@@ -214,7 +216,8 @@ class CaptureEngineRegistryTest {
             java.util.Optional.empty(),
             java.util.Optional.empty(),
             java.util.Optional.empty(),
-            java.util.Optional.empty());
+            java.util.Optional.empty(),
+            () -> false);
 
     assertThat(request.statsColumns()).containsExactly("c1");
     assertThat(request.indexColumns()).containsExactly("idx");
@@ -252,7 +255,8 @@ class CaptureEngineRegistryTest {
         java.util.Optional.empty(),
         java.util.Optional.empty(),
         java.util.Optional.empty(),
-        java.util.Optional.empty());
+        java.util.Optional.empty(),
+        () -> false);
   }
 
   private record TestCaptureEngine(

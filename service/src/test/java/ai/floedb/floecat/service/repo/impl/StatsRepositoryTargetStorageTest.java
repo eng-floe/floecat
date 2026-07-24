@@ -1149,6 +1149,87 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void publishingReplacementGenerationRepairsCorruptSupersededStats() throws Exception {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 4250L;
+    long columnId = 7L;
+    var columnTarget = StatsTargetIdentity.columnTarget(columnId);
+
+    publishColumn(
+        repository,
+        snapshotId,
+        columnId,
+        ScalarStats.newBuilder()
+            .setLogicalType("BIGINT")
+            .setRowCount(1L)
+            .addSketches(quantileSketch("old"))
+            .build());
+
+    String activeManifestUri = repository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    String activeGenerationId = StringValue.parseFrom(blobStore.get(activeManifestUri)).getValue();
+    String activeTargetPointer =
+        Keys.snapshotTargetStatsGenerationPointer(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            activeGenerationId,
+            StatsTargetIdentity.storageId(columnTarget));
+    String corruptBlobUri = pointerStore.get(activeTargetPointer).orElseThrow().getBlobUri();
+    blobStore.put(
+        corruptBlobUri, new byte[] {0x5a, 0x03, 0x0a, 0x01, (byte) 0xff}, "application/x-protobuf");
+
+    String incrementalGenerationId = "incremental-enrichment";
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID, snapshotId, incrementalGenerationId, List.of(), List.of());
+    assertThatThrownBy(
+            () ->
+                repository.publishStatsGeneration(
+                    TABLE_ID,
+                    snapshotId,
+                    incrementalGenerationId,
+                    List.of(
+                        TargetStatsRecords.columnRecord(
+                            TABLE_ID,
+                            snapshotId,
+                            columnId,
+                            ScalarStats.newBuilder()
+                                .setLogicalType("BIGINT")
+                                .setRowCount(2L)
+                                .build(),
+                            null))))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class);
+
+    String replacementGenerationId = "full-rescan-replacement";
+    repository.replaceTargetStatsInGeneration(
+        TABLE_ID, snapshotId, replacementGenerationId, List.of(), List.of());
+    repository.publishStatsGeneration(
+        TABLE_ID,
+        snapshotId,
+        replacementGenerationId,
+        List.of(
+            TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                columnId,
+                ScalarStats.newBuilder()
+                    .setLogicalType("BIGINT")
+                    .setRowCount(2L)
+                    .addSketches(quantileSketch("replacement"))
+                    .build(),
+                null)),
+        false);
+
+    TargetStatsRecord live =
+        repository.getTargetStats(TABLE_ID, snapshotId, columnTarget).orElseThrow();
+    assertThat(live.getScalar().getRowCount()).isEqualTo(2L);
+    assertThat(live.getScalar().getSketchesList())
+        .extracting(sketch -> sketch.getData().toStringUtf8())
+        .containsExactly("replacement");
+  }
+
+  @Test
   void replaceAllPrefersIncomingPayloadOverSupersededForSameIdentity() {
     StatsRepository repository =
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -1912,8 +1993,8 @@ class StatsRepositoryTargetStorageTest {
     }
 
     @Override
-    public void deletePrefix(String prefix) {
-      delegate.deletePrefix(prefix);
+    public int deletePrefix(String prefix) {
+      return delegate.deletePrefix(prefix);
     }
 
     @Override

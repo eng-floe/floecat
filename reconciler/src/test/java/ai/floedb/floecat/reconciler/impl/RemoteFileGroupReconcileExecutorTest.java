@@ -100,6 +100,8 @@ class RemoteFileGroupReconcileExecutorTest {
             41L,
             "plan-1",
             "group-1",
+            "/result.pb",
+            "/stats.pb",
             List.of("s3://bucket/file.parquet"),
             ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.FILE_STATS)));
     RuntimeException failure =
@@ -108,7 +110,7 @@ class RemoteFileGroupReconcileExecutorTest {
             new IllegalArgumentException("Unsupported parquet page type DICTIONARY_PAGE"));
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(payload)).thenThrow(failure);
+    when(runner.execute(eq(payload), any())).thenThrow(failure);
 
     ReconcileExecutor.ExecutionResult result =
         executor.execute(
@@ -160,7 +162,7 @@ class RemoteFileGroupReconcileExecutorTest {
     AtomicBoolean shouldStop = new AtomicBoolean(false);
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(payload))
+    when(runner.execute(eq(payload), any()))
         .thenAnswer(
             ignored -> {
               shouldStop.set(true);
@@ -191,7 +193,7 @@ class RemoteFileGroupReconcileExecutorTest {
     AtomicBoolean shouldStop = new AtomicBoolean(false);
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(payload))
+    when(runner.execute(eq(payload), any()))
         .thenAnswer(
             ignored -> {
               shouldStop.set(true);
@@ -226,7 +228,7 @@ class RemoteFileGroupReconcileExecutorTest {
     StandaloneFileGroupExecutionPayload payload = payload();
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(payload)).thenReturn(CaptureEngineResult.empty());
+    when(runner.execute(eq(payload), any())).thenReturn(CaptureEngineResult.empty());
     when(workerClient.submitSuccess(eq(remoteLease), eq(payload), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
@@ -257,7 +259,7 @@ class RemoteFileGroupReconcileExecutorTest {
     StandaloneFileGroupExecutionPayload payload = payload();
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(payload)).thenReturn(CaptureEngineResult.empty());
+    when(runner.execute(eq(payload), any())).thenReturn(CaptureEngineResult.empty());
     when(workerClient.submitSuccess(eq(remoteLease), eq(payload), any()))
         .thenThrow(new RuntimeException("response lost after success submit"));
 
@@ -287,7 +289,7 @@ class RemoteFileGroupReconcileExecutorTest {
     ReconcilerBackend.StagedIndexArtifact artifact = stagedArtifact();
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(payload))
+    when(runner.execute(eq(payload), any()))
         .thenReturn(CaptureEngineResult.of(List.of(), List.of(), List.of(artifact)));
     when(workerClient.submitSuccess(eq(remoteLease), eq(payload), any())).thenReturn(true);
 
@@ -332,7 +334,7 @@ class RemoteFileGroupReconcileExecutorTest {
             null);
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(payload))
+    when(runner.execute(eq(payload), any()))
         .thenReturn(CaptureEngineResult.of(List.of(fileStat), List.of(), List.of()));
     when(workerClient.submitSuccess(eq(remoteLease), eq(payload), any())).thenReturn(true);
 
@@ -389,6 +391,8 @@ class RemoteFileGroupReconcileExecutorTest {
         41L,
         "plan-1",
         "group-1",
+        "/result.pb",
+        "/stats.pb",
         List.of("s3://bucket/file.parquet"),
         ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.FILE_STATS)));
   }
@@ -410,6 +414,8 @@ class RemoteFileGroupReconcileExecutorTest {
         41L,
         "plan-1",
         "group-1",
+        "/result.pb",
+        "/stats.pb",
         List.of("s3://bucket/file.parquet"),
         ReconcileCapturePolicy.of(
             List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));

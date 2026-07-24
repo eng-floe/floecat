@@ -168,11 +168,8 @@ class QueryPinningConsistencyIT {
             SchemaParser.toJson(SCHEMA_V1),
             "");
     var snap1 =
-        TestSupport.createSnapshot(
-            snapshot, tbl.getResourceId(), 1L, System.currentTimeMillis() - 10_000L);
-    // Visibility gate: a snapshot becomes CURRENT when its generation publishes; the stats push
-    // is the fixture's finalize.
-    seedColumnStats(tbl.getResourceId(), snap1.getSnapshotId(), 1L, 10L);
+        TestSupport.createFinalizedSnapshot(
+            snapshot, statsWriter, tbl.getResourceId(), 1L, System.currentTimeMillis() - 10_000L);
     NameRef name =
         NameRef.newBuilder()
             .setCatalog(cat.getDisplayName())
@@ -192,11 +189,9 @@ class QueryPinningConsistencyIT {
             .setUpdateMask(FieldMask.newBuilder().addPaths("schema_json").build())
             .build());
     long snap2 =
-        TestSupport.createSnapshot(snapshot, f.tableId(), 2L, System.currentTimeMillis())
+        TestSupport.createFinalizedSnapshot(
+                snapshot, statsWriter, f.tableId(), 2L, System.currentTimeMillis())
             .getSnapshotId();
-    // Finalize it: under the visibility gate a registered-but-unfinalized snapshot never becomes
-    // CURRENT, so the "drift" the pinned query must ignore only exists once this publishes.
-    seedColumnStats(f.tableId(), snap2, 1L, 20L);
     return snap2;
   }
 

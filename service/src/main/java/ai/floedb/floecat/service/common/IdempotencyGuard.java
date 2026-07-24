@@ -319,7 +319,8 @@ public final class IdempotencyGuard {
   }
 
   private static boolean shouldLogTiming(String opName) {
-    return "SubmitLeasedFileGroupExecutionResult".equals(opName);
+    return "SubmitLeasedFileGroupExecutionResult".equals(opName)
+        || "SubmitLeasedSnapshotFinalizeResult".equals(opName);
   }
 
   private static void logTiming(

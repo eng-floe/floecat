@@ -125,4 +125,50 @@ class TableMetadataBuilderTest {
     assertFalse(metadata.properties().containsKey("metadata-location"));
     assertEquals("s3://warehouse/orders", metadata.properties().get("location"));
   }
+
+  @Test
+  void fromCatalogIncludesCurrentTableSchemaWhenCurrentSnapshotUsesOlderSchema() {
+    Snapshot snapshot =
+        Snapshot.newBuilder()
+            .setSnapshotId(100L)
+            .setSequenceNumber(1L)
+            .setSchemaId(0)
+            .setSchemaJson(
+                """
+                {"type":"struct","schema-id":0,"fields":[
+                  {"id":1,"name":"id","required":false,"type":"int"},
+                  {"id":2,"name":"v","required":false,"type":"string"}
+                ]}
+                """)
+            .build();
+    Table table =
+        Table.newBuilder()
+            .setDisplayName("orders")
+            .setSchemaJson(
+                """
+                {"type":"struct","schema-id":1,"fields":[
+                  {"id":1,"name":"id","required":false,"type":"int"},
+                  {"id":2,"name":"v","required":false,"type":"string"},
+                  {"id":3,"name":"note","required":false,"type":"string"}
+                ]}
+                """)
+            .build();
+    Map<String, String> props = new LinkedHashMap<>();
+    props.put("current-schema-id", "1");
+    props.put("last-column-id", "3");
+
+    TableMetadataView metadata =
+        TableMetadataBuilder.fromCatalog(
+            "orders",
+            table,
+            props,
+            List.of(snapshot),
+            "s3://warehouse/orders/metadata/00002.metadata.json",
+            100L);
+
+    assertEquals(1, metadata.currentSchemaId());
+    assertEquals(2, metadata.schemas().size());
+    assertEquals(List.of(0, 1), metadata.schemas().stream().map(s -> s.get("schema-id")).toList());
+    assertEquals(0, metadata.snapshots().get(0).get("schema-id"));
+  }
 }

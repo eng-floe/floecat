@@ -37,8 +37,6 @@ import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
-import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
-import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -987,59 +985,6 @@ class ReconcileControlImplTest {
     assertEquals("table-1", response.getJobs(1).getJobId());
     verify(service.jobs).jobTree("acct", "plan-1");
     verify(service.jobs, never()).list("acct", 100, "", "", java.util.Set.of());
-  }
-
-  @Test
-  void getReconcileJobReturnsIndexArtifactOnExecFileGroupResult() {
-    var execJob =
-        new ReconcileJobStore.ReconcileJob(
-            "group-job-1",
-            "acct",
-            "connector-1",
-            "JS_SUCCEEDED",
-            "",
-            0L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L,
-            0L,
-            false,
-            ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
-            0L,
-            0L,
-            null,
-            null,
-            "executor-1",
-            ReconcileJobKind.EXEC_FILE_GROUP,
-            null,
-            null,
-            ReconcileSnapshotTask.empty(),
-            ReconcileFileGroupTask.of(
-                "snapshot-2",
-                "group-1",
-                "table-1",
-                100L,
-                java.util.List.of(),
-                java.util.List.of(
-                    ReconcileFileResult.succeeded(
-                        "a.parquet",
-                        2L,
-                        ReconcileIndexArtifactResult.of(
-                            "s3://bucket/index/a.parquet.index", "parquet", 1)))),
-            "snapshot-2");
-    when(service.jobs.get("acct", "group-job-1")).thenReturn(Optional.of(execJob));
-
-    var response =
-        service
-            .getReconcileJob(GetReconcileJobRequest.newBuilder().setJobId("group-job-1").build())
-            .await()
-            .indefinitely();
-
-    assertEquals(
-        "s3://bucket/index/a.parquet.index",
-        response.getFileGroupTask().getFileResults(0).getIndexArtifact().getArtifactUri());
   }
 
   @Test

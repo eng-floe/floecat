@@ -46,7 +46,6 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   @Inject ReconcileJobStore jobs;
   @Inject SnapshotPlanBlobStore snapshotPlanBlobStore;
   @Inject SnapshotFinalizePersistenceService persistence;
-  @Inject SnapshotFinalizeChildStateService childStateService;
   @Inject SnapshotFinalizeCoverageService coverageService;
   @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
 
@@ -87,7 +86,17 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
 
   @Override
   public boolean supports(ReconcileJobStore.LeasedJob lease) {
-    return lease != null && lease.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE;
+    if (lease == null || lease.jobKind != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
+      return false;
+    }
+    ReconcileSnapshotTask snapshotTask =
+        lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
+    boolean locallyFinalizable =
+        snapshotTask.completionMode() == ReconcileSnapshotTask.CompletionMode.DIRECT_STATS
+            || (snapshotTask.fileGroupPlanRecorded()
+                && snapshotTask.fileGroupCount() == 0
+                && snapshotTask.fileGroups().isEmpty());
+    return locallyFinalizable;
   }
 
   @Override
@@ -230,162 +239,16 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
               + snapshotTask.snapshotId()
               + " (no planned file groups)");
     }
-    if (coverage.expectedFiles().isEmpty()) {
-      LOG.warnf(
-          "Snapshot finalizer proceeding with zero expected files accountId=%s parentJobId=%s"
-              + " tableId=%s snapshotId=%d",
-          lease.accountId, parentJobId, snapshotTask.tableId(), snapshotTask.snapshotId());
-    }
-    if (context.shouldStop().getAsBoolean()) {
-      return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
-    }
-    SnapshotFinalizeChildStateService.ChildState childState =
-        childStateService.childState(
-            lease.accountId, parentJobId, lease.jobId, coverage.expectedGroups());
-    if (!childState.duplicateGroups().isEmpty()) {
-      return ExecutionResult.terminalFailure(
-          0,
-          0,
-          0,
-          0,
-          childState.duplicateGroups().size(),
-          0,
-          0,
-          "Snapshot finalization found duplicate EXEC_FILE_GROUP children for planned groups "
-              + childState.duplicateGroups(),
-          new IllegalStateException("snapshot file-group child jobs duplicated"));
-    }
-    if (!childState.invalidSucceededGroups().isEmpty()) {
-      return ExecutionResult.terminalFailure(
-          0,
-          0,
-          0,
-          0,
-          childState.invalidSucceededGroups().size(),
-          0,
-          0,
-          "Snapshot finalization found succeeded file-group jobs without persisted success"
-              + " results "
-              + childState.invalidSucceededGroups(),
-          new IllegalStateException("snapshot file-group results incomplete"));
-    }
-    if (!childState.failedGroups().isEmpty()) {
-      return ExecutionResult.terminalFailure(
-          0,
-          0,
-          0,
-          0,
-          childState.failedGroups().size(),
-          0,
-          0,
-          "Snapshot finalization blocked by failed file-group jobs " + childState.failedGroups(),
-          new IllegalStateException("snapshot file-group execution failed"));
-    }
-    if (!childState.cancelledGroups().isEmpty()) {
-      return ExecutionResult.obsolete(
-          0,
-          0,
-          0,
-          0,
-          childState.cancelledGroups().size(),
-          0,
-          0,
-          ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
-          "Snapshot finalization blocked by cancelled file-group jobs "
-              + childState.cancelledGroups(),
-          new IllegalStateException("snapshot file-group execution cancelled"));
-    }
-    if (!childState.pendingGroups().isEmpty()) {
-      return ExecutionResult.terminalFailure(
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          "Snapshot finalization was scheduled before file-group completion "
-              + "completed="
-              + childState.completedGroups()
-              + "/"
-              + childState.expectedGroups()
-              + " pending="
-              + childState.pendingGroups(),
-          new IllegalStateException(
-              "snapshot finalization scheduled before file-group completion"));
-    }
-    if (!childState.missingGroups().isEmpty()) {
-      return ExecutionResult.terminalFailure(
-          0,
-          0,
-          0,
-          0,
-          childState.missingGroups().size(),
-          0,
-          0,
-          "Snapshot finalization missing EXEC_FILE_GROUP children for planned groups "
-              + childState.missingGroups(),
-          new IllegalStateException("snapshot file-group child jobs missing"));
-    }
-    if (!requestsStatsOutputs) {
-      RuntimeException pointerFailure = advanceCurrentSnapshot(tableId, snapshotTask, lease);
-      if (pointerFailure != null) {
-        return currentSnapshotAdvanceFailure(snapshotTask, pointerFailure);
-      }
-      return ExecutionResult.success(
-          0,
-          0,
-          0,
-          0,
-          0,
-          1,
-          0,
-          "Skipped snapshot finalization " + snapshotTask.snapshotId() + " (no stats outputs)");
-    }
-    List<TargetStatsRecord> aggregateStats =
-        aggregateKinds.isEmpty()
-            ? List.of()
-            : persistence.mergeCompletedGroupPartials(
-                tableId,
-                snapshotTask.snapshotId(),
-                aggregateKinds,
-                childState.completedGroupTasks());
-    if (aggregateKinds.isEmpty() && !lease.fullRescan) {
-      RuntimeException pointerFailure = advanceCurrentSnapshot(tableId, snapshotTask, lease);
-      if (pointerFailure != null) {
-        return currentSnapshotAdvanceFailure(snapshotTask, pointerFailure);
-      }
-      return ExecutionResult.success(
-          0,
-          0,
-          0,
-          0,
-          0,
-          1,
-          0,
-          "Skipped snapshot finalization " + snapshotTask.snapshotId() + " (no aggregate outputs)");
-    }
-    long statsProcessed =
-        lease.fullRescan
-            ? persistence.publishFileGroupStatsGeneration(
-                tableId,
-                snapshotTask.snapshotId(),
-                LeasedFileGroupExecutionService.statsGenerationId(lease),
-                aggregateStats)
-            : persistence.persistStats(aggregateStats);
-    RuntimeException pointerFailure = advanceCurrentSnapshot(tableId, snapshotTask, lease);
-    if (pointerFailure != null) {
-      return currentSnapshotAdvanceFailure(snapshotTask, pointerFailure);
-    }
-    return ExecutionResult.success(
-        0,
+    return ExecutionResult.terminalFailure(
         0,
         0,
         0,
         0,
         1,
-        statsProcessed,
-        "Finalized snapshot capture " + snapshotTask.snapshotId());
+        0,
+        0,
+        "Non-empty file-group snapshots require a remote descriptor-driven finalizer",
+        new IllegalStateException("local file-group finalization has been removed"));
   }
 
   private RuntimeException advanceCurrentSnapshot(
@@ -457,9 +320,13 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
           || child.jobKind != ReconcileJobKind.EXEC_FILE_GROUP) {
         continue;
       }
-      String description = describeGroup(child.fileGroupTask);
-      childDescriptions.add(
-          description.equals("unknown-group") ? "unknown-group:" + child.jobId : description);
+      ReconcileFileGroupTask group =
+          child.fileGroupTask == null ? ReconcileFileGroupTask.empty() : child.fileGroupTask;
+      String description =
+          group.planId().isBlank() || group.groupId().isBlank()
+              ? "unknown-group:" + child.jobId
+              : group.planId() + "/" + group.groupId();
+      childDescriptions.add(description);
     }
     return List.copyOf(childDescriptions);
   }
@@ -539,9 +406,5 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       }
     }
     return false;
-  }
-
-  private static String describeGroup(ReconcileFileGroupTask fileGroupTask) {
-    return SnapshotFinalizeChildStateService.describeGroup(fileGroupTask);
   }
 }

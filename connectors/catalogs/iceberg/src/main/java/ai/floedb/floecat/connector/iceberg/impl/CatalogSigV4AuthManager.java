@@ -138,12 +138,13 @@ public final class CatalogSigV4AuthManager implements AuthManager {
 
   static Map<String, String> catalogAuthProperties(Map<String, String> properties) {
     Map<String, String> authProperties = new HashMap<>(properties);
+    authProperties.remove(CLIENT_CREDENTIALS_PROVIDER);
+    authProperties.keySet().removeIf(key -> key.startsWith(CLIENT_CREDENTIALS_PROVIDER_PREFIX));
     String providerId =
         authProperties.get(RefreshingAwsCredentialsProviderRegistry.CATALOG_OPTION_PROVIDER_ID);
     if (providerId == null || providerId.isBlank()) {
       return Map.copyOf(authProperties);
     }
-    authProperties.keySet().removeIf(key -> key.startsWith(CLIENT_CREDENTIALS_PROVIDER_PREFIX));
     authProperties.put(
         CLIENT_CREDENTIALS_PROVIDER, RegistryBackedAwsCredentialsProvider.class.getName());
     authProperties.put(

@@ -24,8 +24,8 @@ The current job model is split by responsibility:
   persists per-file execution results, and does not commit snapshot-wide aggregate outputs.
 - **`FINALIZE_SNAPSHOT_CAPTURE`**: child finalization job. Validates the persisted snapshot
   coverage, waits for all planned `EXEC_FILE_GROUP` children to finish with persisted success
-  results, verifies that the stats store contains exactly the expected file-target records for the
-  snapshot, and then writes snapshot-wide aggregate outputs such as table/column stats.
+  results, and publishes the immutable capture manifest containing file-target and snapshot-wide
+  aggregate outputs. Explicit-empty snapshots publish a zero-group manifest.
 
 ## Architecture & Responsibilities
 - **`ReconcileJobStore`**: interface abstracting job persistence and leasing. In service runtime,
@@ -57,7 +57,10 @@ The current job model is split by responsibility:
   - `RemoteDefaultReconcileExecutor` handles `PLAN_TABLE` and `PLAN_VIEW`.
   - `RemoteSnapshotPlanningReconcileExecutor` handles `PLAN_SNAPSHOT`.
   - `RemoteFileGroupReconcileExecutor` handles `EXEC_FILE_GROUP`.
-  - `SnapshotFinalizeReconcileExecutor` handles `FINALIZE_SNAPSHOT_CAPTURE`.
+  - `RemoteSnapshotFinalizeReconcileExecutor` handles file-group
+    `FINALIZE_SNAPSHOT_CAPTURE` jobs, including explicit-empty coverage.
+  - `SnapshotFinalizeReconcileExecutor` handles direct-stats finalization and remains the local
+    fallback for explicit-empty coverage.
 - **`GrpcClients`**: provides blocking stubs for all service RPCs (Catalog, Namespace, Table,
   Snapshot, Statistics, Directory, Connectors, ReconcileExecutorControl).
 - **`FloecatConnector`**: remains the only component allowed to touch upstream catalogs, table
@@ -143,8 +146,8 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
     lane lease, snapshot lease)
   - payload blobs are canonical task artifacts referenced from canonical rows (snapshot plans,
     file-group results, direct stats, per-file-group stats)
-  - projection/root-summary state owns eventual-consistent observability views only (parent
-    rollups, root-job list summaries, tree/list aggregate counters)
+  - projection/root-summary state mirrors canonical parent rollups for eventual-consistent
+    observability (root-job list summaries and tree/list aggregate counters)
 - **Job leasing**: workers lease from persisted ready pointers, mark jobs
   running/succeeded/failed through transactional state transitions, and reclaim expired leases on a
   configured interval. Failed jobs are retried with backoff up to configured attempt limits before
@@ -160,16 +163,16 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
   job-state transitions update them together. Lease maintenance reclaims expired leases and
   projection maintenance repairs dirty parent/root summaries, but neither path is part of queue
   correctness.
-- **Canonical vs projection-owned state**:
-  - canonical parent records carry scheduling and ownership state only (`state`, `message`,
-    timestamps, executor ownership, waiting/finalization metadata, retry scheduling)
-  - rolled-up aggregate counters (`tables*`, `views*`, `snapshotsProcessed`, `statsProcessed`,
-    file-group/file counters, index counters) are projection-owned and root-summary-owned rather
-    than canonical-parent-owned
-  - transactional child completion updates canonical ancestor scheduling state immediately, while
-    aggregate rollups are refreshed through projections
-  - list/get/tree read paths may recompute fresh projections for the returned response, but they do
-    not persist projection or root-summary repair
+- **Canonical parent projection maintenance**:
+  - canonical child records are the sole rollup input; stored child projections are never scanned
+    or used to decide parent state
+  - child changes coalesce through a versioned dirty-parent marker
+  - one maintenance operation reads the direct children once, computes the exact rollup, then
+    atomically commits the canonical parent, its projection, dirty-marker consumption, and the
+    immediate ancestor marker
+  - canonical parent records therefore carry both scheduling state and exact aggregate counters;
+    projections mirror that committed state for list/tree reads
+  - list/get/tree read paths never recursively scan descendants or repair projections
 - **Backend shape**:
   - in `floecat.kv=dynamodb`, the durable store hot paths use native Dynamo-style partition/sort-key
     layouts for job indexes, ready slices, and lease rows/expiry scans
@@ -239,6 +242,10 @@ perform a post-completion final lease confirmation after that RPC has durably co
 
 ## Configuration & Extensibility
 - Scheduling cadence via `reconciler.pollEvery` (defaults to `1s`).
+- Empty-queue polling uses one probe sweep per worker JVM and exponentially backs off with jitter
+  between `reconciler.empty-poll-backoff-initial-ms` (default `500`) and
+  `reconciler.empty-poll-backoff-max-ms` (default `5000`). Leasing work resets the backoff and
+  immediately fills available worker capacity.
 - Worker mode via `floecat.reconciler.worker.mode`:
   - `local` runs the lease poller in the same JVM as the control plane.
   - `remote` keeps the same gRPC lease protocol but is intended for executor-only nodes. Set
@@ -255,9 +262,12 @@ perform a post-completion final lease confirmation after that RPC has durably co
   - `floecat.reconciler.executor.remote-planner.enabled`
   - `floecat.reconciler.executor.remote-snapshot-planner.enabled`
   - `floecat.reconciler.executor.remote-file-group.enabled`
+  - `floecat.reconciler.executor.remote-snapshot-finalize.enabled`
   - `floecat.reconciler.executor.snapshot-finalize.enabled`
-  - `FINALIZE_SNAPSHOT_CAPTURE` is handled by the service-local `SnapshotFinalizeReconcileExecutor`
-    and can be disabled independently, but it is not a separate remote worker toggle.
+  - File-group snapshots, including explicit-empty snapshots, use the descriptor-driven
+    `RemoteSnapshotFinalizeReconcileExecutor`; direct-stats snapshots use the service-local
+    `SnapshotFinalizeReconcileExecutor`. The local executor retains explicit-empty support as a
+    fallback.
 - Swap out `ReconcileJobStore` for additional backends by providing a CDI alternative (job ID
   references must remain stable for `GetReconcileJob`).
 - Extend `FloecatConnector` to add richer snapshot planning or file execution behavior. Query scan

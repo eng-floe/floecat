@@ -165,6 +165,9 @@ final class RepoTestPointerStores {
       if (op instanceof CasUpsert u) {
         return u.key();
       }
+      if (op instanceof UnconditionalUpsert u) {
+        return u.key();
+      }
       if (op instanceof CasDelete d) {
         return d.key();
       }

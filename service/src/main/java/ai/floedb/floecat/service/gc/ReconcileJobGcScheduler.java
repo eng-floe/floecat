@@ -62,10 +62,6 @@ public class ReconcileJobGcScheduler {
 
   private final Map<String, String> jobTokenByAccount = new ConcurrentHashMap<>();
   private final Map<String, String> canonicalQuarantineTokenByAccount = new ConcurrentHashMap<>();
-  private final Map<String, String> dedupeTokenByAccount = new ConcurrentHashMap<>();
-  private final Map<String, String> rootSummaryTokenByAccount = new ConcurrentHashMap<>();
-  private final Map<String, String> connectorRootSummaryTokenByAccount = new ConcurrentHashMap<>();
-  private volatile String readyToken = "";
   private volatile String accountToken = "";
   private volatile List<Account> accountPage = List.of();
   private volatile int accountPageIndex = 0;
@@ -107,13 +103,7 @@ public class ReconcileJobGcScheduler {
         Tag.of(TagKey.OPERATION, "gc_reconcile_jobs"));
     observability.gauge(
         ServiceMetrics.Gc.RECONCILE_JOB_ACTIVE_ACCOUNT_TOKENS,
-        () ->
-            (double)
-                (jobTokenByAccount.size()
-                    + canonicalQuarantineTokenByAccount.size()
-                    + dedupeTokenByAccount.size()
-                    + rootSummaryTokenByAccount.size()
-                    + connectorRootSummaryTokenByAccount.size()),
+        () -> (double) (jobTokenByAccount.size() + canonicalQuarantineTokenByAccount.size()),
         "Accounts with active reconcile job GC continuation tokens",
         Tag.of(TagKey.COMPONENT, "service"),
         Tag.of(TagKey.OPERATION, "gc_reconcile_jobs"));
@@ -169,10 +159,10 @@ public class ReconcileJobGcScheduler {
 
     final long maxTickMillis =
         cfg.getOptionalValue("floecat.gc.reconcile-jobs.max-tick-millis", Long.class)
-            .orElse(30_000L);
+            .orElse(2_000L);
     final int accountsPageSize =
         cfg.getOptionalValue("floecat.gc.reconcile-jobs.accounts-page-size", Integer.class)
-            .orElse(200);
+            .orElse(50);
     final long deadline = now + maxTickMillis;
 
     long tickStart = System.nanoTime();
@@ -181,26 +171,9 @@ public class ReconcileJobGcScheduler {
     int totalExpired = 0;
     int totalPtrDeleted = 0;
     int totalBlobDeleted = 0;
-    int totalDedupeDeleted = 0;
     int totalReadyDeleted = 0;
     int totalQuarantined = 0;
-    int readyScanned = 0;
-    int readyDeleted = 0;
-    int readyQuarantined = 0;
     try {
-      long readyStart = System.nanoTime();
-      var readyResult = gc.runReadySlice(readyToken);
-      readyScanned = readyResult.scanned();
-      readyDeleted = readyResult.deleted();
-      readyQuarantined = readyResult.quarantined();
-      gcMetrics.recordCollection(readyResult.scanned(), Tag.of(TagKey.RESULT, "ready-scanned"));
-      gcMetrics.recordCollection(readyResult.deleted(), Tag.of(TagKey.RESULT, "ready-deleted"));
-      gcMetrics.recordCollection(
-          readyResult.quarantined(), Tag.of(TagKey.RESULT, "ready-quarantined"));
-      gcMetrics.recordPause(
-          Duration.ofNanos(System.nanoTime() - readyStart), Tag.of(TagKey.RESULT, "ready-slice"));
-      readyToken = readyResult.nextToken() == null ? "" : readyResult.nextToken();
-
       while (System.currentTimeMillis() < deadline && !stopping) {
         if (accountPageIndex >= accountPage.size()) {
           StringBuilder next = new StringBuilder();
@@ -221,47 +194,40 @@ public class ReconcileJobGcScheduler {
         String jobToken = jobTokenByAccount.getOrDefault(accountId, "");
         String canonicalQuarantineToken =
             canonicalQuarantineTokenByAccount.getOrDefault(accountId, "");
-        String dedupeToken = dedupeTokenByAccount.getOrDefault(accountId, "");
-        String rootSummaryToken = rootSummaryTokenByAccount.getOrDefault(accountId, "");
-        String connectorRootSummaryToken =
-            connectorRootSummaryTokenByAccount.getOrDefault(accountId, "");
 
         long sliceStart = System.nanoTime();
         try {
-          var result =
-              gc.runAccountSlice(
-                  accountId,
-                  jobToken,
-                  canonicalQuarantineToken,
-                  dedupeToken,
-                  rootSummaryToken,
-                  connectorRootSummaryToken);
-          accountsProcessed++;
-          totalAccountScanned += result.scanned();
-          totalExpired += result.expired();
-          totalPtrDeleted += result.ptrDeleted();
-          totalBlobDeleted += result.blobDeleted();
-          totalDedupeDeleted += result.dedupeDeleted();
-          totalReadyDeleted += result.readyDeleted();
-          totalQuarantined +=
-              result.canonicalQuarantined()
-                  + result.dedupeQuarantined()
-                  + result.rootSummaryQuarantined();
-          gcMetrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "account-scanned"));
-          gcMetrics.recordCollection(result.expired(), Tag.of(TagKey.RESULT, "expired"));
-          gcMetrics.recordCollection(result.ptrDeleted(), Tag.of(TagKey.RESULT, "ptr-deleted"));
-          gcMetrics.recordCollection(result.blobDeleted(), Tag.of(TagKey.RESULT, "blob-deleted"));
-          gcMetrics.recordCollection(
-              result.dedupeDeleted(), Tag.of(TagKey.RESULT, "dedupe-deleted"));
-          gcMetrics.recordCollection(result.readyDeleted(), Tag.of(TagKey.RESULT, "ready-deleted"));
-          gcMetrics.recordCollection(
-              result.canonicalQuarantined(), Tag.of(TagKey.RESULT, "canonical-quarantined"));
-          gcMetrics.recordCollection(
-              result.dedupeQuarantined(), Tag.of(TagKey.RESULT, "dedupe-quarantined"));
-          gcMetrics.recordCollection(
-              result.rootSummaryQuarantined(), Tag.of(TagKey.RESULT, "root-summary-quarantined"));
+          if (System.currentTimeMillis() < deadline) {
+            var result =
+                gc.runAccountSlice(accountId, jobToken, canonicalQuarantineToken, deadline);
+            accountsProcessed++;
+            totalAccountScanned += result.scanned();
+            totalExpired += result.expired();
+            totalPtrDeleted += result.ptrDeleted();
+            totalBlobDeleted += result.blobDeleted();
+            totalReadyDeleted += result.readyDeleted();
+            totalQuarantined += result.canonicalQuarantined();
+            gcMetrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "account-scanned"));
+            gcMetrics.recordCollection(
+                result.retentionScanned(), Tag.of(TagKey.RESULT, "retention-scanned"));
+            gcMetrics.recordCollection(
+                result.quarantineScanned(), Tag.of(TagKey.RESULT, "quarantine-scanned"));
+            gcMetrics.recordPause(
+                Duration.ofNanos(result.retentionNanos()),
+                Tag.of(TagKey.RESULT, "retention-queue"));
+            gcMetrics.recordPause(
+                Duration.ofNanos(result.quarantineNanos()),
+                Tag.of(TagKey.RESULT, "quarantine-queue"));
+            gcMetrics.recordCollection(result.expired(), Tag.of(TagKey.RESULT, "expired"));
+            gcMetrics.recordCollection(result.ptrDeleted(), Tag.of(TagKey.RESULT, "ptr-deleted"));
+            gcMetrics.recordCollection(result.blobDeleted(), Tag.of(TagKey.RESULT, "blob-deleted"));
+            gcMetrics.recordCollection(
+                result.readyDeleted(), Tag.of(TagKey.RESULT, "ready-deleted"));
+            gcMetrics.recordCollection(
+                result.canonicalQuarantined(), Tag.of(TagKey.RESULT, "canonical-quarantined"));
 
-          updateAccountTokens(accountId, result);
+            updateAccountTokens(accountId, result);
+          }
         } catch (Throwable t) {
           gcMetrics.recordError(1, Tag.of(TagKey.RESULT, "account-failed"));
           LOG.warnf(t, "reconcile job gc account slice failed accountId=%s", accountId);
@@ -279,13 +245,8 @@ public class ReconcileJobGcScheduler {
       gcMetrics.recordError(1, Tag.of(TagKey.RESULT, "tick-failed"));
       LOG.warnf(t, "reconcile job gc tick failed");
     } finally {
-      int totalDeleted =
-          totalPtrDeleted
-              + totalBlobDeleted
-              + totalDedupeDeleted
-              + totalReadyDeleted
-              + readyDeleted;
-      int allQuarantined = totalQuarantined + readyQuarantined;
+      int totalDeleted = totalPtrDeleted + totalBlobDeleted + totalReadyDeleted;
+      int allQuarantined = totalQuarantined;
       accountsProcessedLastTick.set(accountsProcessed);
       quarantinedLastTick.set(allQuarantined);
       deletedLastTick.set(totalDeleted);
@@ -294,30 +255,20 @@ public class ReconcileJobGcScheduler {
       lastTickEndMs.set(System.currentTimeMillis());
       running.set(0);
       LOG.infof(
-          "reconcile job gc tick summary accounts=%d readyScanned=%d readyDeleted=%d"
-              + " readyQuarantined=%d accountScanned=%d expired=%d ptrDeleted=%d blobDeleted=%d"
-              + " dedupeDeleted=%d readyPointerDeleted=%d quarantined=%d accountPageIndex=%d"
-              + " accountPageSize=%d accountTokenPresent=%s activeAccountTokens=%d"
-              + " durationMs=%d",
+          "reconcile job gc tick summary accounts=%d accountScanned=%d expired=%d"
+              + " ptrDeleted=%d blobDeleted=%d readyPointerDeleted=%d quarantined=%d accountPageIndex=%d"
+              + " accountPageSize=%d accountTokenPresent=%s activeAccountTokens=%d durationMs=%d",
           accountsProcessed,
-          readyScanned,
-          readyDeleted,
-          readyQuarantined,
           totalAccountScanned,
           totalExpired,
           totalPtrDeleted,
           totalBlobDeleted,
-          totalDedupeDeleted,
           totalReadyDeleted,
           allQuarantined,
           accountPageIndex,
           accountPage.size(),
           accountToken != null && !accountToken.isBlank(),
-          jobTokenByAccount.size()
-              + canonicalQuarantineTokenByAccount.size()
-              + dedupeTokenByAccount.size()
-              + rootSummaryTokenByAccount.size()
-              + connectorRootSummaryTokenByAccount.size(),
+          jobTokenByAccount.size() + canonicalQuarantineTokenByAccount.size(),
           Duration.ofNanos(System.nanoTime() - tickStart).toMillis());
     }
   }
@@ -333,22 +284,6 @@ public class ReconcileJobGcScheduler {
       canonicalQuarantineTokenByAccount.remove(accountId);
     } else {
       canonicalQuarantineTokenByAccount.put(accountId, result.nextCanonicalQuarantineToken());
-    }
-    if (result.nextDedupeToken() == null || result.nextDedupeToken().isBlank()) {
-      dedupeTokenByAccount.remove(accountId);
-    } else {
-      dedupeTokenByAccount.put(accountId, result.nextDedupeToken());
-    }
-    if (result.nextRootSummaryToken() == null || result.nextRootSummaryToken().isBlank()) {
-      rootSummaryTokenByAccount.remove(accountId);
-    } else {
-      rootSummaryTokenByAccount.put(accountId, result.nextRootSummaryToken());
-    }
-    if (result.nextConnectorRootSummaryToken() == null
-        || result.nextConnectorRootSummaryToken().isBlank()) {
-      connectorRootSummaryTokenByAccount.remove(accountId);
-    } else {
-      connectorRootSummaryTokenByAccount.put(accountId, result.nextConnectorRootSummaryToken());
     }
   }
 

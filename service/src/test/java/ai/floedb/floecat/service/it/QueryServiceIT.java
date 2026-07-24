@@ -65,6 +65,9 @@ class QueryServiceIT {
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
 
   @GrpcClient("floecat")
+  MutinyTableStatisticsServiceGrpc.MutinyTableStatisticsServiceStub stats;
+
+  @GrpcClient("floecat")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   @GrpcClient("floecat")
@@ -99,8 +102,8 @@ class QueryServiceIT {
             "none");
 
     var snap =
-        TestSupport.createSnapshot(
-            snapshot, tbl.getResourceId(), 0L, System.currentTimeMillis() - 10_000L);
+        TestSupport.createFinalizedSnapshot(
+            snapshot, stats, tbl.getResourceId(), 0L, System.currentTimeMillis() - 10_000L);
 
     var name =
         NameRef.newBuilder()
@@ -176,8 +179,8 @@ class QueryServiceIT {
             "none");
 
     var snap =
-        TestSupport.createSnapshot(
-            snapshot, tbl.getResourceId(), 0L, System.currentTimeMillis() - 10_000L);
+        TestSupport.createFinalizedSnapshot(
+            snapshot, stats, tbl.getResourceId(), 0L, System.currentTimeMillis() - 10_000L);
 
     String queryId = "it-inputs-" + UUID.randomUUID();
 

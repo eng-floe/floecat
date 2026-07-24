@@ -34,6 +34,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.EnumSet;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
 
 /** Default OSS Java capture engine backed by the current connector SPI. */
 @ApplicationScoped
@@ -82,6 +83,8 @@ public class JavaConnectorCaptureEngine implements CaptureEngine {
     try (var resolved = resolveCredentials(request.sourceConnector(), request);
         var source = connectorOpener.open(resolved.config())) {
       return Optional.of(adapter.capture(source, request));
+    } catch (CancellationException e) {
+      throw e;
     } catch (RuntimeException e) {
       if (isMissingObjectFailure(e)) {
         throw new ReconcileFailureException(

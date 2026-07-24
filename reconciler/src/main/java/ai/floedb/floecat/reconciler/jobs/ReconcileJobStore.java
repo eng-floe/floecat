@@ -346,6 +346,8 @@ public interface ReconcileJobStore {
     return get(jobId);
   }
 
+  Optional<ReconcileJob> getCompactLeaseView(String jobId);
+
   ReconcileJobPage list(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states);
 
@@ -393,6 +395,12 @@ public interface ReconcileJobStore {
     } while (nextToken != null && !nextToken.isBlank());
     return new ReconcileJobPage(out, "");
   }
+
+  FileGroupResultDescriptorPage childFileGroupResultDescriptorsPage(
+      String accountId, String parentJobId, int pageSize, String pageToken);
+
+  ChildJobStatePage childJobStatesPage(
+      String accountId, String parentJobId, int pageSize, String pageToken);
 
   default List<ReconcileJob> childJobs(String accountId, String parentJobId) {
     return childJobsPage(accountId, parentJobId, Integer.MAX_VALUE, "").jobs;
@@ -688,15 +696,36 @@ public interface ReconcileJobStore {
       String manifestUri,
       boolean allowExpiredWithinGrace);
 
-  void persistFileGroupResult(
-      String jobId, String leaseEpoch, ReconcileFileGroupTask fileGroupTask);
-
-  void persistSnapshotFinalizeDirectStatsProgress(
+  boolean completeFileGroupSuccess(
       String jobId,
       String leaseEpoch,
-      boolean fullRescan,
-      int chunkIndex,
-      int directStatsPersistedRecordCount);
+      ReconcileFileGroupResultDescriptor descriptor,
+      long finishedAtMs,
+      String message);
+
+  /**
+   * Atomically establishes the point of no return for snapshot publication.
+   *
+   * <p>Once accepted, cancellation must not move the job to {@code JS_CANCELLING}. A failed or
+   * expired attempt clears the claim before the job is retried.
+   */
+  default boolean beginSnapshotFinalizeCommit(String jobId, String leaseEpoch) {
+    return renewLease(jobId, leaseEpoch);
+  }
+
+  boolean completeSnapshotFinalizeSuccess(
+      String jobId,
+      String leaseEpoch,
+      String resultId,
+      String manifestUri,
+      long manifestBytes,
+      String manifestSha256,
+      int fileGroupCount,
+      int sourceFileCount,
+      long statsRecordCount,
+      long indexArtifactCount,
+      long finishedAtMs,
+      String message);
 
   void markCancelled(
       String jobId,
@@ -1877,6 +1906,27 @@ public interface ReconcileJobStore {
 
     public ReconcileJobPage(List<ReconcileJob> jobs, String nextPageToken) {
       this.jobs = jobs == null ? List.of() : List.copyOf(jobs);
+      this.nextPageToken = nextPageToken == null ? "" : nextPageToken;
+    }
+  }
+
+  record ChildJobState(
+      ReconcileJob job, ReconcileFileGroupResultDescriptor fileGroupResultDescriptor) {}
+
+  record ChildJobStatePage(List<ChildJobState> states, String nextPageToken) {
+    public ChildJobStatePage {
+      states = states == null ? List.of() : List.copyOf(states);
+      nextPageToken = nextPageToken == null ? "" : nextPageToken;
+    }
+  }
+
+  final class FileGroupResultDescriptorPage {
+    public final List<ReconcileFileGroupResultDescriptor> descriptors;
+    public final String nextPageToken;
+
+    public FileGroupResultDescriptorPage(
+        List<ReconcileFileGroupResultDescriptor> descriptors, String nextPageToken) {
+      this.descriptors = descriptors == null ? List.of() : List.copyOf(descriptors);
       this.nextPageToken = nextPageToken == null ? "" : nextPageToken;
     }
   }

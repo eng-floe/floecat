@@ -117,6 +117,18 @@ public class PointerStoreContractTest {
   }
 
   @Test
+  void listPointersByPrefix_accepts_unbounded_limit_without_preallocating_it() {
+    store.compareAndSet(key(1), 0L, pointer(key(1), 1L));
+    store.compareAndSet(key(2), 0L, pointer(key(2), 1L));
+
+    StringBuilder next = new StringBuilder();
+    List<Pointer> page = store.listPointersByPrefix(prefix(), Integer.MAX_VALUE, "", next);
+
+    assertEquals(keysOf(List.of(pointer(key(1), 1L), pointer(key(2), 1L))), keysOf(page));
+    assertTrue(next.isEmpty());
+  }
+
+  @Test
   void deleteByPrefix_empty_or_root_deletes_all() {
     store.compareAndSet(key(1), 0L, pointer(key(1), 1L));
     store.compareAndSet(key(2), 0L, pointer(key(2), 1L));
@@ -226,6 +238,30 @@ public class PointerStoreContractTest {
     // key(1) is untouched: still bound to its original blob at version 1.
     assertEquals("blob/existing", store.get(key(1)).orElseThrow().getBlobUri());
     assertEquals(1L, store.get(key(1)).orElseThrow().getVersion());
+  }
+
+  @Test
+  void unconditionalUpsertReplacesMarkerAndProtectsNewTokenFromStaleDelete() {
+    assertTrue(
+        store.compareAndSetBatch(
+            List.of(
+                new PointerStore.UnconditionalUpsert(
+                    key(1),
+                    pointerWithBlob(key(1), "marker/one").toBuilder().setVersion(17L).build()))));
+    Pointer first = store.get(key(1)).orElseThrow();
+    assertEquals(17L, first.getVersion());
+
+    assertTrue(
+        store.compareAndSetBatch(
+            List.of(
+                new PointerStore.UnconditionalUpsert(
+                    key(1),
+                    pointerWithBlob(key(1), "marker/two").toBuilder().setVersion(23L).build()))));
+
+    assertFalse(store.compareAndSetBatch(List.of(new PointerStore.CasDelete(key(1), 17L))));
+    Pointer current = store.get(key(1)).orElseThrow();
+    assertEquals("marker/two", current.getBlobUri());
+    assertEquals(23L, current.getVersion());
   }
 
   private static Pointer pointer(String key, long version) {

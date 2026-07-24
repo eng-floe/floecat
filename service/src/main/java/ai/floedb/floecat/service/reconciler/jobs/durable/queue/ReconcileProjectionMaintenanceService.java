@@ -22,48 +22,85 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class ReconcileProjectionMaintenanceService {
   private static final Logger LOG = Logger.getLogger(ReconcileProjectionMaintenanceService.class);
 
-  @FunctionalInterface
-  public interface RefreshDirtyParentProjection {
-    void accept(String accountId, String parentJobId);
+  public enum RefreshResult {
+    COMMITTED,
+    OBSOLETE,
+    PROJECTION_CONFLICT,
+    MARKER_ACK_CONFLICT
   }
 
   @FunctionalInterface
-  public interface ObsoleteDirtyParentProjection {
-    boolean test(String accountId, String parentJobId);
+  public interface RefreshDirtyParentProjection {
+    RefreshResult apply(
+        String accountId,
+        String parentJobId,
+        long generation,
+        String markerKey,
+        long markerVersion);
   }
 
   private PointerStore pointerStore;
   private RefreshDirtyParentProjection refreshDirtyParentProjection;
-  private ObsoleteDirtyParentProjection obsoleteDirtyParentProjection;
   private int readyScanLimit;
+  private int maxMarkersPerTick = Integer.MAX_VALUE;
 
   private volatile String dirtyParentScanToken = "";
+  private volatile boolean workHint = true;
+  private final AtomicLong workGeneration = new AtomicLong();
+  private volatile long nextRecoveryScanAtMs;
+  private volatile long earliestDeferredMarkerAtMs = Long.MAX_VALUE;
+  private long idleRecoveryMillis = 60_000L;
 
   public void bind(
       PointerStore pointerStore,
       RefreshDirtyParentProjection refreshDirtyParentProjection,
-      ObsoleteDirtyParentProjection obsoleteDirtyParentProjection,
       int readyScanLimit) {
     this.pointerStore = pointerStore;
     this.refreshDirtyParentProjection = refreshDirtyParentProjection;
-    this.obsoleteDirtyParentProjection = obsoleteDirtyParentProjection;
     this.readyScanLimit = readyScanLimit;
   }
 
   public void runProjectionMaintenanceOnce(long maxMillis) {
+    runProjectionMaintenanceOnce(maxMillis, maxMarkersPerTick);
+  }
+
+  public void runProjectionMaintenanceOnce(long maxMillis, int maxMarkers) {
     long startedAtMs = System.currentTimeMillis();
+    if (!workHint && startedAtMs < nextRecoveryScanAtMs) {
+      return;
+    }
+    long generationAtStart = workGeneration.get();
+    workHint = true;
+    earliestDeferredMarkerAtMs = Long.MAX_VALUE;
     long deadlineMs = maxMillis <= 0L ? startedAtMs : startedAtMs + Math.max(1L, maxMillis);
-    DirtyParentStats dirtyParentStats = refreshDirtyParents(deadlineMs);
+    DirtyParentStats dirtyParentStats = refreshDirtyParents(deadlineMs, Math.max(1, maxMarkers));
+    if (dirtyParentStats.completed()
+        && dirtyParentStats.failures() == 0
+        && dirtyParentStats.commitConflicts() == 0
+        && dirtyParentStats.markerAckConflicts() == 0
+        && (dirtyParentStats.deleted() == dirtyParentStats.scanned()
+            || earliestDeferredMarkerAtMs != Long.MAX_VALUE)
+        && workGeneration.get() == generationAtStart) {
+      workHint = false;
+      long recoveryAt = System.currentTimeMillis() + Math.max(1L, idleRecoveryMillis);
+      nextRecoveryScanAtMs = Math.min(recoveryAt, earliestDeferredMarkerAtMs);
+    }
     logMaintenanceSummary(startedAtMs, dirtyParentStats);
   }
 
-  private DirtyParentStats refreshDirtyParents(long deadlineMs) {
+  public void signalWork() {
+    workGeneration.incrementAndGet();
+    workHint = true;
+  }
+
+  private DirtyParentStats refreshDirtyParents(long deadlineMs, int maxMarkers) {
     if (pointerStore == null || refreshDirtyParentProjection == null) {
       return DirtyParentStats.empty();
     }
@@ -74,11 +111,26 @@ public class ReconcileProjectionMaintenanceService {
     int invalidDeleted = 0;
     int obsoleteDeleted = 0;
     int deleted = 0;
+    int commitConflicts = 0;
+    int markerAckConflicts = 0;
     int failures = 0;
+    String lastConsumedKey = "";
     while (true) {
-      if (System.currentTimeMillis() > deadlineMs) {
+      if (scanned >= maxMarkers || System.currentTimeMillis() > deadlineMs) {
+        if (!lastConsumedKey.isBlank()) {
+          dirtyParentScanToken = pointerStore.pageTokenAfterKey(lastConsumedKey);
+        }
         return new DirtyParentStats(
-            false, pages, scanned, refreshed, invalidDeleted, obsoleteDeleted, deleted, failures);
+            false,
+            pages,
+            scanned,
+            refreshed,
+            invalidDeleted,
+            obsoleteDeleted,
+            deleted,
+            commitConflicts,
+            markerAckConflicts,
+            failures);
       }
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers =
@@ -87,17 +139,39 @@ public class ReconcileProjectionMaintenanceService {
       if (pointers.isEmpty()) {
         dirtyParentScanToken = "";
         return new DirtyParentStats(
-            true, pages, scanned, refreshed, invalidDeleted, obsoleteDeleted, deleted, failures);
+            true,
+            pages,
+            scanned,
+            refreshed,
+            invalidDeleted,
+            obsoleteDeleted,
+            deleted,
+            commitConflicts,
+            markerAckConflicts,
+            failures);
       }
       String nextToken = next.toString();
       for (Pointer pointer : pointers) {
-        if (System.currentTimeMillis() > deadlineMs) {
+        if (scanned >= maxMarkers || System.currentTimeMillis() > deadlineMs) {
+          if (!lastConsumedKey.isBlank()) {
+            dirtyParentScanToken = pointerStore.pageTokenAfterKey(lastConsumedKey);
+          }
           return new DirtyParentStats(
-              false, pages, scanned, refreshed, invalidDeleted, obsoleteDeleted, deleted, failures);
+              false,
+              pages,
+              scanned,
+              refreshed,
+              invalidDeleted,
+              obsoleteDeleted,
+              deleted,
+              commitConflicts,
+              markerAckConflicts,
+              failures);
         }
         if (pointer == null || pointer.getKey().isBlank()) {
           continue;
         }
+        lastConsumedKey = pointer.getKey();
         scanned++;
         DirtyParentMarker marker = parseDirtyParentMarker(pointer);
         if (marker == null) {
@@ -107,19 +181,32 @@ public class ReconcileProjectionMaintenanceService {
           }
           continue;
         }
+        if (System.currentTimeMillis() < marker.dirtyAtMs()) {
+          earliestDeferredMarkerAtMs = Math.min(earliestDeferredMarkerAtMs, marker.dirtyAtMs());
+          continue;
+        }
         try {
-          if (obsoleteDirtyParentProjection != null
-              && obsoleteDirtyParentProjection.test(marker.accountId(), marker.parentJobId())) {
+          RefreshResult result =
+              refreshDirtyParentProjection.apply(
+                  marker.accountId(),
+                  marker.parentJobId(),
+                  marker.generation(),
+                  pointer.getKey(),
+                  pointer.getVersion());
+          refreshed++;
+          if (result == RefreshResult.COMMITTED) {
+            deleted++;
+          } else if (result == RefreshResult.OBSOLETE) {
             if (pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion())) {
               obsoleteDeleted++;
               deleted++;
+            } else {
+              markerAckConflicts++;
             }
-            continue;
-          }
-          refreshDirtyParentProjection.accept(marker.accountId(), marker.parentJobId());
-          refreshed++;
-          if (pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion())) {
-            deleted++;
+          } else if (result == RefreshResult.MARKER_ACK_CONFLICT) {
+            markerAckConflicts++;
+          } else {
+            commitConflicts++;
           }
         } catch (RuntimeException e) {
           failures++;
@@ -140,6 +227,8 @@ public class ReconcileProjectionMaintenanceService {
             invalidDeleted,
             obsoleteDeleted,
             deleted,
+            commitConflicts,
+            markerAckConflicts,
             failures);
       }
       if (nextToken.equals(token)) {
@@ -155,6 +244,8 @@ public class ReconcileProjectionMaintenanceService {
             invalidDeleted,
             obsoleteDeleted,
             deleted,
+            commitConflicts,
+            markerAckConflicts,
             failures);
       }
       dirtyParentScanToken = blankToEmpty(nextToken);
@@ -164,7 +255,16 @@ public class ReconcileProjectionMaintenanceService {
         LOG.warn("Reconcile dirty-parent refresh pagination hit safety page cap; aborting scan");
         dirtyParentScanToken = "";
         return new DirtyParentStats(
-            true, pages, scanned, refreshed, invalidDeleted, obsoleteDeleted, deleted, failures);
+            true,
+            pages,
+            scanned,
+            refreshed,
+            invalidDeleted,
+            obsoleteDeleted,
+            deleted,
+            commitConflicts,
+            markerAckConflicts,
+            failures);
       }
     }
   }
@@ -182,7 +282,9 @@ public class ReconcileProjectionMaintenanceService {
             + " projection_completed=%s projection_pages=%d projection_markers=%d"
             + " projection_refreshed=%d projection_invalid_deleted=%d"
             + " projection_obsolete_deleted=%d"
-            + " projection_markers_deleted=%d projection_failures=%d",
+            + " projection_markers_deleted=%d projection_retries=%d"
+            + " projection_commit_conflicts=%d projection_marker_ack_conflicts=%d"
+            + " projection_failures=%d",
         Long.valueOf(elapsedMs),
         Boolean.valueOf(dirtyParentStats.completed()),
         Integer.valueOf(dirtyParentStats.pages()),
@@ -191,6 +293,9 @@ public class ReconcileProjectionMaintenanceService {
         Integer.valueOf(dirtyParentStats.invalidDeleted()),
         Integer.valueOf(dirtyParentStats.obsoleteDeleted()),
         Integer.valueOf(dirtyParentStats.deleted()),
+        Integer.valueOf(dirtyParentStats.commitConflicts()),
+        Integer.valueOf(dirtyParentStats.commitConflicts()),
+        Integer.valueOf(dirtyParentStats.markerAckConflicts()),
         Integer.valueOf(dirtyParentStats.failures()));
   }
 
@@ -202,23 +307,33 @@ public class ReconcileProjectionMaintenanceService {
     if (payload == null || payload.isBlank()) {
       return null;
     }
-    int delimiter = payload.indexOf('\n');
-    if (delimiter <= 0 || delimiter >= payload.length() - 1) {
+    String[] fields = payload.split("\\n", -1);
+    if (fields.length != 4) {
       return null;
     }
-    String accountId = payload.substring(0, delimiter).trim();
-    String parentJobId = payload.substring(delimiter + 1).trim();
+    String accountId = fields[0].trim();
+    String parentJobId = fields[1].trim();
     if (accountId.isBlank() || parentJobId.isBlank()) {
       return null;
     }
-    return new DirtyParentMarker(accountId, parentJobId);
+    try {
+      long generation = Long.parseLong(fields[2]);
+      long dirtyAtMs = Long.parseLong(fields[3]);
+      if (generation < 0L || dirtyAtMs < 0L) {
+        return null;
+      }
+      return new DirtyParentMarker(accountId, parentJobId, generation, dirtyAtMs);
+    } catch (NumberFormatException ignored) {
+      return null;
+    }
   }
 
   private static String blankToEmpty(String value) {
     return value == null ? "" : value.trim();
   }
 
-  private record DirtyParentMarker(String accountId, String parentJobId) {}
+  private record DirtyParentMarker(
+      String accountId, String parentJobId, long generation, long dirtyAtMs) {}
 
   private record DirtyParentStats(
       boolean completed,
@@ -228,9 +343,11 @@ public class ReconcileProjectionMaintenanceService {
       int invalidDeleted,
       int obsoleteDeleted,
       int deleted,
+      int commitConflicts,
+      int markerAckConflicts,
       int failures) {
     static DirtyParentStats empty() {
-      return new DirtyParentStats(true, 0, 0, 0, 0, 0, 0, 0);
+      return new DirtyParentStats(true, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     }
 
     boolean active() {
@@ -240,6 +357,8 @@ public class ReconcileProjectionMaintenanceService {
           || invalidDeleted > 0
           || obsoleteDeleted > 0
           || deleted > 0
+          || commitConflicts > 0
+          || markerAckConflicts > 0
           || failures > 0;
     }
   }

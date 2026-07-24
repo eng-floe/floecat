@@ -97,6 +97,7 @@ class SnapshotPlanBlobStoreTest {
     assertEquals(scope.capturePolicy().outputs(), roundTrippedScope.capturePolicy().outputs());
     assertEquals(scope.snapshotSelection(), roundTrippedScope.snapshotSelection());
     assertEquals(group, roundTripped.getFirst().fileGroupTask());
+    assertEquals(List.of(group), store.loadFileGroupsByUri(persistedTask.fileGroupPlanBlobUri()));
   }
 
   @Test
@@ -166,8 +167,10 @@ class SnapshotPlanBlobStoreTest {
     }
 
     @Override
-    public void deletePrefix(String prefix) {
+    public int deletePrefix(String prefix) {
+      int before = bytesByUri.size();
       bytesByUri.keySet().removeIf(key -> key.startsWith(prefix));
+      return before - bytesByUri.size();
     }
 
     @Override

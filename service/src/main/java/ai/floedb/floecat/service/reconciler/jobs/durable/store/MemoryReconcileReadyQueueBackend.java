@@ -53,20 +53,30 @@ public class MemoryReconcileReadyQueueBackend implements ReconcileReadyQueueBack
     if (prefix.isBlank()) {
       return new ReconcileReadyQueueStore.ReadyQueueScanPage(List.of(), "");
     }
-    StringBuilder next = new StringBuilder();
-    List<Pointer> pointers =
-        pointerStore.listPointersByPrefix(
-            prefix, Math.max(1, pageSize), blankToEmpty(pageToken), next);
-    List<ReconcileReadyQueueStore.ReadyQueueEntry> entries = new ArrayList<>(pointers.size());
-    for (Pointer pointer : pointers) {
-      var decoded =
-          ReadyQueueBackendSupport.decodeReadyQueueEntry(
-              pointer.getKey(), pointer.getBlobUri(), slice);
-      if (decoded != null) {
-        entries.add(decoded);
+    int limit = Math.max(1, pageSize);
+    String token = blankToEmpty(pageToken);
+    List<ReconcileReadyQueueStore.ReadyQueueEntry> entries = new ArrayList<>(limit);
+    while (entries.size() < limit) {
+      StringBuilder next = new StringBuilder();
+      List<Pointer> pointers =
+          pointerStore.listPointersByPrefix(prefix, limit - entries.size(), token, next);
+      for (Pointer pointer : pointers) {
+        if (!ReadyQueueBackendSupport.pointerBelongsToSlice(pointer.getKey(), slice)) {
+          continue;
+        }
+        var decoded =
+            ReadyQueueBackendSupport.decodeReadyQueueEntry(
+                pointer.getKey(), pointer.getBlobUri(), slice);
+        if (decoded != null) {
+          entries.add(decoded);
+        }
+      }
+      token = next.toString();
+      if (token.isBlank() || pointers.isEmpty()) {
+        break;
       }
     }
-    return new ReconcileReadyQueueStore.ReadyQueueScanPage(entries, next.toString());
+    return new ReconcileReadyQueueStore.ReadyQueueScanPage(entries, token);
   }
 
   @Override
@@ -134,7 +144,8 @@ public class MemoryReconcileReadyQueueBackend implements ReconcileReadyQueueBack
             knownSlice != null
                 ? knownSlice
                 : ReadyQueueBackendSupport.sliceForReadyPointerKey(pointer.getKey());
-        if (slice == null) {
+        if (slice == null
+            || !ReadyQueueBackendSupport.pointerBelongsToSlice(pointer.getKey(), slice)) {
           continue;
         }
         var decoded =

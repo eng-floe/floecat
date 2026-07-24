@@ -24,7 +24,6 @@ import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import com.google.protobuf.Timestamp;
-import jakarta.annotation.Priority;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Alternative;
 import java.util.ArrayList;
@@ -35,7 +34,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Alternative
-@Priority(1)
 @ApplicationScoped
 public class TestOverrideStatsStore implements StatsStore {
   private static final AtomicInteger PUT_COUNT = new AtomicInteger();

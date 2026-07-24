@@ -17,6 +17,9 @@
 package ai.floedb.floecat.service.repo.model;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 
@@ -134,6 +137,11 @@ public final class Keys {
 
   public static String accountBlobPrefix(String accountId) {
     return accountRootPrefix(accountId) + "account/";
+  }
+
+  public static String accountStorageUsagePointer(String accountId) {
+    String tid = req("account_id", accountId);
+    return accountRootPrefix() + encode(tid) + "/metrics/storage-usage";
   }
 
   public static String accountPointerByName(String displayName) {
@@ -1234,6 +1242,19 @@ public final class Keys {
         "%s%019d/%s", reconcileJobByAccountStatePointerPrefix(accountId, state), ts, encode(jid));
   }
 
+  public static String reconcileTerminalRetentionPointerPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/terminal-retention/";
+  }
+
+  public static String reconcileTerminalRetentionPointer(
+      String accountId, long terminalAtMs, String jobId) {
+    String jid = req("job_id", jobId);
+    long ts = reqNonNegative("terminal_at_ms", terminalAtMs);
+    return String.format(
+        "%s%019d/%s", reconcileTerminalRetentionPointerPrefix(accountId), ts, encode(jid));
+  }
+
   public static String reconcileJobByConnectorStatePointerPrefix(
       String accountId, String connectorId) {
     String tid = req("account_id", accountId);
@@ -1311,6 +1332,58 @@ public final class Keys {
         + "/result-"
         + encode(s)
         + ".json";
+  }
+
+  public static String reconcileFileGroupResultPayloadUri(
+      String accountId, String parentJobId, String jobId, String leaseEpoch) {
+    String tid = req("account_id", accountId);
+    String pid = req("parent_job_id", parentJobId);
+    String jid = req("job_id", jobId);
+    String epoch = req("lease_epoch", leaseEpoch);
+    return reconcileJobBlobPrefix(tid, jid)
+        + "result-payloads/v1/snapshot-plans/"
+        + encode(pid)
+        + "/executions/"
+        + sha256Hex(epoch)
+        + ".pb";
+  }
+
+  public static String reconcileFileGroupStatsPayloadUri(
+      String accountId, String parentJobId, String jobId, String leaseEpoch) {
+    String resultUri =
+        reconcileFileGroupResultPayloadUri(accountId, parentJobId, jobId, leaseEpoch);
+    return resultUri.substring(0, resultUri.length() - ".pb".length()) + ".stats.pb";
+  }
+
+  public static String reconcileSnapshotFinalizeStatsPayloadUri(
+      String accountId, String parentJobId, String jobId, String leaseEpoch) {
+    String tid = req("account_id", accountId);
+    String pid = req("parent_job_id", parentJobId);
+    String jid = req("job_id", jobId);
+    String epoch = req("lease_epoch", leaseEpoch);
+    return reconcileJobBlobPrefix(tid, jid)
+        + "result-payloads/v1/snapshot-plans/"
+        + encode(pid)
+        + "/executions/"
+        + sha256Hex(epoch)
+        + ".stats.pb";
+  }
+
+  public static String reconcileSnapshotCaptureManifestUri(
+      String accountId, String parentJobId, String jobId, String leaseEpoch) {
+    String statsUri =
+        reconcileSnapshotFinalizeStatsPayloadUri(accountId, parentJobId, jobId, leaseEpoch);
+    return statsUri.substring(0, statsUri.length() - ".stats.pb".length()) + ".capture-manifest.pb";
+  }
+
+  private static String sha256Hex(String value) {
+    try {
+      return HexFormat.of()
+          .formatHex(
+              MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 unavailable", e);
+    }
   }
 
   public static String reconcileReadyPointerPrefix() {
@@ -1444,6 +1517,17 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
     return "/accounts/" + encode(tid) + "/reconcile/jobs/" + encode(jid) + "/";
+  }
+
+  public static String reconcileJobBlobCleanupPointer(String accountId, String jobId) {
+    String tid = req("account_id", accountId);
+    String jid = req("job_id", jobId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-blob-cleanup/" + encode(jid);
+  }
+
+  public static String reconcileJobBlobCleanupPointerPrefix(String accountId) {
+    String tid = req("account_id", accountId);
+    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-blob-cleanup/";
   }
 
   /**

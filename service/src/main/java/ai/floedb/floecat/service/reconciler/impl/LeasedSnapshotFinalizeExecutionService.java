@@ -16,135 +16,328 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
-import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultResponse;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.MutationOps;
+import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.EnumSet;
-import java.util.List;
-import java.util.Set;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import org.jboss.logging.Logger;
 
+/** Registers fenced snapshot capture manifests without ingesting their artifact payloads. */
 @ApplicationScoped
 public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
+  private static final Logger LOG = Logger.getLogger(LeasedSnapshotFinalizeExecutionService.class);
+
   @Inject ReconcileJobStore jobs;
   @Inject ai.floedb.floecat.service.repo.IdempotencyRepository idempotencyStore;
-  @Inject SnapshotFinalizePersistenceService persistence;
-  @Inject SnapshotFinalizeCoverageService coverageService;
   @Inject SnapshotFinalizeChildStateService childStateService;
   @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
+  @Inject BlobStore blobStore;
 
-  public boolean persistChunk(
+  public boolean persistSuccess(
       PrincipalContext principalContext,
       String jobId,
       String leaseEpoch,
       String resultId,
-      int chunkIndex,
-      List<TargetStatsRecord> statsRecords) {
-    ReconcileJobStore.LeasedJob lease =
-        requireLeasedSnapshotFinalizeJob(principalContext.getCorrelationId(), jobId, leaseEpoch);
-    ReconcileSnapshotTask snapshotTask = requireSnapshotTask(lease);
-    ResourceId tableId = tableId(lease, snapshotTask);
-    String requiredResultId = requireResultId(resultId);
-    List<TargetStatsRecord> nonNullRecords =
-        statsRecords == null
-            ? List.of()
-            : statsRecords.stream().filter(java.util.Objects::nonNull).toList();
-    byte[] requestBytes = chunkPayload(requiredResultId, chunkIndex, nonNullRecords).toByteArray();
-    return runIdempotentCreate(
-            () ->
-                MutationOps.createProto(
-                    principalContext.getAccountId(),
-                    "SubmitLeasedSnapshotFinalizeResult",
-                    chunkIdempotencyKey(jobId, requiredResultId, chunkIndex),
-                    () -> requestBytes,
-                    () -> {
-                      persistStatsChunk(
-                          lease,
-                          snapshotTask,
-                          tableId,
-                          snapshotTask.snapshotId(),
-                          Math.max(0, chunkIndex),
-                          nonNullRecords);
-                      return new IdempotencyGuard.CreateResult<>(
-                          SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
-                              .setAccepted(true)
-                              .build(),
-                          tableId);
-                    },
-                    ignored -> MutationMeta.getDefaultInstance(),
-                    idempotencyStore,
-                    nowTs(),
-                    idempotencyTtlSeconds(),
-                    principalContext::getCorrelationId,
-                    SubmitLeasedSnapshotFinalizeResultResponse::parseFrom))
-        .body
-        .getAccepted();
+      SnapshotCaptureManifestDescriptor descriptor) {
+    long totalStartNanos = System.nanoTime();
+    long[] leaseNanos = {0L};
+    long[] validateNanos = {0L};
+    long[] manifestValidationNanos = {0L};
+    long[] childScanNanos = {0L};
+    long[] commitNanos = {0L};
+    long[] publishNanos = {0L};
+    long[] leaseOutcomeNanos = {0L};
+    long[] rpcRequestBytes = {0L};
+    long[] manifestBytes = {descriptor == null ? 0L : descriptor.getManifestBytes()};
+    String[] outcome = {"failed"};
+    try {
+      String requiredResultId = requireResultId(resultId);
+      String manifestSha256 =
+          descriptor == null
+              ? ""
+              : HexFormat.of().formatHex(descriptor.getManifestSha256().toByteArray());
+      ReconcileJobStore.ReconcileJob existing = jobs.getCompactLeaseView(jobId).orElse(null);
+      if (existing != null && "JS_SUCCEEDED".equals(existing.state)) {
+        boolean replayed =
+            jobs.completeSnapshotFinalizeSuccess(
+                jobId,
+                leaseEpoch,
+                requiredResultId,
+                descriptor == null ? "" : descriptor.getManifestUri(),
+                descriptor == null ? 0L : descriptor.getManifestBytes(),
+                manifestSha256,
+                descriptor == null ? 0 : descriptor.getFileGroupCount(),
+                descriptor == null ? 0 : descriptor.getSourceFileCount(),
+                descriptor == null ? 0L : descriptor.getStatsRecordCount(),
+                descriptor == null ? 0L : descriptor.getIndexArtifactCount(),
+                System.currentTimeMillis(),
+                "Registered snapshot capture manifest");
+        requireAcceptedLeaseOutcome(replayed, jobId);
+        outcome[0] = "replayed";
+        return true;
+      }
+      long leaseStartNanos = System.nanoTime();
+      ReconcileJobStore.LeasedJob lease;
+      try {
+        lease =
+            requireLeasedSnapshotFinalizeJob(
+                principalContext.getCorrelationId(), jobId, leaseEpoch);
+      } finally {
+        leaseNanos[0] = System.nanoTime() - leaseStartNanos;
+      }
+
+      long validateStartNanos = System.nanoTime();
+      ReconcileSnapshotTask snapshotTask;
+      ResourceId tableId;
+      SnapshotCaptureManifestDescriptor validated;
+      try {
+        snapshotTask = requireSnapshotTask(lease);
+        tableId = tableId(lease, snapshotTask);
+        validated =
+            validateManifestDescriptorIdentity(lease, snapshotTask, requiredResultId, descriptor);
+      } finally {
+        validateNanos[0] = System.nanoTime() - validateStartNanos;
+      }
+      long manifestValidationStartNanos = System.nanoTime();
+      try {
+        validateManifestObject(lease, validated);
+      } finally {
+        manifestValidationNanos[0] = System.nanoTime() - manifestValidationStartNanos;
+      }
+      var successPayload = successPayload(requiredResultId, validated);
+      rpcRequestBytes[0] =
+          SubmitLeasedSnapshotFinalizeResultRequest.newBuilder()
+              .setJobId(jobId)
+              .setLeaseEpoch(leaseEpoch)
+              .setSuccess(successPayload)
+              .build()
+              .getSerializedSize();
+
+      long commitStartNanos = System.nanoTime();
+      boolean accepted = false;
+      try {
+        long childStartNanos = System.nanoTime();
+        try {
+          requireReadyChildState(lease, snapshotTask);
+        } finally {
+          childScanNanos[0] = System.nanoTime() - childStartNanos;
+        }
+        requireAcceptedLeaseOutcome(
+            jobs.beginSnapshotFinalizeCommit(lease.jobId, lease.leaseEpoch), lease.jobId);
+        long publishStartNanos = System.nanoTime();
+        try {
+          currentSnapshotPointerService.publishCaptureManifest(
+              tableId,
+              snapshotTask.snapshotId(),
+              BlobRef.newBuilder()
+                  .setUri(validated.getManifestUri())
+                  .setVersion(manifestSha256)
+                  .build(),
+              lease.jobId);
+        } finally {
+          publishNanos[0] = System.nanoTime() - publishStartNanos;
+        }
+        long leaseOutcomeStartNanos = System.nanoTime();
+        try {
+          accepted =
+              jobs.completeSnapshotFinalizeSuccess(
+                  lease.jobId,
+                  lease.leaseEpoch,
+                  requiredResultId,
+                  validated.getManifestUri(),
+                  validated.getManifestBytes(),
+                  manifestSha256,
+                  validated.getFileGroupCount(),
+                  validated.getSourceFileCount(),
+                  validated.getStatsRecordCount(),
+                  validated.getIndexArtifactCount(),
+                  System.currentTimeMillis(),
+                  "Registered snapshot capture manifest " + snapshotTask.snapshotId());
+          requireAcceptedLeaseOutcome(accepted, lease.jobId);
+        } finally {
+          leaseOutcomeNanos[0] = System.nanoTime() - leaseOutcomeStartNanos;
+        }
+      } finally {
+        commitNanos[0] = System.nanoTime() - commitStartNanos;
+      }
+      outcome[0] = accepted ? "accepted" : "rejected";
+      return accepted;
+    } finally {
+      logFinalizeTiming(
+          jobId,
+          outcome[0],
+          totalStartNanos,
+          leaseNanos[0],
+          validateNanos[0],
+          manifestValidationNanos[0],
+          childScanNanos[0],
+          commitNanos[0],
+          publishNanos[0],
+          leaseOutcomeNanos[0],
+          rpcRequestBytes[0],
+          manifestBytes[0]);
+    }
   }
 
-  public boolean persistSuccess(
-      PrincipalContext principalContext, String jobId, String leaseEpoch, String resultId) {
-    ReconcileJobStore.LeasedJob lease =
-        requireLeasedSnapshotFinalizeJob(principalContext.getCorrelationId(), jobId, leaseEpoch);
-    ReconcileSnapshotTask snapshotTask = requireSnapshotTask(lease);
-    ResourceId tableId = tableId(lease, snapshotTask);
-    String requiredResultId = requireResultId(resultId);
-    byte[] requestBytes = successPayload(requiredResultId).toByteArray();
-    return runIdempotentCreate(
-            () ->
-                MutationOps.createProto(
-                    principalContext.getAccountId(),
-                    "SubmitLeasedSnapshotFinalizeResult",
-                    resultIdempotencyKey(jobId, requiredResultId),
-                    () -> requestBytes,
-                    () -> {
-                      finalizeChunkedSuccess(
-                          lease, snapshotTask, tableId, snapshotTask.snapshotId());
-                      currentSnapshotPointerService.maybeAdvance(
-                          tableId, snapshotTask.snapshotId(), lease.jobId);
-                      boolean accepted =
-                          jobs.applyLeaseOutcome(
-                              lease.jobId,
-                              lease.leaseEpoch,
-                              ReconcileJobStore.CompletionKind.SUCCEEDED,
-                              System.currentTimeMillis(),
-                              "Finalized snapshot " + snapshotTask.snapshotId(),
-                              0L,
-                              0L,
-                              0L,
-                              0L,
-                              0L,
-                              1L,
-                              snapshotTask.directStatsPersistedRecordCount());
-                      requireAcceptedLeaseOutcome(accepted, lease.jobId);
-                      return new IdempotencyGuard.CreateResult<>(
-                          SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
-                              .setAccepted(true)
-                              .build(),
-                          tableId);
-                    },
-                    ignored -> MutationMeta.getDefaultInstance(),
-                    idempotencyStore,
-                    nowTs(),
-                    idempotencyTtlSeconds(),
-                    principalContext::getCorrelationId,
-                    SubmitLeasedSnapshotFinalizeResultResponse::parseFrom))
-        .body
-        .getAccepted();
+  private static void logFinalizeTiming(
+      String jobId,
+      String outcome,
+      long totalStartNanos,
+      long leaseNanos,
+      long validateNanos,
+      long manifestValidationNanos,
+      long childScanNanos,
+      long commitNanos,
+      long publishNanos,
+      long leaseOutcomeNanos,
+      long rpcRequestBytes,
+      long manifestBytes) {
+    long totalNanos = System.nanoTime() - totalStartNanos;
+    long accountedNanos = leaseNanos + validateNanos + manifestValidationNanos + commitNanos;
+    long otherNanos = Math.max(0L, totalNanos - accountedNanos);
+    LOG.infof(
+        "snapshot_finalize_submission_timing jobId=%s outcome=%s totalMs=%.3f leaseMs=%.3f"
+            + " validateMs=%.3f manifestValidationMs=%.3f commitMs=%.3f childScanMs=%.3f"
+            + " publishMs=%.3f leaseOutcomeMs=%.3f otherMs=%.3f rpcRequestBytes=%d"
+            + " manifestBytes=%d",
+        jobId,
+        outcome,
+        totalNanos / 1_000_000.0,
+        leaseNanos / 1_000_000.0,
+        validateNanos / 1_000_000.0,
+        manifestValidationNanos / 1_000_000.0,
+        commitNanos / 1_000_000.0,
+        childScanNanos / 1_000_000.0,
+        publishNanos / 1_000_000.0,
+        leaseOutcomeNanos / 1_000_000.0,
+        otherNanos / 1_000_000.0,
+        rpcRequestBytes,
+        manifestBytes);
+  }
+
+  private SnapshotCaptureManifestDescriptor validateManifestDescriptorIdentity(
+      ReconcileJobStore.LeasedJob lease,
+      ReconcileSnapshotTask snapshotTask,
+      String resultId,
+      SnapshotCaptureManifestDescriptor descriptor) {
+    if (descriptor == null || descriptor.getFormatVersion() != 1) {
+      throw new IllegalArgumentException("snapshot capture manifest format_version must be 1");
+    }
+    String expectedUri =
+        Keys.reconcileSnapshotCaptureManifestUri(
+            lease.accountId, lease.parentJobId, lease.jobId, lease.leaseEpoch);
+    if (!lease.accountId.equals(descriptor.getAccountId())
+        || !lease.connectorId.equals(descriptor.getConnectorId())
+        || !lease.parentJobId.equals(descriptor.getParentJobId())
+        || !lease.jobId.equals(descriptor.getFinalizeJobId())
+        || !snapshotTask.tableId().equals(descriptor.getTableId())
+        || snapshotTask.snapshotId() != descriptor.getSnapshotId()
+        || !lease.leaseEpoch.equals(descriptor.getLeaseEpoch())
+        || !resultId.equals(descriptor.getResultId())) {
+      throw new IllegalArgumentException("snapshot capture manifest descriptor identity mismatch");
+    }
+    if (!expectedUri.equals(descriptor.getManifestUri())) {
+      throw new IllegalArgumentException(
+          "snapshot capture manifest URI is outside the leased result location");
+    }
+    if (descriptor.getManifestBytes() <= 0L || descriptor.getManifestSha256().size() != 32) {
+      throw new IllegalArgumentException("snapshot capture manifest size and sha256 are required");
+    }
+    if (descriptor.getFileGroupCount() != snapshotTask.fileGroupCount()
+        || descriptor.getSourceFileCount() != snapshotTask.sourceFileCount()) {
+      throw new IllegalArgumentException("snapshot capture manifest coverage mismatch");
+    }
+    return descriptor;
+  }
+
+  private void validateManifestObject(
+      ReconcileJobStore.LeasedJob lease, SnapshotCaptureManifestDescriptor descriptor) {
+    String expectedUri = descriptor.getManifestUri();
+    byte[] bytes = blobStore.get(expectedUri);
+    if (bytes == null) {
+      throw new StorageAbortRetryableException(
+          "snapshot capture manifest is not committed jobId="
+              + lease.jobId
+              + " uri="
+              + expectedUri);
+    }
+    if (bytes.length != descriptor.getManifestBytes()) {
+      throw new IllegalArgumentException("snapshot capture manifest object size mismatch");
+    }
+    if (!MessageDigest.isEqual(sha256(bytes), descriptor.getManifestSha256().toByteArray())) {
+      throw new IllegalArgumentException("snapshot capture manifest object sha256 mismatch");
+    }
+    SnapshotCaptureManifest manifest;
+    try {
+      manifest = SnapshotCaptureManifest.parseFrom(bytes);
+    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+      throw new IllegalArgumentException("snapshot capture manifest object is invalid", e);
+    }
+    if (manifest.getFormatVersion() != 1
+        || !descriptor.getAccountId().equals(manifest.getAccountId())
+        || !descriptor.getConnectorId().equals(manifest.getConnectorId())
+        || !descriptor.getParentJobId().equals(manifest.getParentJobId())
+        || !descriptor.getFinalizeJobId().equals(manifest.getFinalizeJobId())
+        || !descriptor.getTableId().equals(manifest.getTableId())
+        || descriptor.getSnapshotId() != manifest.getSnapshotId()
+        || !descriptor.getLeaseEpoch().equals(manifest.getLeaseEpoch())
+        || !descriptor.getResultId().equals(manifest.getResultId())
+        || descriptor.getFileGroupCount() != manifest.getFileGroupsCount()
+        || descriptor.getSourceFileCount() != manifest.getSourceFileCount()
+        || descriptor.getStatsRecordCount() != manifest.getStatsIndexCount()
+        || descriptor.getIndexArtifactCount() != manifest.getIndexArtifactsCount()) {
+      throw new IllegalArgumentException("snapshot capture manifest object identity mismatch");
+    }
+  }
+
+  private static byte[] sha256(byte[] bytes) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(bytes);
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 is unavailable", e);
+    }
+  }
+
+  private void requireReadyChildState(
+      ReconcileJobStore.LeasedJob lease, ReconcileSnapshotTask snapshotTask) {
+    if (snapshotTask.fileGroupCount() == 0) {
+      return;
+    }
+    SnapshotFinalizeChildStateService.ChildState childState =
+        childStateService.compactChildState(
+            lease.accountId, lease.parentJobId, lease.jobId, snapshotTask.fileGroupCount());
+    if (!childState.duplicateGroups().isEmpty()
+        || !childState.invalidSucceededGroups().isEmpty()
+        || !childState.failedGroups().isEmpty()
+        || !childState.cancelledGroups().isEmpty()
+        || !childState.pendingGroups().isEmpty()
+        || !childState.missingGroups().isEmpty()) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription("snapshot finalization child results are not ready")
+          .asRuntimeException();
+    }
   }
 
   public boolean persistFailure(
@@ -183,124 +376,6 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         .getAccepted();
   }
 
-  void persistStatsChunk(
-      ReconcileJobStore.LeasedJob lease,
-      ReconcileSnapshotTask snapshotTask,
-      ResourceId tableId,
-      long snapshotId,
-      int chunkIndex,
-      List<TargetStatsRecord> statsRecords) {
-    SnapshotFinalizeCoverageService.ExpectedCoverage coverage =
-        coverageService.expectedCoverage(snapshotTask);
-    requireKnownCoverage(coverage);
-    boolean requestsStatsOutputs = requestsStatsOutputs(lease);
-    switch (coverage.state()) {
-      case NON_EMPTY -> {
-        if (!requestsStatsOutputs) {
-          requireNoStatsRecords(statsRecords);
-          return;
-        }
-        List<TargetStatsRecord> aggregateStats =
-            persistence.validateAggregateStats(statsRecords, tableId, snapshotId);
-        if (aggregateStats.isEmpty()) {
-          return;
-        }
-        if (lease.fullRescan) {
-          return;
-        }
-        persistence.persistStats(aggregateStats);
-        jobs.persistSnapshotFinalizeDirectStatsProgress(
-            lease.jobId, lease.leaseEpoch, lease.fullRescan, chunkIndex, aggregateStats.size());
-      }
-      case DIRECT_STATS -> {
-        if (!requestsStatsOutputs) {
-          requireNoStatsRecords(statsRecords);
-          return;
-        }
-        List<TargetStatsRecord> directStats =
-            persistence.validateReplacementStats(statsRecords, tableId, snapshotId);
-        if (directStats.isEmpty()) {
-          if (lease.fullRescan && chunkIndex == 0) {
-            // A full-rescan finalize that finds no files RE-FINALIZES a LIVE snapshot: it must
-            // RETAIN superseded generations (a live query may have frozen one), not eagerly wipe
-            // every generation's blobs. Publish an empty generation exactly like the non-empty
-            // branch below — retention leaves the old generation for deleteUnreferencedGenerations
-            // to reclaim under its reference/age guards. deleteAllStatsForSnapshot's whole-prefix
-            // teardown is reserved for actual snapshot deletion.
-            persistence.replaceAllStatsForSnapshot(tableId, snapshotId, java.util.List.of());
-            jobs.persistSnapshotFinalizeDirectStatsProgress(
-                lease.jobId, lease.leaseEpoch, true, 0, 0);
-          }
-          return;
-        }
-        if (lease.fullRescan && chunkIndex == 0) {
-          persistence.replaceAllStatsForSnapshot(tableId, snapshotId, directStats);
-        } else {
-          persistence.persistStats(directStats);
-        }
-        jobs.persistSnapshotFinalizeDirectStatsProgress(
-            lease.jobId, lease.leaseEpoch, lease.fullRescan, chunkIndex, directStats.size());
-      }
-      case EXPLICIT_EMPTY -> {
-        requireNoStatsRecords(statsRecords);
-      }
-      default ->
-          throw Status.FAILED_PRECONDITION.withDescription(coverage.message()).asRuntimeException();
-    }
-  }
-
-  void finalizeChunkedSuccess(
-      ReconcileJobStore.LeasedJob lease,
-      ReconcileSnapshotTask snapshotTask,
-      ResourceId tableId,
-      long snapshotId) {
-    SnapshotFinalizeCoverageService.ExpectedCoverage coverage =
-        coverageService.expectedCoverage(snapshotTask);
-    requireKnownCoverage(coverage);
-    boolean requestsStatsOutputs = requestsStatsOutputs(lease);
-    switch (coverage.state()) {
-      case NON_EMPTY -> {
-        if (!requestsStatsOutputs) {
-          return;
-        }
-        if (!lease.fullRescan && snapshotTask.directStatsPersistedRecordCount() > 0) {
-          return;
-        }
-        SnapshotFinalizeChildStateService.ChildState childState =
-            requireReadyChildState(lease, coverage);
-        Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
-        List<TargetStatsRecord> mergedAggregates =
-            aggregateKinds.isEmpty()
-                ? List.of()
-                : persistence.mergeCompletedGroupPartials(
-                    tableId, snapshotId, aggregateKinds, childState.completedGroupTasks());
-        if (lease.fullRescan) {
-          persistence.publishFileGroupStatsGeneration(
-              tableId,
-              snapshotId,
-              LeasedFileGroupExecutionService.statsGenerationId(lease),
-              mergedAggregates);
-        } else if (!mergedAggregates.isEmpty()) {
-          persistence.persistStats(mergedAggregates);
-        }
-      }
-      case DIRECT_STATS -> {
-        if (!requestsStatsOutputs) {
-          return;
-        }
-        requirePlannerDirectStatsRecordCount(
-            snapshotTask, snapshotTask.directStatsPersistedRecordCount());
-      }
-      case EXPLICIT_EMPTY -> {
-        if (requestsStatsOutputs) {
-          persistence.persistEmptySnapshotCompletionMarker(tableId, snapshotId, lease.fullRescan);
-        }
-      }
-      default ->
-          throw Status.FAILED_PRECONDITION.withDescription(coverage.message()).asRuntimeException();
-    }
-  }
-
   private static void requireAcceptedLeaseOutcome(boolean accepted, String jobId) {
     if (!accepted) {
       throw ReconcileLeaseGrpcStatus.leasePreconditionFailed(
@@ -310,14 +385,13 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
 
   private ReconcileJobStore.LeasedJob requireLeasedSnapshotFinalizeJob(
       String corr, String jobId, String leaseEpoch) {
-    boolean renewed = jobs.renewLease(jobId, leaseEpoch);
-    if (!renewed) {
+    if (!jobs.renewLease(jobId, leaseEpoch)) {
       throw Status.FAILED_PRECONDITION
           .withDescription("reconcile lease is no longer valid")
           .asRuntimeException();
     }
     ReconcileJobStore.ReconcileJob job =
-        jobs.getLeaseView(jobId)
+        jobs.getCompactLeaseView(jobId)
             .orElseThrow(
                 () ->
                     Status.NOT_FOUND
@@ -330,11 +404,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     }
     if (!isActiveLeasedState(job.state)) {
       throw Status.FAILED_PRECONDITION
-          .withDescription(
-              "reconcile job is no longer active for lease "
-                  + jobId
-                  + " state="
-                  + (job.state == null ? "" : job.state))
+          .withDescription("reconcile job is no longer active for lease " + jobId)
           .asRuntimeException();
     }
     return new ReconcileJobStore.LeasedJob(
@@ -381,18 +451,11 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         .build();
   }
 
-  private static SubmitLeasedSnapshotFinalizeResultRequest.Chunk chunkPayload(
-      String resultId, int chunkIndex, List<TargetStatsRecord> statsRecords) {
-    return SubmitLeasedSnapshotFinalizeResultRequest.Chunk.newBuilder()
-        .setResultId(resultId)
-        .setChunkIndex(Math.max(0, chunkIndex))
-        .addAllStatsRecords(statsRecords == null ? List.of() : statsRecords)
-        .build();
-  }
-
-  private static SubmitLeasedSnapshotFinalizeResultRequest.Success successPayload(String resultId) {
+  private static SubmitLeasedSnapshotFinalizeResultRequest.Success successPayload(
+      String resultId, SnapshotCaptureManifestDescriptor descriptor) {
     return SubmitLeasedSnapshotFinalizeResultRequest.Success.newBuilder()
         .setResultId(resultId)
+        .setManifestDescriptor(descriptor)
         .build();
   }
 
@@ -408,10 +471,6 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     return (jobId == null ? "" : jobId.trim()) + ":" + resultId;
   }
 
-  private static String chunkIdempotencyKey(String jobId, String resultId, int chunkIndex) {
-    return resultIdempotencyKey(jobId, resultId) + ":chunk:" + Math.max(0, chunkIndex);
-  }
-
   private static String requireResultId(String resultId) {
     if (resultId == null || resultId.isBlank()) {
       throw Status.INVALID_ARGUMENT
@@ -421,120 +480,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     return resultId.trim();
   }
 
-  private static Set<FloecatConnector.StatsTargetKind> requestedAggregateKinds(
-      ReconcileJobStore.LeasedJob lease) {
-    var policy =
-        lease == null || lease.scope == null
-            ? ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.empty()
-            : lease.scope.capturePolicy();
-    EnumSet<FloecatConnector.StatsTargetKind> out =
-        EnumSet.noneOf(FloecatConnector.StatsTargetKind.class);
-    for (var output : policy.outputs()) {
-      switch (output) {
-        case TABLE_STATS -> out.add(FloecatConnector.StatsTargetKind.TABLE);
-        case COLUMN_STATS -> out.add(FloecatConnector.StatsTargetKind.COLUMN);
-        default -> {}
-      }
-    }
-    return out;
-  }
-
-  private static boolean requestsStatsOutputs(ReconcileJobStore.LeasedJob lease) {
-    var policy =
-        lease == null || lease.scope == null
-            ? ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.empty()
-            : lease.scope.capturePolicy();
-    for (var output : policy.outputs()) {
-      switch (output) {
-        case TABLE_STATS, FILE_STATS, COLUMN_STATS -> {
-          return true;
-        }
-        default -> {}
-      }
-    }
-    return false;
-  }
-
   private static boolean isActiveLeasedState(String state) {
     return "JS_RUNNING".equals(state) || "JS_CANCELLING".equals(state);
-  }
-
-  private static void requireKnownCoverage(
-      SnapshotFinalizeCoverageService.ExpectedCoverage coverage) {
-    if (coverage.state() == SnapshotFinalizeCoverageService.PlannedCoverageState.UNKNOWN) {
-      throw Status.FAILED_PRECONDITION.withDescription(coverage.message()).asRuntimeException();
-    }
-  }
-
-  private static void requireNoStatsRecords(List<TargetStatsRecord> statsRecords) {
-    if (statsRecords != null && !statsRecords.isEmpty()) {
-      throw Status.INVALID_ARGUMENT
-          .withDescription(
-              "snapshot finalize chunk must not include stats records for this submission")
-          .asRuntimeException();
-    }
-  }
-
-  private static void requirePlannerDirectStatsRecordCount(
-      ReconcileSnapshotTask snapshotTask, int actualRecordCount) {
-    ReconcileSnapshotTask effective =
-        snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
-    if (effective.directStatsRecordCount() > 0
-        && actualRecordCount != effective.directStatsRecordCount()) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription(
-              "snapshot finalize direct stats record count mismatch expected="
-                  + effective.directStatsRecordCount()
-                  + " actual="
-                  + actualRecordCount)
-          .asRuntimeException();
-    }
-  }
-
-  private SnapshotFinalizeChildStateService.ChildState requireReadyChildState(
-      ReconcileJobStore.LeasedJob lease,
-      SnapshotFinalizeCoverageService.ExpectedCoverage coverage) {
-    SnapshotFinalizeChildStateService.ChildState childState =
-        childStateService.childState(
-            lease.accountId, lease.parentJobId, lease.jobId, coverage.expectedGroups());
-    if (!childState.duplicateGroups().isEmpty()) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription(
-              "snapshot finalization found duplicate EXEC_FILE_GROUP children for planned groups "
-                  + childState.duplicateGroups())
-          .asRuntimeException();
-    }
-    if (!childState.invalidSucceededGroups().isEmpty()) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription(
-              "snapshot finalization found succeeded file-group jobs without persisted success"
-                  + " results "
-                  + childState.invalidSucceededGroups())
-          .asRuntimeException();
-    }
-    if (!childState.failedGroups().isEmpty()) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription(
-              "snapshot finalization blocked by failed file-group jobs "
-                  + childState.failedGroups())
-          .asRuntimeException();
-    }
-    if (!childState.cancelledGroups().isEmpty()) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription(
-              "snapshot finalization blocked by cancelled file-group jobs "
-                  + childState.cancelledGroups())
-          .asRuntimeException();
-    }
-    if (!childState.pendingGroups().isEmpty() || !childState.missingGroups().isEmpty()) {
-      throw Status.FAILED_PRECONDITION
-          .withDescription(
-              "snapshot finalization waiting for snapshot file groups "
-                  + (childState.pendingGroups().isEmpty()
-                      ? childState.missingGroups()
-                      : childState.pendingGroups()))
-          .asRuntimeException();
-    }
-    return childState;
   }
 }

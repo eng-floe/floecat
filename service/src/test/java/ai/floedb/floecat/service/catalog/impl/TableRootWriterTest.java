@@ -128,6 +128,31 @@ class TableRootWriterTest {
   }
 
   @Test
+  void commitSnapshotCaptureRegistersAndPublishesInOneRootCommit() {
+    Snapshot candidate =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(8L)
+            .setUpstreamCreatedAt(Timestamps.fromMillis(8_000L))
+            .build();
+    BlobRef manifestRef =
+        BlobRef.newBuilder().setUri("s3://t/capture/8.pb").setVersion("sha256-8").build();
+    when(snapshotRepo.metaForSafe(tableId, 8L)).thenReturn(snapMeta(8L));
+    when(tableRepo.metaForSafe(tableId)).thenReturn(tableMeta());
+    when(snapshotRepo.latestRegisteredSnapshotPointer(tableId))
+        .thenReturn(Optional.of(pointer(8L)));
+    long versionBefore = roots.metaForSafe(tableId).getPointerVersion();
+
+    writer.commitSnapshotCapture(tableId, candidate, manifestRef);
+
+    var root = roots.get(tableId).orElseThrow();
+    assertEquals(versionBefore + 1L, roots.metaForSafe(tableId).getPointerVersion());
+    assertEquals(8L, root.getCurrentSnapshotId());
+    assertEquals("s3://t/snap-8.pb", entry(8L).getSnapshotRef().getUri());
+    assertEquals(manifestRef, entry(8L).getStatsGenerationRef());
+  }
+
+  @Test
   void commitStatsGenerationClearsTheRefWhenTheGenerationIsGone() {
     when(statsStore.activeStatsGeneration(tableId, 7L))
         .thenReturn(Optional.of("s3://t/stats/7/gen-1.pb"));

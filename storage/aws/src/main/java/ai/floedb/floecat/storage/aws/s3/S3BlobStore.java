@@ -173,6 +173,39 @@ public class S3BlobStore implements BlobStore {
   }
 
   @Override
+  public byte[] getRange(String key, long offset, int length) {
+    if (offset < 0L || length < 0) {
+      throw new IllegalArgumentException("blob range offset and length must be non-negative");
+    }
+    if (length == 0) {
+      return new byte[0];
+    }
+    final String k = normalize(key);
+    final long end = Math.addExact(offset, length - 1L);
+    try {
+      return s3.call(
+              c ->
+                  c.getObject(
+                      GetObjectRequest.builder()
+                          .bucket(bucket)
+                          .key(k)
+                          .range("bytes=" + offset + "-" + end)
+                          .build(),
+                      ResponseTransformer.toBytes()))
+          .asByteArray();
+    } catch (S3Exception e) {
+      if (e.statusCode() == 404) {
+        throw new StorageNotFoundException(msg("GET_RANGE", k, "not found"));
+      }
+      throw mapAndWrap("GET_RANGE", k, e);
+    } catch (SdkClientException e) {
+      throw new StorageAbortRetryableException(msg("GET_RANGE", k, e.getMessage()));
+    } catch (RuntimeException e) {
+      throw mapClosedPoolOrRethrow("GET_RANGE", k, e);
+    }
+  }
+
+  @Override
   public void put(String key, byte[] bytes, String contentType) {
     final String k = normalize(key);
     try {
@@ -365,9 +398,10 @@ public class S3BlobStore implements BlobStore {
   }
 
   @Override
-  public void deletePrefix(String prefix) {
+  public int deletePrefix(String prefix) {
     final String p = normalize(prefix);
     String ct = null;
+    int deleted = 0;
 
     try {
       do {
@@ -387,7 +421,24 @@ public class S3BlobStore implements BlobStore {
             var slice = objs.subList(i, Math.min(i + 1000, objs.size()));
             var dels =
                 slice.stream().map(o -> ObjectIdentifier.builder().key(o.key()).build()).toList();
-            s3.call(c -> c.deleteObjects(b -> b.bucket(bucket).delete(d -> d.objects(dels))));
+            var deleteResponse =
+                s3.call(c -> c.deleteObjects(b -> b.bucket(bucket).delete(d -> d.objects(dels))));
+            if (deleteResponse.hasErrors()) {
+              String failures =
+                  deleteResponse.errors().stream()
+                      .limit(10)
+                      .map(error -> error.key() + ":" + error.code())
+                      .collect(java.util.stream.Collectors.joining(","));
+              throw new StorageAbortRetryableException(
+                  msg(
+                      "DELETE_PREFIX",
+                      p,
+                      "S3 rejected "
+                          + deleteResponse.errors().size()
+                          + " object delete(s): "
+                          + failures));
+            }
+            deleted += slice.size();
           }
         }
 
@@ -396,11 +447,9 @@ public class S3BlobStore implements BlobStore {
       } while (ct != null);
 
       if (p.endsWith("/")) {
-        try {
-          s3.call(c -> c.deleteObject(b -> b.bucket(bucket).key(p)));
-        } catch (Throwable ignore) {
-        }
+        s3.call(c -> c.deleteObject(b -> b.bucket(bucket).key(p)));
       }
+      return deleted;
 
     } catch (S3Exception e) {
       throw mapAndWrap("DELETE_PREFIX", p, e);

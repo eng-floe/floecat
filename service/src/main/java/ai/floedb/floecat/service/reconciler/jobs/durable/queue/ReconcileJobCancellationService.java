@@ -88,6 +88,9 @@ public class ReconcileJobCancellationService {
               if (isTerminalState(existing.state) || "JS_CANCELLING".equals(existing.state)) {
                 return null;
               }
+              if ("JS_RUNNING".equals(existing.state) && existing.snapshotFinalizeCommitStarted) {
+                return null;
+              }
               if ("JS_RUNNING".equals(existing.state)) {
                 long now = System.currentTimeMillis();
                 existing.state = "JS_CANCELLING";

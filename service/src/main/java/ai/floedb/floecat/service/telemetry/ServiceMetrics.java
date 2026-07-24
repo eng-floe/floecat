@@ -42,6 +42,16 @@ public final class ServiceMetrics {
             "",
             CONTRACT,
             "service");
+    public static final MetricId REFRESH_DURATION =
+        new MetricId(
+            "floecat.service.storage.refresh.duration",
+            MetricType.TIMER,
+            "ms",
+            CONTRACT,
+            "service");
+    public static final MetricId FAILURES =
+        new MetricId(
+            "floecat.service.storage.failures.total", MetricType.COUNTER, "", CONTRACT, "service");
   }
 
   public static final class Flight {

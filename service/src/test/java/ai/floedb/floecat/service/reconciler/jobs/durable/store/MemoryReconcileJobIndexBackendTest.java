@@ -32,6 +32,39 @@ import org.junit.jupiter.api.Test;
 class MemoryReconcileJobIndexBackendTest {
 
   @Test
+  void clearInMemoryStateDropsCleanupMetadataAndMigrationState() {
+    String canonicalKey = Keys.reconcileJobPointerById("acct", "job");
+    String lookupKey = Keys.reconcileJobLookupPointerById("job");
+    MemoryReconcileJobIndexBackend backend =
+        new MemoryReconcileJobIndexBackend(new InMemoryPointerStore());
+    assertTrue(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        canonicalKey,
+                        0L,
+                        "inline:reconcile-job:e30",
+                        PointerReferenceKind.PRK_INLINE_JSON,
+                        new ReconcileJobIndexCleanupManifest(List.of(lookupKey), List.of()))),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+    assertTrue(
+        backend
+            .acquireLegacyMigrationLease(
+                ReconcileJobIndexBackend.LegacyMigration.CLEANUP, "owner", 1L, 100L)
+            .isPresent());
+
+    backend.clearInMemoryState();
+
+    assertTrue(backend.loadCleanupManifest(canonicalKey).isEmpty());
+    assertTrue(
+        backend
+            .acquireLegacyMigrationLease(
+                ReconcileJobIndexBackend.LegacyMigration.CLEANUP, "new-owner", 2L, 100L)
+            .isPresent());
+  }
+
+  @Test
   void rejectsTransactionOverDynamoPhysicalItemLimit() {
     MemoryReconcileJobIndexBackend backend =
         new MemoryReconcileJobIndexBackend(new InMemoryPointerStore());
@@ -194,52 +227,5 @@ class MemoryReconcileJobIndexBackendTest {
 
     assertTrue(discovered.indexPointerKeys().contains(parentKey));
     assertFalse(discovered.indexPointerKeys().contains(leaseExpiryKey));
-  }
-
-  @Test
-  void beginCleanupRepairsInvalidStoredManifestFromOwnedReferences() {
-    String accountId = "acct-1";
-    String jobId = "job-1";
-    String canonicalKey = Keys.reconcileJobPointerById(accountId, jobId);
-    String parentKey = Keys.reconcileJobByParentPointer(accountId, "parent-1", jobId);
-    String readyKey = Keys.reconcileReadyPointerByDue(1_000L, accountId, "lane-1", jobId);
-    String invalidIndexKey = Keys.reconcileJobLeaseExpiryPointer(1_000L, accountId, jobId);
-    String projectionKey = Keys.reconcileJobProjectionPointer(accountId, jobId);
-    String blob = "inline:reconcile-job:e30";
-    InMemoryPointerStore pointers = new InMemoryPointerStore();
-    MemoryReconcileJobIndexBackend backend = new MemoryReconcileJobIndexBackend(pointers);
-    var malformed =
-        new ReconcileJobIndexCleanupManifest(
-            List.of(invalidIndexKey), List.of(), List.of(projectionKey));
-    assertTrue(
-        backend.compareAndSetBatch(
-            new ReconcileJobIndexStore.JobIndexWriteBatch(
-                List.of(
-                    new ReconcileJobIndexStore.JobIndexUpsert(
-                        canonicalKey, 0L, blob, PointerReferenceKind.PRK_INLINE_JSON, malformed)),
-                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
-    assertTrue(
-        pointers.compareAndSet(
-            parentKey, 0L, PointerReferences.pointerKeyPointer(parentKey, canonicalKey, 1L)));
-    assertTrue(
-        pointers.compareAndSet(
-            readyKey, 0L, PointerReferences.pointerKeyPointer(readyKey, canonicalKey, 1L)));
-    JobIndexEntrySnapshot canonical = backend.loadIndexEntry(canonicalKey).orElseThrow();
-    var fallback =
-        new ReconcileJobIndexCleanupManifest(List.of(), List.of(), List.of(projectionKey));
-
-    ReconcileJobIndexBackend.JobCleanupSession session =
-        backend
-            .beginJobCleanup(
-                new CanonicalPointerSnapshot(
-                    canonical.pointerKey(), canonical.blobUri(), canonical.version()),
-                fallback)
-            .orElseThrow();
-
-    assertTrue(session.manifest().indexPointerKeys().contains(parentKey));
-    assertTrue(session.manifest().readyPointerKeys().contains(readyKey));
-    assertTrue(session.manifest().pointerKeys().contains(projectionKey));
-    assertFalse(session.manifest().indexPointerKeys().contains(invalidIndexKey));
-    assertTrue(backend.loadIndexEntry(canonicalKey).orElseThrow().cleanupLocked());
   }
 }

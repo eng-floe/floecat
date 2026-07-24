@@ -93,4 +93,14 @@ class InMemoryBlobStoreVersioningTest {
     var store = new InMemoryBlobStore();
     assertTrue(store.delete("/accounts/a/tables/t/table/never-existed.pb", "42"));
   }
+
+  @Test
+  void readsAnExactByteRange() {
+    var store = new InMemoryBlobStore();
+    store.put("/k", "0123456789".getBytes(StandardCharsets.UTF_8), "text/plain");
+
+    assertEquals("3456", new String(store.getRange("/k", 3, 4), StandardCharsets.UTF_8));
+    assertEquals(0, store.getRange("/k", 10, 0).length);
+    assertThrows(IllegalArgumentException.class, () -> store.getRange("/k", 8, 3));
+  }
 }

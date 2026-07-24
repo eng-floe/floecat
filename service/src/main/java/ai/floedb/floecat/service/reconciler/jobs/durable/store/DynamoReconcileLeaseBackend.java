@@ -22,6 +22,7 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -35,6 +36,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.jboss.logging.Logger;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.ConditionCheck;
@@ -50,6 +52,7 @@ import software.amazon.awssdk.services.dynamodb.model.Update;
 @Singleton
 @IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
 public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
+  private static final Logger LOG = Logger.getLogger(DynamoReconcileLeaseBackend.class);
   private static final String ATTR_BLOB_URI = "blob_uri";
 
   @Inject Instance<DynamoDbClientManager> dynamoDbClientManager;
@@ -155,10 +158,13 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
 
   @Override
   public boolean compareAndSetBatch(
-      ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch, LeaseWriteBatch leaseBatch) {
+      ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch,
+      LeaseWriteBatch leaseBatch,
+      List<PointerStore.UnconditionalUpsert> pointerTouches) {
     if ((jobIndexBatch == null
             || (jobIndexBatch.writes().isEmpty() && jobIndexBatch.readyMutation().isEmpty()))
-        && (leaseBatch == null || leaseBatch.writes().isEmpty())) {
+        && (leaseBatch == null || leaseBatch.writes().isEmpty())
+        && (pointerTouches == null || pointerTouches.isEmpty())) {
       return true;
     }
     List<TransactWriteItem> tx = new ArrayList<>();
@@ -193,6 +199,7 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
         }
       }
     }
+    int jobItemCount = tx.size();
     if (leaseBatch != null) {
       Set<String> mutatedLeaseRecords = new HashSet<>();
       Map<String, Long> conditionedLeaseRecords = new HashMap<>();
@@ -233,15 +240,61 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
         }
       }
     }
+    if (pointerTouches != null) {
+      for (PointerStore.UnconditionalUpsert pointerTouch : pointerTouches) {
+        tx.add(
+            DynamoReconcileJobIndexBackend.buildGenericPointerUnconditionalUpsert(
+                table, pointerTouch));
+      }
+    }
     ReconcileJobWriteLimits.requireWithinTransactionLimit(tx.size());
+    long startedNanos = System.nanoTime();
     try {
       dynamoCaller.callVoid(
           dynamoDbClientManager,
           client ->
               client.transactWriteItems(
                   TransactWriteItemsRequest.builder().transactItems(tx).build()));
+      LOG.infof(
+          "reconcile_lease_transaction outcome=committed items=%d job_items=%d"
+              + " lease_items=%d marker_items=%d latency_ms=%.3f",
+          Integer.valueOf(tx.size()),
+          Integer.valueOf(jobItemCount),
+          Integer.valueOf(
+              tx.size() - jobItemCount - (pointerTouches == null ? 0 : pointerTouches.size())),
+          Integer.valueOf(pointerTouches == null ? 0 : pointerTouches.size()),
+          (System.nanoTime() - startedNanos) / 1_000_000.0);
       return true;
     } catch (TransactionCanceledException e) {
+      int canonicalConflicts = 0;
+      int leaseConflicts = 0;
+      int markerConflicts = 0;
+      if (e.cancellationReasons() != null) {
+        int markerStart = tx.size() - (pointerTouches == null ? 0 : pointerTouches.size());
+        for (int i = 0; i < e.cancellationReasons().size(); i++) {
+          String code = e.cancellationReasons().get(i).code();
+          if ("None".equals(code)) {
+            continue;
+          }
+          if (i < jobItemCount) {
+            canonicalConflicts++;
+          } else if (i < markerStart) {
+            leaseConflicts++;
+          } else {
+            markerConflicts++;
+          }
+        }
+      }
+      LOG.infof(
+          "reconcile_lease_transaction outcome=cancelled items=%d job_items=%d"
+              + " canonical_conflicts=%d lease_conflicts=%d dirty_marker_conflicts=%d"
+              + " latency_ms=%.3f",
+          Integer.valueOf(tx.size()),
+          Integer.valueOf(jobItemCount),
+          Integer.valueOf(canonicalConflicts),
+          Integer.valueOf(leaseConflicts),
+          Integer.valueOf(markerConflicts),
+          (System.nanoTime() - startedNanos) / 1_000_000.0);
       return false;
     }
   }
@@ -535,6 +588,18 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
       return;
     }
+    var terminalRetentionKey =
+        JobIndexBackendSupport.parseTerminalRetentionKey(upsert.pointerKey());
+    if (terminalRetentionKey != null) {
+      tx.add(
+          buildJobIndexReferenceUpsert(
+              JobIndexBackendSupport.terminalRetentionPartitionKey(terminalRetentionKey),
+              JobIndexBackendSupport.terminalRetentionSortKey(terminalRetentionKey),
+              JobIndexBackendSupport.KIND_TERMINAL_RETENTION,
+              upsert,
+              JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
+      return;
+    }
     throw new IllegalArgumentException(
         "Unsupported reconcile job index upsert key: " + upsert.pointerKey());
   }
@@ -613,6 +678,16 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
           buildReferenceDelete(
               JobIndexBackendSupport.dedupePartitionKey(dedupeKey),
               JobIndexBackendSupport.dedupeSortKey(dedupeKey),
+              delete));
+      return;
+    }
+    var terminalRetentionKey =
+        JobIndexBackendSupport.parseTerminalRetentionKey(delete.pointerKey());
+    if (terminalRetentionKey != null) {
+      tx.add(
+          buildReferenceDelete(
+              JobIndexBackendSupport.terminalRetentionPartitionKey(terminalRetentionKey),
+              JobIndexBackendSupport.terminalRetentionSortKey(terminalRetentionKey),
               delete));
       return;
     }

@@ -32,6 +32,7 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -43,14 +44,16 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
     runner.reconcileWorkerAuthProvider = ignored -> Optional.of("Bearer worker-token");
     when(runner.captureEngineRegistry.capture(any())).thenReturn(CaptureEngineResult.empty());
+    BooleanSupplier shouldStop = () -> false;
 
-    runner.execute(payload());
+    runner.execute(payload(), shouldStop);
 
     ArgumentCaptor<CaptureEngineRequest> request =
         ArgumentCaptor.forClass(CaptureEngineRequest.class);
     org.mockito.Mockito.verify(runner.captureEngineRegistry).capture(request.capture());
     assertThat(request.getValue().authorizationToken()).contains("Bearer worker-token");
     assertThat(request.getValue().storageLocation()).contains("s3://bucket/path");
+    assertThat(request.getValue().shouldStop()).isSameAs(shouldStop);
   }
 
   @Test
@@ -60,7 +63,7 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
     when(runner.captureEngineRegistry.capture(any())).thenReturn(CaptureEngineResult.empty());
 
-    runner.execute(payload());
+    runner.execute(payload(), () -> false);
 
     ArgumentCaptor<CaptureEngineRequest> request =
         ArgumentCaptor.forClass(CaptureEngineRequest.class);
@@ -76,8 +79,8 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         accountId -> Optional.of("Bearer worker-token-" + accountId);
     when(runner.captureEngineRegistry.capture(any())).thenReturn(CaptureEngineResult.empty());
 
-    runner.execute(payload("acct-a"));
-    runner.execute(payload("acct-b"));
+    runner.execute(payload("acct-a"), () -> false);
+    runner.execute(payload("acct-b"), () -> false);
 
     ArgumentCaptor<CaptureEngineRequest> request =
         ArgumentCaptor.forClass(CaptureEngineRequest.class);
@@ -96,7 +99,7 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
     when(runner.captureEngineRegistry.capture(any())).thenReturn(CaptureEngineResult.empty());
 
-    runner.execute(payload());
+    runner.execute(payload(), () -> false);
 
     ArgumentCaptor<CaptureEngineRequest> request =
         ArgumentCaptor.forClass(CaptureEngineRequest.class);
@@ -128,6 +131,8 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         1L,
         "plan-1",
         "group-1",
+        "/result.pb",
+        "/stats.pb",
         List.of("s3://bucket/path/file.parquet"),
         ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.TABLE_STATS)));
   }

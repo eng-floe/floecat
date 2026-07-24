@@ -183,6 +183,8 @@ public final class InMemoryKvStore implements KvStore {
           } else if (existing == null || existing.version() != put.expectedVersion()) {
             return Uni.createFrom().item(false);
           }
+        } else if (op instanceof TxnPutUnconditional) {
+          // No precondition.
         } else if (op instanceof TxnDelete delete) {
           Record existing = records.get(delete.key());
           if (existing == null || existing.version() != delete.expectedVersion()) {
@@ -202,6 +204,8 @@ public final class InMemoryKvStore implements KvStore {
 
       for (TxnOp op : ops) {
         if (op instanceof TxnPut put) {
+          records.put(put.record().key(), put.record());
+        } else if (op instanceof TxnPutUnconditional put) {
           records.put(put.record().key(), put.record());
         } else if (op instanceof TxnDelete delete) {
           records.remove(delete.key());

@@ -85,7 +85,20 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         Storage.ACCOUNT_BYTES,
         accountTag,
         accountTag,
-        "Estimated per-account storage byte consumption (sampled, not exact).");
+        "Per-account storage byte consumption maintained by the storage accounting ledger.");
+    Set<String> storageOperationTag = Set.of(TagKey.OPERATION);
+    add(
+        defs,
+        Storage.REFRESH_DURATION,
+        storageOperationTag,
+        storageOperationTag,
+        "Time spent refreshing per-account storage gauges from accounting counters.");
+    add(
+        defs,
+        Storage.FAILURES,
+        storageOperationTag,
+        Set.of(TagKey.OPERATION, TagKey.ACCOUNT),
+        "Storage accounting refresh failures.");
     Set<String> partialStateTags = Set.of(TagKey.OPERATION, TagKey.RESOURCE);
     add(
         defs,

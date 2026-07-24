@@ -140,26 +140,18 @@ public final class TableMetadataBuilder {
       lastSequenceNumber = 0L;
     }
     Snapshot currentSnapshot = resolveCurrentSnapshot(snapshots, currentSnapshotId);
-    List<Map<String, Object>> schemaList = schemasFromSnapshot(currentSnapshot, table, deltaTable);
+    List<Map<String, Object>> schemaList =
+        schemasFromCatalog(snapshots, table, deltaTable, currentSchemaId);
     if (!schemaList.isEmpty()) {
-      Map<String, Object> currentSchema = schemaList.get(0);
+      Map<String, Object> currentSchema = schemaById(schemaList, currentSchemaId);
+      if (currentSchema == null) {
+        currentSchema = schemaList.get(schemaList.size() - 1);
+      }
       if (currentSchemaId == null) {
         currentSchemaId = asInteger(currentSchema.get("schema-id"));
       }
       if (lastColumnId == null) {
         lastColumnId = asInteger(currentSchema.get("last-column-id"));
-      }
-    }
-    if (schemaList.isEmpty()) {
-      Map<String, Object> schema = schemaFromTable(table, deltaTable, currentSchemaId);
-      if (schema != null) {
-        schemaList = List.of(schema);
-        if (currentSchemaId == null) {
-          currentSchemaId = asInteger(schema.get("schema-id"));
-        }
-        if (lastColumnId == null) {
-          lastColumnId = asInteger(schema.get("last-column-id"));
-        }
       }
     }
     List<Map<String, Object>> specList = partitionSpecsFromSnapshot(currentSnapshot);
@@ -274,8 +266,25 @@ public final class TableMetadataBuilder {
         .orElse(null);
   }
 
+  private static List<Map<String, Object>> schemasFromCatalog(
+      List<Snapshot> snapshots, Table table, boolean deltaTable, Integer currentSchemaId) {
+    List<Map<String, Object>> schemas = new ArrayList<>();
+    if (snapshots != null) {
+      for (Snapshot snapshot : snapshots) {
+        for (Map<String, Object> schema : schemasFromSnapshot(snapshot, deltaTable)) {
+          MetadataListUtil.upsertById(schemas, schema, "schema-id");
+        }
+      }
+    }
+    Map<String, Object> tableSchema = schemaFromTable(table, deltaTable, currentSchemaId);
+    if (tableSchema != null) {
+      MetadataListUtil.upsertById(schemas, tableSchema, "schema-id");
+    }
+    return List.copyOf(schemas);
+  }
+
   private static List<Map<String, Object>> schemasFromSnapshot(
-      Snapshot snapshot, Table table, boolean deltaTable) {
+      Snapshot snapshot, boolean deltaTable) {
     if (snapshot == null
         || snapshot.getSchemaJson() == null
         || snapshot.getSchemaJson().isBlank()) {
@@ -297,6 +306,19 @@ public final class TableMetadataBuilder {
       schema.put("schema-id", snapshot.getSchemaId());
     }
     return List.of(schema);
+  }
+
+  private static Map<String, Object> schemaById(
+      List<Map<String, Object>> schemas, Integer schemaId) {
+    if (schemas == null || schemas.isEmpty() || schemaId == null) {
+      return null;
+    }
+    for (Map<String, Object> schema : schemas) {
+      if (schema != null && schemaId.equals(asInteger(schema.get("schema-id")))) {
+        return schema;
+      }
+    }
+    return null;
   }
 
   private static List<Map<String, Object>> partitionSpecsFromSnapshot(Snapshot snapshot) {

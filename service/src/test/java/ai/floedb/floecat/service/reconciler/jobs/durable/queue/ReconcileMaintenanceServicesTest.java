@@ -30,6 +30,7 @@ import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileProjectionMaintenanceService.RefreshResult;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobExecutionLoader;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileLeaseStateCodec;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.CanonicalPointerSnapshot;
@@ -69,14 +70,14 @@ class ReconcileMaintenanceServicesTest {
 
     service.bind(
         pointerStore,
-        (accountId, parentJobId) -> {
+        (accountId, parentJobId, generation, markerKey, markerVersion) -> {
           refreshed.add(parentJobId);
           if (parentJobId.startsWith("a") && churnCount.getAndIncrement() < 100) {
             String nextParentId = "a" + String.format("%03d", churnCount.get());
             putDirtyMarker(pointerStore, accountId, nextParentId);
           }
+          return RefreshResult.OBSOLETE;
         },
-        (accountId, parentJobId) -> false,
         1);
 
     service.runProjectionMaintenanceOnce(200L);
@@ -101,15 +102,15 @@ class ReconcileMaintenanceServicesTest {
 
     service.bind(
         pointerStore,
-        (accountId, parentJobId) -> {
+        (accountId, parentJobId, generation, markerKey, markerVersion) -> {
           refreshed.add(parentJobId);
           if (churningChildJobId.equals(parentJobId)) {
             putDirtyMarker(pointerStore, accountId, parentJobId);
             putDirtyMarker(pointerStore, accountId, rootJobId);
             sleepUnchecked(5L);
           }
+          return RefreshResult.OBSOLETE;
         },
-        (accountId, parentJobId) -> false,
         1);
 
     service.runProjectionMaintenanceOnce(1L);
@@ -121,57 +122,14 @@ class ReconcileMaintenanceServicesTest {
   }
 
   @Test
-  void leaseMaintenancePrunesOrphanedReadyPointer() {
-    TestReadyQueueBackend readyQueueBackend = new TestReadyQueueBackend();
+  void leaseMaintenanceQueriesOnlyExpiryIndex() {
+    NoopLeaseStore leaseStore = new NoopLeaseStore();
     ReconcileLeaseMaintenanceService service = new ReconcileLeaseMaintenanceService();
-
-    service.bind(
-        new NoopLeaseStore(),
-        readyQueueBackend,
-        mock(ReconcileReadyQueueStore.class),
-        mock(ReconcileJobIndexStore.class),
-        (entry, nowMs) -> {},
-        record -> false,
-        10,
-        5_000L);
+    service.bind(leaseStore, (entry, nowMs) -> {}, 10, 0L);
 
     service.runLeaseMaintenanceOnce(200L);
 
-    assertTrue(readyQueueBackend.deleted.contains("rp-orphan"));
-  }
-
-  @Test
-  void leaseMaintenancePrunesCancellationBlockedReadyPointer() {
-    TestReadyQueueBackend readyQueueBackend = new TestReadyQueueBackend();
-    CanonicalPointerSnapshot snapshot = new CanonicalPointerSnapshot("cp-blocked", "blob", 1L);
-    readyQueueBackend.readyPointerKey = "rp-blocked";
-    readyQueueBackend.canonicalPointerKey = "cp-blocked";
-    readyQueueBackend.snapshot = Optional.of(snapshot);
-    StoredReconcileJob record = new StoredReconcileJob();
-    record.accountId = "acct";
-    record.jobId = "job";
-
-    ReconcileReadyQueueStore readyQueueStore = mock(ReconcileReadyQueueStore.class);
-    when(readyQueueStore.readyPointerMatchesRecord(
-            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.same(record)))
-        .thenReturn(true);
-    ReconcileJobIndexStore jobIndexStore = mock(ReconcileJobIndexStore.class);
-    when(jobIndexStore.readRecord(snapshot)).thenReturn(Optional.of(record));
-
-    ReconcileLeaseMaintenanceService service = new ReconcileLeaseMaintenanceService();
-    service.bind(
-        new NoopLeaseStore(),
-        readyQueueBackend,
-        readyQueueStore,
-        jobIndexStore,
-        (entry, nowMs) -> {},
-        blocked -> true,
-        10,
-        5_000L);
-
-    service.runLeaseMaintenanceOnce(200L);
-
-    assertTrue(readyQueueBackend.deleted.contains("rp-blocked"));
+    assertEquals(1, leaseStore.expiryQueries.get());
   }
 
   @Test
@@ -287,8 +245,10 @@ class ReconcileMaintenanceServicesTest {
 
     service.bind(
         pointerStore,
-        (accountId, parentJobId) -> events.add("refresh:" + parentJobId),
-        (accountId, parentJobId) -> false,
+        (accountId, parentJobId, generation, markerKey, markerVersion) -> {
+          events.add("refresh:" + parentJobId);
+          return RefreshResult.OBSOLETE;
+        },
         10);
 
     service.runProjectionMaintenanceOnce(200L);
@@ -308,8 +268,7 @@ class ReconcileMaintenanceServicesTest {
 
     service.bind(
         pointerStore,
-        (accountId, parentJobId) -> events.add("refresh:" + parentJobId),
-        (accountId, parentJobId) -> true,
+        (accountId, parentJobId, generation, markerKey, markerVersion) -> RefreshResult.OBSOLETE,
         10);
 
     service.runProjectionMaintenanceOnce(200L);
@@ -317,6 +276,164 @@ class ReconcileMaintenanceServicesTest {
     assertTrue(events.isEmpty());
     assertTrue(
         pointerStore.get(Keys.reconcileDirtyParentPointer("acct", "cancelled-child")).isEmpty());
+  }
+
+  @Test
+  void dirtyParentRefreshDebouncesUntilMarkerIsDue() {
+    TestPointerStore pointerStore = new TestPointerStore();
+    ReconcileProjectionMaintenanceService service = new ReconcileProjectionMaintenanceService();
+    List<String> events = new ArrayList<>();
+    putDirtyMarker(pointerStore, "acct", "parent", 7L, System.currentTimeMillis() + 60_000L);
+    service.bind(
+        pointerStore,
+        (accountId, parentJobId, generation, markerKey, markerVersion) -> {
+          events.add(parentJobId);
+          return RefreshResult.OBSOLETE;
+        },
+        10);
+
+    service.runProjectionMaintenanceOnce(200L);
+    int readsAfterFirstTick = pointerStore.prefixReads.get();
+    service.runProjectionMaintenanceOnce(200L);
+
+    assertTrue(events.isEmpty());
+    assertEquals(readsAfterFirstTick, pointerStore.prefixReads.get());
+    assertTrue(pointerStore.get(Keys.reconcileDirtyParentPointer("acct", "parent")).isPresent());
+  }
+
+  @Test
+  void newerGenerationSurvivesRefreshOfObservedMarker() {
+    PointerStore pointerStore = new TestPointerStore();
+    ReconcileProjectionMaintenanceService service = new ReconcileProjectionMaintenanceService();
+    AtomicInteger refreshes = new AtomicInteger();
+    putDirtyMarker(pointerStore, "acct", "parent", 1L, 0L);
+    service.bind(
+        pointerStore,
+        (accountId, parentJobId, generation, markerKey, markerVersion) -> {
+          if (refreshes.incrementAndGet() == 1) {
+            putDirtyMarker(pointerStore, accountId, parentJobId, 2L, 0L);
+          }
+          return RefreshResult.OBSOLETE;
+        },
+        10);
+
+    service.runProjectionMaintenanceOnce(200L);
+    assertTrue(pointerStore.get(Keys.reconcileDirtyParentPointer("acct", "parent")).isPresent());
+    service.runProjectionMaintenanceOnce(200L);
+
+    assertEquals(2, refreshes.get());
+    assertTrue(pointerStore.get(Keys.reconcileDirtyParentPointer("acct", "parent")).isEmpty());
+  }
+
+  @Test
+  void retryableProjectionConflictRetainsObservedMarkerForNextTick() {
+    PointerStore pointerStore = new TestPointerStore();
+    ReconcileProjectionMaintenanceService service = new ReconcileProjectionMaintenanceService();
+    AtomicInteger attempts = new AtomicInteger();
+    String markerKey = Keys.reconcileDirtyParentPointer("acct", "parent");
+    putDirtyMarker(pointerStore, "acct", "parent", 1L, 0L);
+    service.bind(
+        pointerStore,
+        (accountId, parentJobId, generation, key, markerVersion) ->
+            attempts.incrementAndGet() == 1
+                ? RefreshResult.PROJECTION_CONFLICT
+                : RefreshResult.OBSOLETE,
+        10);
+
+    service.runProjectionMaintenanceOnce(200L);
+    assertTrue(pointerStore.get(markerKey).isPresent());
+
+    service.runProjectionMaintenanceOnce(200L);
+    assertEquals(2, attempts.get());
+    assertTrue(pointerStore.get(markerKey).isEmpty());
+  }
+
+  @Test
+  void markerAcknowledgementConflictDefersNewerMarkerWithoutRetryingProjectionCommit() {
+    PointerStore pointerStore = new TestPointerStore();
+    ReconcileProjectionMaintenanceService service = new ReconcileProjectionMaintenanceService();
+    AtomicInteger attempts = new AtomicInteger();
+    String markerKey = Keys.reconcileDirtyParentPointer("acct", "parent");
+    putDirtyMarker(pointerStore, "acct", "parent", 1L, 0L);
+    service.bind(
+        pointerStore,
+        (accountId, parentJobId, generation, key, markerVersion) -> {
+          if (attempts.incrementAndGet() == 1) {
+            putDirtyMarker(pointerStore, accountId, parentJobId, 2L, 0L);
+            return RefreshResult.MARKER_ACK_CONFLICT;
+          }
+          return RefreshResult.OBSOLETE;
+        },
+        10);
+
+    service.runProjectionMaintenanceOnce(200L);
+    assertTrue(pointerStore.get(markerKey).isPresent());
+
+    service.runProjectionMaintenanceOnce(200L);
+    assertEquals(2, attempts.get());
+    assertTrue(pointerStore.get(markerKey).isEmpty());
+  }
+
+  @Test
+  void markerCountBudgetResumesAfterLastConsumedMarker() {
+    PointerStore pointerStore = new TestPointerStore();
+    ReconcileProjectionMaintenanceService service = new ReconcileProjectionMaintenanceService();
+    List<String> refreshed = new ArrayList<>();
+    putDirtyMarker(pointerStore, "acct", "a");
+    putDirtyMarker(pointerStore, "acct", "b");
+    putDirtyMarker(pointerStore, "acct", "c");
+    service.bind(
+        pointerStore,
+        (accountId, parentJobId, generation, markerKey, markerVersion) -> {
+          refreshed.add(parentJobId);
+          return RefreshResult.OBSOLETE;
+        },
+        10);
+
+    service.runProjectionMaintenanceOnce(1_000L, 2);
+    service.runProjectionMaintenanceOnce(1_000L, 2);
+
+    assertEquals(List.of("a", "b", "c"), refreshed);
+  }
+
+  @Test
+  void idleProjectionMaintenanceSkipsPrefixReadsUntilSignalled() {
+    TestPointerStore pointerStore = new TestPointerStore();
+    ReconcileProjectionMaintenanceService service = new ReconcileProjectionMaintenanceService();
+    service.bind(
+        pointerStore,
+        (accountId, parentJobId, generation, markerKey, markerVersion) -> RefreshResult.OBSOLETE,
+        10);
+
+    service.runProjectionMaintenanceOnce(200L);
+    assertEquals(1, pointerStore.prefixReads.get());
+
+    service.runProjectionMaintenanceOnce(200L);
+    assertEquals(1, pointerStore.prefixReads.get());
+
+    service.signalWork();
+    service.runProjectionMaintenanceOnce(200L);
+    assertEquals(2, pointerStore.prefixReads.get());
+  }
+
+  @Test
+  void workSignalledDuringProjectionRefreshKeepsNextPassActive() {
+    TestPointerStore pointerStore = new TestPointerStore();
+    ReconcileProjectionMaintenanceService service = new ReconcileProjectionMaintenanceService();
+    putDirtyMarker(pointerStore, "acct", "parent");
+    service.bind(
+        pointerStore,
+        (accountId, parentJobId, generation, markerKey, markerVersion) -> {
+          service.signalWork();
+          return RefreshResult.OBSOLETE;
+        },
+        10);
+
+    service.runProjectionMaintenanceOnce(200L);
+    int readsAfterRefresh = pointerStore.prefixReads.get();
+    service.runProjectionMaintenanceOnce(200L);
+
+    assertTrue(pointerStore.prefixReads.get() > readsAfterRefresh);
   }
 
   @Test
@@ -329,7 +446,7 @@ class ReconcileMaintenanceServicesTest {
 
     service.bind(
         pointerStore,
-        (request, childPageSize) -> {
+        (request, childPageSize, deadlineMs) -> {
           cursors.add(request.childPageToken());
           if (request.childPageToken().isBlank()) {
             return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
@@ -338,7 +455,7 @@ class ReconcileMaintenanceServicesTest {
           return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
               true, "", false, false, false);
         },
-        request -> false,
+        (request, deadlineMs) -> false,
         10);
 
     service.runCancellationMaintenanceOnce(200L);
@@ -369,12 +486,12 @@ class ReconcileMaintenanceServicesTest {
 
     service.bind(
         pointerStore,
-        (request, childPageSize) -> {
+        (request, childPageSize, deadlineMs) -> {
           calls.incrementAndGet();
           return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
               true, "", false, false, false);
         },
-        request -> false,
+        (request, deadlineMs) -> false,
         10);
 
     service.runCancellationMaintenanceOnce(200L);
@@ -397,12 +514,12 @@ class ReconcileMaintenanceServicesTest {
 
     service.bind(
         pointerStore,
-        (request, childPageSize) -> {
+        (request, childPageSize, deadlineMs) -> {
           calls.incrementAndGet();
           return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
               true, "", false, false, false);
         },
-        request -> true,
+        (request, deadlineMs) -> true,
         10);
 
     Object stats = cleanupCancellationMarkers(service, System.currentTimeMillis() + 200L);
@@ -416,8 +533,20 @@ class ReconcileMaintenanceServicesTest {
 
   private static void putDirtyMarker(
       PointerStore pointerStore, String accountId, String parentJobId) {
+    putDirtyMarker(pointerStore, accountId, parentJobId, 1L, 0L);
+  }
+
+  private static void putDirtyMarker(
+      PointerStore pointerStore,
+      String accountId,
+      String parentJobId,
+      long generation,
+      long dirtyAtMs) {
     String key = Keys.reconcileDirtyParentPointer(accountId, parentJobId);
-    putMarker(pointerStore, key, accountId, parentJobId);
+    String payload = accountId + "\n" + parentJobId + "\n" + generation + "\n" + dirtyAtMs;
+    long nextVersion = pointerStore.get(key).map(Pointer::getVersion).orElse(0L) + 1L;
+    pointerStore.compareAndSet(
+        key, nextVersion - 1L, PointerReferences.opaqueMarkerPointer(key, payload, nextVersion));
   }
 
   private static void putCancellationMarker(
@@ -467,6 +596,7 @@ class ReconcileMaintenanceServicesTest {
   private static final class TestPointerStore implements PointerStore {
     private final Map<String, Pointer> pointers =
         Collections.synchronizedSortedMap(new TreeMap<>());
+    private final AtomicInteger prefixReads = new AtomicInteger();
 
     @Override
     public Optional<Pointer> get(String key) {
@@ -507,6 +637,7 @@ class ReconcileMaintenanceServicesTest {
     @Override
     public List<Pointer> listPointersByPrefix(
         String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+      prefixReads.incrementAndGet();
       String effectivePrefix = prefix == null ? "" : prefix;
       List<String> keys = new ArrayList<>();
       synchronized (pointers) {
@@ -529,6 +660,11 @@ class ReconcileMaintenanceServicesTest {
         }
       }
       return page;
+    }
+
+    @Override
+    public String pageTokenAfterKey(String key) {
+      return key;
     }
 
     @Override
@@ -602,6 +738,8 @@ class ReconcileMaintenanceServicesTest {
   }
 
   private static final class NoopLeaseStore implements ReconcileLeaseStore {
+    private final AtomicInteger expiryQueries = new AtomicInteger();
+
     @Override
     public void bind(
         ReconcileLeaseBackend leaseBackend,
@@ -667,8 +805,19 @@ class ReconcileMaintenanceServicesTest {
     }
 
     @Override
+    public Optional<ReconcileJobIndexStore.CanonicalEnvelope> completeLeaseTransition(
+        String jobId,
+        String leaseEpoch,
+        UnaryOperator<StoredReconcileJob> mutator,
+        java.util.function.Function<StoredReconcileJob, List<PointerStore.UnconditionalUpsert>>
+            pointerTouches) {
+      return Optional.empty();
+    }
+
+    @Override
     public LeaseExpiryScanPage scanExpiredLeasePointersPage(
         long nowMs, int pageSize, String pageToken) {
+      expiryQueries.incrementAndGet();
       return new LeaseExpiryScanPage(List.of(), "");
     }
 

@@ -28,6 +28,8 @@ import java.util.function.Predicate;
 
 @ApplicationScoped
 public class ReconcileJobIndexes {
+  public static final String STATS_CLEANUP_PENDING_INDEX_STATE = "STATS_CLEANUP_PENDING";
+
   private PointerStore pointerStore;
   private Predicate<StoredReconcileJob> requiresReadyPointer;
   private Function<StoredReconcileJob, List<String>> readyPointerKeys;
@@ -111,6 +113,20 @@ public class ReconcileJobIndexes {
     return keys;
   }
 
+  public String statsCleanupPendingPointerKey(StoredReconcileJob record) {
+    if (record == null
+        || !"PENDING".equals(record.statsCleanupState)
+        || blank(record.accountId)
+        || blank(record.jobId)) {
+      return "";
+    }
+    return Keys.reconcileJobByStatePointer(
+        STATS_CLEANUP_PENDING_INDEX_STATE,
+        Math.max(0L, record.createdAtMs),
+        record.accountId,
+        record.jobId);
+  }
+
   public boolean hasValidStatePointer(StoredReconcileJob record, String canonicalPointerKey) {
     for (String pointerKey : statePointerKeys(record)) {
       Pointer existing = pointerStore.get(pointerKey).orElse(null);
@@ -163,6 +179,28 @@ public class ReconcileJobIndexes {
         record.state,
         Math.max(0L, record.createdAtMs),
         record.jobId);
+  }
+
+  public String terminalRetentionPointerKey(StoredReconcileJob record) {
+    if (record == null
+        || !isTerminalState(record.state)
+        || blank(record.accountId)
+        || blank(record.jobId)) {
+      return "";
+    }
+    long terminalAtMs =
+        Math.max(
+            0L,
+            record.updatedAtMs > 0L
+                ? record.updatedAtMs
+                : record.finishedAtMs > 0L ? record.finishedAtMs : record.createdAtMs);
+    return Keys.reconcileTerminalRetentionPointer(record.accountId, terminalAtMs, record.jobId);
+  }
+
+  private static boolean isTerminalState(String state) {
+    return "JS_SUCCEEDED".equals(state)
+        || "JS_FAILED".equals(state)
+        || "JS_CANCELLED".equals(state);
   }
 
   private static String connectorSortableJobToken(long createdAtMs, String jobId) {

@@ -149,8 +149,8 @@ public final class MicrometerObservability implements Observability {
       boolean storeSpansEnabled) {
     this.registry = Objects.requireNonNull(registry, "registry");
     this.telemetryRegistry = Objects.requireNonNull(telemetryRegistry, "telemetryRegistry");
-    this.validator =
-        new MetricValidator(telemetryRegistry, Objects.requireNonNull(policy, "policy"));
+    this.policy = Objects.requireNonNull(policy, "policy");
+    this.validator = new MetricValidator(telemetryRegistry, this.policy);
     this.droppedTagsCounter = registry.counter(Telemetry.Metrics.DROPPED_TAGS.name());
     this.invalidMetricCounter =
         Counter.builder(Telemetry.Metrics.OBSERVABILITY_INVALID_METRIC.name())
@@ -166,7 +166,6 @@ public final class MicrometerObservability implements Observability {
         Telemetry.Metrics.OBSERVABILITY_REGISTRY_SIZE,
         () -> (double) telemetryRegistry.metrics().size(),
         descriptionFor(Telemetry.Metrics.OBSERVABILITY_REGISTRY_SIZE));
-    this.policy = policy;
     this.tracer = GlobalOpenTelemetry.getTracer("ai.floedb.floecat.telemetry");
     this.diagnosticsEnabled = diagnosticsEnabled;
     this.storeSpansEnabled = storeSpansEnabled;

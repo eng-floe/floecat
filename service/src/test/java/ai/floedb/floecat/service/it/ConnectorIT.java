@@ -46,6 +46,7 @@ import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestDeltaFixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.reconciler.impl.RemoteReconcileExecutorPoller;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.rpc.CaptureMode;
@@ -455,18 +456,24 @@ public class ConnectorIT {
     assertTrue(
         fileGroupJobs.stream().mapToLong(job -> job.statsProcessed).sum() > 0,
         "expected file-group jobs to persist file-target stats");
+    var resultDescriptors =
+        snapshotPlanJobs.stream()
+            .flatMap(job -> childFileGroupResultDescriptors(accountId.getId(), job.jobId).stream())
+            .toList();
+    assertEquals(
+        fileGroupJobs.size(),
+        resultDescriptors.size(),
+        "expected one immutable result descriptor per successful file-group job");
     assertTrue(
-        fileGroupJobs.stream()
+        resultDescriptors.stream()
             .allMatch(
-                job ->
-                    !job.fileGroupTask.fileResults().isEmpty()
-                        && job.fileGroupTask.fileResults().stream()
-                            .allMatch(
-                                file ->
-                                    file.state()
-                                        == ai.floedb.floecat.reconciler.jobs.ReconcileFileResult
-                                            .State.SUCCEEDED)),
-        "expected file-group jobs to persist per-file success results");
+                descriptor ->
+                    !descriptor.payloadUri().isBlank()
+                        && !descriptor.statsPayloadUri().isBlank()
+                        && descriptor.succeededFileCount() == descriptor.plannedFileCount()
+                        && descriptor.failedFileCount() == 0
+                        && descriptor.skippedFileCount() == 0),
+        "expected successful file-group manifests referencing result and stats payloads");
 
     var selectedSnapshotPlan = snapshotPlanJobs.getFirst();
     var selectedSnapshotFileGroups =
@@ -483,10 +490,8 @@ public class ConnectorIT {
         snapshotJobResponse.getFileGroupsTotal(),
         "expected snapshot response to expose persisted file-group count");
     assertEquals(
-        selectedSnapshotFileGroups.stream()
-            .map(job -> job.fileGroupTask)
-            .filter(java.util.Objects::nonNull)
-            .mapToLong(group -> group.filePaths().size())
+        childFileGroupResultDescriptors(accountId.getId(), selectedSnapshotPlan.jobId).stream()
+            .mapToLong(ReconcileFileGroupResultDescriptor::plannedFileCount)
             .sum(),
         snapshotJobResponse.getFilesTotal(),
         "expected snapshot response to expose persisted file count");
@@ -1264,18 +1269,25 @@ public class ConnectorIT {
       assertTrue(
           fileGroupJobs.stream().mapToLong(job -> job.statsProcessed).sum() > 0,
           "expected file-group jobs to persist file-target stats");
+      var resultDescriptors =
+          snapshotPlanJobs.stream()
+              .flatMap(
+                  job -> childFileGroupResultDescriptors(accountId.getId(), job.jobId).stream())
+              .toList();
+      assertEquals(
+          fileGroupJobs.size(),
+          resultDescriptors.size(),
+          "expected one immutable result descriptor per successful file-group job");
       assertTrue(
-          fileGroupJobs.stream()
+          resultDescriptors.stream()
               .allMatch(
-                  job ->
-                      !job.fileGroupTask.fileResults().isEmpty()
-                          && job.fileGroupTask.fileResults().stream()
-                              .allMatch(
-                                  file ->
-                                      file.state()
-                                          == ai.floedb.floecat.reconciler.jobs.ReconcileFileResult
-                                              .State.SUCCEEDED)),
-          "expected file-group jobs to persist per-file success results");
+                  descriptor ->
+                      !descriptor.payloadUri().isBlank()
+                          && !descriptor.statsPayloadUri().isBlank()
+                          && descriptor.succeededFileCount() == descriptor.plannedFileCount()
+                          && descriptor.failedFileCount() == 0
+                          && descriptor.skippedFileCount() == 0),
+          "expected successful file-group manifests referencing result and stats payloads");
 
       var selectedSnapshotPlan = snapshotPlanJobs.getFirst();
       var selectedSnapshotFileGroups =
@@ -2619,6 +2631,22 @@ public class ConnectorIT {
         }
         out.add(java.util.Objects.requireNonNullElse(getCanonicalJob(job.jobId), job));
       }
+      pageToken = page.nextPageToken == null ? "" : page.nextPageToken;
+    } while (!pageToken.isBlank());
+    return List.copyOf(out);
+  }
+
+  private List<ReconcileFileGroupResultDescriptor> childFileGroupResultDescriptors(
+      String accountId, String parentJobId) {
+    List<ReconcileFileGroupResultDescriptor> out = new ArrayList<>();
+    String pageToken = "";
+    do {
+      ReconcileJobStore.FileGroupResultDescriptorPage page =
+          jobs.childFileGroupResultDescriptorsPage(accountId, parentJobId, 200, pageToken);
+      if (page == null || page.descriptors == null || page.descriptors.isEmpty()) {
+        break;
+      }
+      out.addAll(page.descriptors);
       pageToken = page.nextPageToken == null ? "" : page.nextPageToken;
     } while (!pageToken.isBlank());
     return List.copyOf(out);

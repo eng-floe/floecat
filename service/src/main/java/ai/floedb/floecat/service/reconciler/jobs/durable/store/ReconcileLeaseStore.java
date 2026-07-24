@@ -21,9 +21,11 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobExecutionLoader;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileLeaseStateCodec;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.BiConsumer;
+import java.util.function.Function;
 import java.util.function.IntToLongFunction;
 import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
@@ -106,6 +108,12 @@ public interface ReconcileLeaseStore {
 
   Optional<StoredJobLease> renewLeaseIfEpochMatches(
       String accountId, String jobId, String leaseEpoch);
+
+  Optional<ReconcileJobIndexStore.CanonicalEnvelope> completeLeaseTransition(
+      String jobId,
+      String leaseEpoch,
+      UnaryOperator<StoredReconcileJob> mutator,
+      Function<StoredReconcileJob, List<PointerStore.UnconditionalUpsert>> pointerTouches);
 
   LeaseExpiryScanPage scanExpiredLeasePointersPage(long nowMs, int pageSize, String pageToken);
 
