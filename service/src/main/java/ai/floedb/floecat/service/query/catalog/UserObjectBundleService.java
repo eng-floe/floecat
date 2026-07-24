@@ -1290,7 +1290,9 @@ public class UserObjectBundleService {
           relationInfoCache.put(relationCacheKey(found.relation()), outcome.info());
           slots[buildSlots.get(j)] = foundResolution(found.inputIndex(), outcome.info());
         } else {
-          timings.unrecordFound();
+          if (found.isRequestedInput()) {
+            timings.unrecordFound();
+          }
           slots[buildSlots.get(j)] = outcome.error();
         }
       }
@@ -1508,6 +1510,10 @@ public class UserObjectBundleService {
 
       public ResolvedRelation relation() {
         return relation;
+      }
+
+      boolean isRequestedInput() {
+        return inputIndex >= 0;
       }
     }
 

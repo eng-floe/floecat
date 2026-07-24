@@ -2158,6 +2158,68 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void syntheticEagerBaseBuildFailureDoesNotDecrementRequestedFoundCount() {
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("VIEW_WITH_FAILING_BASE")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    ResourceId baseId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("FAILING_BASE_TABLE")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+
+    NameRef baseNameRef = NameRef.newBuilder().setCatalog("cat").setName("failing_base").build();
+    overlay.registerTable(baseId, UserObjectBundleTestSupport.schemaFor("base_col"), baseNameRef);
+    overlay.failSchemaFor(baseId);
+
+    ViewNode viewNode =
+        new ViewNode(
+            viewId,
+            "blob://test/failing-base-view",
+            DEFAULT_CATALOG,
+            ResourceId.getDefaultInstance(),
+            "view_with_failing_base",
+            "SELECT base_col FROM cat.failing_base",
+            "spark",
+            List.of(SchemaColumn.newBuilder().setName("base_col").setNullable(true).build()),
+            List.of(baseNameRef),
+            List.of(),
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Optional.empty(),
+            Map.of(),
+            Map.of());
+    overlay.registerRelation(
+        viewId,
+        viewNode,
+        UserObjectBundleTestSupport.schemaFor("base_col"),
+        NameRef.newBuilder().setCatalog("cat").setName("view_with_failing_base").build());
+
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setViewId(viewId))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
+
+    RelationResolutions resolutions = chunks.get(1).getResolutions();
+    assertThat(resolutions.getItemsCount()).isEqualTo(2);
+    assertThat(resolutions.getItems(0).getStatus())
+        .isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(resolutions.getItems(1).getInputIndex()).isEqualTo(-1);
+    assertThat(resolutions.getItems(1).getStatus())
+        .isEqualTo(ResolutionStatus.RESOLUTION_STATUS_ERROR);
+
+    assertThat(chunks.get(2).getEnd().getResolutionCount()).isEqualTo(1);
+    assertThat(chunks.get(2).getEnd().getFoundCount()).isEqualTo(1);
+  }
+
+  @Test
   void requestedInputAfterAnOverflowingViewSpillsToTheNextChunkInOrder() {
     assertRequestedInputAfterViewSpillsToNextChunk(30, false);
   }
