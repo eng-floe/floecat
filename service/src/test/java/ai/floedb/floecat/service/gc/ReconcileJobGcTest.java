@@ -194,6 +194,42 @@ class ReconcileJobGcTest {
   }
 
   @Test
+  void terminalJobIsRetainedUntilPendingStatsCleanupCompletes() {
+    System.setProperty("floecat.gc.reconcile-jobs.retention-ms", "0");
+    long old = System.currentTimeMillis() - 10_000L;
+    String jobId = "snapshot-pending-stats-cleanup";
+    StoredReconcileJob record = storedJob(jobId, "JS_FAILED", old, "", "", "");
+    record.jobKind = "PLAN_SNAPSHOT";
+    record.statsCleanupState = "PENDING";
+    putNativeJobIndexRows(record);
+
+    var retained = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(0, retained.expired());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId))
+            .isPresent());
+
+    assertTrue(
+        gc.jobIndexStore
+            .mutateByJobIdReturningRecord(
+                jobId,
+                existing -> {
+                  StoredReconcileJob completed = gc.jobIndexStore.cloneStoredRecord(existing);
+                  completed.statsCleanupState = "COMPLETED";
+                  return completed;
+                })
+            .isPresent());
+
+    var collected = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(1, collected.expired());
+    assertTrue(
+        jobIndexBackend.loadIndexEntry(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId)).isEmpty());
+  }
+
+  @Test
   void idleAccountSliceDoesNotLoadNonDueTerminalJobs() {
     System.setProperty("floecat.gc.reconcile-jobs.retention-ms", "86400000");
     StoredReconcileJob record =

@@ -95,12 +95,12 @@ class CasBlobGcSchedulerTest {
     private String failAccountId;
 
     @Override
-    public Result runForAccount(String accountId) {
+    public Result runForAccount(String accountId, long deadlineMs) {
       accountIds.add(accountId);
       if (accountId.equals(failAccountId)) {
         throw new RuntimeException("simulated storage fault");
       }
-      return new Result(2, 11L, 1, 2, 0, 0, 0, 0, 0, false, false);
+      return new Result(2, 11L, 1, 2, 0, 0, 0, 0, 0, false, false, false);
     }
   }
 }

@@ -22,7 +22,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.impl.FileGroupTargetStatsRollup;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
-import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
@@ -71,14 +70,6 @@ public class SnapshotFinalizePersistenceService {
         references == null
             ? List.of()
             : references.stream().filter(java.util.Objects::nonNull).toList();
-    String manifestUri =
-        Keys.snapshotTargetStatsManifestBlobUri(
-            tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
-    if (manifestUri.equals(statsStore.activeStatsGeneration(tableId, snapshotId).orElse(""))) {
-      statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
-      commitGenerationToRoot(tableId, snapshotId);
-      return stable.size();
-    }
     statsStore.publishPrewrittenStatsGeneration(tableId, snapshotId, generationId, stable);
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
     commitGenerationToRoot(tableId, snapshotId);

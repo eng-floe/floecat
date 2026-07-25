@@ -36,6 +36,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -76,6 +77,54 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
                     false, Set.of("s3://bucket/a.parquet"), Set.of("s3://bucket/a.parquet")));
 
     assertTrue(error.getMessage().contains("unrequested index artifacts"));
+  }
+
+  @Test
+  void expectedFileStatsIncludeDeletesAttachedToSuccessfulDataFiles() {
+    String dataPath = "s3://bucket/data.parquet";
+    String deletePath = "s3://bucket/delete.parquet";
+    ReconcileFileExecutionPlan executionPlan =
+        ReconcileFileExecutionPlan.of(
+            dataPath,
+            100L,
+            "",
+            null,
+            "PARQUET",
+            0,
+            List.of(
+                new ReconcileFileExecutionPlan.IcebergDeleteFile(
+                    deletePath,
+                    10L,
+                    ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION,
+                    0,
+                    List.of())));
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan",
+            "group",
+            tableId().getId(),
+            55L,
+            1,
+            "",
+            0,
+            List.of(dataPath),
+            List.of(),
+            List.of(),
+            "{}",
+            List.of(executionPlan));
+
+    Set<String> targets =
+        RemoteSnapshotFinalizeReconcileExecutor.expectedFileStatsTargets(group, Set.of(dataPath));
+
+    assertEquals(2, targets.size());
+    assertTrue(
+        targets.contains(
+            ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(
+                ai.floedb.floecat.stats.identity.StatsTargetIdentity.fileTarget(dataPath))));
+    assertTrue(
+        targets.contains(
+            ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(
+                ai.floedb.floecat.stats.identity.StatsTargetIdentity.fileTarget(deletePath))));
   }
 
   @Test

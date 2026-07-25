@@ -308,6 +308,9 @@ public class ReconcileJobGc {
             if (shouldDeferTerminalFileGroupCleanup(accountId, record)) {
               continue;
             }
+            if (shouldDeferTerminalStatsCleanup(record)) {
+              continue;
+            }
             ReconcileJobIndexStore.JobWritePlan<String> deletePlan =
                 buildCanonicalFootprintDeletePlan(accountId, jobId, canonical, record);
             if (deletePlan != null) {
@@ -467,6 +470,11 @@ public class ReconcileJobGc {
       return true;
     }
     return !TERMINAL_STATES.contains(text(parent, "state"));
+  }
+
+  private boolean shouldDeferTerminalStatsCleanup(JsonNode record) {
+    String statsCleanupState = text(record, "statsCleanupState");
+    return !statsCleanupState.isBlank() && !"COMPLETED".equals(statsCleanupState);
   }
 
   private JsonNode readRecordByReference(String reference) {

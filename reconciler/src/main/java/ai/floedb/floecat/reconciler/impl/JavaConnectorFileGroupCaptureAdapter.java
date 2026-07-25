@@ -20,7 +20,9 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
@@ -78,6 +80,11 @@ final class JavaConnectorFileGroupCaptureAdapter {
     if (fileStats.isEmpty()) {
       return List.of();
     }
+    LinkedHashMap<String, TargetStatsRecord> uniqueFileStats = new LinkedHashMap<>();
+    for (TargetStatsRecord fileStat : fileStats) {
+      uniqueFileStats.putIfAbsent(StatsTargetIdentity.storageId(fileStat.getTarget()), fileStat);
+    }
+    fileStats = List.copyOf(uniqueFileStats.values());
     List<TargetStatsRecord> partialAggregates =
         FileGroupTargetStatsRollup.partialAggregatesFromFileRecords(
             request.tableId(),

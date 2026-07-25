@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
@@ -150,5 +151,20 @@ class SnapshotFinalizePersistenceServiceTest {
 
     assertEquals(0L, result, "marker already present → no new marker created");
     assertEquals("s3://t/stats/5/empty-gen.pb", entry().getStatsGenerationRef().getUri());
+  }
+
+  @Test
+  void prewrittenReFinalizeAlwaysReplaysRepositoryPublication() {
+    String generationId = "gen-retry";
+    when(persistence.statsStore.activeStatsGeneration(tableId, 5L))
+        .thenReturn(
+            Optional.of(
+                ai.floedb.floecat.service.repo.model.Keys.snapshotTargetStatsManifestBlobUri(
+                    tableId.getAccountId(), tableId.getId(), 5L, generationId)));
+
+    persistence.publishPrewrittenStatsGeneration(tableId, 5L, generationId, List.of());
+
+    verify(persistence.statsStore)
+        .publishPrewrittenStatsGeneration(tableId, 5L, generationId, List.of());
   }
 }

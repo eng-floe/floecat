@@ -117,7 +117,8 @@ public class CasBlobGc {
       int referenced,
       int tablesScanned,
       boolean poisoned,
-      boolean deletesUnsupported) {}
+      boolean deletesUnsupported,
+      boolean generationCleanupPending) {}
 
   /**
    * Cheap logical-storage estimate collected only from pointer rows the mark phase already reads.
@@ -156,6 +157,10 @@ public class CasBlobGc {
   }
 
   public Result runForAccount(String accountId) {
+    return runForAccount(accountId, Long.MAX_VALUE);
+  }
+
+  public Result runForAccount(String accountId, long deadlineMs) {
     if (!blobStore.supportsVersionedDeletes()) {
       // Fail closed: without immutable version identities every delete is the
       // eng-floe/core#1904 race (an S3 bucket whose versioning is not Enabled overwrites version
@@ -165,7 +170,7 @@ public class CasBlobGc {
           "cas gc for account %s skipped: blob store cannot delete by immutable version"
               + " (on S3 the bucket's versioning status must be Enabled)",
           accountId);
-      return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, false, true);
+      return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, false, true, false);
     }
 
     final var cfg = ConfigProvider.getConfig();
@@ -173,6 +178,12 @@ public class CasBlobGc {
         cfg.getOptionalValue("floecat.gc.cas.page-size", Integer.class).orElse(500);
     final long minAgeMs =
         cfg.getOptionalValue("floecat.gc.cas.min-age-ms", Long.class).orElse(30_000L);
+    int remainingGenerationBlobDeletes =
+        Math.max(
+            1,
+            cfg.getOptionalValue(
+                    "floecat.gc.cas.stats-generation-blob-deletes-per-account", Integer.class)
+                .orElse(1000));
     final long nowMs = System.currentTimeMillis();
 
     Set<String> referenced = new HashSet<>();
@@ -240,6 +251,8 @@ public class CasBlobGc {
     rootLivePinChains(referenced, walkedPinRoots, walkFailures);
 
     int tablesScanned = 0;
+    int generationBlobsDeleted = 0;
+    boolean generationCleanupPending = false;
     for (String tableId : tableIds) {
       tablesScanned++;
       String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
@@ -271,21 +284,28 @@ public class CasBlobGc {
               .setId(tableId)
               .setKind(ResourceKind.RK_TABLE)
               .build();
-      statsRepository.deleteUnreferencedGenerations(
-          rid,
-          manifestUri -> {
-            if (walkFailures[0] > 0) {
-              return true; // poisoned: an incomplete walk means protection is unknowable
-            }
-            String normalized = normalizeKey(manifestUri);
-            if (referenced.contains(normalized)) {
-              return true;
-            }
-            rootLivePinChains(referenced, walkedPinRoots, walkFailures);
-            return walkFailures[0] > 0 || referenced.contains(normalized);
-          },
-          nowMs,
-          minAgeMs);
+      StatsRepository.GenerationGcResult generationGc =
+          statsRepository.deleteUnreferencedGenerations(
+              rid,
+              manifestUri -> {
+                if (walkFailures[0] > 0) {
+                  return true; // poisoned: an incomplete walk means protection is unknowable
+                }
+                String normalized = normalizeKey(manifestUri);
+                if (referenced.contains(normalized)) {
+                  return true;
+                }
+                rootLivePinChains(referenced, walkedPinRoots, walkFailures);
+                return walkFailures[0] > 0 || referenced.contains(normalized);
+              },
+              nowMs,
+              minAgeMs,
+              remainingGenerationBlobDeletes,
+              deadlineMs);
+      remainingGenerationBlobDeletes =
+          Math.max(0, remainingGenerationBlobDeletes - generationGc.blobDeleteAttempts());
+      generationBlobsDeleted += generationGc.blobsDeleted();
+      generationCleanupPending |= generationGc.pending();
 
       String snapshotsRoot = Keys.snapshotRootPrefix(accountId, tableId);
       pointersScanned +=
@@ -319,7 +339,7 @@ public class CasBlobGc {
     // (in-memory, cheap) pin roots per page so a pin taken mid-sweep still protects its blob.
 
     int blobsScanned = 0;
-    int blobsDeleted = 0;
+    int blobsDeleted = generationBlobsDeleted;
     int blobsRescued = 0;
 
     if (walkFailures[0] > 0) {
@@ -340,7 +360,8 @@ public class CasBlobGc {
           referenced.size(),
           tablesScanned,
           true,
-          false);
+          false,
+          generationCleanupPending);
     }
 
     var account =
@@ -568,7 +589,8 @@ public class CasBlobGc {
         referenced.size(),
         tablesScanned,
         walkFailures[0] > 0 || remarkFailures > 0,
-        false);
+        false,
+        generationCleanupPending);
   }
 
   /**

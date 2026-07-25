@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -393,6 +394,12 @@ class IcebergConnectorIssuesTest {
                       !fileColumn.getScalar().getDisplayName().isBlank()
                           && !fileColumn.getScalar().getLogicalType().isBlank()),
           () -> "file-column stats should preserve name/type: " + captured.statsRecords());
+      assertTrue(
+          captured.statsRecords().stream()
+              .filter(TargetStatsRecord::hasFile)
+              .anyMatch(
+                  record -> record.getFile().getFileContent() == FileContent.FC_POSITION_DELETES),
+          () -> "capture should emit attached position-delete stats: " + captured.statsRecords());
     }
   }
 

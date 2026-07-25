@@ -709,6 +709,12 @@ public final class Keys {
         + "lifecycle";
   }
 
+  public static String snapshotTargetStatsGenerationPublicationIntentPointer(
+      String accountId, String tableId, long snapshotId, String generationId) {
+    return snapshotTargetStatsGenerationPointerPrefix(accountId, tableId, snapshotId, generationId)
+        + "publication-intent";
+  }
+
   public static String snapshotTargetColumnStatsGenerationPrefix(
       String accountId,
       String tableId,

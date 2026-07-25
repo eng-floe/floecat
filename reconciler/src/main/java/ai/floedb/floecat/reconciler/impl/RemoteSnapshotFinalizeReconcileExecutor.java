@@ -367,11 +367,12 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       throw new IllegalArgumentException(
           "snapshot file-group success results do not match the immutable plan");
     }
-    int expectedFileStats = statsRequested ? descriptor.succeededFileCount() : 0;
-    if (payload.getFileStatsCount() != expectedFileStats) {
+    Set<String> expectedStatsTargets =
+        statsRequested ? expectedFileStatsTargets(plannedGroup, successfulFiles) : Set.of();
+    if (payload.getFileStatsCount() != expectedStatsTargets.size()) {
       throw new IllegalArgumentException(
           "snapshot file-group stats count mismatch expected="
-              + expectedFileStats
+              + expectedStatsTargets.size()
               + " actual="
               + payload.getFileStatsCount());
     }
@@ -386,13 +387,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     }
     validateIndexArtifactCoverage(capturePolicy.requestsIndexes(), successfulFiles, indexFiles);
     Set<String> statsTargets = new HashSet<>();
-    Set<String> expectedStatsTargets = new HashSet<>();
-    if (statsRequested) {
-      for (String filePath : successfulFiles) {
-        expectedStatsTargets.add(
-            StatsTargetIdentity.storageId(StatsTargetIdentity.fileTarget(filePath)));
-      }
-    }
     List<StatsObjectDescriptor> fileStatsObjects = new ArrayList<>(payload.getFileStatsCount());
     for (StatsObjectDescriptor statsObject : payload.getFileStatsList()) {
       if (!validObjectDescriptor(statsObject, descriptor.statsObjectPrefix())
@@ -414,6 +408,30 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         payload.getPartialAggregateRecordsList(),
         fileStatsObjects,
         payload.getIndexArtifactsList());
+  }
+
+  static Set<String> expectedFileStatsTargets(
+      ReconcileFileGroupTask plannedGroup, Set<String> successfulFiles) {
+    Set<String> successful = successfulFiles == null ? Set.of() : Set.copyOf(successfulFiles);
+    Set<String> expected = new HashSet<>();
+    for (String filePath : successful) {
+      expected.add(StatsTargetIdentity.storageId(StatsTargetIdentity.fileTarget(filePath)));
+    }
+    if (plannedGroup != null) {
+      for (var executionPlan : plannedGroup.fileExecutionPlans()) {
+        if (!successful.contains(executionPlan.filePath())) {
+          continue;
+        }
+        for (var deleteFile : executionPlan.icebergDeleteFiles()) {
+          if (deleteFile != null && !deleteFile.filePath().isBlank()) {
+            expected.add(
+                StatsTargetIdentity.storageId(
+                    StatsTargetIdentity.fileTarget(deleteFile.filePath())));
+          }
+        }
+      }
+    }
+    return Set.copyOf(expected);
   }
 
   static void validateIndexArtifactCoverage(

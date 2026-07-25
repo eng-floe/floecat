@@ -73,6 +73,9 @@ public class StatsRepository implements StatsStore {
     IN_PROGRESS
   }
 
+  public record GenerationGcResult(
+      int generationsReclaimed, int blobDeleteAttempts, int blobsDeleted, boolean pending) {}
+
   /**
    * Maximum number of concurrent DynamoDB+S3 reads in a single batch fetch.
    *
@@ -226,10 +229,22 @@ public class StatsRepository implements StatsStore {
       String generationId,
       List<StatsStore.PrewrittenTargetStatsReference> references) {
     String effectiveGenerationId = requireGenerationId(generationId);
+    List<PrewrittenStatsWrite> writes =
+        prewrittenStatsWrites(tableId, snapshotId, effectiveGenerationId, references);
+    ensureWritableGeneration(tableId, snapshotId, effectiveGenerationId);
+    targetStatsStorage.overwriteReferencesBatch(writes);
+  }
+
+  private List<PrewrittenStatsWrite> prewrittenStatsWrites(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<StatsStore.PrewrittenTargetStatsReference> references) {
     String requiredPrefix =
         Keys.snapshotTargetStatsGenerationBlobPrefix(
-            tableId.getAccountId(), tableId.getId(), snapshotId, effectiveGenerationId);
+            tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
     List<PrewrittenStatsWrite> writes = new ArrayList<>();
+    Map<String, PrewrittenStatsWrite> uniqueWrites = new LinkedHashMap<>();
     for (StatsStore.PrewrittenTargetStatsReference value :
         references == null ? List.<StatsStore.PrewrittenTargetStatsReference>of() : references) {
       if (value == null) {
@@ -252,14 +267,19 @@ public class StatsRepository implements StatsStore {
                       + ".pb")) {
         throw new IllegalArgumentException("invalid prewritten target stats reference");
       }
-      writes.add(
+      PrewrittenStatsWrite write =
           new PrewrittenStatsWrite(
-              targetPointerKey(tableId, snapshotId, effectiveGenerationId, value.targetStorageId()),
+              targetPointerKey(tableId, snapshotId, generationId, value.targetStorageId()),
               value.blobUri(),
-              value.blobBytes()));
+              value.blobBytes());
+      PrewrittenStatsWrite duplicate = uniqueWrites.putIfAbsent(write.pointerKey(), write);
+      if (duplicate != null && !duplicate.sameReference(write)) {
+        throw new IllegalArgumentException(
+            "duplicate prewritten target stats reference has different content");
+      }
     }
-    ensureWritableGeneration(tableId, snapshotId, effectiveGenerationId);
-    targetStatsStorage.overwriteReferencesBatch(writes);
+    writes.addAll(uniqueWrites.values());
+    return writes;
   }
 
   @Override
@@ -269,21 +289,44 @@ public class StatsRepository implements StatsStore {
       String generationId,
       List<StatsStore.PrewrittenTargetStatsReference> references) {
     String effectiveGenerationId = requireGenerationId(generationId);
-    registerPrewrittenStatsReferencesInGeneration(
-        tableId, snapshotId, effectiveGenerationId, references);
+    List<PrewrittenStatsWrite> writes =
+        prewrittenStatsWrites(tableId, snapshotId, effectiveGenerationId, references);
+    String lifecycleState = generationLifecycleState(tableId, snapshotId, effectiveGenerationId);
+    if (lifecycleState.isBlank() || GENERATION_WRITING.equals(lifecycleState)) {
+      ensureWritableGeneration(tableId, snapshotId, effectiveGenerationId);
+      ensurePublicationIntent(tableId, snapshotId, effectiveGenerationId, writes, true);
+      targetStatsStorage.createExactReferencesBatch(writes);
+    } else if (GENERATION_PUBLISHING.equals(lifecycleState)
+        || GENERATION_PUBLISHED.equals(lifecycleState)) {
+      ensurePublicationIntent(tableId, snapshotId, effectiveGenerationId, writes, false);
+      targetStatsStorage.verifyExactReferences(writes);
+    } else {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "target stats generation cannot publish: "
+              + effectiveGenerationId
+              + " state="
+              + lifecycleState);
+    }
     Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
-    publishActiveGeneration(tableId, snapshotId, effectiveGenerationId, current);
+    if (GENERATION_PUBLISHED.equals(lifecycleState)
+        && current
+            .map(ActiveSnapshotStats::generationId)
+            .filter(effectiveGenerationId::equals)
+            .isEmpty()) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "published target stats generation is no longer active: " + effectiveGenerationId);
+    }
+    publishActiveGenerationPointer(tableId, snapshotId, effectiveGenerationId, current);
     updateTargetLatestSnapshotsIfNewer(
         tableId,
         snapshotId,
-        (references == null
-                ? List.<StatsStore.PrewrittenTargetStatsReference>of()
-                : references)
+        (references == null ? List.<StatsStore.PrewrittenTargetStatsReference>of() : references)
             .stream()
                 .filter(java.util.Objects::nonNull)
                 .map(StatsStore.PrewrittenTargetStatsReference::targetStorageId)
                 .toList());
     updateLatestStatsSnapshotIfNewer(tableId, snapshotId);
+    markGenerationPublished(tableId, snapshotId, effectiveGenerationId);
   }
 
   @Override
@@ -883,8 +926,7 @@ public class StatsRepository implements StatsStore {
                               }
                             }
                             states.put(
-                                storageId,
-                                new LatestSnapshotState(pointer, currentSnapshotId));
+                                storageId, new LatestSnapshotState(pointer, currentSnapshotId));
                           })
               .toList());
 
@@ -909,9 +951,7 @@ public class StatsRepository implements StatsStore {
           unwrittenBlobUris.stream()
               .map(
                   uri ->
-                      (Runnable)
-                          () ->
-                              blobStore.put(uri, snapshotBytes, "application/x-protobuf"))
+                      (Runnable) () -> blobStore.put(uri, snapshotBytes, "application/x-protobuf"))
               .toList());
       writtenBlobUris.addAll(unwrittenBlobUris);
 
@@ -1252,6 +1292,15 @@ public class StatsRepository implements StatsStore {
       long snapshotId,
       String generationId,
       Optional<ActiveSnapshotStats> current) {
+    publishActiveGenerationPointer(tableId, snapshotId, generationId, current);
+    markGenerationPublished(tableId, snapshotId, generationId);
+  }
+
+  private void publishActiveGenerationPointer(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      Optional<ActiveSnapshotStats> current) {
     String manifestPointer =
         Keys.snapshotTargetStatsManifestPointer(
             tableId.getAccountId(), tableId.getId(), snapshotId);
@@ -1266,6 +1315,10 @@ public class StatsRepository implements StatsStore {
       // this publish pays neither a cold fetch nor a parse (URI is per-generation, immutable).
       blobCache.put(manifestBlobUri, generationId);
     }
+    Pointer active = pointerStore.get(manifestPointer).orElse(null);
+    if (active != null && manifestBlobUri.equals(active.getBlobUri())) {
+      return;
+    }
     long expectedVersion = current.map(ActiveSnapshotStats::manifestVersion).orElse(0L);
     Pointer next =
         PointerReferences.blobPointer(manifestPointer, manifestBlobUri, expectedVersion + 1L);
@@ -1273,7 +1326,66 @@ public class StatsRepository implements StatsStore {
       throw new BaseResourceRepository.AbortRetryableException(
           "active target stats generation update conflicted for snapshot " + snapshotId);
     }
-    markGenerationPublished(tableId, snapshotId, generationId);
+  }
+
+  private String generationLifecycleState(
+      ResourceId tableId, long snapshotId, String generationId) {
+    return pointerStore
+        .get(generationLifecyclePointer(tableId, snapshotId, generationId))
+        .map(Pointer::getBlobUri)
+        .map(StatsRepository::blankToEmpty)
+        .orElse("");
+  }
+
+  private void ensurePublicationIntent(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<PrewrittenStatsWrite> writes,
+      boolean createIfAbsent) {
+    String pointerKey =
+        Keys.snapshotTargetStatsGenerationPublicationIntentPointer(
+            tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
+    String intent = prewrittenStatsPublicationIntent(writes);
+    for (int attempt = 0; attempt < 8; attempt++) {
+      Pointer current = pointerStore.get(pointerKey).orElse(null);
+      if (current != null) {
+        if (PointerReferences.isOpaqueMarkerPointer(current)
+            && intent.equals(current.getBlobUri())) {
+          return;
+        }
+        throw new IllegalArgumentException(
+            "prewritten target stats publication intent changed for generation " + generationId);
+      }
+      if (!createIfAbsent) {
+        throw new IllegalArgumentException(
+            "prewritten target stats publication intent is missing for generation " + generationId);
+      }
+      Pointer next = PointerReferences.opaqueMarkerPointer(pointerKey, intent, 1L);
+      if (pointerStore.compareAndSet(pointerKey, 0L, next)) {
+        return;
+      }
+    }
+    throw new BaseResourceRepository.AbortRetryableException(
+        "prewritten target stats publication intent update conflicted: " + generationId);
+  }
+
+  private static String prewrittenStatsPublicationIntent(List<PrewrittenStatsWrite> writes) {
+    StringBuilder canonical = new StringBuilder();
+    writes.stream()
+        .sorted(Comparator.comparing(PrewrittenStatsWrite::pointerKey))
+        .forEach(
+            write ->
+                canonical
+                    .append(write.pointerKey().length())
+                    .append(':')
+                    .append(write.pointerKey())
+                    .append(write.blobUri().length())
+                    .append(':')
+                    .append(write.blobUri())
+                    .append(write.blobBytes())
+                    .append(';'));
+    return "sha256:" + Hashing.sha256Hex(canonical.toString());
   }
 
   private void ensureWritableGeneration(ResourceId tableId, long snapshotId, String generationId) {
@@ -1590,11 +1702,28 @@ public class StatsRepository implements StatsStore {
       java.util.function.Predicate<String> isProtectedManifestUri,
       long nowMs,
       long minAgeMs) {
+    return deleteUnreferencedGenerations(
+            tableId, isProtectedManifestUri, nowMs, minAgeMs, Integer.MAX_VALUE, Long.MAX_VALUE)
+        .generationsReclaimed();
+  }
+
+  public GenerationGcResult deleteUnreferencedGenerations(
+      ResourceId tableId,
+      java.util.function.Predicate<String> isProtectedManifestUri,
+      long nowMs,
+      long minAgeMs,
+      int maxBlobDeleteAttempts,
+      long deadlineMs) {
     String accountId = tableId.getAccountId();
     String prefix = Keys.snapshotRootPrefix(accountId, tableId.getId());
     var candidates = new java.util.LinkedHashSet<Keys.GenerationKey>();
     String token = "";
+    boolean pending = false;
     while (true) {
+      if (System.currentTimeMillis() >= deadlineMs) {
+        pending = true;
+        break;
+      }
       StringBuilder next = new StringBuilder();
       List<Pointer> page = pointerStore.listPointersByPrefix(prefix, 500, token, next);
       for (Pointer pointer : page) {
@@ -1610,25 +1739,48 @@ public class StatsRepository implements StatsStore {
     }
 
     int reclaimed = 0;
+    int deleteAttempts = 0;
+    int blobsDeleted = 0;
     for (Keys.GenerationKey candidate : candidates) {
+      if (deleteAttempts >= Math.max(0, maxBlobDeleteAttempts)
+          || System.currentTimeMillis() >= deadlineMs) {
+        pending = true;
+        break;
+      }
       long snapshotId = candidate.snapshotId();
       String generationId = candidate.generationId();
       String manifestUri =
           Keys.snapshotTargetStatsManifestBlobUri(
               accountId, tableId.getId(), snapshotId, generationId);
+      Pointer lifecycle =
+          pointerStore
+              .get(generationLifecyclePointer(tableId, snapshotId, generationId))
+              .orElse(null);
+      String lifecycleState = lifecycle == null ? "" : blankToEmpty(lifecycle.getBlobUri());
+      if (GENERATION_DELETING.equals(lifecycleState)) {
+        GenerationBlobDeleteResult result =
+            deleteGenerationBlobSlice(
+                accountId,
+                tableId.getId(),
+                snapshotId,
+                generationId,
+                manifestUri,
+                maxBlobDeleteAttempts - deleteAttempts,
+                deadlineMs);
+        deleteAttempts += result.attempts();
+        blobsDeleted += result.deleted();
+        if (result.pending()) {
+          pending = true;
+          break;
+        }
+        deleteGenerationPointers(accountId, tableId.getId(), snapshotId, generationId);
+        reclaimed++;
+        continue;
+      }
       // One HEAD answers both existence and age: absent means unpublished (an in-flight replace
-      // writes records before publishing) or already reclaimed. A generation already claimed for
-      // deletion is the exception: repeat its prefix cleanup so uploads from a stale worker that
-      // landed after the original cleanup cannot leak permanently.
+      // writes records before publishing) or already reclaimed.
       var header = blobStore.head(manifestUri).orElse(null);
       if (header == null) {
-        Pointer lifecycle =
-            pointerStore
-                .get(generationLifecyclePointer(tableId, snapshotId, generationId))
-                .orElse(null);
-        if (lifecycle != null && GENERATION_DELETING.equals(blankToEmpty(lifecycle.getBlobUri()))) {
-          deleteGeneration(accountId, tableId.getId(), snapshotId, generationId);
-        }
         continue;
       }
       if (nowMs - com.google.protobuf.util.Timestamps.toMillis(header.getLastModifiedAt())
@@ -1651,32 +1803,143 @@ public class StatsRepository implements StatsStore {
       if (manifestUri.equals(liveActive)) {
         continue; // creation-window safeguard: active pointer target survives regardless of roots
       }
-      deleteGeneration(accountId, tableId.getId(), snapshotId, generationId);
-      deleteQuietly(() -> blobStore.delete(manifestUri));
+      if (!claimPublishedGenerationForGc(tableId, snapshotId, generationId)) {
+        continue;
+      }
+      if (manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
+          || isProtectedManifestUri.test(manifestUri)) {
+        restoreGenerationPublishedAfterFailedGcClaim(tableId, snapshotId, generationId);
+        continue;
+      }
+      GenerationBlobDeleteResult result =
+          deleteGenerationBlobSlice(
+              accountId,
+              tableId.getId(),
+              snapshotId,
+              generationId,
+              manifestUri,
+              maxBlobDeleteAttempts - deleteAttempts,
+              deadlineMs);
+      deleteAttempts += result.attempts();
+      blobsDeleted += result.deleted();
+      if (result.pending()) {
+        pending = true;
+        break;
+      }
+      deleteGenerationPointers(accountId, tableId.getId(), snapshotId, generationId);
       reclaimed++;
     }
-    return reclaimed;
+    return new GenerationGcResult(reclaimed, deleteAttempts, blobsDeleted, pending);
+  }
+
+  private record GenerationBlobDeleteResult(int attempts, int deleted, boolean pending) {}
+
+  private GenerationBlobDeleteResult deleteGenerationBlobSlice(
+      String accountId,
+      String tableId,
+      long snapshotId,
+      String generationId,
+      String manifestUri,
+      int maxAttempts,
+      long deadlineMs) {
+    if (maxAttempts <= 0 || System.currentTimeMillis() >= deadlineMs) {
+      return new GenerationBlobDeleteResult(0, 0, true);
+    }
+    String blobPrefix =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(accountId, tableId, snapshotId, generationId);
+    int attempts = 0;
+    int deleted = 0;
+    BlobStore.Page page = blobStore.list(blobPrefix, Math.min(maxAttempts, 1000), "");
+    for (String key : page.keys()) {
+      if (attempts >= maxAttempts || System.currentTimeMillis() >= deadlineMs) {
+        return new GenerationBlobDeleteResult(attempts, deleted, true);
+      }
+      attempts++;
+      if (blobStore.delete(key)) {
+        deleted++;
+      }
+    }
+    if (!blobStore.list(blobPrefix, 1, "").keys().isEmpty()) {
+      return new GenerationBlobDeleteResult(attempts, deleted, true);
+    }
+    if (blobStore.head(manifestUri).isPresent()) {
+      if (attempts >= maxAttempts || System.currentTimeMillis() >= deadlineMs) {
+        return new GenerationBlobDeleteResult(attempts, deleted, true);
+      }
+      attempts++;
+      if (blobStore.delete(manifestUri)) {
+        deleted++;
+      }
+    }
+    return new GenerationBlobDeleteResult(attempts, deleted, false);
+  }
+
+  private void deleteGenerationPointers(
+      String accountId, String tableId, long snapshotId, String generationId) {
+    pointerStore.deleteByPrefix(
+        Keys.snapshotTargetStatsGenerationPrefix(accountId, tableId, snapshotId, generationId));
+    pointerStore.deleteByPrefix(
+        Keys.snapshotTargetStatsGenerationProtectionsPointerPrefix(
+            accountId, tableId, snapshotId, generationId));
   }
 
   private void deleteGeneration(
       String accountId, String tableId, long snapshotId, String generationId) {
-    deleteQuietly(
-        () ->
-            pointerStore.deleteByPrefix(
-                Keys.snapshotTargetStatsGenerationPrefix(
-                    accountId, tableId, snapshotId, generationId)));
-    deleteQuietly(
-        () ->
-            pointerStore.deleteByPrefix(
-                Keys.snapshotTargetStatsGenerationProtectionsPointerPrefix(
-                    accountId, tableId, snapshotId, generationId)));
+    deleteQuietly(() -> deleteGenerationPointers(accountId, tableId, snapshotId, generationId));
     deleteQuietly(
         () ->
             blobStore.deletePrefix(
-                Keys.snapshotTargetStatsBlobPrefix(accountId, tableId, snapshotId)
-                    + "generations/"
-                    + Keys.encodeSegment(generationId)
-                    + "/"));
+                Keys.snapshotTargetStatsGenerationBlobPrefix(
+                    accountId, tableId, snapshotId, generationId)));
+  }
+
+  private boolean claimPublishedGenerationForGc(
+      ResourceId tableId, long snapshotId, String generationId) {
+    String lifecyclePointer = generationLifecyclePointer(tableId, snapshotId, generationId);
+    for (int attempt = 0; attempt < 8; attempt++) {
+      Pointer current = pointerStore.get(lifecyclePointer).orElse(null);
+      if (current == null) {
+        return false;
+      }
+      String state = blankToEmpty(current.getBlobUri());
+      if (GENERATION_DELETING.equals(state)) {
+        return true;
+      }
+      if (!GENERATION_PUBLISHED.equals(state)) {
+        return false;
+      }
+      Pointer next =
+          PointerReferences.opaqueMarkerPointer(
+              lifecyclePointer, GENERATION_DELETING, current.getVersion() + 1L);
+      if (pointerStore.compareAndSet(lifecyclePointer, current.getVersion(), next)) {
+        return true;
+      }
+    }
+    throw new StorageAbortRetryableException(
+        "stats generation GC claim conflicted repeatedly: " + generationId);
+  }
+
+  private void restoreGenerationPublishedAfterFailedGcClaim(
+      ResourceId tableId, long snapshotId, String generationId) {
+    String lifecyclePointer = generationLifecyclePointer(tableId, snapshotId, generationId);
+    for (int attempt = 0; attempt < 8; attempt++) {
+      Pointer current = pointerStore.get(lifecyclePointer).orElse(null);
+      if (current == null || GENERATION_PUBLISHED.equals(blankToEmpty(current.getBlobUri()))) {
+        return;
+      }
+      if (!GENERATION_DELETING.equals(blankToEmpty(current.getBlobUri()))) {
+        throw new StorageAbortRetryableException(
+            "stats generation changed state while restoring failed GC claim: " + generationId);
+      }
+      Pointer restored =
+          PointerReferences.opaqueMarkerPointer(
+              lifecyclePointer, GENERATION_PUBLISHED, current.getVersion() + 1L);
+      if (pointerStore.compareAndSet(lifecyclePointer, current.getVersion(), restored)) {
+        return;
+      }
+    }
+    throw new StorageAbortRetryableException(
+        "stats generation GC claim restore conflicted repeatedly: " + generationId);
   }
 
   private void deleteGenerationStrict(
@@ -1771,7 +2034,11 @@ public class StatsRepository implements StatsStore {
 
   private record TargetStatsWrite(String pointerKey, String blobUri, TargetStatsRecord value) {}
 
-  private record PrewrittenStatsWrite(String pointerKey, String blobUri, long blobBytes) {}
+  private record PrewrittenStatsWrite(String pointerKey, String blobUri, long blobBytes) {
+    private boolean sameReference(PrewrittenStatsWrite other) {
+      return other != null && blobBytes == other.blobBytes && blobUri.equals(other.blobUri);
+    }
+  }
 
   private static final class TargetStatsStorage extends BaseResourceRepository<TargetStatsRecord> {
 
@@ -1834,6 +2101,58 @@ public class StatsRepository implements StatsStore {
       }
       List<PrewrittenStatsWrite> pending = new ArrayList<>(uniqueWrites.values());
       forEachPointerBatch(pending, this::overwriteReferencesChunk);
+    }
+
+    private void createExactReferencesBatch(List<PrewrittenStatsWrite> writes) {
+      if (writes == null || writes.isEmpty()) {
+        return;
+      }
+      forEachPointerBatch(writes, this::createExactReferencesChunk);
+    }
+
+    private void createExactReferencesChunk(List<PrewrittenStatsWrite> writes) {
+      List<PrewrittenStatsWrite> remaining = new ArrayList<>(writes);
+      for (int attempt = 0; attempt < CAS_MAX; attempt++) {
+        List<PointerStore.CasOp> creates = new ArrayList<>();
+        List<PrewrittenStatsWrite> missing = new ArrayList<>();
+        for (PrewrittenStatsWrite write : remaining) {
+          Pointer existing = pointerStore.get(write.pointerKey()).orElse(null);
+          if (existing != null) {
+            requireExactReference(write, existing);
+            continue;
+          }
+          missing.add(write);
+          creates.add(prewrittenStatsUpsert(write, 0L));
+        }
+        if (creates.isEmpty() || pointerStore.compareAndSetBatch(creates)) {
+          return;
+        }
+        remaining = missing;
+      }
+      throw new AbortRetryableException(
+          "prewritten target stats reference create conflicted: "
+              + remaining.getFirst().pointerKey());
+    }
+
+    private void verifyExactReferences(List<PrewrittenStatsWrite> writes) {
+      for (PrewrittenStatsWrite write : writes) {
+        Pointer existing = pointerStore.get(write.pointerKey()).orElse(null);
+        if (existing == null) {
+          throw new AbortRetryableException(
+              "prewritten target stats reference is missing: " + write.pointerKey());
+        }
+        requireExactReference(write, existing);
+      }
+    }
+
+    private void requireExactReference(PrewrittenStatsWrite write, Pointer existing) {
+      if (!PointerReferences.isBlobPointer(existing)
+          || !write.blobUri().equals(existing.getBlobUri())
+          || !existing.hasReferencedObjectSizeBytes()
+          || write.blobBytes() != existing.getReferencedObjectSizeBytes()) {
+        throw new IllegalArgumentException(
+            "prewritten target stats reference changed for pointer " + write.pointerKey());
+      }
     }
 
     private void overwriteReferencesChunk(List<PrewrittenStatsWrite> writes) {

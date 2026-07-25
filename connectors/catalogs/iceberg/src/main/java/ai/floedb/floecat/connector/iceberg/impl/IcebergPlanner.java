@@ -114,13 +114,9 @@ final class IcebergPlanner implements Planner<Integer> {
             files.add(toPlanned(task.file()));
             deleteFilesByDataFile.put(
                 dataPath, task.deletes().stream().map(IcebergPlanner::toDeleteFileStat).toList());
-          }
-          for (var deleteFile : task.deletes()) {
-            String deletePath = deleteFile.location().toString();
-            if (!this.plannedFilePaths.isEmpty() && !this.plannedFilePaths.contains(deletePath)) {
-              continue;
+            for (var deleteFile : task.deletes()) {
+              deleteFiles.add(toDeleteFileStat(deleteFile));
             }
-            deleteFiles.add(toDeleteFileStat(deleteFile));
           }
         }
       } catch (Exception e) {
