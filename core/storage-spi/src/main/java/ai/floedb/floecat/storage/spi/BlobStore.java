@@ -58,6 +58,14 @@ public interface BlobStore {
     throw new UnsupportedOperationException("versioned deletes not supported by this store");
   }
 
+  /**
+   * Deletes objects whose keys begin with {@code prefix}.
+   *
+   * <p>Returns the number of object deletions the implementation reports as successful. Prefix
+   * deletion is not atomic: an exception may be raised after earlier batches have already been
+   * deleted. Implementation-specific housekeeping, such as removal of an object-store directory
+   * marker, is not included in the count.
+   */
   int deletePrefix(String prefix);
 
   default Map<String, byte[]> getBatch(List<String> uris) {

@@ -405,7 +405,7 @@ public class S3BlobStore implements BlobStore {
                           + " object delete(s): "
                           + failures));
             }
-            deleted += slice.size();
+            deleted += deleteResponse.deleted().size();
           }
         }
 
@@ -414,7 +414,14 @@ public class S3BlobStore implements BlobStore {
       } while (ct != null);
 
       if (p.endsWith("/")) {
-        s3.call(c -> c.deleteObject(b -> b.bucket(bucket).key(p)));
+        try {
+          s3.call(c -> c.deleteObject(b -> b.bucket(bucket).key(p)));
+        } catch (RuntimeException e) {
+          // All listed objects have already been processed. A directory marker is only
+          // housekeeping, so its failure must not turn completed object deletion into an
+          // ambiguous failed operation.
+          LOG.debugf(e, "best-effort directory marker delete failed key=%s", p);
+        }
       }
       return deleted;
 
