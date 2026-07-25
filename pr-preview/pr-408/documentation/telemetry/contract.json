@@ -930,34 +930,34 @@
     "allowedTags": ["component", "mode", "operation", "reason", "resource", "result", "scope", "trigger"]
   },
   {
-    "name": "floecat.service.storage.account.bytes",
+    "name": "floecat.service.storage.account.gc_estimated_bytes",
     "type": "GAUGE",
     "unit": "bytes",
     "since": "v1",
     "origin": "service",
-    "description": "Per-account storage byte consumption maintained by the storage accounting ledger.",
+    "description": "Known bytes referenced by pointer roots traversed by the latest per-account CAS GC mark.",
     "requiredTags": ["account"],
     "allowedTags": ["account"]
   },
   {
-    "name": "floecat.service.storage.account.pointers",
+    "name": "floecat.service.storage.account.gc_estimated_pointers",
     "type": "GAUGE",
     "unit": "",
     "since": "v1",
     "origin": "service",
-    "description": "Per-account pointer count stored in the service.",
+    "description": "Pointer roots traversed by the latest per-account CAS GC mark.",
     "requiredTags": ["account"],
     "allowedTags": ["account"]
   },
   {
-    "name": "floecat.service.storage.failures.total",
-    "type": "COUNTER",
-    "unit": "",
+    "name": "floecat.service.storage.account.gc_size_coverage",
+    "type": "GAUGE",
+    "unit": "ratio",
     "since": "v1",
     "origin": "service",
-    "description": "Storage accounting refresh failures.",
-    "requiredTags": ["operation"],
-    "allowedTags": ["account", "operation"]
+    "description": "Fraction of CAS-GC-scanned blob pointer roots carrying referenced-size metadata.",
+    "requiredTags": ["account"],
+    "allowedTags": ["account"]
   },
   {
     "name": "floecat.service.storage.partial_state.total",
@@ -968,15 +968,5 @@
     "description": "Stored partial-pointer-state anomalies surfaced (non-retryably) by the repository layer: a canonical/secondary pointer mismatch that an atomic create/createIfAbsent can never itself produce and that must be reconciled out of band.",
     "requiredTags": ["operation", "resource"],
     "allowedTags": ["operation", "resource"]
-  },
-  {
-    "name": "floecat.service.storage.refresh.duration",
-    "type": "TIMER",
-    "unit": "ms",
-    "since": "v1",
-    "origin": "service",
-    "description": "Time spent refreshing per-account storage gauges from accounting counters.",
-    "requiredTags": ["operation"],
-    "allowedTags": ["operation"]
   }
 ]

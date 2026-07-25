@@ -2186,17 +2186,19 @@ already cleared the lease as part of successful completion.</p>
 <h2 id="what-the-rust-worker-must-produce">What the Rust Worker Must Produce<a class="headerlink" href="#what-the-rust-worker-must-produce" title="Permanent link">&para;</a></h2>
 <p>The service expects the same logical outputs the Java runner currently produces:</p>
 <ul>
-<li>a directly uploaded <code>FileGroupStatsPayload</code> containing requested <code>TargetStatsRecord</code> values</li>
+<li>one directly uploaded protobuf blob per requested <code>TargetStatsRecord</code></li>
 <li>directly uploaded index objects referenced by <code>IndexArtifactRecord</code> values in a
   <code>FileGroupResultPayload</code></li>
-<li>a <code>ReconcileFileGroupResultDescriptor</code> manifest sent in the success RPC</li>
+<li>a bounded <code>FileGroupResultPayload</code> containing stats-object descriptors and index metadata</li>
+<li>a <code>ReconcileFileGroupResultDescriptor</code> sent in the success RPC</li>
 </ul>
 <p>The worker is responsible for ensuring:</p>
 <ul>
 <li>every planned file requested for page-index capture gets a matching artifact</li>
 <li>artifact metadata matches the target file identity</li>
 <li>every referenced stats or index object is committed before the success RPC</li>
-<li>the manifest sizes and SHA-256 values match the uploaded payloads</li>
+<li>every stats descriptor identifies its target storage ID and the object size and SHA-256</li>
+<li>the result manifest size and SHA-256 match the uploaded payload</li>
 </ul>
 <h2 id="minimal-architecture">Minimal Architecture<a class="headerlink" href="#minimal-architecture" title="Permanent link">&para;</a></h2>
 <p>A practical Rust implementation usually has these pieces:</p>
