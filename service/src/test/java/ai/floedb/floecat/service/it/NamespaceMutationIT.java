@@ -259,7 +259,7 @@ class NamespaceMutationIT {
         nsDelBlocked,
         Status.Code.ABORTED,
         ErrorCode.MC_CONFLICT,
-        "Namespace \"" + leaf + "_root3" + "\" contains tables and/or children.");
+        "Namespace \"" + leaf + "_root3" + "\" contains tables, views, and/or children.");
 
     TestSupport.deleteTable(table, nsId, tbl.getResourceId());
 
