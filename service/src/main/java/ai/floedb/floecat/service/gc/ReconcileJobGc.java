@@ -168,7 +168,7 @@ public class ReconcileJobGc {
         cfg.getOptionalValue("floecat.gc.reconcile-jobs.slice-millis", Long.class).orElse(1000L);
     final int blobPrefixesPerSlice =
         cfg.getOptionalValue("floecat.gc.reconcile-jobs.blob-prefixes-per-slice", Integer.class)
-            .orElse(1);
+            .orElse(50);
     final long retentionMs =
         Math.max(
             1L,
