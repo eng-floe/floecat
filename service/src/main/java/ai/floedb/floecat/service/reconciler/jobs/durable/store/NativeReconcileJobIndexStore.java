@@ -896,9 +896,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     copy.fileGroupResultPartialAggregateRecordCount =
         source.fileGroupResultPartialAggregateRecordCount;
     copy.fileGroupResultIndexArtifactCount = source.fileGroupResultIndexArtifactCount;
-    copy.fileGroupStatsPayloadUri = source.fileGroupStatsPayloadUri;
-    copy.fileGroupStatsPayloadBytes = source.fileGroupStatsPayloadBytes;
-    copy.fileGroupStatsPayloadSha256 = source.fileGroupStatsPayloadSha256;
+    copy.fileGroupStatsObjectPrefix = source.fileGroupStatsObjectPrefix;
     copy.fileGroupStatsRecordCount = source.fileGroupStatsRecordCount;
     copy.fileGroupResultCreatedAtMs = source.fileGroupResultCreatedAtMs;
     copy.definition = cloneDefinition(source.definition);

@@ -233,8 +233,6 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
         0,
         0,
         "",
-        0L,
-        "",
         0,
         1L);
   }

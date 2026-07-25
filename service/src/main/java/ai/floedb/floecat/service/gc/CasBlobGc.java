@@ -19,7 +19,6 @@ package ai.floedb.floecat.service.gc;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
@@ -89,6 +88,7 @@ public class CasBlobGc {
 
   private static final Logger LOG = Logger.getLogger(CasBlobGc.class);
   private static final int CHAIN_READ_ATTEMPTS = 3;
+  private static final String SEG_WORKER_UPLOADS = "/worker-uploads/";
 
   @Inject BlobStore blobStore;
   @Inject PointerStore pointerStore;
@@ -322,7 +322,10 @@ public class CasBlobGc {
             key ->
                 key.contains(Keys.SEG_TABLE)
                     || (key.contains(Keys.SEG_SNAPSHOTS) && key.contains(Keys.SEG_SNAPSHOT))
-                    || key.contains(Keys.SEG_TARGET_STATS)
+                    // Worker uploads are reclaimed as a whole by stats-generation cleanup. They
+                    // must not be swept individually: a worker can spend longer than min-age
+                    // uploading a batch before the service can install protection pointers.
+                    || (key.contains(Keys.SEG_TARGET_STATS) && !key.contains(SEG_WORKER_UPLOADS))
                     || key.contains(Keys.SEG_FILE_STATS)
                     || key.contains(Keys.SEG_CONSTRAINTS)
                     || key.contains(Keys.SEG_TABLE_ROOT),
@@ -529,10 +532,6 @@ public class CasBlobGc {
           if (entry.hasStatsGenerationRef() && !entry.getStatsGenerationRef().getUri().isBlank()) {
             String statsRefUri = entry.getStatsGenerationRef().getUri();
             referenced.add(normalizeKey(statsRefUri));
-            if (statsRefUri.endsWith(".capture-manifest.pb")
-                && !collectCaptureManifestReferences(statsRefUri, referenced)) {
-              return false;
-            }
           }
           if (entry.hasConstraintsRef() && !entry.getConstraintsRef().getUri().isBlank()) {
             referenced.add(normalizeKey(entry.getConstraintsRef().getUri()));
@@ -543,37 +542,6 @@ public class CasBlobGc {
       return true;
     } catch (RuntimeException e) {
       LOG.warnf(e, "cas gc chain walk failed for root %s; sweep will be skipped", rootBlobUri);
-      return false;
-    }
-  }
-
-  private boolean collectCaptureManifestReferences(String manifestUri, Set<String> referenced) {
-    try {
-      SnapshotCaptureManifest manifest =
-          SnapshotCaptureManifest.parseFrom(blobStore.get(manifestUri));
-      if (manifest.getFormatVersion() != 1) {
-        LOG.warnf("cas gc found unsupported capture manifest %s", manifestUri);
-        return false;
-      }
-      for (var descriptor : manifest.getFileGroupsList()) {
-        if (!descriptor.getPayloadUri().isBlank()) {
-          referenced.add(normalizeKey(descriptor.getPayloadUri()));
-        }
-        if (!descriptor.getStatsPayloadUri().isBlank()) {
-          referenced.add(normalizeKey(descriptor.getStatsPayloadUri()));
-        }
-      }
-      if (manifest.hasFinalStats() && !manifest.getFinalStats().getPayloadUri().isBlank()) {
-        referenced.add(normalizeKey(manifest.getFinalStats().getPayloadUri()));
-      }
-      for (var artifact : manifest.getIndexArtifactsList()) {
-        if (!artifact.getArtifactUri().isBlank()) {
-          referenced.add(normalizeKey(artifact.getArtifactUri()));
-        }
-      }
-      return true;
-    } catch (RuntimeException | com.google.protobuf.InvalidProtocolBufferException e) {
-      LOG.warnf(e, "cas gc could not read capture manifest %s; sweep will be skipped", manifestUri);
       return false;
     }
   }

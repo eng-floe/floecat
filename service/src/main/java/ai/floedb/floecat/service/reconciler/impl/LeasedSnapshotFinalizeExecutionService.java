@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
-import ai.floedb.floecat.catalog.rpc.BlobRef;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -27,13 +27,17 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultResponse;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.MutationOps;
+import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
+import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.Status;
@@ -41,10 +45,14 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.List;
+import java.util.Set;
 import org.jboss.logging.Logger;
 
-/** Registers fenced snapshot capture manifests without ingesting their artifact payloads. */
+/** Validates and publishes fenced snapshot capture artifacts. */
 @ApplicationScoped
 public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
   private static final Logger LOG = Logger.getLogger(LeasedSnapshotFinalizeExecutionService.class);
@@ -53,6 +61,8 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
   @Inject ai.floedb.floecat.service.repo.IdempotencyRepository idempotencyStore;
   @Inject SnapshotFinalizeChildStateService childStateService;
   @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
+  @Inject SnapshotFinalizePersistenceService persistence;
+  @Inject IndexArtifactRepository indexArtifactRepository;
   @Inject BlobStore blobStore;
 
   public boolean persistSuccess(
@@ -121,8 +131,9 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         validateNanos[0] = System.nanoTime() - validateStartNanos;
       }
       long manifestValidationStartNanos = System.nanoTime();
+      SnapshotCaptureManifest manifest;
       try {
-        validateManifestObject(lease, validated);
+        manifest = validateManifestObject(lease, validated);
       } finally {
         manifestValidationNanos[0] = System.nanoTime() - manifestValidationStartNanos;
       }
@@ -148,14 +159,9 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
             jobs.beginSnapshotFinalizeCommit(lease.jobId, lease.leaseEpoch), lease.jobId);
         long publishStartNanos = System.nanoTime();
         try {
-          currentSnapshotPointerService.publishCaptureManifest(
-              tableId,
-              snapshotTask.snapshotId(),
-              BlobRef.newBuilder()
-                  .setUri(validated.getManifestUri())
-                  .setVersion(manifestSha256)
-                  .build(),
-              lease.jobId);
+          publishCaptureArtifacts(lease, tableId, snapshotTask, manifest);
+          currentSnapshotPointerService.maybeAdvance(
+              tableId, snapshotTask.snapshotId(), lease.jobId);
         } finally {
           publishNanos[0] = System.nanoTime() - publishStartNanos;
         }
@@ -272,7 +278,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     return descriptor;
   }
 
-  private void validateManifestObject(
+  private SnapshotCaptureManifest validateManifestObject(
       ReconcileJobStore.LeasedJob lease, SnapshotCaptureManifestDescriptor descriptor) {
     String expectedUri = descriptor.getManifestUri();
     byte[] bytes = blobStore.get(expectedUri);
@@ -306,9 +312,105 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         || !descriptor.getResultId().equals(manifest.getResultId())
         || descriptor.getFileGroupCount() != manifest.getFileGroupsCount()
         || descriptor.getSourceFileCount() != manifest.getSourceFileCount()
-        || descriptor.getStatsRecordCount() != manifest.getStatsIndexCount()
+        || descriptor.getStatsRecordCount()
+            != manifest.getFileStatsRecordCount() + manifest.getFinalStatsCount()
         || descriptor.getIndexArtifactCount() != manifest.getIndexArtifactsCount()) {
       throw new IllegalArgumentException("snapshot capture manifest object identity mismatch");
+    }
+    return manifest;
+  }
+
+  private void publishCaptureArtifacts(
+      ReconcileJobStore.LeasedJob lease,
+      ResourceId tableId,
+      ReconcileSnapshotTask snapshotTask,
+      SnapshotCaptureManifest manifest) {
+    String generationId = "full-rescan-" + lease.parentJobId;
+    String requiredPrefix =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+            tableId.getAccountId(), tableId.getId(), snapshotTask.snapshotId(), generationId);
+    List<StatsStore.PrewrittenTargetStats> stats = new ArrayList<>();
+    Set<String> targets = new HashSet<>();
+    for (var fileGroup : manifest.getFileGroupsList()) {
+      byte[] resultBytes = blobStore.get(fileGroup.getPayloadUri());
+      if (resultBytes.length != fileGroup.getPayloadBytes()
+          || fileGroup.getPayloadSha256().size() != 32
+          || !MessageDigest.isEqual(
+              sha256(resultBytes), fileGroup.getPayloadSha256().toByteArray())) {
+        throw new IllegalArgumentException(
+            "snapshot file-group result payload does not match its descriptor");
+      }
+      final ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload result;
+      try {
+        result = ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload.parseFrom(resultBytes);
+      } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+        throw new IllegalArgumentException("snapshot file-group result payload is invalid", e);
+      }
+      if (result.getFormatVersion() != 1
+          || !fileGroup.getAccountId().equals(result.getAccountId())
+          || !fileGroup.getParentJobId().equals(result.getParentJobId())
+          || !fileGroup.getFileGroupJobId().equals(result.getFileGroupJobId())
+          || !fileGroup.getLeaseEpoch().equals(result.getLeaseEpoch())
+          || !fileGroup.getResultId().equals(result.getResultId())
+          || fileGroup.getFileStatsRecordCount() != result.getFileStatsCount()) {
+        throw new IllegalArgumentException("snapshot file-group result identity mismatch");
+      }
+      for (StatsObjectDescriptor object : result.getFileStatsList()) {
+        stats.add(loadPrewrittenStats(tableId, snapshotTask.snapshotId(), requiredPrefix, object));
+        if (!targets.add(object.getTargetStorageId())) {
+          throw new IllegalArgumentException(
+              "duplicate target in snapshot stats publication: " + object.getTargetStorageId());
+        }
+      }
+    }
+    for (StatsObjectDescriptor object : manifest.getFinalStatsList()) {
+      stats.add(loadPrewrittenStats(tableId, snapshotTask.snapshotId(), requiredPrefix, object));
+      if (!targets.add(object.getTargetStorageId())) {
+        throw new IllegalArgumentException(
+            "duplicate target in snapshot stats publication: " + object.getTargetStorageId());
+      }
+    }
+    if (stats.size() != manifest.getFileStatsRecordCount() + manifest.getFinalStatsCount()) {
+      throw new IllegalArgumentException("snapshot stats publication count mismatch");
+    }
+    persistence.publishPrewrittenStatsGeneration(
+        tableId, snapshotTask.snapshotId(), generationId, stats);
+    indexArtifactRepository.putIndexArtifactsBatch(manifest.getIndexArtifactsList());
+  }
+
+  private StatsStore.PrewrittenTargetStats loadPrewrittenStats(
+      ResourceId tableId,
+      long snapshotId,
+      String requiredPrefix,
+      StatsObjectDescriptor descriptor) {
+    if (descriptor.getTargetStorageId().isBlank()
+        || descriptor.getPayloadUri().isBlank()
+        || !descriptor.getPayloadUri().startsWith(requiredPrefix)
+        || descriptor.getPayloadBytes() <= 0L
+        || descriptor.getPayloadSha256().size() != 32) {
+      throw new IllegalArgumentException("invalid target stats object descriptor");
+    }
+    byte[] bytes = blobStore.get(descriptor.getPayloadUri());
+    if (bytes.length != descriptor.getPayloadBytes()
+        || !MessageDigest.isEqual(sha256(bytes), descriptor.getPayloadSha256().toByteArray())) {
+      throw new IllegalArgumentException("target stats object does not match its descriptor");
+    }
+    try {
+      TargetStatsRecord record = TargetStatsRecord.parseFrom(bytes);
+      if (!tableId.equals(record.getTableId())
+          || snapshotId != record.getSnapshotId()
+          || !descriptor
+              .getTargetStorageId()
+              .equals(StatsTargetIdentity.storageId(record.getTarget()))) {
+        throw new IllegalArgumentException("target stats object identity mismatch");
+      }
+      return new StatsStore.PrewrittenTargetStats(
+          record,
+          descriptor.getPayloadUri(),
+          descriptor.getPayloadBytes(),
+          descriptor.getPayloadSha256().toByteArray());
+    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+      throw new IllegalArgumentException("target stats object is invalid", e);
     }
   }
 

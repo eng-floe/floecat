@@ -371,6 +371,149 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void workerObjectProtectionSurvivesGcRootsAndIsRemovedWithAbandonedGeneration() {
+    InMemoryPointerStore pointerDelegate = new InMemoryPointerStore();
+    AtomicInteger batchCalls = new AtomicInteger();
+    var pointerStore =
+        new RepoTestPointerStores.DelegatingPointerStore(pointerDelegate) {
+          @Override
+          public boolean compareAndSetBatch(List<CasOp> ops) {
+            batchCalls.incrementAndGet();
+            return super.compareAndSetBatch(ops);
+          }
+        };
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 712L;
+    String generationId = "full-rescan-parent";
+    String objectUri =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/child/lease/stats.pb";
+    String secondObjectUri =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/child/lease/second-stats.pb";
+    byte[] objectBytes = new byte[] {1, 2, 3};
+    blobStore.put(objectUri, objectBytes, "application/x-protobuf");
+    blobStore.put(secondObjectUri, objectBytes, "application/x-protobuf");
+
+    repository.protectPrewrittenStatsObjectsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        "child:lease",
+        List.of(
+            new StatsStore.PrewrittenStatsObject(objectUri, objectBytes.length, new byte[32]),
+            new StatsStore.PrewrittenStatsObject(
+                secondObjectUri, objectBytes.length, new byte[32])));
+
+    assertThat(batchCalls).hasValue(1);
+    String generationPointerPrefix =
+        Keys.snapshotTargetStatsGenerationPointerPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    List<Pointer> pointers =
+        pointerStore.listPointersByPrefix(generationPointerPrefix, 10, "", new StringBuilder());
+    assertThat(pointers).extracting(Pointer::getBlobUri).contains(objectUri, secondObjectUri);
+
+    assertThat(repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, generationId))
+        .isEqualTo(UnpublishedGenerationDeleteResult.DELETED);
+    assertThat(
+            pointerStore.listPointersByPrefix(
+                Keys.snapshotTargetStatsGenerationProtectionsPointerPrefix(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId),
+                10,
+                "",
+                new StringBuilder()))
+        .isEmpty();
+    assertThat(
+            pointerStore.get(
+                Keys.snapshotTargetStatsGenerationLifecyclePointer(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)))
+        .isPresent();
+    assertThat(blobStore.head(objectUri)).isEmpty();
+    assertThat(blobStore.head(secondObjectUri)).isEmpty();
+  }
+
+  @Test
+  void deletingGenerationReapsWorkerUploadThatArrivesAfterAbandonedCleanup() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 714L;
+    String generationId = "full-rescan-late-upload";
+    String objectUri =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/child/lease/stats.pb";
+
+    repository.protectPrewrittenStatsObjectsInGeneration(
+        TABLE_ID, snapshotId, generationId, "child:lease", List.of());
+    assertThat(repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, generationId))
+        .isEqualTo(UnpublishedGenerationDeleteResult.DELETED);
+
+    blobStore.put(objectUri, new byte[] {1, 2, 3}, "application/x-protobuf");
+    repository.deleteUnreferencedGenerations(TABLE_ID, ignored -> false, Long.MAX_VALUE, 0L);
+
+    assertThat(blobStore.head(objectUri)).isEmpty();
+  }
+
+  @Test
+  void abandonedGenerationCleanupRetriesWhenProtectionDeletionFails() {
+    InMemoryPointerStore pointerDelegate = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    long snapshotId = 713L;
+    String generationId = "full-rescan-retry";
+    String protectionPrefix =
+        Keys.snapshotTargetStatsGenerationProtectionsPointerPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    AtomicBoolean failProtectionDelete = new AtomicBoolean(true);
+    var pointerStore =
+        new RepoTestPointerStores.DelegatingPointerStore(pointerDelegate) {
+          @Override
+          public int deleteByPrefix(String prefix) {
+            if (protectionPrefix.equals(prefix)
+                && failProtectionDelete.compareAndSet(true, false)) {
+              throw new StorageAbortRetryableException("injected protection deletion failure");
+            }
+            return super.deleteByPrefix(prefix);
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    String objectUri =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/child/lease/stats.pb";
+    byte[] objectBytes = new byte[] {1, 2, 3};
+    blobStore.put(objectUri, objectBytes, "application/x-protobuf");
+    repository.protectPrewrittenStatsObjectsInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        "child:lease",
+        List.of(new StatsStore.PrewrittenStatsObject(objectUri, objectBytes.length, new byte[32])));
+
+    assertThatThrownBy(
+            () -> repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, generationId))
+        .isInstanceOf(StorageAbortRetryableException.class)
+        .hasMessageContaining("cleanup failed");
+    assertThat(pointerDelegate.countByPrefix(protectionPrefix)).isEqualTo(1);
+    assertThat(
+            pointerDelegate
+                .get(
+                    Keys.snapshotTargetStatsGenerationLifecyclePointer(
+                        TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId))
+                .orElseThrow()
+                .getBlobUri())
+        .isEqualTo("DELETING");
+
+    assertThat(repository.deleteUnpublishedStatsGeneration(TABLE_ID, snapshotId, generationId))
+        .isEqualTo(UnpublishedGenerationDeleteResult.DELETED);
+    assertThat(pointerDelegate.countByPrefix(protectionPrefix)).isZero();
+    assertThat(blobStore.head(objectUri)).isEmpty();
+  }
+
+  @Test
   void deleteUnpublishedStatsGenerationDoesNotDeletePublishedGeneration() {
     InMemoryPointerStore pointerStore = new InMemoryPointerStore();
     InMemoryBlobStore blobStore = new InMemoryBlobStore();

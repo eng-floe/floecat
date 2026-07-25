@@ -668,10 +668,30 @@ public final class Keys {
 
   public static String snapshotTargetStatsGenerationDirectoryPointer(
       String accountId, String tableId, long snapshotId, String generationId) {
+    return snapshotTargetStatsGenerationPointerPrefix(accountId, tableId, snapshotId, generationId)
+        + "targets/";
+  }
+
+  public static String snapshotTargetStatsGenerationPointerPrefix(
+      String accountId, String tableId, long snapshotId, String generationId) {
     String generation = req("generation_id", generationId);
     return snapshotTargetStatsGenerationRootPointer(accountId, tableId, snapshotId)
         + encode(generation)
-        + "/targets/";
+        + "/";
+  }
+
+  public static String snapshotTargetStatsGenerationProtectionPointerPrefix(
+      String accountId, String tableId, long snapshotId, String generationId, String protectionId) {
+    return snapshotTargetStatsGenerationProtectionsPointerPrefix(
+            accountId, tableId, snapshotId, generationId)
+        + encode(req("protection_id", protectionId))
+        + "/";
+  }
+
+  public static String snapshotTargetStatsGenerationProtectionsPointerPrefix(
+      String accountId, String tableId, long snapshotId, String generationId) {
+    return snapshotTargetStatsGenerationPointerPrefix(accountId, tableId, snapshotId, generationId)
+        + "protections/";
   }
 
   public static String snapshotTargetStatsGenerationPointer(
@@ -690,10 +710,8 @@ public final class Keys {
 
   public static String snapshotTargetStatsGenerationLifecyclePointer(
       String accountId, String tableId, long snapshotId, String generationId) {
-    String generation = req("generation_id", generationId);
-    return snapshotTargetStatsGenerationRootPointer(accountId, tableId, snapshotId)
-        + encode(generation)
-        + "/lifecycle";
+    return snapshotTargetStatsGenerationPointerPrefix(accountId, tableId, snapshotId, generationId)
+        + "lifecycle";
   }
 
   public static String snapshotTargetColumnStatsGenerationPrefix(
@@ -735,6 +753,15 @@ public final class Keys {
     return String.format(
         "/accounts/%s/tables/%s/target-stats/%019d/generations/%s/%s/%s.pb",
         encode(tid), encode(tbid), sid, encode(generation), encode(target), encode(sha));
+  }
+
+  public static String snapshotTargetStatsGenerationBlobPrefix(
+      String accountId, String tableId, long snapshotId, String generationId) {
+    String generation = req("generation_id", generationId);
+    return snapshotTargetStatsBlobPrefix(accountId, tableId, snapshotId)
+        + "generations/"
+        + encode(generation)
+        + "/";
   }
 
   public static String snapshotTargetStatsBlobPrefix(
@@ -1348,14 +1375,34 @@ public final class Keys {
         + ".pb";
   }
 
-  public static String reconcileFileGroupStatsPayloadUri(
-      String accountId, String parentJobId, String jobId, String leaseEpoch) {
-    String resultUri =
-        reconcileFileGroupResultPayloadUri(accountId, parentJobId, jobId, leaseEpoch);
-    return resultUri.substring(0, resultUri.length() - ".pb".length()) + ".stats.pb";
+  public static String reconcileFileGroupStatsObjectPrefix(
+      String accountId,
+      String tableId,
+      long snapshotId,
+      String parentJobId,
+      String jobId,
+      String leaseEpoch) {
+    String generationId = "full-rescan-" + req("parent_job_id", parentJobId);
+    return snapshotTargetStatsGenerationBlobPrefix(accountId, tableId, snapshotId, generationId)
+        + "worker-uploads/"
+        + encode(req("job_id", jobId))
+        + "/"
+        + sha256Hex(req("lease_epoch", leaseEpoch))
+        + "/";
   }
 
-  public static String reconcileSnapshotFinalizeStatsPayloadUri(
+  public static String reconcileSnapshotFinalizeStatsObjectPrefix(
+      String accountId,
+      String tableId,
+      long snapshotId,
+      String parentJobId,
+      String jobId,
+      String leaseEpoch) {
+    return reconcileFileGroupStatsObjectPrefix(
+        accountId, tableId, snapshotId, parentJobId, jobId, leaseEpoch);
+  }
+
+  public static String reconcileSnapshotCaptureManifestUri(
       String accountId, String parentJobId, String jobId, String leaseEpoch) {
     String tid = req("account_id", accountId);
     String pid = req("parent_job_id", parentJobId);
@@ -1366,14 +1413,7 @@ public final class Keys {
         + encode(pid)
         + "/executions/"
         + sha256Hex(epoch)
-        + ".stats.pb";
-  }
-
-  public static String reconcileSnapshotCaptureManifestUri(
-      String accountId, String parentJobId, String jobId, String leaseEpoch) {
-    String statsUri =
-        reconcileSnapshotFinalizeStatsPayloadUri(accountId, parentJobId, jobId, leaseEpoch);
-    return statsUri.substring(0, statsUri.length() - ".stats.pb".length()) + ".capture-manifest.pb";
+        + ".capture-manifest.pb";
   }
 
   private static String sha256Hex(String value) {

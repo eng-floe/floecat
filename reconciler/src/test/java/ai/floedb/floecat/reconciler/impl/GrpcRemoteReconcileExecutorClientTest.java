@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -243,7 +244,7 @@ class GrpcRemoteReconcileExecutorClientTest {
                             LeasedSnapshotFinalizeInput.FinalizeMode.FZM_EXPLICIT_EMPTY)
                         .setFileGroupCount(0)
                         .setSourceFileCount(0)
-                        .setStatsPayloadUri("/stats.pb")
+                        .setStatsObjectPrefix("/stats.pb")
                         .setCaptureManifestUri("/manifest.pb")
                         .build())
                 .build());
@@ -271,7 +272,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             client.submitSnapshotFinalizeSuccess(
                 remoteSnapshotFinalizeLease(),
                 "result-1",
-                "/stats.pb",
+                "/stats/",
                 "/manifest.pb",
                 0,
                 List.of(),
@@ -746,7 +747,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
-  void submitFileGroupSuccessSendsChunkedFileStats() throws Exception {
+  void submitFileGroupSuccessWritesOneStatsObjectAndSendsOnlyItsDescriptor() throws Exception {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ManagedChannel channel = mock(ManagedChannel.class);
     ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
@@ -789,7 +790,13 @@ class GrpcRemoteReconcileExecutorClientTest {
     var success = requestCaptor.getValue().getSuccess();
     assertThat(success.getResultId()).isEqualTo("result-1");
     assertThat(success.getResultDescriptor().getFileStatsRecordCount()).isEqualTo(1);
-    assertThat(success.getResultDescriptor().getStatsPayloadUri()).isEqualTo("/stats.pb");
+    assertThat(success.getResultDescriptor().getStatsObjectPrefix()).isEqualTo("/stats/");
+    ArgumentCaptor<String> blobUris = ArgumentCaptor.forClass(String.class);
+    verify(client.blobStore, times(2))
+        .put(blobUris.capture(), any(byte[].class), eq("application/x-protobuf"));
+    assertThat(blobUris.getAllValues()).contains("/result.pb");
+    assertThat(blobUris.getAllValues())
+        .anyMatch(uri -> uri.startsWith("/stats/") && uri.endsWith(".pb"));
   }
 
   @Test
@@ -961,7 +968,7 @@ class GrpcRemoteReconcileExecutorClientTest {
         "plan-1",
         "group-1",
         "/result.pb",
-        "/stats.pb",
+        "/stats/",
         List.of(filePaths),
         ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.empty());
   }

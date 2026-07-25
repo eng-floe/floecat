@@ -97,47 +97,6 @@ public class TableRootWriter {
             advanceAtRegistration));
   }
 
-  /**
-   * Registers a snapshot and publishes its capture manifest in one table-root CAS. The caller has
-   * already committed the authoritative current-snapshot pointer, so the root mutation re-reads
-   * that pointer on every CAS attempt and derives both entry registration and visibility from the
-   * same current root.
-   */
-  public void commitSnapshotCapture(ResourceId tableId, Snapshot candidate, BlobRef manifestRef) {
-    if (manifestRef == null
-        || manifestRef.getUri().isBlank()
-        || manifestRef.getVersion().isBlank()) {
-      throw new IllegalArgumentException("capture manifest ref is required");
-    }
-    BlobRef snapshotRef =
-        BlobRefs.refFrom(snapshots.metaForSafe(tableId, candidate.getSnapshotId()));
-    if (snapshotRef == null) {
-      throw new IllegalStateException(
-          "snapshot blob is not resolvable for capture publication " + candidate.getSnapshotId());
-    }
-    SnapshotManifestEntry entry = snapshotEntry(candidate, snapshotRef);
-    BlobRef definitionRef = BlobRefs.refFrom(tables.metaForSafe(tableId));
-    committer.commit(
-        tableId,
-        current -> {
-          Long committedCurrentSnapshotId =
-              snapshots
-                  .latestRegisteredSnapshotPointer(tableId)
-                  .map(CurrentSnapshotPointer::getSnapshotId)
-                  .orElse(null);
-          var registered =
-              TableRootMutations.upsertSnapshot(roots, tableId, entry, definitionRef, true)
-                  .apply(current);
-          return TableRootMutations.setStatsGeneration(
-                  roots,
-                  tableId,
-                  candidate.getSnapshotId(),
-                  manifestRef,
-                  committedCurrentSnapshotId)
-              .apply(java.util.Optional.of(registered));
-        });
-  }
-
   private static SnapshotManifestEntry snapshotEntry(Snapshot candidate, BlobRef snapshotRef) {
     SnapshotManifestEntry.Builder entry =
         SnapshotManifestEntry.newBuilder()

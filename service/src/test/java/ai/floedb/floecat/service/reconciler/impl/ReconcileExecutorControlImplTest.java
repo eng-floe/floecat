@@ -621,7 +621,7 @@ class ReconcileExecutorControlImplTest {
         response.getInput().getSnapshotPlanUri());
     assertEquals(
         "/accounts/acct/reconcile/result-payloads/finalize.stats.pb",
-        response.getInput().getStatsPayloadUri());
+        response.getInput().getStatsObjectPrefix());
     assertEquals(
         "/accounts/acct/reconcile/result-payloads/finalize.capture-manifest.pb",
         response.getInput().getCaptureManifestUri());
@@ -926,9 +926,7 @@ class ReconcileExecutorControlImplTest {
         .setPayloadSha256(com.google.protobuf.ByteString.copyFromUtf8("sha256"))
         .setPlannedFileCount(1)
         .setSucceededFileCount(1)
-        .setStatsPayloadUri("/stats.pb")
-        .setStatsPayloadBytes(100L)
-        .setStatsPayloadSha256(com.google.protobuf.ByteString.copyFromUtf8("stats-sha256"))
+        .setStatsObjectPrefix("/stats.pb")
         .setFileStatsRecordCount(1)
         .build();
   }

@@ -469,7 +469,7 @@ public class ConnectorIT {
             .allMatch(
                 descriptor ->
                     !descriptor.payloadUri().isBlank()
-                        && !descriptor.statsPayloadUri().isBlank()
+                        && !descriptor.statsObjectPrefix().isBlank()
                         && descriptor.succeededFileCount() == descriptor.plannedFileCount()
                         && descriptor.failedFileCount() == 0
                         && descriptor.skippedFileCount() == 0),
@@ -1283,7 +1283,7 @@ public class ConnectorIT {
               .allMatch(
                   descriptor ->
                       !descriptor.payloadUri().isBlank()
-                          && !descriptor.statsPayloadUri().isBlank()
+                          && !descriptor.statsObjectPrefix().isBlank()
                           && descriptor.succeededFileCount() == descriptor.plannedFileCount()
                           && descriptor.failedFileCount() == 0
                           && descriptor.skippedFileCount() == 0),

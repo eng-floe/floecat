@@ -249,8 +249,16 @@ message ReconcileFileGroupTask {
   reserved 6, 7;
 }
 
-// Immutable packed result written directly by a file-group executor. The payload is stored as one
-// object (multipart upload is allowed) so snapshots do not create one object per record or sketch.
+// Compact reference to one immutable stats record written directly by a worker.
+message StatsObjectDescriptor {
+  string target_storage_id = 1;
+  string payload_uri = 2;
+  uint64 payload_bytes = 3;
+  bytes payload_sha256 = 4;
+}
+
+// Immutable result metadata written directly by a file-group executor. File stats are stored as
+// individual objects; this bounded file-group payload carries only their compact references.
 message FileGroupResultPayload {
   uint32 format_version = 1;
   string account_id = 2;
@@ -266,71 +274,13 @@ message FileGroupResultPayload {
   repeated ReconcileFileResult file_results = 12;
   repeated ai.floedb.floecat.catalog.TargetStatsRecord partial_aggregate_records = 13;
   repeated ai.floedb.floecat.catalog.IndexArtifactRecord index_artifacts = 14;
-}
-
-// Immutable file-scoped stats pack written directly by a file-group executor. The snapshot
-// finalizer validates it and publishes record ranges in the capture manifest; records are not
-// carried over gRPC or exploded into individual objects.
-message FileGroupStatsPayload {
-  uint32 format_version = 1;
-  string account_id = 2;
-  string connector_id = 3;
-  string parent_job_id = 4;
-  string file_group_job_id = 5;
-  string plan_id = 6;
-  string group_id = 7;
-  string table_id = 8;
-  uint64 snapshot_id = 9;
-  string lease_epoch = 10;
-  string result_id = 11;
-  repeated ai.floedb.floecat.catalog.TargetStatsRecord file_stats = 12;
-}
-
-// Immutable final stats pack written directly by a snapshot-finalize executor.
-message SnapshotFinalizeStatsPayload {
-  uint32 format_version = 1;
-  string account_id = 2;
-  string connector_id = 3;
-  string parent_job_id = 4;
-  string finalize_job_id = 5;
-  string table_id = 6;
-  uint64 snapshot_id = 7;
-  string lease_epoch = 8;
-  string result_id = 9;
-  repeated ai.floedb.floecat.catalog.TargetStatsRecord stats_records = 10;
-}
-
-// Compact reference to one committed SnapshotFinalizeStatsPayload object.
-message SnapshotFinalizeStatsDescriptor {
-  uint32 format_version = 1;
-  string account_id = 2;
-  string connector_id = 3;
-  string parent_job_id = 4;
-  string finalize_job_id = 5;
-  string table_id = 6;
-  uint64 snapshot_id = 7;
-  string lease_epoch = 8;
-  string result_id = 9;
-  string payload_uri = 10;
-  uint64 payload_bytes = 11;
-  bytes payload_sha256 = 12;
-  uint32 stats_record_count = 13;
+  repeated StatsObjectDescriptor file_stats = 15;
 }
 
 // Immutable publication unit produced by the snapshot-finalize executor after it has verified all
-// child artifacts. Readers resolve stats and index metadata through this manifest; Floecat only
-// registers its fenced descriptor on the table root.
+// child artifacts. File stats remain partitioned across bounded file-group payloads; aggregate
+// stats are individual objects referenced here.
 message SnapshotCaptureManifest {
-  message StatsRecordLocation {
-    string target_storage_id = 1;
-    string payload_uri = 2;
-    uint32 record_index = 3;
-    bool final_aggregate = 4;
-    uint64 byte_offset = 5;
-    uint32 byte_length = 6;
-    bytes record_sha256 = 7;
-  }
-
   uint32 format_version = 1;
   string account_id = 2;
   string connector_id = 3;
@@ -342,9 +292,9 @@ message SnapshotCaptureManifest {
   string result_id = 9;
   CapturePolicy capture_policy = 10;
   repeated FileGroupResultDescriptor file_groups = 11;
-  SnapshotFinalizeStatsDescriptor final_stats = 12;
+  repeated StatsObjectDescriptor final_stats = 12;
   repeated ai.floedb.floecat.catalog.IndexArtifactRecord index_artifacts = 13;
-  repeated StatsRecordLocation stats_index = 14;
+  reserved 14;
   uint32 source_file_count = 15;
   uint32 file_stats_record_count = 16;
   uint32 partial_aggregate_record_count = 17;
@@ -397,9 +347,8 @@ message FileGroupResultDescriptor {
   uint32 partial_aggregate_record_count = 19;
   uint32 index_artifact_count = 20;
   google.protobuf.Timestamp created_at = 21;
-  string stats_payload_uri = 22;
-  uint64 stats_payload_bytes = 23;
-  bytes stats_payload_sha256 = 24;
+  string stats_object_prefix = 22;
+  reserved 23, 24;
   uint32 file_stats_record_count = 25;
 }
 
@@ -632,8 +581,8 @@ message LeasedSnapshotFinalizeInput {
   string snapshot_plan_uri = 10;
   bool full_rescan = 11;
   uint32 file_group_count = 12;
-  // Server-allocated immutable object URI for this fenced finalizer's stats pack.
-  string stats_payload_uri = 13;
+  // Server-allocated immutable prefix for this fenced finalizer's individual stats objects.
+  string stats_object_prefix = 13;
   // Server-allocated immutable object URI for this fenced finalizer's capture manifest.
   string capture_manifest_uri = 14;
 }
@@ -897,8 +846,8 @@ message LeasedFileGroupExecution {
   string storage_location = 13;
   // Server-allocated immutable object URI for this fenced execution's packed result.
   string result_payload_uri = 14;
-  // Server-allocated immutable object URI for this fenced execution's file-stats pack.
-  string stats_payload_uri = 15;
+  // Server-allocated immutable prefix for this fenced execution's individual stats objects.
+  string stats_object_prefix = 15;
 }
 
 message GetLeasedFileGroupExecutionResponse {

@@ -37,6 +37,11 @@ import java.util.Optional;
  * implementation needs to read or write persisted stats.
  */
 public interface StatsStore {
+  record PrewrittenTargetStats(
+      TargetStatsRecord record, String blobUri, long blobBytes, byte[] blobSha256) {}
+
+  record PrewrittenStatsObject(String blobUri, long blobBytes, byte[] blobSha256) {}
+
   enum UnpublishedGenerationDeleteResult {
     DELETED,
     NOT_DELETABLE_PUBLISHED,
@@ -267,6 +272,38 @@ public interface StatsStore {
       List<TargetStatsRecord> records) {
     throw new UnsupportedOperationException("unpublished stats generations are not supported");
   }
+
+  /**
+   * Registers immutable target-stats objects that a fenced worker already wrote.
+   *
+   * <p>The implementation creates generation-scoped target mappings without rewriting the blob
+   * bytes. The generation remains unpublished until {@link #publishStatsGeneration} succeeds.
+   */
+  default void registerPrewrittenStatsInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<PrewrittenTargetStats> records) {
+    throw new UnsupportedOperationException("prewritten stats objects are not supported");
+  }
+
+  /**
+   * Protects immutable worker-written stats objects while their generation is still unpublished.
+   *
+   * <p>The protection is scoped to one fenced worker result and is not visible to stats readers.
+   */
+  default void protectPrewrittenStatsObjectsInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      String protectionId,
+      List<PrewrittenStatsObject> objects) {
+    throw new UnsupportedOperationException("prewritten stats object protection is not supported");
+  }
+
+  /** Removes all temporary worker-object protections after their target mappings are published. */
+  default void clearPrewrittenStatsObjectProtections(
+      ResourceId tableId, long snapshotId, String generationId) {}
 
   /**
    * Publishes an unpublished generation as the active stats generation for a table snapshot.

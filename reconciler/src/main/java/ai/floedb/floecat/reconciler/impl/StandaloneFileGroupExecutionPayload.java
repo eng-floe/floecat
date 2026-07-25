@@ -35,7 +35,7 @@ public record StandaloneFileGroupExecutionPayload(
     String planId,
     String groupId,
     String resultPayloadUri,
-    String statsPayloadUri,
+    String statsObjectPrefix,
     List<String> plannedFilePaths,
     ReconcileCapturePolicy capturePolicy) {
   public StandaloneFileGroupExecutionPayload {
@@ -49,7 +49,7 @@ public record StandaloneFileGroupExecutionPayload(
     planId = planId == null ? "" : planId.trim();
     groupId = groupId == null ? "" : groupId.trim();
     resultPayloadUri = resultPayloadUri == null ? "" : resultPayloadUri.trim();
-    statsPayloadUri = statsPayloadUri == null ? "" : statsPayloadUri.trim();
+    statsObjectPrefix = statsObjectPrefix == null ? "" : statsObjectPrefix.trim();
     plannedFilePaths =
         plannedFilePaths == null
             ? List.of()

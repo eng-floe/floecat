@@ -56,13 +56,14 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload;
-import ai.floedb.floecat.reconciler.rpc.FileGroupStatsPayload;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
+import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import com.google.protobuf.ByteString;
 import io.grpc.Status;
@@ -114,6 +115,7 @@ class LeasedFileGroupExecutionServiceTest {
     service.snapshotRepo = snapshotRepo;
     service.credentialResolver = credentialResolver;
     service.idempotencyStore = idempotencyStore;
+    service.statsStore = statsStore;
     service.blobStore = mock(ai.floedb.floecat.storage.spi.BlobStore.class);
     when(principal.getCorrelationId()).thenReturn("corr");
     when(principal.getAccountId()).thenReturn(ACCOUNT_ID);
@@ -182,7 +184,7 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   @Test
-  void persistSuccessRegistersDescriptorWithoutReadingPayloads() {
+  void persistSuccessProtectsReferencedStatsObjectsBeforeRegisteringDescriptor() {
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of(
             "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
@@ -231,12 +233,73 @@ class LeasedFileGroupExecutionServiceTest {
     assertEquals(1, persisted.getValue().plannedFileCount());
     assertEquals(1, persisted.getValue().succeededFileCount());
     assertEquals(resultPayloadUri(), persisted.getValue().payloadUri());
-    verify(service.blobStore, never()).get(anyString());
+    verify(service.blobStore).get(resultPayloadUri());
+    verify(statsStore)
+        .protectPrewrittenStatsObjectsInGeneration(
+            eq(tableId()),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-" + PARENT_JOB_ID),
+            eq(CHILD_JOB_ID + ":" + LEASE_EPOCH),
+            eq(List.of()));
     verify(idempotencyStore, never())
         .createPending(anyString(), anyString(), anyString(), anyString(), any(), any());
     verify(idempotencyStore, never())
         .finalizeSuccess(
             anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void persistSuccessProtectsEachIndividualStatsObjectWithoutReadingIt() {
+    ReconcileFileGroupTask plannedGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileJobStore.ReconcileJob childLeaseView =
+        job(
+            CHILD_JOB_ID,
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileSnapshotTask.empty(),
+            plannedGroup.asReference(),
+            PARENT_JOB_ID);
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                        TABLE_ID,
+                        SNAPSHOT_ID,
+                        "db",
+                        "events",
+                        List.of(plannedGroup),
+                        true,
+                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                        "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                        1),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    TargetStatsRecord record = fileStatsRecord("s3://bucket/data/file-1.parquet", 10L);
+
+    assertTrue(
+        service.persistSuccess(
+            principal, CHILD_JOB_ID, LEASE_EPOCH, "result-1", resultDescriptor(List.of(record))));
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<StatsStore.PrewrittenStatsObject>> objects =
+        ArgumentCaptor.forClass(List.class);
+    verify(statsStore)
+        .protectPrewrittenStatsObjectsInGeneration(
+            eq(tableId()),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-" + PARENT_JOB_ID),
+            eq(CHILD_JOB_ID + ":" + LEASE_EPOCH),
+            objects.capture());
+    assertEquals(1, objects.getValue().size());
+    assertEquals(statsObjectPrefix() + "0.pb", objects.getValue().getFirst().blobUri());
+    verify(service.blobStore, never()).get(statsObjectPrefix() + "0.pb");
   }
 
   @Test
@@ -271,7 +334,6 @@ class LeasedFileGroupExecutionServiceTest {
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
     when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
     when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    publishStatsPayload(List.of());
     when(jobs.completeFileGroupSuccess(
             anyString(),
             anyString(),
@@ -684,41 +746,13 @@ class LeasedFileGroupExecutionServiceTest {
         ACCOUNT_ID, PARENT_JOB_ID, CHILD_JOB_ID, LEASE_EPOCH);
   }
 
-  private static String statsPayloadUri() {
-    return Keys.reconcileFileGroupStatsPayloadUri(
-        ACCOUNT_ID, PARENT_JOB_ID, CHILD_JOB_ID, LEASE_EPOCH);
-  }
-
-  private byte[] publishStatsPayload(List<TargetStatsRecord> fileStats) {
-    byte[] bytes =
-        FileGroupStatsPayload.newBuilder()
-            .setFormatVersion(1)
-            .setAccountId(ACCOUNT_ID)
-            .setConnectorId(CONNECTOR_ID)
-            .setParentJobId(PARENT_JOB_ID)
-            .setFileGroupJobId(CHILD_JOB_ID)
-            .setPlanId("plan-1")
-            .setGroupId("group-1")
-            .setTableId(TABLE_ID)
-            .setSnapshotId(SNAPSHOT_ID)
-            .setLeaseEpoch(LEASE_EPOCH)
-            .setResultId("result-1")
-            .addAllFileStats(fileStats)
-            .build()
-            .toByteArray();
-    when(service.blobStore.head(statsPayloadUri()))
-        .thenReturn(
-            Optional.of(
-                ai.floedb.floecat.common.rpc.BlobHeader.newBuilder()
-                    .setContentLength(bytes.length)
-                    .build()));
-    when(service.blobStore.get(statsPayloadUri())).thenReturn(bytes);
-    return bytes;
+  private static String statsObjectPrefix() {
+    return Keys.reconcileFileGroupStatsObjectPrefix(
+        ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID, PARENT_JOB_ID, CHILD_JOB_ID, LEASE_EPOCH);
   }
 
   private ReconcileFileGroupResultDescriptor resultDescriptor(List<TargetStatsRecord> fileStats) {
-    byte[] resultBytes = publishResultPayload();
-    byte[] statsBytes = publishStatsPayload(fileStats);
+    byte[] resultBytes = publishResultPayload(fileStats);
     return new ReconcileFileGroupResultDescriptor(
         1,
         ACCOUNT_ID,
@@ -740,15 +774,13 @@ class LeasedFileGroupExecutionServiceTest {
         0,
         0,
         0,
-        statsPayloadUri(),
-        statsBytes.length,
-        Base64.getEncoder().encodeToString(sha256(statsBytes)),
+        statsObjectPrefix(),
         fileStats.size(),
         1L);
   }
 
-  private byte[] publishResultPayload() {
-    byte[] bytes =
+  private byte[] publishResultPayload(List<TargetStatsRecord> fileStats) {
+    var builder =
         FileGroupResultPayload.newBuilder()
             .setFormatVersion(1)
             .setAccountId(ACCOUNT_ID)
@@ -765,9 +797,18 @@ class LeasedFileGroupExecutionServiceTest {
                 ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.newBuilder()
                     .setFilePath("s3://bucket/data/file-1.parquet")
                     .setState(
-                        ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_SUCCEEDED))
-            .build()
-            .toByteArray();
+                        ai.floedb.floecat.reconciler.rpc.ReconcileFileResult.State.RFRS_SUCCEEDED));
+    for (int i = 0; i < fileStats.size(); i++) {
+      byte[] statsBytes = fileStats.get(i).toByteArray();
+      String statsUri = statsObjectPrefix() + i + ".pb";
+      builder.addFileStats(
+          StatsObjectDescriptor.newBuilder()
+              .setTargetStorageId(StatsTargetIdentity.storageId(fileStats.get(i).getTarget()))
+              .setPayloadUri(statsUri)
+              .setPayloadBytes(statsBytes.length)
+              .setPayloadSha256(ByteString.copyFrom(sha256(statsBytes))));
+    }
+    byte[] bytes = builder.build().toByteArray();
     when(service.blobStore.head(resultPayloadUri()))
         .thenReturn(
             Optional.of(

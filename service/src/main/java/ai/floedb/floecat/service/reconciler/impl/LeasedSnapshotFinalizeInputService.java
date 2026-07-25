@@ -46,7 +46,7 @@ public class LeasedSnapshotFinalizeInputService {
       int sourceFileCount,
       String snapshotPlanUri,
       int fileGroupCount,
-      String statsPayloadUri,
+      String statsObjectPrefix,
       String captureManifestUri) {}
 
   enum FinalizeMode {
@@ -105,7 +105,7 @@ public class LeasedSnapshotFinalizeInputService {
           snapshotTask.sourceFileCount(),
           snapshotTask.fileGroupPlanBlobUri(),
           snapshotTask.fileGroupCount(),
-          statsPayloadUri(lease),
+          statsObjectPrefix(lease),
           captureManifestUri(lease));
     }
     if (snapshotTask.fileGroupCount() == 0) {
@@ -123,7 +123,7 @@ public class LeasedSnapshotFinalizeInputService {
           snapshotTask.sourceFileCount(),
           snapshotTask.fileGroupPlanBlobUri(),
           0,
-          statsPayloadUri(lease),
+          statsObjectPrefix(lease),
           captureManifestUri(lease));
     }
     SnapshotFinalizeChildStateService.ChildState childState =
@@ -143,13 +143,20 @@ public class LeasedSnapshotFinalizeInputService {
         snapshotTask.sourceFileCount(),
         snapshotTask.fileGroupPlanBlobUri(),
         snapshotTask.fileGroupCount(),
-        statsPayloadUri(lease),
+        statsObjectPrefix(lease),
         captureManifestUri(lease));
   }
 
-  private static String statsPayloadUri(ReconcileJobStore.LeasedJob lease) {
-    return Keys.reconcileSnapshotFinalizeStatsPayloadUri(
-        lease.accountId, lease.parentJobId, lease.jobId, lease.leaseEpoch);
+  private static String statsObjectPrefix(ReconcileJobStore.LeasedJob lease) {
+    ReconcileSnapshotTask snapshotTask =
+        lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
+    return Keys.reconcileSnapshotFinalizeStatsObjectPrefix(
+        lease.accountId,
+        snapshotTask.tableId(),
+        snapshotTask.snapshotId(),
+        lease.parentJobId,
+        lease.jobId,
+        lease.leaseEpoch);
   }
 
   private static String captureManifestUri(ReconcileJobStore.LeasedJob lease) {

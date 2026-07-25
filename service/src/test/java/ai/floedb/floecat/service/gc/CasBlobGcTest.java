@@ -82,6 +82,23 @@ class CasBlobGcTest {
   }
 
   @Test
+  void keepsUnreferencedWorkerUploadForGenerationCleanup() {
+    String workerObject =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(ACCOUNT_ID, TABLE_ID, 7L, "full-rescan-parent")
+            + "worker-uploads/child/lease/target/stats.pb";
+    blobs.put(workerObject, "stats".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
+    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(workerObject).isPresent(),
+        "worker uploads are owned and reclaimed by stats-generation cleanup");
+  }
+
+  @Test
   void keyWithoutADerivableOwnerIsNeverDeletedInANonDeferringPass() {
     // A candidate that passes a family's segment filter but whose key shape yields no owner
     // pointer (malformed/blank rid) must NOT take the unconditional-delete path in the

@@ -564,7 +564,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
     assertEquals("JS_SUCCEEDED", completed.state);
     assertEquals(2_000L, completed.finishedAtMs);
     assertEquals(descriptor.payloadUri(), completed.fileGroupResultPayloadUri);
-    assertEquals(descriptor.statsPayloadUri(), completed.fileGroupStatsPayloadUri);
+    assertEquals(descriptor.statsObjectPrefix(), completed.fileGroupStatsObjectPrefix);
     assertEquals(3L, completed.statsProcessed);
     assertEquals(1L, completed.indexesProcessed);
     assertTrue(store.leaseStore.loadLease(ACCOUNT_ID, jobId).isEmpty());
@@ -666,9 +666,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
         0,
         2,
         1,
-        "/results/" + jobId + ".stats.pb",
-        200L,
-        "stats-sha256",
+        "/results/" + jobId + "/stats/",
         1,
         1_500L);
   }

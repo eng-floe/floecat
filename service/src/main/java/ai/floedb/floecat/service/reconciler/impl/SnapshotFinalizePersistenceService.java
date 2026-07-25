@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.impl.FileGroupTargetStatsRollup;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
@@ -59,6 +60,30 @@ public class SnapshotFinalizePersistenceService {
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
     commitGenerationToRoot(tableId, snapshotId);
     return canonicalAggregates.size();
+  }
+
+  public long publishPrewrittenStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<StatsStore.PrewrittenTargetStats> records) {
+    List<StatsStore.PrewrittenTargetStats> stable =
+        records == null ? List.of() : records.stream().filter(java.util.Objects::nonNull).toList();
+    String manifestUri =
+        Keys.snapshotTargetStatsManifestBlobUri(
+            tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
+    if (manifestUri.equals(statsStore.activeStatsGeneration(tableId, snapshotId).orElse(""))) {
+      statsStore.clearPrewrittenStatsObjectProtections(tableId, snapshotId, generationId);
+      statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+      commitGenerationToRoot(tableId, snapshotId);
+      return stable.size();
+    }
+    statsStore.registerPrewrittenStatsInGeneration(tableId, snapshotId, generationId, stable);
+    statsStore.publishStatsGeneration(tableId, snapshotId, generationId, List.of(), false);
+    statsStore.clearPrewrittenStatsObjectProtections(tableId, snapshotId, generationId);
+    statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+    commitGenerationToRoot(tableId, snapshotId);
+    return stable.size();
   }
 
   public long stageStatsGenerationChunk(

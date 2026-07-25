@@ -38,15 +38,13 @@ public record ReconcileFileGroupResultDescriptor(
     int skippedFileCount,
     int partialAggregateRecordCount,
     int indexArtifactCount,
-    String statsPayloadUri,
-    long statsPayloadBytes,
-    String statsPayloadSha256,
+    String statsObjectPrefix,
     int fileStatsRecordCount,
     long createdAtMs) {
 
   public static ReconcileFileGroupResultDescriptor empty() {
     return new ReconcileFileGroupResultDescriptor(
-        0, "", "", "", "", "", "", "", 0L, "", "", "", 0L, "", 0, 0, 0, 0, 0, 0, "", 0L, "", 0, 0L);
+        0, "", "", "", "", "", "", "", 0L, "", "", "", 0L, "", 0, 0, 0, 0, 0, 0, "", 0, 0L);
   }
 
   public boolean isEmpty() {

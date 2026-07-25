@@ -231,17 +231,19 @@ already cleared the lease as part of successful completion.
 ## What the Rust Worker Must Produce
 The service expects the same logical outputs the Java runner currently produces:
 
-- a directly uploaded `FileGroupStatsPayload` containing requested `TargetStatsRecord` values
+- one directly uploaded protobuf blob per requested `TargetStatsRecord`
 - directly uploaded index objects referenced by `IndexArtifactRecord` values in a
   `FileGroupResultPayload`
-- a `ReconcileFileGroupResultDescriptor` manifest sent in the success RPC
+- a bounded `FileGroupResultPayload` containing stats-object descriptors and index metadata
+- a `ReconcileFileGroupResultDescriptor` sent in the success RPC
 
 The worker is responsible for ensuring:
 
 - every planned file requested for page-index capture gets a matching artifact
 - artifact metadata matches the target file identity
 - every referenced stats or index object is committed before the success RPC
-- the manifest sizes and SHA-256 values match the uploaded payloads
+- every stats descriptor identifies its target storage ID and the object size and SHA-256
+- the result manifest size and SHA-256 match the uploaded payload
 
 ## Minimal Architecture
 A practical Rust implementation usually has these pieces:

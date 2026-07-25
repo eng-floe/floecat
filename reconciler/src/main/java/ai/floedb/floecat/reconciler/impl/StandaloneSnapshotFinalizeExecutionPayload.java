@@ -18,7 +18,7 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 
-/** Compact, manifest-only input for one remotely executed snapshot finalizer. */
+/** Compact input for one remotely executed snapshot finalizer. */
 public record StandaloneSnapshotFinalizeExecutionPayload(
     String jobId,
     String leaseEpoch,
@@ -29,7 +29,7 @@ public record StandaloneSnapshotFinalizeExecutionPayload(
     int sourceFileCount,
     String snapshotPlanUri,
     int fileGroupCount,
-    String statsPayloadUri,
+    String statsObjectPrefix,
     String captureManifestUri) {
   public StandaloneSnapshotFinalizeExecutionPayload {
     jobId = trim(jobId);
@@ -37,7 +37,7 @@ public record StandaloneSnapshotFinalizeExecutionPayload(
     parentJobId = trim(parentJobId);
     tableId = tableId == null ? ResourceId.getDefaultInstance() : tableId;
     snapshotPlanUri = trim(snapshotPlanUri);
-    statsPayloadUri = trim(statsPayloadUri);
+    statsObjectPrefix = trim(statsObjectPrefix);
     captureManifestUri = trim(captureManifestUri);
     sourceFileCount = Math.max(0, sourceFileCount);
     fileGroupCount = Math.max(0, fileGroupCount);

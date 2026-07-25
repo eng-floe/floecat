@@ -62,9 +62,7 @@ public class StoredReconcileJob {
   public int fileGroupResultSkippedFileCount;
   public int fileGroupResultPartialAggregateRecordCount;
   public int fileGroupResultIndexArtifactCount;
-  public String fileGroupStatsPayloadUri;
-  public long fileGroupStatsPayloadBytes;
-  public String fileGroupStatsPayloadSha256;
+  public String fileGroupStatsObjectPrefix;
   public int fileGroupStatsRecordCount;
   public long fileGroupResultCreatedAtMs;
   public String snapshotFinalizeResultLeaseEpoch;

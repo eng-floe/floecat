@@ -1860,9 +1860,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     existing.fileGroupResultSkippedFileCount = descriptor.skippedFileCount();
     existing.fileGroupResultPartialAggregateRecordCount = descriptor.partialAggregateRecordCount();
     existing.fileGroupResultIndexArtifactCount = descriptor.indexArtifactCount();
-    existing.fileGroupStatsPayloadUri = descriptor.statsPayloadUri();
-    existing.fileGroupStatsPayloadBytes = descriptor.statsPayloadBytes();
-    existing.fileGroupStatsPayloadSha256 = descriptor.statsPayloadSha256();
+    existing.fileGroupStatsObjectPrefix = descriptor.statsObjectPrefix();
     existing.fileGroupStatsRecordCount = descriptor.fileStatsRecordCount();
     existing.fileGroupResultCreatedAtMs = descriptor.createdAtMs();
     existing.statsProcessed =
@@ -4678,9 +4676,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         state.fileGroupResultSkippedFileCount,
         state.fileGroupResultPartialAggregateRecordCount,
         state.fileGroupResultIndexArtifactCount,
-        blankToEmpty(state.fileGroupStatsPayloadUri),
-        state.fileGroupStatsPayloadBytes,
-        blankToEmpty(state.fileGroupStatsPayloadSha256),
+        blankToEmpty(state.fileGroupStatsObjectPrefix),
         state.fileGroupStatsRecordCount,
         state.fileGroupResultCreatedAtMs);
   }

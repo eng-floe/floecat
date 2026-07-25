@@ -852,9 +852,11 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                               payload.parentJobId(),
                               payload.jobId(),
                               payload.leaseEpoch()))
-                      .setStatsPayloadUri(
-                          Keys.reconcileFileGroupStatsPayloadUri(
+                      .setStatsObjectPrefix(
+                          Keys.reconcileFileGroupStatsObjectPrefix(
                               payload.tableId().getAccountId(),
+                              payload.tableId().getId(),
+                              payload.snapshotId(),
                               payload.parentJobId(),
                               payload.jobId(),
                               payload.leaseEpoch()))
@@ -931,7 +933,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       .setSnapshotPlanUri(payload.snapshotPlanUri())
                       .setFullRescan(payload.fullRescan())
                       .setFileGroupCount(payload.fileGroupCount())
-                      .setStatsPayloadUri(payload.statsPayloadUri())
+                      .setStatsObjectPrefix(payload.statsObjectPrefix())
                       .setCaptureManifestUri(payload.captureManifestUri());
               return GetLeasedSnapshotFinalizeInputResponse.newBuilder()
                   .setInput(inputBuilder.build())
@@ -995,11 +997,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
             .setSkippedFileCount(descriptor.skippedFileCount())
             .setPartialAggregateRecordCount(descriptor.partialAggregateRecordCount())
             .setIndexArtifactCount(descriptor.indexArtifactCount())
-            .setStatsPayloadUri(descriptor.statsPayloadUri())
-            .setStatsPayloadBytes(descriptor.statsPayloadBytes())
-            .setStatsPayloadSha256(
-                com.google.protobuf.ByteString.copyFrom(
-                    Base64.getDecoder().decode(descriptor.statsPayloadSha256())))
+            .setStatsObjectPrefix(descriptor.statsObjectPrefix())
             .setFileStatsRecordCount(descriptor.fileStatsRecordCount());
     if (descriptor.createdAtMs() > 0L) {
       builder.setCreatedAt(
@@ -1076,9 +1074,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         descriptor.getSkippedFileCount(),
         descriptor.getPartialAggregateRecordCount(),
         descriptor.getIndexArtifactCount(),
-        descriptor.getStatsPayloadUri(),
-        descriptor.getStatsPayloadBytes(),
-        Base64.getEncoder().encodeToString(descriptor.getStatsPayloadSha256().toByteArray()),
+        descriptor.getStatsObjectPrefix(),
         descriptor.getFileStatsRecordCount(),
         descriptor.hasCreatedAt()
             ? com.google.protobuf.util.Timestamps.toMillis(descriptor.getCreatedAt())

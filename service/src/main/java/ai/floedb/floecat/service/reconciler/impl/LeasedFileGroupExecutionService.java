@@ -42,6 +42,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultResponse;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -53,12 +55,18 @@ import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 
 @ApplicationScoped
@@ -69,6 +77,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
   @Inject SnapshotRepository snapshotRepo;
   @Inject CredentialResolver credentialResolver;
   @Inject BlobStore blobStore;
+  @Inject StatsStore statsStore;
   @Inject IdempotencyRepository idempotencyStore;
 
   public StandaloneFileGroupExecutionPayload resolve(
@@ -115,8 +124,13 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         plannedTask.groupId(),
         Keys.reconcileFileGroupResultPayloadUri(
             lease.accountId, lease.parentJobId, lease.jobId, lease.leaseEpoch),
-        Keys.reconcileFileGroupStatsPayloadUri(
-            lease.accountId, lease.parentJobId, lease.jobId, lease.leaseEpoch),
+        Keys.reconcileFileGroupStatsObjectPrefix(
+            lease.accountId,
+            plannedTask.tableId(),
+            plannedTask.snapshotId(),
+            lease.parentJobId,
+            lease.jobId,
+            lease.leaseEpoch),
         plannedTask.filePaths(),
         FileGroupExecutionSupport.effectiveCapturePolicy(lease));
   }
@@ -238,6 +252,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     ReconcileFileGroupTask plannedTask = resolvePlannedTask(lease);
     ReconcileFileGroupResultDescriptor validated =
         validateResultDescriptor(lease, plannedTask, requiredResultId, descriptor);
+    protectStatsObjects(lease, plannedTask, validated);
     boolean accepted =
         jobs.completeFileGroupSuccess(
             lease.jobId,
@@ -261,8 +276,13 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         Keys.reconcileFileGroupResultPayloadUri(
             lease.accountId, lease.parentJobId, lease.jobId, lease.leaseEpoch);
     String expectedStatsUri =
-        Keys.reconcileFileGroupStatsPayloadUri(
-            lease.accountId, lease.parentJobId, lease.jobId, lease.leaseEpoch);
+        Keys.reconcileFileGroupStatsObjectPrefix(
+            lease.accountId,
+            plannedTask.tableId(),
+            plannedTask.snapshotId(),
+            lease.parentJobId,
+            lease.jobId,
+            lease.leaseEpoch);
     if (!lease.accountId.equals(descriptor.accountId())
         || !lease.connectorId.equals(descriptor.connectorId())
         || !lease.parentJobId.equals(descriptor.parentJobId())
@@ -279,19 +299,16 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       throw new IllegalArgumentException(
           "file-group result descriptor payload_uri is outside the leased result location");
     }
-    if (!expectedStatsUri.equals(descriptor.statsPayloadUri())) {
+    if (!expectedStatsUri.equals(descriptor.statsObjectPrefix())) {
       throw new IllegalArgumentException(
-          "file-group result descriptor stats_payload_uri is outside the leased stats location");
+          "file-group result descriptor stats_object_prefix is outside the leased stats location");
     }
     if (descriptor.payloadBytes() <= 0L
         || descriptor.payloadSha256() == null
         || descriptor.payloadSha256().isBlank()
-        || descriptor.statsPayloadBytes() <= 0L
-        || descriptor.statsPayloadSha256() == null
-        || descriptor.statsPayloadSha256().isBlank()
         || descriptor.fileStatsRecordCount() < 0) {
       throw new IllegalArgumentException(
-          "file-group result descriptor payload sizes, sha256 values, and stats count are required");
+          "file-group result descriptor payload size, sha256, and stats count are required");
     }
     int plannedCount = plannedTask.filePaths().size();
     if (descriptor.plannedFileCount() != plannedCount
@@ -315,24 +332,87 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       throw new IllegalArgumentException(
           "file-group result object size mismatch jobId=" + lease.jobId + " uri=" + expectedUri);
     }
-    var statsHeader =
-        blobStore
-            .head(expectedStatsUri)
-            .orElseThrow(
-                () ->
-                    new StorageAbortRetryableException(
-                        "file-group stats object is not committed jobId="
-                            + lease.jobId
-                            + " uri="
-                            + expectedStatsUri));
-    if (statsHeader.getContentLength() != descriptor.statsPayloadBytes()) {
-      throw new IllegalArgumentException(
-          "file-group stats object size mismatch jobId="
+    return descriptor;
+  }
+
+  private void protectStatsObjects(
+      ReconcileJobStore.LeasedJob lease,
+      ReconcileFileGroupTask plannedTask,
+      ReconcileFileGroupResultDescriptor descriptor) {
+    byte[] bytes = blobStore.get(descriptor.payloadUri());
+    if (bytes == null) {
+      throw new StorageAbortRetryableException(
+          "file-group result object is not committed jobId="
               + lease.jobId
               + " uri="
-              + expectedStatsUri);
+              + descriptor.payloadUri());
     }
-    return descriptor;
+    byte[] expectedHash;
+    try {
+      expectedHash = Base64.getDecoder().decode(descriptor.payloadSha256());
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException("file-group result object sha256 is invalid", e);
+    }
+    if (expectedHash.length != 32
+        || bytes.length != descriptor.payloadBytes()
+        || !MessageDigest.isEqual(sha256(bytes), expectedHash)) {
+      throw new IllegalArgumentException("file-group result object does not match its descriptor");
+    }
+    final FileGroupResultPayload result;
+    try {
+      result = FileGroupResultPayload.parseFrom(bytes);
+    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
+      throw new IllegalArgumentException("file-group result object is invalid", e);
+    }
+    if (result.getFormatVersion() != 1
+        || !descriptor.accountId().equals(result.getAccountId())
+        || !descriptor.connectorId().equals(result.getConnectorId())
+        || !descriptor.parentJobId().equals(result.getParentJobId())
+        || !descriptor.fileGroupJobId().equals(result.getFileGroupJobId())
+        || !descriptor.planId().equals(result.getPlanId())
+        || !descriptor.groupId().equals(result.getGroupId())
+        || !descriptor.tableId().equals(result.getTableId())
+        || descriptor.snapshotId() != result.getSnapshotId()
+        || !descriptor.leaseEpoch().equals(result.getLeaseEpoch())
+        || !descriptor.resultId().equals(result.getResultId())
+        || descriptor.fileStatsRecordCount() != result.getFileStatsCount()) {
+      throw new IllegalArgumentException("file-group result object identity mismatch");
+    }
+    List<StatsStore.PrewrittenStatsObject> objects = new ArrayList<>(result.getFileStatsCount());
+    for (StatsObjectDescriptor object : result.getFileStatsList()) {
+      if (object.getTargetStorageId().isBlank()
+          || object.getPayloadUri().isBlank()
+          || !object.getPayloadUri().startsWith(descriptor.statsObjectPrefix())
+          || object.getPayloadBytes() <= 0L
+          || object.getPayloadSha256().size() != 32) {
+        throw new IllegalArgumentException("invalid target stats object descriptor");
+      }
+      objects.add(
+          new StatsStore.PrewrittenStatsObject(
+              object.getPayloadUri(),
+              object.getPayloadBytes(),
+              object.getPayloadSha256().toByteArray()));
+    }
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(lease.accountId)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(plannedTask.tableId())
+            .build();
+    statsStore.protectPrewrittenStatsObjectsInGeneration(
+        tableId,
+        plannedTask.snapshotId(),
+        "full-rescan-" + lease.parentJobId,
+        lease.jobId + ":" + lease.leaseEpoch,
+        objects);
+  }
+
+  private static byte[] sha256(byte[] bytes) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(bytes);
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 is unavailable", e);
+    }
   }
 
   private static void requireAcceptedLeaseOutcome(boolean accepted, String jobId) {

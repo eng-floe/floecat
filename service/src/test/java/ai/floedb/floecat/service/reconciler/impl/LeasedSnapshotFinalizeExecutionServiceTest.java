@@ -27,7 +27,6 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -42,6 +41,7 @@ import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
+import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.ByteString;
@@ -62,6 +62,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   private ReconcileJobStore jobs;
   private BlobStore blobs;
   private CurrentSnapshotPointerService currentSnapshotPointerService;
+  private SnapshotFinalizePersistenceService persistence;
   private PrincipalContext principal;
 
   @BeforeEach
@@ -70,11 +71,14 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     jobs = mock(ReconcileJobStore.class);
     blobs = mock(BlobStore.class);
     currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
+    persistence = mock(SnapshotFinalizePersistenceService.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
     service.blobStore = blobs;
     service.childStateService = mock(SnapshotFinalizeChildStateService.class);
     service.currentSnapshotPointerService = currentSnapshotPointerService;
+    service.persistence = persistence;
+    service.indexArtifactRepository = mock(IndexArtifactRepository.class);
     service.idempotencyStore = mock(IdempotencyRepository.class);
     when(principal.getCorrelationId()).thenReturn("corr");
     when(principal.getAccountId()).thenReturn(ACCOUNT_ID);
@@ -114,18 +118,10 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     verify(service.idempotencyStore, never())
         .finalizeSuccess(
             anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
-    verify(currentSnapshotPointerService)
-        .publishCaptureManifest(
-            any(),
-            eq(SNAPSHOT_ID),
-            eq(
-                BlobRef.newBuilder()
-                    .setUri(manifestUri())
-                    .setVersion(
-                        java.util.HexFormat.of()
-                            .formatHex(descriptor.getManifestSha256().toByteArray()))
-                    .build()),
-            eq(FINALIZE_JOB_ID));
+    verify(persistence)
+        .publishPrewrittenStatsGeneration(
+            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(List.of()));
+    verify(currentSnapshotPointerService).maybeAdvance(any(), eq(SNAPSHOT_ID), eq(FINALIZE_JOB_ID));
   }
 
   @Test
@@ -141,8 +137,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                 descriptor("s3://other/manifest.pb")));
 
     verify(blobs, never()).get(anyString());
-    verify(currentSnapshotPointerService, never())
-        .publishCaptureManifest(any(), anyLong(), any(), anyString());
+    verify(currentSnapshotPointerService, never()).maybeAdvance(any(), anyLong(), anyString());
   }
 
   @Test
@@ -155,8 +150,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
     verify(jobs, never()).renewLease(anyString(), anyString());
     verify(blobs, never()).head(anyString());
-    verify(currentSnapshotPointerService, never())
-        .publishCaptureManifest(any(), anyLong(), any(), anyString());
+    verify(currentSnapshotPointerService, never()).maybeAdvance(any(), anyLong(), anyString());
   }
 
   private static SnapshotCaptureManifestDescriptor descriptor(String uri) {

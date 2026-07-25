@@ -39,7 +39,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload;
-import ai.floedb.floecat.reconciler.rpc.FileGroupStatsPayload;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedFileGroupExecutionRequest;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanConnectorInputRequest;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanSnapshotInputRequest;
@@ -58,9 +57,8 @@ import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
-import ai.floedb.floecat.reconciler.rpc.SnapshotFinalizeStatsDescriptor;
-import ai.floedb.floecat.reconciler.rpc.SnapshotFinalizeStatsPayload;
 import ai.floedb.floecat.reconciler.rpc.StartLeasedReconcileJobRequest;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanConnectorResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
@@ -81,11 +79,13 @@ import io.grpc.stub.MetadataUtils;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -957,7 +957,7 @@ class GrpcRemoteReconcileExecutorClient
         execution.getPlanId(),
         execution.getGroupId(),
         execution.getResultPayloadUri(),
-        execution.getStatsPayloadUri(),
+        execution.getStatsObjectPrefix(),
         execution.getFilePathsList(),
         execution.hasCapturePolicy()
             ? ReconcileCapturePolicy.of(
@@ -988,9 +988,9 @@ class GrpcRemoteReconcileExecutorClient
     }
     if (payload == null
         || payload.resultPayloadUri().isBlank()
-        || payload.statsPayloadUri().isBlank()) {
+        || payload.statsObjectPrefix().isBlank()) {
       throw new IllegalArgumentException(
-          "leased file-group result_payload_uri and stats_payload_uri are required");
+          "leased file-group result_payload_uri and stats_object_prefix are required");
     }
     List<ai.floedb.floecat.catalog.rpc.IndexArtifactRecord> indexArtifacts =
         publishIndexArtifacts(result);
@@ -998,6 +998,10 @@ class GrpcRemoteReconcileExecutorClient
         result.statsRecords().stream().filter(TargetStatsRecord::hasFile).toList();
     List<TargetStatsRecord> partialAggregates =
         result.statsRecords().stream().filter(record -> !record.hasFile()).toList();
+    List<StatsObjectDescriptor> fileStatsObjects =
+        fileStats.stream()
+            .map(record -> publishStatsObject(payload.statsObjectPrefix(), record))
+            .toList();
     ReconcileFileGroupTask plannedTask =
         ReconcileFileGroupTask.of(
             payload.planId(),
@@ -1027,26 +1031,10 @@ class GrpcRemoteReconcileExecutorClient
                     .toList())
             .addAllPartialAggregateRecords(partialAggregates)
             .addAllIndexArtifacts(indexArtifacts)
+            .addAllFileStats(fileStatsObjects)
             .build();
     byte[] packedBytes = packedPayload.toByteArray();
     blobStore.put(payload.resultPayloadUri(), packedBytes, "application/x-protobuf");
-    FileGroupStatsPayload statsPayload =
-        FileGroupStatsPayload.newBuilder()
-            .setFormatVersion(1)
-            .setAccountId(lease.lease().accountId)
-            .setConnectorId(lease.lease().connectorId)
-            .setParentJobId(lease.lease().parentJobId)
-            .setFileGroupJobId(lease.lease().jobId)
-            .setPlanId(payload.planId())
-            .setGroupId(payload.groupId())
-            .setTableId(payload.tableId() == null ? "" : payload.tableId().getId())
-            .setSnapshotId(payload.snapshotId())
-            .setLeaseEpoch(lease.lease().leaseEpoch)
-            .setResultId(resultId)
-            .addAllFileStats(fileStats)
-            .build();
-    byte[] statsBytes = statsPayload.toByteArray();
-    blobStore.put(payload.statsPayloadUri(), statsBytes, "application/x-protobuf");
     FileGroupResultDescriptor descriptor =
         FileGroupResultDescriptor.newBuilder()
             .setFormatVersion(1)
@@ -1067,9 +1055,7 @@ class GrpcRemoteReconcileExecutorClient
             .setSucceededFileCount(fileResults.size())
             .setPartialAggregateRecordCount(partialAggregates.size())
             .setIndexArtifactCount(indexArtifacts.size())
-            .setStatsPayloadUri(payload.statsPayloadUri())
-            .setStatsPayloadBytes(statsBytes.length)
-            .setStatsPayloadSha256(ByteString.copyFrom(sha256(statsBytes)))
+            .setStatsObjectPrefix(payload.statsObjectPrefix())
             .setFileStatsRecordCount(fileStats.size())
             .setCreatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
             .build();
@@ -1176,7 +1162,7 @@ class GrpcRemoteReconcileExecutorClient
         input.getSourceFileCount(),
         input.getSnapshotPlanUri(),
         input.getFileGroupCount(),
-        input.getStatsPayloadUri(),
+        input.getStatsObjectPrefix(),
         input.getCaptureManifestUri());
   }
 
@@ -1232,10 +1218,7 @@ class GrpcRemoteReconcileExecutorClient
         descriptor.getSkippedFileCount(),
         descriptor.getPartialAggregateRecordCount(),
         descriptor.getIndexArtifactCount(),
-        descriptor.getStatsPayloadUri(),
-        descriptor.getStatsPayloadBytes(),
-        java.util.Base64.getEncoder()
-            .encodeToString(descriptor.getStatsPayloadSha256().toByteArray()),
+        descriptor.getStatsObjectPrefix(),
         descriptor.getFileStatsRecordCount(),
         descriptor.hasCreatedAt() ? Timestamps.toMillis(descriptor.getCreatedAt()) : 0L);
   }
@@ -1244,21 +1227,21 @@ class GrpcRemoteReconcileExecutorClient
   public boolean submitSnapshotFinalizeSuccess(
       RemoteLeasedJob lease,
       String resultId,
-      String statsPayloadUri,
+      String statsObjectPrefix,
       String captureManifestUri,
       int sourceFileCount,
       List<ReconcileFileGroupResultDescriptor> fileGroups,
-      List<RemoteSnapshotFinalizeWorkerClient.FileStatsRecordLocation> fileStats,
+      List<RemoteSnapshotFinalizeWorkerClient.StatsObject> fileStats,
       List<TargetStatsRecord> finalStats,
       List<IndexArtifactRecord> indexArtifacts) {
     String stableResultId = resultId == null ? "" : resultId.trim();
-    String stablePayloadUri = statsPayloadUri == null ? "" : statsPayloadUri.trim();
+    String stableStatsObjectPrefix = statsObjectPrefix == null ? "" : statsObjectPrefix.trim();
     String stableManifestUri = captureManifestUri == null ? "" : captureManifestUri.trim();
     if (stableResultId.isBlank()) {
       throw new IllegalArgumentException("resultId is required");
     }
-    if (stablePayloadUri.isBlank()) {
-      throw new IllegalArgumentException("statsPayloadUri is required");
+    if (stableStatsObjectPrefix.isBlank()) {
+      throw new IllegalArgumentException("statsObjectPrefix is required");
     }
     if (stableManifestUri.isBlank()) {
       throw new IllegalArgumentException("captureManifestUri is required");
@@ -1269,7 +1252,7 @@ class GrpcRemoteReconcileExecutorClient
         finalStats == null
             ? List.of()
             : finalStats.stream().filter(java.util.Objects::nonNull).toList();
-    List<RemoteSnapshotFinalizeWorkerClient.FileStatsRecordLocation> stableFileStats =
+    List<RemoteSnapshotFinalizeWorkerClient.StatsObject> stableFileStats =
         fileStats == null
             ? List.of()
             : fileStats.stream().filter(java.util.Objects::nonNull).toList();
@@ -1289,37 +1272,10 @@ class GrpcRemoteReconcileExecutorClient
       throw new IllegalArgumentException(
           "file-group descriptors do not cover the planned snapshot files");
     }
-    SnapshotFinalizeStatsPayload payload =
-        SnapshotFinalizeStatsPayload.newBuilder()
-            .setFormatVersion(1)
-            .setAccountId(leasedJob.accountId)
-            .setConnectorId(leasedJob.connectorId)
-            .setParentJobId(leasedJob.parentJobId)
-            .setFinalizeJobId(leasedJob.jobId)
-            .setTableId(snapshotTask.tableId())
-            .setSnapshotId(snapshotTask.snapshotId())
-            .setLeaseEpoch(leasedJob.leaseEpoch)
-            .setResultId(stableResultId)
-            .addAllStatsRecords(records)
-            .build();
-    byte[] payloadBytes = payload.toByteArray();
-    blobStore.put(stablePayloadUri, payloadBytes, "application/x-protobuf");
-    SnapshotFinalizeStatsDescriptor descriptor =
-        SnapshotFinalizeStatsDescriptor.newBuilder()
-            .setFormatVersion(1)
-            .setAccountId(leasedJob.accountId)
-            .setConnectorId(leasedJob.connectorId)
-            .setParentJobId(leasedJob.parentJobId)
-            .setFinalizeJobId(leasedJob.jobId)
-            .setTableId(snapshotTask.tableId())
-            .setSnapshotId(snapshotTask.snapshotId())
-            .setLeaseEpoch(leasedJob.leaseEpoch)
-            .setResultId(stableResultId)
-            .setPayloadUri(stablePayloadUri)
-            .setPayloadBytes(payloadBytes.length)
-            .setPayloadSha256(ByteString.copyFrom(sha256(payloadBytes)))
-            .setStatsRecordCount(records.size())
-            .build();
+    List<StatsObjectDescriptor> finalStatsObjects =
+        records.stream()
+            .map(record -> publishStatsObject(stableStatsObjectPrefix, record))
+            .toList();
     SnapshotCaptureManifest.Builder manifest =
         SnapshotCaptureManifest.newBuilder()
             .setFormatVersion(1)
@@ -1336,7 +1292,7 @@ class GrpcRemoteReconcileExecutorClient
                     leasedJob.scope == null
                         ? ReconcileCapturePolicy.empty()
                         : leasedJob.scope.capturePolicy()))
-            .setFinalStats(descriptor)
+            .addAllFinalStats(finalStatsObjects)
             .addAllIndexArtifacts(stableIndexArtifacts)
             .setSourceFileCount(sourceFileCount)
             .setFileStatsRecordCount(stableFileStats.size())
@@ -1354,44 +1310,21 @@ class GrpcRemoteReconcileExecutorClient
         stableFileGroups.stream()
             .mapToInt(ReconcileFileGroupResultDescriptor::fileStatsRecordCount)
             .sum();
-    Set<String> declaredStatsUris =
-        stableFileGroups.stream()
-            .map(ReconcileFileGroupResultDescriptor::statsPayloadUri)
-            .collect(java.util.stream.Collectors.toSet());
     if (declaredFileStats != stableFileStats.size()) {
       throw new IllegalArgumentException("file stats do not match file-group descriptor counts");
     }
-    for (RemoteSnapshotFinalizeWorkerClient.FileStatsRecordLocation location : stableFileStats) {
-      TargetStatsRecord record = location.record();
-      if (record == null
-          || !declaredStatsUris.contains(location.payloadUri())
-          || location.recordIndex() < 0
-          || location.byteOffset() < 0L
-          || location.byteLength() <= 0
-          || location.recordSha256() == null
-          || location.recordSha256().length != 32) {
-        throw new IllegalArgumentException("invalid file stats range metadata");
+    for (RemoteSnapshotFinalizeWorkerClient.StatsObject statsObject : stableFileStats) {
+      TargetStatsRecord record = statsObject.record();
+      if (record == null || statsObject.descriptor() == null) {
+        throw new IllegalArgumentException("invalid file stats object metadata");
       }
       String targetStorageId =
           ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(record.getTarget());
-      if (!indexedStatsTargets.add(targetStorageId)) {
+      if (!targetStorageId.equals(statsObject.descriptor().getTargetStorageId())
+          || !indexedStatsTargets.add(targetStorageId)) {
         throw new IllegalArgumentException(
             "duplicate target in snapshot capture manifest: " + targetStorageId);
       }
-      manifest.addStatsIndex(
-          SnapshotCaptureManifest.StatsRecordLocation.newBuilder()
-              .setTargetStorageId(targetStorageId)
-              .setPayloadUri(location.payloadUri())
-              .setRecordIndex(location.recordIndex())
-              .setByteOffset(location.byteOffset())
-              .setByteLength(location.byteLength())
-              .setRecordSha256(ByteString.copyFrom(location.recordSha256()))
-              .build());
-    }
-    List<ProtobufMessageRanges.ByteRange> finalStatsRanges =
-        ProtobufMessageRanges.locate(payloadBytes, 10);
-    if (finalStatsRanges.size() != records.size()) {
-      throw new IllegalArgumentException("final stats range count mismatch");
     }
     for (int recordIndex = 0; recordIndex < records.size(); recordIndex++) {
       String targetStorageId =
@@ -1401,19 +1334,6 @@ class GrpcRemoteReconcileExecutorClient
         throw new IllegalArgumentException(
             "duplicate target in snapshot capture manifest: " + targetStorageId);
       }
-      ProtobufMessageRanges.ByteRange range = finalStatsRanges.get(recordIndex);
-      manifest.addStatsIndex(
-          SnapshotCaptureManifest.StatsRecordLocation.newBuilder()
-              .setTargetStorageId(targetStorageId)
-              .setPayloadUri(stablePayloadUri)
-              .setRecordIndex(recordIndex)
-              .setFinalAggregate(true)
-              .setByteOffset(range.offset())
-              .setByteLength(range.length())
-              .setRecordSha256(
-                  ByteString.copyFrom(
-                      sha256(payloadBytes, Math.toIntExact(range.offset()), range.length())))
-              .build());
     }
     byte[] manifestBytes = manifest.build().toByteArray();
     blobStore.put(stableManifestUri, manifestBytes, "application/x-protobuf");
@@ -1481,10 +1401,7 @@ class GrpcRemoteReconcileExecutorClient
             .setSkippedFileCount(descriptor.skippedFileCount())
             .setPartialAggregateRecordCount(descriptor.partialAggregateRecordCount())
             .setIndexArtifactCount(descriptor.indexArtifactCount())
-            .setStatsPayloadUri(descriptor.statsPayloadUri())
-            .setStatsPayloadBytes(descriptor.statsPayloadBytes())
-            .setStatsPayloadSha256(
-                ByteString.copyFrom(Base64.getDecoder().decode(descriptor.statsPayloadSha256())))
+            .setStatsObjectPrefix(descriptor.statsObjectPrefix())
             .setFileStatsRecordCount(descriptor.fileStatsRecordCount());
     if (descriptor.createdAtMs() > 0L) {
       out.setCreatedAt(Timestamps.fromMillis(descriptor.createdAtMs()));
@@ -1527,6 +1444,28 @@ class GrpcRemoteReconcileExecutorClient
       out.add(artifact.record().toBuilder().setContentEtag(header.getEtag()).build());
     }
     return List.copyOf(out);
+  }
+
+  private StatsObjectDescriptor publishStatsObject(
+      String statsObjectPrefix, TargetStatsRecord record) {
+    TargetStatsRecord canonical =
+        ai.floedb.floecat.stats.identity.TargetStatsRecords.canonicalize(record);
+    byte[] bytes = canonical.toByteArray();
+    String storageId =
+        ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(canonical.getTarget());
+    String uri =
+        statsObjectPrefix
+            + HexFormat.of().formatHex(sha256(storageId.getBytes(StandardCharsets.UTF_8)))
+            + "/"
+            + HexFormat.of().formatHex(sha256(bytes))
+            + ".pb";
+    blobStore.put(uri, bytes, "application/x-protobuf");
+    return StatsObjectDescriptor.newBuilder()
+        .setTargetStorageId(storageId)
+        .setPayloadUri(uri)
+        .setPayloadBytes(bytes.length)
+        .setPayloadSha256(ByteString.copyFrom(sha256(bytes)))
+        .build();
   }
 
   private static byte[] sha256(byte[] bytes) {

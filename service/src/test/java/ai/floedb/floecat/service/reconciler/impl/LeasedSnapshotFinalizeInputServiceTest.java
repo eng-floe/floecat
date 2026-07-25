@@ -396,9 +396,7 @@ class LeasedSnapshotFinalizeInputServiceTest {
         0,
         0,
         0,
-        "/accounts/acct/reconcile/jobs/child-job/file-group-result/stats.pb",
-        100L,
-        "dGVzdA==",
+        "/accounts/acct/reconcile/jobs/child-job/file-group-result/stats/",
         plannedGroup.fileCount(),
         1L);
   }
