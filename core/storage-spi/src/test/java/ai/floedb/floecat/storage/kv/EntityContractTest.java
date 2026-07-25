@@ -438,15 +438,19 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
       for (var increment : increments.entrySet()) {
         var name = increment.getKey();
         var current = attrs.get(name);
-        if (current != null && current.asLong().isEmpty()) {
+        // Rejected on the type, not on whether the text happens to parse — same rule as
+        // InMemoryKvStore, because DynamoDB's ADD raises ValidationException for any S-typed
+        // attribute, numeric-looking ones like "42" included. A laxer fake would let an entity
+        // test pass here and fail in production.
+        if (current != null && !(current instanceof AttrValue.NumberValue)) {
           throw new IllegalStateException(
               "cannot increment attr "
                   + name
                   + " on "
                   + key
-                  + ": it currently holds a non-numeric string value");
+                  + ": it currently holds a string value");
         }
-        long base = AttrValue.longOr(attrs, name, 0L);
+        long base = current == null ? 0L : ((AttrValue.NumberValue) current).value();
         attrs.put(name, AttrValue.of(base + increment.getValue()));
       }
 
