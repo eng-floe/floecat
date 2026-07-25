@@ -2306,6 +2306,12 @@ class StatsRepositoryTargetStorageTest {
 
     assertThat(latestBatchCalls).hasValue(3);
     assertThat(latestSingleCasCalls).hasValue(0);
+    Pointer tableLatest =
+        pointerDelegate
+            .get(Keys.tableStatsLatestSnapshotPointer(TABLE_ID.getAccountId(), TABLE_ID.getId()))
+            .orElseThrow();
+    assertThat(PointerReferences.isOpaqueMarkerPointer(tableLatest)).isTrue();
+    assertThat(tableLatest.getBlobUri()).isEqualTo(Long.toString(snapshotId));
     long olderSnapshotId = snapshotId - 1;
     String olderGenerationId = generationId + "-older";
     String olderBlobPrefix =
@@ -2334,9 +2340,22 @@ class StatsRepositoryTargetStorageTest {
           Keys.targetStatsLatestSnapshotPointer(
               TABLE_ID.getAccountId(), TABLE_ID.getId(), reference.targetStorageId());
       Pointer pointer = pointerDelegate.get(pointerKey).orElseThrow();
-      assertThat(blobStore.get(pointer.getBlobUri()))
-          .isEqualTo(StringValue.of(Long.toString(snapshotId)).toByteArray());
+      assertThat(PointerReferences.isOpaqueMarkerPointer(pointer)).isTrue();
+      assertThat(pointer.getBlobUri()).isEqualTo(Long.toString(snapshotId));
     }
+    assertThat(
+            blobStore
+                .list(
+                    "/accounts/"
+                        + TABLE_ID.getAccountId()
+                        + "/tables/"
+                        + TABLE_ID.getId()
+                        + "/stats/targets/",
+                    1,
+                    "")
+                .keys())
+        .as("latest-snapshot indexes must not create marker blobs")
+        .isEmpty();
   }
 
   @Test
@@ -2423,8 +2442,8 @@ class StatsRepositoryTargetStorageTest {
         Keys.targetStatsLatestSnapshotPointer(
             TABLE_ID.getAccountId(), TABLE_ID.getId(), "column-1");
     Pointer latest = pointerDelegate.get(latestPointer).orElseThrow();
-    assertThat(blobStore.get(latest.getBlobUri()))
-        .isEqualTo(StringValue.of(Long.toString(snapshotId)).toByteArray());
+    assertThat(PointerReferences.isOpaqueMarkerPointer(latest)).isTrue();
+    assertThat(latest.getBlobUri()).isEqualTo(Long.toString(snapshotId));
     assertThat(generationLifecycle(pointerDelegate, snapshotId, generationId))
         .isEqualTo("PUBLISHED");
   }

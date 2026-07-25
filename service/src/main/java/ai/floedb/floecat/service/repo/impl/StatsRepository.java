@@ -43,14 +43,12 @@ import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -798,13 +796,10 @@ public class StatsRepository implements StatsStore {
     if (ptr.isEmpty()) {
       return OptionalLong.empty();
     }
-    try {
-      byte[] bytes = blobStore.get(ptr.get().getBlobUri());
-      long latestId = Long.parseLong(StringValue.parseFrom(bytes).getValue());
-      return latestId <= maxSnapshotId ? OptionalLong.of(latestId) : OptionalLong.empty();
-    } catch (Exception e) {
-      return OptionalLong.empty();
-    }
+    OptionalLong latestId = latestSnapshotId(ptr.get());
+    return latestId.isPresent() && latestId.getAsLong() <= maxSnapshotId
+        ? latestId
+        : OptionalLong.empty();
   }
 
   /**
@@ -815,9 +810,7 @@ public class StatsRepository implements StatsStore {
    */
   private void updateLatestStatsSnapshotIfNewer(ResourceId tableId, long snapshotId) {
     advanceLatestSnapshotPointer(
-        Keys.tableStatsLatestSnapshotPointer(tableId.getAccountId(), tableId.getId()),
-        Keys.tableStatsLatestSnapshotBlobUri(tableId.getAccountId(), tableId.getId(), snapshotId),
-        snapshotId);
+        Keys.tableStatsLatestSnapshotPointer(tableId.getAccountId(), tableId.getId()), snapshotId);
   }
 
   /**
@@ -826,31 +819,17 @@ public class StatsRepository implements StatsStore {
    * writer advanced it) or our CAS succeeds. Without the retry a higher-snapshotId writer can lose
    * CAS to a lower-snapshotId writer and leave the pointer stale.
    */
-  private void advanceLatestSnapshotPointer(String pointerKey, String blobUri, long snapshotId) {
-    boolean blobWritten = false;
+  private void advanceLatestSnapshotPointer(String pointerKey, long snapshotId) {
     for (int attempt = 0; attempt < BaseResourceRepository.CAS_MAX; attempt++) {
       Optional<Pointer> existing = pointerStore.get(pointerKey);
-      long currentId = 0L;
-      if (existing.isPresent()) {
-        try {
-          byte[] bytes = blobStore.get(existing.get().getBlobUri());
-          currentId = Long.parseLong(StringValue.parseFrom(bytes).getValue());
-        } catch (Exception ignored) {
-          // Treat corrupt/missing blob as currentId=0 so we overwrite it.
-        }
-      }
+      long currentId = existing.flatMap(StatsRepository::latestSnapshotIdBoxed).orElse(0L);
       if (snapshotId <= currentId) {
         return; // Pointer already at a >= snapshotId — nothing to do.
       }
-      if (!blobWritten) {
-        blobStore.put(
-            blobUri,
-            StringValue.of(Long.toString(snapshotId)).toByteArray(),
-            "application/x-protobuf");
-        blobWritten = true;
-      }
       long expectedVersion = existing.map(Pointer::getVersion).orElse(0L);
-      Pointer next = PointerReferences.blobPointer(pointerKey, blobUri, expectedVersion + 1L);
+      Pointer next =
+          PointerReferences.opaqueMarkerPointer(
+              pointerKey, Long.toString(snapshotId), expectedVersion + 1L);
       if (pointerStore.compareAndSet(pointerKey, expectedVersion, next)) {
         return; // CAS succeeded — pointer advanced.
       }
@@ -877,8 +856,6 @@ public class StatsRepository implements StatsStore {
       ResourceId tableId, long snapshotId, String storageId) {
     advanceLatestSnapshotPointer(
         Keys.targetStatsLatestSnapshotPointer(tableId.getAccountId(), tableId.getId(), storageId),
-        Keys.targetStatsLatestSnapshotBlobUri(
-            tableId.getAccountId(), tableId.getId(), storageId, snapshotId),
         snapshotId);
   }
 
@@ -901,34 +878,16 @@ public class StatsRepository implements StatsStore {
 
   private void updateTargetLatestSnapshotChunk(
       ResourceId tableId, long snapshotId, List<String> storageIds) {
-    Set<String> writtenBlobUris = new HashSet<>();
     for (int attempt = 0; attempt < BaseResourceRepository.CAS_MAX; attempt++) {
-      ConcurrentHashMap<String, LatestSnapshotState> states =
-          new ConcurrentHashMap<>(storageIds.size());
-      runBoundedIo(
-          storageIds.stream()
-              .map(
-                  storageId ->
-                      (Runnable)
-                          () -> {
-                            String pointerKey =
-                                Keys.targetStatsLatestSnapshotPointer(
-                                    tableId.getAccountId(), tableId.getId(), storageId);
-                            Pointer pointer = pointerStore.get(pointerKey).orElse(null);
-                            long currentSnapshotId = 0L;
-                            if (pointer != null) {
-                              try {
-                                byte[] bytes = blobStore.get(pointer.getBlobUri());
-                                currentSnapshotId =
-                                    Long.parseLong(StringValue.parseFrom(bytes).getValue());
-                              } catch (Exception ignored) {
-                                // Treat corrupt/missing state as zero, matching the single path.
-                              }
-                            }
-                            states.put(
-                                storageId, new LatestSnapshotState(pointer, currentSnapshotId));
-                          })
-              .toList());
+      Map<String, LatestSnapshotState> states = new LinkedHashMap<>(storageIds.size());
+      for (String storageId : storageIds) {
+        String pointerKey =
+            Keys.targetStatsLatestSnapshotPointer(
+                tableId.getAccountId(), tableId.getId(), storageId);
+        Pointer pointer = pointerStore.get(pointerKey).orElse(null);
+        long currentSnapshotId = latestSnapshotIdBoxed(pointer).orElse(0L);
+        states.put(storageId, new LatestSnapshotState(pointer, currentSnapshotId));
+      }
 
       List<String> pending =
           storageIds.stream()
@@ -938,39 +897,19 @@ public class StatsRepository implements StatsStore {
         return;
       }
 
-      List<String> unwrittenBlobUris =
-          pending.stream()
-              .map(
-                  storageId ->
-                      Keys.targetStatsLatestSnapshotBlobUri(
-                          tableId.getAccountId(), tableId.getId(), storageId, snapshotId))
-              .filter(uri -> !writtenBlobUris.contains(uri))
-              .toList();
-      byte[] snapshotBytes = StringValue.of(Long.toString(snapshotId)).toByteArray();
-      runBoundedIo(
-          unwrittenBlobUris.stream()
-              .map(
-                  uri ->
-                      (Runnable) () -> blobStore.put(uri, snapshotBytes, "application/x-protobuf"))
-              .toList());
-      writtenBlobUris.addAll(unwrittenBlobUris);
-
       List<PointerStore.CasOp> ops = new ArrayList<>(pending.size());
       for (String storageId : pending) {
         LatestSnapshotState state = states.get(storageId);
         String pointerKey =
             Keys.targetStatsLatestSnapshotPointer(
                 tableId.getAccountId(), tableId.getId(), storageId);
-        String blobUri =
-            Keys.targetStatsLatestSnapshotBlobUri(
-                tableId.getAccountId(), tableId.getId(), storageId, snapshotId);
         long expectedVersion = state.pointer() == null ? 0L : state.pointer().getVersion();
         ops.add(
             new PointerStore.CasUpsert(
                 pointerKey,
                 expectedVersion,
-                PointerReferences.blobPointer(
-                    pointerKey, blobUri, expectedVersion + 1L, snapshotBytes.length)));
+                PointerReferences.opaqueMarkerPointer(
+                    pointerKey, Long.toString(snapshotId), expectedVersion + 1L)));
       }
       if (pointerStore.compareAndSetBatch(ops)) {
         return;
@@ -981,29 +920,21 @@ public class StatsRepository implements StatsStore {
             + tableId.getId());
   }
 
-  private static void runBoundedIo(List<Runnable> actions) {
-    if (actions == null || actions.isEmpty()) {
-      return;
+  private static OptionalLong latestSnapshotId(Pointer pointer) {
+    if (!PointerReferences.isOpaqueMarkerPointer(pointer)) {
+      return OptionalLong.empty();
     }
-    var semaphore = new Semaphore(Math.min(actions.size(), MAX_PARALLEL_READS));
-    try (var exec = Executors.newVirtualThreadPerTaskExecutor()) {
-      List<CompletableFuture<Void>> futures =
-          actions.stream()
-              .map(
-                  action ->
-                      CompletableFuture.runAsync(
-                          () -> {
-                            semaphore.acquireUninterruptibly();
-                            try {
-                              action.run();
-                            } finally {
-                              semaphore.release();
-                            }
-                          },
-                          exec))
-              .toList();
-      awaitAll(futures);
+    try {
+      long snapshotId = Long.parseLong(pointer.getBlobUri());
+      return snapshotId >= 0L ? OptionalLong.of(snapshotId) : OptionalLong.empty();
+    } catch (NumberFormatException ignored) {
+      return OptionalLong.empty();
     }
+  }
+
+  private static Optional<Long> latestSnapshotIdBoxed(Pointer pointer) {
+    OptionalLong snapshotId = latestSnapshotId(pointer);
+    return snapshotId.isPresent() ? Optional.of(snapshotId.getAsLong()) : Optional.empty();
   }
 
   /**

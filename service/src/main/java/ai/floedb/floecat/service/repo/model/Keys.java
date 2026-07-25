@@ -620,15 +620,6 @@ public final class Keys {
         + "/stats/latest-snapshot";
   }
 
-  public static String tableStatsLatestSnapshotBlobUri(
-      String accountId, String tableId, long snapshotId) {
-    return String.format(
-        "/accounts/%s/tables/%s/stats/latest-snapshot/%019d.pb",
-        encode(req("account_id", accountId)),
-        encode(req("table_id", tableId)),
-        reqNonNegative("snapshot_id", snapshotId));
-  }
-
   /**
    * Pointer key for the latest snapshot that has committed stats for a specific target (column).
    *
@@ -644,16 +635,6 @@ public final class Keys {
         + "/stats/targets/"
         + encode(req("storage_id", storageId))
         + "/latest-snapshot";
-  }
-
-  public static String targetStatsLatestSnapshotBlobUri(
-      String accountId, String tableId, String storageId, long snapshotId) {
-    return String.format(
-        "/accounts/%s/tables/%s/stats/targets/%s/latest-snapshot/%019d.pb",
-        encode(req("account_id", accountId)),
-        encode(req("table_id", tableId)),
-        encode(req("storage_id", storageId)),
-        reqNonNegative("snapshot_id", snapshotId));
   }
 
   public static String snapshotTargetStatsGenerationRootPointer(
