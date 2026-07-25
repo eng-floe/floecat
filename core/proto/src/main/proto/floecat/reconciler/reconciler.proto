@@ -921,10 +921,10 @@ message SubmitLeasedFileGroupExecutionResultRequest {
   string lease_epoch = 2;
 
   oneof outcome {
-    Success success = 3;
-    Failure failure = 4;
+    Success success = 4;
+    Failure failure = 5;
   }
-  reserved 5;
+  reserved 3;
 }
 
 message SubmitLeasedFileGroupExecutionResultResponse {
