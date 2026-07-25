@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.storage.kv.AttrValue;
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
 import io.smallrye.mutiny.Uni;
@@ -156,6 +157,12 @@ class NotProdSecretsManagerIT {
                         return null;
                       })
                   == null);
+    }
+
+    @Override
+    public Uni<Optional<Long>> updateMetadataAttrsIfExists(
+        Key key, Map<String, AttrValue> sets, Map<String, Long> increments) {
+      throw new UnsupportedOperationException("updateMetadataAttrsIfExists not supported");
     }
 
     @Override

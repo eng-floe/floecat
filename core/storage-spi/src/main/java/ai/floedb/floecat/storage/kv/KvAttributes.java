@@ -15,6 +15,8 @@
  */
 package ai.floedb.floecat.storage.kv;
 
+import java.util.Set;
+
 public interface KvAttributes {
   String ATTR_PARTITION_KEY = "pk";
   String ATTR_SORT_KEY = "sk";
@@ -26,4 +28,11 @@ public interface KvAttributes {
 
   String TARGET_PARTITION_KEY = "targetPk";
   String TARGET_SORT_KEY = "targetSk";
+
+  /**
+   * Names a backend uses for the record's own structure. They are reserved: a record attribute may
+   * not use one, because storing it would collide with the structural field of the same name.
+   */
+  Set<String> STRUCTURAL_ATTRS =
+      Set.of(ATTR_PARTITION_KEY, ATTR_SORT_KEY, ATTR_KIND, ATTR_VALUE, ATTR_VERSION);
 }

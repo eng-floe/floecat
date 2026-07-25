@@ -16,11 +16,14 @@
 
 package ai.floedb.floecat.storage.memory;
 
+import ai.floedb.floecat.storage.kv.AttrValue;
 import ai.floedb.floecat.storage.kv.KvStore;
+import ai.floedb.floecat.storage.kv.MetadataAttrUpdates;
 import io.smallrye.mutiny.Uni;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -65,6 +68,63 @@ public final class InMemoryKvStore implements KvStore {
                       return null;
                     })
                 == null);
+  }
+
+  @Override
+  public Uni<Optional<Long>> updateMetadataAttrsIfExists(
+      Key key, Map<String, AttrValue> sets, Map<String, Long> increments) {
+    MetadataAttrUpdates.validate(key, sets, increments);
+
+    // Deferred (a supplier, unlike the eager item(...) used elsewhere in this class) so that the
+    // loud non-numeric-increment failure below arrives as a failed Uni instead of a synchronous
+    // throw out of a Uni-returning method. Argument validation above stays synchronous, matching
+    // deleteCas's guard.
+    return Uni.createFrom()
+        .item(
+            () -> {
+              // A successful update always produces a version >= 1, so 0 is an unambiguous "the
+              // remap never ran, or refused". computeIfPresent's own return value cannot tell
+              // those apart from success, since a refusal also returns a non-null record.
+              long[] newVersion = {0L};
+              records.computeIfPresent(
+                  key,
+                  (unused, existing) -> {
+                    if (existing.value().length > 0) {
+                      // Refused: a value-carrying record embeds a copy of the version inside its
+                      // serialized payload, which this update does not rewrite. Leave it as is and
+                      // leave newVersion unset.
+                      return existing;
+                    }
+
+                    var attrs = new HashMap<>(existing.attrs());
+                    attrs.putAll(sets);
+                    for (var increment : increments.entrySet()) {
+                      var name = increment.getKey();
+                      var current = attrs.get(name);
+                      // Rejected on the type, not on whether the text happens to parse: DynamoDB's
+                      // ADD raises ValidationException for any S-typed attribute, including a
+                      // numeric-looking one like "42". Accepting those here would let a caller pass
+                      // in memory and fail in production. Throwing from the remap leaves the
+                      // mapping
+                      // unchanged (ConcurrentHashMap's contract), so nothing is half-applied.
+                      if (current != null && !(current instanceof AttrValue.NumberValue)) {
+                        throw new IllegalStateException(
+                            "cannot increment attr "
+                                + name
+                                + " on "
+                                + key
+                                + ": it currently holds a string value");
+                      }
+                      long base = current == null ? 0L : ((AttrValue.NumberValue) current).value();
+                      attrs.put(name, AttrValue.of(base + increment.getValue()));
+                    }
+
+                    newVersion[0] = existing.version() + 1;
+                    return new Record(
+                        existing.key(), existing.kind(), existing.value(), attrs, newVersion[0]);
+                  });
+              return newVersion[0] == 0L ? Optional.<Long>empty() : Optional.of(newVersion[0]);
+            });
   }
 
   @Override

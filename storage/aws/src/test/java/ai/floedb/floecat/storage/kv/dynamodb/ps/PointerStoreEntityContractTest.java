@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.storage.kv.AbstractEntity;
 import ai.floedb.floecat.storage.kv.AbstractEntityTest;
+import ai.floedb.floecat.storage.kv.AttrValue;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbKvTestProfile;
@@ -309,7 +310,7 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
             .await()
             .indefinitely()
             .orElseThrow();
-    assertEquals("1234", rec.attrs().get(KvAttributes.ATTR_EXPIRES_AT));
+    assertEquals(AttrValue.of("1234"), rec.attrs().get(KvAttributes.ATTR_EXPIRES_AT));
   }
 
   @Test
@@ -319,7 +320,7 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
             new KvStore.Key(PointerStoreEntity.GLOBAL_PK, "accounts/by-id/7/catalog/ttl"),
             PointerStoreEntity.KIND_POINTER,
             new byte[0],
-            Map.of(KvAttributes.ATTR_EXPIRES_AT, "4321"),
+            Map.of(KvAttributes.ATTR_EXPIRES_AT, AttrValue.of("4321")),
             1L);
 
     Pointer decoded = pointers.decode(rec);
@@ -447,8 +448,8 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
                     && opt.isPresent()
                     && updated.compareAndSet(false, true)) {
                   Record current = opt.get();
-                  Map<String, String> attrs = new HashMap<>(current.attrs());
-                  attrs.put(PointerStoreEntity.ATTR_BLOB_URI, "s3://b/updated");
+                  Map<String, AttrValue> attrs = new HashMap<>(current.attrs());
+                  attrs.put(PointerStoreEntity.ATTR_BLOB_URI, AttrValue.of("s3://b/updated"));
                   Record updatedRecord =
                       new Record(
                           current.key(),
@@ -470,6 +471,12 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
     @Override
     public Uni<Boolean> deleteCas(Key key, long expectedVersion) {
       return delegate.deleteCas(key, expectedVersion);
+    }
+
+    @Override
+    public Uni<Optional<Long>> updateMetadataAttrsIfExists(
+        Key key, Map<String, AttrValue> sets, Map<String, Long> increments) {
+      return delegate.updateMetadataAttrsIfExists(key, sets, increments);
     }
 
     @Override

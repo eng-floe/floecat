@@ -17,19 +17,29 @@ package ai.floedb.floecat.storage.kv.dynamodb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.floecat.storage.kv.AttrValue;
+import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.cdi.KvTable;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
 import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
+import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
+import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 
 @QuarkusTest
 @TestProfile(DynamoDbKvTestProfile.class)
@@ -39,6 +49,12 @@ public class KvStoreContractTest {
   @Inject
   @KvTable("floecat")
   KvStore kv;
+
+  /** Used only to plant rows the KvStore API cannot express (no version, raw attribute types). */
+  @Inject DynamoDbAsyncClient ddb;
+
+  @ConfigProperty(name = "floecat.kv.table")
+  String kvTable;
 
   @BeforeEach
   void resetTable() {
@@ -186,11 +202,315 @@ public class KvStoreContractTest {
                 .indefinitely());
   }
 
+  @Test
+  void updateMetadataAttrsIfExists_sets_and_increments_and_bumps_version() {
+    KvStore.Key k = key("pk1", "meta");
+    assertTrue(
+        kv.putCas(
+                attrsRecord(
+                    k,
+                    1L,
+                    Map.of(
+                        "target", AttrValue.of("old"),
+                        "hits", AttrValue.of(5L),
+                        "keep", AttrValue.of("stay"))),
+                0L)
+            .await()
+            .indefinitely());
+
+    assertEquals(
+        Optional.of(2L),
+        kv.updateMetadataAttrsIfExists(k, Map.of("target", AttrValue.of("new")), Map.of("hits", 3L))
+            .await()
+            .indefinitely());
+
+    KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
+    assertEquals(2L, got.version());
+    assertEquals(AttrValue.of("new"), got.attrs().get("target"));
+    assertEquals(AttrValue.of(8L), got.attrs().get("hits"));
+    assertEquals(AttrValue.of("stay"), got.attrs().get("keep"));
+  }
+
+  @Test
+  void updateMetadataAttrsIfExists_increment_of_absent_attr_creates_it_at_the_delta() {
+    KvStore.Key k = key("pk1", "meta");
+    assertTrue(
+        kv.putCas(attrsRecord(k, 1L, Map.of("keep", AttrValue.of("stay"))), 0L)
+            .await()
+            .indefinitely());
+
+    assertEquals(
+        Optional.of(2L),
+        kv.updateMetadataAttrsIfExists(k, Map.of(), Map.of("misses", 4L)).await().indefinitely());
+
+    KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
+    assertEquals(AttrValue.of(4L), got.attrs().get("misses"));
+    assertEquals(AttrValue.of("stay"), got.attrs().get("keep"));
+  }
+
+  @Test
+  void updateMetadataAttrsIfExists_absent_key_returns_empty_and_creates_nothing() {
+    KvStore.Key k = key("pk1", "ghost");
+
+    assertTrue(
+        kv.updateMetadataAttrsIfExists(k, Map.of("target", AttrValue.of("t")), Map.of("hits", 1L))
+            .await()
+            .indefinitely()
+            .isEmpty());
+
+    // No ghost row: the update must never create the record as a side effect.
+    assertTrue(kv.get(k).await().indefinitely().isEmpty());
+    assertTrue(kv.isEmpty().await().indefinitely());
+  }
+
+  @Test
+  void updateMetadataAttrsIfExists_refuses_value_carrying_record_and_leaves_it_untouched() {
+    // A value payload embeds its own copy of the version, which this update does not rewrite, so
+    // the whole record must be refused rather than partially advanced.
+    KvStore.Key k = key("pk1", "sk1");
+    KvStore.Record stored =
+        new KvStore.Record(
+            k,
+            "KIND",
+            "payload".getBytes(StandardCharsets.UTF_8),
+            Map.of("target", AttrValue.of("old"), "hits", AttrValue.of(5L)),
+            1L);
+    assertTrue(kv.putCas(stored, 0L).await().indefinitely());
+
+    assertTrue(
+        kv.updateMetadataAttrsIfExists(k, Map.of("target", AttrValue.of("new")), Map.of("hits", 1L))
+            .await()
+            .indefinitely()
+            .isEmpty());
+
+    KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
+    assertEquals(1L, got.version());
+    assertEquals(AttrValue.of("old"), got.attrs().get("target"));
+    assertEquals(AttrValue.of(5L), got.attrs().get("hits"));
+    assertEquals("payload", new String(got.value(), StandardCharsets.UTF_8));
+  }
+
+  @Test
+  void updateMetadataAttrsIfExists_version_0_record_becomes_version_1() {
+    // putCas refuses a record at version 0, so the row is planted directly. A stored 0 and a
+    // missing version attribute are the same starting point per the SPI, so both are checked.
+    Map<String, AttributeValue> zero = rawItem("pk1", "zero");
+    zero.put(KvAttributes.ATTR_VERSION, AttributeValue.fromN("0"));
+    putRawItem(zero);
+
+    assertEquals(
+        Optional.of(1L),
+        kv.updateMetadataAttrsIfExists(key("pk1", "zero"), Map.of(), Map.of("hits", 1L))
+            .await()
+            .indefinitely());
+
+    KvStore.Record got = kv.get(key("pk1", "zero")).await().indefinitely().orElseThrow();
+    assertEquals(1L, got.version());
+    assertEquals(AttrValue.of(1L), got.attrs().get("hits"));
+
+    putRawItem(rawItem("pk1", "noversion"));
+    assertEquals(
+        Optional.of(1L),
+        kv.updateMetadataAttrsIfExists(key("pk1", "noversion"), Map.of(), Map.of("hits", 1L))
+            .await()
+            .indefinitely());
+    assertEquals(
+        1L, kv.get(key("pk1", "noversion")).await().indefinitely().orElseThrow().version());
+  }
+
+  @Test
+  void updateMetadataAttrsIfExists_sets_only_works() {
+    // The branch where the update expression must carry SET but omit nothing else; an empty ADD
+    // or SET clause is a DynamoDB ValidationException.
+    KvStore.Key k = key("pk1", "meta");
+    assertTrue(
+        kv.putCas(attrsRecord(k, 1L, Map.of("target", AttrValue.of("old"))), 0L)
+            .await()
+            .indefinitely());
+
+    assertEquals(
+        Optional.of(2L),
+        kv.updateMetadataAttrsIfExists(
+                k, Map.of("target", AttrValue.of("new"), "extra", AttrValue.of(9L)), Map.of())
+            .await()
+            .indefinitely());
+
+    KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
+    assertEquals(2L, got.version());
+    assertEquals(AttrValue.of("new"), got.attrs().get("target"));
+    assertEquals(AttrValue.of(9L), got.attrs().get("extra"));
+  }
+
+  @Test
+  void updateMetadataAttrsIfExists_increments_only_works() {
+    // The branch where the SET clause must be omitted entirely.
+    KvStore.Key k = key("pk1", "meta");
+    assertTrue(
+        kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of(10L))), 0L)
+            .await()
+            .indefinitely());
+
+    assertEquals(
+        Optional.of(2L),
+        kv.updateMetadataAttrsIfExists(k, Map.of(), Map.of("hits", 5L, "misses", 2L))
+            .await()
+            .indefinitely());
+
+    KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
+    assertEquals(2L, got.version());
+    assertEquals(AttrValue.of(15L), got.attrs().get("hits"));
+    assertEquals(AttrValue.of(2L), got.attrs().get("misses"));
+  }
+
+  @Test
+  void updateMetadataAttrsIfExists_rejects_empty_updates() {
+    // No await(): validation must throw synchronously rather than produce a failed Uni.
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> kv.updateMetadataAttrsIfExists(key("pk1", "meta"), Map.of(), Map.of()));
+  }
+
+  @Test
+  void updateMetadataAttrsIfExists_rejects_structural_attr_names_in_sets() {
+    for (String name : KvAttributes.STRUCTURAL_ATTRS) {
+      Map<String, AttrValue> sets = Map.of(name, AttrValue.of("x"));
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> kv.updateMetadataAttrsIfExists(key("pk1", "meta"), sets, Map.of()));
+    }
+  }
+
+  @Test
+  void updateMetadataAttrsIfExists_rejects_attr_that_is_both_set_and_incremented() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            kv.updateMetadataAttrsIfExists(
+                key("pk1", "meta"), Map.of("hits", AttrValue.of(1L)), Map.of("hits", 1L)));
+  }
+
+  @Test
+  void updateMetadataAttrsIfExists_increment_of_string_attr_fails() {
+    // DynamoDB's ADD on an S-typed attribute is a server-side ValidationException, which the SDK
+    // does not model, so it arrives as a plain DynamoDbException. The in-memory store has the
+    // stored AttrValue in hand and throws IllegalStateException instead — hence the two contract
+    // tests assert different exception types for this case by design.
+    KvStore.Key k = key("pk1", "meta");
+    assertTrue(
+        kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of("abc"))), 0L)
+            .await()
+            .indefinitely());
+
+    DynamoDbException thrown =
+        assertThrows(
+            DynamoDbException.class,
+            () ->
+                kv.updateMetadataAttrsIfExists(k, Map.of(), Map.of("hits", 1L))
+                    .await()
+                    .indefinitely());
+    // Must not be the one failure the store recovers into an empty result: a type error is not
+    // "the record was absent".
+    assertFalse(thrown instanceof ConditionalCheckFailedException);
+
+    // Never silently overwritten, and the version bump in the same request did not land either.
+    KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
+    assertEquals(1L, got.version());
+    assertEquals(AttrValue.of("abc"), got.attrs().get("hits"));
+  }
+
+  @Test
+  void updateMetadataAttrsIfExists_increment_of_numeric_looking_string_attr_fails() {
+    // "42" parses fine, but ADD rejects the S type regardless of its content.
+    KvStore.Key k = key("pk1", "meta");
+    assertTrue(
+        kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of("42"))), 0L)
+            .await()
+            .indefinitely());
+
+    assertThrows(
+        DynamoDbException.class,
+        () ->
+            kv.updateMetadataAttrsIfExists(k, Map.of(), Map.of("hits", 1L)).await().indefinitely());
+
+    KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
+    assertEquals(1L, got.version());
+    assertEquals(AttrValue.of("42"), got.attrs().get("hits"));
+  }
+
+  @Test
+  void updateMetadataAttrsIfExists_version_bump_is_visible_to_putCas() {
+    KvStore.Key k = key("pk1", "meta");
+    assertTrue(
+        kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of(1L))), 0L).await().indefinitely());
+
+    assertEquals(
+        Optional.of(2L),
+        kv.updateMetadataAttrsIfExists(k, Map.of(), Map.of("hits", 1L)).await().indefinitely());
+
+    // A writer that read the record before the metadata bump must be rejected...
+    assertFalse(
+        kv.putCas(attrsRecord(k, 2L, Map.of("hits", AttrValue.of(99L))), 1L)
+            .await()
+            .indefinitely());
+    // ...and one that re-read afterwards must succeed.
+    assertTrue(
+        kv.putCas(attrsRecord(k, 3L, Map.of("hits", AttrValue.of(99L))), 2L)
+            .await()
+            .indefinitely());
+    assertEquals(3L, kv.get(k).await().indefinitely().orElseThrow().version());
+  }
+
+  @Test
+  void number_attr_round_trips_and_stays_visible_on_read() {
+    // The read path used to drop every non-string attribute type; a NumberValue written through
+    // putCas must come back as a NumberValue, not vanish.
+    KvStore.Key k = key("pk1", "meta");
+    assertTrue(
+        kv.putCas(
+                attrsRecord(k, 1L, Map.of("hits", AttrValue.of(7L), "target", AttrValue.of("t"))),
+                0L)
+            .await()
+            .indefinitely());
+
+    KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
+    assertInstanceOf(AttrValue.NumberValue.class, got.attrs().get("hits"));
+    assertEquals(AttrValue.of(7L), got.attrs().get("hits"));
+    assertEquals(7L, got.attrs().get("hits").asLong().orElseThrow());
+    assertEquals(AttrValue.of("t"), got.attrs().get("target"));
+  }
+
+  @Test
+  void raw_numeric_and_string_attributes_read_back_with_their_native_types() {
+    // Written out-of-band so the native DynamoDB type, not this store's writer, decides the type.
+    Map<String, AttributeValue> item = rawItem("pk1", "raw");
+    item.put(KvAttributes.ATTR_VERSION, AttributeValue.fromN("3"));
+    item.put("nativeNumber", AttributeValue.fromN("42"));
+    item.put("nativeString", AttributeValue.fromS("42"));
+    putRawItem(item);
+
+    KvStore.Record got = kv.get(key("pk1", "raw")).await().indefinitely().orElseThrow();
+    assertEquals(3L, got.version());
+    assertEquals(new AttrValue.NumberValue(42L), got.attrs().get("nativeNumber"));
+    assertEquals(new AttrValue.StringValue("42"), got.attrs().get("nativeString"));
+  }
+
   private void putSeries(String pk, String skPrefix, int count) {
     for (int i = 0; i < count; i++) {
       KvStore.Record rec = record(pk, skPrefix + i, 1L, "v" + i);
       assertTrue(kv.putCas(rec, 0L).await().indefinitely());
     }
+  }
+
+  private void putRawItem(Map<String, AttributeValue> item) {
+    ddb.putItem(PutItemRequest.builder().tableName(kvTable).item(item).build()).join();
+  }
+
+  private static Map<String, AttributeValue> rawItem(String pk, String sk) {
+    Map<String, AttributeValue> item = new HashMap<>();
+    item.put(KvAttributes.ATTR_PARTITION_KEY, AttributeValue.fromS(pk));
+    item.put(KvAttributes.ATTR_SORT_KEY, AttributeValue.fromS(sk));
+    item.put(KvAttributes.ATTR_KIND, AttributeValue.fromS("META"));
+    return item;
   }
 
   private static KvStore.Key key(String pk, String sk) {
@@ -200,5 +520,10 @@ public class KvStoreContractTest {
   private static KvStore.Record record(String pk, String sk, long version, String value) {
     return new KvStore.Record(
         key(pk, sk), "KIND", value.getBytes(StandardCharsets.UTF_8), null, version);
+  }
+
+  private static KvStore.Record attrsRecord(
+      KvStore.Key key, long version, Map<String, AttrValue> attrs) {
+    return new KvStore.Record(key, "META", new byte[0], attrs, version);
   }
 }

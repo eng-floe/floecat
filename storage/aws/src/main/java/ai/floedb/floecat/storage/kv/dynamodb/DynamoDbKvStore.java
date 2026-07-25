@@ -15,8 +15,10 @@
  */
 package ai.floedb.floecat.storage.kv.dynamodb;
 
+import ai.floedb.floecat.storage.kv.AttrValue;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.kv.KvStore;
+import ai.floedb.floecat.storage.kv.MetadataAttrUpdates;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import java.nio.charset.StandardCharsets;
@@ -86,26 +88,48 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
     return Map.of(ATTR_PARTITION_KEY, S(k.partitionKey()), ATTR_SORT_KEY, S(k.sortKey()));
   }
 
-  private static Map<String, AttributeValue> attrsToAv(Map<String, String> attrs) {
+  /** A typed attr as its native DynamoDB type; {@code N} is what makes atomic ADD possible. */
+  private static AttributeValue attrToAv(AttrValue v) {
+    return switch (v) {
+      case AttrValue.StringValue s -> S(s.value());
+      case AttrValue.NumberValue n -> N(n.value());
+    };
+  }
+
+  private static Map<String, AttributeValue> attrsToAv(Map<String, AttrValue> attrs) {
     if (attrs == null || attrs.isEmpty()) return Map.of();
     var out = new HashMap<String, AttributeValue>(attrs.size());
     for (var e : attrs.entrySet()) {
-      out.put(e.getKey(), S(e.getValue()));
+      out.put(e.getKey(), attrToAv(e.getValue()));
     }
     return out;
   }
 
-  private static Map<String, String> avToAttrs(Map<String, AttributeValue> item) {
-    var out = new HashMap<String, String>();
+  private static Map<String, AttrValue> avToAttrs(Map<String, AttributeValue> item) {
+    var out = new HashMap<String, AttrValue>();
     for (var e : item.entrySet()) {
       var k = e.getKey();
+      // Structural names are the record's own fields, and Record's constructor now rejects them as
+      // attrs. Other writers do put them on rows, so skipping them here is what keeps such a read
+      // from turning into an exception.
       if (k.equals(ATTR_PARTITION_KEY)
           || k.equals(ATTR_SORT_KEY)
           || k.equals(ATTR_KIND)
           || k.equals(ATTR_VALUE)
           || k.equals(ATTR_VERSION)) continue;
       var v = e.getValue();
-      if (v.s() != null) out.put(k, v.s());
+      if (v.s() != null) {
+        out.put(k, AttrValue.of(v.s()));
+      } else if (v.n() != null) {
+        try {
+          out.put(k, AttrValue.of(Long.parseLong(v.n())));
+        } catch (NumberFormatException ex) {
+          // DynamoDB's N is wider than a long and admits fractions. A foreign writer's value that
+          // does not fit degrades to its raw decimal text rather than vanishing from the record.
+          out.put(k, AttrValue.of(v.n()));
+        }
+      }
+      // B/BOOL/M/L have no AttrValue representation and are dropped, as they always have been.
     }
     return out;
   }
@@ -134,6 +158,10 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
   private Map<String, AttributeValue> recordToAv(Record r) {
     var item = new HashMap<String, AttributeValue>();
+    // Attrs first, structure second: Record's constructor already rejects structural attr names,
+    // so this ordering is belt-and-braces — should that check ever gain a hole, the structural
+    // fields still win instead of being clobbered by an attr of the same name.
+    item.putAll(attrsToAv(r.attrs()));
     item.put(ATTR_PARTITION_KEY, S(r.key().partitionKey()));
     item.put(ATTR_SORT_KEY, S(r.key().sortKey()));
     item.put(ATTR_KIND, S(r.kind()));
@@ -142,7 +170,6 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
       item.put(ATTR_VALUE, B(r.value()));
     }
     item.put(ATTR_VERSION, N(r.version()));
-    item.putAll(attrsToAv(r.attrs()));
     return item;
   }
 
@@ -269,6 +296,90 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
         .replaceWith(true)
         .onFailure(ConditionalCheckFailedException.class)
         .recoverWithItem(false);
+  }
+
+  @Override
+  public Uni<Optional<Long>> updateMetadataAttrsIfExists(
+      Key key, Map<String, AttrValue> sets, Map<String, Long> increments) {
+    MetadataAttrUpdates.validate(key, sets, increments);
+
+    // Every attribute reaches the expression through a #placeholder: "value", "version" and
+    // "timestamp" are DynamoDB reserved words, and caller-supplied attr names may be too.
+    var names = new HashMap<String, String>();
+    names.put("#pk", ATTR_PARTITION_KEY);
+    names.put("#value", ATTR_VALUE);
+    names.put("#version", ATTR_VERSION);
+    var values = new HashMap<String, AttributeValue>();
+    values.put(":one", N(1L));
+
+    var setTerms = new ArrayList<String>(sets.size());
+    int i = 0;
+    for (var e : sets.entrySet()) {
+      names.put("#s" + i, e.getKey());
+      values.put(":s" + i, attrToAv(e.getValue()));
+      setTerms.add("#s" + i + " = :s" + i);
+      i++;
+    }
+
+    var addTerms = new ArrayList<String>(increments.size() + 1);
+    i = 0;
+    for (var e : increments.entrySet()) {
+      names.put("#a" + i, e.getKey());
+      values.put(":a" + i, N(e.getValue()));
+      addTerms.add("#a" + i + " :a" + i);
+      i++;
+    }
+    // ADD creates a missing attribute at the delta value, so a record with no stored version
+    // becomes version 1 — which is exactly the documented semantics.
+    addTerms.add("#version :one");
+
+    // ADD always carries the version bump, but SET has no terms when the caller only asked for
+    // increments; a SET keyword with an empty clause is a ValidationException, so it is omitted.
+    var expr = new StringBuilder();
+    if (!setTerms.isEmpty()) {
+      expr.append("SET ").append(String.join(", ", setTerms)).append(' ');
+    }
+    expr.append("ADD ").append(String.join(", ", addTerms));
+
+    var req =
+        UpdateItemRequest.builder()
+            .tableName(table)
+            .key(keyMap(key))
+            .updateExpression(expr.toString())
+            // attribute_not_exists(#value) is the attrs-only guard: a value-carrying record keeps a
+            // copy of its version inside the serialized payload, which this update cannot rewrite.
+            .conditionExpression("attribute_exists(#pk) AND attribute_not_exists(#value)")
+            .expressionAttributeNames(names)
+            .expressionAttributeValues(values)
+            .returnValues(ReturnValue.UPDATED_NEW)
+            .build();
+
+    return dynamo(client -> client.updateItem(req))
+        .map(resp -> Optional.of(newVersionOf(resp)))
+        // Absent and refused are one and the same condition failure server-side; the SPI documents
+        // both as an empty result. Nothing else is recovered — a ValidationException (e.g. ADD on a
+        // string-typed attribute) must reach the caller.
+        .onFailure(ConditionalCheckFailedException.class)
+        .recoverWithItem(Optional.<Long>empty());
+  }
+
+  /**
+   * Reads the post-update version out of an {@code UPDATED_NEW} response. The version is always
+   * part of the update, so a missing or unparseable one is corruption, not absence, and must never
+   * be reported as an empty result.
+   */
+  private static long newVersionOf(UpdateItemResponse resp) {
+    var v = resp.attributes() == null ? null : resp.attributes().get(ATTR_VERSION);
+    if (v == null || v.n() == null) {
+      throw new IllegalStateException(
+          "UpdateItem returned no numeric " + ATTR_VERSION + " attribute: " + resp.attributes());
+    }
+    try {
+      return Long.parseLong(v.n());
+    } catch (NumberFormatException e) {
+      throw new IllegalStateException(
+          "UpdateItem returned a non-integral " + ATTR_VERSION + ": " + v.n(), e);
+    }
   }
 
   // ---- Query

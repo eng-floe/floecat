@@ -154,7 +154,7 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
             .isPresent());
 
     KvStore.Record rec = kv.records.get(key("pk", "sk1"));
-    assertEquals("2", rec.attrs().get(KvAttributes.ATTR_EXPIRES_AT));
+    assertEquals(AttrValue.of("2"), rec.attrs().get(KvAttributes.ATTR_EXPIRES_AT));
   }
 
   @Test
@@ -194,7 +194,11 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
             "ptr",
             "Pointer",
             new byte[0],
-            Map.of(KvAttributes.TARGET_PARTITION_KEY, "tp", KvAttributes.TARGET_SORT_KEY, "ts"),
+            Map.of(
+                KvAttributes.TARGET_PARTITION_KEY,
+                AttrValue.of("tp"),
+                KvAttributes.TARGET_SORT_KEY,
+                AttrValue.of("ts")),
             1L));
     kv.records.put(
         targetKey, record("tp", "ts", TestEntity.KIND, pointerBytes("target"), Map.of(), 1L));
@@ -214,7 +218,10 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
             "Pointer",
             new byte[0],
             Map.of(
-                KvAttributes.TARGET_PARTITION_KEY, "tp", KvAttributes.TARGET_SORT_KEY, "missing"),
+                KvAttributes.TARGET_PARTITION_KEY,
+                AttrValue.of("tp"),
+                KvAttributes.TARGET_SORT_KEY,
+                AttrValue.of("missing")),
             1L));
 
     assertTrue(entity.getViaPointerForTest(ptrKey).await().indefinitely().isEmpty());
@@ -229,7 +236,11 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
             "p1",
             "Pointer",
             new byte[0],
-            Map.of(KvAttributes.TARGET_PARTITION_KEY, "tp", KvAttributes.TARGET_SORT_KEY, "t1"),
+            Map.of(
+                KvAttributes.TARGET_PARTITION_KEY,
+                AttrValue.of("tp"),
+                KvAttributes.TARGET_SORT_KEY,
+                AttrValue.of("t1")),
             1L));
     kv.records.put(
         key("ptr", "p2"),
@@ -238,7 +249,11 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
             "p2",
             "Pointer",
             new byte[0],
-            Map.of(KvAttributes.TARGET_PARTITION_KEY, "tp", KvAttributes.TARGET_SORT_KEY, "t2"),
+            Map.of(
+                KvAttributes.TARGET_PARTITION_KEY,
+                AttrValue.of("tp"),
+                KvAttributes.TARGET_SORT_KEY,
+                AttrValue.of("t2")),
             1L));
 
     kv.records.put(
@@ -279,7 +294,11 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
             "p1",
             "Pointer",
             new byte[0],
-            Map.of(KvAttributes.TARGET_PARTITION_KEY, "tp", KvAttributes.TARGET_SORT_KEY, "t1"),
+            Map.of(
+                KvAttributes.TARGET_PARTITION_KEY,
+                AttrValue.of("tp"),
+                KvAttributes.TARGET_SORT_KEY,
+                AttrValue.of("t1")),
             1L));
     kv.records.put(
         key("ptr", "p2"),
@@ -289,7 +308,10 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
             "Pointer",
             new byte[0],
             Map.of(
-                KvAttributes.TARGET_PARTITION_KEY, "tp", KvAttributes.TARGET_SORT_KEY, "missing"),
+                KvAttributes.TARGET_PARTITION_KEY,
+                AttrValue.of("tp"),
+                KvAttributes.TARGET_SORT_KEY,
+                AttrValue.of("missing")),
             1L));
     kv.records.put(
         key("tp", "t1"), record("tp", "t1", TestEntity.KIND, pointerBytes("t1"), Map.of(), 1L));
@@ -308,7 +330,7 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
   }
 
   private static KvStore.Record record(
-      String pk, String sk, String kind, byte[] value, Map<String, String> attrs, long version) {
+      String pk, String sk, String kind, byte[] value, Map<String, AttrValue> attrs, long version) {
     return new KvStore.Record(new KvStore.Key(pk, sk), kind, value, attrs, version);
   }
 
@@ -324,7 +346,7 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
     }
 
     private Uni<Optional<Pointer>> putCanonicalCasForTest(
-        KvStore.Key key, Pointer pointer, Map<String, String> attrs, long expectedVersion) {
+        KvStore.Key key, Pointer pointer, Map<String, AttrValue> attrs, long expectedVersion) {
       return putCanonicalCas(key, KIND, pointer, attrs, expectedVersion);
     }
 
@@ -399,6 +421,39 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
         return Uni.createFrom().item(true);
       }
       return Uni.createFrom().item(false);
+    }
+
+    @Override
+    public Uni<Optional<Long>> updateMetadataAttrsIfExists(
+        Key key, Map<String, AttrValue> sets, Map<String, Long> increments) {
+      MetadataAttrUpdates.validate(key, sets, increments);
+
+      Record existing = records.get(key);
+      if (existing == null || existing.value().length > 0) {
+        return Uni.createFrom().item(Optional.empty());
+      }
+
+      var attrs = new HashMap<>(existing.attrs());
+      attrs.putAll(sets);
+      for (var increment : increments.entrySet()) {
+        var name = increment.getKey();
+        var current = attrs.get(name);
+        if (current != null && current.asLong().isEmpty()) {
+          throw new IllegalStateException(
+              "cannot increment attr "
+                  + name
+                  + " on "
+                  + key
+                  + ": it currently holds a non-numeric string value");
+        }
+        long base = AttrValue.longOr(attrs, name, 0L);
+        attrs.put(name, AttrValue.of(base + increment.getValue()));
+      }
+
+      long newVersion = existing.version() + 1;
+      records.put(
+          key, new Record(existing.key(), existing.kind(), existing.value(), attrs, newVersion));
+      return Uni.createFrom().item(Optional.of(newVersion));
     }
 
     @Override

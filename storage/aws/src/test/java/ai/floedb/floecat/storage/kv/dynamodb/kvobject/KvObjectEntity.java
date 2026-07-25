@@ -16,6 +16,7 @@
 package ai.floedb.floecat.storage.kv.dynamodb.kvobject;
 
 import ai.floedb.floecat.storage.kv.AbstractEntity;
+import ai.floedb.floecat.storage.kv.AttrValue;
 import ai.floedb.floecat.storage.kv.Keys;
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.cdi.KvTable;
@@ -122,7 +123,8 @@ public final class KvObjectEntity extends AbstractEntity<KvObject> {
     String id = obj.getId();
     var sKey = Keys.key(Keys.join(PK_TESTOBJ, normalize(id)), Keys.join(SK_SUB, subKey));
     var rec =
-        new KvStore.Record(sKey, KIND_SUB_OBJECT, new byte[0], Map.of(ATTR_SUBVALUE, subValue), 1);
+        new KvStore.Record(
+            sKey, KIND_SUB_OBJECT, new byte[0], Map.of(ATTR_SUBVALUE, AttrValue.of(subValue)), 1);
     return kv.txnWriteCas(List.of(new KvStore.TxnPut(rec, 0)));
   }
 

@@ -17,6 +17,7 @@ package ai.floedb.floecat.storage.kv.dynamodb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.floecat.storage.kv.AttrValue;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.kv.KvStore;
 import java.lang.reflect.InvocationHandler;
@@ -131,12 +132,12 @@ public class DynamoDbKvStoreTest {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     DynamoDbKvStore store = newStore(handler);
 
-    KvStore.Record record = record("pk", "sk", "K", "v1", 3L, Map.of("foo", "bar"));
+    KvStore.Record record = record("pk", "sk", "K", "v1", 3L, Map.of("foo", AttrValue.of("bar")));
     assertTrue(store.putCas(record, 0L).await().indefinitely());
 
     KvStore.Record got = store.get(key("pk", "sk")).await().indefinitely().orElseThrow();
     assertEquals(3L, got.version());
-    assertEquals("bar", got.attrs().get("foo"));
+    assertEquals(AttrValue.of("bar"), got.attrs().get("foo"));
   }
 
   @Test
@@ -327,13 +328,13 @@ public class DynamoDbKvStoreTest {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     DynamoDbKvStore store = newStore(handler);
 
-    Map<String, String> attrs = Map.of("user", "ok");
+    Map<String, AttrValue> attrs = Map.of("user", AttrValue.of("ok"));
 
     KvStore.Record record = record("pk", "sk", "K", "v1", 1L, attrs);
     assertTrue(store.putCas(record, 0L).await().indefinitely());
 
     KvStore.Record got = store.get(key("pk", "sk")).await().indefinitely().orElseThrow();
-    assertEquals("ok", got.attrs().get("user"));
+    assertEquals(AttrValue.of("ok"), got.attrs().get("user"));
     assertFalse(got.attrs().containsKey(KvAttributes.ATTR_PARTITION_KEY));
     assertFalse(got.attrs().containsKey(KvAttributes.ATTR_SORT_KEY));
     assertFalse(got.attrs().containsKey(KvAttributes.ATTR_KIND));
@@ -763,7 +764,7 @@ public class DynamoDbKvStoreTest {
   }
 
   private static KvStore.Record record(
-      String pk, String sk, String kind, String value, long version, Map<String, String> attrs) {
+      String pk, String sk, String kind, String value, long version, Map<String, AttrValue> attrs) {
     return new KvStore.Record(
         new KvStore.Key(pk, sk), kind, value.getBytes(StandardCharsets.UTF_8), attrs, version);
   }

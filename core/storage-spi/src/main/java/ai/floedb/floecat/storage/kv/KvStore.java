@@ -49,13 +49,20 @@ public interface KvStore {
    *   <li>{@code kind} is a small discriminator (useful for debugging)
    *   <li>{@code value} is raw bytes (protobuf bytes for canonical entities; usually empty for
    *       pointer/index items)
-   *   <li>{@code attrs} are small string attributes for pointers/indexes/metadata
+   *   <li>{@code attrs} are small typed attributes for pointers/indexes/metadata (see {@link
+   *       AttrValue})
    *   <li>{@code version} is the monotonically increasing optimistic-concurrency version
    * </ul>
    */
-  record Record(Key key, String kind, byte[] value, Map<String, String> attrs, long version) {
+  record Record(Key key, String kind, byte[] value, Map<String, AttrValue> attrs, long version) {
     public Record {
       attrs = (attrs == null) ? Map.of() : Map.copyOf(attrs);
+      for (var name : attrs.keySet()) {
+        if (KvAttributes.STRUCTURAL_ATTRS.contains(name)) {
+          throw new IllegalArgumentException(
+              "attr name is reserved by the record structure: " + name);
+        }
+      }
       value = (value == null) ? new byte[0] : value;
       if (version < 0) throw new IllegalArgumentException("version must be >= 0");
     }
@@ -86,6 +93,42 @@ public interface KvStore {
    * @return true if deleted; false if the condition failed
    */
   Uni<Boolean> deleteCas(Key key, long expectedVersion);
+
+  /**
+   * Atomically updates metadata attributes on an <em>existing</em> record and advances its
+   * optimistic-concurrency version, in a single request. This is the one write on this interface
+   * that is not a whole-record CAS: it exists so that "bump this bookkeeping metadata" costs one
+   * request instead of a read plus a conditional whole-record write, and so that concurrent bumps
+   * cannot lose each other on the version.
+   *
+   * <ul>
+   *   <li>{@code sets} replaces attribute values.
+   *   <li>{@code increments} adds a delta to a numeric attribute, creating it with the delta value
+   *       if absent. Incrementing an attribute that currently holds a non-numeric string fails the
+   *       {@link Uni} with a store-specific error; it never silently overwrites.
+   *   <li>The record's version is advanced by one in the same request. A record whose stored
+   *       version is missing counts as 0 and becomes 1.
+   *   <li>The record is never created as a side effect.
+   * </ul>
+   *
+   * <p><b>Restricted to attrs-only records.</b> A record carrying a {@code value} payload is
+   * refused. The reason is that canonical protobuf entities embed a copy of the version inside
+   * their serialized value and never resync it from {@code Record.version}, so advancing the
+   * version without rewriting the value would desynchronize the two. Note the check <em>excludes
+   * value-carrying records</em>; it does not by itself prove a record is attrs-only — pointer rows,
+   * for instance, are canonical entities that happen to store nothing in {@code value}. Callers
+   * must target records whose consumers treat {@code Record.version} as authoritative.
+   *
+   * @param sets attribute values to replace; must not name a {@link KvAttributes#STRUCTURAL_ATTRS}
+   *     attribute
+   * @param increments deltas to add to numeric attributes; must not overlap {@code sets}
+   * @return the new version if the record existed and was updated; empty if the record was absent
+   *     or was refused for carrying a value
+   * @throws IllegalArgumentException if both maps are empty, or an attribute name is reserved,
+   *     blank, or present in both maps
+   */
+  Uni<Optional<Long>> updateMetadataAttrsIfExists(
+      Key key, Map<String, AttrValue> sets, Map<String, Long> increments);
 
   /**
    * Query within a partition key, ordered by sk, with a prefix constraint. This is the
