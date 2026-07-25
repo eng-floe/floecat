@@ -43,12 +43,14 @@ import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -271,12 +273,16 @@ public class StatsRepository implements StatsStore {
         tableId, snapshotId, effectiveGenerationId, references);
     Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
     publishActiveGeneration(tableId, snapshotId, effectiveGenerationId, current);
-    for (StatsStore.PrewrittenTargetStatsReference reference :
-        references == null ? List.<StatsStore.PrewrittenTargetStatsReference>of() : references) {
-      if (reference != null) {
-        updateTargetLatestSnapshotIfNewer(tableId, snapshotId, reference.targetStorageId());
-      }
-    }
+    updateTargetLatestSnapshotsIfNewer(
+        tableId,
+        snapshotId,
+        (references == null
+                ? List.<StatsStore.PrewrittenTargetStatsReference>of()
+                : references)
+            .stream()
+                .filter(java.util.Objects::nonNull)
+                .map(StatsStore.PrewrittenTargetStatsReference::targetStorageId)
+                .toList());
     updateLatestStatsSnapshotIfNewer(tableId, snapshotId);
   }
 
@@ -831,6 +837,133 @@ public class StatsRepository implements StatsStore {
         Keys.targetStatsLatestSnapshotBlobUri(
             tableId.getAccountId(), tableId.getId(), storageId, snapshotId),
         snapshotId);
+  }
+
+  private record LatestSnapshotState(Pointer pointer, long snapshotId) {}
+
+  private void updateTargetLatestSnapshotsIfNewer(
+      ResourceId tableId, long snapshotId, List<String> storageIds) {
+    if (storageIds == null || storageIds.isEmpty()) {
+      return;
+    }
+    List<String> uniqueStorageIds = new ArrayList<>(new java.util.LinkedHashSet<>(storageIds));
+    for (int from = 0; from < uniqueStorageIds.size(); from += MAX_POINTER_BATCH_SIZE) {
+      updateTargetLatestSnapshotChunk(
+          tableId,
+          snapshotId,
+          uniqueStorageIds.subList(
+              from, Math.min(from + MAX_POINTER_BATCH_SIZE, uniqueStorageIds.size())));
+    }
+  }
+
+  private void updateTargetLatestSnapshotChunk(
+      ResourceId tableId, long snapshotId, List<String> storageIds) {
+    Set<String> writtenBlobUris = new HashSet<>();
+    for (int attempt = 0; attempt < BaseResourceRepository.CAS_MAX; attempt++) {
+      ConcurrentHashMap<String, LatestSnapshotState> states =
+          new ConcurrentHashMap<>(storageIds.size());
+      runBoundedIo(
+          storageIds.stream()
+              .map(
+                  storageId ->
+                      (Runnable)
+                          () -> {
+                            String pointerKey =
+                                Keys.targetStatsLatestSnapshotPointer(
+                                    tableId.getAccountId(), tableId.getId(), storageId);
+                            Pointer pointer = pointerStore.get(pointerKey).orElse(null);
+                            long currentSnapshotId = 0L;
+                            if (pointer != null) {
+                              try {
+                                byte[] bytes = blobStore.get(pointer.getBlobUri());
+                                currentSnapshotId =
+                                    Long.parseLong(StringValue.parseFrom(bytes).getValue());
+                              } catch (Exception ignored) {
+                                // Treat corrupt/missing state as zero, matching the single path.
+                              }
+                            }
+                            states.put(
+                                storageId,
+                                new LatestSnapshotState(pointer, currentSnapshotId));
+                          })
+              .toList());
+
+      List<String> pending =
+          storageIds.stream()
+              .filter(storageId -> states.get(storageId).snapshotId() < snapshotId)
+              .toList();
+      if (pending.isEmpty()) {
+        return;
+      }
+
+      List<String> unwrittenBlobUris =
+          pending.stream()
+              .map(
+                  storageId ->
+                      Keys.targetStatsLatestSnapshotBlobUri(
+                          tableId.getAccountId(), tableId.getId(), storageId, snapshotId))
+              .filter(uri -> !writtenBlobUris.contains(uri))
+              .toList();
+      byte[] snapshotBytes = StringValue.of(Long.toString(snapshotId)).toByteArray();
+      runBoundedIo(
+          unwrittenBlobUris.stream()
+              .map(
+                  uri ->
+                      (Runnable)
+                          () ->
+                              blobStore.put(uri, snapshotBytes, "application/x-protobuf"))
+              .toList());
+      writtenBlobUris.addAll(unwrittenBlobUris);
+
+      List<PointerStore.CasOp> ops = new ArrayList<>(pending.size());
+      for (String storageId : pending) {
+        LatestSnapshotState state = states.get(storageId);
+        String pointerKey =
+            Keys.targetStatsLatestSnapshotPointer(
+                tableId.getAccountId(), tableId.getId(), storageId);
+        String blobUri =
+            Keys.targetStatsLatestSnapshotBlobUri(
+                tableId.getAccountId(), tableId.getId(), storageId, snapshotId);
+        long expectedVersion = state.pointer() == null ? 0L : state.pointer().getVersion();
+        ops.add(
+            new PointerStore.CasUpsert(
+                pointerKey,
+                expectedVersion,
+                PointerReferences.blobPointer(
+                    pointerKey, blobUri, expectedVersion + 1L, snapshotBytes.length)));
+      }
+      if (pointerStore.compareAndSetBatch(ops)) {
+        return;
+      }
+    }
+    throw new BaseResourceRepository.AbortRetryableException(
+        "exhausted CAS attempts advancing latest-snapshot pointer batch for table "
+            + tableId.getId());
+  }
+
+  private static void runBoundedIo(List<Runnable> actions) {
+    if (actions == null || actions.isEmpty()) {
+      return;
+    }
+    var semaphore = new Semaphore(Math.min(actions.size(), MAX_PARALLEL_READS));
+    try (var exec = Executors.newVirtualThreadPerTaskExecutor()) {
+      List<CompletableFuture<Void>> futures =
+          actions.stream()
+              .map(
+                  action ->
+                      CompletableFuture.runAsync(
+                          () -> {
+                            semaphore.acquireUninterruptibly();
+                            try {
+                              action.run();
+                            } finally {
+                              semaphore.release();
+                            }
+                          },
+                          exec))
+              .toList();
+      awaitAll(futures);
+    }
   }
 
   /**

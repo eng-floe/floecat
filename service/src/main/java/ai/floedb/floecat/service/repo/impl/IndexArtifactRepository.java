@@ -131,7 +131,14 @@ public class IndexArtifactRepository {
 
   private void registerPrewrittenIndexArtifactChunk(List<PrewrittenIndexWrite> writes) {
     List<PrewrittenIndexWrite> remaining = new ArrayList<>(writes);
-    for (int attempt = 0; attempt < 4; attempt++) {
+    List<PointerStore.CasOp> initial = new ArrayList<>(remaining.size());
+    for (PrewrittenIndexWrite write : remaining) {
+      initial.add(prewrittenIndexUpsert(write, 0L));
+    }
+    if (pointerStore.compareAndSetBatch(initial)) {
+      return;
+    }
+    for (int attempt = 1; attempt < 4; attempt++) {
       List<PrewrittenIndexWrite> nextRemaining = new ArrayList<>();
       List<PointerStore.CasOp> ops = new ArrayList<>();
       for (PrewrittenIndexWrite write : remaining) {
@@ -141,12 +148,7 @@ public class IndexArtifactRepository {
         }
         long expectedVersion = existing == null ? 0L : existing.getVersion();
         nextRemaining.add(write);
-        ops.add(
-            new PointerStore.CasUpsert(
-                write.pointerKey(),
-                expectedVersion,
-                PointerReferences.blobPointer(
-                    write.pointerKey(), write.blobUri(), expectedVersion + 1L, write.blobBytes())));
+        ops.add(prewrittenIndexUpsert(write, expectedVersion));
       }
       if (ops.isEmpty() || pointerStore.compareAndSetBatch(ops)) {
         return;
@@ -156,6 +158,15 @@ public class IndexArtifactRepository {
     throw new GenericResourceRepository.AbortRetryableException(
         "index artifact reference update conflicted repeatedly for "
             + remaining.getFirst().pointerKey());
+  }
+
+  private PointerStore.CasUpsert prewrittenIndexUpsert(
+      PrewrittenIndexWrite write, long expectedVersion) {
+    return new PointerStore.CasUpsert(
+        write.pointerKey(),
+        expectedVersion,
+        PointerReferences.blobPointer(
+            write.pointerKey(), write.blobUri(), expectedVersion + 1L, write.blobBytes()));
   }
 
   public Optional<IndexArtifactRecord> getIndexArtifact(

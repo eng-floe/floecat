@@ -2200,4 +2200,94 @@ class StatsRepositoryTargetStorageTest {
         .isEqualTo(205);
     assertThat(blobStore.list(blobPrefix, 10, "").keys()).isEmpty();
   }
+
+  @Test
+  void prewrittenStatsPublicationBatchesLatestSnapshotPointers() {
+    InMemoryPointerStore pointerDelegate = new InMemoryPointerStore();
+    AtomicInteger latestBatchCalls = new AtomicInteger();
+    AtomicInteger latestSingleCasCalls = new AtomicInteger();
+    var pointerStore =
+        new RepoTestPointerStores.DelegatingPointerStore(pointerDelegate) {
+          @Override
+          public boolean compareAndSetBatch(List<CasOp> ops) {
+            if (!ops.isEmpty()
+                && ops.stream()
+                    .allMatch(
+                        op ->
+                            op instanceof CasUpsert upsert
+                                && upsert.key().contains("/stats/targets/")
+                                && upsert.key().endsWith("/latest-snapshot"))) {
+              latestBatchCalls.incrementAndGet();
+            }
+            return super.compareAndSetBatch(ops);
+          }
+
+          @Override
+          public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
+            if (key.contains("/stats/targets/") && key.endsWith("/latest-snapshot")) {
+              latestSingleCasCalls.incrementAndGet();
+            }
+            return super.compareAndSet(key, expectedVersion, next);
+          }
+        };
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 716L;
+    String generationId = "full-rescan-batched-latest";
+    String blobPrefix =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/job/lease/";
+    List<StatsStore.PrewrittenTargetStatsReference> references = new ArrayList<>();
+    for (int index = 1; index <= 205; index++) {
+      String targetStorageId = "column-" + String.format("%019d", index);
+      byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex("payload-" + index));
+      String blobUri =
+          blobPrefix
+              + Hashing.sha256Hex(targetStorageId)
+              + "/"
+              + HexFormat.of().formatHex(digest)
+              + ".pb";
+      references.add(
+          new StatsStore.PrewrittenTargetStatsReference(
+              targetStorageId, blobUri, index, digest));
+    }
+
+    repository.publishPrewrittenStatsGeneration(
+        TABLE_ID, snapshotId, generationId, references);
+
+    assertThat(latestBatchCalls).hasValue(3);
+    assertThat(latestSingleCasCalls).hasValue(0);
+    long olderSnapshotId = snapshotId - 1;
+    String olderGenerationId = generationId + "-older";
+    String olderBlobPrefix =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), olderSnapshotId, olderGenerationId)
+            + "worker-uploads/job/lease/";
+    List<StatsStore.PrewrittenTargetStatsReference> olderReferences = new ArrayList<>();
+    for (int index = 0; index < references.size(); index++) {
+      StatsStore.PrewrittenTargetStatsReference reference = references.get(index);
+      String blobUri =
+          olderBlobPrefix
+              + Hashing.sha256Hex(reference.targetStorageId())
+              + "/"
+              + HexFormat.of().formatHex(reference.blobSha256())
+              + ".pb";
+      olderReferences.add(
+          new StatsStore.PrewrittenTargetStatsReference(
+              reference.targetStorageId(), blobUri, reference.blobBytes(), reference.blobSha256()));
+    }
+    repository.publishPrewrittenStatsGeneration(
+        TABLE_ID, olderSnapshotId, olderGenerationId, olderReferences);
+
+    assertThat(latestBatchCalls).hasValue(3);
+    for (StatsStore.PrewrittenTargetStatsReference reference : references) {
+      String pointerKey =
+          Keys.targetStatsLatestSnapshotPointer(
+              TABLE_ID.getAccountId(), TABLE_ID.getId(), reference.targetStorageId());
+      Pointer pointer = pointerDelegate.get(pointerKey).orElseThrow();
+      assertThat(blobStore.get(pointer.getBlobUri()))
+          .isEqualTo(StringValue.of(Long.toString(snapshotId)).toByteArray());
+    }
+  }
 }

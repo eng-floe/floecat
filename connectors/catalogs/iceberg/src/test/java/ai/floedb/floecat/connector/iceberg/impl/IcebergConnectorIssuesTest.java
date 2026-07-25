@@ -352,10 +352,12 @@ class IcebergConnectorIssuesTest {
       var plan =
           connector.planSnapshotFiles("iceberg", "trino_test", tableId, snapshotId).orElseThrow();
       assertFalse(
-          plan.deleteFiles().isEmpty(),
-          "expected current fixture snapshot to include delete files");
+          plan.dataFiles().isEmpty(), "expected current fixture snapshot to include data files");
+      assertTrue(
+          plan.dataFiles().stream().anyMatch(file -> !file.icebergDeleteFiles().isEmpty()),
+          "expected current fixture snapshot data files to include attached delete files");
       Set<String> plannedFilePaths =
-          java.util.stream.Stream.concat(plan.dataFiles().stream(), plan.deleteFiles().stream())
+          plan.dataFiles().stream()
               .map(FloecatConnector.SnapshotFileEntry::filePath)
               .collect(java.util.stream.Collectors.toSet());
 
