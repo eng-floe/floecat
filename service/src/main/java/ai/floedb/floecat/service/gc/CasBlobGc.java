@@ -23,6 +23,7 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -107,6 +108,9 @@ public class CasBlobGc {
    */
   public record Result(
       int pointersScanned,
+      long referencedBytes,
+      int sizedBlobPointers,
+      int blobPointers,
       int blobsScanned,
       int blobsDeleted,
       int blobsRescued,
@@ -114,6 +118,42 @@ public class CasBlobGc {
       int tablesScanned,
       boolean poisoned,
       boolean deletesUnsupported) {}
+
+  /**
+   * Cheap logical-storage estimate collected only from pointer rows the mark phase already reads.
+   * No additional pointer listing or blob HEAD is permitted here.
+   */
+  private static final class StorageEstimate {
+    private int pointers;
+    private int blobPointers;
+    private int sizedBlobPointers;
+    private long referencedBytes;
+
+    private void observe(Pointer pointer) {
+      if (pointer == null) {
+        return;
+      }
+      pointers++;
+      if (!PointerReferences.isBlobPointer(pointer)
+          || pointer.getBlobUri() == null
+          || pointer.getBlobUri().isBlank()) {
+        return;
+      }
+      blobPointers++;
+      if (pointer.hasReferencedObjectSizeBytes()) {
+        sizedBlobPointers++;
+        referencedBytes =
+            saturatedAdd(referencedBytes, Math.max(0L, pointer.getReferencedObjectSizeBytes()));
+      }
+    }
+
+    private static long saturatedAdd(long left, long right) {
+      if (right > Long.MAX_VALUE - left) {
+        return Long.MAX_VALUE;
+      }
+      return left + right;
+    }
+  }
 
   public Result runForAccount(String accountId) {
     if (!blobStore.supportsVersionedDeletes()) {
@@ -125,7 +165,7 @@ public class CasBlobGc {
           "cas gc for account %s skipped: blob store cannot delete by immutable version"
               + " (on S3 the bucket's versioning status must be Enabled)",
           accountId);
-      return new Result(0, 0, 0, 0, 0, 0, false, true);
+      return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, false, true);
     }
 
     final var cfg = ConfigProvider.getConfig();
@@ -138,23 +178,55 @@ public class CasBlobGc {
     Set<String> referenced = new HashSet<>();
     List<String> tableIds = new ArrayList<>();
     int pointersScanned = 0;
+    StorageEstimate storageEstimate = new StorageEstimate();
 
     var accountPtr = pointerStore.get(Keys.accountPointerById(accountId)).orElse(null);
     if (accountPtr != null && !accountPtr.getBlobUri().isBlank()) {
       referenced.add(normalizeKey(accountPtr.getBlobUri()));
       pointersScanned++;
+      storageEstimate.observe(accountPtr);
     }
 
     pointersScanned +=
-        collectPointers(Keys.catalogPointerByIdPrefix(accountId), referenced, null, pageSize);
+        collectPointers(
+            Keys.catalogPointerByIdPrefix(accountId),
+            referenced,
+            null,
+            pageSize,
+            null,
+            storageEstimate);
     pointersScanned +=
-        collectPointers(Keys.namespacePointerByIdPrefix(accountId), referenced, null, pageSize);
+        collectPointers(
+            Keys.namespacePointerByIdPrefix(accountId),
+            referenced,
+            null,
+            pageSize,
+            null,
+            storageEstimate);
     pointersScanned +=
-        collectPointers(Keys.tablePointerByIdPrefix(accountId), referenced, tableIds, pageSize);
+        collectPointers(
+            Keys.tablePointerByIdPrefix(accountId),
+            referenced,
+            tableIds,
+            pageSize,
+            null,
+            storageEstimate);
     pointersScanned +=
-        collectPointers(Keys.viewPointerByIdPrefix(accountId), referenced, null, pageSize);
+        collectPointers(
+            Keys.viewPointerByIdPrefix(accountId),
+            referenced,
+            null,
+            pageSize,
+            null,
+            storageEstimate);
     pointersScanned +=
-        collectPointers(Keys.connectorPointerByIdPrefix(accountId), referenced, null, pageSize);
+        collectPointers(
+            Keys.connectorPointerByIdPrefix(accountId),
+            referenced,
+            null,
+            pageSize,
+            null,
+            storageEstimate);
 
     // A pinned ROOT protects everything it references, not just its own blob: a query pinned to a
     // superseded root must keep reading that root's pages, snapshot blobs, generation manifests,
@@ -171,7 +243,8 @@ public class CasBlobGc {
     for (String tableId : tableIds) {
       tablesScanned++;
       String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
-      pointersScanned += collectPointers(snapshotsById, referenced, null, pageSize);
+      pointersScanned +=
+          collectPointers(snapshotsById, referenced, null, pageSize, null, storageEstimate);
 
       // The current table root and EVERYTHING it references are GC roots: the root blob, every
       // manifest page, and each entry's definition/snapshot/generation-manifest/constraints blobs.
@@ -182,6 +255,7 @@ public class CasBlobGc {
       var rootPtr = pointerStore.get(Keys.tableRootByTable(accountId, tableId)).orElse(null);
       if (rootPtr != null && !rootPtr.getBlobUri().isBlank()) {
         pointersScanned++;
+        storageEstimate.observe(rootPtr);
         if (!rootTableRootChain(rootPtr.getBlobUri(), referenced)) {
           walkFailures[0]++;
         }
@@ -220,7 +294,8 @@ public class CasBlobGc {
               referenced,
               null,
               pageSize,
-              p -> p.getKey() != null && p.getKey().contains(Keys.SEG_STATS));
+              p -> p.getKey() != null && p.getKey().contains(Keys.SEG_STATS),
+              storageEstimate);
 
       // Constraints pointers live under a SIBLING prefix (/constraints/by-snapshot/), not under
       // /snapshots/, so they need their own scan. A constraints blob is deletable (it matches the
@@ -231,7 +306,9 @@ public class CasBlobGc {
               Keys.snapshotConstraintsPointerPrefix(accountId, tableId),
               referenced,
               null,
-              pageSize);
+              pageSize,
+              null,
+              storageEstimate);
     }
 
     // Active query pins are GC roots: an immutable blob a live query pinned must survive even after
@@ -252,7 +329,18 @@ public class CasBlobGc {
       LOG.warnf(
           "cas gc for account %s skipped its delete phase: %d root-chain walk(s) failed",
           accountId, walkFailures[0]);
-      return new Result(pointersScanned, 0, 0, 0, referenced.size(), tablesScanned, true, false);
+      return new Result(
+          pointersScanned,
+          storageEstimate.referencedBytes,
+          storageEstimate.sizedBlobPointers,
+          storageEstimate.blobPointers,
+          0,
+          0,
+          0,
+          referenced.size(),
+          tablesScanned,
+          true,
+          false);
     }
 
     var account =
@@ -471,6 +559,9 @@ public class CasBlobGc {
     // clean here would reset the clean-sweep clock and skip the poisoned-account count.
     return new Result(
         pointersScanned,
+        storageEstimate.referencedBytes,
+        storageEstimate.sizedBlobPointers,
+        storageEstimate.blobPointers,
         blobsScanned,
         blobsDeleted,
         blobsRescued,
@@ -566,7 +657,7 @@ public class CasBlobGc {
 
   private int collectPointers(
       String prefix, Set<String> referenced, List<String> tableIds, int pageSize) {
-    return collectPointers(prefix, referenced, tableIds, pageSize, null);
+    return collectPointers(prefix, referenced, tableIds, pageSize, null, null);
   }
 
   private int collectPointers(
@@ -575,6 +666,16 @@ public class CasBlobGc {
       List<String> tableIds,
       int pageSize,
       Predicate<Pointer> filter) {
+    return collectPointers(prefix, referenced, tableIds, pageSize, filter, null);
+  }
+
+  private int collectPointers(
+      String prefix,
+      Set<String> referenced,
+      List<String> tableIds,
+      int pageSize,
+      Predicate<Pointer> filter,
+      StorageEstimate storageEstimate) {
     String token = "";
     int scanned = 0;
 
@@ -586,6 +687,9 @@ public class CasBlobGc {
           continue;
         }
         scanned++;
+        if (storageEstimate != null) {
+          storageEstimate.observe(p);
+        }
         if (p.getBlobUri() != null && !p.getBlobUri().isBlank()) {
           referenced.add(normalizeKey(p.getBlobUri()));
         }

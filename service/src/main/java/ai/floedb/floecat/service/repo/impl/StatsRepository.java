@@ -1621,7 +1621,7 @@ public class StatsRepository implements StatsStore {
 
     private void create(String pointerKey, String blobUri, TargetStatsRecord value) {
       putBlob(blobUri, value);
-      reserveAllOrRollback(pointerKey, blobUri);
+      reserveAllOrRollback(value.getSerializedSize(), pointerKey, blobUri);
     }
 
     private void createBatch(List<TargetStatsWrite> writes) {
@@ -1717,7 +1717,8 @@ public class StatsRepository implements StatsStore {
           return;
         }
         Pointer next =
-            PointerReferences.blobPointer(pointerKey, blobUri, Math.max(1L, expectedVersion + 1L));
+            PointerReferences.blobPointer(
+                pointerKey, blobUri, Math.max(1L, expectedVersion + 1L), value.getSerializedSize());
         if (pointerStore.compareAndSet(pointerKey, expectedVersion, next)) {
           return;
         }
@@ -1735,7 +1736,8 @@ public class StatsRepository implements StatsStore {
       }
       boolean blobExistedBefore = blobStore.head(blobUri).isPresent();
       putBlob(blobUri, value);
-      Pointer reserve = PointerReferences.blobPointer(pointerKey, blobUri, 1L);
+      Pointer reserve =
+          PointerReferences.blobPointer(pointerKey, blobUri, 1L, value.getSerializedSize());
       if (!pointerStore.compareAndSet(pointerKey, 0L, reserve)) {
         cleanupCreateIfAbsentBlobOnCasMiss(pointerKey, blobUri, blobExistedBefore);
         return false;
@@ -1827,7 +1829,8 @@ public class StatsRepository implements StatsStore {
               new PointerStore.CasUpsert(
                   write.pointerKey(),
                   0L,
-                  PointerReferences.blobPointer(write.pointerKey(), write.blobUri(), 1L)));
+                  PointerReferences.blobPointer(
+                      write.pointerKey(), write.blobUri(), 1L, write.value().getSerializedSize())));
         }
         if (pointerStore.compareAndSetBatch(ops)) {
           return;
@@ -1859,7 +1862,8 @@ public class StatsRepository implements StatsStore {
             new PointerStore.CasUpsert(
                 write.pointerKey(),
                 0L,
-                PointerReferences.blobPointer(write.pointerKey(), write.blobUri(), 1L)));
+                PointerReferences.blobPointer(
+                    write.pointerKey(), write.blobUri(), 1L, write.value().getSerializedSize())));
       }
       return pointerStore.compareAndSetBatch(ops);
     }

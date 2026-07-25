@@ -82,6 +82,31 @@ class CasBlobGcTest {
   }
 
   @Test
+  void estimatesKnownReferencedBytesFromPointersAlreadyScannedByTheMark() {
+    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
+    String connectorBlob = Keys.connectorBlobUri(ACCOUNT_ID, "connector-1", "sha-connector");
+    blobs.put(tableBlob, new byte[5], "application/x-protobuf");
+    blobs.put(connectorBlob, new byte[7], "application/x-protobuf");
+    String tablePointer = Keys.tablePointerById(ACCOUNT_ID, TABLE_ID);
+    String connectorPointer = Keys.connectorPointerById(ACCOUNT_ID, "connector-1");
+    assertTrue(
+        pointers.compareAndSet(
+            tablePointer, 0L, PointerReferences.blobPointer(tablePointer, tableBlob, 1L, 5L)));
+    assertTrue(
+        pointers.compareAndSet(
+            connectorPointer,
+            0L,
+            PointerReferences.blobPointer(connectorPointer, connectorBlob, 1L)));
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertEquals(2, result.pointersScanned());
+    assertEquals(5L, result.referencedBytes());
+    assertEquals(1, result.sizedBlobPointers());
+    assertEquals(2, result.blobPointers());
+  }
+
+  @Test
   void keepsUnreferencedWorkerUploadForGenerationCleanup() {
     String workerObject =
         Keys.snapshotTargetStatsGenerationBlobPrefix(ACCOUNT_ID, TABLE_ID, 7L, "full-rescan-parent")

@@ -139,11 +139,6 @@ public final class Keys {
     return accountRootPrefix(accountId) + "account/";
   }
 
-  public static String accountStorageUsagePointer(String accountId) {
-    String tid = req("account_id", accountId);
-    return accountRootPrefix() + encode(tid) + "/metrics/storage-usage";
-  }
-
   public static String accountPointerByName(String displayName) {
     String name = req("display_name", displayName);
     return "/accounts/by-name/" + encode(name);

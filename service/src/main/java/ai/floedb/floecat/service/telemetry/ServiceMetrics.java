@@ -25,14 +25,25 @@ public final class ServiceMetrics {
   private static final String CONTRACT = "v1";
 
   public static final class Storage {
-    public static final MetricId ACCOUNT_POINTERS =
+    public static final MetricId ACCOUNT_GC_ESTIMATED_POINTERS =
         new MetricId(
-            "floecat.service.storage.account.pointers", MetricType.GAUGE, "", CONTRACT, "service");
-    public static final MetricId ACCOUNT_BYTES =
+            "floecat.service.storage.account.gc_estimated_pointers",
+            MetricType.GAUGE,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId ACCOUNT_GC_ESTIMATED_BYTES =
         new MetricId(
-            "floecat.service.storage.account.bytes",
+            "floecat.service.storage.account.gc_estimated_bytes",
             MetricType.GAUGE,
             "bytes",
+            CONTRACT,
+            "service");
+    public static final MetricId ACCOUNT_GC_SIZE_COVERAGE =
+        new MetricId(
+            "floecat.service.storage.account.gc_size_coverage",
+            MetricType.GAUGE,
+            "ratio",
             CONTRACT,
             "service");
     public static final MetricId PARTIAL_STATE =
@@ -42,16 +53,6 @@ public final class ServiceMetrics {
             "",
             CONTRACT,
             "service");
-    public static final MetricId REFRESH_DURATION =
-        new MetricId(
-            "floecat.service.storage.refresh.duration",
-            MetricType.TIMER,
-            "ms",
-            CONTRACT,
-            "service");
-    public static final MetricId FAILURES =
-        new MetricId(
-            "floecat.service.storage.failures.total", MetricType.COUNTER, "", CONTRACT, "service");
   }
 
   public static final class Flight {

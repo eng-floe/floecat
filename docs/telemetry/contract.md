@@ -115,11 +115,10 @@ This lists all metrics currently available in the repository:
 | floecat.service.stats.store_misses.total | COUNTER |  | v1 | Stats store miss count for batch resolution. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
 | floecat.service.stats.sync.latency | TIMER | ms | v1 | End-to-end latency of a single sync-first resolution attempt including store reads. | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
 | floecat.service.stats.sync_outcomes.total | COUNTER |  | v1 | Sync-first resolution outcomes by result (HIT, CAPTURED, PARTIAL, TIMEOUT, FAILED, SKIPPED). | component, operation | component, mode, operation, reason, resource, result, scope, trigger |
-| floecat.service.storage.account.bytes | GAUGE | bytes | v1 | Per-account storage byte consumption maintained by the storage accounting ledger. | account | account |
-| floecat.service.storage.account.pointers | GAUGE |  | v1 | Per-account pointer count stored in the service. | account | account |
-| floecat.service.storage.failures.total | COUNTER |  | v1 | Storage accounting refresh failures. | operation | account, operation |
+| floecat.service.storage.account.gc_estimated_bytes | GAUGE | bytes | v1 | Known bytes referenced by pointer roots traversed by the latest per-account CAS GC mark. | account | account |
+| floecat.service.storage.account.gc_estimated_pointers | GAUGE |  | v1 | Pointer roots traversed by the latest per-account CAS GC mark. | account | account |
+| floecat.service.storage.account.gc_size_coverage | GAUGE | ratio | v1 | Fraction of CAS-GC-scanned blob pointer roots carrying referenced-size metadata. | account | account |
 | floecat.service.storage.partial_state.total | COUNTER |  | v1 | Stored partial-pointer-state anomalies surfaced (non-retryably) by the repository layer: a canonical/secondary pointer mismatch that an atomic create/createIfAbsent can never itself produce and that must be reconciled out of band. | operation, resource | operation, resource |
-| floecat.service.storage.refresh.duration | TIMER | ms | v1 | Time spent refreshing per-account storage gauges from accounting counters. | operation | operation |
 
 <!-- METRICS:END -->
 

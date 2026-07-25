@@ -17,83 +17,47 @@
 package ai.floedb.floecat.service.telemetry;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.floecat.service.repo.model.Keys;
-import ai.floedb.floecat.service.repo.model.PointerReferences;
-import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
-import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
-import ai.floedb.floecat.storage.spi.PointerStore;
-import java.util.List;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
+import ai.floedb.floecat.telemetry.TestObservability;
 import org.junit.jupiter.api.Test;
 
 class StorageUsageMetricsTest {
 
   @Test
-  void pointerMutationsMaintainExactIncrementalUsageWithoutRefreshScans() {
-    InMemoryPointerStore delegate = new InMemoryPointerStore();
-    InMemoryBlobStore blobs = new InMemoryBlobStore();
-    StorageAccountingPointerStore accounting = accounting(delegate, blobs);
-    blobs.put("/accounts/acct/blobs/one", new byte[5], "application/octet-stream");
-    blobs.put("/accounts/acct/blobs/two", new byte[4], "application/octet-stream");
+  void publishesGcEstimateWithoutReadingOrWritingStorage() {
+    TestObservability observability = new TestObservability();
+    StorageUsageMetrics metrics = new StorageUsageMetrics();
+    metrics.observability = observability;
 
-    assertTrue(
-        accounting.compareAndSet(
-            "/accounts/acct/one",
-            0L,
-            PointerReferences.blobPointer("/accounts/acct/one", "/accounts/acct/blobs/one", 1L)));
-    assertTrue(
-        accounting.compareAndSet(
-            "/accounts/acct/two",
-            0L,
-            PointerReferences.blobPointer("/accounts/acct/two", "/accounts/acct/blobs/one", 1L)));
-    assertEquals(new StorageAccountingPointerStore.AccountUsage(2L, 10L), usage(delegate));
+    metrics.recordGcEstimate("acct", 12L, 900L, 3L, 4L);
 
-    assertTrue(
-        accounting.compareAndSet(
-            "/accounts/acct/two",
-            1L,
-            PointerReferences.blobPointer("/accounts/acct/two", "/accounts/acct/blobs/two", 2L)));
-    assertEquals(new StorageAccountingPointerStore.AccountUsage(2L, 9L), usage(delegate));
-
-    assertTrue(accounting.compareAndDelete("/accounts/acct/two", 2L));
-    assertEquals(new StorageAccountingPointerStore.AccountUsage(1L, 5L), usage(delegate));
+    assertEquals(
+        12L, observability.gauge(ServiceMetrics.Storage.ACCOUNT_GC_ESTIMATED_POINTERS).get());
+    assertEquals(
+        900L, observability.gauge(ServiceMetrics.Storage.ACCOUNT_GC_ESTIMATED_BYTES).get());
+    assertEquals(
+        0.75d,
+        observability.gauge(ServiceMetrics.Storage.ACCOUNT_GC_SIZE_COVERAGE).get().doubleValue());
+    assertEquals(
+        java.util.List.of(Tag.of(TagKey.ACCOUNT, "acct")),
+        observability.gaugeTags(ServiceMetrics.Storage.ACCOUNT_GC_SIZE_COVERAGE));
   }
 
   @Test
-  void batchAccountingIsAppliedOnlyAfterSuccessfulBatch() {
-    InMemoryPointerStore delegate = new InMemoryPointerStore();
-    InMemoryBlobStore blobs = new InMemoryBlobStore();
-    StorageAccountingPointerStore accounting = accounting(delegate, blobs);
-    blobs.put("/accounts/acct/blobs/value", new byte[7], "application/octet-stream");
+  void emptyBlobPointerSetHasFullCoverageAndNegativeInputsClampToZero() {
+    TestObservability observability = new TestObservability();
+    StorageUsageMetrics metrics = new StorageUsageMetrics();
+    metrics.observability = observability;
 
-    assertTrue(
-        accounting.compareAndSetBatch(
-            List.of(
-                new PointerStore.CasUpsert(
-                    "/accounts/acct/a",
-                    0L,
-                    PointerReferences.blobPointer(
-                        "/accounts/acct/a", "/accounts/acct/blobs/value", 1L)),
-                new PointerStore.CasUpsert(
-                    "/accounts/acct/b",
-                    0L,
-                    PointerReferences.blobPointer(
-                        "/accounts/acct/b", "/accounts/acct/blobs/value", 1L)))));
+    metrics.recordGcEstimate("acct", -1L, -2L, 0L, 0L);
 
-    assertEquals(new StorageAccountingPointerStore.AccountUsage(2L, 14L), usage(delegate));
-  }
-
-  private static StorageAccountingPointerStore accounting(
-      InMemoryPointerStore delegate, InMemoryBlobStore blobs) {
-    StorageAccountingPointerStore accounting = new StorageAccountingPointerStore() {};
-    accounting.delegate = delegate;
-    accounting.blobStore = blobs;
-    return accounting;
-  }
-
-  private static StorageAccountingPointerStore.AccountUsage usage(InMemoryPointerStore delegate) {
-    return StorageAccountingPointerStore.decodeUsage(
-        delegate.get(Keys.accountStorageUsagePointer("acct")).orElse(null));
+    assertEquals(
+        0L, observability.gauge(ServiceMetrics.Storage.ACCOUNT_GC_ESTIMATED_POINTERS).get());
+    assertEquals(0L, observability.gauge(ServiceMetrics.Storage.ACCOUNT_GC_ESTIMATED_BYTES).get());
+    assertEquals(
+        1.0d,
+        observability.gauge(ServiceMetrics.Storage.ACCOUNT_GC_SIZE_COVERAGE).get().doubleValue());
   }
 }

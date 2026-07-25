@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.gc;
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
+import ai.floedb.floecat.service.telemetry.StorageUsageMetrics;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
@@ -53,6 +54,7 @@ public class CasBlobGcScheduler {
 
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<CasBlobGc> casBlobGc;
+  @Inject Provider<StorageUsageMetrics> storageUsageMetrics;
   @Inject Observability observability;
 
   private GcMetrics gcMetrics;
@@ -204,6 +206,16 @@ public class CasBlobGcScheduler {
         } else {
           // A clean, fully-reached sweep resets this account's backlog age.
           lastCleanSweepMs.put(accountId, System.currentTimeMillis());
+        }
+        if (!result.deletesUnsupported()) {
+          storageUsageMetrics
+              .get()
+              .recordGcEstimate(
+                  accountId,
+                  result.pointersScanned(),
+                  result.referencedBytes(),
+                  result.sizedBlobPointers(),
+                  result.blobPointers());
         }
         gcMetrics.recordCollection(
             result.pointersScanned(), Tag.of(TagKey.RESULT, "pointers-scanned"));

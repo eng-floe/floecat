@@ -238,22 +238,20 @@ class ServiceTelemetryContributorTest {
   }
 
   @Test
-  void registersStorageAccountingMetricContractsWithExpectedTags() {
+  void registersGcStorageEstimateMetricContractsWithExpectedTags() {
     TelemetryRegistry registry = new TelemetryRegistry();
     registry.register(new ServiceTelemetryContributor());
 
-    MetricDef accountBytes = registry.metric(ServiceMetrics.Storage.ACCOUNT_BYTES.name());
-    MetricDef refreshDuration = registry.metric(ServiceMetrics.Storage.REFRESH_DURATION.name());
-    MetricDef failures = registry.metric(ServiceMetrics.Storage.FAILURES.name());
+    MetricDef accountBytes =
+        registry.metric(ServiceMetrics.Storage.ACCOUNT_GC_ESTIMATED_BYTES.name());
+    MetricDef sizeCoverage =
+        registry.metric(ServiceMetrics.Storage.ACCOUNT_GC_SIZE_COVERAGE.name());
 
     assertThat(accountBytes).isNotNull();
     assertThat(accountBytes.requiredTags()).containsExactly(TagKey.ACCOUNT);
     assertThat(accountBytes.allowedTags()).containsExactly(TagKey.ACCOUNT);
-    assertThat(refreshDuration).isNotNull();
-    assertThat(refreshDuration.requiredTags()).containsExactly(TagKey.OPERATION);
-    assertThat(refreshDuration.allowedTags()).containsExactly(TagKey.OPERATION);
-    assertThat(failures).isNotNull();
-    assertThat(failures.requiredTags()).containsExactly(TagKey.OPERATION);
-    assertThat(failures.allowedTags()).containsExactlyInAnyOrder(TagKey.OPERATION, TagKey.ACCOUNT);
+    assertThat(sizeCoverage).isNotNull();
+    assertThat(sizeCoverage.requiredTags()).containsExactly(TagKey.ACCOUNT);
+    assertThat(sizeCoverage.allowedTags()).containsExactly(TagKey.ACCOUNT);
   }
 }
