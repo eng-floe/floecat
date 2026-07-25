@@ -1169,9 +1169,22 @@ class GrpcRemoteReconcileExecutorClient
   @Override
   public List<ReconcileFileGroupResultDescriptor> listSnapshotFileGroupResults(
       RemoteLeasedJob lease) {
+    ReconcileSnapshotTask snapshotTask = lease.lease().snapshotTask;
+    if (snapshotTask == null) {
+      throw new IllegalArgumentException("snapshot finalize lease is missing its snapshot task");
+    }
+    int expectedFileGroups = Math.max(0, snapshotTask.fileGroupCount());
+    // The finalizer API returns the complete descriptor set, so its resident memory is bounded by
+    // the file-group count persisted in the leased snapshot plan. Reject a server overrun instead
+    // of allowing an inconsistent or malicious response to grow this list without bound.
     List<ReconcileFileGroupResultDescriptor> descriptors = new ArrayList<>();
+    Set<String> seenPageTokens = new HashSet<>();
     String pageToken = "";
     do {
+      if (!seenPageTokens.add(pageToken)) {
+        throw new IllegalStateException(
+            "snapshot file-group result paging repeated token: " + pageToken);
+      }
       String requestedPageToken = pageToken;
       var response =
           invokeWorkerControlRetryable(
@@ -1186,6 +1199,10 @@ class GrpcRemoteReconcileExecutorClient
                           .setPageSize(200)
                           .setPageToken(requestedPageToken)
                           .build()));
+      if (response.getDescriptorsCount() > expectedFileGroups - descriptors.size()) {
+        throw new IllegalStateException(
+            "snapshot file-group result count exceeds planned count " + expectedFileGroups);
+      }
       descriptors.addAll(
           response.getDescriptorsList().stream()
               .map(GrpcRemoteReconcileExecutorClient::fromProtoFileGroupResultDescriptor)
@@ -1356,12 +1373,11 @@ class GrpcRemoteReconcileExecutorClient
             .setStatsRecordCount(stableFileStats.size() + records.size())
             .setIndexArtifactCount(stableIndexArtifacts.size())
             .build();
-    boolean retryable = !stableResultId.isBlank();
     return invokeWorkerControl(
         "submitLeasedSnapshotFinalizeResult",
         correlationId(lease),
         lease.lease().accountId,
-        retryable,
+        true,
         stub ->
             stub.submitLeasedSnapshotFinalizeResult(
                     SubmitLeasedSnapshotFinalizeResultRequest.newBuilder()
@@ -1428,8 +1444,6 @@ class GrpcRemoteReconcileExecutorClient
             artifact.contentType() == null || artifact.contentType().isBlank()
                 ? "application/x-parquet"
                 : artifact.contentType());
-      } else if (blobStore.head(uri).isEmpty()) {
-        throw new IllegalArgumentException("index artifact object is not committed: " + uri);
       }
       var header =
           blobStore

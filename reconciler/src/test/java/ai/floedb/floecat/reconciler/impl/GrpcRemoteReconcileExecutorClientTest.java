@@ -27,6 +27,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
+import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -43,6 +45,7 @@ import ai.floedb.floecat.reconciler.rpc.GetLeasedSnapshotFinalizeInputResponse;
 import ai.floedb.floecat.reconciler.rpc.LeasedPlanConnectorInput;
 import ai.floedb.floecat.reconciler.rpc.LeasedPlanTableInput;
 import ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput;
+import ai.floedb.floecat.reconciler.rpc.ListLeasedSnapshotFileGroupResultsResponse;
 import ai.floedb.floecat.reconciler.rpc.ReconcileExecutorControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseResponse;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
@@ -53,6 +56,7 @@ import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultResponse;
+import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.ManagedChannel;
 import io.grpc.Metadata;
@@ -287,6 +291,53 @@ class GrpcRemoteReconcileExecutorClientTest {
     SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
     assertEquals(0, manifest.getFileGroupsCount());
     assertEquals(0, manifest.getSourceFileCount());
+  }
+
+  @Test
+  void snapshotFileGroupResultPagingRejectsRepeatedTokens() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.listLeasedSnapshotFileGroupResults(any()))
+        .thenReturn(
+            ListLeasedSnapshotFileGroupResultsResponse.newBuilder()
+                .setNextPageToken("repeat")
+                .build(),
+            ListLeasedSnapshotFileGroupResultsResponse.newBuilder()
+                .setNextPageToken("repeat")
+                .build());
+
+    IllegalStateException error =
+        assertThrows(
+            IllegalStateException.class,
+            () -> client.listSnapshotFileGroupResults(remoteSnapshotFinalizeLease(1)));
+
+    assertThat(error).hasMessageContaining("repeated token");
+    verify(stub, times(2)).listLeasedSnapshotFileGroupResults(any());
+  }
+
+  @Test
+  void snapshotFileGroupResultPagingIsBoundedByThePlannedCount() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.listLeasedSnapshotFileGroupResults(any()))
+        .thenReturn(
+            ListLeasedSnapshotFileGroupResultsResponse.newBuilder()
+                .addDescriptors(
+                    ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor.getDefaultInstance())
+                .build());
+
+    IllegalStateException error =
+        assertThrows(
+            IllegalStateException.class,
+            () -> client.listSnapshotFileGroupResults(remoteSnapshotFinalizeLease(0)));
+
+    assertThat(error).hasMessageContaining("exceeds planned count 0");
   }
 
   @Test
@@ -841,6 +892,40 @@ class GrpcRemoteReconcileExecutorClientTest {
     assertThat(success.getResultDescriptor().getFileStatsRecordCount()).isEqualTo(12);
   }
 
+  @Test
+  void submitFileGroupSuccessHeadsAPrecommittedIndexArtifactOnce() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.submitLeasedFileGroupExecutionResult(any()))
+        .thenReturn(
+            SubmitLeasedFileGroupExecutionResultResponse.newBuilder().setAccepted(true).build());
+    String artifactUri = "s3://bucket/file.parquet.idx";
+    when(client.blobStore.head(artifactUri))
+        .thenReturn(
+            java.util.Optional.of(
+                BlobHeader.newBuilder().setContentLength(3).setEtag("etag-1").build()));
+    var artifact =
+        new ReconcilerBackend.StagedIndexArtifact(
+            IndexArtifactRecord.newBuilder()
+                .setArtifactUri(artifactUri)
+                .setArtifactFormat("parquet")
+                .setArtifactFormatVersion(1)
+                .build(),
+            null,
+            "application/x-parquet");
+    var result = new StandaloneFileGroupExecutionResult("result-1", List.of(), List.of(artifact));
+
+    assertThat(
+            client.submitSuccess(
+                remoteFileGroupLease(), fileGroupPayload("s3://bucket/file.parquet"), result))
+        .isTrue();
+
+    verify(client.blobStore, times(1)).head(artifactUri);
+  }
+
   private static ResourceId connectorId() {
     return ResourceId.newBuilder()
         .setAccountId("acct")
@@ -921,6 +1006,10 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   private static RemoteLeasedJob remoteSnapshotFinalizeLease() {
+    return remoteSnapshotFinalizeLease(0);
+  }
+
+  private static RemoteLeasedJob remoteSnapshotFinalizeLease(int fileGroupCount) {
     return new RemoteLeasedJob(
         new ReconcileJobStore.LeasedJob(
             "finalize-job",
@@ -945,7 +1034,7 @@ class GrpcRemoteReconcileExecutorClientTest {
                 true,
                 ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
                 "",
-                0),
+                fileGroupCount),
             null,
             "snapshot-job"));
   }

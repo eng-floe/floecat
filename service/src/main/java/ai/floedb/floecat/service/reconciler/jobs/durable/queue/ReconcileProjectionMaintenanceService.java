@@ -282,8 +282,8 @@ public class ReconcileProjectionMaintenanceService {
             + " projection_completed=%s projection_pages=%d projection_markers=%d"
             + " projection_refreshed=%d projection_invalid_deleted=%d"
             + " projection_obsolete_deleted=%d"
-            + " projection_markers_deleted=%d projection_retries=%d"
-            + " projection_commit_conflicts=%d projection_marker_ack_conflicts=%d"
+            + " projection_markers_deleted=%d projection_commit_conflicts=%d"
+            + " projection_marker_ack_conflicts=%d"
             + " projection_failures=%d",
         Long.valueOf(elapsedMs),
         Boolean.valueOf(dirtyParentStats.completed()),
@@ -293,7 +293,6 @@ public class ReconcileProjectionMaintenanceService {
         Integer.valueOf(dirtyParentStats.invalidDeleted()),
         Integer.valueOf(dirtyParentStats.obsoleteDeleted()),
         Integer.valueOf(dirtyParentStats.deleted()),
-        Integer.valueOf(dirtyParentStats.commitConflicts()),
         Integer.valueOf(dirtyParentStats.commitConflicts()),
         Integer.valueOf(dirtyParentStats.markerAckConflicts()),
         Integer.valueOf(dirtyParentStats.failures()));
