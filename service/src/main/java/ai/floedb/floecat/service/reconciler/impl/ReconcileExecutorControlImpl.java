@@ -25,6 +25,8 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan.DeltaDeletionVector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -845,6 +847,11 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       .setPlanId(payload.planId())
                       .setGroupId(payload.groupId())
                       .addAllFilePaths(payload.plannedFilePaths())
+                      .setExecutionSchemaJson(payload.executionSchemaJson())
+                      .addAllFileExecutionPlans(
+                          payload.fileExecutionPlans().stream()
+                              .map(ReconcileExecutorControlImpl::toProtoFileExecutionPlan)
+                              .toList())
                       .setStorageLocation(payload.storageLocation())
                       .setResultPayloadUri(
                           Keys.reconcileFileGroupResultPayloadUri(
@@ -1304,7 +1311,99 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         .setTableId(effective.tableId())
         .setSnapshotId(effective.snapshotId())
         .addAllFilePaths(effective.filePaths())
+        .setExecutionSchemaJson(effective.executionSchemaJson())
+        .addAllFileExecutionPlans(
+            effective.fileExecutionPlans().stream()
+                .map(ReconcileExecutorControlImpl::toProtoFileExecutionPlan)
+                .toList())
         .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.FileExecutionPlan toProtoFileExecutionPlan(
+      ReconcileFileExecutionPlan plan) {
+    var builder =
+        ai.floedb.floecat.reconciler.rpc.FileExecutionPlan.newBuilder()
+            .setFilePath(plan.filePath())
+            .setFileSizeInBytes(plan.fileSizeInBytes())
+            .setPartitionDataJson(plan.partitionDataJson())
+            .setFileFormat(plan.fileFormat())
+            .setPartitionSpecId(plan.partitionSpecId())
+            .addAllIcebergDeleteFiles(
+                plan.icebergDeleteFiles().stream()
+                    .map(ReconcileExecutorControlImpl::toProtoIcebergDeleteFile)
+                    .toList());
+    if (plan.deletionVector() != null) {
+      DeltaDeletionVector dv = plan.deletionVector();
+      var dvBuilder =
+          ai.floedb.floecat.reconciler.rpc.DeltaDeletionVector.newBuilder()
+              .setStorageType(dv.storageType())
+              .setPathOrInlineDv(dv.pathOrInlineDv())
+              .setSizeInBytes(dv.sizeInBytes())
+              .setCardinality(dv.cardinality());
+      if (dv.offset() != null) {
+        dvBuilder.setOffset(dv.offset());
+      }
+      builder.setDeletionVector(dvBuilder);
+    }
+    return builder.build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.IcebergDeleteFile toProtoIcebergDeleteFile(
+      ReconcileFileExecutionPlan.IcebergDeleteFile deleteFile) {
+    return ai.floedb.floecat.reconciler.rpc.IcebergDeleteFile.newBuilder()
+        .setFilePath(deleteFile.filePath())
+        .setFileSizeInBytes(deleteFile.fileSizeInBytes())
+        .setContent(
+            switch (deleteFile.content()) {
+              case POSITION ->
+                  ai.floedb.floecat.reconciler.rpc.IcebergDeleteFile.Content.IDFC_POSITION;
+              case EQUALITY ->
+                  ai.floedb.floecat.reconciler.rpc.IcebergDeleteFile.Content.IDFC_EQUALITY;
+              case UNSPECIFIED ->
+                  ai.floedb.floecat.reconciler.rpc.IcebergDeleteFile.Content.IDFC_UNSPECIFIED;
+            })
+        .setPartitionSpecId(deleteFile.partitionSpecId())
+        .addAllEqualityFieldIds(deleteFile.equalityFieldIds())
+        .build();
+  }
+
+  private static ReconcileFileExecutionPlan fromProtoFileExecutionPlan(
+      ai.floedb.floecat.reconciler.rpc.FileExecutionPlan plan) {
+    DeltaDeletionVector dv =
+        plan.hasDeletionVector()
+            ? new DeltaDeletionVector(
+                plan.getDeletionVector().getStorageType(),
+                plan.getDeletionVector().getPathOrInlineDv(),
+                plan.getDeletionVector().hasOffset() ? plan.getDeletionVector().getOffset() : null,
+                plan.getDeletionVector().getSizeInBytes(),
+                plan.getDeletionVector().getCardinality())
+            : null;
+    return ReconcileFileExecutionPlan.of(
+        plan.getFilePath(),
+        plan.getFileSizeInBytes(),
+        plan.getPartitionDataJson(),
+        dv,
+        plan.getFileFormat(),
+        plan.getPartitionSpecId(),
+        plan.getIcebergDeleteFilesList().stream()
+            .map(ReconcileExecutorControlImpl::fromProtoIcebergDeleteFile)
+            .toList());
+  }
+
+  private static ReconcileFileExecutionPlan.IcebergDeleteFile fromProtoIcebergDeleteFile(
+      ai.floedb.floecat.reconciler.rpc.IcebergDeleteFile deleteFile) {
+    ReconcileFileExecutionPlan.IcebergDeleteContent content =
+        switch (deleteFile.getContent()) {
+          case IDFC_POSITION -> ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION;
+          case IDFC_EQUALITY -> ReconcileFileExecutionPlan.IcebergDeleteContent.EQUALITY;
+          default -> ReconcileFileExecutionPlan.IcebergDeleteContent.UNSPECIFIED;
+        };
+    return new ReconcileFileExecutionPlan.IcebergDeleteFile(
+        deleteFile.getFilePath(),
+        deleteFile.getFileSizeInBytes(),
+        content,
+        deleteFile.getPartitionSpecId(),
+        deleteFile.getEqualityFieldIdsList());
   }
 
   private static ai.floedb.floecat.reconciler.rpc.CaptureMode toProtoCaptureMode(
@@ -1590,8 +1689,16 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         fileGroupTask.getGroupId(),
         fileGroupTask.getTableId(),
         fileGroupTask.getSnapshotId(),
+        fileGroupTask.getFilePathsCount(),
+        "",
         0,
-        fileGroupTask.getFilePathsList());
+        fileGroupTask.getFilePathsList(),
+        List.of(),
+        List.of(),
+        fileGroupTask.getExecutionSchemaJson(),
+        fileGroupTask.getFileExecutionPlansList().stream()
+            .map(ReconcileExecutorControlImpl::fromProtoFileExecutionPlan)
+            .toList());
   }
 
   private static ReconcileCapturePolicy.Output fromProtoCaptureOutput(

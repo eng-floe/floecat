@@ -145,8 +145,17 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                             "",
                             0,
                             List.of(),
-                            null)),
-                    List.of())));
+                            null,
+                            new FloecatConnector.SnapshotDeletionVector("i", "encoded", null, 7, 2),
+                            List.of(
+                                new FloecatConnector.SnapshotIcebergDeleteFile(
+                                    "s3://bucket/delete-1.parquet",
+                                    4L,
+                                    ai.floedb.floecat.catalog.rpc.FileContent.FC_EQUALITY_DELETES,
+                                    3,
+                                    List.of(7))))),
+                    List.of(),
+                    "{\"type\":\"struct\",\"fields\":[]}")));
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
@@ -167,7 +176,33 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                         && snapshotTask.completionMode()
                             == ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
                         && snapshotTask.fileGroups().size() == 1),
-            argThat(fileGroupJobs -> fileGroupJobs != null && fileGroupJobs.size() == 1),
+            argThat(
+                fileGroupJobs ->
+                    fileGroupJobs != null
+                        && fileGroupJobs.size() == 1
+                        && fileGroupJobs.getFirst().fileGroupTask().fileExecutionPlans().size() == 1
+                        && fileGroupJobs
+                            .getFirst()
+                            .fileGroupTask()
+                            .executionSchemaJson()
+                            .contains("struct")
+                        && fileGroupJobs
+                                .getFirst()
+                                .fileGroupTask()
+                                .fileExecutionPlans()
+                                .getFirst()
+                                .deletionVector()
+                                .cardinality()
+                            == 2
+                        && fileGroupJobs
+                            .getFirst()
+                            .fileGroupTask()
+                            .fileExecutionPlans()
+                            .getFirst()
+                            .icebergDeleteFiles()
+                            .getFirst()
+                            .equalityFieldIds()
+                            .equals(List.of(7))),
             argThat(stats -> stats != null && stats.isEmpty()));
   }
 

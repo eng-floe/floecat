@@ -28,9 +28,12 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
+import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
+import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -362,7 +365,32 @@ class GrpcRemoteReconcileExecutorClientTest {
 
     ReconcileFileGroupTask fileGroupTask =
         ReconcileFileGroupTask.of(
-            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/data/file-1.parquet"));
+            "plan-1",
+            "group-1",
+            "table-1",
+            55L,
+            1,
+            "",
+            0,
+            List.of("s3://bucket/data/file-1.parquet"),
+            List.of(),
+            List.of(),
+            "{\"type\":\"struct\",\"schema-id\":1,\"fields\":[]}",
+            List.of(
+                ReconcileFileExecutionPlan.of(
+                    "s3://bucket/data/file-1.parquet",
+                    100L,
+                    "{}",
+                    null,
+                    "PARQUET",
+                    3,
+                    List.of(
+                        new ReconcileFileExecutionPlan.IcebergDeleteFile(
+                            "s3://bucket/data/delete-1.parquet",
+                            10L,
+                            ReconcileFileExecutionPlan.IcebergDeleteContent.EQUALITY,
+                            3,
+                            List.of(7))))));
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             "table-1",
@@ -401,6 +429,12 @@ class GrpcRemoteReconcileExecutorClientTest {
     assertThat(chunkRequest.getChunk().getFileGroupJobsCount()).isEqualTo(1);
     assertThat(chunkRequest.getChunk().getFileGroupJobs(0).getFileGroupTask().getGroupId())
         .isEqualTo("group-1");
+    var protoTask = chunkRequest.getChunk().getFileGroupJobs(0).getFileGroupTask();
+    assertThat(protoTask.getExecutionSchemaJson()).contains("schema-id");
+    assertThat(protoTask.getFileExecutionPlans(0).getFileFormat()).isEqualTo("PARQUET");
+    assertThat(
+            protoTask.getFileExecutionPlans(0).getIcebergDeleteFiles(0).getEqualityFieldIdsList())
+        .containsExactly(7);
 
     verify(successStub).submitLeasedPlanSnapshotResult(requestCaptor.capture());
     SubmitLeasedPlanSnapshotResultRequest.Success success = requestCaptor.getValue().getSuccess();
@@ -893,7 +927,7 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
-  void submitFileGroupSuccessHeadsAPrecommittedIndexArtifactOnce() {
+  void submitFileGroupSuccessPreservesOverriddenIndexArtifactDestination() throws Exception {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ManagedChannel channel = mock(ManagedChannel.class);
     ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
@@ -910,6 +944,13 @@ class GrpcRemoteReconcileExecutorClientTest {
     var artifact =
         new ReconcilerBackend.StagedIndexArtifact(
             IndexArtifactRecord.newBuilder()
+                .setTarget(
+                    IndexTarget.newBuilder()
+                        .setFile(
+                            IndexFileTarget.newBuilder()
+                                .setFilePath("s3://source/file.parquet")
+                                .build())
+                        .build())
                 .setArtifactUri(artifactUri)
                 .setArtifactFormat("parquet")
                 .setArtifactFormatVersion(1)
@@ -924,6 +965,19 @@ class GrpcRemoteReconcileExecutorClientTest {
         .isTrue();
 
     verify(client.blobStore, times(1)).head(artifactUri);
+    ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
+        ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
+    verify(stub).submitLeasedFileGroupExecutionResult(requestCaptor.capture());
+    String payloadUri = requestCaptor.getValue().getSuccess().getResultDescriptor().getPayloadUri();
+    ArgumentCaptor<String> uriCaptor = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<byte[]> bytesCaptor = ArgumentCaptor.forClass(byte[].class);
+    verify(client.blobStore, times(2))
+        .put(uriCaptor.capture(), bytesCaptor.capture(), eq("application/x-protobuf"));
+    int metadataIndex = uriCaptor.getAllValues().get(0).equals(payloadUri) ? 1 : 0;
+    assertThat(
+            IndexArtifactRecord.parseFrom(bytesCaptor.getAllValues().get(metadataIndex))
+                .getArtifactUri())
+        .isEqualTo(artifactUri);
   }
 
   private static ResourceId connectorId() {
@@ -1059,6 +1113,8 @@ class GrpcRemoteReconcileExecutorClientTest {
         "/result.pb",
         "/stats/",
         List.of(filePaths),
+        "",
+        List.of(),
         ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.empty());
   }
 

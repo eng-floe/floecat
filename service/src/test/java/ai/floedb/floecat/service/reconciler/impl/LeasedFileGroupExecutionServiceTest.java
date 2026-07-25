@@ -49,6 +49,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -142,7 +143,32 @@ class LeasedFileGroupExecutionServiceTest {
   void resolveUsesParentSnapshotTaskFileGroupsFromDurableJobView() {
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
-            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+            "plan-1",
+            "group-1",
+            TABLE_ID,
+            SNAPSHOT_ID,
+            1,
+            "",
+            0,
+            List.of("s3://bucket/data/file-1.parquet"),
+            List.of(),
+            List.of(),
+            "{\"type\":\"struct\",\"fields\":[]}",
+            List.of(
+                ReconcileFileExecutionPlan.of(
+                    "s3://bucket/data/file-1.parquet",
+                    123L,
+                    "{}",
+                    null,
+                    "PARQUET",
+                    3,
+                    List.of(
+                        new ReconcileFileExecutionPlan.IcebergDeleteFile(
+                            "s3://bucket/data/delete-1.parquet",
+                            10L,
+                            ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION,
+                            3,
+                            List.of())))));
 
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID))
@@ -181,6 +207,13 @@ class LeasedFileGroupExecutionServiceTest {
     assertEquals("plan-1", payload.planId());
     assertEquals("group-1", payload.groupId());
     assertEquals(List.of("s3://bucket/data/file-1.parquet"), payload.plannedFilePaths());
+    assertEquals("{\"type\":\"struct\",\"fields\":[]}", payload.executionSchemaJson());
+    assertEquals(1, payload.fileExecutionPlans().size());
+    assertEquals(123L, payload.fileExecutionPlans().getFirst().fileSizeInBytes());
+    assertEquals("PARQUET", payload.fileExecutionPlans().getFirst().fileFormat());
+    assertEquals(
+        ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION,
+        payload.fileExecutionPlans().getFirst().icebergDeleteFiles().getFirst().content());
   }
 
   @Test

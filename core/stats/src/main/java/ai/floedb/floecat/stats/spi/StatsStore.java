@@ -37,8 +37,8 @@ import java.util.Optional;
  * implementation needs to read or write persisted stats.
  */
 public interface StatsStore {
-  record PrewrittenTargetStats(
-      TargetStatsRecord record, String blobUri, long blobBytes, byte[] blobSha256) {}
+  record PrewrittenTargetStatsReference(
+      String targetStorageId, String blobUri, long blobBytes, byte[] blobSha256) {}
 
   record PrewrittenStatsObject(String blobUri, long blobBytes, byte[] blobSha256) {}
 
@@ -279,12 +279,21 @@ public interface StatsStore {
    * <p>The implementation creates generation-scoped target mappings without rewriting the blob
    * bytes. The generation remains unpublished until {@link #publishStatsGeneration} succeeds.
    */
-  default void registerPrewrittenStatsInGeneration(
+  default void registerPrewrittenStatsReferencesInGeneration(
       ResourceId tableId,
       long snapshotId,
       String generationId,
-      List<PrewrittenTargetStats> records) {
+      List<PrewrittenTargetStatsReference> references) {
     throw new UnsupportedOperationException("prewritten stats objects are not supported");
+  }
+
+  /** Registers worker-written records and publishes their generation without reading the blobs. */
+  default void publishPrewrittenStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<PrewrittenTargetStatsReference> references) {
+    throw new UnsupportedOperationException("prewritten stats generation publish is not supported");
   }
 
   /**

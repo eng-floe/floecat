@@ -305,6 +305,9 @@ public class ReconcileJobGc {
               }
               continue;
             }
+            if (shouldDeferTerminalFileGroupCleanup(accountId, record)) {
+              continue;
+            }
             ReconcileJobIndexStore.JobWritePlan<String> deletePlan =
                 buildCanonicalFootprintDeletePlan(accountId, jobId, canonical, record);
             if (deletePlan != null) {
@@ -439,6 +442,31 @@ public class ReconcileJobGc {
     }
     var canonical = jobIndexBackend.loadIndexEntry(canonicalPointerKey).orElse(null);
     return canonical == null ? null : readRecordByReference(canonical.blobUri());
+  }
+
+  private boolean shouldDeferTerminalFileGroupCleanup(String accountId, JsonNode record) {
+    if (record == null || !"EXEC_FILE_GROUP".equals(text(record, "jobKind"))) {
+      return false;
+    }
+    String parentJobId = text(record, "parentJobId");
+    if (parentJobId.isBlank()) {
+      return false;
+    }
+    String parentCanonicalKey = Keys.reconcileJobPointerById(accountId, parentJobId);
+    JobIndexEntrySnapshot parentCanonical =
+        jobIndexBackend.loadIndexEntry(parentCanonicalKey).orElse(null);
+    if (parentCanonical == null) {
+      return false;
+    }
+    JsonNode parent = readRecordByReference(parentCanonical.blobUri());
+    if (parent == null) {
+      LOG.warnf(
+          "Deferring terminal file-group GC because parent state is unreadable"
+              + " accountId=%s jobId=%s parentJobId=%s",
+          accountId, text(record, "jobId"), parentJobId);
+      return true;
+    }
+    return !TERMINAL_STATES.contains(text(parent, "state"));
   }
 
   private JsonNode readRecordByReference(String reference) {

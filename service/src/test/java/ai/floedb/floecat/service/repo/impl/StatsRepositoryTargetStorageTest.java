@@ -50,9 +50,12 @@ import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.StringValue;
 import com.google.protobuf.Timestamp;
+import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -2149,5 +2152,52 @@ class StatsRepositoryTargetStorageTest {
     public Page list(String prefix, int limit, String pageToken) {
       return delegate.list(prefix, limit, pageToken);
     }
+  }
+
+  @Test
+  void prewrittenStatsReferencesAreCommittedInPointerBatchesWithoutBlobReads() {
+    InMemoryPointerStore pointerDelegate = new InMemoryPointerStore();
+    AtomicInteger batchCalls = new AtomicInteger();
+    var pointerStore =
+        new RepoTestPointerStores.DelegatingPointerStore(pointerDelegate) {
+          @Override
+          public boolean compareAndSetBatch(List<CasOp> ops) {
+            batchCalls.incrementAndGet();
+            return super.compareAndSetBatch(ops);
+          }
+        };
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 715L;
+    String generationId = "full-rescan-batched-references";
+    String blobPrefix =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)
+            + "worker-uploads/job/lease/";
+    List<StatsStore.PrewrittenTargetStatsReference> references = new ArrayList<>();
+    for (int index = 1; index <= 205; index++) {
+      String targetStorageId = "column-" + String.format("%019d", index);
+      byte[] binaryDigest = HexFormat.of().parseHex(Hashing.sha256Hex("payload-" + index));
+      String blobUri =
+          blobPrefix
+              + Hashing.sha256Hex(targetStorageId)
+              + "/"
+              + HexFormat.of().formatHex(binaryDigest)
+              + ".pb";
+      references.add(
+          new StatsStore.PrewrittenTargetStatsReference(
+              targetStorageId, blobUri, index, binaryDigest));
+    }
+
+    repository.registerPrewrittenStatsReferencesInGeneration(
+        TABLE_ID, snapshotId, generationId, references);
+
+    assertThat(batchCalls).hasValue(3);
+    assertThat(
+            pointerDelegate.countByPrefix(
+                Keys.snapshotTargetStatsGenerationDirectoryPointer(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)))
+        .isEqualTo(205);
+    assertThat(blobStore.list(blobPrefix, 10, "").keys()).isEmpty();
   }
 }

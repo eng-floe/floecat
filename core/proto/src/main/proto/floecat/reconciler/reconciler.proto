@@ -247,9 +247,43 @@ message ReconcileFileGroupTask {
   // Files assigned to this execution group.
   repeated string file_paths = 5;
   reserved 6, 7;
+  string execution_schema_json = 8;
+  repeated FileExecutionPlan file_execution_plans = 9;
 }
 
-// Compact reference to one immutable stats record written directly by a worker.
+message DeltaDeletionVector {
+  string storage_type = 1;
+  string path_or_inline_dv = 2;
+  optional int32 offset = 3;
+  uint32 size_in_bytes = 4;
+  uint64 cardinality = 5;
+}
+
+message FileExecutionPlan {
+  string file_path = 1;
+  uint64 file_size_in_bytes = 2;
+  string partition_data_json = 3;
+  DeltaDeletionVector deletion_vector = 4;
+  string file_format = 5;
+  int32 partition_spec_id = 6;
+  repeated IcebergDeleteFile iceberg_delete_files = 7;
+}
+
+message IcebergDeleteFile {
+  enum Content {
+    IDFC_UNSPECIFIED = 0;
+    IDFC_POSITION = 1;
+    IDFC_EQUALITY = 2;
+  }
+
+  string file_path = 1;
+  uint64 file_size_in_bytes = 2;
+  Content content = 3;
+  int32 partition_spec_id = 4;
+  repeated int32 equality_field_ids = 5;
+}
+
+// Compact reference to one immutable artifact record written directly by a worker.
 message StatsObjectDescriptor {
   string target_storage_id = 1;
   string payload_uri = 2;
@@ -273,7 +307,7 @@ message FileGroupResultPayload {
   string result_id = 11;
   repeated ReconcileFileResult file_results = 12;
   repeated ai.floedb.floecat.catalog.TargetStatsRecord partial_aggregate_records = 13;
-  repeated ai.floedb.floecat.catalog.IndexArtifactRecord index_artifacts = 14;
+  repeated StatsObjectDescriptor index_artifacts = 14;
   repeated StatsObjectDescriptor file_stats = 15;
 }
 
@@ -293,8 +327,8 @@ message SnapshotCaptureManifest {
   CapturePolicy capture_policy = 10;
   repeated FileGroupResultDescriptor file_groups = 11;
   repeated StatsObjectDescriptor final_stats = 12;
-  repeated ai.floedb.floecat.catalog.IndexArtifactRecord index_artifacts = 13;
-  reserved 14;
+  repeated StatsObjectDescriptor index_artifacts = 13;
+  repeated StatsObjectDescriptor file_stats = 14;
   uint32 source_file_count = 15;
   uint32 file_stats_record_count = 16;
   uint32 partial_aggregate_record_count = 17;
@@ -848,6 +882,8 @@ message LeasedFileGroupExecution {
   string result_payload_uri = 14;
   // Server-allocated immutable prefix for this fenced execution's individual stats objects.
   string stats_object_prefix = 15;
+  string execution_schema_json = 16;
+  repeated FileExecutionPlan file_execution_plans = 17;
 }
 
 message GetLeasedFileGroupExecutionResponse {

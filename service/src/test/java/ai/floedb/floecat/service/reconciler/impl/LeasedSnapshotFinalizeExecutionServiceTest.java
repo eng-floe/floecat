@@ -24,6 +24,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -37,19 +38,25 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.ByteString;
 import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class LeasedSnapshotFinalizeExecutionServiceTest {
   private static final String ACCOUNT_ID = "acct";
@@ -125,6 +132,98 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
+  void successRegistersStatsReferencesWithoutReadingStatsObjects() {
+    String childJobId = "file-group-job";
+    String childLeaseEpoch = "child-lease";
+    String statsPrefix =
+        Keys.reconcileFileGroupStatsObjectPrefix(
+            ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID, "parent-job", childJobId, childLeaseEpoch);
+    String targetStorageId = "file-" + "1".repeat(64);
+    byte[] statsSha256 = sha256(new byte[] {1, 2, 3});
+    String statsUri =
+        statsPrefix
+            + sha256Hex(targetStorageId)
+            + "/"
+            + HexFormat.of().formatHex(statsSha256)
+            + ".pb";
+    StatsObjectDescriptor statsObject =
+        StatsObjectDescriptor.newBuilder()
+            .setTargetStorageId(targetStorageId)
+            .setPayloadUri(statsUri)
+            .setPayloadBytes(3)
+            .setPayloadSha256(ByteString.copyFrom(statsSha256))
+            .build();
+    byte[] payloadBytes = new byte[] {7};
+    String payloadUri = "/file-group-result.pb";
+    FileGroupResultDescriptor fileGroup =
+        FileGroupResultDescriptor.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(ACCOUNT_ID)
+            .setConnectorId("connector")
+            .setParentJobId("parent-job")
+            .setFileGroupJobId(childJobId)
+            .setPlanId("plan-1")
+            .setGroupId("group-1")
+            .setTableId(TABLE_ID)
+            .setSnapshotId(SNAPSHOT_ID)
+            .setLeaseEpoch(childLeaseEpoch)
+            .setResultId("child-result")
+            .setPayloadUri(payloadUri)
+            .setPayloadBytes(payloadBytes.length)
+            .setPayloadSha256(ByteString.copyFrom(sha256(payloadBytes)))
+            .setStatsObjectPrefix(statsPrefix)
+            .setPlannedFileCount(1)
+            .setSucceededFileCount(1)
+            .setFileStatsRecordCount(1)
+            .build();
+    SnapshotCaptureManifest manifest =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(ACCOUNT_ID)
+            .setConnectorId("connector")
+            .setParentJobId("parent-job")
+            .setFinalizeJobId(FINALIZE_JOB_ID)
+            .setTableId(TABLE_ID)
+            .setSnapshotId(SNAPSHOT_ID)
+            .setLeaseEpoch(LEASE_EPOCH)
+            .setResultId("result-1")
+            .addFileGroups(fileGroup)
+            .setSourceFileCount(1)
+            .setFileStatsRecordCount(1)
+            .addFileStats(statsObject)
+            .build();
+    byte[] manifestBytes = manifest.toByteArray();
+    SnapshotCaptureManifestDescriptor descriptor =
+        descriptor(manifestUri(), manifestBytes, 1, 1, 1);
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID)).thenReturn(Optional.of(finalizeJobView(1, 1)));
+    when(service.childStateService.compactChildState(ACCOUNT_ID, "parent-job", FINALIZE_JOB_ID, 1))
+        .thenReturn(
+            new SnapshotFinalizeChildStateService.ChildState(
+                1, 1, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()));
+    when(blobs.get(manifestUri())).thenReturn(manifestBytes);
+
+    service.persistSuccess(principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor);
+
+    verify(blobs, times(1)).get(manifestUri());
+    verify(blobs, never()).get(payloadUri);
+    verify(blobs, never()).get(statsUri);
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<ai.floedb.floecat.stats.spi.StatsStore.PrewrittenTargetStatsReference>>
+        references = ArgumentCaptor.forClass(List.class);
+    verify(persistence)
+        .publishPrewrittenStatsGeneration(
+            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), references.capture());
+    org.assertj.core.api.Assertions.assertThat(references.getValue())
+        .singleElement()
+        .satisfies(
+            reference -> {
+              org.assertj.core.api.Assertions.assertThat(reference.targetStorageId())
+                  .isEqualTo(targetStorageId);
+              org.assertj.core.api.Assertions.assertThat(reference.blobUri()).isEqualTo(statsUri);
+            });
+  }
+
+  @Test
   void successRejectsManifestOutsideFencedLocation() {
     assertThrows(
         IllegalArgumentException.class,
@@ -137,6 +236,35 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                 descriptor("s3://other/manifest.pb")));
 
     verify(blobs, never()).get(anyString());
+    verify(currentSnapshotPointerService, never()).maybeAdvance(any(), anyLong(), anyString());
+  }
+
+  @Test
+  void missingManifestReturnedAsNullIsRetryable() {
+    SnapshotCaptureManifestDescriptor descriptor = descriptor(manifestUri());
+    when(blobs.get(manifestUri())).thenReturn(null);
+
+    assertThrows(
+        StorageAbortRetryableException.class,
+        () ->
+            service.persistSuccess(
+                principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor));
+
+    verify(currentSnapshotPointerService, never()).maybeAdvance(any(), anyLong(), anyString());
+  }
+
+  @Test
+  void missingManifestExceptionIsRetryable() {
+    SnapshotCaptureManifestDescriptor descriptor = descriptor(manifestUri());
+    when(blobs.get(manifestUri()))
+        .thenThrow(new StorageNotFoundException("GET manifest: not found"));
+
+    assertThrows(
+        StorageAbortRetryableException.class,
+        () ->
+            service.persistSuccess(
+                principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor));
+
     verify(currentSnapshotPointerService, never()).maybeAdvance(any(), anyLong(), anyString());
   }
 
@@ -155,6 +283,11 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
   private static SnapshotCaptureManifestDescriptor descriptor(String uri) {
     byte[] manifest = manifestBytes();
+    return descriptor(uri, manifest, 0, 0, 0);
+  }
+
+  private static SnapshotCaptureManifestDescriptor descriptor(
+      String uri, byte[] manifest, int fileGroupCount, int sourceFileCount, int statsRecordCount) {
     return SnapshotCaptureManifestDescriptor.newBuilder()
         .setFormatVersion(1)
         .setAccountId(ACCOUNT_ID)
@@ -168,9 +301,9 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         .setManifestUri(uri)
         .setManifestBytes(manifest.length)
         .setManifestSha256(ByteString.copyFrom(sha256(manifest)))
-        .setFileGroupCount(0)
-        .setSourceFileCount(0)
-        .setStatsRecordCount(0)
+        .setFileGroupCount(fileGroupCount)
+        .setSourceFileCount(sourceFileCount)
+        .setStatsRecordCount(statsRecordCount)
         .build();
   }
 
@@ -197,6 +330,11 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     }
   }
 
+  private static String sha256Hex(String value) {
+    return HexFormat.of()
+        .formatHex(sha256(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+  }
+
   private static String manifestUri() {
     return Keys.reconcileSnapshotCaptureManifestUri(
         ACCOUNT_ID, "parent-job", FINALIZE_JOB_ID, LEASE_EPOCH);
@@ -207,6 +345,16 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   private static ReconcileJobStore.ReconcileJob finalizeJobView(String state) {
+    return finalizeJobView(state, 0, 0);
+  }
+
+  private static ReconcileJobStore.ReconcileJob finalizeJobView(
+      int fileGroupCount, int sourceFileCount) {
+    return finalizeJobView("JS_RUNNING", fileGroupCount, sourceFileCount);
+  }
+
+  private static ReconcileJobStore.ReconcileJob finalizeJobView(
+      String state, int fileGroupCount, int sourceFileCount) {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -217,6 +365,9 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             true,
             ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
             "/snapshot-plan.pb",
+            fileGroupCount,
+            sourceFileCount,
+            "",
             0);
     return new ReconcileJobStore.ReconcileJob(
         FINALIZE_JOB_ID,

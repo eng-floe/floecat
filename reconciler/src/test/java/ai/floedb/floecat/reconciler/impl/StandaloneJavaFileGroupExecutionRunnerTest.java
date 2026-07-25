@@ -134,6 +134,8 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         "/result.pb",
         "/stats.pb",
         List.of("s3://bucket/path/file.parquet"),
+        "",
+        List.of(),
         ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.TABLE_STATS)));
   }
 }

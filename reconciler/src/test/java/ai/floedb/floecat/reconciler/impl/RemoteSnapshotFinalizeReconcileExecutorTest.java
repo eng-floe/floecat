@@ -16,8 +16,10 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -31,6 +33,7 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
@@ -48,6 +51,91 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class RemoteSnapshotFinalizeReconcileExecutorTest {
+
+  @Test
+  void rejectsMissingRequestedIndexArtifactCoverage() {
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                RemoteSnapshotFinalizeReconcileExecutor.validateIndexArtifactCoverage(
+                    true,
+                    Set.of("s3://bucket/a.parquet", "s3://bucket/b.parquet"),
+                    Set.of("s3://bucket/a.parquet")));
+
+    assertTrue(error.getMessage().contains("do not cover successful files"));
+  }
+
+  @Test
+  void rejectsUnrequestedIndexArtifacts() {
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                RemoteSnapshotFinalizeReconcileExecutor.validateIndexArtifactCoverage(
+                    false, Set.of("s3://bucket/a.parquet"), Set.of("s3://bucket/a.parquet")));
+
+    assertTrue(error.getMessage().contains("unrequested index artifacts"));
+  }
+
+  @Test
+  void acceptsEmptyFileGroupWithoutStatsPartials() {
+    StandaloneSnapshotFinalizeExecutionPayload input =
+        new StandaloneSnapshotFinalizeExecutionPayload(
+            "finalize-job",
+            "lease-1",
+            "snapshot-job",
+            tableId(),
+            55L,
+            true,
+            0,
+            "/snapshot-plan.json",
+            1,
+            "/final-stats.pb",
+            "/capture-manifest.pb");
+
+    assertDoesNotThrow(
+        () ->
+            RemoteSnapshotFinalizeReconcileExecutor.validatePartialAggregates(
+                input,
+                true,
+                0,
+                Set.of(
+                    FloecatConnector.StatsTargetKind.TABLE,
+                    FloecatConnector.StatsTargetKind.COLUMN),
+                List.of()));
+  }
+
+  @Test
+  void rejectsMissingRequestedPartialsForNonemptyFileGroup() {
+    StandaloneSnapshotFinalizeExecutionPayload input =
+        new StandaloneSnapshotFinalizeExecutionPayload(
+            "finalize-job",
+            "lease-1",
+            "snapshot-job",
+            tableId(),
+            55L,
+            true,
+            1,
+            "/snapshot-plan.json",
+            1,
+            "/final-stats.pb",
+            "/capture-manifest.pb");
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                RemoteSnapshotFinalizeReconcileExecutor.validatePartialAggregates(
+                    input,
+                    true,
+                    1,
+                    Set.of(
+                        FloecatConnector.StatsTargetKind.TABLE,
+                        FloecatConnector.StatsTargetKind.COLUMN),
+                    List.of()));
+    assertTrue(error.getMessage().contains("table aggregate partial coverage"));
+  }
 
   @Test
   void finalizesExplicitEmptySnapshotRemotely() {

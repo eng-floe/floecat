@@ -612,7 +612,58 @@ public interface FloecatConnector extends Closeable {
       String partitionDataJson,
       int partitionSpecId,
       List<Integer> equalityFieldIds,
-      Long sequenceNumber) {
+      Long sequenceNumber,
+      SnapshotDeletionVector deletionVector,
+      List<SnapshotIcebergDeleteFile> icebergDeleteFiles) {
+    public SnapshotFileEntry(
+        String filePath,
+        String fileFormat,
+        long fileSizeInBytes,
+        long recordCount,
+        FileContent fileContent,
+        String partitionDataJson,
+        int partitionSpecId,
+        List<Integer> equalityFieldIds,
+        Long sequenceNumber) {
+      this(
+          filePath,
+          fileFormat,
+          fileSizeInBytes,
+          recordCount,
+          fileContent,
+          partitionDataJson,
+          partitionSpecId,
+          equalityFieldIds,
+          sequenceNumber,
+          null,
+          List.of());
+    }
+
+    public SnapshotFileEntry(
+        String filePath,
+        String fileFormat,
+        long fileSizeInBytes,
+        long recordCount,
+        FileContent fileContent,
+        String partitionDataJson,
+        int partitionSpecId,
+        List<Integer> equalityFieldIds,
+        Long sequenceNumber,
+        SnapshotDeletionVector deletionVector) {
+      this(
+          filePath,
+          fileFormat,
+          fileSizeInBytes,
+          recordCount,
+          fileContent,
+          partitionDataJson,
+          partitionSpecId,
+          equalityFieldIds,
+          sequenceNumber,
+          deletionVector,
+          List.of());
+    }
+
     public SnapshotFileEntry {
       filePath = filePath == null ? "" : filePath;
       fileFormat = fileFormat == null ? "" : fileFormat;
@@ -621,13 +672,51 @@ public interface FloecatConnector extends Closeable {
       fileContent = fileContent == null ? FileContent.FC_DATA : fileContent;
       partitionDataJson = partitionDataJson == null ? "" : partitionDataJson;
       equalityFieldIds = equalityFieldIds == null ? List.of() : List.copyOf(equalityFieldIds);
+      icebergDeleteFiles = icebergDeleteFiles == null ? List.of() : List.copyOf(icebergDeleteFiles);
     }
   }
 
-  record SnapshotFilePlan(List<SnapshotFileEntry> dataFiles, List<SnapshotFileEntry> deleteFiles) {
+  record SnapshotIcebergDeleteFile(
+      String filePath,
+      long fileSizeInBytes,
+      FileContent fileContent,
+      int partitionSpecId,
+      List<Integer> equalityFieldIds) {
+    public SnapshotIcebergDeleteFile {
+      filePath = filePath == null ? "" : filePath;
+      fileSizeInBytes = Math.max(0L, fileSizeInBytes);
+      fileContent = fileContent == null ? FileContent.FC_UNSPECIFIED : fileContent;
+      equalityFieldIds = equalityFieldIds == null ? List.of() : List.copyOf(equalityFieldIds);
+    }
+  }
+
+  record SnapshotDeletionVector(
+      String storageType,
+      String pathOrInlineDv,
+      Integer offset,
+      int sizeInBytes,
+      long cardinality) {
+    public SnapshotDeletionVector {
+      storageType = storageType == null ? "" : storageType.trim();
+      pathOrInlineDv = pathOrInlineDv == null ? "" : pathOrInlineDv;
+      sizeInBytes = Math.max(0, sizeInBytes);
+      cardinality = Math.max(0L, cardinality);
+    }
+  }
+
+  record SnapshotFilePlan(
+      List<SnapshotFileEntry> dataFiles,
+      List<SnapshotFileEntry> deleteFiles,
+      String executionSchemaJson) {
+    public SnapshotFilePlan(
+        List<SnapshotFileEntry> dataFiles, List<SnapshotFileEntry> deleteFiles) {
+      this(dataFiles, deleteFiles, "");
+    }
+
     public SnapshotFilePlan {
       dataFiles = dataFiles == null ? List.of() : List.copyOf(dataFiles);
       deleteFiles = deleteFiles == null ? List.of() : List.copyOf(deleteFiles);
+      executionSchemaJson = executionSchemaJson == null ? "" : executionSchemaJson;
     }
   }
 

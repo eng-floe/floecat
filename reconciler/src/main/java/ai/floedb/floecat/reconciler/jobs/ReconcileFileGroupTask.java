@@ -30,7 +30,9 @@ public record ReconcileFileGroupTask(
     int fileStatsRecordCount,
     List<String> filePaths,
     List<ReconcileFileResult> fileResults,
-    List<TargetStatsRecord> partialAggregateRecords) {
+    List<TargetStatsRecord> partialAggregateRecords,
+    String executionSchemaJson,
+    List<ReconcileFileExecutionPlan> fileExecutionPlans) {
 
   public ReconcileFileGroupTask {
     planId = planId == null ? "" : planId.trim();
@@ -59,6 +61,13 @@ public record ReconcileFileGroupTask(
             ? List.of()
             : partialAggregateRecords.stream()
                 .filter(record -> record != null && record.hasTarget())
+                .toList();
+    executionSchemaJson = executionSchemaJson == null ? "" : executionSchemaJson;
+    fileExecutionPlans =
+        fileExecutionPlans == null
+            ? List.of()
+            : fileExecutionPlans.stream()
+                .filter(plan -> plan != null && !plan.filePath().isBlank())
                 .toList();
   }
 
@@ -96,6 +105,34 @@ public record ReconcileFileGroupTask(
       List<String> filePaths,
       List<ReconcileFileResult> fileResults,
       List<TargetStatsRecord> partialAggregateRecords) {
+    return of(
+        planId,
+        groupId,
+        tableId,
+        snapshotId,
+        fileCount,
+        fileStatsBlobUri,
+        fileStatsRecordCount,
+        filePaths,
+        fileResults,
+        partialAggregateRecords,
+        "",
+        List.of());
+  }
+
+  public static ReconcileFileGroupTask of(
+      String planId,
+      String groupId,
+      String tableId,
+      long snapshotId,
+      int fileCount,
+      String fileStatsBlobUri,
+      int fileStatsRecordCount,
+      List<String> filePaths,
+      List<ReconcileFileResult> fileResults,
+      List<TargetStatsRecord> partialAggregateRecords,
+      String executionSchemaJson,
+      List<ReconcileFileExecutionPlan> fileExecutionPlans) {
     if ((planId == null || planId.isBlank())
         && (groupId == null || groupId.isBlank())
         && (tableId == null || tableId.isBlank())
@@ -105,7 +142,9 @@ public record ReconcileFileGroupTask(
         && fileStatsRecordCount <= 0
         && (filePaths == null || filePaths.isEmpty())
         && (fileResults == null || fileResults.isEmpty())
-        && (partialAggregateRecords == null || partialAggregateRecords.isEmpty())) {
+        && (partialAggregateRecords == null || partialAggregateRecords.isEmpty())
+        && (executionSchemaJson == null || executionSchemaJson.isBlank())
+        && (fileExecutionPlans == null || fileExecutionPlans.isEmpty())) {
       return empty();
     }
     return new ReconcileFileGroupTask(
@@ -118,7 +157,9 @@ public record ReconcileFileGroupTask(
         fileStatsRecordCount,
         filePaths,
         fileResults,
-        partialAggregateRecords);
+        partialAggregateRecords,
+        executionSchemaJson,
+        fileExecutionPlans);
   }
 
   public static ReconcileFileGroupTask of(
@@ -182,7 +223,8 @@ public record ReconcileFileGroupTask(
   }
 
   public static ReconcileFileGroupTask empty() {
-    return new ReconcileFileGroupTask("", "", "", -1L, 0, "", 0, List.of(), List.of(), List.of());
+    return new ReconcileFileGroupTask(
+        "", "", "", -1L, 0, "", 0, List.of(), List.of(), List.of(), "", List.of());
   }
 
   public ReconcileFileGroupTask asReference() {
@@ -199,6 +241,8 @@ public record ReconcileFileGroupTask(
         fileStatsRecordCount,
         List.of(),
         List.of(),
+        List.of(),
+        "",
         List.of());
   }
 
@@ -213,7 +257,9 @@ public record ReconcileFileGroupTask(
         fileStatsRecordCount,
         filePaths,
         fileResults,
-        partialAggregateRecords);
+        partialAggregateRecords,
+        executionSchemaJson,
+        fileExecutionPlans);
   }
 
   public ReconcileFileGroupTask withFileStatsBlob(String blobUri, int recordCount) {
@@ -227,7 +273,9 @@ public record ReconcileFileGroupTask(
         recordCount,
         filePaths,
         fileResults,
-        partialAggregateRecords);
+        partialAggregateRecords,
+        executionSchemaJson,
+        fileExecutionPlans);
   }
 
   public ReconcileFileGroupTask withPartialAggregateRecords(
@@ -242,7 +290,9 @@ public record ReconcileFileGroupTask(
         fileStatsRecordCount,
         filePaths,
         fileResults,
-        partialAggregateRecords);
+        partialAggregateRecords,
+        executionSchemaJson,
+        fileExecutionPlans);
   }
 
   @JsonIgnore
@@ -256,6 +306,8 @@ public record ReconcileFileGroupTask(
         && fileStatsRecordCount <= 0
         && filePaths.isEmpty()
         && fileResults.isEmpty()
-        && partialAggregateRecords.isEmpty();
+        && partialAggregateRecords.isEmpty()
+        && executionSchemaJson.isBlank()
+        && fileExecutionPlans.isEmpty();
   }
 }

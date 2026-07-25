@@ -19,25 +19,40 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.model.IndexArtifactKey;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Optional;
 
 @ApplicationScoped
 public class IndexArtifactRepository {
+  private static final int MAX_POINTER_BATCH_SIZE = 100;
+
+  public record PrewrittenIndexArtifactReference(
+      String targetStorageId, String blobUri, long blobBytes, byte[] blobSha256) {}
+
+  private record PrewrittenIndexWrite(String pointerKey, String blobUri, long blobBytes) {}
+
   private final GenericResourceRepository<IndexArtifactRecord, IndexArtifactKey> repo;
+  private final PointerStore pointerStore;
 
   @Inject
   public IndexArtifactRepository(PointerStore pointerStore, BlobStore blobStore) {
+    this.pointerStore = pointerStore;
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -75,6 +90,72 @@ public class IndexArtifactRepository {
       }
       putIndexArtifact(value);
     }
+  }
+
+  public void registerPrewrittenIndexArtifactReferences(
+      ResourceId tableId, long snapshotId, List<PrewrittenIndexArtifactReference> references) {
+    LinkedHashMap<String, PrewrittenIndexWrite> unique = new LinkedHashMap<>();
+    for (PrewrittenIndexArtifactReference reference :
+        references == null ? List.<PrewrittenIndexArtifactReference>of() : references) {
+      if (reference == null
+          || reference.targetStorageId() == null
+          || reference.targetStorageId().isBlank()
+          || reference.blobUri() == null
+          || reference.blobUri().isBlank()
+          || reference.blobBytes() <= 0L
+          || reference.blobSha256() == null
+          || reference.blobSha256().length != 32
+          || !reference
+              .blobUri()
+              .endsWith(
+                  "/"
+                      + Hashing.sha256Hex(reference.targetStorageId())
+                      + "/"
+                      + HexFormat.of().formatHex(reference.blobSha256())
+                      + ".pb")) {
+        throw new IllegalArgumentException("invalid prewritten index artifact reference");
+      }
+      String pointerKey =
+          Keys.snapshotIndexArtifactPointer(
+              tableId.getAccountId(), tableId.getId(), snapshotId, reference.targetStorageId());
+      unique.put(
+          pointerKey,
+          new PrewrittenIndexWrite(pointerKey, reference.blobUri(), reference.blobBytes()));
+    }
+    List<PrewrittenIndexWrite> writes = new ArrayList<>(unique.values());
+    for (int from = 0; from < writes.size(); from += MAX_POINTER_BATCH_SIZE) {
+      registerPrewrittenIndexArtifactChunk(
+          writes.subList(from, Math.min(from + MAX_POINTER_BATCH_SIZE, writes.size())));
+    }
+  }
+
+  private void registerPrewrittenIndexArtifactChunk(List<PrewrittenIndexWrite> writes) {
+    List<PrewrittenIndexWrite> remaining = new ArrayList<>(writes);
+    for (int attempt = 0; attempt < 4; attempt++) {
+      List<PrewrittenIndexWrite> nextRemaining = new ArrayList<>();
+      List<PointerStore.CasOp> ops = new ArrayList<>();
+      for (PrewrittenIndexWrite write : remaining) {
+        Pointer existing = pointerStore.get(write.pointerKey()).orElse(null);
+        if (existing != null && write.blobUri().equals(existing.getBlobUri())) {
+          continue;
+        }
+        long expectedVersion = existing == null ? 0L : existing.getVersion();
+        nextRemaining.add(write);
+        ops.add(
+            new PointerStore.CasUpsert(
+                write.pointerKey(),
+                expectedVersion,
+                PointerReferences.blobPointer(
+                    write.pointerKey(), write.blobUri(), expectedVersion + 1L, write.blobBytes())));
+      }
+      if (ops.isEmpty() || pointerStore.compareAndSetBatch(ops)) {
+        return;
+      }
+      remaining = nextRemaining;
+    }
+    throw new GenericResourceRepository.AbortRetryableException(
+        "index artifact reference update conflicted repeatedly for "
+            + remaining.getFirst().pointerKey());
   }
 
   public Optional<IndexArtifactRecord> getIndexArtifact(

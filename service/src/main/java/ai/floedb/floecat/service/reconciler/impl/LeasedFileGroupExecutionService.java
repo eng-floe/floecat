@@ -132,6 +132,8 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             lease.jobId,
             lease.leaseEpoch),
         plannedTask.filePaths(),
+        plannedTask.executionSchemaJson(),
+        plannedTask.fileExecutionPlans(),
         FileGroupExecutionSupport.effectiveCapturePolicy(lease));
   }
 
@@ -375,11 +377,15 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         || descriptor.snapshotId() != result.getSnapshotId()
         || !descriptor.leaseEpoch().equals(result.getLeaseEpoch())
         || !descriptor.resultId().equals(result.getResultId())
-        || descriptor.fileStatsRecordCount() != result.getFileStatsCount()) {
+        || descriptor.fileStatsRecordCount() != result.getFileStatsCount()
+        || descriptor.indexArtifactCount() != result.getIndexArtifactsCount()) {
       throw new IllegalArgumentException("file-group result object identity mismatch");
     }
-    List<StatsStore.PrewrittenStatsObject> objects = new ArrayList<>(result.getFileStatsCount());
-    for (StatsObjectDescriptor object : result.getFileStatsList()) {
+    List<StatsStore.PrewrittenStatsObject> objects =
+        new ArrayList<>(result.getFileStatsCount() + result.getIndexArtifactsCount());
+    List<StatsObjectDescriptor> descriptors = new ArrayList<>(result.getFileStatsList());
+    descriptors.addAll(result.getIndexArtifactsList());
+    for (StatsObjectDescriptor object : descriptors) {
       if (object.getTargetStorageId().isBlank()
           || object.getPayloadUri().isBlank()
           || !object.getPayloadUri().startsWith(descriptor.statsObjectPrefix())

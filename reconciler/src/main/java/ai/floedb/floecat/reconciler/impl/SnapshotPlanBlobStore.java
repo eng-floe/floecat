@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
@@ -319,6 +320,8 @@ public class SnapshotPlanBlobStore {
     public long snapshotId = -1L;
     public int fileCount = 0;
     public List<String> filePaths = List.of();
+    public String executionSchemaJson = "";
+    public List<ReconcileFileExecutionPlan> fileExecutionPlans = List.of();
 
     static StoredFileGroupTask from(ReconcileFileGroupTask task) {
       StoredFileGroupTask stored = new StoredFileGroupTask();
@@ -329,6 +332,8 @@ public class SnapshotPlanBlobStore {
       stored.snapshotId = effective.snapshotId();
       stored.fileCount = effective.fileCount();
       stored.filePaths = effective.filePaths();
+      stored.executionSchemaJson = effective.executionSchemaJson();
+      stored.fileExecutionPlans = effective.fileExecutionPlans();
       return stored;
     }
 
@@ -337,7 +342,19 @@ public class SnapshotPlanBlobStore {
     }
 
     ReconcileFileGroupTask toTask() {
-      return ReconcileFileGroupTask.of(planId, groupId, tableId, snapshotId, fileCount, filePaths);
+      return ReconcileFileGroupTask.of(
+          planId,
+          groupId,
+          tableId,
+          snapshotId,
+          fileCount,
+          "",
+          0,
+          filePaths,
+          List.of(),
+          List.of(),
+          executionSchemaJson,
+          fileExecutionPlans);
     }
   }
 

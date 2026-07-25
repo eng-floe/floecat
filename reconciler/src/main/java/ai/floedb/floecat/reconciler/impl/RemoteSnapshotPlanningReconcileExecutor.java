@@ -24,6 +24,8 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan.DeltaDeletionVector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -356,16 +358,18 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       ReconcileJobStore.LeasedJob lease, ReconcileSnapshotTask task) {
     Optional<FloecatConnector.SnapshotFilePlan> planned = fetchSnapshotFilePlan(lease, task);
     if (planned.isPresent()) {
-      List<String> parquetFilePaths =
-          java.util.stream.Stream.concat(
-                  planned.get().dataFiles().stream(), planned.get().deleteFiles().stream())
-              .filter(file -> file != null && isParquetFile(file))
-              .map(FloecatConnector.SnapshotFileEntry::filePath)
-              .filter(path -> path != null && !path.isBlank())
-              .distinct()
-              .toList();
-      if (!parquetFilePaths.isEmpty()) {
-        return partitionFilePaths(lease.jobId, task, parquetFilePaths);
+      LinkedHashMap<String, FloecatConnector.SnapshotFileEntry> parquetFiles =
+          new LinkedHashMap<>();
+      planned.get().dataFiles().stream()
+          .filter(file -> file != null && isParquetFile(file))
+          .filter(file -> file.filePath() != null && !file.filePath().isBlank())
+          .forEach(file -> parquetFiles.putIfAbsent(file.filePath(), file));
+      if (!parquetFiles.isEmpty()) {
+        return partitionFiles(
+            lease.jobId,
+            task,
+            List.copyOf(parquetFiles.values()),
+            planned.get().executionSchemaJson());
       }
       return List.of();
     }
@@ -519,18 +523,80 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
     return planned;
   }
 
-  private List<ReconcileFileGroupTask> partitionFilePaths(
-      String planId, ReconcileSnapshotTask task, List<String> filePaths) {
+  private List<ReconcileFileGroupTask> partitionFiles(
+      String planId,
+      ReconcileSnapshotTask task,
+      List<FloecatConnector.SnapshotFileEntry> files,
+      String executionSchemaJson) {
     java.util.ArrayList<ReconcileFileGroupTask> groups = new java.util.ArrayList<>();
     int groupSize = maxFilesPerGroup;
-    for (int offset = 0; offset < filePaths.size(); offset += groupSize) {
-      int end = Math.min(filePaths.size(), offset + groupSize);
+    for (int offset = 0; offset < files.size(); offset += groupSize) {
+      int end = Math.min(files.size(), offset + groupSize);
       String groupId = "snapshot-" + task.snapshotId() + "-group-" + groups.size();
+      List<FloecatConnector.SnapshotFileEntry> groupFiles = files.subList(offset, end);
+      List<String> filePaths =
+          groupFiles.stream().map(FloecatConnector.SnapshotFileEntry::filePath).toList();
+      List<ReconcileFileExecutionPlan> executionPlans =
+          executionSchemaJson == null || executionSchemaJson.isBlank()
+              ? List.of()
+              : groupFiles.stream()
+                  .map(RemoteSnapshotPlanningReconcileExecutor::executionPlan)
+                  .toList();
       groups.add(
           ReconcileFileGroupTask.of(
-              planId, groupId, task.tableId(), task.snapshotId(), filePaths.subList(offset, end)));
+              planId,
+              groupId,
+              task.tableId(),
+              task.snapshotId(),
+              filePaths.size(),
+              "",
+              0,
+              filePaths,
+              List.of(),
+              List.of(),
+              executionSchemaJson,
+              executionPlans));
     }
     return List.copyOf(groups);
+  }
+
+  private static ReconcileFileExecutionPlan executionPlan(FloecatConnector.SnapshotFileEntry file) {
+    FloecatConnector.SnapshotDeletionVector dv = file.deletionVector();
+    DeltaDeletionVector plannedDv =
+        dv == null
+            ? null
+            : new DeltaDeletionVector(
+                dv.storageType(),
+                dv.pathOrInlineDv(),
+                dv.offset(),
+                dv.sizeInBytes(),
+                dv.cardinality());
+    return ReconcileFileExecutionPlan.of(
+        file.filePath(),
+        file.fileSizeInBytes(),
+        file.partitionDataJson(),
+        plannedDv,
+        file.fileFormat(),
+        file.partitionSpecId(),
+        file.icebergDeleteFiles().stream()
+            .map(RemoteSnapshotPlanningReconcileExecutor::icebergDeleteFile)
+            .toList());
+  }
+
+  private static ReconcileFileExecutionPlan.IcebergDeleteFile icebergDeleteFile(
+      FloecatConnector.SnapshotIcebergDeleteFile deleteFile) {
+    ReconcileFileExecutionPlan.IcebergDeleteContent content =
+        switch (deleteFile.fileContent()) {
+          case FC_POSITION_DELETES -> ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION;
+          case FC_EQUALITY_DELETES -> ReconcileFileExecutionPlan.IcebergDeleteContent.EQUALITY;
+          default -> ReconcileFileExecutionPlan.IcebergDeleteContent.UNSPECIFIED;
+        };
+    return new ReconcileFileExecutionPlan.IcebergDeleteFile(
+        deleteFile.filePath(),
+        deleteFile.fileSizeInBytes(),
+        content,
+        deleteFile.partitionSpecId(),
+        deleteFile.equalityFieldIds());
   }
 
   private ReconcileContext reconcileContext(ReconcileJobStore.LeasedJob lease) {

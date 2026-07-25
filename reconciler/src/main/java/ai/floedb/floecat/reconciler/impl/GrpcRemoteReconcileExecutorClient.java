@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
@@ -25,6 +24,8 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan.DeltaDeletionVector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
@@ -959,6 +960,10 @@ class GrpcRemoteReconcileExecutorClient
         execution.getResultPayloadUri(),
         execution.getStatsObjectPrefix(),
         execution.getFilePathsList(),
+        execution.getExecutionSchemaJson(),
+        execution.getFileExecutionPlansList().stream()
+            .map(GrpcRemoteReconcileExecutorClient::fromProtoFileExecutionPlan)
+            .toList(),
         execution.hasCapturePolicy()
             ? ReconcileCapturePolicy.of(
                 execution.getCapturePolicy().getColumnsList().stream()
@@ -992,8 +997,8 @@ class GrpcRemoteReconcileExecutorClient
       throw new IllegalArgumentException(
           "leased file-group result_payload_uri and stats_object_prefix are required");
     }
-    List<ai.floedb.floecat.catalog.rpc.IndexArtifactRecord> indexArtifacts =
-        publishIndexArtifacts(result);
+    List<StatsObjectDescriptor> indexArtifacts =
+        publishIndexArtifacts(result, payload.statsObjectPrefix());
     List<TargetStatsRecord> fileStats =
         result.statsRecords().stream().filter(TargetStatsRecord::hasFile).toList();
     List<TargetStatsRecord> partialAggregates =
@@ -1248,9 +1253,9 @@ class GrpcRemoteReconcileExecutorClient
       String captureManifestUri,
       int sourceFileCount,
       List<ReconcileFileGroupResultDescriptor> fileGroups,
-      List<RemoteSnapshotFinalizeWorkerClient.StatsObject> fileStats,
+      List<StatsObjectDescriptor> fileStats,
       List<TargetStatsRecord> finalStats,
-      List<IndexArtifactRecord> indexArtifacts) {
+      List<StatsObjectDescriptor> indexArtifacts) {
     String stableResultId = resultId == null ? "" : resultId.trim();
     String stableStatsObjectPrefix = statsObjectPrefix == null ? "" : statsObjectPrefix.trim();
     String stableManifestUri = captureManifestUri == null ? "" : captureManifestUri.trim();
@@ -1269,7 +1274,7 @@ class GrpcRemoteReconcileExecutorClient
         finalStats == null
             ? List.of()
             : finalStats.stream().filter(java.util.Objects::nonNull).toList();
-    List<RemoteSnapshotFinalizeWorkerClient.StatsObject> stableFileStats =
+    List<StatsObjectDescriptor> stableFileStats =
         fileStats == null
             ? List.of()
             : fileStats.stream().filter(java.util.Objects::nonNull).toList();
@@ -1277,7 +1282,7 @@ class GrpcRemoteReconcileExecutorClient
         fileGroups == null
             ? List.of()
             : fileGroups.stream().filter(java.util.Objects::nonNull).toList();
-    List<IndexArtifactRecord> stableIndexArtifacts =
+    List<StatsObjectDescriptor> stableIndexArtifacts =
         indexArtifacts == null
             ? List.of()
             : indexArtifacts.stream().filter(java.util.Objects::nonNull).toList();
@@ -1310,6 +1315,7 @@ class GrpcRemoteReconcileExecutorClient
                         ? ReconcileCapturePolicy.empty()
                         : leasedJob.scope.capturePolicy()))
             .addAllFinalStats(finalStatsObjects)
+            .addAllFileStats(stableFileStats)
             .addAllIndexArtifacts(stableIndexArtifacts)
             .setSourceFileCount(sourceFileCount)
             .setFileStatsRecordCount(stableFileStats.size())
@@ -1330,15 +1336,12 @@ class GrpcRemoteReconcileExecutorClient
     if (declaredFileStats != stableFileStats.size()) {
       throw new IllegalArgumentException("file stats do not match file-group descriptor counts");
     }
-    for (RemoteSnapshotFinalizeWorkerClient.StatsObject statsObject : stableFileStats) {
-      TargetStatsRecord record = statsObject.record();
-      if (record == null || statsObject.descriptor() == null) {
+    for (StatsObjectDescriptor statsObject : stableFileStats) {
+      if (statsObject == null) {
         throw new IllegalArgumentException("invalid file stats object metadata");
       }
-      String targetStorageId =
-          ai.floedb.floecat.stats.identity.StatsTargetIdentity.storageId(record.getTarget());
-      if (!targetStorageId.equals(statsObject.descriptor().getTargetStorageId())
-          || !indexedStatsTargets.add(targetStorageId)) {
+      String targetStorageId = statsObject.getTargetStorageId();
+      if (targetStorageId.isBlank() || !indexedStatsTargets.add(targetStorageId)) {
         throw new IllegalArgumentException(
             "duplicate target in snapshot capture manifest: " + targetStorageId);
       }
@@ -1425,9 +1428,9 @@ class GrpcRemoteReconcileExecutorClient
     return out.build();
   }
 
-  private List<ai.floedb.floecat.catalog.rpc.IndexArtifactRecord> publishIndexArtifacts(
-      StandaloneFileGroupExecutionResult result) {
-    List<ai.floedb.floecat.catalog.rpc.IndexArtifactRecord> out = new ArrayList<>();
+  private List<StatsObjectDescriptor> publishIndexArtifacts(
+      StandaloneFileGroupExecutionResult result, String artifactObjectPrefix) {
+    List<StatsObjectDescriptor> out = new ArrayList<>();
     for (var artifact : result.stagedIndexArtifacts()) {
       if (artifact == null || artifact.record() == null) {
         continue;
@@ -1455,9 +1458,32 @@ class GrpcRemoteReconcileExecutorClient
       if (header.getContentLength() <= 0L) {
         throw new IllegalArgumentException("index artifact object is empty: " + uri);
       }
-      out.add(artifact.record().toBuilder().setContentEtag(header.getEtag()).build());
+      var record = artifact.record().toBuilder().setContentEtag(header.getEtag()).build();
+      out.add(publishIndexArtifactObject(artifactObjectPrefix, record));
     }
     return List.copyOf(out);
+  }
+
+  private StatsObjectDescriptor publishIndexArtifactObject(
+      String artifactObjectPrefix, ai.floedb.floecat.catalog.rpc.IndexArtifactRecord record) {
+    if (!record.hasTarget() || !record.getTarget().hasFile()) {
+      throw new IllegalArgumentException("index artifact file target is required");
+    }
+    String storageId = "file:" + record.getTarget().getFile().getFilePath();
+    byte[] bytes = record.toByteArray();
+    String uri =
+        artifactObjectPrefix
+            + HexFormat.of().formatHex(sha256(storageId.getBytes(StandardCharsets.UTF_8)))
+            + "/"
+            + HexFormat.of().formatHex(sha256(bytes))
+            + ".pb";
+    blobStore.put(uri, bytes, "application/x-protobuf");
+    return StatsObjectDescriptor.newBuilder()
+        .setTargetStorageId(storageId)
+        .setPayloadUri(uri)
+        .setPayloadBytes(bytes.length)
+        .setPayloadSha256(ByteString.copyFrom(sha256(bytes)))
+        .build();
   }
 
   private StatsObjectDescriptor publishStatsObject(
@@ -1883,7 +1909,99 @@ class GrpcRemoteReconcileExecutorClient
         .setTableId(effective.tableId())
         .setSnapshotId(effective.snapshotId())
         .addAllFilePaths(effective.filePaths())
+        .setExecutionSchemaJson(effective.executionSchemaJson())
+        .addAllFileExecutionPlans(
+            effective.fileExecutionPlans().stream()
+                .map(GrpcRemoteReconcileExecutorClient::toProtoFileExecutionPlan)
+                .toList())
         .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.FileExecutionPlan toProtoFileExecutionPlan(
+      ReconcileFileExecutionPlan plan) {
+    var builder =
+        ai.floedb.floecat.reconciler.rpc.FileExecutionPlan.newBuilder()
+            .setFilePath(plan.filePath())
+            .setFileSizeInBytes(plan.fileSizeInBytes())
+            .setPartitionDataJson(plan.partitionDataJson())
+            .setFileFormat(plan.fileFormat())
+            .setPartitionSpecId(plan.partitionSpecId())
+            .addAllIcebergDeleteFiles(
+                plan.icebergDeleteFiles().stream()
+                    .map(GrpcRemoteReconcileExecutorClient::toProtoIcebergDeleteFile)
+                    .toList());
+    if (plan.deletionVector() != null) {
+      DeltaDeletionVector dv = plan.deletionVector();
+      var dvBuilder =
+          ai.floedb.floecat.reconciler.rpc.DeltaDeletionVector.newBuilder()
+              .setStorageType(dv.storageType())
+              .setPathOrInlineDv(dv.pathOrInlineDv())
+              .setSizeInBytes(dv.sizeInBytes())
+              .setCardinality(dv.cardinality());
+      if (dv.offset() != null) {
+        dvBuilder.setOffset(dv.offset());
+      }
+      builder.setDeletionVector(dvBuilder);
+    }
+    return builder.build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.IcebergDeleteFile toProtoIcebergDeleteFile(
+      ReconcileFileExecutionPlan.IcebergDeleteFile deleteFile) {
+    return ai.floedb.floecat.reconciler.rpc.IcebergDeleteFile.newBuilder()
+        .setFilePath(deleteFile.filePath())
+        .setFileSizeInBytes(deleteFile.fileSizeInBytes())
+        .setContent(
+            switch (deleteFile.content()) {
+              case POSITION ->
+                  ai.floedb.floecat.reconciler.rpc.IcebergDeleteFile.Content.IDFC_POSITION;
+              case EQUALITY ->
+                  ai.floedb.floecat.reconciler.rpc.IcebergDeleteFile.Content.IDFC_EQUALITY;
+              case UNSPECIFIED ->
+                  ai.floedb.floecat.reconciler.rpc.IcebergDeleteFile.Content.IDFC_UNSPECIFIED;
+            })
+        .setPartitionSpecId(deleteFile.partitionSpecId())
+        .addAllEqualityFieldIds(deleteFile.equalityFieldIds())
+        .build();
+  }
+
+  private static ReconcileFileExecutionPlan fromProtoFileExecutionPlan(
+      ai.floedb.floecat.reconciler.rpc.FileExecutionPlan plan) {
+    DeltaDeletionVector dv =
+        plan.hasDeletionVector()
+            ? new DeltaDeletionVector(
+                plan.getDeletionVector().getStorageType(),
+                plan.getDeletionVector().getPathOrInlineDv(),
+                plan.getDeletionVector().hasOffset() ? plan.getDeletionVector().getOffset() : null,
+                plan.getDeletionVector().getSizeInBytes(),
+                plan.getDeletionVector().getCardinality())
+            : null;
+    return ReconcileFileExecutionPlan.of(
+        plan.getFilePath(),
+        plan.getFileSizeInBytes(),
+        plan.getPartitionDataJson(),
+        dv,
+        plan.getFileFormat(),
+        plan.getPartitionSpecId(),
+        plan.getIcebergDeleteFilesList().stream()
+            .map(GrpcRemoteReconcileExecutorClient::fromProtoIcebergDeleteFile)
+            .toList());
+  }
+
+  private static ReconcileFileExecutionPlan.IcebergDeleteFile fromProtoIcebergDeleteFile(
+      ai.floedb.floecat.reconciler.rpc.IcebergDeleteFile deleteFile) {
+    ReconcileFileExecutionPlan.IcebergDeleteContent content =
+        switch (deleteFile.getContent()) {
+          case IDFC_POSITION -> ReconcileFileExecutionPlan.IcebergDeleteContent.POSITION;
+          case IDFC_EQUALITY -> ReconcileFileExecutionPlan.IcebergDeleteContent.EQUALITY;
+          default -> ReconcileFileExecutionPlan.IcebergDeleteContent.UNSPECIFIED;
+        };
+    return new ReconcileFileExecutionPlan.IcebergDeleteFile(
+        deleteFile.getFilePath(),
+        deleteFile.getFileSizeInBytes(),
+        content,
+        deleteFile.getPartitionSpecId(),
+        deleteFile.getEqualityFieldIdsList());
   }
 
   private static ai.floedb.floecat.reconciler.rpc.ReconcileFileResult toProtoFileResult(
@@ -2070,8 +2188,16 @@ class GrpcRemoteReconcileExecutorClient
         fileGroupTask.getGroupId(),
         fileGroupTask.getTableId(),
         fileGroupTask.getSnapshotId(),
+        fileGroupTask.getFilePathsCount(),
+        "",
         0,
-        fileGroupTask.getFilePathsList());
+        fileGroupTask.getFilePathsList(),
+        List.of(),
+        List.of(),
+        fileGroupTask.getExecutionSchemaJson(),
+        fileGroupTask.getFileExecutionPlansList().stream()
+            .map(GrpcRemoteReconcileExecutorClient::fromProtoFileExecutionPlan)
+            .toList());
   }
 
   private ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub controlStub() {

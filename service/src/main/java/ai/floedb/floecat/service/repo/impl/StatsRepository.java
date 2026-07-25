@@ -43,6 +43,7 @@ import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -217,37 +218,66 @@ public class StatsRepository implements StatsStore {
   }
 
   @Override
-  public void registerPrewrittenStatsInGeneration(
+  public void registerPrewrittenStatsReferencesInGeneration(
       ResourceId tableId,
       long snapshotId,
       String generationId,
-      List<StatsStore.PrewrittenTargetStats> records) {
+      List<StatsStore.PrewrittenTargetStatsReference> references) {
     String effectiveGenerationId = requireGenerationId(generationId);
-    ensureWritableGeneration(tableId, snapshotId, effectiveGenerationId);
     String requiredPrefix =
         Keys.snapshotTargetStatsGenerationBlobPrefix(
             tableId.getAccountId(), tableId.getId(), snapshotId, effectiveGenerationId);
     List<PrewrittenStatsWrite> writes = new ArrayList<>();
-    for (StatsStore.PrewrittenTargetStats value :
-        records == null ? List.<StatsStore.PrewrittenTargetStats>of() : records) {
-      if (value == null || value.record() == null) {
+    for (StatsStore.PrewrittenTargetStatsReference value :
+        references == null ? List.<StatsStore.PrewrittenTargetStatsReference>of() : references) {
+      if (value == null) {
         continue;
       }
-      TargetStatsRecord canonical = canonicalRecord(value.record());
-      requireRecordForSnapshot(tableId, snapshotId, canonical);
-      if (!canonical.equals(value.record())
+      if (value.targetStorageId() == null
+          || value.targetStorageId().isBlank()
           || value.blobUri() == null
           || !value.blobUri().startsWith(requiredPrefix)
           || value.blobBytes() <= 0L
           || value.blobSha256() == null
-          || value.blobSha256().length != 32) {
-        throw new IllegalArgumentException("invalid prewritten target stats object");
+          || value.blobSha256().length != 32
+          || !value
+              .blobUri()
+              .endsWith(
+                  "/"
+                      + Hashing.sha256Hex(value.targetStorageId())
+                      + "/"
+                      + HexFormat.of().formatHex(value.blobSha256())
+                      + ".pb")) {
+        throw new IllegalArgumentException("invalid prewritten target stats reference");
       }
       writes.add(
           new PrewrittenStatsWrite(
-              pointerKey(canonical, effectiveGenerationId), value.blobUri(), value.blobBytes()));
+              targetPointerKey(tableId, snapshotId, effectiveGenerationId, value.targetStorageId()),
+              value.blobUri(),
+              value.blobBytes()));
     }
+    ensureWritableGeneration(tableId, snapshotId, effectiveGenerationId);
     targetStatsStorage.overwriteReferencesBatch(writes);
+  }
+
+  @Override
+  public void publishPrewrittenStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<StatsStore.PrewrittenTargetStatsReference> references) {
+    String effectiveGenerationId = requireGenerationId(generationId);
+    registerPrewrittenStatsReferencesInGeneration(
+        tableId, snapshotId, effectiveGenerationId, references);
+    Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
+    publishActiveGeneration(tableId, snapshotId, effectiveGenerationId, current);
+    for (StatsStore.PrewrittenTargetStatsReference reference :
+        references == null ? List.<StatsStore.PrewrittenTargetStatsReference>of() : references) {
+      if (reference != null) {
+        updateTargetLatestSnapshotIfNewer(tableId, snapshotId, reference.targetStorageId());
+      }
+    }
+    updateLatestStatsSnapshotIfNewer(tableId, snapshotId);
   }
 
   @Override
@@ -791,7 +821,11 @@ public class StatsRepository implements StatsStore {
    */
   private void updateTargetLatestSnapshotIfNewer(
       ResourceId tableId, long snapshotId, StatsTarget target) {
-    String storageId = StatsTargetIdentity.storageId(target);
+    updateTargetLatestSnapshotIfNewer(tableId, snapshotId, StatsTargetIdentity.storageId(target));
+  }
+
+  private void updateTargetLatestSnapshotIfNewer(
+      ResourceId tableId, long snapshotId, String storageId) {
     advanceLatestSnapshotPointer(
         Keys.targetStatsLatestSnapshotPointer(tableId.getAccountId(), tableId.getId(), storageId),
         Keys.targetStatsLatestSnapshotBlobUri(
@@ -1366,12 +1400,14 @@ public class StatsRepository implements StatsStore {
 
   private static String targetPointerKey(
       ResourceId tableId, long snapshotId, String generationId, StatsTarget target) {
+    return targetPointerKey(
+        tableId, snapshotId, generationId, StatsTargetIdentity.storageId(target));
+  }
+
+  private static String targetPointerKey(
+      ResourceId tableId, long snapshotId, String generationId, String targetStorageId) {
     return Keys.snapshotTargetStatsGenerationPointer(
-        tableId.getAccountId(),
-        tableId.getId(),
-        snapshotId,
-        generationId,
-        StatsTargetIdentity.storageId(target));
+        tableId.getAccountId(), tableId.getId(), snapshotId, generationId, targetStorageId);
   }
 
   private static OptionalLong parseSnapshotIdFromStatsManifestPointer(

@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
-import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -36,10 +35,11 @@ import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
-import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.types.Hashing;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -281,14 +281,8 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
   private SnapshotCaptureManifest validateManifestObject(
       ReconcileJobStore.LeasedJob lease, SnapshotCaptureManifestDescriptor descriptor) {
     String expectedUri = descriptor.getManifestUri();
-    byte[] bytes = blobStore.get(expectedUri);
-    if (bytes == null) {
-      throw new StorageAbortRetryableException(
-          "snapshot capture manifest is not committed jobId="
-              + lease.jobId
-              + " uri="
-              + expectedUri);
-    }
+    byte[] bytes =
+        loadRequiredPublishedObject(expectedUri, "snapshot capture manifest jobId=" + lease.jobId);
     if (bytes.length != descriptor.getManifestBytes()) {
       throw new IllegalArgumentException("snapshot capture manifest object size mismatch");
     }
@@ -314,6 +308,9 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         || descriptor.getSourceFileCount() != manifest.getSourceFileCount()
         || descriptor.getStatsRecordCount()
             != manifest.getFileStatsRecordCount() + manifest.getFinalStatsCount()
+        || manifest.getFileStatsRecordCount() != manifest.getFileStatsCount()
+        || manifest.getFinalStatsRecordCount() != manifest.getFinalStatsCount()
+        || manifest.getIndexArtifactCount() != manifest.getIndexArtifactsCount()
         || descriptor.getIndexArtifactCount() != manifest.getIndexArtifactsCount()) {
       throw new IllegalArgumentException("snapshot capture manifest object identity mismatch");
     }
@@ -326,45 +323,58 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       ReconcileSnapshotTask snapshotTask,
       SnapshotCaptureManifest manifest) {
     String generationId = "full-rescan-" + lease.parentJobId;
-    String requiredPrefix =
-        Keys.snapshotTargetStatsGenerationBlobPrefix(
-            tableId.getAccountId(), tableId.getId(), snapshotTask.snapshotId(), generationId);
-    List<StatsStore.PrewrittenTargetStats> stats = new ArrayList<>();
+    List<StatsStore.PrewrittenTargetStatsReference> stats = new ArrayList<>();
     Set<String> targets = new HashSet<>();
+    List<String> workerPrefixes = new ArrayList<>();
+    Set<String> fileGroups = new HashSet<>();
+    int declaredFileStats = 0;
+    int declaredIndexArtifacts = 0;
     for (var fileGroup : manifest.getFileGroupsList()) {
-      byte[] resultBytes = blobStore.get(fileGroup.getPayloadUri());
-      if (resultBytes.length != fileGroup.getPayloadBytes()
-          || fileGroup.getPayloadSha256().size() != 32
-          || !MessageDigest.isEqual(
-              sha256(resultBytes), fileGroup.getPayloadSha256().toByteArray())) {
+      String expectedStatsPrefix =
+          Keys.reconcileFileGroupStatsObjectPrefix(
+              tableId.getAccountId(),
+              tableId.getId(),
+              snapshotTask.snapshotId(),
+              lease.parentJobId,
+              fileGroup.getFileGroupJobId(),
+              fileGroup.getLeaseEpoch());
+      if (fileGroup.getFormatVersion() != 1
+          || !manifest.getAccountId().equals(fileGroup.getAccountId())
+          || !manifest.getConnectorId().equals(fileGroup.getConnectorId())
+          || !lease.parentJobId.equals(fileGroup.getParentJobId())
+          || !manifest.getTableId().equals(fileGroup.getTableId())
+          || manifest.getSnapshotId() != fileGroup.getSnapshotId()
+          || !fileGroups.add(fileGroup.getPlanId() + ":" + fileGroup.getGroupId())
+          || !expectedStatsPrefix.equals(fileGroup.getStatsObjectPrefix())) {
         throw new IllegalArgumentException(
-            "snapshot file-group result payload does not match its descriptor");
+            "snapshot file-group descriptor is outside the fenced worker location");
       }
-      final ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload result;
-      try {
-        result = ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload.parseFrom(resultBytes);
-      } catch (com.google.protobuf.InvalidProtocolBufferException e) {
-        throw new IllegalArgumentException("snapshot file-group result payload is invalid", e);
-      }
-      if (result.getFormatVersion() != 1
-          || !fileGroup.getAccountId().equals(result.getAccountId())
-          || !fileGroup.getParentJobId().equals(result.getParentJobId())
-          || !fileGroup.getFileGroupJobId().equals(result.getFileGroupJobId())
-          || !fileGroup.getLeaseEpoch().equals(result.getLeaseEpoch())
-          || !fileGroup.getResultId().equals(result.getResultId())
-          || fileGroup.getFileStatsRecordCount() != result.getFileStatsCount()) {
-        throw new IllegalArgumentException("snapshot file-group result identity mismatch");
-      }
-      for (StatsObjectDescriptor object : result.getFileStatsList()) {
-        stats.add(loadPrewrittenStats(tableId, snapshotTask.snapshotId(), requiredPrefix, object));
-        if (!targets.add(object.getTargetStorageId())) {
-          throw new IllegalArgumentException(
-              "duplicate target in snapshot stats publication: " + object.getTargetStorageId());
-        }
+      workerPrefixes.add(expectedStatsPrefix);
+      declaredFileStats += fileGroup.getFileStatsRecordCount();
+      declaredIndexArtifacts += fileGroup.getIndexArtifactCount();
+    }
+    if (declaredFileStats != manifest.getFileStatsCount()
+        || declaredIndexArtifacts != manifest.getIndexArtifactsCount()) {
+      throw new IllegalArgumentException("snapshot file-group artifact count mismatch");
+    }
+    for (StatsObjectDescriptor object : manifest.getFileStatsList()) {
+      String prefix = requiredWorkerPrefix(workerPrefixes, object);
+      stats.add(prewrittenStatsReference(prefix, object));
+      if (!targets.add(object.getTargetStorageId())) {
+        throw new IllegalArgumentException(
+            "duplicate target in snapshot stats publication: " + object.getTargetStorageId());
       }
     }
+    String finalStatsPrefix =
+        Keys.reconcileSnapshotFinalizeStatsObjectPrefix(
+            tableId.getAccountId(),
+            tableId.getId(),
+            snapshotTask.snapshotId(),
+            lease.parentJobId,
+            lease.jobId,
+            lease.leaseEpoch);
     for (StatsObjectDescriptor object : manifest.getFinalStatsList()) {
-      stats.add(loadPrewrittenStats(tableId, snapshotTask.snapshotId(), requiredPrefix, object));
+      stats.add(prewrittenStatsReference(finalStatsPrefix, object));
       if (!targets.add(object.getTargetStorageId())) {
         throw new IllegalArgumentException(
             "duplicate target in snapshot stats publication: " + object.getTargetStorageId());
@@ -375,43 +385,59 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     }
     persistence.publishPrewrittenStatsGeneration(
         tableId, snapshotTask.snapshotId(), generationId, stats);
-    indexArtifactRepository.putIndexArtifactsBatch(manifest.getIndexArtifactsList());
+    List<IndexArtifactRepository.PrewrittenIndexArtifactReference> indexes = new ArrayList<>();
+    Set<String> indexTargets = new HashSet<>();
+    for (StatsObjectDescriptor object : manifest.getIndexArtifactsList()) {
+      String prefix = requiredWorkerPrefix(workerPrefixes, object);
+      if (!indexTargets.add(object.getTargetStorageId())) {
+        throw new IllegalArgumentException(
+            "duplicate target in snapshot index publication: " + object.getTargetStorageId());
+      }
+      StatsStore.PrewrittenTargetStatsReference reference =
+          prewrittenStatsReference(prefix, object);
+      indexes.add(
+          new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+              reference.targetStorageId(),
+              reference.blobUri(),
+              reference.blobBytes(),
+              reference.blobSha256()));
+    }
+    indexArtifactRepository.registerPrewrittenIndexArtifactReferences(
+        tableId, snapshotTask.snapshotId(), indexes);
+    persistence.clearPrewrittenArtifactProtections(
+        tableId, snapshotTask.snapshotId(), generationId);
   }
 
-  private StatsStore.PrewrittenTargetStats loadPrewrittenStats(
-      ResourceId tableId,
-      long snapshotId,
-      String requiredPrefix,
-      StatsObjectDescriptor descriptor) {
+  private String requiredWorkerPrefix(
+      List<String> workerPrefixes, StatsObjectDescriptor descriptor) {
+    return workerPrefixes.stream()
+        .filter(prefix -> descriptor.getPayloadUri().startsWith(prefix))
+        .findFirst()
+        .orElseThrow(
+            () ->
+                new IllegalArgumentException(
+                    "artifact object descriptor is outside the fenced worker locations"));
+  }
+
+  private StatsStore.PrewrittenTargetStatsReference prewrittenStatsReference(
+      String requiredPrefix, StatsObjectDescriptor descriptor) {
+    String targetStorageId = descriptor.getTargetStorageId();
+    byte[] payloadSha256 = descriptor.getPayloadSha256().toByteArray();
+    String expectedUri =
+        requiredPrefix
+            + Hashing.sha256Hex(targetStorageId)
+            + "/"
+            + HexFormat.of().formatHex(payloadSha256)
+            + ".pb";
     if (descriptor.getTargetStorageId().isBlank()
         || descriptor.getPayloadUri().isBlank()
-        || !descriptor.getPayloadUri().startsWith(requiredPrefix)
+        || !descriptor.getPayloadUri().equals(expectedUri)
         || descriptor.getPayloadBytes() <= 0L
         || descriptor.getPayloadSha256().size() != 32) {
       throw new IllegalArgumentException("invalid target stats object descriptor");
     }
-    byte[] bytes = blobStore.get(descriptor.getPayloadUri());
-    if (bytes.length != descriptor.getPayloadBytes()
-        || !MessageDigest.isEqual(sha256(bytes), descriptor.getPayloadSha256().toByteArray())) {
-      throw new IllegalArgumentException("target stats object does not match its descriptor");
-    }
-    try {
-      TargetStatsRecord record = TargetStatsRecord.parseFrom(bytes);
-      if (!tableId.equals(record.getTableId())
-          || snapshotId != record.getSnapshotId()
-          || !descriptor
-              .getTargetStorageId()
-              .equals(StatsTargetIdentity.storageId(record.getTarget()))) {
-        throw new IllegalArgumentException("target stats object identity mismatch");
-      }
-      return new StatsStore.PrewrittenTargetStats(
-          record,
-          descriptor.getPayloadUri(),
-          descriptor.getPayloadBytes(),
-          descriptor.getPayloadSha256().toByteArray());
-    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
-      throw new IllegalArgumentException("target stats object is invalid", e);
-    }
+    return new StatsStore.PrewrittenTargetStatsReference(
+        targetStorageId, descriptor.getPayloadUri(), descriptor.getPayloadBytes(), payloadSha256);
   }
 
   private static byte[] sha256(byte[] bytes) {
@@ -419,6 +445,20 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       return MessageDigest.getInstance("SHA-256").digest(bytes);
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException("SHA-256 is unavailable", e);
+    }
+  }
+
+  private byte[] loadRequiredPublishedObject(String uri, String description) {
+    try {
+      byte[] bytes = blobStore.get(uri);
+      if (bytes == null) {
+        throw new StorageAbortRetryableException(
+            description + " is not committed or not yet visible uri=" + uri);
+      }
+      return bytes;
+    } catch (StorageNotFoundException error) {
+      throw new StorageAbortRetryableException(
+          description + " is not committed or not yet visible uri=" + uri, error);
     }
   }
 

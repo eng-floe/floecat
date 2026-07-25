@@ -103,6 +103,8 @@ class RemoteFileGroupReconcileExecutorTest {
             "/result.pb",
             "/stats.pb",
             List.of("s3://bucket/file.parquet"),
+            "",
+            List.of(),
             ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.FILE_STATS)));
     RuntimeException failure =
         new RuntimeException(
@@ -394,6 +396,8 @@ class RemoteFileGroupReconcileExecutorTest {
         "/result.pb",
         "/stats.pb",
         List.of("s3://bucket/file.parquet"),
+        "",
+        List.of(),
         ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.FILE_STATS)));
   }
 
@@ -417,6 +421,8 @@ class RemoteFileGroupReconcileExecutorTest {
         "/result.pb",
         "/stats.pb",
         List.of("s3://bucket/file.parquet"),
+        "",
+        List.of(),
         ReconcileCapturePolicy.of(
             List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
   }

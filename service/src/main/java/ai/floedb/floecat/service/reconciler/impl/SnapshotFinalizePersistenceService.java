@@ -66,24 +66,28 @@ public class SnapshotFinalizePersistenceService {
       ResourceId tableId,
       long snapshotId,
       String generationId,
-      List<StatsStore.PrewrittenTargetStats> records) {
-    List<StatsStore.PrewrittenTargetStats> stable =
-        records == null ? List.of() : records.stream().filter(java.util.Objects::nonNull).toList();
+      List<StatsStore.PrewrittenTargetStatsReference> references) {
+    List<StatsStore.PrewrittenTargetStatsReference> stable =
+        references == null
+            ? List.of()
+            : references.stream().filter(java.util.Objects::nonNull).toList();
     String manifestUri =
         Keys.snapshotTargetStatsManifestBlobUri(
             tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
     if (manifestUri.equals(statsStore.activeStatsGeneration(tableId, snapshotId).orElse(""))) {
-      statsStore.clearPrewrittenStatsObjectProtections(tableId, snapshotId, generationId);
       statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
       commitGenerationToRoot(tableId, snapshotId);
       return stable.size();
     }
-    statsStore.registerPrewrittenStatsInGeneration(tableId, snapshotId, generationId, stable);
-    statsStore.publishStatsGeneration(tableId, snapshotId, generationId, List.of(), false);
-    statsStore.clearPrewrittenStatsObjectProtections(tableId, snapshotId, generationId);
+    statsStore.publishPrewrittenStatsGeneration(tableId, snapshotId, generationId, stable);
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
     commitGenerationToRoot(tableId, snapshotId);
     return stable.size();
+  }
+
+  public void clearPrewrittenArtifactProtections(
+      ResourceId tableId, long snapshotId, String generationId) {
+    statsStore.clearPrewrittenStatsObjectProtections(tableId, snapshotId, generationId);
   }
 
   public long stageStatsGenerationChunk(

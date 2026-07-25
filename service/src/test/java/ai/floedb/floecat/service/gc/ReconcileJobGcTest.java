@@ -136,6 +136,64 @@ class ReconcileJobGcTest {
   }
 
   @Test
+  void terminalFileGroupIsRetainedWhileParentIsNonterminal() {
+    System.setProperty("floecat.gc.reconcile-jobs.retention-ms", "0");
+    long old = System.currentTimeMillis() - 10_000L;
+    String parentJobId = "snapshot-parent-running";
+    StoredReconcileJob parent = storedJob(parentJobId, "JS_RUNNING", old, "", "", "");
+    parent.jobKind = "PLAN_SNAPSHOT";
+    putNativeJobIndexRows(parent);
+
+    String childJobId = "file-group-complete";
+    StoredReconcileJob child = storedJob(childJobId, "JS_SUCCEEDED", old, parentJobId, "", "");
+    child.jobKind = "EXEC_FILE_GROUP";
+    putNativeJobIndexRows(child);
+    String childPayload = Keys.reconcileJobBlobUri(ACCOUNT_ID, childJobId, "result-payload");
+    blobs.put(childPayload, new byte[] {1}, "application/x-protobuf");
+
+    StoredReconcileJob eligible = storedJob("unrelated-terminal", "JS_SUCCEEDED", old, "", "", "");
+    putNativeJobIndexRows(eligible);
+
+    var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertEquals(1, result.expired());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(Keys.reconcileJobPointerById(ACCOUNT_ID, childJobId))
+            .isPresent());
+    assertTrue(pointers.get(Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, childJobId)).isEmpty());
+    assertTrue(blobs.head(childPayload).isPresent());
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(Keys.reconcileJobPointerById(ACCOUNT_ID, eligible.jobId))
+            .isEmpty());
+  }
+
+  @Test
+  void terminalFileGroupIsCollectibleAfterParentTerminates() {
+    System.setProperty("floecat.gc.reconcile-jobs.retention-ms", "0");
+    long old = System.currentTimeMillis() - 10_000L;
+    String parentJobId = "snapshot-parent-complete";
+    StoredReconcileJob parent = storedJob(parentJobId, "JS_SUCCEEDED", old, "", "", "");
+    parent.jobKind = "PLAN_SNAPSHOT";
+    putNativeJobIndexRows(parent);
+
+    String childJobId = "file-group-collectible";
+    StoredReconcileJob child = storedJob(childJobId, "JS_SUCCEEDED", old, parentJobId, "", "");
+    child.jobKind = "EXEC_FILE_GROUP";
+    putNativeJobIndexRows(child);
+
+    gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertTrue(
+        jobIndexBackend
+            .loadIndexEntry(Keys.reconcileJobPointerById(ACCOUNT_ID, childJobId))
+            .isEmpty());
+    assertTrue(
+        pointers.get(Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, childJobId)).isPresent());
+  }
+
+  @Test
   void idleAccountSliceDoesNotLoadNonDueTerminalJobs() {
     System.setProperty("floecat.gc.reconcile-jobs.retention-ms", "86400000");
     StoredReconcileJob record =

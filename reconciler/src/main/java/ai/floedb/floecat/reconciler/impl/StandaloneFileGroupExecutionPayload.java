@@ -19,6 +19,7 @@ package ai.floedb.floecat.reconciler.impl;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import java.util.List;
 import java.util.Set;
 
@@ -37,6 +38,8 @@ public record StandaloneFileGroupExecutionPayload(
     String resultPayloadUri,
     String statsObjectPrefix,
     List<String> plannedFilePaths,
+    String executionSchemaJson,
+    List<ReconcileFileExecutionPlan> fileExecutionPlans,
     ReconcileCapturePolicy capturePolicy) {
   public StandaloneFileGroupExecutionPayload {
     jobId = jobId == null ? "" : jobId.trim();
@@ -57,6 +60,8 @@ public record StandaloneFileGroupExecutionPayload(
                 .filter(path -> path != null && !path.isBlank())
                 .map(String::trim)
                 .toList();
+    executionSchemaJson = executionSchemaJson == null ? "" : executionSchemaJson;
+    fileExecutionPlans = fileExecutionPlans == null ? List.of() : List.copyOf(fileExecutionPlans);
     capturePolicy = capturePolicy == null ? ReconcileCapturePolicy.empty() : capturePolicy;
   }
 

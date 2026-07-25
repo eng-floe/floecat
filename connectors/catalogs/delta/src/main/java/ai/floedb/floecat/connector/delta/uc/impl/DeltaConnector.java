@@ -409,11 +409,9 @@ abstract class DeltaConnector implements FloecatConnector {
     }
     final String storageLocation = storageLocation(namespaceFq, tableName);
     final Table table = loadTable(storageLocation);
-    Snapshot snapshot = table.getSnapshotAsOfVersion(engine, snapshotId);
-    if (snapshot == null) {
+    if (table.getSnapshotAsOfVersion(engine, snapshotId) == null) {
       return Optional.empty();
     }
-
     try (var planner =
         new DeltaPlanner(
             engine,
@@ -428,9 +426,13 @@ abstract class DeltaConnector implements FloecatConnector {
             true)) {
       List<SnapshotFileEntry> dataFiles = new ArrayList<>();
       for (PlannedFile<String> planned : planner) {
-        dataFiles.add(toDataScanFile(planned));
+        dataFiles.add(toDataScanFile(planned, planner.deletionVectorForFile(planned.path())));
       }
-      return Optional.of(new SnapshotFilePlan(List.copyOf(dataFiles), List.of()));
+      return Optional.of(
+          new SnapshotFilePlan(
+              List.copyOf(dataFiles),
+              List.of(),
+              DataTypeJsonSerDe.serializeStructType(planner.schema())));
     }
   }
 
@@ -474,6 +476,11 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   private static SnapshotFileEntry toDataScanFile(PlannedFile<String> planned) {
+    return toDataScanFile(planned, null);
+  }
+
+  private static SnapshotFileEntry toDataScanFile(
+      PlannedFile<String> planned, DeletionVectorDescriptor deletionVector) {
     return new SnapshotFileEntry(
         planned.path(),
         planned.format(),
@@ -483,7 +490,15 @@ abstract class DeltaConnector implements FloecatConnector {
         planned.partitionDataJson(),
         planned.partitionSpecId(),
         List.of(),
-        planned.sequenceNumber());
+        planned.sequenceNumber(),
+        deletionVector == null
+            ? null
+            : new SnapshotDeletionVector(
+                deletionVector.getStorageType(),
+                deletionVector.getPathOrInlineDv(),
+                deletionVector.getOffset().orElse(null),
+                deletionVector.getSizeInBytes(),
+                deletionVector.getCardinality()));
   }
 
   protected Table loadTable(String storageLocation) {

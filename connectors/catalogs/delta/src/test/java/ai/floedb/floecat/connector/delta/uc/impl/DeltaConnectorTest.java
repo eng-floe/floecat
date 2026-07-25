@@ -83,6 +83,16 @@ class DeltaConnectorTest {
   }
 
   @Test
+  void planSnapshotFilesReturnsEmptyForMissingVersion() {
+    Snapshot latest = snapshot(7L, 7000L);
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(latest, Map.of(7L, latest)));
+
+    assertTrue(
+        connector.planSnapshotFiles("ns", "tbl", ResourceId.getDefaultInstance(), 6L).isEmpty());
+  }
+
+  @Test
   void enumerateSnapshotsReturnsAllUnknownVersionsForIncrementalRuns() {
     Snapshot latest = snapshot(5L, 5000L);
     Table table =
