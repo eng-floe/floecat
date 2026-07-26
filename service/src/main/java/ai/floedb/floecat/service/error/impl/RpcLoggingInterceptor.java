@@ -55,6 +55,7 @@ public class RpcLoggingInterceptor implements ServerInterceptor, Prioritized {
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
       ServerCall<ReqT, RespT> call, Metadata headers, ServerCallHandler<ReqT, RespT> next) {
     final long startNanos = System.nanoTime();
+    final long ingressEpochMs = System.currentTimeMillis();
     final String method = call.getMethodDescriptor().getFullMethodName();
 
     String contextCorrelationId = InboundContextInterceptor.CORR_KEY.get();
@@ -66,6 +67,9 @@ public class RpcLoggingInterceptor implements ServerInterceptor, Prioritized {
             ? contextCorrelationId
             : nonBlank(headerCorrelationId) ? headerCorrelationId : "";
     final String logCorrelationId = nonBlank(correlationId) ? correlationId : MISSING;
+    final boolean renewalCall = method.endsWith("/RenewReconcileLease");
+    final long preInterceptorMs =
+        elapsedSinceClientStart(ingressEpochMs, headers.get(RENEW_START_EPOCH_MS_KEY));
     final AtomicReference<String> logQueryIdRef =
         new AtomicReference<>(chooseFirstNonBlank(contextQueryId, headerQueryId, MISSING));
 
@@ -83,6 +87,12 @@ public class RpcLoggingInterceptor implements ServerInterceptor, Prioritized {
           @Override
           public void close(io.grpc.Status status, Metadata trailers) {
             long durationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+            if (renewalCall
+                && (!status.isOk() || preInterceptorMs >= slowRpcMs || durationMs >= slowRpcMs)) {
+              LOG.infof(
+                  "slow_or_unsuccessful_reconcile_lease_transport correlationId=%s status=%s preInterceptorMs=%d durationMs=%d",
+                  logCorrelationId, status.getCode().name(), preInterceptorMs, durationMs);
+            }
             Metadata nextTrailers = new Metadata();
             nextTrailers.merge(trailers);
             if (nonBlank(correlationId)) {
@@ -111,6 +121,19 @@ public class RpcLoggingInterceptor implements ServerInterceptor, Prioritized {
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> QUERY_ID_KEY =
       Metadata.Key.of(InboundCallContextHelper.HEADER_QUERY_ID, Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> RENEW_START_EPOCH_MS_KEY =
+      Metadata.Key.of("x-floescan-renew-start-epoch-ms", Metadata.ASCII_STRING_MARSHALLER);
+
+  private static long elapsedSinceClientStart(long ingressEpochMs, String clientStartEpochMs) {
+    if (!nonBlank(clientStartEpochMs)) {
+      return 0L;
+    }
+    try {
+      return Math.max(0L, ingressEpochMs - Long.parseLong(clientStartEpochMs));
+    } catch (NumberFormatException ignored) {
+      return 0L;
+    }
+  }
 
   void logCall(
       io.grpc.Status status,

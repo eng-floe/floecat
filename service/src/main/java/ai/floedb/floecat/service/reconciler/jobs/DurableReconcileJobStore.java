@@ -3973,8 +3973,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     boolean allowExpiredWithinGrace =
         completionKind == CompletionKind.SUCCEEDED_WAITING
             || completionKind == CompletionKind.SUCCEEDED
-            || completionKind == CompletionKind.FAILED_TERMINAL
-            || completionKind == CompletionKind.CANCELLED;
+            || completionKind == CompletionKind.FAILED_TERMINAL;
     if (!leaseManager()
         .hasActiveLease(jobId, leaseEpoch, nextChild, op, true, true, allowExpiredWithinGrace)) {
       return null;

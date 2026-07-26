@@ -890,11 +890,16 @@ message GetLeasedFileGroupExecutionResponse {
   LeasedFileGroupExecution execution = 1;
 }
 
-message SubmitLeasedFileGroupExecutionResultRequest {
+// A successful outcome idempotently protects the immutable objects produced by one file-group
+// execution before completing the leased job. Protection and job completion are ordered, not one
+// atomic storage transaction. The service never reads the referenced objects during this
+// control-plane call. Replays with the same result_id are idempotent.
+message CommitLeasedFileGroupResultRequest {
   message Success {
     string result_id = 1;
     FileGroupResultDescriptor result_descriptor = 2;
-    reserved 3;
+    repeated StatsObjectDescriptor file_stats = 3;
+    repeated StatsObjectDescriptor index_artifacts = 4;
   }
 
   message Failure {
@@ -912,7 +917,7 @@ message SubmitLeasedFileGroupExecutionResultRequest {
   reserved 3;
 }
 
-message SubmitLeasedFileGroupExecutionResultResponse {
+message CommitLeasedFileGroupResultResponse {
   bool accepted = 1;
 }
 
@@ -1165,9 +1170,9 @@ service ReconcileExecutorControl {
   // Returns the standalone worker payload for one leased EXEC_FILE_GROUP job.
   rpc GetLeasedFileGroupExecution(GetLeasedFileGroupExecutionRequest)
       returns (GetLeasedFileGroupExecutionResponse);
-  // Persists one standalone worker execution result for a leased EXEC_FILE_GROUP job.
-  rpc SubmitLeasedFileGroupExecutionResult(SubmitLeasedFileGroupExecutionResultRequest)
-      returns (SubmitLeasedFileGroupExecutionResultResponse);
+  // Protects one standalone worker result; success then completes its EXEC_FILE_GROUP job.
+  rpc CommitLeasedFileGroupResult(CommitLeasedFileGroupResultRequest)
+      returns (CommitLeasedFileGroupResultResponse);
   // Returns compact child-result manifests for one leased FINALIZE_SNAPSHOT_CAPTURE job.
   rpc GetLeasedSnapshotFinalizeInput(GetLeasedSnapshotFinalizeInputRequest)
       returns (GetLeasedSnapshotFinalizeInputResponse);

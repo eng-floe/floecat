@@ -42,6 +42,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedSnapshotFinalizeInputRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileCancellationRequest;
@@ -52,7 +53,6 @@ import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryDisposition;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
-import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
 import ai.floedb.floecat.service.reconciler.jobs.LeaseScanCapacityExceededException;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -518,19 +518,19 @@ class ReconcileExecutorControlImplTest {
   }
 
   @Test
-  void submitLeasedFileGroupExecutionResultRoutesSuccessCompletion() {
+  void commitLeasedFileGroupResultRoutesSuccessCompletion() {
     when(service.leasedFileGroupExecutionService.persistSuccess(
-            any(), eq("job-1"), eq("lease-1"), eq("result-1"), any()))
+            any(), eq("job-1"), eq("lease-1"), eq("result-1"), any(), any(), any()))
         .thenReturn(true);
 
     var response =
         service
-            .submitLeasedFileGroupExecutionResult(
-                SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
+            .commitLeasedFileGroupResult(
+                CommitLeasedFileGroupResultRequest.newBuilder()
                     .setJobId("job-1")
                     .setLeaseEpoch("lease-1")
                     .setSuccess(
-                        SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
+                        CommitLeasedFileGroupResultRequest.Success.newBuilder()
                             .setResultId("result-1")
                             .setResultDescriptor(fileGroupResultDescriptor())
                             .build())
@@ -540,25 +540,25 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.leasedFileGroupExecutionService)
-        .persistSuccess(any(), eq("job-1"), eq("lease-1"), eq("result-1"), any());
+        .persistSuccess(any(), eq("job-1"), eq("lease-1"), eq("result-1"), any(), any(), any());
   }
 
   @Test
-  void submitLeasedFileGroupExecutionResultAllowsRunningLeafToFinishAfterConnectorDelete() {
+  void commitLeasedFileGroupResultAllowsRunningLeafToFinishAfterConnectorDelete() {
     service.connectorRepo = mock(ConnectorRepository.class);
     when(service.connectorRepo.existsById(any())).thenReturn(false);
     when(service.leasedFileGroupExecutionService.persistSuccess(
-            any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), any()))
+            any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), any(), any(), any()))
         .thenReturn(true);
 
     var response =
         service
-            .submitLeasedFileGroupExecutionResult(
-                SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
+            .commitLeasedFileGroupResult(
+                CommitLeasedFileGroupResultRequest.newBuilder()
                     .setJobId("leaf-1")
                     .setLeaseEpoch("lease-1")
                     .setSuccess(
-                        SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
+                        CommitLeasedFileGroupResultRequest.Success.newBuilder()
                             .setResultId("result-1")
                             .setResultDescriptor(fileGroupResultDescriptor())
                             .build())
@@ -568,7 +568,7 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.leasedFileGroupExecutionService)
-        .persistSuccess(any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), any());
+        .persistSuccess(any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), any(), any(), any());
   }
 
   @Test

@@ -37,6 +37,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload;
@@ -60,7 +61,6 @@ import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StartLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
-import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanConnectorResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
@@ -1064,19 +1064,21 @@ class GrpcRemoteReconcileExecutorClient
             .setFileStatsRecordCount(fileStats.size())
             .setCreatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
             .build();
-    SubmitLeasedFileGroupExecutionResultRequest.Success success =
-        SubmitLeasedFileGroupExecutionResultRequest.Success.newBuilder()
+    CommitLeasedFileGroupResultRequest.Success success =
+        CommitLeasedFileGroupResultRequest.Success.newBuilder()
             .setResultId(resultId)
             .setResultDescriptor(descriptor)
+            .addAllFileStats(fileStatsObjects)
+            .addAllIndexArtifacts(indexArtifacts)
             .build();
     return invokeWorkerControl(
-        "submitLeasedFileGroupExecutionResult",
+        "commitLeasedFileGroupResult",
         correlationId(lease),
         lease.lease().accountId,
         true,
         stub ->
-            stub.submitLeasedFileGroupExecutionResult(
-                    SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
+            stub.commitLeasedFileGroupResult(
+                    CommitLeasedFileGroupResultRequest.newBuilder()
                         .setJobId(lease.lease().jobId)
                         .setLeaseEpoch(lease.lease().leaseEpoch)
                         .setSuccess(success)
@@ -1088,16 +1090,16 @@ class GrpcRemoteReconcileExecutorClient
     String stableResultId = resultId == null ? "" : resultId.trim();
     if (stableResultId.isBlank()) {
       return invokeWorkerControlMutationOnce(
-          "submitLeasedFileGroupExecutionResult",
+          "commitLeasedFileGroupResult",
           correlationId(lease),
           lease.lease().accountId,
           stub ->
-              stub.submitLeasedFileGroupExecutionResult(
-                      SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
+              stub.commitLeasedFileGroupResult(
+                      CommitLeasedFileGroupResultRequest.newBuilder()
                           .setJobId(lease.lease().jobId)
                           .setLeaseEpoch(lease.lease().leaseEpoch)
                           .setFailure(
-                              SubmitLeasedFileGroupExecutionResultRequest.Failure.newBuilder()
+                              CommitLeasedFileGroupResultRequest.Failure.newBuilder()
                                   .setResultId(stableResultId)
                                   .setMessage(message == null ? "" : message)
                                   .build())
@@ -1105,16 +1107,16 @@ class GrpcRemoteReconcileExecutorClient
                   .getAccepted());
     }
     return invokeWorkerControlRetryable(
-        "submitLeasedFileGroupExecutionResult",
+        "commitLeasedFileGroupResult",
         correlationId(lease),
         lease.lease().accountId,
         stub ->
-            stub.submitLeasedFileGroupExecutionResult(
-                    SubmitLeasedFileGroupExecutionResultRequest.newBuilder()
+            stub.commitLeasedFileGroupResult(
+                    CommitLeasedFileGroupResultRequest.newBuilder()
                         .setJobId(lease.lease().jobId)
                         .setLeaseEpoch(lease.lease().leaseEpoch)
                         .setFailure(
-                            SubmitLeasedFileGroupExecutionResultRequest.Failure.newBuilder()
+                            CommitLeasedFileGroupResultRequest.Failure.newBuilder()
                                 .setResultId(stableResultId)
                                 .setMessage(message == null ? "" : message)
                                 .build())
@@ -2349,7 +2351,7 @@ class GrpcRemoteReconcileExecutorClient
     return switch (operation) {
       case "renewReconcileLease", "getReconcileCancellation", "reportReconcileProgress" ->
           workerControlLeaseDeadlineMs;
-      case "submitLeasedFileGroupExecutionResult",
+      case "commitLeasedFileGroupResult",
           "submitLeasedSnapshotFinalizeResult",
           "completeLeasedReconcileJob" ->
           workerControlMutationDeadlineMs;

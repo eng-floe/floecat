@@ -95,7 +95,7 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
   same reconcile job tree without metadata reconciliation. `METADATA_AND_CAPTURE` performs metadata
   reconciliation and capture within the same planner/executor job tree. Remote file-group workers
   submit file-target stats and staged index artifacts back through
-  `SubmitLeasedFileGroupExecutionResult`, and the service persists those results before
+  `CommitLeasedFileGroupResult`, and the service protects those result objects before
   `FINALIZE_SNAPSHOT_CAPTURE` writes any snapshot-wide aggregate stats.
 - **Snapshot planning persistence**: the immutable snapshot plan is stored on the parent
   `PLAN_SNAPSHOT` job payload rather than in a separate plan repository. That payload includes the
@@ -111,9 +111,11 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
   - Service-side result submission persists only file-target stats from file-group workers;
     aggregate table/column outputs are rejected from file-group completion and recomputed once at
     snapshot finalization time.
-  - `SubmitLeasedFileGroupExecutionResult` requires `result_id`. The service records top-level
-    idempotency for the whole submit payload and per-item idempotency for individual stats/artifact
-    writes so worker retries can safely replay the same result.
+  - `CommitLeasedFileGroupResult` requires `result_id`. It idempotently protects immutable
+    stats/artifact objects in batches without reading their payloads, then completes the file-group
+    job. Protection and completion are ordered, not one atomic storage transaction. Worker retries
+    safely replay the same result. Successful finalization clears protection metadata; abandoned
+    unpublished full-rescan generations are deleted after terminal failure or cancellation.
   - Current snapshot reads surface `file_groups_total`, `file_groups_completed`,
     `file_groups_failed`, `files_total`, `files_completed`, and `files_failed`.
 - **Index artifacts**:

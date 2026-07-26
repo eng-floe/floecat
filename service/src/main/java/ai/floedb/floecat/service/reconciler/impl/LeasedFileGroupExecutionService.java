@@ -42,10 +42,9 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
-import ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload;
+import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
+import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultResponse;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
-import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
-import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultResponse;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.MutationOps;
@@ -56,16 +55,12 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.stats.spi.StatsStore;
-import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
-import ai.floedb.floecat.storage.spi.BlobStore;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.Base64;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -76,7 +71,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
   @Inject ConnectorRepository connectorRepo;
   @Inject SnapshotRepository snapshotRepo;
   @Inject CredentialResolver credentialResolver;
-  @Inject BlobStore blobStore;
   @Inject StatsStore statsStore;
   @Inject IdempotencyRepository idempotencyStore;
 
@@ -238,7 +232,9 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       String jobId,
       String leaseEpoch,
       String resultId,
-      ReconcileFileGroupResultDescriptor descriptor) {
+      ReconcileFileGroupResultDescriptor descriptor,
+      List<StatsObjectDescriptor> fileStats,
+      List<StatsObjectDescriptor> indexArtifacts) {
     String corr = principalContext.getCorrelationId();
     String requiredResultId = requireResultId(resultId);
     ReconcileJobStore.ReconcileJob existing = jobs.getCompactLeaseView(jobId).orElse(null);
@@ -254,7 +250,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     ReconcileFileGroupTask plannedTask = resolvePlannedTask(lease);
     ReconcileFileGroupResultDescriptor validated =
         validateResultDescriptor(lease, plannedTask, requiredResultId, descriptor);
-    protectStatsObjects(lease, plannedTask, validated);
+    protectStatsObjects(lease, plannedTask, validated, fileStats, indexArtifacts);
     boolean accepted =
         jobs.completeFileGroupSuccess(
             lease.jobId,
@@ -320,74 +316,31 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       throw new IllegalArgumentException(
           "file-group result descriptor outcome counts do not match successful plan");
     }
-    var header =
-        blobStore
-            .head(expectedUri)
-            .orElseThrow(
-                () ->
-                    new StorageAbortRetryableException(
-                        "file-group result object is not committed jobId="
-                            + lease.jobId
-                            + " uri="
-                            + expectedUri));
-    if (header.getContentLength() != descriptor.payloadBytes()) {
-      throw new IllegalArgumentException(
-          "file-group result object size mismatch jobId=" + lease.jobId + " uri=" + expectedUri);
-    }
     return descriptor;
   }
 
   private void protectStatsObjects(
       ReconcileJobStore.LeasedJob lease,
       ReconcileFileGroupTask plannedTask,
-      ReconcileFileGroupResultDescriptor descriptor) {
-    byte[] bytes = blobStore.get(descriptor.payloadUri());
-    if (bytes == null) {
-      throw new StorageAbortRetryableException(
-          "file-group result object is not committed jobId="
-              + lease.jobId
-              + " uri="
-              + descriptor.payloadUri());
-    }
-    byte[] expectedHash;
-    try {
-      expectedHash = Base64.getDecoder().decode(descriptor.payloadSha256());
-    } catch (IllegalArgumentException e) {
-      throw new IllegalArgumentException("file-group result object sha256 is invalid", e);
-    }
-    if (expectedHash.length != 32
-        || bytes.length != descriptor.payloadBytes()
-        || !MessageDigest.isEqual(sha256(bytes), expectedHash)) {
-      throw new IllegalArgumentException("file-group result object does not match its descriptor");
-    }
-    final FileGroupResultPayload result;
-    try {
-      result = FileGroupResultPayload.parseFrom(bytes);
-    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
-      throw new IllegalArgumentException("file-group result object is invalid", e);
-    }
-    if (result.getFormatVersion() != 1
-        || !descriptor.accountId().equals(result.getAccountId())
-        || !descriptor.connectorId().equals(result.getConnectorId())
-        || !descriptor.parentJobId().equals(result.getParentJobId())
-        || !descriptor.fileGroupJobId().equals(result.getFileGroupJobId())
-        || !descriptor.planId().equals(result.getPlanId())
-        || !descriptor.groupId().equals(result.getGroupId())
-        || !descriptor.tableId().equals(result.getTableId())
-        || descriptor.snapshotId() != result.getSnapshotId()
-        || !descriptor.leaseEpoch().equals(result.getLeaseEpoch())
-        || !descriptor.resultId().equals(result.getResultId())
-        || descriptor.fileStatsRecordCount() != result.getFileStatsCount()
-        || descriptor.indexArtifactCount() != result.getIndexArtifactsCount()) {
-      throw new IllegalArgumentException("file-group result object identity mismatch");
+      ReconcileFileGroupResultDescriptor descriptor,
+      List<StatsObjectDescriptor> fileStats,
+      List<StatsObjectDescriptor> indexArtifacts) {
+    List<StatsObjectDescriptor> requiredFileStats = fileStats == null ? List.of() : fileStats;
+    List<StatsObjectDescriptor> requiredIndexArtifacts =
+        indexArtifacts == null ? List.of() : indexArtifacts;
+    if (descriptor.fileStatsRecordCount() != requiredFileStats.size()
+        || descriptor.indexArtifactCount() != requiredIndexArtifacts.size()) {
+      throw new IllegalArgumentException("file-group pointer counts do not match descriptor");
     }
     List<StatsStore.PrewrittenStatsObject> objects =
-        new ArrayList<>(result.getFileStatsCount() + result.getIndexArtifactsCount());
-    List<StatsObjectDescriptor> descriptors = new ArrayList<>(result.getFileStatsList());
-    descriptors.addAll(result.getIndexArtifactsList());
+        new ArrayList<>(requiredFileStats.size() + requiredIndexArtifacts.size());
+    List<StatsObjectDescriptor> descriptors = new ArrayList<>(requiredFileStats);
+    descriptors.addAll(requiredIndexArtifacts);
+    HashSet<String> payloadUris = new HashSet<>();
     for (StatsObjectDescriptor object : descriptors) {
       if (object.getTargetStorageId().isBlank()
           || object.getPayloadUri().isBlank()
+          || !payloadUris.add(object.getPayloadUri())
           || !object.getPayloadUri().startsWith(descriptor.statsObjectPrefix())
           || object.getPayloadBytes() <= 0L
           || object.getPayloadSha256().size() != 32) {
@@ -411,14 +364,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         "full-rescan-" + lease.parentJobId,
         lease.jobId + ":" + lease.leaseEpoch,
         objects);
-  }
-
-  private static byte[] sha256(byte[] bytes) {
-    try {
-      return MessageDigest.getInstance("SHA-256").digest(bytes);
-    } catch (NoSuchAlgorithmException e) {
-      throw new IllegalStateException("SHA-256 is unavailable", e);
-    }
   }
 
   private static void requireAcceptedLeaseOutcome(boolean accepted, String jobId) {
@@ -450,12 +395,12 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             () ->
                 MutationOps.createProto(
                     principalContext.getAccountId(),
-                    "SubmitLeasedFileGroupExecutionResult",
+                    "CommitLeasedFileGroupResult",
                     resultIdempotencyKey(jobId, requiredResultId),
                     () -> requestBytes,
                     () ->
                         new IdempotencyGuard.CreateResult<>(
-                            SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
+                            CommitLeasedFileGroupResultResponse.newBuilder()
                                 .setAccepted(true)
                                 .build(),
                             tableId),
@@ -464,7 +409,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                     nowTs(),
                     idempotencyTtlSeconds(),
                     principalContext::getCorrelationId,
-                    SubmitLeasedFileGroupExecutionResultResponse::parseFrom))
+                    CommitLeasedFileGroupResultResponse::parseFrom))
         .body
         .getAccepted();
   }
@@ -497,9 +442,9 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         .orElse(base);
   }
 
-  private static SubmitLeasedFileGroupExecutionResultRequest.Failure failurePayload(
+  private static CommitLeasedFileGroupResultRequest.Failure failurePayload(
       String resultId, String message) {
-    return SubmitLeasedFileGroupExecutionResultRequest.Failure.newBuilder()
+    return CommitLeasedFileGroupResultRequest.Failure.newBuilder()
         .setResultId(resultId)
         .setMessage(message == null ? "" : message)
         .build();

@@ -21,7 +21,7 @@ The current JVM path for file-group execution is:
 - `RemoteReconcileExecutorPoller` leases `EXEC_FILE_GROUP` jobs.
 - `RemoteFileGroupReconcileExecutor` fetches `LeasedFileGroupExecution`.
 - `StandaloneJavaFileGroupExecutionRunner` performs the actual parquet work.
-- `SubmitLeasedFileGroupExecutionResult` persists stats, index artifacts, and per-file results.
+- `CommitLeasedFileGroupResult` protects stats and index-artifact objects, then completes the job.
 
 A Rust worker replaces the execution portion of that flow. It should behave like an external
 implementation of the current worker contract, not like a new public API.
@@ -36,7 +36,7 @@ At minimum, the Rust worker must implement these `ReconcileExecutorControl` RPCs
 - `ReportReconcileProgress`
 - `GetReconcileCancellation`
 - `GetLeasedFileGroupExecution`
-- `SubmitLeasedFileGroupExecutionResult`
+- `CommitLeasedFileGroupResult`
 - `CompleteLeasedReconcileJob`
 
 For a file-group-only worker, lease only `RJK_EXEC_FILE_GROUP`.
@@ -97,8 +97,7 @@ LeaseReconcileJob
   → StartLeasedReconcileJob
   → GetLeasedFileGroupExecution
   → run parquet capture
-  → SubmitLeasedFileGroupExecutionResult(success)
-  → CompleteLeasedReconcileJob(RCS_SUCCEEDED)
+  → CommitLeasedFileGroupResult(success)
 ```
 
 The failure path is:
@@ -108,7 +107,7 @@ LeaseReconcileJob
   → StartLeasedReconcileJob
   → GetLeasedFileGroupExecution
   → run parquet capture
-  → SubmitLeasedFileGroupExecutionResult(failure)
+  → CommitLeasedFileGroupResult(failure)
   → CompleteLeasedReconcileJob(RCS_FAILED)
 ```
 
@@ -141,28 +140,28 @@ For a Rust worker, `source_connector` is important because it carries the resolv
 connector definition and auth material needed to read source files.
 
 ## Result Contract
-`SubmitLeasedFileGroupExecutionResult` has two outcomes:
+`CommitLeasedFileGroupResult` has two outcomes:
 
 - `success`
 - `failure`
 
 Both require `result_id`.
 
-Stats records and index artifacts are streamed first as `chunk` messages; `success` then finalizes
-the result and tells the service how many chunks to reassemble.
+The worker uploads immutable stats and index-artifact objects, then sends their compact descriptors
+with `success`. Floecat idempotently protects the referenced objects without reading them, then
+completes the file-group job. Protection and completion are ordered, not one atomic storage
+transaction.
 
 Success carries:
 
 - `result_id`
-- `file_results`
-- `chunk_count` (number of preceding `chunk` messages)
-
-Each preceding `chunk` carries:
-
-- `result_id`
-- `chunk_index`
-- `stats_records`
+- `result_descriptor`
+- `file_stats`
 - `index_artifacts`
+
+Each `StatsObjectDescriptor` carries the immutable object's target storage ID, payload URI, byte
+length, and SHA-256. File-stats and index descriptors for the same source file may share a target
+storage ID; their payload URIs identify the distinct protected objects.
 
 Failure carries:
 
@@ -196,18 +195,18 @@ rejected with `Conflict detected`. Including the `lease_epoch` guarantees that.
 ## Idempotency and Retry Semantics
 The worker should assume the following:
 
-- `SubmitLeasedFileGroupExecutionResult` is safe to retry only if the same `result_id` and the
+- `CommitLeasedFileGroupResult` is safe to retry only if the same `result_id` and the
   same payload are reused.
 - success and failure are different outcomes and must not share a `result_id`.
-- `CompleteLeasedReconcileJob` is a separate terminal-state RPC. Do not assume a successful result
-  submit also marks the job terminal.
+- a successful commit marks the file-group job terminal; do not send a second success completion.
+- a failed or uncertain commit may leave protection metadata, but cannot mark the job successful
+  before protection succeeds. Finalization or abandoned-generation cleanup removes the protections.
 
 Recommended retry behavior:
 
 1. Generate one `result_id` per execution attempt (include the `lease_epoch`); a re-lease produces a new one.
 2. If the submit RPC times out or the response is lost, retry the same request unchanged.
-3. If `CompleteLeasedReconcileJob` times out after a successful submit, retry completion with the
-   same terminal counters/message.
+3. Once the commit is accepted, stop heartbeats; no separate success completion is needed.
 
 ## Cancellation and Lease Handling
 The worker should treat lease expiry and cancellation as first-class control signals.
@@ -219,7 +218,7 @@ Recommended loop:
 3. Treat `renewed=false` as loss of ownership and stop work.
 4. Poll `GetReconcileCancellation` or rely on the cancellation flag returned by renew/progress.
 5. If cancellation is requested, stop execution and submit:
-   - `SubmitLeasedFileGroupExecutionResult(failure)` only if you want a durable failure payload, or
+   - `CommitLeasedFileGroupResult(failure)` only if you want a durable failure payload, or
    - no result payload if no per-file result should be persisted
 6. Finish with `CompleteLeasedReconcileJob(RCS_CANCELLED)` when appropriate.
 

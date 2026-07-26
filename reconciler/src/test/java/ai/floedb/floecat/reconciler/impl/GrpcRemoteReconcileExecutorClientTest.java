@@ -41,6 +41,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
+import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
+import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultResponse;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanConnectorInputResponse;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanTableInputResponse;
@@ -52,8 +54,6 @@ import ai.floedb.floecat.reconciler.rpc.ListLeasedSnapshotFileGroupResultsRespon
 import ai.floedb.floecat.reconciler.rpc.ReconcileExecutorControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseResponse;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
-import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
-import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
@@ -764,11 +764,10 @@ class GrpcRemoteReconcileExecutorClientTest {
     client.enqueueTransport(channel2, stub2);
     when(stub1.withInterceptors(any())).thenReturn(stub1);
     when(stub2.withInterceptors(any())).thenReturn(stub2);
-    when(stub1.submitLeasedFileGroupExecutionResult(any()))
+    when(stub1.commitLeasedFileGroupResult(any()))
         .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE));
-    when(stub2.submitLeasedFileGroupExecutionResult(any()))
-        .thenReturn(
-            SubmitLeasedFileGroupExecutionResultResponse.newBuilder().setAccepted(true).build());
+    when(stub2.commitLeasedFileGroupResult(any()))
+        .thenReturn(CommitLeasedFileGroupResultResponse.newBuilder().setAccepted(true).build());
 
     boolean accepted =
         client.submitSuccess(
@@ -777,8 +776,8 @@ class GrpcRemoteReconcileExecutorClientTest {
             StandaloneFileGroupExecutionResult.empty("result-1"));
 
     assertThat(accepted).isTrue();
-    verify(stub1).submitLeasedFileGroupExecutionResult(any());
-    verify(stub2).submitLeasedFileGroupExecutionResult(any());
+    verify(stub1).commitLeasedFileGroupResult(any());
+    verify(stub2).commitLeasedFileGroupResult(any());
   }
 
   @Test
@@ -797,7 +796,7 @@ class GrpcRemoteReconcileExecutorClientTest {
                 fileGroupPayload("s3://bucket/file.parquet"),
                 StandaloneFileGroupExecutionResult.empty("  ")));
 
-    verify(stub, org.mockito.Mockito.never()).submitLeasedFileGroupExecutionResult(any());
+    verify(stub, org.mockito.Mockito.never()).commitLeasedFileGroupResult(any());
     assertThat(client.transportFailureLogs()).isEmpty();
   }
 
@@ -809,9 +808,8 @@ class GrpcRemoteReconcileExecutorClientTest {
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     client.enqueueTransport(channel, stub);
     when(stub.withInterceptors(any())).thenReturn(stub);
-    when(stub.submitLeasedFileGroupExecutionResult(any()))
-        .thenReturn(
-            SubmitLeasedFileGroupExecutionResultResponse.newBuilder().setAccepted(true).build());
+    when(stub.commitLeasedFileGroupResult(any()))
+        .thenReturn(CommitLeasedFileGroupResultResponse.newBuilder().setAccepted(true).build());
     when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
 
     var result = new StandaloneFileGroupExecutionResult("result-1", List.of(), List.of());
@@ -821,9 +819,9 @@ class GrpcRemoteReconcileExecutorClientTest {
                 remoteFileGroupLease(), fileGroupPayload("s3://bucket/file.parquet"), result))
         .isTrue();
 
-    ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
-        ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
-    verify(stub).submitLeasedFileGroupExecutionResult(requestCaptor.capture());
+    ArgumentCaptor<CommitLeasedFileGroupResultRequest> requestCaptor =
+        ArgumentCaptor.forClass(CommitLeasedFileGroupResultRequest.class);
+    verify(stub).commitLeasedFileGroupResult(requestCaptor.capture());
     var success = requestCaptor.getValue().getSuccess();
     assertThat(success.getResultId()).isEqualTo("result-1");
     assertThat(success.getResultDescriptor().getPlannedFileCount()).isEqualTo(1);
@@ -839,9 +837,8 @@ class GrpcRemoteReconcileExecutorClientTest {
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     client.enqueueTransport(channel, stub);
     when(stub.withInterceptors(any())).thenReturn(stub);
-    when(stub.submitLeasedFileGroupExecutionResult(any()))
-        .thenReturn(
-            SubmitLeasedFileGroupExecutionResultResponse.newBuilder().setAccepted(true).build());
+    when(stub.commitLeasedFileGroupResult(any()))
+        .thenReturn(CommitLeasedFileGroupResultResponse.newBuilder().setAccepted(true).build());
     when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
 
     var result =
@@ -869,9 +866,9 @@ class GrpcRemoteReconcileExecutorClientTest {
                 result))
         .isTrue();
 
-    ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
-        ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
-    verify(stub).submitLeasedFileGroupExecutionResult(requestCaptor.capture());
+    ArgumentCaptor<CommitLeasedFileGroupResultRequest> requestCaptor =
+        ArgumentCaptor.forClass(CommitLeasedFileGroupResultRequest.class);
+    verify(stub).commitLeasedFileGroupResult(requestCaptor.capture());
     var success = requestCaptor.getValue().getSuccess();
     assertThat(success.getResultId()).isEqualTo("result-1");
     assertThat(success.getResultDescriptor().getFileStatsRecordCount()).isEqualTo(1);
@@ -892,9 +889,8 @@ class GrpcRemoteReconcileExecutorClientTest {
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     client.enqueueTransport(channel, stub);
     when(stub.withInterceptors(any())).thenReturn(stub);
-    when(stub.submitLeasedFileGroupExecutionResult(any()))
-        .thenReturn(
-            SubmitLeasedFileGroupExecutionResultResponse.newBuilder().setAccepted(true).build());
+    when(stub.commitLeasedFileGroupResult(any()))
+        .thenReturn(CommitLeasedFileGroupResultResponse.newBuilder().setAccepted(true).build());
     when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
 
     String largeFilePath = "s3://bucket/" + "x".repeat(16 * 1024) + ".parquet";
@@ -919,9 +915,9 @@ class GrpcRemoteReconcileExecutorClientTest {
             client.submitSuccess(remoteFileGroupLease(), fileGroupPayload(largeFilePath), result))
         .isTrue();
 
-    ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
-        ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
-    verify(stub).submitLeasedFileGroupExecutionResult(requestCaptor.capture());
+    ArgumentCaptor<CommitLeasedFileGroupResultRequest> requestCaptor =
+        ArgumentCaptor.forClass(CommitLeasedFileGroupResultRequest.class);
+    verify(stub).commitLeasedFileGroupResult(requestCaptor.capture());
     var success = requestCaptor.getValue().getSuccess();
     assertThat(success.getResultDescriptor().getFileStatsRecordCount()).isEqualTo(12);
   }
@@ -933,9 +929,8 @@ class GrpcRemoteReconcileExecutorClientTest {
     ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
         mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
     client.enqueueTransport(channel, stub);
-    when(stub.submitLeasedFileGroupExecutionResult(any()))
-        .thenReturn(
-            SubmitLeasedFileGroupExecutionResultResponse.newBuilder().setAccepted(true).build());
+    when(stub.commitLeasedFileGroupResult(any()))
+        .thenReturn(CommitLeasedFileGroupResultResponse.newBuilder().setAccepted(true).build());
     String artifactUri = "s3://bucket/file.parquet.idx";
     when(client.blobStore.head(artifactUri))
         .thenReturn(
@@ -965,9 +960,9 @@ class GrpcRemoteReconcileExecutorClientTest {
         .isTrue();
 
     verify(client.blobStore, times(1)).head(artifactUri);
-    ArgumentCaptor<SubmitLeasedFileGroupExecutionResultRequest> requestCaptor =
-        ArgumentCaptor.forClass(SubmitLeasedFileGroupExecutionResultRequest.class);
-    verify(stub).submitLeasedFileGroupExecutionResult(requestCaptor.capture());
+    ArgumentCaptor<CommitLeasedFileGroupResultRequest> requestCaptor =
+        ArgumentCaptor.forClass(CommitLeasedFileGroupResultRequest.class);
+    verify(stub).commitLeasedFileGroupResult(requestCaptor.capture());
     String payloadUri = requestCaptor.getValue().getSuccess().getResultDescriptor().getPayloadUri();
     ArgumentCaptor<String> uriCaptor = ArgumentCaptor.forClass(String.class);
     ArgumentCaptor<byte[]> bytesCaptor = ArgumentCaptor.forClass(byte[].class);

@@ -38,12 +38,14 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.PriorityQueue;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -51,6 +53,7 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecutor {
   private static final Logger LOG = Logger.getLogger(RemoteSnapshotPlanningReconcileExecutor.class);
+  private static final long ESTIMATED_FILE_OVERHEAD_BYTES = 4L * 1024L * 1024L;
 
   private final ReconcilerBackend backend;
   private final RemotePlannerWorkerClient workerClient;
@@ -529,11 +532,9 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       List<FloecatConnector.SnapshotFileEntry> files,
       String executionSchemaJson) {
     java.util.ArrayList<ReconcileFileGroupTask> groups = new java.util.ArrayList<>();
-    int groupSize = maxFilesPerGroup;
-    for (int offset = 0; offset < files.size(); offset += groupSize) {
-      int end = Math.min(files.size(), offset + groupSize);
+    for (List<FloecatConnector.SnapshotFileEntry> groupFiles :
+        partitionByEstimatedWork(files, maxFilesPerGroup)) {
       String groupId = "snapshot-" + task.snapshotId() + "-group-" + groups.size();
-      List<FloecatConnector.SnapshotFileEntry> groupFiles = files.subList(offset, end);
       List<String> filePaths =
           groupFiles.stream().map(FloecatConnector.SnapshotFileEntry::filePath).toList();
       List<ReconcileFileExecutionPlan> executionPlans =
@@ -558,6 +559,92 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
               executionPlans));
     }
     return List.copyOf(groups);
+  }
+
+  static List<List<FloecatConnector.SnapshotFileEntry>> partitionByEstimatedWork(
+      List<FloecatConnector.SnapshotFileEntry> files, int maxFilesPerGroup) {
+    if (files == null || files.isEmpty()) {
+      return List.of();
+    }
+
+    int effectiveMaxFiles = Math.max(1, maxFilesPerGroup);
+    int groupCount = (files.size() + effectiveMaxFiles - 1) / effectiveMaxFiles;
+    List<FileGroupBucket> buckets = new ArrayList<>(groupCount);
+    PriorityQueue<FileGroupBucket> available =
+        new PriorityQueue<>(
+            Comparator.comparingLong(FileGroupBucket::estimatedWork)
+                .thenComparingInt(FileGroupBucket::fileCount)
+                .thenComparingInt(FileGroupBucket::index));
+    for (int index = 0; index < groupCount; index++) {
+      FileGroupBucket bucket = new FileGroupBucket(index);
+      buckets.add(bucket);
+      available.add(bucket);
+    }
+
+    List<FloecatConnector.SnapshotFileEntry> weightedFiles =
+        files.stream()
+            .sorted(
+                Comparator.comparingLong(RemoteSnapshotPlanningReconcileExecutor::estimatedFileWork)
+                    .reversed()
+                    .thenComparing(FloecatConnector.SnapshotFileEntry::filePath)
+                    .thenComparing(FloecatConnector.SnapshotFileEntry::fileFormat))
+            .toList();
+    for (FloecatConnector.SnapshotFileEntry file : weightedFiles) {
+      FileGroupBucket bucket = available.remove();
+      bucket.add(file);
+      if (bucket.fileCount() < effectiveMaxFiles) {
+        available.add(bucket);
+      }
+    }
+
+    return buckets.stream().map(FileGroupBucket::immutableFiles).toList();
+  }
+
+  private static long estimatedFileWork(FloecatConnector.SnapshotFileEntry file) {
+    long estimatedWork = saturatedAdd(file.fileSizeInBytes(), ESTIMATED_FILE_OVERHEAD_BYTES);
+    if (file.deletionVector() != null) {
+      estimatedWork = saturatedAdd(estimatedWork, file.deletionVector().sizeInBytes());
+    }
+    for (FloecatConnector.SnapshotIcebergDeleteFile deleteFile : file.icebergDeleteFiles()) {
+      estimatedWork = saturatedAdd(estimatedWork, deleteFile.fileSizeInBytes());
+    }
+    return estimatedWork;
+  }
+
+  private static long saturatedAdd(long left, long right) {
+    long nonNegativeRight = Math.max(0L, right);
+    return left > Long.MAX_VALUE - nonNegativeRight ? Long.MAX_VALUE : left + nonNegativeRight;
+  }
+
+  private static final class FileGroupBucket {
+    private final int index;
+    private final List<FloecatConnector.SnapshotFileEntry> files = new ArrayList<>();
+    private long estimatedWork;
+
+    private FileGroupBucket(int index) {
+      this.index = index;
+    }
+
+    private void add(FloecatConnector.SnapshotFileEntry file) {
+      files.add(file);
+      estimatedWork = saturatedAdd(estimatedWork, estimatedFileWork(file));
+    }
+
+    private int index() {
+      return index;
+    }
+
+    private int fileCount() {
+      return files.size();
+    }
+
+    private long estimatedWork() {
+      return estimatedWork;
+    }
+
+    private List<FloecatConnector.SnapshotFileEntry> immutableFiles() {
+      return List.copyOf(files);
+    }
   }
 
   private static ReconcileFileExecutionPlan executionPlan(FloecatConnector.SnapshotFileEntry file) {

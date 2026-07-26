@@ -536,6 +536,31 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
   }
 
   @Test
+  void applyLeaseOutcomeRejectsCancellationFromExpiredLease() {
+    configureLeaseRenewGraceMs(0L);
+    String jobId = enqueueRoot();
+    ReconcileJobStore.LeasedJob lease = leaseJob(jobId);
+    expireLease(jobId);
+
+    assertFalse(
+        store.applyLeaseOutcome(
+            jobId,
+            lease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.CANCELLED,
+            2_000L,
+            "Cancelled",
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
+
+    assertEquals("JS_RUNNING", store.getLeaseView(jobId).orElseThrow().state);
+  }
+
+  @Test
   void renewLeaseReturnsFalseForExpiredLeaseWhenEpochStillMatches() {
     configureLeaseRenewGraceMs(0L);
     String jobId = enqueueRoot();

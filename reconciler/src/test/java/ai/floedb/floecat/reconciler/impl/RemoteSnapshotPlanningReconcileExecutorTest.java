@@ -42,6 +42,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
@@ -358,6 +360,59 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
+  void partitionByEstimatedWorkBalancesSkewedFilesWithinConfiguredFileLimit() {
+    List<FloecatConnector.SnapshotFileEntry> files =
+        List.of(
+            snapshotFile("large-a", 100L),
+            snapshotFile("large-b", 90L),
+            snapshotFile("large-c", 80L),
+            snapshotFile("small-a", 3L),
+            snapshotFile("small-b", 2L),
+            snapshotFile("small-c", 1L));
+
+    List<List<FloecatConnector.SnapshotFileEntry>> groups =
+        RemoteSnapshotPlanningReconcileExecutor.partitionByEstimatedWork(files, 2);
+
+    assertThat(groups)
+        .extracting(
+            group -> group.stream().map(FloecatConnector.SnapshotFileEntry::filePath).toList())
+        .containsExactly(
+            List.of("s3://bucket/large-a.parquet", "s3://bucket/small-c.parquet"),
+            List.of("s3://bucket/large-b.parquet", "s3://bucket/small-b.parquet"),
+            List.of("s3://bucket/large-c.parquet", "s3://bucket/small-a.parquet"));
+    assertThat(groups).allMatch(group -> group.size() <= 2);
+    assertThat(
+            groups.stream().flatMap(List::stream).map(FloecatConnector.SnapshotFileEntry::filePath))
+        .containsExactlyInAnyOrderElementsOf(
+            files.stream().map(FloecatConnector.SnapshotFileEntry::filePath).toList());
+  }
+
+  @Test
+  void partitionByEstimatedWorkIsDeterministicAcrossInputOrder() {
+    List<FloecatConnector.SnapshotFileEntry> files =
+        List.of(
+            snapshotFile("a", 100L),
+            snapshotFile("b", 90L),
+            snapshotFile("c", 80L),
+            snapshotFile("d", 3L),
+            snapshotFile("e", 2L),
+            snapshotFile("f", 1L));
+    List<FloecatConnector.SnapshotFileEntry> reversed = new ArrayList<>(files);
+    Collections.reverse(reversed);
+
+    List<List<String>> forwardGroups =
+        RemoteSnapshotPlanningReconcileExecutor.partitionByEstimatedWork(files, 2).stream()
+            .map(group -> group.stream().map(FloecatConnector.SnapshotFileEntry::filePath).toList())
+            .toList();
+    List<List<String>> reversedGroups =
+        RemoteSnapshotPlanningReconcileExecutor.partitionByEstimatedWork(reversed, 2).stream()
+            .map(group -> group.stream().map(FloecatConnector.SnapshotFileEntry::filePath).toList())
+            .toList();
+
+    assertThat(reversedGroups).isEqualTo(forwardGroups);
+  }
+
+  @Test
   void executeFailsTerminalWhenExpectedSnapshotIsMissing() {
     var backend = mock(ai.floedb.floecat.reconciler.spi.ReconcilerBackend.class);
     var workerClient = mock(RemotePlannerWorkerClient.class);
@@ -549,6 +604,19 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
               null));
     }
     return List.copyOf(out);
+  }
+
+  private static FloecatConnector.SnapshotFileEntry snapshotFile(String name, long sizeBytes) {
+    return new FloecatConnector.SnapshotFileEntry(
+        "s3://bucket/" + name + ".parquet",
+        "PARQUET",
+        sizeBytes,
+        1L,
+        ai.floedb.floecat.catalog.rpc.FileContent.FC_DATA,
+        "",
+        0,
+        List.of(),
+        null);
   }
 
   private static ReconcileJobStore.LeasedJob lease(

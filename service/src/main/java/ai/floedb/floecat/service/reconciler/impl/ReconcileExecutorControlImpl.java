@@ -36,6 +36,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
+import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultResponse;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedFileGroupExecutionRequest;
@@ -68,8 +70,6 @@ import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressResponse;
 import ai.floedb.floecat.reconciler.rpc.StartLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.StartLeasedReconcileJobResponse;
-import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultRequest;
-import ai.floedb.floecat.reconciler.rpc.SubmitLeasedFileGroupExecutionResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanConnectorResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanConnectorResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
@@ -98,10 +98,13 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
+import org.jboss.logging.Logger;
 
 @GrpcService
 public class ReconcileExecutorControlImpl extends BaseServiceImpl
     implements ReconcileExecutorControl {
+  private static final Logger LOG = Logger.getLogger(ReconcileExecutorControlImpl.class);
+
   static final java.util.List<String> EXECUTOR_CONTROL_PERMISSIONS =
       java.util.List.of(RolePermissions.RECONCILE_EXECUTOR_CONTROL_INTERNAL);
 
@@ -202,19 +205,67 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
 
   @Override
   public Uni<RenewReconcileLeaseResponse> renewReconcileLease(RenewReconcileLeaseRequest request) {
+    long handlerEntryNanos = System.nanoTime();
     return mapFailures(
         run(
             () -> {
-              var principalContext = principalProvider.get();
-              requireExecutorControl(principalContext);
-              String corr = principalContext.getCorrelationId();
-              String jobId = mustNonEmpty(request.getJobId(), "job_id", corr);
-              String leaseEpoch = mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", corr);
-              boolean renewed = jobs.renewLease(jobId, leaseEpoch);
-              return RenewReconcileLeaseResponse.newBuilder()
-                  .setRenewed(renewed)
-                  .setCancellationRequested(jobs.isCancellationRequested(jobId))
-                  .build();
+              long bodyStartNanos = System.nanoTime();
+              long setupNanos = 0L;
+              long renewNanos = 0L;
+              long cancellationNanos = 0L;
+              String jobId = request == null ? "" : request.getJobId();
+              String correlationId = "";
+              String outcome = "failed";
+              try {
+                long phaseStartNanos = System.nanoTime();
+                var principalContext = principalProvider.get();
+                requireExecutorControl(principalContext);
+                correlationId = principalContext.getCorrelationId();
+                jobId = mustNonEmpty(request.getJobId(), "job_id", correlationId);
+                String leaseEpoch =
+                    mustNonEmpty(request.getLeaseEpoch(), "lease_epoch", correlationId);
+                setupNanos = System.nanoTime() - phaseStartNanos;
+
+                phaseStartNanos = System.nanoTime();
+                boolean renewed = jobs.renewLease(jobId, leaseEpoch);
+                renewNanos = System.nanoTime() - phaseStartNanos;
+
+                phaseStartNanos = System.nanoTime();
+                boolean cancellationRequested = jobs.isCancellationRequested(jobId);
+                cancellationNanos = System.nanoTime() - phaseStartNanos;
+                outcome = renewed ? "renewed" : "rejected";
+                return RenewReconcileLeaseResponse.newBuilder()
+                    .setRenewed(renewed)
+                    .setCancellationRequested(cancellationRequested)
+                    .build();
+              } finally {
+                long totalNanos = System.nanoTime() - handlerEntryNanos;
+                long bodyNanos = System.nanoTime() - bodyStartNanos;
+                long queueNanos = Math.max(0L, bodyStartNanos - handlerEntryNanos);
+                long accountedBodyNanos = setupNanos + renewNanos + cancellationNanos;
+                long otherBodyNanos = Math.max(0L, bodyNanos - accountedBodyNanos);
+                long slowNanos = 250_000_000L;
+                if (!"renewed".equals(outcome)
+                    || totalNanos >= slowNanos
+                    || queueNanos >= slowNanos
+                    || renewNanos >= slowNanos
+                    || cancellationNanos >= slowNanos) {
+                  LOG.infof(
+                      "slow_or_unsuccessful_reconcile_lease_handler jobId=%s correlationId=%s outcome=%s"
+                          + " totalMs=%.3f queueMs=%.3f bodyMs=%.3f setupMs=%.3f renewMs=%.3f"
+                          + " cancellationMs=%.3f otherBodyMs=%.3f",
+                      jobId,
+                      correlationId,
+                      outcome,
+                      totalNanos / 1_000_000.0,
+                      queueNanos / 1_000_000.0,
+                      bodyNanos / 1_000_000.0,
+                      setupNanos / 1_000_000.0,
+                      renewNanos / 1_000_000.0,
+                      cancellationNanos / 1_000_000.0,
+                      otherBodyNanos / 1_000_000.0);
+                }
+              }
             }),
         correlationId());
   }
@@ -1014,8 +1065,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
   }
 
   @Override
-  public Uni<SubmitLeasedFileGroupExecutionResultResponse> submitLeasedFileGroupExecutionResult(
-      SubmitLeasedFileGroupExecutionResultRequest request) {
+  public Uni<CommitLeasedFileGroupResultResponse> commitLeasedFileGroupResult(
+      CommitLeasedFileGroupResultRequest request) {
     return mapFailures(
         run(
             () -> {
@@ -1036,8 +1087,10 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         leaseEpoch,
                         request.getSuccess().getResultId(),
                         fromProtoFileGroupResultDescriptor(
-                            request.getSuccess().getResultDescriptor()));
-                return SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
+                            request.getSuccess().getResultDescriptor()),
+                        request.getSuccess().getFileStatsList(),
+                        request.getSuccess().getIndexArtifactsList());
+                return CommitLeasedFileGroupResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();
               }
@@ -1049,7 +1102,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         leaseEpoch,
                         request.getFailure().getResultId(),
                         request.getFailure().getMessage());
-                return SubmitLeasedFileGroupExecutionResultResponse.newBuilder()
+                return CommitLeasedFileGroupResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();
               }

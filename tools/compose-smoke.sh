@@ -313,7 +313,7 @@ assert_remote_file_group_worker_activity() {
     "$out" \
     "remote_file_group_worker" \
     "Executed file group" \
-    "submitLeasedFileGroupExecutionResult"
+    "commitLeasedFileGroupResult"
 }
 
 assert_table_stats_available() {
