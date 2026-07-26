@@ -16,13 +16,13 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
-import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -115,7 +115,7 @@ public final class FileGroupExecutionSupport {
 
   public static List<ReconcileFileResult> fileResultsForSuccess(
       ReconcileFileGroupTask plannedTask,
-      List<TargetStatsRecord> stats,
+      List<StatsObjectDescriptor> fileStats,
       List<ReconcilerBackend.StagedIndexArtifact> artifacts) {
     LinkedHashMap<String, Long> statsByFile = new LinkedHashMap<>();
     HashMap<String, ReconcileIndexArtifactResult> artifactsByFile = new HashMap<>();
@@ -141,11 +141,11 @@ public final class FileGroupExecutionSupport {
               record.getArtifactFormat(),
               record.getArtifactFormatVersion()));
     }
-    for (TargetStatsRecord record : stats) {
-      if (!record.hasFile()) {
+    for (StatsObjectDescriptor descriptor : fileStats) {
+      if (descriptor == null || !descriptor.getTargetStorageId().startsWith("file:")) {
         continue;
       }
-      String filePath = record.getFile().getFilePath();
+      String filePath = descriptor.getTargetStorageId().substring("file:".length());
       if (filePath == null || filePath.isBlank() || !statsByFile.containsKey(filePath)) {
         continue;
       }

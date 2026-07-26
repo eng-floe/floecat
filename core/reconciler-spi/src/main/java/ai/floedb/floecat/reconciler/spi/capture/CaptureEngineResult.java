@@ -22,10 +22,11 @@ import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import java.util.List;
 
 /**
- * Captured outputs for one file-group execution.
+ * Terminal captured outputs for one file-group execution.
  *
- * <p>Results are persistable file-group execution outputs. Engines may obtain those outputs however
- * they want, while callers remain responsible for any snapshot-level aggregate derivation.
+ * <p>File-scoped outputs are delivered progressively through {@link CaptureFileResultConsumer} and
+ * must not be retained here. Stats records in this result are compact file-group aggregate
+ * partials.
  */
 public record CaptureEngineResult(
     List<TargetStatsRecord> statsRecords,

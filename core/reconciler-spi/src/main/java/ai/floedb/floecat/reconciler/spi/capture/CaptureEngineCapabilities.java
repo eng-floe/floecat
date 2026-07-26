@@ -36,7 +36,7 @@ public record CaptureEngineCapabilities(
   }
 
   public enum ResultContract {
-    COMPLETE_FILE_GROUP_OUTPUTS
+    PROGRESSIVE_FILE_OUTPUTS
   }
 
   public enum ExecutionRuntime {
@@ -50,7 +50,7 @@ public record CaptureEngineCapabilities(
         statsTargetKinds == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(statsTargetKinds));
     executionScope = executionScope == null ? ExecutionScope.FILE_GROUP_ONLY : executionScope;
     resultContract =
-        resultContract == null ? ResultContract.COMPLETE_FILE_GROUP_OUTPUTS : resultContract;
+        resultContract == null ? ResultContract.PROGRESSIVE_FILE_OUTPUTS : resultContract;
     executionRuntime = executionRuntime == null ? ExecutionRuntime.LOCAL_ONLY : executionRuntime;
   }
 
@@ -62,7 +62,7 @@ public record CaptureEngineCapabilities(
         false,
         true,
         ExecutionScope.FILE_GROUP_ONLY,
-        ResultContract.COMPLETE_FILE_GROUP_OUTPUTS,
+        ResultContract.PROGRESSIVE_FILE_OUTPUTS,
         ExecutionRuntime.LOCAL_ONLY);
   }
 
@@ -121,9 +121,9 @@ public record CaptureEngineCapabilities(
     if (executionScope == ExecutionScope.FILE_GROUP_ONLY && !request.isFileGroupScoped()) {
       errors.add("request does not satisfy file-group execution scope");
     }
-    if (resultContract == ResultContract.COMPLETE_FILE_GROUP_OUTPUTS
-        && !request.expectsCompleteFileGroupOutputs()) {
-      errors.add("request does not satisfy complete file-group output contract");
+    if (resultContract == ResultContract.PROGRESSIVE_FILE_OUTPUTS
+        && !request.expectsProgressiveFileGroupOutputs()) {
+      errors.add("request does not satisfy progressive file-group output contract");
     }
     return List.copyOf(errors);
   }

@@ -1082,6 +1082,7 @@ class QueuedReconcileWorkerSupport {
         (captureOnly || !fullRescan) ? backend.existingSnapshotIds(ctx, tableId) : Set.of();
     ReconcileCapturePolicy capturePolicy =
         ReconcilerService.effectiveCapturePolicy(scope, captureMode);
+    Map<Long, Boolean> captureCompletenessBySnapshot = new java.util.HashMap<>();
     Set<Long> enumerationKnownSnapshotIds =
         reconcilerService.enumerationKnownSnapshotIds(
             ctx,
@@ -1090,7 +1091,8 @@ class QueuedReconcileWorkerSupport {
             knownSnapshotIds,
             capturePolicy,
             tableScopedCaptureRequestsBySnapshot,
-            defaultColumnSelectors);
+            defaultColumnSelectors,
+            captureCompletenessBySnapshot);
     ReconcileSnapshotSelection enumerationSelection =
         captureOnly
             ? ReconcilerService.captureOnlyEnumerationSelection(
@@ -1162,14 +1164,18 @@ class QueuedReconcileWorkerSupport {
                 snapshotId ->
                     fullRescan
                         || !requiresCaptureOutputs
-                        || !reconcilerService.isSnapshotCaptureCompleteForScope(
-                            ctx,
-                            tableId,
+                        || !knownSnapshotIds.contains(snapshotId)
+                        || !captureCompletenessBySnapshot.computeIfAbsent(
                             snapshotId,
-                            capturePolicy,
-                            tableScopedCaptureRequestsBySnapshot.getOrDefault(
-                                snapshotId, List.of()),
-                            defaultColumnSelectors))
+                            ignored ->
+                                reconcilerService.isSnapshotCaptureCompleteForScope(
+                                    ctx,
+                                    tableId,
+                                    snapshotId,
+                                    capturePolicy,
+                                    tableScopedCaptureRequestsBySnapshot.getOrDefault(
+                                        snapshotId, List.of()),
+                                    defaultColumnSelectors)))
             .toList();
     if (progressState != null) {
       progressState.observe(

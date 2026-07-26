@@ -136,9 +136,15 @@ During execution:
 - `group_id`
 - `file_paths`
 - `capture_policy`
+- `stats_object_prefix`
 
 For a Rust worker, `source_connector` is important because it carries the resolved upstream
 connector definition and auth material needed to read source files.
+
+Treat the complete `capture_policy` as the execution contract. Its outputs, per-column settings,
+default column scope, maximum default-column count, and opaque `properties` map are all forwarded
+to the worker. Engines may interpret property keys they own and should preserve unknown keys when
+passing the policy between worker components.
 
 ## Result Contract
 `CommitLeasedFileGroupResult` has two outcomes:
@@ -156,6 +162,18 @@ last. Completion and pointer staging are ordered, not one atomic storage transac
 `artifact_uri` inside an index wrapper may name external storage; Floecat does not read, copy, or
 clean up that sidecar.
 
+The sidecar and its wrapper have separate placement rules:
+
+- The worker may choose the actual sidecar URI recorded in `IndexArtifactRecord.artifact_uri`.
+- The serialized `IndexArtifactRecord` wrapper must be written below
+  `<stats_object_prefix>index-artifacts/`.
+- Its wrapper URI must be
+  `<stats_object_prefix>index-artifacts/<sha256(target_storage_id)>/<payload_sha256>.pb`, using
+  lowercase hexadecimal SHA-256 values.
+
+The fenced wrapper prefix prevents one lease from registering another worker's metadata. It does
+not move, copy, or constrain the referenced sidecar.
+
 Success carries:
 
 - `result_id`
@@ -165,7 +183,8 @@ Success carries:
 
 Each `StatsObjectDescriptor` carries the immutable object's target storage ID, payload URI, byte
 length, and SHA-256. File-stats and index descriptors for the same source file may share a target
-storage ID; their payload URIs identify the distinct protected objects.
+storage ID; their payload URIs identify the distinct protected objects. For a file target,
+`target_storage_id` is `file:<source-file-path>`.
 
 Failure carries:
 
@@ -243,16 +262,18 @@ already cleared the lease as part of successful completion.
 The service expects the same logical outputs the Java runner currently produces:
 
 - one directly uploaded protobuf blob per requested `TargetStatsRecord`
-- directly uploaded index objects referenced by `IndexArtifactRecord` values in a
-  `FileGroupResultPayload`
-- a bounded `FileGroupResultPayload` containing stats-object descriptors and index metadata
+- worker-chosen parquet sidecars plus one fenced, hash-addressed `IndexArtifactRecord` wrapper per
+  sidecar
+- a bounded `FileGroupResultPayload` containing compact file-stats and index-wrapper descriptors
 - a `ReconcileFileGroupResultDescriptor` sent in the success RPC
 
 The worker is responsible for ensuring:
 
 - every planned file requested for page-index capture gets a matching artifact
 - artifact metadata matches the target file identity
-- every referenced stats or index object is committed before the success RPC
+- every referenced stats object, sidecar, and index wrapper is committed before the success RPC
+- every index wrapper uses the leased `stats_object_prefix` plus the required
+  `index-artifacts/<target-hash>/<payload-hash>.pb` suffix
 - every stats descriptor identifies its target storage ID and the object size and SHA-256
 - the result descriptor's `artifact_references_sha256` is the canonical digest of its file-stats
   and index-artifact descriptor sets
@@ -299,6 +320,10 @@ proportional to the snapshot's file count.
 The finalizer's `SnapshotCaptureManifest` must carry each durable file-group descriptor, including
 its `artifact_references_sha256`, but must not repeat the per-file stats or index descriptor lists.
 It carries only file-group descriptors, snapshot-wide aggregate descriptors, and counts.
+
+The manifest must also repeat the leased capture policy exactly, including outputs, column
+policies, default column scope, maximum default-column count, and the complete opaque properties
+map. The control plane rejects policy drift during finalization.
 
 `SubmitLeasedSnapshotFinalizeResult` reads the manifest once and performs one metadata-pointer
 lookup per file group. It does not read file-group payloads or per-file objects. If any accepted

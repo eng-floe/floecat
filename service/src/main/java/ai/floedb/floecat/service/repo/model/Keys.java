@@ -38,7 +38,12 @@ public final class Keys {
   public static final String SEG_STORAGE_AUTHORITY = "/storage-authority/";
   public static final String SEG_TARGET_STATS = "/target-stats/";
   public static final String SEG_INDEX_ARTIFACTS = "/index-artifacts/";
-  public static final String SEG_FILE_STATS = "/file-stats/";
+  public static final String INDEX_CAPTURE_MANIFEST_POINTER_FILE = "capture-manifest";
+  public static final String INDEX_CAPTURE_MANIFEST_BLOB_DIRECTORY = "capture-manifests/";
+  public static final String SEG_INDEX_CAPTURE_MANIFESTS =
+      SEG_INDEX_ARTIFACTS + INDEX_CAPTURE_MANIFEST_BLOB_DIRECTORY;
+  public static final String SUFFIX_INDEX_CAPTURE_MANIFEST_POINTER =
+      SEG_INDEX_ARTIFACTS + INDEX_CAPTURE_MANIFEST_POINTER_FILE;
   public static final String SEG_CONSTRAINTS = "/constraints/";
   public static final String SEG_NAMESPACE_BY_PATH = "/namespaces/by-path/";
   public static final String SEG_TABLES_BY_NAME = "/tables/by-name/";
@@ -566,39 +571,8 @@ public final class Keys {
         "/accounts/%s/tables/%s/snapshots/%019d/stats/", encode(tid), encode(tbid), sid);
   }
 
-  public static String snapshotTargetStatsDirectoryPointer(
-      String accountId, String tableId, long snapshotId) {
-    return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "targets/";
-  }
-
   public static String snapshotStatsPrefix(String accountId, String tableId, long snapshotId) {
     return snapshotStatsRootPointer(accountId, tableId, snapshotId);
-  }
-
-  public static String snapshotTargetStatsPointer(
-      String accountId, String tableId, long snapshotId, String targetId) {
-    String tid = req("account_id", accountId);
-    String tbid = req("table_id", tableId);
-    long sid = reqNonNegative("snapshot_id", snapshotId);
-    String target = req("target_id", targetId);
-    return snapshotTargetStatsDirectoryPointer(tid, tbid, sid) + encode(target);
-  }
-
-  public static String snapshotTargetStatsBlobUri(
-      String accountId, String tableId, String targetId, String sha256) {
-    String tid = req("account_id", accountId);
-    String tbid = req("table_id", tableId);
-    String target = req("target_id", targetId);
-    String sha = req("sha256", sha256);
-    return String.format(
-        "/accounts/%s/tables/%s/target-stats/%s/%s.pb",
-        encode(tid), encode(tbid), encode(target), encode(sha));
-  }
-
-  public static String snapshotTargetStatsBlobPrefix(String accountId, String tableId) {
-    String tid = req("account_id", accountId);
-    String tbid = req("table_id", tableId);
-    return String.format("/accounts/%s/tables/%s/target-stats/", encode(tid), encode(tbid));
   }
 
   public static String snapshotTargetStatsManifestPointer(
@@ -741,7 +715,7 @@ public final class Keys {
     String sha = req("sha256", sha256);
     return String.format(
         "/accounts/%s/tables/%s/target-stats/%019d/generations/%s/%s/%s.pb",
-        encode(tid), encode(tbid), sid, encode(generation), encode(target), encode(sha));
+        encode(tid), encode(tbid), sid, encode(generation), sha256Hex(target), encode(sha));
   }
 
   public static String snapshotTargetStatsGenerationBlobPrefix(
@@ -762,17 +736,6 @@ public final class Keys {
         "/accounts/%s/tables/%s/target-stats/%019d/", encode(tid), encode(tbid), sid);
   }
 
-  public static String snapshotTargetStatsPrefix(
-      String accountId, String tableId, long snapshotId) {
-    return snapshotTargetStatsDirectoryPointer(accountId, tableId, snapshotId);
-  }
-
-  public static String snapshotTargetColumnStatsPrefix(
-      String accountId, String tableId, long snapshotId, String columnTargetIdPrefix) {
-    String prefix = req("column_target_id_prefix", columnTargetIdPrefix);
-    return snapshotTargetStatsDirectoryPointer(accountId, tableId, snapshotId) + encode(prefix);
-  }
-
   public static String snapshotIndexArtifactDirectoryPointer(
       String accountId, String tableId, long snapshotId) {
     return String.format(
@@ -782,27 +745,55 @@ public final class Keys {
         reqNonNegative("snapshot_id", snapshotId));
   }
 
-  public static String snapshotIndexArtifactBlobUri(
-      String accountId, String tableId, String targetId, String sha256) {
-    String tid = req("account_id", accountId);
-    String tbid = req("table_id", tableId);
-    String target = req("target_id", targetId);
-    String sha = req("sha256", sha256);
-    return String.format(
-        "/accounts/%s/tables/%s/index-artifacts/%s/%s.pb",
-        encode(tid), encode(tbid), encode(target), encode(sha));
-  }
-
   public static String snapshotIndexArtifactActiveGenerationPointer(
       String accountId, String tableId, long snapshotId) {
     return snapshotIndexArtifactDirectoryPointer(accountId, tableId, snapshotId)
         + "active-generation";
   }
 
+  public static String snapshotIndexArtifactCaptureManifestPointer(
+      String accountId, String tableId, long snapshotId) {
+    return snapshotIndexArtifactDirectoryPointer(accountId, tableId, snapshotId)
+        + INDEX_CAPTURE_MANIFEST_POINTER_FILE;
+  }
+
+  public static String snapshotIndexArtifactCaptureManifestBlobPrefix(
+      String accountId, String tableId, long snapshotId) {
+    return snapshotIndexArtifactDirectoryPointer(accountId, tableId, snapshotId)
+        + INDEX_CAPTURE_MANIFEST_BLOB_DIRECTORY;
+  }
+
+  public static String snapshotIndexArtifactCaptureManifestBlobUri(
+      String accountId, String tableId, long snapshotId, String sha256) {
+    return snapshotIndexArtifactCaptureManifestBlobPrefix(accountId, tableId, snapshotId)
+        + encode(req("sha256", sha256))
+        + ".pb";
+  }
+
   public static String snapshotIndexArtifactGenerationPrefix(
       String accountId, String tableId, long snapshotId, String generationId) {
     return snapshotTargetStatsGenerationPointerPrefix(accountId, tableId, snapshotId, generationId)
         + "index-artifacts/";
+  }
+
+  public static String snapshotIndexArtifactGenerationBlobPrefix(
+      String accountId, String tableId, long snapshotId, String generationId) {
+    return snapshotTargetStatsGenerationBlobPrefix(accountId, tableId, snapshotId, generationId)
+        + "index-artifacts/";
+  }
+
+  public static String snapshotIndexArtifactGenerationBlobUri(
+      String accountId,
+      String tableId,
+      long snapshotId,
+      String generationId,
+      String targetId,
+      String sha256) {
+    return snapshotIndexArtifactGenerationBlobPrefix(accountId, tableId, snapshotId, generationId)
+        + sha256Hex(req("target_id", targetId))
+        + "/"
+        + encode(req("sha256", sha256))
+        + ".pb";
   }
 
   public static String snapshotIndexArtifactGenerationPointer(
@@ -821,41 +812,6 @@ public final class Keys {
     return String.format(
         "/accounts/%s/tables/%s/index-sidecars/%019d/%s/%s.parquet",
         encode(tid), encode(tbid), sid, encode(target), encode(sha));
-  }
-
-  public static String snapshotFileStatsDirectoryPointer(
-      String accountId, String tableId, long snapshotId) {
-    return snapshotStatsRootPointer(accountId, tableId, snapshotId) + "files/";
-  }
-
-  public static String snapshotFileStatsPointer(
-      String accountId, String tableId, long snapshotId, String filePath) {
-    String tid = req("account_id", accountId);
-    String tbid = req("table_id", tableId);
-    long sid = reqNonNegative("snapshot_id", snapshotId);
-    String fp = req("file_path", filePath);
-    return snapshotFileStatsDirectoryPointer(tid, tbid, sid) + encode(fp);
-  }
-
-  public static String snapshotFileStatsBlobUri(
-      String accountId, String tableId, String filePath, String sha256) {
-    String tid = req("account_id", accountId);
-    String tbid = req("table_id", tableId);
-    String fp = req("file_path", filePath);
-    String sha = req("sha256", sha256);
-    return String.format(
-        "/accounts/%s/tables/%s/file-stats/%s/%s.pb",
-        encode(tid), encode(tbid), encode(fp), encode(sha));
-  }
-
-  public static String snapshotFileStatsBlobPrefix(String accountId, String tableId) {
-    String tid = req("account_id", accountId);
-    String tbid = req("table_id", tableId);
-    return String.format("/accounts/%s/tables/%s/file-stats/", encode(tid), encode(tbid));
-  }
-
-  public static String snapshotFileStatsPrefix(String accountId, String tableId, long snapshotId) {
-    return snapshotFileStatsDirectoryPointer(accountId, tableId, snapshotId);
   }
 
   public static String snapshotCompatDirectoryPointer(
@@ -1685,14 +1641,14 @@ public final class Keys {
    * <ul>
    *   <li>root manifest pages ({@code .../root/manifest/<sha>.pb}): referenced by the {@code
    *       TableRoot} blob's content, not by any pointer;
-   *   <li>the snapshot-id-less per-target stats records ({@code
-   *       .../target-stats/<target>/<sha>.pb}) and file stats ({@code
-   *       .../file-stats/<path>/<sha>.pb}): their owning pointers live under {@code
-   *       .../snapshots/<snapshot_id>/stats/...} and the snapshot id is not part of the blob key.
-   *       Note the generation-scoped target-stats shape ({@code
-   *       .../target-stats/<snapshot_id>/generations/<gen>/<target>/<sha>.pb}) DOES carry the
-   *       snapshot id and IS derivable — it takes the inline recheck path below, not this null
-   *       branch.
+   *   <li>generation-scoped target stats records ({@code
+   *       .../target-stats/<snapshot_id>/generations/<gen>/<target-hash>/<sha>.pb}): the bounded
+   *       target hash does not encode the pointer's target id, so liveness is re-proven by the
+   *       table-scoped stats-pointer re-mark instead;
+   *   <li>generation-scoped index wrappers ({@code
+   *       .../generations/<gen>/index-artifacts/<target-hash>/<sha>.pb}): the bounded target hash
+   *       does not encode the pointer's target id, so liveness is re-proven by the table-scoped
+   *       stats-pointer re-mark instead.
    * </ul>
    */
   public static String ownerPointerKeyForBlob(String blobKey) {
@@ -1750,8 +1706,20 @@ public final class Keys {
       case "snapshots":
         {
           // snapshots/<snapshot_id>/snapshot/<sha>.pb
-          Long sid = seg.length == 8 && "snapshot".equals(seg[6]) ? parseSnapshotId(seg[5]) : null;
-          return sid == null ? null : snapshotPointerById(account, table, sid);
+          Long sid = parseSnapshotId(seg[5]);
+          if (sid == null) {
+            return null;
+          }
+          if (seg.length == 8 && "snapshot".equals(seg[6])) {
+            return snapshotPointerById(account, table, sid);
+          }
+          // snapshots/<snapshot_id>/index-artifacts/capture-manifests/<sha>.pb
+          if (seg.length == 9
+              && "index-artifacts".equals(seg[6])
+              && "capture-manifests".equals(seg[7])) {
+            return snapshotIndexArtifactCaptureManifestPointer(account, table, sid);
+          }
+          return null;
         }
       case "constraints":
         {
@@ -1761,19 +1729,14 @@ public final class Keys {
         }
       case "target-stats":
         {
-          // target-stats/<snapshot_id>/manifests/<generation>.pb -> the active-generation pointer;
-          // target-stats/<snapshot_id>/generations/<gen>/<target>/<sha>.pb -> per-record pointer;
-          // target-stats/<target>/<sha>.pb carries no snapshot id -> not derivable.
+          // target-stats/<snapshot_id>/manifests/<generation>.pb -> the active-generation pointer.
+          // Generation record paths carry only a target hash, so their owner is not derivable.
           Long sid = parseSnapshotId(seg[5]);
           if (sid == null) {
             return null;
           }
           if (seg.length == 8 && "manifests".equals(seg[6])) {
             return snapshotTargetStatsManifestPointer(account, table, sid);
-          }
-          if (seg.length == 10 && "generations".equals(seg[6])) {
-            return snapshotTargetStatsGenerationPointer(
-                account, table, sid, percentDecode(seg[7]), percentDecode(seg[8]));
           }
           return null;
         }

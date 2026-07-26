@@ -22,16 +22,13 @@ import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
-import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableRoot;
-import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.service.repo.util.ConstraintNormalizer;
-import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.storage.rpc.StorageAuthority;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
@@ -196,76 +193,6 @@ public final class Schemas {
                     v.getTableId().getAccountId(), v.getTableId().getId(), sha);
               })
           .withCasBlobs();
-
-  public static final ResourceSchema<TargetStatsRecord, TargetStatsKey> TARGET_STATS =
-      ResourceSchema.<TargetStatsRecord, TargetStatsKey>of(
-              "target-stats",
-              (TargetStatsKey key) ->
-                  Keys.snapshotTargetStatsPointer(
-                      key.accountId(), key.tableId(), key.snapshotId(), key.targetId()),
-              (TargetStatsKey key) ->
-                  Keys.snapshotTargetStatsBlobUri(
-                      key.accountId(), key.tableId(), key.targetId(), key.sha256()),
-              (TargetStatsRecord v) -> Map.of(),
-              (TargetStatsRecord v) -> {
-                var target = v.getTarget();
-                if (target.getTargetCase() == StatsTarget.TargetCase.TARGET_NOT_SET) {
-                  throw new IllegalArgumentException("target must be set on TargetStatsRecord");
-                }
-                validateTargetValueCompatibility(target, v.getValueCase());
-                var normalizedTarget =
-                    target.getTargetCase() == StatsTarget.TargetCase.EXPRESSION
-                        ? StatsTarget.newBuilder()
-                            .setExpression(
-                                StatsTargetIdentity.normalizeExpressionTarget(
-                                    target.getExpression()))
-                            .build()
-                        : target;
-                var canonical =
-                    switch (v.getValueCase()) {
-                      case TABLE, SCALAR, FILE -> v.toBuilder().setTarget(normalizedTarget).build();
-                      case VALUE_NOT_SET ->
-                          throw new IllegalArgumentException(
-                              "value must be set on TargetStatsRecord");
-                    };
-                var sha = Hashing.sha256Hex(canonical.toByteArray());
-                return new TargetStatsKey(
-                    v.getTableId().getAccountId(),
-                    v.getTableId().getId(),
-                    v.getSnapshotId(),
-                    StatsTargetIdentity.storageId(normalizedTarget),
-                    sha);
-              })
-          .withCasBlobs();
-
-  private static void validateTargetValueCompatibility(
-      StatsTarget target, TargetStatsRecord.ValueCase valueCase) {
-    switch (target.getTargetCase()) {
-      case TABLE -> {
-        if (valueCase != TargetStatsRecord.ValueCase.TABLE) {
-          throw new IllegalArgumentException(
-              "incompatible target/value: table target requires table value");
-        }
-      }
-      case COLUMN, EXPRESSION -> {
-        if (valueCase != TargetStatsRecord.ValueCase.SCALAR) {
-          throw new IllegalArgumentException(
-              "incompatible target/value: column/expression target requires scalar value");
-        }
-      }
-      case FILE -> {
-        if (valueCase != TargetStatsRecord.ValueCase.FILE) {
-          throw new IllegalArgumentException(
-              "incompatible target/value: file target requires file value");
-        }
-      }
-      case COMPOSITE ->
-          throw new IllegalArgumentException(
-              "incompatible target/value: composite target values are not implemented");
-      case TARGET_NOT_SET ->
-          throw new IllegalArgumentException("target must be set on TargetStatsRecord");
-    }
-  }
 
   public static final ResourceSchema<SnapshotConstraints, SnapshotConstraintsKey>
       SNAPSHOT_CONSTRAINTS =

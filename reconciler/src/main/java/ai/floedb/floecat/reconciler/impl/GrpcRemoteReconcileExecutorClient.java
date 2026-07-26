@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
@@ -998,16 +999,11 @@ class GrpcRemoteReconcileExecutorClient
       throw new IllegalArgumentException(
           "leased file-group result_payload_uri and stats_object_prefix are required");
     }
+    validateIndexArtifactCoverage(payload, result);
     List<StatsObjectDescriptor> indexArtifacts =
         publishIndexArtifacts(result, payload.statsObjectPrefix());
-    List<TargetStatsRecord> fileStats =
-        result.statsRecords().stream().filter(TargetStatsRecord::hasFile).toList();
-    List<TargetStatsRecord> partialAggregates =
-        result.statsRecords().stream().filter(record -> !record.hasFile()).toList();
-    List<StatsObjectDescriptor> fileStatsObjects =
-        fileStats.stream()
-            .map(record -> publishStatsObject(payload.statsObjectPrefix(), record))
-            .toList();
+    List<StatsObjectDescriptor> fileStatsObjects = result.fileStats();
+    List<TargetStatsRecord> partialAggregates = result.partialAggregateRecords();
     ReconcileFileGroupTask plannedTask =
         ReconcileFileGroupTask.of(
             payload.planId(),
@@ -1017,7 +1013,7 @@ class GrpcRemoteReconcileExecutorClient
             payload.plannedFilePaths());
     List<ReconcileFileResult> fileResults =
         FileGroupExecutionSupport.fileResultsForSuccess(
-            plannedTask, result.statsRecords(), result.stagedIndexArtifacts());
+            plannedTask, fileStatsObjects, result.stagedIndexArtifacts());
     FileGroupResultPayload packedPayload =
         FileGroupResultPayload.newBuilder()
             .setFormatVersion(1)
@@ -1064,7 +1060,7 @@ class GrpcRemoteReconcileExecutorClient
             .setPartialAggregateRecordCount(partialAggregates.size())
             .setIndexArtifactCount(indexArtifacts.size())
             .setStatsObjectPrefix(payload.statsObjectPrefix())
-            .setFileStatsRecordCount(fileStats.size())
+            .setFileStatsRecordCount(fileStatsObjects.size())
             .setArtifactReferencesSha256(
                 ByteString.copyFrom(HexFormat.of().parseHex(artifactReferencesSha256)))
             .setCreatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
@@ -1089,6 +1085,18 @@ class GrpcRemoteReconcileExecutorClient
                         .setSuccess(success)
                         .build())
                 .getAccepted());
+  }
+
+  @Override
+  public StatsObjectDescriptor publishFileStats(
+      StandaloneFileGroupExecutionPayload payload, TargetStatsRecord fileStats) {
+    if (payload == null || payload.statsObjectPrefix().isBlank()) {
+      throw new IllegalArgumentException("leased file-group stats_object_prefix is required");
+    }
+    if (fileStats == null || !fileStats.hasFile()) {
+      throw new IllegalArgumentException("file-scoped stats record is required");
+    }
+    return publishStatsObject(payload.statsObjectPrefix(), fileStats);
   }
 
   public boolean submitFailure(RemoteLeasedJob lease, String resultId, String message) {
@@ -1439,6 +1447,7 @@ class GrpcRemoteReconcileExecutorClient
 
   private List<StatsObjectDescriptor> publishIndexArtifacts(
       StandaloneFileGroupExecutionResult result, String artifactObjectPrefix) {
+    String indexArtifactObjectPrefix = artifactObjectPrefix + "index-artifacts/";
     List<StatsObjectDescriptor> out = new ArrayList<>();
     for (var artifact : result.stagedIndexArtifacts()) {
       if (artifact == null || artifact.record() == null) {
@@ -1468,9 +1477,58 @@ class GrpcRemoteReconcileExecutorClient
         throw new IllegalArgumentException("index artifact object is empty: " + uri);
       }
       var record = artifact.record().toBuilder().setContentEtag(header.getEtag()).build();
-      out.add(publishIndexArtifactObject(artifactObjectPrefix, record));
+      out.add(publishIndexArtifactObject(indexArtifactObjectPrefix, record));
     }
     return List.copyOf(out);
+  }
+
+  private static void validateIndexArtifactCoverage(
+      StandaloneFileGroupExecutionPayload payload, StandaloneFileGroupExecutionResult result) {
+    ReconcileCapturePolicy policy =
+        payload.capturePolicy() == null ? ReconcileCapturePolicy.empty() : payload.capturePolicy();
+    if (!policy.requestsIndexes()) {
+      return;
+    }
+    Set<String> planned = new HashSet<>(payload.plannedFilePaths());
+    Set<String> captured = new HashSet<>();
+    Set<String> requiredSelectors = policy.selectorsForIndex();
+    for (var artifact : result.stagedIndexArtifacts()) {
+      var record = artifact == null ? null : artifact.record();
+      if (record == null
+          || !record.hasTarget()
+          || !record.getTarget().hasFile()
+          || record.getState() != IndexArtifactState.IAS_READY) {
+        throw new IllegalArgumentException(
+            "index capture requires one ready artifact per planned file");
+      }
+      String filePath = record.getTarget().getFile().getFilePath();
+      if (!planned.contains(filePath) || !captured.add(filePath)) {
+        throw new IllegalArgumentException(
+            "index artifact targets do not match the planned file group");
+      }
+      if (!persistedIndexSelectors(record).containsAll(requiredSelectors)) {
+        throw new IllegalArgumentException("index artifact does not cover the requested selectors");
+      }
+    }
+    if (!captured.equals(planned)) {
+      throw new IllegalArgumentException(
+          "index capture requires one ready artifact per planned file");
+    }
+  }
+
+  private static Set<String> persistedIndexSelectors(
+      ai.floedb.floecat.catalog.rpc.IndexArtifactRecord record) {
+    String encoded = record.getPropertiesOrDefault("indexed_columns", "");
+    if (encoded.isBlank()) {
+      return Set.of();
+    }
+    Set<String> selectors = new HashSet<>();
+    for (String token : encoded.split(",")) {
+      if (token != null && !token.isBlank()) {
+        selectors.add(token.trim());
+      }
+    }
+    return Set.copyOf(selectors);
   }
 
   private StatsObjectDescriptor publishIndexArtifactObject(

@@ -380,7 +380,8 @@ public class ReconcilerService {
       Set<Long> knownSnapshotIds,
       ReconcileCapturePolicy capturePolicy,
       Map<Long, List<ReconcileScope.ScopedCaptureRequest>> scopedCaptureRequestsBySnapshot,
-      Set<String> defaultColumnSelectors) {
+      Set<String> defaultColumnSelectors,
+      Map<Long, Boolean> captureCompletenessBySnapshot) {
     if (capturePolicy == null || capturePolicy.outputs().isEmpty()) {
       return knownSnapshotIdsForEnumeration(fullRescan, false, knownSnapshotIds, null);
     }
@@ -388,24 +389,17 @@ public class ReconcilerService {
         fullRescan,
         capturePolicy.requestsStats() || capturePolicy.requestsIndexes(),
         knownSnapshotIds,
-        snapshotId -> {
-          List<ReconcileScope.ScopedCaptureRequest> scopedCaptureRequests =
-              scopedCaptureRequestsBySnapshot.getOrDefault(snapshotId, List.of());
-          boolean statsComplete =
-              !capturePolicy.requestsStats()
-                  || isStatsCaptureCompleteForScope(
-                      ctx,
-                      tableId,
-                      snapshotId,
-                      capturePolicy,
-                      scopedCaptureRequests,
-                      defaultColumnSelectors);
-          boolean indexesComplete =
-              !capturePolicy.requestsIndexes()
-                  || isIndexCaptureCompleteForScope(
-                      ctx, tableId, snapshotId, capturePolicy, scopedCaptureRequests);
-          return statsComplete && indexesComplete;
-        });
+        snapshotId ->
+            captureCompletenessBySnapshot.computeIfAbsent(
+                snapshotId,
+                ignored ->
+                    isSnapshotCaptureCompleteForScope(
+                        ctx,
+                        tableId,
+                        snapshotId,
+                        capturePolicy,
+                        scopedCaptureRequestsBySnapshot.getOrDefault(snapshotId, List.of()),
+                        defaultColumnSelectors)));
   }
 
   static ReconcileSnapshotSelection captureOnlyEnumerationSelection(
@@ -563,24 +557,7 @@ public class ReconcilerService {
     if (!supportsIndexCompletenessCheck(scopedCaptureRequests)) {
       return false;
     }
-    List<String> parquetFilePaths =
-        backend
-            .fetchSnapshotFilePlan(ctx, tableId, snapshotId)
-            .map(
-                plan ->
-                    java.util.stream.Stream.concat(
-                            plan.dataFiles().stream(), plan.deleteFiles().stream())
-                        .filter(file -> file != null && isParquetSnapshotFile(file))
-                        .map(FloecatConnector.SnapshotFileEntry::filePath)
-                        .filter(path -> path != null && !path.isBlank())
-                        .distinct()
-                        .toList())
-            .orElse(null);
-    if (parquetFilePaths == null) {
-      return false;
-    }
-    return backend.indexArtifactsCapturedForFilePaths(
-        ctx, tableId, snapshotId, parquetFilePaths, requestedSelectors);
+    return backend.indexCaptureComplete(ctx, tableId, snapshotId, requestedSelectors);
   }
 
   private boolean supportsIndexCompletenessCheck(
@@ -596,15 +573,6 @@ public class ReconcilerService {
       }
     }
     return true;
-  }
-
-  private static boolean isParquetSnapshotFile(FloecatConnector.SnapshotFileEntry file) {
-    String format = file.fileFormat() == null ? "" : file.fileFormat().trim();
-    if ("PARQUET".equalsIgnoreCase(format)) {
-      return true;
-    }
-    String path = file.filePath() == null ? "" : file.filePath().toLowerCase(java.util.Locale.ROOT);
-    return path.endsWith(".parquet") || path.endsWith(".parq");
   }
 
   private Set<StatsTarget> decodeTargetSpecsFromRequests(

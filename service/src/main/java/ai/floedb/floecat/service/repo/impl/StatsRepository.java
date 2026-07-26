@@ -24,7 +24,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
-import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
@@ -1300,8 +1299,41 @@ public class StatsRepository implements StatsStore {
 
   private TargetStatsRecord canonicalRecord(TargetStatsRecord value) {
     TargetStatsRecord canonical = TargetStatsRecords.canonicalize(value);
-    Schemas.TARGET_STATS.keyFromValue.apply(canonical);
+    validateTargetStatsRecord(canonical);
     return canonical;
+  }
+
+  private static void validateTargetStatsRecord(TargetStatsRecord record) {
+    if (record == null) {
+      throw new IllegalArgumentException("TargetStatsRecord is required");
+    }
+    StatsTarget target = record.getTarget();
+    switch (target.getTargetCase()) {
+      case TABLE -> {
+        if (record.getValueCase() != TargetStatsRecord.ValueCase.TABLE) {
+          throw new IllegalArgumentException(
+              "incompatible target/value: table target requires table value");
+        }
+      }
+      case COLUMN, EXPRESSION -> {
+        if (record.getValueCase() != TargetStatsRecord.ValueCase.SCALAR) {
+          throw new IllegalArgumentException(
+              "incompatible target/value: column/expression target requires scalar value");
+        }
+      }
+      case FILE -> {
+        if (record.getValueCase() != TargetStatsRecord.ValueCase.FILE) {
+          throw new IllegalArgumentException(
+              "incompatible target/value: file target requires file value");
+        }
+      }
+      case COMPOSITE ->
+          throw new IllegalArgumentException(
+              "incompatible target/value: composite target values are not implemented");
+      case TARGET_NOT_SET ->
+          throw new IllegalArgumentException("target must be set on TargetStatsRecord");
+    }
+    StatsTargetIdentity.storageId(target);
   }
 
   /**

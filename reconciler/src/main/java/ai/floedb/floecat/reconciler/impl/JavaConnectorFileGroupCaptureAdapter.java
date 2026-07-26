@@ -20,8 +20,9 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureFileResultConsumer;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
-import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
@@ -36,9 +37,14 @@ import java.util.concurrent.CancellationException;
  * contract directly from its own runtime.
  */
 final class JavaConnectorFileGroupCaptureAdapter {
-  CaptureEngineResult capture(FloecatConnector source, CaptureEngineRequest request) {
-    List<TargetStatsRecord> capturedStats = new ArrayList<>();
-    List<FloecatConnector.ParquetPageIndexEntry> capturedPageIndexes = new ArrayList<>();
+  CaptureEngineResult capture(
+      FloecatConnector source,
+      CaptureEngineRequest request,
+      CaptureFileResultConsumer fileResultConsumer) {
+    CaptureFileResultConsumer output =
+        java.util.Objects.requireNonNull(fileResultConsumer, "fileResultConsumer");
+    Set<String> publishedFileTargets = new HashSet<>();
+    List<TargetStatsRecord> partialAggregates = List.of();
     for (String filePath : request.plannedFilePaths()) {
       throwIfCancellationRequested(request);
       FloecatConnector.FileGroupCaptureResult captured =
@@ -52,14 +58,19 @@ final class JavaConnectorFileGroupCaptureAdapter {
               request.requestedStatsTargetKinds(),
               request.capturePageIndex(),
               request.columnSelectorPolicy());
-      capturedStats.addAll(captured.statsRecords());
-      capturedPageIndexes.addAll(captured.pageIndexEntries());
+      List<TargetStatsRecord> fileStats =
+          uniqueFileStats(captured.statsRecords(), publishedFileTargets);
+      List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries =
+          filterPageIndexEntries(captured.pageIndexEntries(), request.indexColumns());
+      if (!fileStats.isEmpty()) {
+        partialAggregates = mergePartialAggregates(request, partialAggregates, fileStats);
+      }
+      if (!fileStats.isEmpty() || !pageIndexEntries.isEmpty()) {
+        output.accept(fileStats, pageIndexEntries);
+      }
       throwIfCancellationRequested(request);
     }
-    return CaptureEngineResult.of(
-        completeStats(request, capturedStats),
-        filterPageIndexEntries(capturedPageIndexes, request.indexColumns()),
-        List.of());
+    return CaptureEngineResult.of(partialAggregates, List.of(), List.of());
   }
 
   private static void throwIfCancellationRequested(CaptureEngineRequest request) {
@@ -68,33 +79,46 @@ final class JavaConnectorFileGroupCaptureAdapter {
     }
   }
 
-  private List<TargetStatsRecord> completeStats(
-      CaptureEngineRequest request, List<TargetStatsRecord> capturedStats) {
-    if (!request.requestsStats() || request.plannedFilePaths().isEmpty()) {
-      return List.of();
-    }
-    List<TargetStatsRecord> fileStats =
-        capturedStats == null
-            ? List.of()
-            : capturedStats.stream().filter(record -> record != null && record.hasFile()).toList();
-    if (fileStats.isEmpty()) {
+  private static List<TargetStatsRecord> uniqueFileStats(
+      List<TargetStatsRecord> capturedStats, Set<String> publishedFileTargets) {
+    if (capturedStats == null || capturedStats.isEmpty()) {
       return List.of();
     }
     LinkedHashMap<String, TargetStatsRecord> uniqueFileStats = new LinkedHashMap<>();
-    for (TargetStatsRecord fileStat : fileStats) {
-      uniqueFileStats.putIfAbsent(StatsTargetIdentity.storageId(fileStat.getTarget()), fileStat);
+    for (TargetStatsRecord fileStat : capturedStats) {
+      if (fileStat == null || !fileStat.hasFile()) {
+        continue;
+      }
+      String storageId = StatsTargetIdentity.storageId(fileStat.getTarget());
+      if (publishedFileTargets.add(storageId)) {
+        uniqueFileStats.put(storageId, fileStat);
+      }
     }
-    fileStats = List.copyOf(uniqueFileStats.values());
-    List<TargetStatsRecord> partialAggregates =
+    return List.copyOf(uniqueFileStats.values());
+  }
+
+  private static List<TargetStatsRecord> mergePartialAggregates(
+      CaptureEngineRequest request,
+      List<TargetStatsRecord> partialAggregates,
+      List<TargetStatsRecord> fileStats) {
+    if (!request.requestsStats()) {
+      return List.of();
+    }
+    List<TargetStatsRecord> next =
         FileGroupTargetStatsRollup.partialAggregatesFromFileRecords(
             request.tableId(),
             request.snapshotId(),
             request.requestedStatsTargetKinds(),
             fileStats);
-    List<TargetStatsRecord> out = new ArrayList<>(partialAggregates.size() + fileStats.size());
-    out.addAll(partialAggregates);
-    out.addAll(fileStats);
-    return List.copyOf(out);
+    if (partialAggregates.isEmpty()) {
+      return next;
+    }
+    List<TargetStatsRecord> combined =
+        new java.util.ArrayList<>(partialAggregates.size() + next.size());
+    combined.addAll(partialAggregates);
+    combined.addAll(next);
+    return FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(
+        request.tableId(), request.snapshotId(), request.requestedStatsTargetKinds(), combined);
   }
 
   private static List<FloecatConnector.ParquetPageIndexEntry> filterPageIndexEntries(

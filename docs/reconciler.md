@@ -138,9 +138,27 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
 - **Index artifacts**:
   - sidecars are parquet artifacts written by execution workers and registered through
     `IndexArtifactRecord`.
-  - Floecat stages only the protobuf wrapper pointer. An externally overridden `artifact_uri`
-    inside that wrapper is never copied, moved, or treated as Floecat-owned cleanup state.
+  - The actual sidecar URI remains worker-controlled. Floecat never copies, moves, or treats the
+    sidecar named by `artifact_uri` as Floecat-owned cleanup state.
+  - The serialized protobuf wrapper is Floecat-owned lease output. Remote workers must publish it
+    beneath the leased file-group `stats_object_prefix` at
+    `index-artifacts/<sha256(target_storage_id)>/<payload_sha256>.pb`. The service stages only a
+    pointer to that fenced wrapper.
   - service-side lookup/list/read is exposed by `TableIndexService`.
+- **Capture-engine SPI contract**:
+  - `CaptureEngine.capture` accepts a `CaptureFileResultConsumer`. Engines emit file-scoped stats
+    progressively through that consumer instead of retaining them in `CaptureEngineResult`.
+  - The terminal result may contain compact group-level aggregate partials and staged index
+    outputs, but it must not contain file stats or page-index rows.
+  - Engine capabilities use `PROGRESSIVE_FILE_OUTPUTS`. Implementations compiled against the old
+    `capture(request)` or `COMPLETE_FILE_GROUP_OUTPUTS` API must be updated.
+  - `ReconcilerBackend.indexCaptureComplete` is a snapshot-level completeness proof. Backend
+    implementations must not replace it with one remote artifact lookup per source file.
+- **External capture policy**:
+  - leased file-group and snapshot-finalize payloads carry the complete policy, including its
+    opaque properties map.
+  - snapshot finalizers must reproduce outputs, column policies, default scope, maximum default
+    columns, and properties exactly; the control plane rejects policy drift.
 - **Connector security boundary**: all upstream I/O remains inside `FloecatConnector`.
   `ScanBundleService` stays query-plane only; reconcile snapshot planning uses connector-native
   snapshot file planning.

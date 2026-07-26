@@ -352,6 +352,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       String fileGroupJobId,
       String leaseEpoch,
       String artifactReferencesSha256,
+      String indexArtifactObjectPrefix,
       List<StatsStore.PrewrittenStatsObject> objects,
       List<StatsStore.PrewrittenTargetStatsReference> statsReferences,
       List<IndexArtifactRepository.PrewrittenIndexArtifactReference> indexReferences) {}
@@ -384,6 +385,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         new ArrayList<>(requiredFileStats.size());
     List<IndexArtifactRepository.PrewrittenIndexArtifactReference> indexReferences =
         new ArrayList<>(requiredIndexArtifacts.size());
+    String indexArtifactObjectPrefix = descriptor.statsObjectPrefix() + "index-artifacts/";
     List<StatsObjectDescriptor> descriptors = new ArrayList<>(requiredFileStats);
     descriptors.addAll(requiredIndexArtifacts);
     HashSet<String> payloadUris = new HashSet<>();
@@ -417,6 +419,9 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     }
     HashSet<String> indexTargets = new HashSet<>();
     for (StatsObjectDescriptor object : requiredIndexArtifacts) {
+      if (!object.getPayloadUri().startsWith(indexArtifactObjectPrefix)) {
+        throw new IllegalArgumentException("invalid prewritten index artifact object prefix");
+      }
       if (!indexTargets.add(object.getTargetStorageId())) {
         throw new IllegalArgumentException(
             "duplicate index artifact target: " + object.getTargetStorageId());
@@ -441,6 +446,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         fileGroupJobId,
         leaseEpoch,
         artifactReferencesSha256,
+        indexArtifactObjectPrefix,
         List.copyOf(objects),
         List.copyOf(statsReferences),
         List.copyOf(indexReferences));
@@ -465,7 +471,11 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     statsStore.registerPrewrittenStatsReferencesInGeneration(
         staged.tableId(), staged.snapshotId(), staged.generationId(), staged.statsReferences());
     indexArtifactRepository.registerPrewrittenIndexArtifactReferencesInGeneration(
-        staged.tableId(), staged.snapshotId(), staged.generationId(), staged.indexReferences());
+        staged.tableId(),
+        staged.snapshotId(),
+        staged.generationId(),
+        staged.indexArtifactObjectPrefix(),
+        staged.indexReferences());
     statsStore.markPreparedFileGroup(
         staged.tableId(),
         staged.snapshotId(),

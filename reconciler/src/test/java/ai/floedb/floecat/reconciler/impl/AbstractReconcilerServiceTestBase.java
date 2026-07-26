@@ -308,12 +308,8 @@ abstract class AbstractReconcilerServiceTestBase {
     }
 
     @Override
-    public boolean indexArtifactsCapturedForFilePaths(
-        ReconcileContext ctx,
-        ResourceId tableId,
-        long snapshotId,
-        List<String> filePaths,
-        Set<String> selectors) {
+    public boolean indexCaptureComplete(
+        ReconcileContext ctx, ResourceId tableId, long snapshotId, Set<String> selectors) {
       return false;
     }
 

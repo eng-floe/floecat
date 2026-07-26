@@ -66,12 +66,12 @@ import org.jboss.logging.Logger;
  * dead URI). Deletes are version-targeted (the exact version the pass age-checked), and the sweep
  * fails closed unless the store reports immutable version ids (S3 bucket versioning Enabled), so a
  * concurrent re-PUT always survives as a new version the targeted delete cannot touch. Families
- * with no owner pointer derivable from the key (manifest pages, per-target and file stats records)
- * cannot be rescued individually, and lexicographic listing puts some of them before any blob whose
- * rescue could reveal the stale set — so their deletion is DEFERRED, and the flush independently
- * re-proves liveness per owning table against the settled store (root-chain re-walk plus
- * constraints/stats pointer re-scan) before deleting. Superseded-but-pinned blobs are outside the
- * recheck's reach (their owner pointer has moved on) and remain guarded by pin roots and
+ * with no owner pointer derivable from the key (manifest pages and generation-scoped stats/index
+ * records) cannot be rescued individually, and lexicographic listing puts some of them before any
+ * blob whose rescue could reveal the stale set — so their deletion is DEFERRED, and the flush
+ * independently re-proves liveness per owning table against the settled store (root-chain re-walk
+ * plus constraints/stats pointer re-scan) before deleting. Superseded-but-pinned blobs are outside
+ * the recheck's reach (their owner pointer has moved on) and remain guarded by pin roots and
  * walk-failure poisoning alone.
  *
  * <p><b>Versioned-bucket operations note.</b> This sweep only ever deletes the CURRENT version it
@@ -314,7 +314,11 @@ public class CasBlobGc {
               referenced,
               null,
               pageSize,
-              p -> p.getKey() != null && p.getKey().contains(Keys.SEG_STATS),
+              p ->
+                  p.getKey() != null
+                      && (p.getKey().contains(Keys.SEG_STATS)
+                          || p.getKey().contains(Keys.SEG_INDEX_ARTIFACTS)
+                          || p.getKey().endsWith(Keys.SUFFIX_INDEX_CAPTURE_MANIFEST_POINTER)),
               storageEstimate);
 
       // Constraints pointers live under a SIBLING prefix (/constraints/by-snapshot/), not under
@@ -425,9 +429,9 @@ public class CasBlobGc {
             // computation above actually tracks may be delete candidates. Families NOT listed
             // (index-artifact sidecars, compat, storage-authority) are LISTed but never deleted
             // here — widening this filter without also teaching the referenced-set to root their
-            // live blobs would delete live data. Bringing those families under GC (with
-            // referenced-set support) is a separate follow-up; today they are out of scope for
-            // this sweep, not a data-loss risk.
+            // live blobs would delete live data. Capture manifests are the sole index-artifact
+            // exception: their snapshot-scoped owner pointers are marked above and are derivable
+            // from their blob keys for the pre-delete pointer recheck.
             key ->
                 key.contains(Keys.SEG_TABLE)
                     || (key.contains(Keys.SEG_SNAPSHOTS) && key.contains(Keys.SEG_SNAPSHOT))
@@ -435,8 +439,8 @@ public class CasBlobGc {
                     // must not be swept individually: a worker can spend longer than min-age
                     // uploading a batch before the service can install protection pointers.
                     || (key.contains(Keys.SEG_TARGET_STATS) && !key.contains(SEG_WORKER_UPLOADS))
-                    || key.contains(Keys.SEG_FILE_STATS)
                     || key.contains(Keys.SEG_CONSTRAINTS)
+                    || key.contains(Keys.SEG_INDEX_CAPTURE_MANIFESTS)
                     || key.contains(Keys.SEG_TABLE_ROOT),
             deferredNoOwner,
             pageSize,
@@ -478,16 +482,16 @@ public class CasBlobGc {
 
     // Flush the chain-walked candidates LAST, and never on the sweep-long stale set alone. These
     // families cannot rescue themselves: manifest pages have no pointer at all, and the
-    // per-target/file stats records are referenced by per-snapshot pointers not reconstructible
-    // from the blob key — a flip-flop or scan miss on those produces no inline rescue anywhere
-    // (and the head/min-age skip paths can swallow a top-level rescue signal). So the flush
-    // proves liveness for itself: for each table that owns deferred candidates, it re-reads that
-    // table's root chain and re-scans its constraints and stats pointer prefixes against the
-    // SETTLED store, and only deletes candidates this fresh, scoped re-mark still leaves
-    // unreferenced. The zero-rescue/zero-poison gate remains as a cheap early out — any rescue
-    // already means the whole set is suspect — but correctness rests on the re-mark, not on
-    // rescue-signal completeness. Cost is proportional to actual garbage (tables with deferred
-    // candidates), not to steady-state traffic.
+    // generation-scoped stats and index records are referenced by per-snapshot pointers not
+    // reconstructible from their hashed target key — a flip-flop or scan miss on those produces no
+    // inline rescue anywhere (and the head/min-age skip paths can swallow a top-level rescue
+    // signal). So the flush proves liveness for itself: for each table that owns deferred
+    // candidates, it re-reads that table's root chain and re-scans its constraints and stats
+    // pointer prefixes against the SETTLED store, and only deletes candidates this fresh, scoped
+    // re-mark still leaves unreferenced. The zero-rescue/zero-poison gate remains as a cheap early
+    // out — any rescue already means the whole set is suspect — but correctness rests on the
+    // re-mark, not on rescue-signal completeness. Cost is proportional to actual garbage (tables
+    // with deferred candidates), not to steady-state traffic.
     int remarkFailures = 0;
     // Gated on walkFailures only, NOT on blobsRescued: a rescue means the referenced set is
     // stale, but the flush re-proves liveness per table against the SETTLED store (it does not
@@ -976,7 +980,11 @@ public class CasBlobGc {
         fresh,
         null,
         pageSize,
-        ptr -> ptr.getKey() != null && ptr.getKey().contains(Keys.SEG_STATS));
+        ptr ->
+            ptr.getKey() != null
+                && (ptr.getKey().contains(Keys.SEG_STATS)
+                    || ptr.getKey().contains(Keys.SEG_INDEX_ARTIFACTS)
+                    || ptr.getKey().endsWith(Keys.SUFFIX_INDEX_CAPTURE_MANIFEST_POINTER)));
     collectPointers(
         Keys.snapshotConstraintsPointerPrefix(accountId, tableId), fresh, null, pageSize);
     return true;

@@ -30,6 +30,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -38,6 +39,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
@@ -54,6 +56,7 @@ import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -132,7 +135,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         .publishPreparedStatsGeneration(
             any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(List.of()));
     verify(service.indexArtifactRepository)
-        .activateGeneration(any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"));
+        .activateGeneration(
+            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), any(byte[].class));
     verify(currentSnapshotPointerService).maybeAdvance(any(), eq(SNAPSHOT_ID), eq(FINALIZE_JOB_ID));
   }
 
@@ -216,7 +220,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         .publishPreparedStatsGeneration(
             any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(List.of()));
     verify(service.indexArtifactRepository)
-        .activateGeneration(any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"));
+        .activateGeneration(
+            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), any(byte[].class));
   }
 
   @Test
@@ -288,7 +293,76 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     verify(persistence, never())
         .publishPreparedStatsGeneration(any(), anyLong(), anyString(), any());
     verify(service.indexArtifactRepository, never())
-        .activateGeneration(any(), anyLong(), anyString());
+        .activateGeneration(any(), anyLong(), anyString(), any(byte[].class));
+  }
+
+  @Test
+  void successRejectsIncompleteIndexCoverageBeforeActivation() {
+    byte[] manifestBytes =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(ACCOUNT_ID)
+            .setConnectorId("connector")
+            .setParentJobId("parent-job")
+            .setFinalizeJobId(FINALIZE_JOB_ID)
+            .setTableId(TABLE_ID)
+            .setSnapshotId(SNAPSHOT_ID)
+            .setLeaseEpoch(LEASE_EPOCH)
+            .setResultId("result-1")
+            .setCapturePolicy(
+                ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
+                    .addOutputs(CaptureOutput.CO_PARQUET_PAGE_INDEX))
+            .setSourceFileCount(1)
+            .setIndexArtifactCount(0)
+            .build()
+            .toByteArray();
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), policy);
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJobView("JS_RUNNING", 0, 1, scope)));
+    when(blobs.get(manifestUri())).thenReturn(manifestBytes);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            service.persistSuccess(
+                principal,
+                FINALIZE_JOB_ID,
+                LEASE_EPOCH,
+                "result-1",
+                descriptor(manifestUri(), manifestBytes, 0, 1, 0)));
+
+    verify(service.indexArtifactRepository, never())
+        .activateGeneration(any(), anyLong(), anyString(), any(byte[].class));
+  }
+
+  @Test
+  void successRejectsManifestPolicyThatDoesNotMatchLease() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), policy);
+    byte[] manifestBytes = manifestBytes();
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJobView("JS_RUNNING", 0, 0, scope)));
+    when(blobs.get(manifestUri())).thenReturn(manifestBytes);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            service.persistSuccess(
+                principal,
+                FINALIZE_JOB_ID,
+                LEASE_EPOCH,
+                "result-1",
+                descriptor(manifestUri(), manifestBytes, 0, 0, 0)));
+
+    verify(persistence, never())
+        .publishPreparedStatsGeneration(any(), anyLong(), anyString(), any());
+    verify(service.indexArtifactRepository, never())
+        .activateGeneration(any(), anyLong(), anyString(), any(byte[].class));
   }
 
   @Test
@@ -423,6 +497,11 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
   private static ReconcileJobStore.ReconcileJob finalizeJobView(
       String state, int fileGroupCount, int sourceFileCount) {
+    return finalizeJobView(state, fileGroupCount, sourceFileCount, ReconcileScope.empty());
+  }
+
+  private static ReconcileJobStore.ReconcileJob finalizeJobView(
+      String state, int fileGroupCount, int sourceFileCount, ReconcileScope scope) {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -454,7 +533,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         CaptureMode.METADATA_AND_CAPTURE,
         0L,
         0L,
-        ReconcileScope.empty(),
+        scope,
         ReconcileExecutionPolicy.defaults(),
         "",
         "",

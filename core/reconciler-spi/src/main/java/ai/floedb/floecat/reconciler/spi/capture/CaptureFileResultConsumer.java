@@ -14,8 +14,16 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.repo.model;
+package ai.floedb.floecat.reconciler.spi.capture;
 
-public record TargetStatsKey(
-    String accountId, String tableId, long snapshotId, String targetId, String sha256)
-    implements ResourceKey {}
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
+import java.util.List;
+
+/** Receives the outputs for one completed source file during file-group capture. */
+@FunctionalInterface
+public interface CaptureFileResultConsumer {
+  void accept(
+      List<TargetStatsRecord> fileStats,
+      List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries);
+}

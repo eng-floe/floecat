@@ -16,8 +16,14 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
+
 interface RemoteFileGroupWorkerClient {
   StandaloneFileGroupExecutionPayload getExecution(RemoteLeasedJob lease);
+
+  StatsObjectDescriptor publishFileStats(
+      StandaloneFileGroupExecutionPayload payload, TargetStatsRecord fileStats);
 
   boolean submitSuccess(
       RemoteLeasedJob lease,

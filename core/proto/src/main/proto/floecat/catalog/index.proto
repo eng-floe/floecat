@@ -100,6 +100,16 @@ message GetIndexArtifactResponse {
   IndexArtifactRecord record = 1;
 }
 
+message GetIndexCaptureStatusRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  ai.floedb.floecat.common.SnapshotRef snapshot = 2;
+  repeated string selectors = 3;
+}
+
+message GetIndexCaptureStatusResponse {
+  bool complete = 1;
+}
+
 message ListIndexArtifactsRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   ai.floedb.floecat.common.SnapshotRef snapshot = 2;
@@ -113,6 +123,7 @@ message ListIndexArtifactsResponse {
 
 service TableIndexService {
   rpc GetIndexArtifact(GetIndexArtifactRequest) returns (GetIndexArtifactResponse);
+  rpc GetIndexCaptureStatus(GetIndexCaptureStatusRequest) returns (GetIndexCaptureStatusResponse);
   rpc ListIndexArtifacts(ListIndexArtifactsRequest) returns (ListIndexArtifactsResponse);
   rpc PutIndexArtifacts(stream PutIndexArtifactsRequest) returns (PutIndexArtifactsResponse);
 }

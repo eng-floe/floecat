@@ -55,13 +55,29 @@ public class CaptureEngineRegistry {
     return candidates(request).stream().findFirst();
   }
 
-  public CaptureEngineResult capture(CaptureEngineRequest request) {
+  public CaptureEngineResult capture(
+      CaptureEngineRequest request, CaptureFileResultConsumer fileResultConsumer) {
+    CaptureFileResultConsumer output =
+        java.util.Objects.requireNonNull(fileResultConsumer, "fileResultConsumer");
     for (CaptureEngine engine : candidates(request)) {
-      Optional<CaptureEngineResult> result = engine.capture(request);
+      Optional<CaptureEngineResult> result = engine.capture(request, output);
       if (result.isPresent()) {
-        return result.get();
+        return validateProgressiveResult(engine, result.get());
       }
     }
     return CaptureEngineResult.empty();
+  }
+
+  private static CaptureEngineResult validateProgressiveResult(
+      CaptureEngine engine, CaptureEngineResult result) {
+    if (result.statsRecords().stream().anyMatch(record -> record != null && record.hasFile())) {
+      throw new IllegalStateException(
+          "capture engine " + engine.id() + " retained file stats in its terminal result");
+    }
+    if (!result.pageIndexEntries().isEmpty()) {
+      throw new IllegalStateException(
+          "capture engine " + engine.id() + " retained page-index rows in its terminal result");
+    }
+    return result;
   }
 }

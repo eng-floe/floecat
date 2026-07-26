@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.spi.capture;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -67,7 +68,10 @@ class CaptureEngineRegistryTest {
                     List.of(TargetStatsRecord.getDefaultInstance()), List.of(), List.of())));
     var registry = new CaptureEngineRegistry(List.of(declining, capturing));
 
-    assertThat(registry.capture(request(false, Set.of(FloecatConnector.StatsTargetKind.FILE))))
+    assertThat(
+            registry.capture(
+                request(false, Set.of(FloecatConnector.StatsTargetKind.FILE)),
+                (fileStats, pageIndexEntries) -> {}))
         .extracting(CaptureEngineResult::statsRecords)
         .asList()
         .hasSize(1);
@@ -95,6 +99,36 @@ class CaptureEngineRegistryTest {
   }
 
   @Test
+  void captureRejectsLegacyBatchFileStatsResults() {
+    TargetStatsRecord fileStats =
+        TargetStatsRecord.newBuilder()
+            .setTarget(
+                ai.floedb.floecat.catalog.rpc.StatsTarget.newBuilder()
+                    .setFile(
+                        ai.floedb.floecat.catalog.rpc.FileStatsTarget.newBuilder()
+                            .setFilePath("s3://bucket/file.parquet")))
+            .setFile(
+                ai.floedb.floecat.catalog.rpc.FileTargetStats.newBuilder()
+                    .setFilePath("s3://bucket/file.parquet"))
+            .build();
+    var batchEngine =
+        new TestCaptureEngine(
+            "batch",
+            1,
+            CaptureEngineCapabilities.of(Set.of(FloecatConnector.StatsTargetKind.FILE), false),
+            Optional.of(CaptureEngineResult.of(List.of(fileStats), List.of(), List.of())));
+    var registry = new CaptureEngineRegistry(List.of(batchEngine));
+
+    assertThatThrownBy(
+            () ->
+                registry.capture(
+                    request(false, Set.of(FloecatConnector.StatsTargetKind.FILE)),
+                    (stats, indexes) -> {}))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("retained file stats");
+  }
+
+  @Test
   void capabilitiesExposeExecutionContractForRoutingAndReplacement() {
     CaptureEngineCapabilities capabilities =
         CaptureEngineCapabilities.of(
@@ -103,7 +137,7 @@ class CaptureEngineRegistryTest {
             false,
             true,
             CaptureEngineCapabilities.ExecutionScope.FILE_GROUP_ONLY,
-            CaptureEngineCapabilities.ResultContract.COMPLETE_FILE_GROUP_OUTPUTS,
+            CaptureEngineCapabilities.ResultContract.PROGRESSIVE_FILE_OUTPUTS,
             CaptureEngineCapabilities.ExecutionRuntime.LOCAL_OR_REMOTE);
 
     assertThat(capabilities.supportsExpressionTargets()).isFalse();
@@ -111,7 +145,7 @@ class CaptureEngineRegistryTest {
     assertThat(capabilities.executionScope())
         .isEqualTo(CaptureEngineCapabilities.ExecutionScope.FILE_GROUP_ONLY);
     assertThat(capabilities.resultContract())
-        .isEqualTo(CaptureEngineCapabilities.ResultContract.COMPLETE_FILE_GROUP_OUTPUTS);
+        .isEqualTo(CaptureEngineCapabilities.ResultContract.PROGRESSIVE_FILE_OUTPUTS);
     assertThat(capabilities.executionRuntime())
         .isEqualTo(CaptureEngineCapabilities.ExecutionRuntime.LOCAL_OR_REMOTE);
   }
@@ -125,7 +159,7 @@ class CaptureEngineRegistryTest {
             false,
             false,
             CaptureEngineCapabilities.ExecutionScope.FILE_GROUP_ONLY,
-            CaptureEngineCapabilities.ResultContract.COMPLETE_FILE_GROUP_OUTPUTS,
+            CaptureEngineCapabilities.ResultContract.PROGRESSIVE_FILE_OUTPUTS,
             CaptureEngineCapabilities.ExecutionRuntime.LOCAL_OR_REMOTE);
 
     CaptureEngineRequest missingPlannedFiles =
@@ -222,7 +256,7 @@ class CaptureEngineRegistryTest {
     assertThat(request.statsColumns()).containsExactly("c1");
     assertThat(request.indexColumns()).containsExactly("idx");
     assertThat(request.isFileGroupScoped()).isTrue();
-    assertThat(request.expectsCompleteFileGroupOutputs()).isTrue();
+    assertThat(request.expectsProgressiveFileGroupOutputs()).isTrue();
   }
 
   private static CaptureEngineRequest request(
@@ -266,7 +300,8 @@ class CaptureEngineRegistryTest {
       Optional<CaptureEngineResult> result)
       implements CaptureEngine {
     @Override
-    public Optional<CaptureEngineResult> capture(CaptureEngineRequest request) {
+    public Optional<CaptureEngineResult> capture(
+        CaptureEngineRequest request, CaptureFileResultConsumer fileResultConsumer) {
       return result;
     }
   }

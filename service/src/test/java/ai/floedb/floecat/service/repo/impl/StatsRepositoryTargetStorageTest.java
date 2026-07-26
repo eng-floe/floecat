@@ -1683,6 +1683,15 @@ class StatsRepositoryTargetStorageTest {
           new byte[] {(byte) i},
           "application/x-protobuf");
     }
+    String indexWrapper =
+        Keys.snapshotIndexArtifactGenerationBlobUri(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            generationId,
+            "file:s3://bucket/data.parquet",
+            "sha-index");
+    blobStore.put(indexWrapper, new byte[] {9}, "application/x-protobuf");
     statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, java.util.List.of(record));
 
     StatsRepository.GenerationGcResult result =
@@ -1706,6 +1715,7 @@ class StatsRepositoryTargetStorageTest {
     assertThat(result.pending()).isFalse();
     assertThat(result.generationsReclaimed()).isEqualTo(1);
     assertThat(blobStore.get(supersededManifest)).isNull();
+    assertThat(blobStore.get(indexWrapper)).isNull();
     assertThat(blobStore.list(generationBlobPrefix, 1, "").keys()).isEmpty();
   }
 

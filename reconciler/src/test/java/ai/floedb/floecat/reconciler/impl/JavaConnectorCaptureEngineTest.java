@@ -74,7 +74,7 @@ class JavaConnectorCaptureEngineTest {
     assertThat(engine.capabilities().resultContract())
         .isEqualTo(
             ai.floedb.floecat.reconciler.spi.capture.CaptureEngineCapabilities.ResultContract
-                .COMPLETE_FILE_GROUP_OUTPUTS);
+                .PROGRESSIVE_FILE_OUTPUTS);
     assertThat(engine.capabilities().executionRuntime())
         .isEqualTo(
             ai.floedb.floecat.reconciler.spi.capture.CaptureEngineCapabilities.ExecutionRuntime
@@ -138,7 +138,7 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             () -> false);
 
-    assertThat(engine.capture(request)).isEmpty();
+    assertThat(engine.capture(request, (fileStats, pageIndexEntries) -> {})).isEmpty();
     verify(connector, never())
         .capturePlannedFileGroup(
             any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any());
@@ -199,7 +199,7 @@ class JavaConnectorCaptureEngineTest {
             Optional.of("lease-1"),
             () -> false);
 
-    assertThat(engine.capture(request)).isPresent();
+    assertThat(engine.capture(request, (fileStats, pageIndexEntries) -> {})).isPresent();
     verify(storageResolver)
         .resolveManagedWithAuthorization(
             eq(Optional.of("worker-token")),
@@ -251,7 +251,7 @@ class JavaConnectorCaptureEngineTest {
             any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
         .thenThrow(expiredToken);
 
-    assertThatThrownBy(() -> engine.capture(request))
+    assertThatThrownBy(() -> engine.capture(request, (fileStats, pageIndexEntries) -> {}))
         .isInstanceOf(ReconcileFailureException.class)
         .satisfies(
             error -> {
@@ -263,7 +263,7 @@ class JavaConnectorCaptureEngineTest {
   }
 
   @Test
-  void captureReturnsAggregateAndFileStatsForFileGroupExecution() {
+  void capturePublishesFileStatsAndReturnsOnlyAggregatePartials() {
     FloecatConnector connector = Mockito.mock(FloecatConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
@@ -339,10 +339,11 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             () -> false);
 
-    var result = engine.capture(request);
+    var outputs = new CapturedFileOutputs();
+    var result = engine.capture(request, outputs::accept);
 
     assertThat(result).isPresent();
-    assertThat(result.get().statsRecords()).contains(fileRecord);
+    assertThat(outputs.fileStats).containsExactly(fileRecord);
     assertThat(result.get().statsRecords())
         .filteredOn(record -> record.getTarget().hasTable())
         .hasSize(1);
@@ -351,7 +352,7 @@ class JavaConnectorCaptureEngineTest {
         .hasSize(1);
     assertThat(result.get().statsRecords())
         .filteredOn(record -> record.getTarget().hasFile())
-        .hasSize(1);
+        .isEmpty();
 
     verify(connector, never())
         .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
@@ -418,10 +419,12 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             () -> false);
 
-    var result = engine.capture(request);
+    var outputs = new CapturedFileOutputs();
+    var result = engine.capture(request, outputs::accept);
 
     assertThat(result).isPresent();
-    assertThat(result.get().statsRecords()).containsExactly(fileRecord);
+    assertThat(outputs.fileStats).containsExactly(fileRecord);
+    assertThat(result.get().statsRecords()).isEmpty();
     verify(connector, never())
         .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
     verify(connector)
@@ -489,18 +492,16 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             () -> false);
 
-    var result = engine.capture(request);
+    var outputs = new CapturedFileOutputs();
+    var result = engine.capture(request, outputs::accept);
 
     assertThat(result).isPresent();
-    assertThat(result.get().statsRecords()).hasSize(3);
-    assertThat(result.get().statsRecords())
-        .filteredOn(record -> record.getTarget().hasFile())
-        .hasSize(2);
+    assertThat(outputs.fileStats).hasSize(2);
+    assertThat(result.get().statsRecords()).hasSize(1);
     assertThat(result.get().statsRecords())
         .filteredOn(record -> record.getTarget().hasColumn())
         .hasSize(1);
-    assertThat(result.get().statsRecords())
-        .filteredOn(record -> record.getTarget().hasFile())
+    assertThat(outputs.fileStats)
         .extracting(record -> record.getFile().getColumns(0).getScalar().getNdv())
         .allSatisfy(
             ndv -> {
@@ -547,7 +548,7 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             shouldStop::get);
 
-    assertThatThrownBy(() -> engine.capture(request))
+    assertThatThrownBy(() -> engine.capture(request, (fileStats, pageIndexEntries) -> {}))
         .isInstanceOf(CancellationException.class)
         .hasMessage("file-group execution cancelled");
     verify(connector)
@@ -675,13 +676,16 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             () -> false);
 
-    var result = engine.capture(request);
+    var outputs = new CapturedFileOutputs();
+    var result = engine.capture(request, outputs::accept);
 
     assertThat(result).isPresent();
-    assertThat(result.get().statsRecords()).containsExactly(fileRecord);
-    assertThat(result.get().pageIndexEntries())
+    assertThat(outputs.fileStats).containsExactly(fileRecord);
+    assertThat(outputs.pageIndexEntries)
         .extracting(FloecatConnector.ParquetPageIndexEntry::columnName)
         .containsExactly("index_only");
+    assertThat(result.get().statsRecords()).isEmpty();
+    assertThat(result.get().pageIndexEntries()).isEmpty();
   }
 
   private static TargetStatsRecord fileRecordWithColumnNdv(
@@ -871,10 +875,11 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             () -> false);
 
-    var result = engine.capture(request);
+    var outputs = new CapturedFileOutputs();
+    var result = engine.capture(request, outputs::accept);
 
     assertThat(result).isPresent();
-    assertThat(result.get().statsRecords()).contains(fileRecordOne, fileRecordTwo);
+    assertThat(outputs.fileStats).containsExactly(fileRecordOne, fileRecordTwo);
     assertThat(result.get().statsRecords())
         .filteredOn(record -> record.getTarget().hasTable())
         .hasSize(1);
@@ -883,6 +888,19 @@ class JavaConnectorCaptureEngineTest {
         .hasSize(1);
     assertThat(result.get().statsRecords())
         .filteredOn(record -> record.getTarget().hasFile())
-        .hasSize(2);
+        .isEmpty();
+  }
+
+  private static final class CapturedFileOutputs {
+    private final List<TargetStatsRecord> fileStats = new java.util.ArrayList<>();
+    private final List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries =
+        new java.util.ArrayList<>();
+
+    private void accept(
+        List<TargetStatsRecord> completedFileStats,
+        List<FloecatConnector.ParquetPageIndexEntry> completedPageIndexEntries) {
+      fileStats.addAll(completedFileStats);
+      pageIndexEntries.addAll(completedPageIndexEntries);
+    }
   }
 }

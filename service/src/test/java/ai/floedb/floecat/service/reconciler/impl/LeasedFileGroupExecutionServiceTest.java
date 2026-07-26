@@ -69,12 +69,14 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.ByteString;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -283,7 +285,11 @@ class LeasedFileGroupExecutionServiceTest {
             eq(tableId()), eq(SNAPSHOT_ID), eq("full-rescan-" + PARENT_JOB_ID), eq(List.of()));
     verify(indexArtifactRepository)
         .registerPrewrittenIndexArtifactReferencesInGeneration(
-            eq(tableId()), eq(SNAPSHOT_ID), eq("full-rescan-" + PARENT_JOB_ID), eq(List.of()));
+            eq(tableId()),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-" + PARENT_JOB_ID),
+            eq(statsObjectPrefix() + "index-artifacts/"),
+            eq(List.of()));
     verify(statsStore)
         .markPreparedFileGroup(
             eq(tableId()),
@@ -418,10 +424,16 @@ class LeasedFileGroupExecutionServiceTest {
     TargetStatsRecord record = fileStatsRecord(filePath, 10L);
     StatsObjectDescriptor fileStats = statsObjectDescriptors(List.of(record)).getFirst();
     byte[] indexBytes = "index".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    String indexArtifactObjectPrefix = statsObjectPrefix() + "index-artifacts/";
     StatsObjectDescriptor indexArtifact =
         StatsObjectDescriptor.newBuilder()
             .setTargetStorageId(fileStats.getTargetStorageId())
-            .setPayloadUri(statsObjectPrefix() + "index.pb")
+            .setPayloadUri(
+                indexArtifactObjectPrefix
+                    + Hashing.sha256Hex(fileStats.getTargetStorageId())
+                    + "/"
+                    + HexFormat.of().formatHex(sha256(indexBytes))
+                    + ".pb")
             .setPayloadBytes(indexBytes.length)
             .setPayloadSha256(ByteString.copyFrom(sha256(indexBytes)))
             .build();
@@ -455,6 +467,7 @@ class LeasedFileGroupExecutionServiceTest {
             eq(tableId()),
             eq(SNAPSHOT_ID),
             eq("full-rescan-" + PARENT_JOB_ID),
+            eq(indexArtifactObjectPrefix),
             references.capture());
     assertEquals(1, references.getValue().size());
     assertEquals(
@@ -520,7 +533,7 @@ class LeasedFileGroupExecutionServiceTest {
             any(), anyLong(), anyString(), anyString(), any());
     verify(indexArtifactRepository, never())
         .registerPrewrittenIndexArtifactReferencesInGeneration(
-            any(), anyLong(), anyString(), any());
+            any(), anyLong(), anyString(), anyString(), any());
     verify(idempotencyStore, never())
         .finalizeSuccess(
             anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());

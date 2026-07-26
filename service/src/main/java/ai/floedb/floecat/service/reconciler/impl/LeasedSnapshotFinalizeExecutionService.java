@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
@@ -313,8 +314,73 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         || descriptor.getIndexArtifactCount() != manifest.getIndexArtifactCount()) {
       throw new IllegalArgumentException("snapshot capture manifest object identity mismatch");
     }
+    validateCapturePolicy(lease, manifest.getCapturePolicy());
+    if (manifest
+            .getCapturePolicy()
+            .getOutputsList()
+            .contains(ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_PARQUET_PAGE_INDEX)
+        && manifest.getIndexArtifactCount() != manifest.getSourceFileCount()) {
+      throw new IllegalArgumentException(
+          "snapshot capture manifest index artifacts do not cover planned files");
+    }
     return manifest;
   }
+
+  private static void validateCapturePolicy(
+      ReconcileJobStore.LeasedJob lease, ai.floedb.floecat.reconciler.rpc.CapturePolicy submitted) {
+    ReconcileCapturePolicy expected =
+        lease.scope == null ? ReconcileCapturePolicy.empty() : lease.scope.capturePolicy();
+    Set<ai.floedb.floecat.reconciler.rpc.CaptureOutput> expectedOutputs = new HashSet<>();
+    for (ReconcileCapturePolicy.Output output : expected.outputs()) {
+      expectedOutputs.add(
+          switch (output) {
+            case TABLE_STATS -> ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_TABLE_STATS;
+            case FILE_STATS -> ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_FILE_STATS;
+            case COLUMN_STATS -> ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_COLUMN_STATS;
+            case PARQUET_PAGE_INDEX ->
+                ai.floedb.floecat.reconciler.rpc.CaptureOutput.CO_PARQUET_PAGE_INDEX;
+          });
+    }
+    Set<ai.floedb.floecat.reconciler.rpc.CaptureOutput> submittedOutputs =
+        new HashSet<>(submitted.getOutputsList());
+    List<CapturePolicyColumn> expectedColumns =
+        expected.columns().stream()
+            .map(
+                column ->
+                    new CapturePolicyColumn(
+                        column.selector(), column.captureStats(), column.captureIndex()))
+            .toList();
+    List<CapturePolicyColumn> submittedColumns =
+        submitted.getColumnsList().stream()
+            .map(
+                column ->
+                    new CapturePolicyColumn(
+                        column.getSelector().trim(),
+                        column.getCaptureStats(),
+                        column.getCaptureIndex()))
+            .toList();
+    ReconcileCapturePolicy.DefaultColumnScope submittedDefaultScope =
+        switch (submitted.getDefaultColumnScope()) {
+          case DCS_ALL -> ReconcileCapturePolicy.DefaultColumnScope.ALL;
+          case DCS_EXPLICIT_ONLY -> ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
+          case DCS_FIRST_N, DCS_UNSPECIFIED, UNRECOGNIZED ->
+              ReconcileCapturePolicy.DefaultColumnScope.FIRST_N;
+        };
+    int submittedMaxDefaultColumns =
+        submitted.getMaxDefaultColumns() <= 0
+            ? ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS
+            : submitted.getMaxDefaultColumns();
+    if (!expectedOutputs.equals(submittedOutputs)
+        || !expectedColumns.equals(submittedColumns)
+        || expected.defaultColumnScope() != submittedDefaultScope
+        || expected.maxDefaultColumns() != submittedMaxDefaultColumns
+        || !expected.properties().equals(submitted.getPropertiesMap())) {
+      throw new IllegalArgumentException(
+          "snapshot capture manifest policy does not match the leased reconcile policy");
+    }
+  }
+
+  private record CapturePolicyColumn(String selector, boolean captureStats, boolean captureIndex) {}
 
   private void publishCaptureArtifacts(
       ReconcileJobStore.LeasedJob lease,
@@ -384,7 +450,8 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     }
     persistence.publishPreparedStatsGeneration(
         tableId, snapshotTask.snapshotId(), generationId, finalStats);
-    indexArtifactRepository.activateGeneration(tableId, snapshotTask.snapshotId(), generationId);
+    indexArtifactRepository.activateGeneration(
+        tableId, snapshotTask.snapshotId(), generationId, manifest.toByteArray());
     persistence.clearPrewrittenArtifactProtections(
         tableId, snapshotTask.snapshotId(), generationId);
   }

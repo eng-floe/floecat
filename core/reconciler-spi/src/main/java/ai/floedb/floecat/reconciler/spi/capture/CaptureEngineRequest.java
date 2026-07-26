@@ -123,7 +123,7 @@ public record CaptureEngineRequest(
     return tableId != null && snapshotId >= 0 && !plannedFilePaths.isEmpty();
   }
 
-  public boolean expectsCompleteFileGroupOutputs() {
+  public boolean expectsProgressiveFileGroupOutputs() {
     return hasOutputs() && isFileGroupScoped();
   }
 }

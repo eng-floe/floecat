@@ -33,6 +33,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -210,6 +211,13 @@ class ReconcileExecutorControlImplTest {
 
   @Test
   void leaseReconcileJobUsesExecutorAwareLeaseFilterAndMapsLease() {
+    ReconcileCapturePolicy capturePolicy =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            java.util.Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+            ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS,
+            Map.of("engine.option", "enabled"));
     when(service.jobs.leaseNext(any()))
         .thenReturn(
             Optional.of(
@@ -219,7 +227,7 @@ class ReconcileExecutorControlImplTest {
                     "connector-1",
                     false,
                     CaptureMode.METADATA_AND_CAPTURE,
-                    ReconcileScope.of(java.util.List.of(), "orders"),
+                    ReconcileScope.of(java.util.List.of(), "orders", List.of(), capturePolicy),
                     ReconcileExecutionPolicy.of(
                         ReconcileExecutionClass.HEAVY, "remote", Map.of("tier", "gold")),
                     "lease-1",
@@ -242,6 +250,13 @@ class ReconcileExecutorControlImplTest {
     assertEquals("job-1", response.getJob().getJobId());
     assertEquals("connector-1", response.getJob().getConnectorId().getId());
     assertEquals("orders", response.getJob().getScope().getDestinationTableId());
+    assertEquals(
+        "enabled",
+        response
+            .getJob()
+            .getScope()
+            .getCapturePolicy()
+            .getPropertiesOrDefault("engine.option", ""));
     assertEquals("remote-executor", response.getJob().getPinnedExecutorId());
     verify(service.jobs)
         .leaseNext(

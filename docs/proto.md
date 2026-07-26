@@ -46,7 +46,7 @@ CLI, and reconciler.
 | `ViewService` | Similar CRUD semantics, storing SQL definitions and metadata. |
 | `SnapshotService` | `ListSnapshots`, `GetSnapshot`, `CreateSnapshot`, `DeleteSnapshot` | Pins upstream checkpoints and timestamps. |
 | `TableStatisticsService` | `GetTargetStats`, `ListTargetStats`, client-streaming `PutTargetStats` | Accepts per-snapshot target stats envelopes (table/column/expression/file). `ListTargetStats` supports target-kind filtering (currently at most one kind per request); streaming writes collapse multiple batches into a single call. |
-| `TableIndexService` | `GetIndexArtifact`, `ListIndexArtifacts`, client-streaming `PutIndexArtifacts` | Stores and resolves snapshot-scoped parquet sidecar artifact metadata keyed by table, snapshot, and target file. |
+| `TableIndexService` | `GetIndexArtifact`, `GetIndexCaptureStatus`, `ListIndexArtifacts`, client-streaming `PutIndexArtifacts` | Stores and resolves snapshot-scoped parquet sidecar artifact metadata and bounded-cost finalized capture status keyed by table and snapshot. |
 | `TableConstraintsService` | `GetTableConstraints`, `ListTableConstraints`, `PutTableConstraints`, `MergeTableConstraints`, `AppendTableConstraints`, `DeleteTableConstraints`, `AddTableConstraint`, `DeleteTableConstraint` | Snapshot-scoped constraints CRUD for user tables. `PutTableConstraints` is full-bundle upsert, `MergeTableConstraints` is server-side merge by `constraint.name` plus shallow merge of bundle `properties` (incoming keys win), `AppendTableConstraints` is server-side append-only (duplicate names rejected), and `AddTableConstraint`/`DeleteTableConstraint` are single-constraint partial mutations. All write operations require snapshot existence (`NOT_FOUND` when missing). |
 | `DirectoryService` | `Resolve*` & `Lookup*` RPCs | Translates between names and `ResourceId`s with pagination for batched lookups. |
 | `AccountService` | Account CRUD. |
@@ -106,6 +106,10 @@ engine release.
   aggregate pointers, and counts; it requires every prepared marker and activates the generation
   without repeating per-file pointers. Successful finalization clears protections; failed or
   cancelled full rescans delete the unpublished generation.
+  Index sidecar placement remains executor-controlled through `IndexArtifactRecord.artifact_uri`,
+  but its serialized wrapper must be published beneath the leased `stats_object_prefix` as
+  `index-artifacts/<sha256(target_storage_id)>/<payload_sha256>.pb`. Finalize manifests must repeat
+  the leased capture policy exactly, including opaque properties.
 - **File-group planning ceiling** – snapshot planning uses at most 128 files per group by default.
   `floecat.reconciler.snapshot-plan.max-files-per-group` configures that ceiling and is clamped to
   at least one. The service validates commits against the immutable planned group but does not

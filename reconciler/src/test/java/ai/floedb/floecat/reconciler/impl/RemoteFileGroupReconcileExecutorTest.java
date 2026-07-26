@@ -39,11 +39,13 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
 
 class RemoteFileGroupReconcileExecutorTest {
@@ -112,7 +114,7 @@ class RemoteFileGroupReconcileExecutorTest {
             new IllegalArgumentException("Unsupported parquet page type DICTIONARY_PAGE"));
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(eq(payload), any())).thenThrow(failure);
+    when(runner.execute(eq(payload), any(), any())).thenThrow(failure);
 
     ReconcileExecutor.ExecutionResult result =
         executor.execute(
@@ -164,7 +166,7 @@ class RemoteFileGroupReconcileExecutorTest {
     AtomicBoolean shouldStop = new AtomicBoolean(false);
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(eq(payload), any()))
+    when(runner.execute(eq(payload), any(), any()))
         .thenAnswer(
             ignored -> {
               shouldStop.set(true);
@@ -195,7 +197,7 @@ class RemoteFileGroupReconcileExecutorTest {
     AtomicBoolean shouldStop = new AtomicBoolean(false);
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(eq(payload), any()))
+    when(runner.execute(eq(payload), any(), any()))
         .thenAnswer(
             ignored -> {
               shouldStop.set(true);
@@ -230,7 +232,7 @@ class RemoteFileGroupReconcileExecutorTest {
     StandaloneFileGroupExecutionPayload payload = payload();
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(eq(payload), any())).thenReturn(CaptureEngineResult.empty());
+    when(runner.execute(eq(payload), any(), any())).thenReturn(CaptureEngineResult.empty());
     when(workerClient.submitSuccess(eq(remoteLease), eq(payload), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
@@ -245,7 +247,7 @@ class RemoteFileGroupReconcileExecutorTest {
             eq(payload),
             eq(
                 new StandaloneFileGroupExecutionResult(
-                    "job-1:plan-1:group-1:lease-1:success", List.of(), List.of())));
+                    "job-1:plan-1:group-1:lease-1:success", List.of(), List.of(), List.of())));
   }
 
   @Test
@@ -261,7 +263,7 @@ class RemoteFileGroupReconcileExecutorTest {
     StandaloneFileGroupExecutionPayload payload = payload();
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(eq(payload), any())).thenReturn(CaptureEngineResult.empty());
+    when(runner.execute(eq(payload), any(), any())).thenReturn(CaptureEngineResult.empty());
     when(workerClient.submitSuccess(eq(remoteLease), eq(payload), any()))
         .thenThrow(new RuntimeException("response lost after success submit"));
 
@@ -291,7 +293,7 @@ class RemoteFileGroupReconcileExecutorTest {
     ReconcilerBackend.StagedIndexArtifact artifact = stagedArtifact();
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(eq(payload), any()))
+    when(runner.execute(eq(payload), any(), any()))
         .thenReturn(CaptureEngineResult.of(List.of(), List.of(), List.of(artifact)));
     when(workerClient.submitSuccess(eq(remoteLease), eq(payload), any())).thenReturn(true);
 
@@ -307,11 +309,14 @@ class RemoteFileGroupReconcileExecutorTest {
             eq(payload),
             eq(
                 new StandaloneFileGroupExecutionResult(
-                    "job-1:plan-1:group-1:lease-1:success", List.of(), List.of(artifact))));
+                    "job-1:plan-1:group-1:lease-1:success",
+                    List.of(),
+                    List.of(),
+                    List.of(artifact))));
   }
 
   @Test
-  void submitsFileStatsInlineInSuccessResult() {
+  void publishesFileStatsProgressivelyAndSubmitsOnlyDescriptor() {
     RemoteFileGroupWorkerClient workerClient = mock(RemoteFileGroupWorkerClient.class);
     StandaloneJavaFileGroupExecutionRunner runner =
         mock(StandaloneJavaFileGroupExecutionRunner.class);
@@ -334,10 +339,24 @@ class RemoteFileGroupReconcileExecutorTest {
                 .setRowCount(10L)
                 .build(),
             null);
+    var descriptor =
+        StatsObjectDescriptor.newBuilder()
+            .setTargetStorageId("file:s3://bucket/file.parquet")
+            .setPayloadUri("/stats/file.pb")
+            .setPayloadBytes(1L)
+            .build();
 
     when(workerClient.getExecution(remoteLease)).thenReturn(payload);
-    when(runner.execute(eq(payload), any()))
-        .thenReturn(CaptureEngineResult.of(List.of(fileStat), List.of(), List.of()));
+    when(runner.execute(eq(payload), any(), any()))
+        .thenAnswer(
+            invocation -> {
+              @SuppressWarnings("unchecked")
+              Consumer<ai.floedb.floecat.catalog.rpc.TargetStatsRecord> publisher =
+                  invocation.getArgument(2);
+              publisher.accept(fileStat);
+              return CaptureEngineResult.empty();
+            });
+    when(workerClient.publishFileStats(payload, fileStat)).thenReturn(descriptor);
     when(workerClient.submitSuccess(eq(remoteLease), eq(payload), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
@@ -352,7 +371,10 @@ class RemoteFileGroupReconcileExecutorTest {
             eq(payload),
             eq(
                 new StandaloneFileGroupExecutionResult(
-                    "job-1:plan-1:group-1:lease-1:success", List.of(fileStat), List.of())));
+                    "job-1:plan-1:group-1:lease-1:success",
+                    List.of(),
+                    List.of(descriptor),
+                    List.of())));
   }
 
   private static ReconcileJobStore.LeasedJob leasedFileGroupJob() {

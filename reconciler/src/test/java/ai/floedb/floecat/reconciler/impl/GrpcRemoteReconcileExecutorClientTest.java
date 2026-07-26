@@ -812,7 +812,8 @@ class GrpcRemoteReconcileExecutorClientTest {
         .thenReturn(CommitLeasedFileGroupResultResponse.newBuilder().setAccepted(true).build());
     when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
 
-    var result = new StandaloneFileGroupExecutionResult("result-1", List.of(), List.of());
+    var result =
+        new StandaloneFileGroupExecutionResult("result-1", List.of(), List.of(), List.of());
 
     assertThat(
             client.submitSuccess(
@@ -830,7 +831,8 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
-  void submitFileGroupSuccessWritesOneStatsObjectAndSendsOnlyItsDescriptor() throws Exception {
+  void progressiveFileStatsPublicationWritesObjectBeforeTerminalDescriptorSubmission()
+      throws Exception {
     ExplicitTransportClient client = new ExplicitTransportClient();
     ManagedChannel channel = mock(ManagedChannel.class);
     ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
@@ -841,30 +843,26 @@ class GrpcRemoteReconcileExecutorClientTest {
         .thenReturn(CommitLeasedFileGroupResultResponse.newBuilder().setAccepted(true).build());
     when(channel.awaitTermination(5, TimeUnit.SECONDS)).thenReturn(true);
 
+    var payload = fileGroupPayload("s3://bucket/data/file-1.parquet");
+    var record =
+        ai.floedb.floecat.stats.identity.TargetStatsRecords.fileRecord(
+            ResourceId.newBuilder()
+                .setAccountId("acct")
+                .setKind(ResourceKind.RK_TABLE)
+                .setId("table-1")
+                .build(),
+            55L,
+            ai.floedb.floecat.catalog.rpc.FileTargetStats.newBuilder()
+                .setFilePath("s3://bucket/data/file-1.parquet")
+                .setRowCount(3L)
+                .build(),
+            null);
+    var descriptor = client.publishFileStats(payload, record);
     var result =
         new StandaloneFileGroupExecutionResult(
-            "result-1",
-            List.of(
-                ai.floedb.floecat.stats.identity.TargetStatsRecords.fileRecord(
-                    ResourceId.newBuilder()
-                        .setAccountId("acct")
-                        .setKind(ResourceKind.RK_TABLE)
-                        .setId("table-1")
-                        .build(),
-                    55L,
-                    ai.floedb.floecat.catalog.rpc.FileTargetStats.newBuilder()
-                        .setFilePath("s3://bucket/data/file-1.parquet")
-                        .setRowCount(3L)
-                        .build(),
-                    null)),
-            List.of());
+            "result-1", List.of(), List.of(descriptor), List.of());
 
-    assertThat(
-            client.submitSuccess(
-                remoteFileGroupLease(),
-                fileGroupPayload("s3://bucket/data/file-1.parquet"),
-                result))
-        .isTrue();
+    assertThat(client.submitSuccess(remoteFileGroupLease(), payload, result)).isTrue();
 
     ArgumentCaptor<CommitLeasedFileGroupResultRequest> requestCaptor =
         ArgumentCaptor.forClass(CommitLeasedFileGroupResultRequest.class);
@@ -907,13 +905,13 @@ class GrpcRemoteReconcileExecutorClientTest {
                 .setRowCount(3L)
                 .build(),
             null);
+    var payload = fileGroupPayload(largeFilePath);
+    var descriptor = client.publishFileStats(payload, record);
     var result =
         new StandaloneFileGroupExecutionResult(
-            "result-1", java.util.Collections.nCopies(12, record), List.of());
+            "result-1", List.of(), java.util.Collections.nCopies(12, descriptor), List.of());
 
-    assertThat(
-            client.submitSuccess(remoteFileGroupLease(), fileGroupPayload(largeFilePath), result))
-        .isTrue();
+    assertThat(client.submitSuccess(remoteFileGroupLease(), payload, result)).isTrue();
 
     ArgumentCaptor<CommitLeasedFileGroupResultRequest> requestCaptor =
         ArgumentCaptor.forClass(CommitLeasedFileGroupResultRequest.class);
@@ -952,7 +950,8 @@ class GrpcRemoteReconcileExecutorClientTest {
                 .build(),
             null,
             "application/x-parquet");
-    var result = new StandaloneFileGroupExecutionResult("result-1", List.of(), List.of(artifact));
+    var result =
+        new StandaloneFileGroupExecutionResult("result-1", List.of(), List.of(), List.of(artifact));
 
     assertThat(
             client.submitSuccess(
@@ -969,6 +968,7 @@ class GrpcRemoteReconcileExecutorClientTest {
     verify(client.blobStore, times(2))
         .put(uriCaptor.capture(), bytesCaptor.capture(), eq("application/x-protobuf"));
     int metadataIndex = uriCaptor.getAllValues().get(0).equals(payloadUri) ? 1 : 0;
+    assertThat(uriCaptor.getAllValues().get(metadataIndex)).startsWith("/stats/index-artifacts/");
     assertThat(
             IndexArtifactRecord.parseFrom(bytesCaptor.getAllValues().get(metadataIndex))
                 .getArtifactUri())

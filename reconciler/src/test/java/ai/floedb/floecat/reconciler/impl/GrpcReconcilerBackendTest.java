@@ -35,6 +35,8 @@ import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyActionRule;
 import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
+import ai.floedb.floecat.catalog.rpc.GetIndexCaptureStatusRequest;
+import ai.floedb.floecat.catalog.rpc.GetIndexCaptureStatusResponse;
 import ai.floedb.floecat.catalog.rpc.GetNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
@@ -95,6 +97,36 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class GrpcReconcilerBackendTest {
+  @Test
+  void indexCompletenessUsesOneSnapshotLevelRpc() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.index =
+        mock(
+            ai.floedb.floecat.catalog.rpc.TableIndexServiceGrpc.TableIndexServiceBlockingStub
+                .class);
+    when(backend.index.withInterceptors(any())).thenReturn(backend.index);
+    when(backend.index.getIndexCaptureStatus(any()))
+        .thenReturn(GetIndexCaptureStatusResponse.newBuilder().setComplete(true).build());
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl")
+            .build();
+
+    assertThat(
+            backend.indexCaptureComplete(reconcileContext(), tableId, 44L, Set.of("customer_id")))
+        .isTrue();
+
+    ArgumentCaptor<GetIndexCaptureStatusRequest> request =
+        ArgumentCaptor.forClass(GetIndexCaptureStatusRequest.class);
+    verify(backend.index).getIndexCaptureStatus(request.capture());
+    assertThat(request.getValue().getSnapshot().getSnapshotId()).isEqualTo(44L);
+    assertThat(request.getValue().getSelectorsList()).containsExactly("customer_id");
+  }
+
   @Test
   void ensureTablePersistsStorageLocationFromDescriptorWhenMissingFromProperties() {
     GrpcReconcilerBackend backend =
@@ -868,7 +900,10 @@ class GrpcReconcilerBackendTest {
           }
 
           @Override
-          public Optional<CaptureEngineResult> capture(CaptureEngineRequest request) {
+          public Optional<CaptureEngineResult> capture(
+              CaptureEngineRequest request,
+              ai.floedb.floecat.reconciler.spi.capture.CaptureFileResultConsumer
+                  fileResultConsumer) {
             return Optional.of(CaptureEngineResult.of(stats, List.of(), List.of()));
           }
         };

@@ -30,6 +30,7 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngine;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineCapabilities;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureFileResultConsumer;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.EnumSet;
@@ -71,18 +72,19 @@ public class JavaConnectorCaptureEngine implements CaptureEngine {
         false,
         true,
         CaptureEngineCapabilities.ExecutionScope.FILE_GROUP_ONLY,
-        CaptureEngineCapabilities.ResultContract.COMPLETE_FILE_GROUP_OUTPUTS,
+        CaptureEngineCapabilities.ResultContract.PROGRESSIVE_FILE_OUTPUTS,
         CaptureEngineCapabilities.ExecutionRuntime.LOCAL_ONLY);
   }
 
   @Override
-  public Optional<CaptureEngineResult> capture(CaptureEngineRequest request) {
+  public Optional<CaptureEngineResult> capture(
+      CaptureEngineRequest request, CaptureFileResultConsumer fileResultConsumer) {
     if (!supports(request)) {
       return Optional.empty();
     }
     try (var resolved = resolveCredentials(request.sourceConnector(), request);
         var source = connectorOpener.open(resolved.config())) {
-      return Optional.of(adapter.capture(source, request));
+      return Optional.of(adapter.capture(source, request, fileResultConsumer));
     } catch (CancellationException e) {
       throw e;
     } catch (RuntimeException e) {

@@ -21,6 +21,10 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
+import ai.floedb.floecat.catalog.rpc.FileTargetStats;
+import ai.floedb.floecat.catalog.rpc.StatsTarget;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
@@ -43,14 +47,15 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     var runner = new StandaloneJavaFileGroupExecutionRunner();
     runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
     runner.reconcileWorkerAuthProvider = ignored -> Optional.of("Bearer worker-token");
-    when(runner.captureEngineRegistry.capture(any())).thenReturn(CaptureEngineResult.empty());
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenReturn(CaptureEngineResult.empty());
     BooleanSupplier shouldStop = () -> false;
 
-    runner.execute(payload(), shouldStop);
+    runner.execute(payload(), shouldStop, ignored -> {});
 
     ArgumentCaptor<CaptureEngineRequest> request =
         ArgumentCaptor.forClass(CaptureEngineRequest.class);
-    org.mockito.Mockito.verify(runner.captureEngineRegistry).capture(request.capture());
+    org.mockito.Mockito.verify(runner.captureEngineRegistry).capture(request.capture(), any());
     assertThat(request.getValue().authorizationToken()).contains("Bearer worker-token");
     assertThat(request.getValue().storageLocation()).contains("s3://bucket/path");
     assertThat(request.getValue().shouldStop()).isSameAs(shouldStop);
@@ -61,13 +66,14 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     var runner = new StandaloneJavaFileGroupExecutionRunner();
     runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
     runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
-    when(runner.captureEngineRegistry.capture(any())).thenReturn(CaptureEngineResult.empty());
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenReturn(CaptureEngineResult.empty());
 
-    runner.execute(payload(), () -> false);
+    runner.execute(payload(), () -> false, ignored -> {});
 
     ArgumentCaptor<CaptureEngineRequest> request =
         ArgumentCaptor.forClass(CaptureEngineRequest.class);
-    org.mockito.Mockito.verify(runner.captureEngineRegistry).capture(request.capture());
+    org.mockito.Mockito.verify(runner.captureEngineRegistry).capture(request.capture(), any());
     assertThat(request.getValue().authorizationToken()).isEmpty();
   }
 
@@ -77,15 +83,16 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
     runner.reconcileWorkerAuthProvider =
         accountId -> Optional.of("Bearer worker-token-" + accountId);
-    when(runner.captureEngineRegistry.capture(any())).thenReturn(CaptureEngineResult.empty());
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenReturn(CaptureEngineResult.empty());
 
-    runner.execute(payload("acct-a"), () -> false);
-    runner.execute(payload("acct-b"), () -> false);
+    runner.execute(payload("acct-a"), () -> false, ignored -> {});
+    runner.execute(payload("acct-b"), () -> false, ignored -> {});
 
     ArgumentCaptor<CaptureEngineRequest> request =
         ArgumentCaptor.forClass(CaptureEngineRequest.class);
     org.mockito.Mockito.verify(runner.captureEngineRegistry, org.mockito.Mockito.times(2))
-        .capture(request.capture());
+        .capture(request.capture(), any());
     assertThat(request.getAllValues())
         .extracting(CaptureEngineRequest::authorizationToken)
         .containsExactly(
@@ -97,17 +104,47 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     var runner = new StandaloneJavaFileGroupExecutionRunner();
     runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
     runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
-    when(runner.captureEngineRegistry.capture(any())).thenReturn(CaptureEngineResult.empty());
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenReturn(CaptureEngineResult.empty());
 
-    runner.execute(payload(), () -> false);
+    runner.execute(payload(), () -> false, ignored -> {});
 
     ArgumentCaptor<CaptureEngineRequest> request =
         ArgumentCaptor.forClass(CaptureEngineRequest.class);
-    org.mockito.Mockito.verify(runner.captureEngineRegistry).capture(request.capture());
+    org.mockito.Mockito.verify(runner.captureEngineRegistry).capture(request.capture(), any());
     assertThat(request.getValue().requestedStatsTargetKinds())
         .containsExactlyInAnyOrder(
             ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.TABLE,
             ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.FILE);
+  }
+
+  @Test
+  void executePublishesCompletedFileStatsThroughCallerSink() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    TargetStatsRecord fileStats =
+        TargetStatsRecord.newBuilder()
+            .setTarget(
+                StatsTarget.newBuilder()
+                    .setFile(
+                        FileStatsTarget.newBuilder().setFilePath("s3://bucket/path/file.parquet")))
+            .setFile(FileTargetStats.newBuilder().setFilePath("s3://bucket/path/file.parquet"))
+            .build();
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              ai.floedb.floecat.reconciler.spi.capture.CaptureFileResultConsumer consumer =
+                  invocation.getArgument(1);
+              consumer.accept(List.of(fileStats), List.of());
+              return CaptureEngineResult.empty();
+            });
+    List<TargetStatsRecord> published = new java.util.ArrayList<>();
+
+    CaptureEngineResult result = runner.execute(payload(), () -> false, published::add);
+
+    assertThat(published).containsExactly(fileStats);
+    assertThat(result.statsRecords()).isEmpty();
   }
 
   private static StandaloneFileGroupExecutionPayload payload() {

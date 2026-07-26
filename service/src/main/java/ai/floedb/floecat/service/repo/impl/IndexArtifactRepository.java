@@ -21,9 +21,12 @@ import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.types.Hashing;
@@ -34,8 +37,10 @@ import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 @ApplicationScoped
 public class IndexArtifactRepository {
@@ -61,13 +66,23 @@ public class IndexArtifactRepository {
     ResourceId tableId = value.getTableId();
     String targetStorageId = indexArtifactTargetStorageId(value.getTarget());
     byte[] bytes = value.toByteArray();
-    String blobUri =
-        Keys.snapshotIndexArtifactBlobUri(
-            tableId.getAccountId(), tableId.getId(), targetStorageId, Hashing.sha256Hex(bytes));
-    blobStore.put(blobUri, bytes, "application/x-protobuf");
+    String blobSha256 = Hashing.sha256Hex(bytes);
     for (int attempt = 0; attempt < 4; attempt++) {
       Optional<String> before = activeGeneration(tableId, value.getSnapshotId());
+      if (before.isPresent() && !DIRECT_GENERATION.equals(before.get())) {
+        throw new IllegalStateException(
+            "direct index artifact writes cannot mutate finalized generation " + before.get());
+      }
       String generationId = before.orElse(DIRECT_GENERATION);
+      String blobUri =
+          Keys.snapshotIndexArtifactGenerationBlobUri(
+              tableId.getAccountId(),
+              tableId.getId(),
+              value.getSnapshotId(),
+              generationId,
+              targetStorageId,
+              blobSha256);
+      blobStore.put(blobUri, bytes, "application/x-protobuf");
       registerWrites(
           List.of(
               new PrewrittenIndexWrite(
@@ -86,6 +101,12 @@ public class IndexArtifactRepository {
       }
       if (after.filter(generationId::equals).isPresent()) {
         return;
+      }
+      if (DIRECT_GENERATION.equals(generationId)
+          && after.filter(active -> !DIRECT_GENERATION.equals(active)).isPresent()) {
+        deleteDirectGenerationPointers(tableId, value.getSnapshotId());
+        throw new IllegalStateException(
+            "direct index artifact write raced with finalized generation activation");
       }
     }
     throw new BaseResourceRepository.AbortRetryableException(
@@ -112,10 +133,11 @@ public class IndexArtifactRepository {
       ResourceId tableId,
       long snapshotId,
       String generationId,
+      String requiredBlobPrefix,
       List<PrewrittenIndexArtifactReference> references) {
-    String requiredPrefix =
-        Keys.snapshotTargetStatsGenerationBlobPrefix(
-            tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
+    if (requiredBlobPrefix == null || requiredBlobPrefix.isBlank()) {
+      throw new IllegalArgumentException("requiredBlobPrefix is required");
+    }
     LinkedHashMap<String, PrewrittenIndexWrite> unique = new LinkedHashMap<>();
     for (PrewrittenIndexArtifactReference reference :
         references == null ? List.<PrewrittenIndexArtifactReference>of() : references) {
@@ -123,7 +145,7 @@ public class IndexArtifactRepository {
           || reference.targetStorageId() == null
           || reference.targetStorageId().isBlank()
           || reference.blobUri() == null
-          || !reference.blobUri().startsWith(requiredPrefix)
+          || !reference.blobUri().startsWith(requiredBlobPrefix)
           || reference.blobBytes() <= 0L
           || reference.blobSha256() == null
           || reference.blobSha256().length != 32
@@ -150,10 +172,23 @@ public class IndexArtifactRepository {
     registerWrites(new ArrayList<>(unique.values()));
   }
 
-  public void activateGeneration(ResourceId tableId, long snapshotId, String generationId) {
+  public void activateGeneration(
+      ResourceId tableId, long snapshotId, String generationId, byte[] captureManifestBytes) {
     if (generationId == null || generationId.isBlank()) {
       throw new IllegalArgumentException("generationId is required");
     }
+    if (captureManifestBytes == null || captureManifestBytes.length == 0) {
+      throw new IllegalArgumentException("capture manifest bytes are required");
+    }
+    String captureManifestUri =
+        Keys.snapshotIndexArtifactCaptureManifestBlobUri(
+            tableId.getAccountId(),
+            tableId.getId(),
+            snapshotId,
+            Hashing.sha256Hex(captureManifestBytes));
+    blobStore.put(captureManifestUri, captureManifestBytes, "application/x-protobuf");
+    publishCaptureManifestPointer(
+        tableId, snapshotId, captureManifestUri, captureManifestBytes.length);
     String pointerKey =
         Keys.snapshotIndexArtifactActiveGenerationPointer(
             tableId.getAccountId(), tableId.getId(), snapshotId);
@@ -166,11 +201,85 @@ public class IndexArtifactRepository {
       Pointer next =
           PointerReferences.opaqueMarkerPointer(pointerKey, generationId, expectedVersion + 1L);
       if (pointerStore.compareAndSet(pointerKey, expectedVersion, next)) {
+        if (current != null && DIRECT_GENERATION.equals(current.getBlobUri())) {
+          deleteDirectGenerationPointers(tableId, snapshotId);
+        }
         return;
       }
     }
     throw new BaseResourceRepository.AbortRetryableException(
         "index artifact generation activation conflicted repeatedly for snapshot " + snapshotId);
+  }
+
+  public boolean indexCaptureComplete(
+      ResourceId tableId, long snapshotId, Set<String> requestedSelectors) {
+    Optional<String> generationId = activeGeneration(tableId, snapshotId);
+    if (generationId.isEmpty()) {
+      return false;
+    }
+    String manifestPointerKey =
+        Keys.snapshotIndexArtifactCaptureManifestPointer(
+            tableId.getAccountId(), tableId.getId(), snapshotId);
+    Pointer manifestPointer = pointerStore.get(manifestPointerKey).orElse(null);
+    if (manifestPointer == null || manifestPointer.getBlobUri().isBlank()) {
+      return false;
+    }
+    SnapshotCaptureManifest manifest;
+    try {
+      manifest = SnapshotCaptureManifest.parseFrom(blobStore.get(manifestPointer.getBlobUri()));
+    } catch (StorageNotFoundException e) {
+      return false;
+    } catch (InvalidProtocolBufferException e) {
+      throw new IllegalStateException(
+          "invalid snapshot capture manifest at " + manifestPointer.getBlobUri(), e);
+    }
+    if (manifest.getFormatVersion() != 1
+        || !tableId.getAccountId().equals(manifest.getAccountId())
+        || !tableId.getId().equals(manifest.getTableId())
+        || snapshotId != manifest.getSnapshotId()
+        || !generationId.get().equals("full-rescan-" + manifest.getParentJobId())
+        || !manifest
+            .getCapturePolicy()
+            .getOutputsList()
+            .contains(CaptureOutput.CO_PARQUET_PAGE_INDEX)
+        || manifest.getIndexArtifactCount() != manifest.getSourceFileCount()) {
+      return false;
+    }
+    Set<String> capturedSelectors = new LinkedHashSet<>();
+    manifest
+        .getCapturePolicy()
+        .getColumnsList()
+        .forEach(
+            column -> {
+              if (column.getCaptureIndex() && !column.getSelector().isBlank()) {
+                capturedSelectors.add(column.getSelector().trim());
+              }
+            });
+    return requestedSelectors == null
+        || requestedSelectors.isEmpty()
+        || capturedSelectors.containsAll(requestedSelectors);
+  }
+
+  private void publishCaptureManifestPointer(
+      ResourceId tableId, long snapshotId, String manifestUri, long manifestBytes) {
+    String pointerKey =
+        Keys.snapshotIndexArtifactCaptureManifestPointer(
+            tableId.getAccountId(), tableId.getId(), snapshotId);
+    for (int attempt = 0; attempt < 8; attempt++) {
+      Pointer current = pointerStore.get(pointerKey).orElse(null);
+      if (current != null && manifestUri.equals(current.getBlobUri())) {
+        return;
+      }
+      long expectedVersion = current == null ? 0L : current.getVersion();
+      Pointer next =
+          PointerReferences.blobPointer(
+              pointerKey, manifestUri, expectedVersion + 1L, manifestBytes);
+      if (pointerStore.compareAndSet(pointerKey, expectedVersion, next)) {
+        return;
+      }
+    }
+    throw new BaseResourceRepository.AbortRetryableException(
+        "index capture manifest publication conflicted repeatedly for snapshot " + snapshotId);
   }
 
   private boolean activateDirectGenerationIfAbsent(ResourceId tableId, long snapshotId) {
@@ -179,6 +288,12 @@ public class IndexArtifactRepository {
             tableId.getAccountId(), tableId.getId(), snapshotId);
     return pointerStore.compareAndSet(
         pointerKey, 0L, PointerReferences.opaqueMarkerPointer(pointerKey, DIRECT_GENERATION, 1L));
+  }
+
+  private void deleteDirectGenerationPointers(ResourceId tableId, long snapshotId) {
+    pointerStore.deleteByPrefix(
+        Keys.snapshotIndexArtifactGenerationPrefix(
+            tableId.getAccountId(), tableId.getId(), snapshotId, DIRECT_GENERATION));
   }
 
   public Optional<IndexArtifactRecord> getIndexArtifact(
