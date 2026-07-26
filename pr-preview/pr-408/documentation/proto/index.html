@@ -1977,7 +1977,7 @@ CLI, and reconciler.</p>
 </tr>
 <tr>
 <td><code>ReconcileExecutorControl</code></td>
-<td><code>LeaseReconcileJob</code>, <code>GetLeasedPlan*Input</code>, <code>SubmitLeasedPlan*Result</code>, <code>GetLeasedFileGroupExecution</code>, <code>SubmitLeasedFileGroupExecutionResult</code></td>
+<td><code>LeaseReconcileJob</code>, <code>GetLeasedPlan*Input</code>, <code>SubmitLeasedPlan*Result</code>, <code>GetLeasedFileGroupExecution</code>, <code>CommitLeasedFileGroupResult</code></td>
 <td>Executor-facing lease protocol for split reconcile workers. Carries typed planner and file-group payloads plus progress, cancellation, and completion RPCs.</td>
 </tr>
 <tr>
@@ -2033,10 +2033,12 @@ engine release.</p>
 <li><strong>Index artifact streams</strong> – <code>PutIndexArtifacts</code> requires each client stream to target exactly one
   <code>table_id</code> and one <code>snapshot_id</code>. Multiple snapshots must be written through separate client
   streams.</li>
-<li><strong>Leased file-group result submission</strong> – <code>SubmitLeasedFileGroupExecutionResult.Success</code> and
-  <code>.Failure</code> both require <code>result_id</code>. The control plane uses that identifier for top-level replay
-  protection on the entire request payload, while service-side writes also keep per-item
-  idempotency for stats and index artifacts.</li>
+<li><strong>Leased file-group result commit</strong> – <code>CommitLeasedFileGroupResult.Success</code> and <code>.Failure</code> both
+  require <code>result_id</code>. Success carries immutable stats/artifact pointers. The control plane first
+  protects the referenced objects without reading them, then completes the child job. These writes
+  are ordered and idempotent rather than one atomic storage transaction, so a failed attempt may
+  leave harmless protection metadata. Successful finalization clears protections; failed or
+  cancelled full rescans delete the unpublished generation. Replaying the same result is safe.</li>
 <li><strong>Executor leasing filters</strong> – <code>LeaseReconcileJobRequest</code> accepts execution class, lane, job kind,
   <code>executor_id</code>, and repeated <code>executor_ids</code> selectors so a worker fleet can advertise both its
   concrete worker identity and the executor implementations it is willing to run.</li>

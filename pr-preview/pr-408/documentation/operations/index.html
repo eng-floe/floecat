@@ -1903,8 +1903,9 @@ correctness.</p>
 <p>In the split model, the control plane owns top-level <code>PLAN_CONNECTOR</code> jobs and public reconcile
 APIs, while executor-plane nodes primarily run child <code>PLAN_TABLE</code>, <code>PLAN_VIEW</code>, <code>PLAN_SNAPSHOT</code>,
 and <code>EXEC_FILE_GROUP</code> work. <code>CaptureNow</code> uses the same plan-plus-child execution path. File-group workers submit results through
-<code>SubmitLeasedFileGroupExecutionResult</code>, which requires <code>result_id</code> so the control plane can
-enforce replay safety across worker retries.</p>
+<code>CommitLeasedFileGroupResult</code>, which requires <code>result_id</code> so the control plane can enforce replay
+safety across worker retries. Success idempotently protects the referenced objects before completing
+the child job; these are ordered operations rather than one atomic storage transaction.</p>
 <p>For <code>floecat.kv=dynamodb</code>, the durable reconcile hot paths now use native queue-oriented storage
 layouts rather than broad generic prefix scans:
 - job-index queries are partitioned by their query slice
