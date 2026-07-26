@@ -29,6 +29,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRegistry;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
@@ -147,6 +148,33 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
     assertThat(result.statsRecords()).isEmpty();
   }
 
+  @Test
+  void executeStagesIndexesOnlyForFilesInTheLeasedGroup() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    String plannedFile = "s3://bucket/path/file.parquet";
+    String associatedDeleteFile = "s3://bucket/path/delete.parquet";
+    TargetStatsRecord plannedStats = fileStats(plannedFile);
+    TargetStatsRecord deleteStats = fileStats(associatedDeleteFile);
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              ai.floedb.floecat.reconciler.spi.capture.CaptureFileResultConsumer consumer =
+                  invocation.getArgument(1);
+              consumer.accept(
+                  List.of(plannedStats, deleteStats),
+                  List.of(pageIndexEntry(plannedFile), pageIndexEntry(associatedDeleteFile)));
+              return CaptureEngineResult.empty();
+            });
+
+    CaptureEngineResult result = runner.execute(indexPayload(), () -> false, ignored -> {});
+
+    assertThat(result.stagedIndexArtifacts())
+        .extracting(artifact -> artifact.record().getTarget().getFile().getFilePath())
+        .containsExactly(plannedFile);
+  }
+
   private static StandaloneFileGroupExecutionPayload payload() {
     return payload("acct");
   }
@@ -174,5 +202,50 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         "",
         List.of(),
         ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.TABLE_STATS)));
+  }
+
+  private static StandaloneFileGroupExecutionPayload indexPayload() {
+    StandaloneFileGroupExecutionPayload base = payload();
+    return new StandaloneFileGroupExecutionPayload(
+        base.jobId(),
+        base.leaseEpoch(),
+        base.parentJobId(),
+        base.sourceConnector(),
+        base.sourceNamespace(),
+        base.sourceTable(),
+        base.storageLocation(),
+        base.tableId(),
+        base.snapshotId(),
+        base.planId(),
+        base.groupId(),
+        base.resultPayloadUri(),
+        base.statsObjectPrefix(),
+        base.plannedFilePaths(),
+        base.executionSchemaJson(),
+        base.fileExecutionPlans(),
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(
+                ReconcileCapturePolicy.Output.FILE_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+  }
+
+  private static TargetStatsRecord fileStats(String filePath) {
+    return TargetStatsRecord.newBuilder()
+        .setTarget(
+            StatsTarget.newBuilder().setFile(FileStatsTarget.newBuilder().setFilePath(filePath)))
+        .setFile(
+            FileTargetStats.newBuilder()
+                .setFilePath(filePath)
+                .setFileFormat("PARQUET")
+                .setRowCount(1L)
+                .setSizeBytes(1L))
+        .build();
+  }
+
+  private static FloecatConnector.ParquetPageIndexEntry pageIndexEntry(String filePath) {
+    return new FloecatConnector.ParquetPageIndexEntry(
+        filePath, "id", 0, 0, 0L, 1, 1, 16L, 32, 8L, 8, true, "INT64", "ZSTD", (short) 1, (short) 0,
+        null, null, null);
   }
 }

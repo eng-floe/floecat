@@ -25,7 +25,6 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
@@ -99,7 +98,7 @@ public class StandaloneJavaFileGroupExecutionRunner {
                     FileGroupIndexArtifactStager.stage(
                         payload.tableId(),
                         payload.snapshotId(),
-                        completedFilePaths(completedFileStats, completedPageIndexEntries),
+                        payload.plannedFilePaths(),
                         completedFileStats,
                         completedPageIndexEntries));
               }
@@ -108,24 +107,6 @@ public class StandaloneJavaFileGroupExecutionRunner {
     throwIfCancellationRequested(stop);
     stagedIndexArtifacts.addAll(capture.stagedIndexArtifacts());
     return CaptureEngineResult.of(capture.statsRecords(), List.of(), stagedIndexArtifacts);
-  }
-
-  private static List<String> completedFilePaths(
-      List<TargetStatsRecord> fileStats,
-      List<ai.floedb.floecat.connector.spi.FloecatConnector.ParquetPageIndexEntry>
-          pageIndexEntries) {
-    LinkedHashSet<String> paths = new LinkedHashSet<>();
-    for (TargetStatsRecord record : fileStats) {
-      if (record != null && record.hasFile() && !record.getFile().getFilePath().isBlank()) {
-        paths.add(record.getFile().getFilePath());
-      }
-    }
-    for (var entry : pageIndexEntries) {
-      if (entry != null && entry.filePath() != null && !entry.filePath().isBlank()) {
-        paths.add(entry.filePath());
-      }
-    }
-    return List.copyOf(paths);
   }
 
   private static void throwIfCancellationRequested(BooleanSupplier shouldStop) {
