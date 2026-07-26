@@ -2115,85 +2115,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           Long.valueOf(previousProjection.appliedGeneration()));
       return;
     }
-    if (previousProjection != null
-        && projectionAggregateMatchesCanonical(parent, previousProjection)
-        && requestedGeneration > Math.max(0L, previousProjection.appliedGeneration())
-        && canPublishCanonicalProjectionPatch(parent, previousProjection)) {
-      var nextProjection =
-          projectionWithCanonicalFields(parent, previousProjection, requestedGeneration);
-      projections().upsert(nextProjection);
-      LOG.infof(
-          "reconcile projection generation patch accountId=%s jobId=%s kind=%s parentJobId=%s"
-              + " requestedGeneration=%d previousAppliedGeneration=%d projectionGeneration=%d"
-              + " state=%s tables=%d/%d stats=%d indexes=%d fileGroups=%d/%d files=%d/%d",
-          accountId,
-          parentJobId,
-          parent.jobKind(),
-          blankToEmpty(parent.parentJobId),
-          Long.valueOf(requestedGeneration),
-          Long.valueOf(previousAppliedGeneration),
-          Long.valueOf(nextProjection.appliedGeneration()),
-          nextProjection.state(),
-          Long.valueOf(nextProjection.tablesChanged()),
-          Long.valueOf(nextProjection.tablesScanned()),
-          Long.valueOf(nextProjection.statsProcessed()),
-          Long.valueOf(nextProjection.indexesProcessed()),
-          Long.valueOf(nextProjection.completedFileGroups()),
-          Long.valueOf(nextProjection.plannedFileGroups()),
-          Long.valueOf(nextProjection.completedFiles()),
-          Long.valueOf(nextProjection.plannedFiles()));
-      if (blankToEmpty(parent.parentJobId).isBlank()) {
-        rootSummaries().upsert(toRootListSummary(parent, nextProjection));
-      }
-      enqueueSnapshotFinalizationForPlanSnapshotIfEligible(
-          projector().toPublicJob(parent, nextProjection, true), snapshotTaskFromStored(parent));
-      advanceAppliedProjectionGeneration(accountId, parentJobId, requestedGeneration);
-      if (propagateDirtyParent && requestedGeneration > previousAppliedGeneration) {
-        markDirtyParent(parent.accountId, parent.parentJobId);
-      }
-      return;
-    }
-    if (canPublishCanonicalAggregatePatch(parent, previousProjection)) {
-      var nextProjection =
-          projectionWithCanonicalFields(parent, previousProjection, requestedGeneration);
-      boolean projectionChanged = !Objects.equals(previousProjection, nextProjection);
-      if (projectionChanged) {
-        if (!commitProjectionAggregateChange(parent, previousProjection, nextProjection)) {
-          throw new IllegalStateException(
-              "Failed to apply reconcile projection aggregate patch to parent job "
-                  + blankToEmpty(parent.parentJobId));
-        }
-      }
-      LOG.infof(
-          "reconcile projection aggregate patch accountId=%s jobId=%s kind=%s parentJobId=%s"
-              + " requestedGeneration=%d previousAppliedGeneration=%d projectionGeneration=%d"
-              + " state=%s stats=%d indexes=%d fileGroups=%d/%d files=%d/%d",
-          accountId,
-          parentJobId,
-          parent.jobKind(),
-          blankToEmpty(parent.parentJobId),
-          Long.valueOf(requestedGeneration),
-          Long.valueOf(previousAppliedGeneration),
-          Long.valueOf(nextProjection.appliedGeneration()),
-          nextProjection.state(),
-          Long.valueOf(nextProjection.statsProcessed()),
-          Long.valueOf(nextProjection.indexesProcessed()),
-          Long.valueOf(nextProjection.completedFileGroups()),
-          Long.valueOf(nextProjection.plannedFileGroups()),
-          Long.valueOf(nextProjection.completedFiles()),
-          Long.valueOf(nextProjection.plannedFiles()));
-      if (blankToEmpty(parent.parentJobId).isBlank()) {
-        rootSummaries().upsert(toRootListSummary(parent, nextProjection));
-      }
-      enqueueSnapshotFinalizationForPlanSnapshotIfEligible(
-          projector().toPublicJob(parent, nextProjection, true), snapshotTaskFromStored(parent));
-      advanceAppliedProjectionGeneration(accountId, parentJobId, requestedGeneration);
-      if (propagateDirtyParent
-          && (requestedGeneration > previousAppliedGeneration || projectionChanged)) {
-        markDirtyParent(parent.accountId, parent.parentJobId);
-      }
-      return;
-    }
+    // Every remaining path must recompute the state from the children before it advances the
+    // applied generation. A counters-only patch that consumed the generation would leave a stale
+    // non-terminal state published forever: nothing else re-derives it (the maintenance sweep is
+    // dirty-marker-driven and the marker is deleted after this call, the read paths never
+    // recompute, and the canonical cascade only runs on a lease outcome).
     List<StoredReconcileJob> directChildren = listAllStoredChildJobs(accountId, parentJobId);
     var nextProjection = recomputeSummaryProjection(parent, directChildren, false, true);
     if (nextProjection == null) {
@@ -3207,56 +3133,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     long requestedGeneration = Math.max(0L, record.projectionRequestedGeneration);
     long appliedGeneration = Math.max(0L, projection.appliedGeneration());
     return appliedGeneration >= requestedGeneration;
-  }
-
-  private boolean canPublishCanonicalAggregatePatch(
-      StoredReconcileJob record, StoredReconcileJobProjection projection) {
-    return canPublishCanonicalProjectionPatch(record, projection)
-        && !projectionAggregateMatchesCanonical(record, projection);
-  }
-
-  private boolean canPublishCanonicalProjectionPatch(
-      StoredReconcileJob record, StoredReconcileJobProjection projection) {
-    if (record == null || projection == null || !isParentCapable(record.jobKind())) {
-      return false;
-    }
-    String canonicalState = blankToEmpty(record.state);
-    String projectionState = blankToEmpty(projection.state());
-    if (canonicalState.isBlank()
-        || isTerminalState(canonicalState)
-        || isTerminalState(projectionState)
-        || isCancellationState(canonicalState)) {
-      return false;
-    }
-    return true;
-  }
-
-  private StoredReconcileJobProjection projectionWithCanonicalFields(
-      StoredReconcileJob record, StoredReconcileJobProjection previous, long appliedGeneration) {
-    return new StoredReconcileJobProjection(
-        previous.accountId(),
-        previous.jobId(),
-        Math.max(Math.max(0L, appliedGeneration), Math.max(0L, previous.appliedGeneration())),
-        previous.state(),
-        previous.message(),
-        previous.startedAtMs(),
-        previous.finishedAtMs(),
-        Math.max(0L, record.tablesScanned),
-        Math.max(0L, record.tablesChanged),
-        Math.max(0L, record.viewsScanned),
-        Math.max(0L, record.viewsChanged),
-        Math.max(0L, record.errors),
-        Math.max(0L, record.snapshotsProcessed),
-        Math.max(0L, record.statsProcessed),
-        Math.max(0L, record.indexesProcessed),
-        Math.max(0L, record.plannedFileGroups),
-        Math.max(0L, record.plannedFiles),
-        Math.max(0L, record.completedFileGroups),
-        Math.max(0L, record.failedFileGroups),
-        Math.max(0L, record.completedFiles),
-        Math.max(0L, record.failedFiles),
-        previous.executorId(),
-        previous.aggregateSummaryPresent());
   }
 
   private boolean commitProjectionAggregateChange(
