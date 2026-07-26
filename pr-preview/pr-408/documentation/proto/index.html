@@ -1932,8 +1932,8 @@ CLI, and reconciler.</p>
 </tr>
 <tr>
 <td><code>TableIndexService</code></td>
-<td><code>GetIndexArtifact</code>, <code>ListIndexArtifacts</code>, client-streaming <code>PutIndexArtifacts</code></td>
-<td>Stores and resolves snapshot-scoped parquet sidecar artifact metadata keyed by table, snapshot, and target file.</td>
+<td><code>GetIndexArtifact</code>, <code>GetIndexCaptureStatus</code>, <code>ListIndexArtifacts</code>, client-streaming <code>PutIndexArtifacts</code></td>
+<td>Stores and resolves snapshot-scoped parquet sidecar artifact metadata and bounded-cost finalized capture status keyed by table and snapshot.</td>
 </tr>
 <tr>
 <td><code>TableConstraintsService</code></td>
@@ -2043,7 +2043,11 @@ engine release.</p>
   when the child job is already terminal. Snapshot finalization carries only group descriptors,
   aggregate pointers, and counts; it requires every prepared marker and activates the generation
   without repeating per-file pointers. Successful finalization clears protections; failed or
-  cancelled full rescans delete the unpublished generation.</li>
+  cancelled full rescans delete the unpublished generation.
+  Index sidecar placement remains executor-controlled through <code>IndexArtifactRecord.artifact_uri</code>,
+  but its serialized wrapper must be published beneath the leased <code>stats_object_prefix</code> as
+  <code>index-artifacts/&lt;sha256(target_storage_id)&gt;/&lt;payload_sha256&gt;.pb</code>. Finalize manifests must repeat
+  the leased capture policy exactly, including opaque properties.</li>
 <li><strong>File-group planning ceiling</strong> – snapshot planning uses at most 128 files per group by default.
   <code>floecat.reconciler.snapshot-plan.max-files-per-group</code> configures that ceiling and is clamped to
   at least one. The service validates commits against the immutable planned group but does not

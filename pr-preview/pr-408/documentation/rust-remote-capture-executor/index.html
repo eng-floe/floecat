@@ -2139,9 +2139,14 @@ workers. A Rust fleet should do the same if you intend to use pinned executor ro
 <li><code>group_id</code></li>
 <li><code>file_paths</code></li>
 <li><code>capture_policy</code></li>
+<li><code>stats_object_prefix</code></li>
 </ul>
 <p>For a Rust worker, <code>source_connector</code> is important because it carries the resolved upstream
 connector definition and auth material needed to read source files.</p>
+<p>Treat the complete <code>capture_policy</code> as the execution contract. Its outputs, per-column settings,
+default column scope, maximum default-column count, and opaque <code>properties</code> map are all forwarded
+to the worker. Engines may interpret property keys they own and should preserve unknown keys when
+passing the policy between worker components.</p>
 <h2 id="result-contract">Result Contract<a class="headerlink" href="#result-contract" title="Permanent link">&para;</a></h2>
 <p><code>CommitLeasedFileGroupResult</code> has two outcomes:</p>
 <ul>
@@ -2156,6 +2161,17 @@ generation-scoped pointer mappings without reading them, and writes a digest-bou
 last. Completion and pointer staging are ordered, not one atomic storage transaction. The
 <code>artifact_uri</code> inside an index wrapper may name external storage; Floecat does not read, copy, or
 clean up that sidecar.</p>
+<p>The sidecar and its wrapper have separate placement rules:</p>
+<ul>
+<li>The worker may choose the actual sidecar URI recorded in <code>IndexArtifactRecord.artifact_uri</code>.</li>
+<li>The serialized <code>IndexArtifactRecord</code> wrapper must be written below
+  <code>&lt;stats_object_prefix&gt;index-artifacts/</code>.</li>
+<li>Its wrapper URI must be
+  <code>&lt;stats_object_prefix&gt;index-artifacts/&lt;sha256(target_storage_id)&gt;/&lt;payload_sha256&gt;.pb</code>, using
+  lowercase hexadecimal SHA-256 values.</li>
+</ul>
+<p>The fenced wrapper prefix prevents one lease from registering another worker's metadata. It does
+not move, copy, or constrain the referenced sidecar.</p>
 <p>Success carries:</p>
 <ul>
 <li><code>result_id</code></li>
@@ -2165,7 +2181,8 @@ clean up that sidecar.</p>
 </ul>
 <p>Each <code>StatsObjectDescriptor</code> carries the immutable object's target storage ID, payload URI, byte
 length, and SHA-256. File-stats and index descriptors for the same source file may share a target
-storage ID; their payload URIs identify the distinct protected objects.</p>
+storage ID; their payload URIs identify the distinct protected objects. For a file target,
+<code>target_storage_id</code> is <code>file:&lt;source-file-path&gt;</code>.</p>
 <p>Failure carries:</p>
 <ul>
 <li><code>result_id</code></li>
@@ -2233,16 +2250,18 @@ already cleared the lease as part of successful completion.</p>
 <p>The service expects the same logical outputs the Java runner currently produces:</p>
 <ul>
 <li>one directly uploaded protobuf blob per requested <code>TargetStatsRecord</code></li>
-<li>directly uploaded index objects referenced by <code>IndexArtifactRecord</code> values in a
-  <code>FileGroupResultPayload</code></li>
-<li>a bounded <code>FileGroupResultPayload</code> containing stats-object descriptors and index metadata</li>
+<li>worker-chosen parquet sidecars plus one fenced, hash-addressed <code>IndexArtifactRecord</code> wrapper per
+  sidecar</li>
+<li>a bounded <code>FileGroupResultPayload</code> containing compact file-stats and index-wrapper descriptors</li>
 <li>a <code>ReconcileFileGroupResultDescriptor</code> sent in the success RPC</li>
 </ul>
 <p>The worker is responsible for ensuring:</p>
 <ul>
 <li>every planned file requested for page-index capture gets a matching artifact</li>
 <li>artifact metadata matches the target file identity</li>
-<li>every referenced stats or index object is committed before the success RPC</li>
+<li>every referenced stats object, sidecar, and index wrapper is committed before the success RPC</li>
+<li>every index wrapper uses the leased <code>stats_object_prefix</code> plus the required
+  <code>index-artifacts/&lt;target-hash&gt;/&lt;payload-hash&gt;.pb</code> suffix</li>
 <li>every stats descriptor identifies its target storage ID and the object size and SHA-256</li>
 <li>the result descriptor's <code>artifact_references_sha256</code> is the canonical digest of its file-stats
   and index-artifact descriptor sets</li>
@@ -2281,6 +2300,9 @@ proportional to the snapshot's file count.</p>
 <p>The finalizer's <code>SnapshotCaptureManifest</code> must carry each durable file-group descriptor, including
 its <code>artifact_references_sha256</code>, but must not repeat the per-file stats or index descriptor lists.
 It carries only file-group descriptors, snapshot-wide aggregate descriptors, and counts.</p>
+<p>The manifest must also repeat the leased capture policy exactly, including outputs, column
+policies, default column scope, maximum default-column count, and the complete opaque properties
+map. The control plane rejects policy drift during finalization.</p>
 <p><code>SubmitLeasedSnapshotFinalizeResult</code> reads the manifest once and performs one metadata-pointer
 lookup per file group. It does not read file-group payloads or per-file objects. If any accepted
 file group has not written its digest-bound prepared marker, the service returns a retryable error.

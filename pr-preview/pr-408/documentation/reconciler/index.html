@@ -1927,9 +1927,27 @@ reconcile control RPCs:</p>
 <li><strong>Index artifacts</strong>:</li>
 <li>sidecars are parquet artifacts written by execution workers and registered through
     <code>IndexArtifactRecord</code>.</li>
-<li>Floecat stages only the protobuf wrapper pointer. An externally overridden <code>artifact_uri</code>
-    inside that wrapper is never copied, moved, or treated as Floecat-owned cleanup state.</li>
+<li>The actual sidecar URI remains worker-controlled. Floecat never copies, moves, or treats the
+    sidecar named by <code>artifact_uri</code> as Floecat-owned cleanup state.</li>
+<li>The serialized protobuf wrapper is Floecat-owned lease output. Remote workers must publish it
+    beneath the leased file-group <code>stats_object_prefix</code> at
+    <code>index-artifacts/&lt;sha256(target_storage_id)&gt;/&lt;payload_sha256&gt;.pb</code>. The service stages only a
+    pointer to that fenced wrapper.</li>
 <li>service-side lookup/list/read is exposed by <code>TableIndexService</code>.</li>
+<li><strong>Capture-engine SPI contract</strong>:</li>
+<li><code>CaptureEngine.capture</code> accepts a <code>CaptureFileResultConsumer</code>. Engines emit file-scoped stats
+    progressively through that consumer instead of retaining them in <code>CaptureEngineResult</code>.</li>
+<li>The terminal result may contain compact group-level aggregate partials and staged index
+    outputs, but it must not contain file stats or page-index rows.</li>
+<li>Engine capabilities use <code>PROGRESSIVE_FILE_OUTPUTS</code>. Implementations compiled against the old
+    <code>capture(request)</code> or <code>COMPLETE_FILE_GROUP_OUTPUTS</code> API must be updated.</li>
+<li><code>ReconcilerBackend.indexCaptureComplete</code> is a snapshot-level completeness proof. Backend
+    implementations must not replace it with one remote artifact lookup per source file.</li>
+<li><strong>External capture policy</strong>:</li>
+<li>leased file-group and snapshot-finalize payloads carry the complete policy, including its
+    opaque properties map.</li>
+<li>snapshot finalizers must reproduce outputs, column policies, default scope, maximum default
+    columns, and properties exactly; the control plane rejects policy drift.</li>
 <li><strong>Connector security boundary</strong>: all upstream I/O remains inside <code>FloecatConnector</code>.
   <code>ScanBundleService</code> stays query-plane only; reconcile snapshot planning uses connector-native
   snapshot file planning.</li>
