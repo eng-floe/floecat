@@ -64,6 +64,7 @@ public class StoredReconcileJob {
   public int fileGroupResultIndexArtifactCount;
   public String fileGroupStatsObjectPrefix;
   public int fileGroupStatsRecordCount;
+  public String fileGroupArtifactReferencesSha256;
   public long fileGroupResultCreatedAtMs;
   public String snapshotFinalizeResultLeaseEpoch;
   public String snapshotFinalizeResultId;

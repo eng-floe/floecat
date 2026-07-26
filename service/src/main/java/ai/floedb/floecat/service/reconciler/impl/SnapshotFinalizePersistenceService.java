@@ -76,6 +76,21 @@ public class SnapshotFinalizePersistenceService {
     return stable.size();
   }
 
+  public long publishPreparedStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<StatsStore.PrewrittenTargetStatsReference> finalReferences) {
+    List<StatsStore.PrewrittenTargetStatsReference> stable =
+        finalReferences == null
+            ? List.of()
+            : finalReferences.stream().filter(java.util.Objects::nonNull).toList();
+    statsStore.publishPreparedStatsGeneration(tableId, snapshotId, generationId, stable);
+    statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+    commitGenerationToRoot(tableId, snapshotId);
+    return stable.size();
+  }
+
   public void clearPrewrittenArtifactProtections(
       ResourceId tableId, long snapshotId, String generationId) {
     statsStore.clearPrewrittenStatsObjectProtections(tableId, snapshotId, generationId);

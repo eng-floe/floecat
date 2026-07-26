@@ -231,6 +231,75 @@ public class StatsRepository implements StatsStore {
         prewrittenStatsWrites(tableId, snapshotId, effectiveGenerationId, references);
     ensureWritableGeneration(tableId, snapshotId, effectiveGenerationId);
     targetStatsStorage.overwriteReferencesBatch(writes);
+    updateTargetLatestSnapshotsIfNewer(
+        tableId,
+        snapshotId,
+        (references == null ? List.<StatsStore.PrewrittenTargetStatsReference>of() : references)
+            .stream()
+                .filter(java.util.Objects::nonNull)
+                .map(StatsStore.PrewrittenTargetStatsReference::targetStorageId)
+                .toList());
+  }
+
+  @Override
+  public void markPreparedFileGroup(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      String fileGroupJobId,
+      String leaseEpoch,
+      String artifactReferencesSha256) {
+    String effectiveGenerationId = requireGenerationId(generationId);
+    ensureWritableGeneration(tableId, snapshotId, effectiveGenerationId);
+    String pointerKey =
+        Keys.snapshotTargetStatsGenerationPreparedFileGroupPointer(
+            tableId.getAccountId(),
+            tableId.getId(),
+            snapshotId,
+            effectiveGenerationId,
+            requireNonBlank(fileGroupJobId, "fileGroupJobId"));
+    String marker =
+        requireNonBlank(leaseEpoch, "leaseEpoch") + ":" + requireSha256(artifactReferencesSha256);
+    for (int attempt = 0; attempt < BaseResourceRepository.CAS_MAX; attempt++) {
+      Pointer current = pointerStore.get(pointerKey).orElse(null);
+      if (current != null && marker.equals(current.getBlobUri())) {
+        return;
+      }
+      if (current != null) {
+        throw new IllegalStateException(
+            "prepared file-group marker conflicts with the accepted result: " + fileGroupJobId);
+      }
+      if (pointerStore.compareAndSet(
+          pointerKey, 0L, PointerReferences.opaqueMarkerPointer(pointerKey, marker, 1L))) {
+        return;
+      }
+    }
+    throw new BaseResourceRepository.AbortRetryableException(
+        "prepared file-group marker conflicted repeatedly: " + fileGroupJobId);
+  }
+
+  @Override
+  public boolean isPreparedFileGroup(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      String fileGroupJobId,
+      String leaseEpoch,
+      String artifactReferencesSha256) {
+    String marker =
+        requireNonBlank(leaseEpoch, "leaseEpoch") + ":" + requireSha256(artifactReferencesSha256);
+    return pointerStore
+        .get(
+            Keys.snapshotTargetStatsGenerationPreparedFileGroupPointer(
+                tableId.getAccountId(),
+                tableId.getId(),
+                snapshotId,
+                requireGenerationId(generationId),
+                requireNonBlank(fileGroupJobId, "fileGroupJobId")))
+        .filter(PointerReferences::isOpaqueMarkerPointer)
+        .map(Pointer::getBlobUri)
+        .filter(marker::equals)
+        .isPresent();
   }
 
   private List<PrewrittenStatsWrite> prewrittenStatsWrites(
@@ -319,6 +388,55 @@ public class StatsRepository implements StatsStore {
         tableId,
         snapshotId,
         (references == null ? List.<StatsStore.PrewrittenTargetStatsReference>of() : references)
+            .stream()
+                .filter(java.util.Objects::nonNull)
+                .map(StatsStore.PrewrittenTargetStatsReference::targetStorageId)
+                .toList());
+    updateLatestStatsSnapshotIfNewer(tableId, snapshotId);
+    markGenerationPublished(tableId, snapshotId, effectiveGenerationId);
+  }
+
+  @Override
+  public void publishPreparedStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<StatsStore.PrewrittenTargetStatsReference> finalReferences) {
+    String effectiveGenerationId = requireGenerationId(generationId);
+    List<PrewrittenStatsWrite> finalWrites =
+        prewrittenStatsWrites(tableId, snapshotId, effectiveGenerationId, finalReferences);
+    String lifecycleState = generationLifecycleState(tableId, snapshotId, effectiveGenerationId);
+    if (lifecycleState.isBlank() || GENERATION_WRITING.equals(lifecycleState)) {
+      ensureWritableGeneration(tableId, snapshotId, effectiveGenerationId);
+      ensurePublicationIntent(tableId, snapshotId, effectiveGenerationId, finalWrites, true);
+      targetStatsStorage.overwriteReferencesBatch(finalWrites);
+    } else if (GENERATION_PUBLISHING.equals(lifecycleState)
+        || GENERATION_PUBLISHED.equals(lifecycleState)) {
+      ensurePublicationIntent(tableId, snapshotId, effectiveGenerationId, finalWrites, false);
+      targetStatsStorage.verifyExactReferences(finalWrites);
+    } else {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "prepared target stats generation cannot publish: "
+              + effectiveGenerationId
+              + " state="
+              + lifecycleState);
+    }
+    Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
+    if (GENERATION_PUBLISHED.equals(lifecycleState)
+        && current
+            .map(ActiveSnapshotStats::generationId)
+            .filter(effectiveGenerationId::equals)
+            .isEmpty()) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "published target stats generation is no longer active: " + effectiveGenerationId);
+    }
+    publishActiveGenerationPointer(tableId, snapshotId, effectiveGenerationId, current);
+    updateTargetLatestSnapshotsIfNewer(
+        tableId,
+        snapshotId,
+        (finalReferences == null
+                ? List.<StatsStore.PrewrittenTargetStatsReference>of()
+                : finalReferences)
             .stream()
                 .filter(java.util.Objects::nonNull)
                 .map(StatsStore.PrewrittenTargetStatsReference::targetStorageId)
@@ -1044,13 +1162,17 @@ public class StatsRepository implements StatsStore {
       int limit,
       String pageToken) {
     StringBuilder next = new StringBuilder();
-    List<TargetStatsRecord> rows =
-        targetStatsStorage.listByPrefix(
+    List<BaseResourceRepository.KeyedValue<TargetStatsRecord>> rows =
+        targetStatsStorage.listKeyed(
             listPrefix(tableId, snapshotId, generationId, targetType),
             Math.max(1, limit),
             pageToken,
             next);
-    return new StatsStorePage(rows, next.toString());
+    List<TargetStatsRecord> records =
+        rows.stream().map(BaseResourceRepository.KeyedValue::value).toList();
+    List<String> continuationTokens =
+        rows.stream().map(row -> pointerStore.pageTokenAfterKey(row.key())).toList();
+    return new StatsStorePage(records, next.toString(), continuationTokens);
   }
 
   private List<TargetStatsRecord> listAllInGeneration(
@@ -1812,6 +1934,8 @@ public class StatsRepository implements StatsStore {
     pointerStore.deleteByPrefix(
         Keys.snapshotTargetStatsGenerationProtectionsPointerPrefix(
             accountId, tableId, snapshotId, generationId));
+    pointerStore.deleteByPrefix(
+        Keys.snapshotIndexArtifactGenerationPrefix(accountId, tableId, snapshotId, generationId));
   }
 
   private void deleteGeneration(
@@ -1880,6 +2004,8 @@ public class StatsRepository implements StatsStore {
     String protectionPointerPrefix =
         Keys.snapshotTargetStatsGenerationProtectionsPointerPrefix(
             accountId, tableId, snapshotId, generationId);
+    String indexPointerPrefix =
+        Keys.snapshotIndexArtifactGenerationPrefix(accountId, tableId, snapshotId, generationId);
     String blobPrefix =
         Keys.snapshotTargetStatsBlobPrefix(accountId, tableId, snapshotId)
             + "generations/"
@@ -1893,6 +2019,15 @@ public class StatsRepository implements StatsStore {
     }
     try {
       pointerStore.deleteByPrefix(protectionPointerPrefix);
+    } catch (RuntimeException e) {
+      if (failure == null) {
+        failure = e;
+      } else {
+        failure.addSuppressed(e);
+      }
+    }
+    try {
+      pointerStore.deleteByPrefix(indexPointerPrefix);
     } catch (RuntimeException e) {
       if (failure == null) {
         failure = e;
@@ -1931,6 +2066,23 @@ public class StatsRepository implements StatsStore {
       throw new IllegalArgumentException("stats generation id is required");
     }
     return effective;
+  }
+
+  private static String requireNonBlank(String value, String field) {
+    String effective = value == null ? "" : value.trim();
+    if (effective.isBlank()) {
+      throw new IllegalArgumentException(field + " is required");
+    }
+    return effective;
+  }
+
+  private static String requireSha256(String value) {
+    String effective = requireNonBlank(value, "artifactReferencesSha256");
+    if (effective.length() != 64
+        || !effective.chars().allMatch(character -> Character.digit(character, 16) >= 0)) {
+      throw new IllegalArgumentException("artifactReferencesSha256 must be 64 hexadecimal digits");
+    }
+    return effective.toLowerCase(java.util.Locale.ROOT);
   }
 
   private static String blankToEmpty(String value) {
@@ -1984,6 +2136,11 @@ public class StatsRepository implements StatsStore {
 
     private Optional<TargetStatsRecord> getByPointer(String pointerKey) {
       return get(pointerKey);
+    }
+
+    private List<KeyedValue<TargetStatsRecord>> listKeyed(
+        String prefix, int limit, String token, StringBuilder nextOut) {
+      return super.listByPrefixWithKeys(prefix, limit, token, nextOut);
     }
 
     private void create(String pointerKey, String blobUri, TargetStatsRecord value) {

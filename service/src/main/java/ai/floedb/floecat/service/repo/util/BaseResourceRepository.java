@@ -399,8 +399,17 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     return observeRepository("ref_by_pointer", () -> pointerStore.get(key));
   }
 
+  public record KeyedValue<T>(String key, T value) {}
+
   @Override
   public List<T> listByPrefix(String prefix, int limit, String token, StringBuilder nextOut) {
+    return listByPrefixWithKeys(prefix, limit, token, nextOut).stream()
+        .map(KeyedValue::value)
+        .toList();
+  }
+
+  protected List<KeyedValue<T>> listByPrefixWithKeys(
+      String prefix, int limit, String token, StringBuilder nextOut) {
     return observeRepository(
         "list_by_prefix",
         () -> {
@@ -422,12 +431,12 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
           }
           var blobsMap =
               missUris.isEmpty() ? Map.<String, byte[]>of() : blobStore.getBatch(missUris);
-          var blobs = new ArrayList<T>(rows.size());
+          var blobs = new ArrayList<KeyedValue<T>>(rows.size());
           for (var row : rows) {
             String blobUri = requireBlobReference(row, row.getKey());
             T hit = cached.get(blobUri);
             if (hit != null) {
-              blobs.add(hit);
+              blobs.add(new KeyedValue<>(row.getKey(), hit));
               continue;
             }
             byte[] bytes = blobsMap.get(blobUri);
@@ -444,7 +453,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
               if (blobCacheable()) {
                 blobCache.put(blobUri, parsed);
               }
-              blobs.add(parsed);
+              blobs.add(new KeyedValue<>(row.getKey(), parsed));
             } catch (Exception e) {
               throw new CorruptionException("parse failed: " + blobUri, e);
             }

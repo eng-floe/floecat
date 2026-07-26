@@ -167,4 +167,19 @@ class SnapshotFinalizePersistenceServiceTest {
     verify(persistence.statsStore)
         .publishPrewrittenStatsGeneration(tableId, 5L, generationId, List.of());
   }
+
+  @Test
+  void preparedReFinalizeAlwaysReplaysRepositoryActivation() {
+    String generationId = "gen-prepared-retry";
+    when(persistence.statsStore.activeStatsGeneration(tableId, 5L))
+        .thenReturn(
+            Optional.of(
+                ai.floedb.floecat.service.repo.model.Keys.snapshotTargetStatsManifestBlobUri(
+                    tableId.getAccountId(), tableId.getId(), 5L, generationId)));
+
+    persistence.publishPreparedStatsGeneration(tableId, 5L, generationId, List.of());
+
+    verify(persistence.statsStore)
+        .publishPreparedStatsGeneration(tableId, 5L, generationId, List.of());
+  }
 }

@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
@@ -1040,6 +1041,8 @@ class GrpcRemoteReconcileExecutorClient
             .build();
     byte[] packedBytes = packedPayload.toByteArray();
     blobStore.put(payload.resultPayloadUri(), packedBytes, "application/x-protobuf");
+    String artifactReferencesSha256 =
+        ArtifactReferenceDigest.sha256(fileStatsObjects, indexArtifacts);
     FileGroupResultDescriptor descriptor =
         FileGroupResultDescriptor.newBuilder()
             .setFormatVersion(1)
@@ -1062,6 +1065,8 @@ class GrpcRemoteReconcileExecutorClient
             .setIndexArtifactCount(indexArtifacts.size())
             .setStatsObjectPrefix(payload.statsObjectPrefix())
             .setFileStatsRecordCount(fileStats.size())
+            .setArtifactReferencesSha256(
+                ByteString.copyFrom(HexFormat.of().parseHex(artifactReferencesSha256)))
             .setCreatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
             .build();
     CommitLeasedFileGroupResultRequest.Success success =
@@ -1244,6 +1249,7 @@ class GrpcRemoteReconcileExecutorClient
         descriptor.getIndexArtifactCount(),
         descriptor.getStatsObjectPrefix(),
         descriptor.getFileStatsRecordCount(),
+        HexFormat.of().formatHex(descriptor.getArtifactReferencesSha256().toByteArray()),
         descriptor.hasCreatedAt() ? Timestamps.toMillis(descriptor.getCreatedAt()) : 0L);
   }
 
@@ -1317,8 +1323,6 @@ class GrpcRemoteReconcileExecutorClient
                         ? ReconcileCapturePolicy.empty()
                         : leasedJob.scope.capturePolicy()))
             .addAllFinalStats(finalStatsObjects)
-            .addAllFileStats(stableFileStats)
-            .addAllIndexArtifacts(stableIndexArtifacts)
             .setSourceFileCount(sourceFileCount)
             .setFileStatsRecordCount(stableFileStats.size())
             .setPartialAggregateRecordCount(
@@ -1423,7 +1427,10 @@ class GrpcRemoteReconcileExecutorClient
             .setPartialAggregateRecordCount(descriptor.partialAggregateRecordCount())
             .setIndexArtifactCount(descriptor.indexArtifactCount())
             .setStatsObjectPrefix(descriptor.statsObjectPrefix())
-            .setFileStatsRecordCount(descriptor.fileStatsRecordCount());
+            .setFileStatsRecordCount(descriptor.fileStatsRecordCount())
+            .setArtifactReferencesSha256(
+                ByteString.copyFrom(
+                    HexFormat.of().parseHex(descriptor.artifactReferencesSha256())));
     if (descriptor.createdAtMs() > 0L) {
       out.setCreatedAt(Timestamps.fromMillis(descriptor.createdAtMs()));
     }

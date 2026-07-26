@@ -56,7 +56,6 @@ import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 
 class LeasedSnapshotFinalizeExecutionServiceTest {
   private static final String ACCOUNT_ID = "acct";
@@ -86,6 +85,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     service.currentSnapshotPointerService = currentSnapshotPointerService;
     service.persistence = persistence;
     service.indexArtifactRepository = mock(IndexArtifactRepository.class);
+    service.statsStore = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     service.idempotencyStore = mock(IdempotencyRepository.class);
     when(principal.getCorrelationId()).thenReturn("corr");
     when(principal.getAccountId()).thenReturn(ACCOUNT_ID);
@@ -95,6 +95,9 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         .thenReturn(true);
     when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.beginSnapshotFinalizeCommit(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(service.statsStore.isPreparedFileGroup(
+            any(), anyLong(), anyString(), anyString(), anyString(), anyString()))
+        .thenReturn(true);
     when(jobs.getCompactLeaseView(FINALIZE_JOB_ID)).thenReturn(Optional.of(finalizeJobView()));
     when(jobs.completeSnapshotFinalizeSuccess(
             eq(FINALIZE_JOB_ID),
@@ -126,13 +129,15 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         .finalizeSuccess(
             anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
     verify(persistence)
-        .publishPrewrittenStatsGeneration(
+        .publishPreparedStatsGeneration(
             any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(List.of()));
+    verify(service.indexArtifactRepository)
+        .activateGeneration(any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"));
     verify(currentSnapshotPointerService).maybeAdvance(any(), eq(SNAPSHOT_ID), eq(FINALIZE_JOB_ID));
   }
 
   @Test
-  void successRegistersStatsReferencesWithoutReadingStatsObjects() {
+  void successActivatesPreparedFileStatsWithoutReadingOrRepeatingTheirObjects() {
     String childJobId = "file-group-job";
     String childLeaseEpoch = "child-lease";
     String statsPrefix =
@@ -175,6 +180,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .setPlannedFileCount(1)
             .setSucceededFileCount(1)
             .setFileStatsRecordCount(1)
+            .setArtifactReferencesSha256(ByteString.copyFrom(new byte[32]))
             .build();
     SnapshotCaptureManifest manifest =
         SnapshotCaptureManifest.newBuilder()
@@ -190,7 +196,6 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             .addFileGroups(fileGroup)
             .setSourceFileCount(1)
             .setFileStatsRecordCount(1)
-            .addFileStats(statsObject)
             .build();
     byte[] manifestBytes = manifest.toByteArray();
     SnapshotCaptureManifestDescriptor descriptor =
@@ -207,20 +212,83 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     verify(blobs, times(1)).get(manifestUri());
     verify(blobs, never()).get(payloadUri);
     verify(blobs, never()).get(statsUri);
-    @SuppressWarnings("unchecked")
-    ArgumentCaptor<List<ai.floedb.floecat.stats.spi.StatsStore.PrewrittenTargetStatsReference>>
-        references = ArgumentCaptor.forClass(List.class);
     verify(persistence)
-        .publishPrewrittenStatsGeneration(
-            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), references.capture());
-    org.assertj.core.api.Assertions.assertThat(references.getValue())
-        .singleElement()
-        .satisfies(
-            reference -> {
-              org.assertj.core.api.Assertions.assertThat(reference.targetStorageId())
-                  .isEqualTo(targetStorageId);
-              org.assertj.core.api.Assertions.assertThat(reference.blobUri()).isEqualTo(statsUri);
-            });
+        .publishPreparedStatsGeneration(
+            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(List.of()));
+    verify(service.indexArtifactRepository)
+        .activateGeneration(any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"));
+  }
+
+  @Test
+  void successRetriesWhenAFileGroupHasNotFinishedMetadataOnlyStaging() {
+    String childJobId = "file-group-job";
+    String childLeaseEpoch = "child-lease";
+    FileGroupResultDescriptor fileGroup =
+        FileGroupResultDescriptor.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(ACCOUNT_ID)
+            .setConnectorId("connector")
+            .setParentJobId("parent-job")
+            .setFileGroupJobId(childJobId)
+            .setPlanId("plan-1")
+            .setGroupId("group-1")
+            .setTableId(TABLE_ID)
+            .setSnapshotId(SNAPSHOT_ID)
+            .setLeaseEpoch(childLeaseEpoch)
+            .setResultId("child-result")
+            .setPayloadUri("/file-group-result.pb")
+            .setPayloadBytes(1)
+            .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+            .setStatsObjectPrefix(
+                Keys.reconcileFileGroupStatsObjectPrefix(
+                    ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID, "parent-job", childJobId, childLeaseEpoch))
+            .setPlannedFileCount(1)
+            .setSucceededFileCount(1)
+            .setFileStatsRecordCount(1)
+            .setArtifactReferencesSha256(ByteString.copyFrom(new byte[32]))
+            .build();
+    byte[] manifestBytes =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(ACCOUNT_ID)
+            .setConnectorId("connector")
+            .setParentJobId("parent-job")
+            .setFinalizeJobId(FINALIZE_JOB_ID)
+            .setTableId(TABLE_ID)
+            .setSnapshotId(SNAPSHOT_ID)
+            .setLeaseEpoch(LEASE_EPOCH)
+            .setResultId("result-1")
+            .addFileGroups(fileGroup)
+            .setSourceFileCount(1)
+            .setFileStatsRecordCount(1)
+            .build()
+            .toByteArray();
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID)).thenReturn(Optional.of(finalizeJobView(1, 1)));
+    when(service.childStateService.compactChildState(ACCOUNT_ID, "parent-job", FINALIZE_JOB_ID, 1))
+        .thenReturn(
+            new SnapshotFinalizeChildStateService.ChildState(
+                1, 1, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of()));
+    when(blobs.get(manifestUri())).thenReturn(manifestBytes);
+    when(service.statsStore.isPreparedFileGroup(
+            any(), anyLong(), anyString(), anyString(), anyString(), anyString()))
+        .thenReturn(false);
+
+    assertThrows(
+        StorageAbortRetryableException.class,
+        () ->
+            service.persistSuccess(
+                principal,
+                FINALIZE_JOB_ID,
+                LEASE_EPOCH,
+                "result-1",
+                descriptor(manifestUri(), manifestBytes, 1, 1, 1)));
+
+    verify(blobs, times(1)).get(manifestUri());
+    verify(blobs, never()).get("/file-group-result.pb");
+    verify(persistence, never())
+        .publishPreparedStatsGeneration(any(), anyLong(), anyString(), any());
+    verify(service.indexArtifactRepository, never())
+        .activateGeneration(any(), anyLong(), anyString());
   }
 
   @Test

@@ -1862,6 +1862,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     existing.fileGroupResultIndexArtifactCount = descriptor.indexArtifactCount();
     existing.fileGroupStatsObjectPrefix = descriptor.statsObjectPrefix();
     existing.fileGroupStatsRecordCount = descriptor.fileStatsRecordCount();
+    existing.fileGroupArtifactReferencesSha256 = descriptor.artifactReferencesSha256();
     existing.fileGroupResultCreatedAtMs = descriptor.createdAtMs();
     existing.statsProcessed =
         Math.max(existing.statsProcessed, descriptor.partialAggregateRecordCount());
@@ -4677,6 +4678,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         state.fileGroupResultIndexArtifactCount,
         blankToEmpty(state.fileGroupStatsObjectPrefix),
         state.fileGroupStatsRecordCount,
+        blankToEmpty(state.fileGroupArtifactReferencesSha256),
         state.fileGroupResultCreatedAtMs);
   }
 

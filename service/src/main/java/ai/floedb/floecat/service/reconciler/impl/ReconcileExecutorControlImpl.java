@@ -1056,7 +1056,10 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
             .setPartialAggregateRecordCount(descriptor.partialAggregateRecordCount())
             .setIndexArtifactCount(descriptor.indexArtifactCount())
             .setStatsObjectPrefix(descriptor.statsObjectPrefix())
-            .setFileStatsRecordCount(descriptor.fileStatsRecordCount());
+            .setFileStatsRecordCount(descriptor.fileStatsRecordCount())
+            .setArtifactReferencesSha256(
+                com.google.protobuf.ByteString.copyFrom(
+                    java.util.HexFormat.of().parseHex(descriptor.artifactReferencesSha256())));
     if (descriptor.createdAtMs() > 0L) {
       builder.setCreatedAt(
           com.google.protobuf.util.Timestamps.fromMillis(descriptor.createdAtMs()));
@@ -1136,6 +1139,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         descriptor.getIndexArtifactCount(),
         descriptor.getStatsObjectPrefix(),
         descriptor.getFileStatsRecordCount(),
+        java.util.HexFormat.of().formatHex(descriptor.getArtifactReferencesSha256().toByteArray()),
         descriptor.hasCreatedAt()
             ? com.google.protobuf.util.Timestamps.toMillis(descriptor.getCreatedAt())
             : 0L);

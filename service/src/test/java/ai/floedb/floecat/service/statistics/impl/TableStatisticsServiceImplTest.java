@@ -16,16 +16,28 @@
 package ai.floedb.floecat.service.statistics.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.FileColumnStats;
+import ai.floedb.floecat.catalog.rpc.FileTargetStats;
+import ai.floedb.floecat.catalog.rpc.ListTargetStatsResponse;
+import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.catalog.rpc.PutTargetStatsRequest;
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.catalog.rpc.SketchPayload;
+import ai.floedb.floecat.catalog.rpc.SketchRole;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.StatsMetadata;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.TargetStatsView;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
@@ -39,13 +51,144 @@ import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.service.testsupport.TestPrincipals;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsStore;
+import com.google.protobuf.ByteString;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.smallrye.mutiny.Multi;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class TableStatisticsServiceImplTest {
+
+  @Test
+  void listFetchLimitBoundsStoreReadsBeforeResponseSizing() {
+    assertEquals(
+        TableStatisticsServiceImpl.LIST_FETCH_MAX_RECORDS,
+        TableStatisticsServiceImpl.boundedListLimit(Integer.MAX_VALUE));
+    assertEquals(1, TableStatisticsServiceImpl.boundedListLimit(0));
+  }
+
+  @Test
+  void summaryViewStripsOnlyRawSketchBytesAndDoesNotMutateTheSourceRecord() {
+    TargetStatsRecord stored = fileRecord("file-1", 256);
+
+    TargetStatsRecord summary =
+        TableStatisticsServiceImpl.buildListResponse(
+                new StatsStore.StatsStorePage(List.of(stored), ""),
+                1,
+                TargetStatsView.TSV_UNSPECIFIED,
+                Integer.MAX_VALUE)
+            .getRecords(0);
+
+    ScalarStats scalar = summary.getFile().getColumns(0).getScalar();
+    assertEquals(17L, scalar.getRowCount());
+    assertEquals(2L, scalar.getNullCount());
+    assertEquals(1L, scalar.getNanCount());
+    assertEquals("10", scalar.getMin());
+    assertEquals("99", scalar.getMax());
+    assertEquals(12.5, scalar.getNdv().getApprox().getEstimate());
+    assertEquals("theta-v1", scalar.getNdv().getSketches(0).getSketchType());
+    assertTrue(scalar.getNdv().getSketches(0).getData().isEmpty());
+    assertEquals("kll-v1", scalar.getSketches(0).getSketchType());
+    assertTrue(scalar.getSketches(0).getData().isEmpty());
+    assertEquals(stored.getMetadata(), summary.getMetadata());
+    assertFalse(stored.getFile().getColumns(0).getScalar().getSketches(0).getData().isEmpty());
+    assertFalse(
+        stored.getFile().getColumns(0).getScalar().getNdv().getSketches(0).getData().isEmpty());
+  }
+
+  @Test
+  void fullViewPreservesRawSketchPayloads() {
+    TargetStatsRecord stored = fileRecord("file-1", 256);
+    var page = new StatsStore.StatsStorePage(List.of(stored), "");
+
+    ListTargetStatsResponse response =
+        TableStatisticsServiceImpl.buildListResponse(
+            page, 1, TargetStatsView.TSV_FULL, Integer.MAX_VALUE);
+
+    assertEquals(stored, response.getRecords(0));
+    assertFalse(
+        response
+            .getRecords(0)
+            .getFile()
+            .getColumns(0)
+            .getScalar()
+            .getSketches(0)
+            .getData()
+            .isEmpty());
+  }
+
+  @Test
+  void byteBudgetReturnsAnExactContinuationAfterTheLastIncludedRecord() {
+    TargetStatsRecord first = fileRecord("file-1", 128);
+    TargetStatsRecord second = fileRecord("file-2", 128);
+    var page =
+        new StatsStore.StatsStorePage(
+            List.of(first, second), "storage-page-end", List.of("after-file-1", "after-file-2"));
+    int bothRecordsBytes =
+        ListTargetStatsResponse.newBuilder()
+            .addRecords(first)
+            .addRecords(second)
+            .setPage(
+                ai.floedb.floecat.common.rpc.PageResponse.newBuilder()
+                    .setNextPageToken("storage-page-end")
+                    .setTotalSize(2))
+            .build()
+            .getSerializedSize();
+
+    ListTargetStatsResponse response =
+        TableStatisticsServiceImpl.buildListResponse(
+            page, 2, TargetStatsView.TSV_FULL, bothRecordsBytes - 1);
+
+    assertEquals(1, response.getRecordsCount());
+    assertEquals(first, response.getRecords(0));
+    assertEquals("after-file-1", response.getPage().getNextPageToken());
+    assertTrue(response.getSerializedSize() <= bothRecordsBytes - 1);
+  }
+
+  @Test
+  void recordLimitIsPreservedWhenAllFetchedRecordsFit() {
+    TargetStatsRecord first = fileRecord("file-1", 8);
+    TargetStatsRecord second = fileRecord("file-2", 8);
+    var page =
+        new StatsStore.StatsStorePage(
+            List.of(first, second), "next-storage-page", List.of("after-file-1", "after-file-2"));
+
+    ListTargetStatsResponse response =
+        TableStatisticsServiceImpl.buildListResponse(
+            page, 7, TargetStatsView.TSV_SUMMARY, Integer.MAX_VALUE);
+
+    assertEquals(2, response.getRecordsCount());
+    assertEquals("next-storage-page", response.getPage().getNextPageToken());
+    assertEquals(7, response.getPage().getTotalSize());
+  }
+
+  @Test
+  void oversizedFullRecordFailsWithResourceExhausted() {
+    TargetStatsRecord record = fileRecord("too-large", 1024);
+    int tooSmall =
+        TableStatisticsServiceImpl.buildListResponse(
+                    new StatsStore.StatsStorePage(List.of(record), ""),
+                    1,
+                    TargetStatsView.TSV_FULL,
+                    Integer.MAX_VALUE)
+                .getSerializedSize()
+            - 1;
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                TableStatisticsServiceImpl.buildListResponse(
+                    new StatsStore.StatsStorePage(List.of(record), ""),
+                    1,
+                    TargetStatsView.TSV_FULL,
+                    tooSmall));
+
+    assertEquals(Status.Code.RESOURCE_EXHAUSTED, error.getStatus().getCode());
+    assertTrue(error.getStatus().getDescription().contains("one target stats record exceeds"));
+  }
 
   @Test
   void putTargetStatsRejectsSystemTableBeforePersistence() {
@@ -177,5 +320,55 @@ class TableStatisticsServiceImplTest {
     verify(svc.rootWriter, times(0))
         .commitStatsGeneration(
             org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyLong());
+  }
+
+  private static TargetStatsRecord fileRecord(String path, int sketchBytes) {
+    SketchPayload ndvSketch =
+        SketchPayload.newBuilder()
+            .setRole(SketchRole.SKETCH_ROLE_NDV)
+            .setSketchType("theta-v1")
+            .setData(ByteString.copyFrom(new byte[sketchBytes]))
+            .putParams("k", "4096")
+            .setCapturedAtMs(123L)
+            .build();
+    SketchPayload scalarSketch =
+        SketchPayload.newBuilder()
+            .setRole(SketchRole.SKETCH_ROLE_QUANTILES)
+            .setSketchType("kll-v1")
+            .setData(ByteString.copyFrom(new byte[sketchBytes]))
+            .putParams("k", "200")
+            .setCapturedAtMs(456L)
+            .build();
+    ScalarStats scalar =
+        ScalarStats.newBuilder()
+            .setDisplayName("c1")
+            .setLogicalType("BIGINT")
+            .setRowCount(17L)
+            .setNullCount(2L)
+            .setNanCount(1L)
+            .setMin("10")
+            .setMax("99")
+            .setNdv(
+                Ndv.newBuilder()
+                    .setApprox(
+                        ai.floedb.floecat.catalog.rpc.NdvApprox.newBuilder().setEstimate(12.5))
+                    .addSketches(ndvSketch))
+            .addSketches(scalarSketch)
+            .putProperties("source", "test")
+            .build();
+    return TargetStatsRecord.newBuilder()
+        .setTableId(
+            ResourceId.newBuilder()
+                .setAccountId("acct")
+                .setKind(ResourceKind.RK_TABLE)
+                .setId("tbl"))
+        .setSnapshotId(123L)
+        .setMetadata(StatsMetadata.newBuilder().putProperties("capture", "footer"))
+        .setFile(
+            FileTargetStats.newBuilder()
+                .setFilePath(path)
+                .setRowCount(17L)
+                .addColumns(FileColumnStats.newBuilder().setColumnId(1L).setScalar(scalar)))
+        .build();
   }
 }

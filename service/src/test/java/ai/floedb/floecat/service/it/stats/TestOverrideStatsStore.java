@@ -109,7 +109,11 @@ public class TestOverrideStatsStore implements StatsStore {
     int end = Math.min(offset + pageSize, filtered.size());
     List<TargetStatsRecord> page = new ArrayList<>(filtered.subList(offset, end));
     String next = end < filtered.size() ? Integer.toString(end) : "";
-    return new StatsStorePage(page, next);
+    List<String> continuationTokens = new ArrayList<>(page.size());
+    for (int i = offset + 1; i <= end; i++) {
+      continuationTokens.add(Integer.toString(i));
+    }
+    return new StatsStorePage(page, next, continuationTokens);
   }
 
   @Override

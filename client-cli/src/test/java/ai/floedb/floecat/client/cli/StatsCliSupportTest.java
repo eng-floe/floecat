@@ -48,6 +48,7 @@ import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.catalog.rpc.TargetStatsView;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -295,6 +296,8 @@ class StatsCliSupportTest {
           StatsTargetKind.STK_FILE,
           h.statisticsService.lastListTargetStatsRequest.getTargetKinds(0));
       assertEquals(100, h.statisticsService.lastListTargetStatsRequest.getPage().getPageSize());
+      assertEquals(
+          TargetStatsView.TSV_SUMMARY, h.statisticsService.lastListTargetStatsRequest.getView());
     }
   }
 

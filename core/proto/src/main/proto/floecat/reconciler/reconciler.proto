@@ -312,8 +312,9 @@ message FileGroupResultPayload {
 }
 
 // Immutable publication unit produced by the snapshot-finalize executor after it has verified all
-// child artifacts. File stats remain partitioned across bounded file-group payloads; aggregate
-// stats are individual objects referenced here.
+// child artifacts. File stats and index-wrapper mappings are staged by bounded file-group commits
+// and represented here only by group descriptors and counts. Aggregate stats produced by the
+// finalizer are individual objects referenced here.
 message SnapshotCaptureManifest {
   uint32 format_version = 1;
   string account_id = 2;
@@ -327,8 +328,7 @@ message SnapshotCaptureManifest {
   CapturePolicy capture_policy = 10;
   repeated FileGroupResultDescriptor file_groups = 11;
   repeated StatsObjectDescriptor final_stats = 12;
-  repeated StatsObjectDescriptor index_artifacts = 13;
-  repeated StatsObjectDescriptor file_stats = 14;
+  reserved 13, 14;
   uint32 source_file_count = 15;
   uint32 file_stats_record_count = 16;
   uint32 partial_aggregate_record_count = 17;
@@ -384,6 +384,9 @@ message FileGroupResultDescriptor {
   string stats_object_prefix = 22;
   reserved 23, 24;
   uint32 file_stats_record_count = 25;
+  // SHA-256 over the canonical file-stats and index-artifact descriptor sets.
+  // Binds the bounded commit-time mappings to this durable result descriptor.
+  bytes artifact_references_sha256 = 26;
 }
 
 // Scheduler hints that influence where and how a reconcile job should run.
@@ -890,10 +893,11 @@ message GetLeasedFileGroupExecutionResponse {
   LeasedFileGroupExecution execution = 1;
 }
 
-// A successful outcome idempotently protects the immutable objects produced by one file-group
-// execution before completing the leased job. Protection and job completion are ordered, not one
-// atomic storage transaction. The service never reads the referenced objects during this
-// control-plane call. Replays with the same result_id are idempotent.
+// A successful outcome first durably accepts the immutable result and completes the leased job,
+// then idempotently stages its object-pointer metadata and writes a prepared marker last. These
+// steps are ordered, not one atomic storage transaction. The service never reads the referenced
+// objects during this control-plane call. After an uncertain or retryable outcome, the worker must
+// replay the exact same result_id, descriptor, and descriptor lists even if the job is terminal.
 message CommitLeasedFileGroupResultRequest {
   message Success {
     string result_id = 1;
@@ -921,6 +925,9 @@ message CommitLeasedFileGroupResultResponse {
   bool accepted = 1;
 }
 
+// Finalization reads the manifest once and requires a digest-bound prepared marker for every file
+// group before activating its stats and index generations. It does not read file-group payloads or
+// per-file objects. A missing marker is retryable and requires an exact replay of this result.
 message SubmitLeasedSnapshotFinalizeResultRequest {
   message Success {
     string result_id = 1;

@@ -303,6 +303,7 @@ class InMemoryReconcileJobStoreTest {
                 1,
                 "/stats/",
                 1,
+                "0".repeat(64),
                 System.currentTimeMillis()),
             System.currentTimeMillis(),
             "done"));

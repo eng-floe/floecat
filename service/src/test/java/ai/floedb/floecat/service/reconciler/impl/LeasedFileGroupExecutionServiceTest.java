@@ -23,9 +23,11 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
@@ -47,6 +49,7 @@ import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
+import ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
@@ -59,6 +62,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
+import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -94,6 +98,7 @@ class LeasedFileGroupExecutionServiceTest {
   private CredentialResolver credentialResolver;
   private IdempotencyRepository idempotencyStore;
   private StatsStore statsStore;
+  private IndexArtifactRepository indexArtifactRepository;
   private StatsOrchestrator statsOrchestrator;
   private PrincipalContext principal;
 
@@ -107,6 +112,7 @@ class LeasedFileGroupExecutionServiceTest {
     credentialResolver = mock(CredentialResolver.class);
     idempotencyStore = mock(IdempotencyRepository.class);
     statsStore = mock(StatsStore.class);
+    indexArtifactRepository = mock(IndexArtifactRepository.class);
     statsOrchestrator = mock(StatsOrchestrator.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
@@ -116,6 +122,7 @@ class LeasedFileGroupExecutionServiceTest {
     service.credentialResolver = credentialResolver;
     service.idempotencyStore = idempotencyStore;
     service.statsStore = statsStore;
+    service.indexArtifactRepository = indexArtifactRepository;
     when(principal.getCorrelationId()).thenReturn("corr");
     when(principal.getAccountId()).thenReturn(ACCOUNT_ID);
     when(idempotencyStore.get(anyString())).thenReturn(Optional.empty());
@@ -271,6 +278,33 @@ class LeasedFileGroupExecutionServiceTest {
             eq("full-rescan-" + PARENT_JOB_ID),
             eq(CHILD_JOB_ID + ":" + LEASE_EPOCH),
             eq(List.of()));
+    verify(statsStore)
+        .registerPrewrittenStatsReferencesInGeneration(
+            eq(tableId()), eq(SNAPSHOT_ID), eq("full-rescan-" + PARENT_JOB_ID), eq(List.of()));
+    verify(indexArtifactRepository)
+        .registerPrewrittenIndexArtifactReferencesInGeneration(
+            eq(tableId()), eq(SNAPSHOT_ID), eq("full-rescan-" + PARENT_JOB_ID), eq(List.of()));
+    verify(statsStore)
+        .markPreparedFileGroup(
+            eq(tableId()),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-" + PARENT_JOB_ID),
+            eq(CHILD_JOB_ID),
+            eq(LEASE_EPOCH),
+            eq(resultDescriptor(List.of()).artifactReferencesSha256()));
+    var order = inOrder(jobs, statsStore, indexArtifactRepository);
+    order
+        .verify(jobs)
+        .completeFileGroupSuccess(
+            eq(CHILD_JOB_ID),
+            eq(LEASE_EPOCH),
+            any(ReconcileFileGroupResultDescriptor.class),
+            anyLong(),
+            eq("Executed file group group-1"));
+    order
+        .verify(statsStore)
+        .protectPrewrittenStatsObjectsInGeneration(
+            any(), anyLong(), anyString(), anyString(), any());
     verify(idempotencyStore, never())
         .createPending(anyString(), anyString(), anyString(), anyString(), any(), any());
     verify(idempotencyStore, never())
@@ -335,6 +369,16 @@ class LeasedFileGroupExecutionServiceTest {
             objects.capture());
     assertEquals(1, objects.getValue().size());
     assertEquals(statsObjectPrefix() + "0.pb", objects.getValue().getFirst().blobUri());
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<StatsStore.PrewrittenTargetStatsReference>> references =
+        ArgumentCaptor.forClass(List.class);
+    verify(statsStore)
+        .registerPrewrittenStatsReferencesInGeneration(
+            eq(tableId()),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-" + PARENT_JOB_ID),
+            references.capture());
+    assertEquals(1, references.getValue().size());
   }
 
   @Test
@@ -388,7 +432,7 @@ class LeasedFileGroupExecutionServiceTest {
             CHILD_JOB_ID,
             LEASE_EPOCH,
             "result-1",
-            resultDescriptor(List.of(record), 1),
+            resultDescriptor(List.of(record), List.of(fileStats), List.of(indexArtifact)),
             List.of(fileStats),
             List.of(indexArtifact)));
 
@@ -403,6 +447,18 @@ class LeasedFileGroupExecutionServiceTest {
             eq(CHILD_JOB_ID + ":" + LEASE_EPOCH),
             objects.capture());
     assertEquals(2, objects.getValue().size());
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<IndexArtifactRepository.PrewrittenIndexArtifactReference>> references =
+        ArgumentCaptor.forClass(List.class);
+    verify(indexArtifactRepository)
+        .registerPrewrittenIndexArtifactReferencesInGeneration(
+            eq(tableId()),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-" + PARENT_JOB_ID),
+            references.capture());
+    assertEquals(1, references.getValue().size());
+    assertEquals(
+        fileStats.getTargetStorageId(), references.getValue().getFirst().targetStorageId());
   }
 
   @Test
@@ -459,9 +515,71 @@ class LeasedFileGroupExecutionServiceTest {
                     List.of()));
 
     assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    verify(statsStore, never())
+        .protectPrewrittenStatsObjectsInGeneration(
+            any(), anyLong(), anyString(), anyString(), any());
+    verify(indexArtifactRepository, never())
+        .registerPrewrittenIndexArtifactReferencesInGeneration(
+            any(), anyLong(), anyString(), any());
     verify(idempotencyStore, never())
         .finalizeSuccess(
             anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void persistSuccessRejectsPointerMappingsThatDoNotMatchTheDurableDigest() {
+    ReconcileFileGroupTask plannedGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileJobStore.ReconcileJob childLeaseView =
+        job(
+            CHILD_JOB_ID,
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileSnapshotTask.empty(),
+            plannedGroup.asReference(),
+            PARENT_JOB_ID);
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                        TABLE_ID,
+                        SNAPSHOT_ID,
+                        "db",
+                        "events",
+                        List.of(plannedGroup),
+                        true,
+                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                        "/snapshot-plan.json",
+                        1),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    TargetStatsRecord record = fileStatsRecord("s3://bucket/data/file-1.parquet", 10L);
+    StatsObjectDescriptor changed =
+        statsObjectDescriptors(List.of(record)).getFirst().toBuilder()
+            .setPayloadUri(statsObjectPrefix() + "changed.pb")
+            .build();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            service.persistSuccess(
+                principal,
+                CHILD_JOB_ID,
+                LEASE_EPOCH,
+                "result-1",
+                resultDescriptor(List.of(record)),
+                List.of(changed),
+                List.of()));
+
+    verify(jobs, never())
+        .completeFileGroupSuccess(anyString(), anyString(), any(), anyLong(), anyString());
+    verifyNoInteractions(indexArtifactRepository);
   }
 
   @Test
@@ -861,11 +979,13 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   private ReconcileFileGroupResultDescriptor resultDescriptor(List<TargetStatsRecord> fileStats) {
-    return resultDescriptor(fileStats, 0);
+    return resultDescriptor(fileStats, statsObjectDescriptors(fileStats), List.of());
   }
 
   private ReconcileFileGroupResultDescriptor resultDescriptor(
-      List<TargetStatsRecord> fileStats, int indexArtifactCount) {
+      List<TargetStatsRecord> fileStats,
+      List<StatsObjectDescriptor> fileStatsDescriptors,
+      List<StatsObjectDescriptor> indexArtifactDescriptors) {
     byte[] resultBytes = "result-payload".getBytes(java.nio.charset.StandardCharsets.UTF_8);
     return new ReconcileFileGroupResultDescriptor(
         1,
@@ -887,9 +1007,10 @@ class LeasedFileGroupExecutionServiceTest {
         0,
         0,
         0,
-        indexArtifactCount,
+        indexArtifactDescriptors.size(),
         statsObjectPrefix(),
         fileStats.size(),
+        ArtifactReferenceDigest.sha256(fileStatsDescriptors, indexArtifactDescriptors),
         1L);
   }
 

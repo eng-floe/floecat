@@ -63,6 +63,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
   @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
   @Inject SnapshotFinalizePersistenceService persistence;
   @Inject IndexArtifactRepository indexArtifactRepository;
+  @Inject StatsStore statsStore;
   @Inject BlobStore blobStore;
 
   public boolean persistSuccess(
@@ -307,11 +308,9 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         || descriptor.getFileGroupCount() != manifest.getFileGroupsCount()
         || descriptor.getSourceFileCount() != manifest.getSourceFileCount()
         || descriptor.getStatsRecordCount()
-            != manifest.getFileStatsRecordCount() + manifest.getFinalStatsCount()
-        || manifest.getFileStatsRecordCount() != manifest.getFileStatsCount()
+            != manifest.getFileStatsRecordCount() + manifest.getFinalStatsRecordCount()
         || manifest.getFinalStatsRecordCount() != manifest.getFinalStatsCount()
-        || manifest.getIndexArtifactCount() != manifest.getIndexArtifactsCount()
-        || descriptor.getIndexArtifactCount() != manifest.getIndexArtifactsCount()) {
+        || descriptor.getIndexArtifactCount() != manifest.getIndexArtifactCount()) {
       throw new IllegalArgumentException("snapshot capture manifest object identity mismatch");
     }
     return manifest;
@@ -323,9 +322,6 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       ReconcileSnapshotTask snapshotTask,
       SnapshotCaptureManifest manifest) {
     String generationId = "full-rescan-" + lease.parentJobId;
-    List<StatsStore.PrewrittenTargetStatsReference> stats = new ArrayList<>();
-    Set<String> targets = new HashSet<>();
-    List<String> workerPrefixes = new ArrayList<>();
     Set<String> fileGroups = new HashSet<>();
     int declaredFileStats = 0;
     int declaredIndexArtifacts = 0;
@@ -345,26 +341,32 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           || !manifest.getTableId().equals(fileGroup.getTableId())
           || manifest.getSnapshotId() != fileGroup.getSnapshotId()
           || !fileGroups.add(fileGroup.getPlanId() + ":" + fileGroup.getGroupId())
-          || !expectedStatsPrefix.equals(fileGroup.getStatsObjectPrefix())) {
+          || !expectedStatsPrefix.equals(fileGroup.getStatsObjectPrefix())
+          || fileGroup.getArtifactReferencesSha256().size() != 32) {
         throw new IllegalArgumentException(
             "snapshot file-group descriptor is outside the fenced worker location");
       }
-      workerPrefixes.add(expectedStatsPrefix);
+      String artifactReferencesSha256 =
+          HexFormat.of().formatHex(fileGroup.getArtifactReferencesSha256().toByteArray());
+      if (!statsStore.isPreparedFileGroup(
+          tableId,
+          snapshotTask.snapshotId(),
+          generationId,
+          fileGroup.getFileGroupJobId(),
+          fileGroup.getLeaseEpoch(),
+          artifactReferencesSha256)) {
+        throw new StorageAbortRetryableException(
+            "accepted file-group pointer staging is incomplete: " + fileGroup.getFileGroupJobId());
+      }
       declaredFileStats += fileGroup.getFileStatsRecordCount();
       declaredIndexArtifacts += fileGroup.getIndexArtifactCount();
     }
-    if (declaredFileStats != manifest.getFileStatsCount()
-        || declaredIndexArtifacts != manifest.getIndexArtifactsCount()) {
+    if (declaredFileStats != manifest.getFileStatsRecordCount()
+        || declaredIndexArtifacts != manifest.getIndexArtifactCount()) {
       throw new IllegalArgumentException("snapshot file-group artifact count mismatch");
     }
-    for (StatsObjectDescriptor object : manifest.getFileStatsList()) {
-      String prefix = requiredWorkerPrefix(workerPrefixes, object);
-      stats.add(prewrittenStatsReference(prefix, object));
-      if (!targets.add(object.getTargetStorageId())) {
-        throw new IllegalArgumentException(
-            "duplicate target in snapshot stats publication: " + object.getTargetStorageId());
-      }
-    }
+    List<StatsStore.PrewrittenTargetStatsReference> finalStats = new ArrayList<>();
+    Set<String> finalTargets = new HashSet<>();
     String finalStatsPrefix =
         Keys.reconcileSnapshotFinalizeStatsObjectPrefix(
             tableId.getAccountId(),
@@ -374,49 +376,17 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
             lease.jobId,
             lease.leaseEpoch);
     for (StatsObjectDescriptor object : manifest.getFinalStatsList()) {
-      stats.add(prewrittenStatsReference(finalStatsPrefix, object));
-      if (!targets.add(object.getTargetStorageId())) {
+      finalStats.add(prewrittenStatsReference(finalStatsPrefix, object));
+      if (!finalTargets.add(object.getTargetStorageId())) {
         throw new IllegalArgumentException(
             "duplicate target in snapshot stats publication: " + object.getTargetStorageId());
       }
     }
-    if (stats.size() != manifest.getFileStatsRecordCount() + manifest.getFinalStatsCount()) {
-      throw new IllegalArgumentException("snapshot stats publication count mismatch");
-    }
-    persistence.publishPrewrittenStatsGeneration(
-        tableId, snapshotTask.snapshotId(), generationId, stats);
-    List<IndexArtifactRepository.PrewrittenIndexArtifactReference> indexes = new ArrayList<>();
-    Set<String> indexTargets = new HashSet<>();
-    for (StatsObjectDescriptor object : manifest.getIndexArtifactsList()) {
-      String prefix = requiredWorkerPrefix(workerPrefixes, object);
-      if (!indexTargets.add(object.getTargetStorageId())) {
-        throw new IllegalArgumentException(
-            "duplicate target in snapshot index publication: " + object.getTargetStorageId());
-      }
-      StatsStore.PrewrittenTargetStatsReference reference =
-          prewrittenStatsReference(prefix, object);
-      indexes.add(
-          new IndexArtifactRepository.PrewrittenIndexArtifactReference(
-              reference.targetStorageId(),
-              reference.blobUri(),
-              reference.blobBytes(),
-              reference.blobSha256()));
-    }
-    indexArtifactRepository.registerPrewrittenIndexArtifactReferences(
-        tableId, snapshotTask.snapshotId(), indexes);
+    persistence.publishPreparedStatsGeneration(
+        tableId, snapshotTask.snapshotId(), generationId, finalStats);
+    indexArtifactRepository.activateGeneration(tableId, snapshotTask.snapshotId(), generationId);
     persistence.clearPrewrittenArtifactProtections(
         tableId, snapshotTask.snapshotId(), generationId);
-  }
-
-  private String requiredWorkerPrefix(
-      List<String> workerPrefixes, StatsObjectDescriptor descriptor) {
-    return workerPrefixes.stream()
-        .filter(prefix -> descriptor.getPayloadUri().startsWith(prefix))
-        .findFirst()
-        .orElseThrow(
-            () ->
-                new IllegalArgumentException(
-                    "artifact object descriptor is outside the fenced worker locations"));
   }
 
   private StatsStore.PrewrittenTargetStatsReference prewrittenStatsReference(

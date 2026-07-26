@@ -21,7 +21,8 @@ The current JVM path for file-group execution is:
 - `RemoteReconcileExecutorPoller` leases `EXEC_FILE_GROUP` jobs.
 - `RemoteFileGroupReconcileExecutor` fetches `LeasedFileGroupExecution`.
 - `StandaloneJavaFileGroupExecutionRunner` performs the actual parquet work.
-- `CommitLeasedFileGroupResult` protects stats and index-artifact objects, then completes the job.
+- `CommitLeasedFileGroupResult` durably accepts the immutable result, then stages its stats and
+  index-artifact pointer metadata and writes a prepared marker.
 
 A Rust worker replaces the execution portion of that flow. It should behave like an external
 implementation of the current worker contract, not like a new public API.
@@ -147,10 +148,13 @@ connector definition and auth material needed to read source files.
 
 Both require `result_id`.
 
-The worker uploads immutable stats and index-artifact objects, then sends their compact descriptors
-with `success`. Floecat idempotently protects the referenced objects without reading them, then
-completes the file-group job. Protection and completion are ordered, not one atomic storage
-transaction.
+The worker uploads immutable stats and index-artifact wrapper objects, then sends their compact
+descriptors with `success`. Floecat first durably accepts the immutable result and makes the
+file-group job terminal. It then idempotently protects the referenced objects, stages their
+generation-scoped pointer mappings without reading them, and writes a digest-bound prepared marker
+last. Completion and pointer staging are ordered, not one atomic storage transaction. The
+`artifact_uri` inside an index wrapper may name external storage; Floecat does not read, copy, or
+clean up that sidecar.
 
 Success carries:
 
@@ -196,17 +200,25 @@ rejected with `Conflict detected`. Including the `lease_epoch` guarantees that.
 The worker should assume the following:
 
 - `CommitLeasedFileGroupResult` is safe to retry only if the same `result_id` and the
-  same payload are reused.
+  same descriptor and descriptor lists are reused.
 - success and failure are different outcomes and must not share a `result_id`.
-- a successful commit marks the file-group job terminal; do not send a second success completion.
-- a failed or uncertain commit may leave protection metadata, but cannot mark the job successful
-  before protection succeeds. Finalization or abandoned-generation cleanup removes the protections.
+- a successful commit can mark the file-group job terminal before pointer staging and the prepared
+  marker are complete.
+- a retry of the exact success submission is required after a timeout, retryable error, or uncertain
+  outcome, even when the job is already terminal. This is a replay of the accepted result, not a
+  second logical completion.
+- a failed or uncertain commit may leave partial pointer or protection metadata. An exact replay
+  resumes staging; finalization waits for the prepared marker. Finalization or
+  abandoned-generation cleanup removes the protections.
 
 Recommended retry behavior:
 
 1. Generate one `result_id` per execution attempt (include the `lease_epoch`); a re-lease produces a new one.
 2. If the submit RPC times out or the response is lost, retry the same request unchanged.
-3. Once the commit is accepted, stop heartbeats; no separate success completion is needed.
+3. Once the durable result is accepted, stop heartbeats. If staging is incomplete, continue retrying
+   the same success request without renewing the cleared lease.
+4. Treat `accepted=true` as confirmation that both durable completion and metadata staging
+   succeeded.
 
 ## Cancellation and Lease Handling
 The worker should treat lease expiry and cancellation as first-class control signals.
@@ -242,7 +254,61 @@ The worker is responsible for ensuring:
 - artifact metadata matches the target file identity
 - every referenced stats or index object is committed before the success RPC
 - every stats descriptor identifies its target storage ID and the object size and SHA-256
+- the result descriptor's `artifact_references_sha256` is the canonical digest of its file-stats
+  and index-artifact descriptor sets
 - the result manifest size and SHA-256 match the uploaded payload
+
+`CommitLeasedFileGroupResult` can durably accept the result before all bounded pointer staging has
+finished. If the RPC outcome is uncertain or retryable, submit the exact same result ID, descriptor,
+and descriptor lists again. The service uses that exact retry to resume staging and writes a
+metadata-only prepared marker last; it does not re-read the worker objects.
+
+Compute `artifact_references_sha256` by feeding the following canonical bytes to SHA-256:
+
+1. Encode the file-stats group, then the index-artifact group.
+2. For each group, write its one-byte kind (`1` for file stats or `2` for index artifacts), followed
+   by its descriptor count as an unsigned 32-bit big-endian integer.
+3. Sort descriptors by target storage ID, payload URI, payload byte count, then lowercase payload
+   SHA-256 hex.
+4. For each descriptor, write the UTF-8 target storage ID and payload URI as a 32-bit big-endian
+   byte length followed by the bytes, write the payload byte count as a 64-bit big-endian integer,
+   then write the binary payload SHA-256 as a 32-bit big-endian byte length followed by the bytes.
+
+## File-Group Size Ceiling
+
+Snapshot planning currently limits each file group to 128 files by default. Configure the planning
+ceiling with:
+
+```properties
+floecat.reconciler.snapshot-plan.max-files-per-group=128
+```
+
+The planner clamps the configured value to at least one and partitions the immutable snapshot plan
+accordingly. The service validates each submitted result against that planned group, so an executor
+cannot add files beyond its lease. There is no separate absolute service-side maximum: increasing
+this setting increases the maximum descriptor count, pointer-staging work, request size, and
+resident metadata for one `CommitLeasedFileGroupResult` call. Keep the value bounded to the RPC
+deadline and message-size limits of the worker deployment.
+
+## Snapshot Finalizer Implications
+
+The snapshot finalizer still reads and SHA-verifies each file-group result payload and each
+referenced stats object to calculate snapshot-wide aggregates. That worker-side workload remains
+proportional to the snapshot's file count.
+
+The finalizer's `SnapshotCaptureManifest` must carry each durable file-group descriptor, including
+its `artifact_references_sha256`, but must not repeat the per-file stats or index descriptor lists.
+It carries only file-group descriptors, snapshot-wide aggregate descriptors, and counts.
+
+`SubmitLeasedSnapshotFinalizeResult` reads the manifest once and performs one metadata-pointer
+lookup per file group. It does not read file-group payloads or per-file objects. If any accepted
+file group has not written its digest-bound prepared marker, the service returns a retryable error.
+The finalizer must retry the exact same finalization result; it must not regenerate a different
+result ID or manifest for that retry.
+
+The digest field is required and has no legacy fallback. Existing in-flight or persisted
+file-group results without it must be drained or replanned before a finalizer using this contract
+can complete them.
 
 ## Minimal Architecture
 A practical Rust implementation usually has these pieces:

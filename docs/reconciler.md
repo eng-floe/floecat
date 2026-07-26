@@ -95,8 +95,9 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
   same reconcile job tree without metadata reconciliation. `METADATA_AND_CAPTURE` performs metadata
   reconciliation and capture within the same planner/executor job tree. Remote file-group workers
   submit file-target stats and staged index artifacts back through
-  `CommitLeasedFileGroupResult`, and the service protects those result objects before
-  `FINALIZE_SNAPSHOT_CAPTURE` writes any snapshot-wide aggregate stats.
+  `CommitLeasedFileGroupResult`, and the service protects those result objects and stages their
+  generation-scoped pointer mappings before `FINALIZE_SNAPSHOT_CAPTURE` writes any snapshot-wide
+  aggregate stats.
 - **Snapshot planning persistence**: the immutable snapshot plan is stored on the parent
   `PLAN_SNAPSHOT` job payload rather than in a separate plan repository. That payload includes the
   explicit file-group coverage metadata required by `FINALIZE_SNAPSHOT_CAPTURE`. Child
@@ -111,16 +112,34 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
   - Service-side result submission persists only file-target stats from file-group workers;
     aggregate table/column outputs are rejected from file-group completion and recomputed once at
     snapshot finalization time.
-  - `CommitLeasedFileGroupResult` requires `result_id`. It idempotently protects immutable
-    stats/artifact objects in batches without reading their payloads, then completes the file-group
-    job. Protection and completion are ordered, not one atomic storage transaction. Worker retries
-    safely replay the same result. Successful finalization clears protection metadata; abandoned
-    unpublished full-rescan generations are deleted after terminal failure or cancellation.
+  - `CommitLeasedFileGroupResult` requires `result_id` and a canonical
+    `artifact_references_sha256` over its stats and index descriptors. The service first durably
+    accepts that immutable result, then idempotently protects its worker-written objects and stages
+    bounded generation-scoped pointer batches without reading their payloads. A metadata-only
+    prepared marker is written last. An exact retry of an accepted result resumes any incomplete
+    staging.
+    `FINALIZE_SNAPSHOT_CAPTURE` requires the digest-bound prepared marker for every file group,
+    stages only snapshot-wide aggregate pointers, and activates the prepared stats and index
+    generations. It performs one small pointer lookup per file group and does not read result
+    payloads, read worker objects, or enumerate per-file pointers. Successful finalization clears
+    protection metadata; abandoned unpublished full-rescan generations are deleted after terminal
+    failure or cancellation.
+  - Snapshot planning limits each file group to 128 files by default. The ceiling is configurable
+    with `floecat.reconciler.snapshot-plan.max-files-per-group`; values are clamped to at least one.
+    The service enforces membership and counts against the resulting immutable planned group but
+    does not impose a separate absolute maximum. Raising the setting increases the descriptor
+    count, pointer-metadata work, request size, and resident metadata for one file-group commit.
+  - The finalizer still reads and verifies file-group payloads and worker-written stats objects to
+    calculate snapshot-wide aggregates. Only the duplicate service-side reads were removed.
+    Finalize submission can race with pointer staging and must retry the exact same result when a
+    prepared marker is not yet present.
   - Current snapshot reads surface `file_groups_total`, `file_groups_completed`,
     `file_groups_failed`, `files_total`, `files_completed`, and `files_failed`.
 - **Index artifacts**:
   - sidecars are parquet artifacts written by execution workers and registered through
     `IndexArtifactRecord`.
+  - Floecat stages only the protobuf wrapper pointer. An externally overridden `artifact_uri`
+    inside that wrapper is never copied, moved, or treated as Floecat-owned cleanup state.
   - service-side lookup/list/read is exposed by `TableIndexService`.
 - **Connector security boundary**: all upstream I/O remains inside `FloecatConnector`.
   `ScanBundleService` stays query-plane only; reconcile snapshot planning uses connector-native

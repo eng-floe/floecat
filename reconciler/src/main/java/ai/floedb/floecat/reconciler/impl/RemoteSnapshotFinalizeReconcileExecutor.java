@@ -19,6 +19,7 @@ package ai.floedb.floecat.reconciler.impl;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -351,6 +352,12 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     if (descriptor.fileStatsRecordCount() != payload.getFileStatsCount()
         || descriptor.indexArtifactCount() != payload.getIndexArtifactsCount()) {
       throw new IllegalArgumentException("snapshot file-group result payload count mismatch");
+    }
+    String artifactReferencesSha256 =
+        ArtifactReferenceDigest.sha256(payload.getFileStatsList(), payload.getIndexArtifactsList());
+    if (!artifactReferencesSha256.equals(descriptor.artifactReferencesSha256())) {
+      throw new IllegalArgumentException(
+          "snapshot file-group artifact references do not match the durable result descriptor");
     }
     Set<String> successfulFiles = new HashSet<>();
     for (var fileResult : payload.getFileResultsList()) {

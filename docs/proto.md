@@ -96,11 +96,20 @@ engine release.
   `table_id` and one `snapshot_id`. Multiple snapshots must be written through separate client
   streams.
 - **Leased file-group result commit** – `CommitLeasedFileGroupResult.Success` and `.Failure` both
-  require `result_id`. Success carries immutable stats/artifact pointers. The control plane first
-  protects the referenced objects without reading them, then completes the child job. These writes
-  are ordered and idempotent rather than one atomic storage transaction, so a failed attempt may
-  leave harmless protection metadata. Successful finalization clears protections; failed or
-  cancelled full rescans delete the unpublished generation. Replaying the same result is safe.
+  require `result_id`. Success carries immutable stats/artifact pointers and an
+  `artifact_references_sha256` binding those pointer mappings to the durable descriptor. The
+  control plane first accepts the immutable result and completes the child job, then stages
+  generation-scoped mappings without reading their objects and writes a prepared marker last.
+  These writes are ordered and idempotent rather than one atomic storage transaction. A timeout,
+  retryable error, or uncertain outcome requires an exact replay of the same success request, even
+  when the child job is already terminal. Snapshot finalization carries only group descriptors,
+  aggregate pointers, and counts; it requires every prepared marker and activates the generation
+  without repeating per-file pointers. Successful finalization clears protections; failed or
+  cancelled full rescans delete the unpublished generation.
+- **File-group planning ceiling** – snapshot planning uses at most 128 files per group by default.
+  `floecat.reconciler.snapshot-plan.max-files-per-group` configures that ceiling and is clamped to
+  at least one. The service validates commits against the immutable planned group but does not
+  impose a separate absolute maximum.
 - **Executor leasing filters** – `LeaseReconcileJobRequest` accepts execution class, lane, job kind,
   `executor_id`, and repeated `executor_ids` selectors so a worker fleet can advertise both its
   concrete worker identity and the executor implementations it is willing to run.

@@ -371,6 +371,8 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
         0,
         "",
         0,
+        ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest.sha256(
+            java.util.List.of(), java.util.List.of()),
         1L);
   }
 }

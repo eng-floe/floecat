@@ -182,6 +182,44 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void listHonorsRecordLimitAndCanResumeExactlyAfterAnyConsumedRecord() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 304L;
+    for (int i = 1; i <= 3; i++) {
+      repository.putTargetStats(
+          TargetStatsRecords.fileRecord(
+              TABLE_ID,
+              snapshotId,
+              FileTargetStats.newBuilder()
+                  .setFilePath("s3://bucket/path/file-" + i + ".parquet")
+                  .build()));
+    }
+
+    StatsStore.StatsStorePage first =
+        repository.listTargetStats(TABLE_ID, snapshotId, Optional.of(StatsTargetType.FILE), 2, "");
+    assertThat(first.records()).hasSize(2);
+    assertThat(first.continuationTokens()).hasSize(2);
+
+    StatsStore.StatsStorePage resumed =
+        repository.listTargetStats(
+            TABLE_ID,
+            snapshotId,
+            Optional.of(StatsTargetType.FILE),
+            2,
+            first.continuationTokenAfter(0));
+
+    assertThat(resumed.records()).hasSize(2);
+    assertThat(resumed.records().get(0)).isEqualTo(first.records().get(1));
+    assertThat(
+            List.of(
+                first.records().get(0).getFile().getFilePath(),
+                resumed.records().get(0).getFile().getFilePath(),
+                resumed.records().get(1).getFile().getFilePath()))
+        .doesNotHaveDuplicates();
+  }
+
+  @Test
   void putTargetStatsBatchWritesMultipleTargets() {
     StatsRepository repository =
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -2242,13 +2280,107 @@ class StatsRepositoryTargetStorageTest {
     repository.registerPrewrittenStatsReferencesInGeneration(
         TABLE_ID, snapshotId, generationId, references);
 
-    assertThat(batchCalls).hasValue(3);
+    assertThat(batchCalls).hasValue(6);
     assertThat(
             pointerDelegate.countByPrefix(
                 Keys.snapshotTargetStatsGenerationDirectoryPointer(
                     TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)))
         .isEqualTo(205);
     assertThat(blobStore.list(blobPrefix, 10, "").keys()).isEmpty();
+  }
+
+  @Test
+  void preparedStatsPublicationDoesNotEnumerateOrReadStagedFileObjects() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    AtomicInteger blobGets = new AtomicInteger();
+    AtomicInteger blobPuts = new AtomicInteger();
+    BlobStore blobStore =
+        new DelegatingBlobStore(new InMemoryBlobStore()) {
+          @Override
+          public byte[] get(String uri) {
+            blobGets.incrementAndGet();
+            return super.get(uri);
+          }
+
+          @Override
+          public void put(String uri, byte[] bytes, String contentType) {
+            blobPuts.incrementAndGet();
+            super.put(uri, bytes, contentType);
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 7151L;
+    String generationId = "full-rescan-prepared";
+    List<StatsStore.PrewrittenTargetStatsReference> fileReferences = new ArrayList<>();
+    for (int index = 1; index <= 205; index++) {
+      fileReferences.add(
+          prewrittenReference(
+              snapshotId, generationId, "file:s3://bucket/file-" + index, "file-" + index));
+    }
+    StatsStore.PrewrittenTargetStatsReference finalReference =
+        prewrittenReference(snapshotId, generationId, "column:1", "final-column");
+    repository.registerPrewrittenStatsReferencesInGeneration(
+        TABLE_ID, snapshotId, generationId, fileReferences);
+
+    for (StatsStore.PrewrittenTargetStatsReference reference : fileReferences) {
+      Pointer latest =
+          pointerStore
+              .get(
+                  Keys.targetStatsLatestSnapshotPointer(
+                      TABLE_ID.getAccountId(), TABLE_ID.getId(), reference.targetStorageId()))
+              .orElseThrow();
+      assertThat(latest.getBlobUri()).isEqualTo(Long.toString(snapshotId));
+    }
+
+    repository.publishPreparedStatsGeneration(
+        TABLE_ID, snapshotId, generationId, List.of(finalReference));
+
+    assertThat(blobGets).hasValue(0);
+    assertThat(blobPuts)
+        .as("publication retains only the existing single active-generation manifest write")
+        .hasValue(1);
+    assertThat(
+            pointerStore.countByPrefix(
+                Keys.snapshotTargetStatsGenerationPrefix(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)))
+        .isEqualTo(206);
+  }
+
+  @Test
+  void preparedFileGroupMarkerIsMetadataOnlyAndExact() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    AtomicInteger blobGets = new AtomicInteger();
+    AtomicInteger blobPuts = new AtomicInteger();
+    BlobStore blobStore =
+        new DelegatingBlobStore(new InMemoryBlobStore()) {
+          @Override
+          public byte[] get(String uri) {
+            blobGets.incrementAndGet();
+            return super.get(uri);
+          }
+
+          @Override
+          public void put(String uri, byte[] bytes, String contentType) {
+            blobPuts.incrementAndGet();
+            super.put(uri, bytes, contentType);
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    String digest = "a".repeat(64);
+
+    repository.markPreparedFileGroup(
+        TABLE_ID, 7152L, "full-rescan-prepared", "file-group-1", "lease-1", digest);
+
+    assertThat(
+            repository.isPreparedFileGroup(
+                TABLE_ID, 7152L, "full-rescan-prepared", "file-group-1", "lease-1", digest))
+        .isTrue();
+    assertThat(
+            repository.isPreparedFileGroup(
+                TABLE_ID, 7152L, "full-rescan-prepared", "file-group-1", "lease-2", digest))
+        .isFalse();
+    assertThat(blobGets).hasValue(0);
+    assertThat(blobPuts).hasValue(0);
   }
 
   @Test

@@ -297,6 +297,46 @@ public interface StatsStore {
   }
 
   /**
+   * Publishes a generation whose bounded worker references were registered before finalization.
+   *
+   * <p>Only {@code finalReferences}, such as aggregate records produced by the finalizer, are
+   * registered by this call. Implementations must activate the already-prepared generation without
+   * enumerating or reading its worker-written objects.
+   */
+  default void publishPreparedStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<PrewrittenTargetStatsReference> finalReferences) {
+    throw new UnsupportedOperationException("prepared stats generation publish is not supported");
+  }
+
+  /**
+   * Records that one accepted file-group result finished staging all of its bounded pointer
+   * mappings. This marker contains metadata only and is written after stats and index mappings.
+   */
+  default void markPreparedFileGroup(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      String fileGroupJobId,
+      String leaseEpoch,
+      String artifactReferencesSha256) {
+    throw new UnsupportedOperationException("prepared file-group markers are not supported");
+  }
+
+  /** Verifies an accepted file group's metadata-only staging completion marker. */
+  default boolean isPreparedFileGroup(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      String fileGroupJobId,
+      String leaseEpoch,
+      String artifactReferencesSha256) {
+    return false;
+  }
+
+  /**
    * Protects immutable worker-written stats objects while their generation is still unpublished.
    *
    * <p>The protection is scoped to one fenced worker result and is not visible to stats readers.
@@ -403,12 +443,31 @@ public interface StatsStore {
    * Immutable page container for {@link #listTargetStats}.
    *
    * <p>Records are defensively copied; {@code nextPageToken} is normalized to empty-string when
-   * null.
+   * null. Implementations that may serve the gRPC list endpoint provide one continuation token per
+   * record so response byte-bounding can resume after the last emitted record without skipping over
+   * fetched records.
    */
-  record StatsStorePage(List<TargetStatsRecord> records, String nextPageToken) {
+  record StatsStorePage(
+      List<TargetStatsRecord> records, String nextPageToken, List<String> continuationTokens) {
+    public StatsStorePage(List<TargetStatsRecord> records, String nextPageToken) {
+      this(records, nextPageToken, List.of());
+    }
+
     public StatsStorePage {
       records = records == null ? List.of() : List.copyOf(records);
       nextPageToken = nextPageToken == null ? "" : nextPageToken;
+      continuationTokens = continuationTokens == null ? List.of() : List.copyOf(continuationTokens);
+      if (!continuationTokens.isEmpty() && continuationTokens.size() != records.size()) {
+        throw new IllegalArgumentException(
+            "continuationTokens must be empty or match the record count");
+      }
+    }
+
+    public String continuationTokenAfter(int recordIndex) {
+      if (continuationTokens.isEmpty()) {
+        throw new IllegalStateException("store did not provide per-record continuation tokens");
+      }
+      return continuationTokens.get(recordIndex);
     }
   }
 }

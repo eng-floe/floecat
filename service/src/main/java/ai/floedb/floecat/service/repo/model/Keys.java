@@ -696,6 +696,13 @@ public final class Keys {
         + "publication-intent";
   }
 
+  public static String snapshotTargetStatsGenerationPreparedFileGroupPointer(
+      String accountId, String tableId, long snapshotId, String generationId, String jobId) {
+    return snapshotTargetStatsGenerationPointerPrefix(accountId, tableId, snapshotId, generationId)
+        + "prepared-file-groups/"
+        + encode(req("job_id", jobId));
+  }
+
   public static String snapshotTargetColumnStatsGenerationPrefix(
       String accountId,
       String tableId,
@@ -775,12 +782,6 @@ public final class Keys {
         reqNonNegative("snapshot_id", snapshotId));
   }
 
-  public static String snapshotIndexArtifactPointer(
-      String accountId, String tableId, long snapshotId, String targetId) {
-    String target = req("target_id", targetId);
-    return snapshotIndexArtifactDirectoryPointer(accountId, tableId, snapshotId) + encode(target);
-  }
-
   public static String snapshotIndexArtifactBlobUri(
       String accountId, String tableId, String targetId, String sha256) {
     String tid = req("account_id", accountId);
@@ -792,9 +793,22 @@ public final class Keys {
         encode(tid), encode(tbid), encode(target), encode(sha));
   }
 
-  public static String snapshotIndexArtifactsPrefix(
+  public static String snapshotIndexArtifactActiveGenerationPointer(
       String accountId, String tableId, long snapshotId) {
-    return snapshotIndexArtifactDirectoryPointer(accountId, tableId, snapshotId);
+    return snapshotIndexArtifactDirectoryPointer(accountId, tableId, snapshotId)
+        + "active-generation";
+  }
+
+  public static String snapshotIndexArtifactGenerationPrefix(
+      String accountId, String tableId, long snapshotId, String generationId) {
+    return snapshotTargetStatsGenerationPointerPrefix(accountId, tableId, snapshotId, generationId)
+        + "index-artifacts/";
+  }
+
+  public static String snapshotIndexArtifactGenerationPointer(
+      String accountId, String tableId, long snapshotId, String generationId, String targetId) {
+    return snapshotIndexArtifactGenerationPrefix(accountId, tableId, snapshotId, generationId)
+        + encode(req("target_id", targetId));
   }
 
   public static String snapshotIndexSidecarBlobUri(
