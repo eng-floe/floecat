@@ -104,7 +104,8 @@ Emitted by `GetUserObjects`. This is the main planner metadata lookup summary fo
 | `pin_ms` | Total pinning time as a convenience field. |
 | `relation_build_ms` | Time building returned relation metadata. |
 | `decoration_ms` | Total decoration time. |
-| `stats_lookup_ms` | Time spent loading stats/decorator inputs. |
+| `stats_lookup_ms` | Time spent loading stats/decorator inputs (per-relation reads during build). |
+| `stats_warm_ms` | Time in the chunk's one-shot batch stats warm pass, kept separate from `stats_lookup_ms` so the warm fetch is not double-counted against the per-relation cache-hit reads it enables. |
 | `decorate_relation_ms` / `decorate_view_ms` | Relation/view decoration time. |
 | `decorate_columns_ms` | Total column decoration time. |
 | `decorate_column_invoke_ms` | Time invoking column decorators. |
