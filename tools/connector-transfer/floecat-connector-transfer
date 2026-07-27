@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+JAR="$SCRIPT_DIR/target/floecat-connector-transfer.jar"
+
+if [ ! -f "$JAR" ]; then
+  echo "Missing $JAR; build it with: mvn -pl tools/connector-transfer -am package" >&2
+  exit 1
+fi
+
+exec java -jar "$JAR" "$@"

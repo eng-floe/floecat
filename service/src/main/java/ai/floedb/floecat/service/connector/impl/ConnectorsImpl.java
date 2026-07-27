@@ -32,6 +32,8 @@ import ai.floedb.floecat.connector.rpc.CreateConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorResponse;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
+import ai.floedb.floecat.connector.rpc.ExportConnectorRequest;
+import ai.floedb.floecat.connector.rpc.ExportConnectorResponse;
 import ai.floedb.floecat.connector.rpc.GetConnectorRequest;
 import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
 import ai.floedb.floecat.connector.rpc.ListConnectorsRequest;
@@ -214,6 +216,58 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   return GetConnectorResponse.newBuilder()
                       .setConnector(maskConnector(connector))
                       .build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  @Override
+  public Uni<ExportConnectorResponse> exportConnector(ExportConnectorRequest request) {
+    var L = LogHelper.start(LOG, "ExportConnector");
+
+    return mapFailures(
+            run(
+                () -> {
+                  var principalContext = principalProvider.get();
+                  var correlationId = principalContext.getCorrelationId();
+                  var accountId = principalContext.getAccountId();
+
+                  authz.require(principalContext, "connector.export");
+                  var connectorId =
+                      scopedConnectorId(accountId, request.getConnectorId(), correlationId);
+
+                  for (int attempt = 0; attempt < 3; attempt++) {
+                    var before = connectorRepo.getById(connectorId);
+                    if (before.isEmpty()) {
+                      throw GrpcErrors.notFound(
+                          correlationId,
+                          GeneratedErrorMessages.MessageKey.CONNECTOR,
+                          Map.of("id", connectorId.getId()));
+                    }
+
+                    Optional<AuthCredentials> firstCredentials = Optional.empty();
+                    Optional<AuthCredentials> secondCredentials = Optional.empty();
+                    if (request.getIncludeCredentials()) {
+                      firstCredentials = credentialResolver.resolve(accountId, connectorId.getId());
+                      secondCredentials =
+                          credentialResolver.resolve(accountId, connectorId.getId());
+                    }
+                    var after = connectorRepo.getById(connectorId);
+
+                    if (after.isPresent()
+                        && before.get().equals(after.get())
+                        && firstCredentials.equals(secondCredentials)) {
+                      var response =
+                          ExportConnectorResponse.newBuilder().setConnector(before.get());
+                      firstCredentials.ifPresent(response::setCredentials);
+                      return response.build();
+                    }
+                  }
+
+                  throw GrpcErrors.aborted(correlationId, Map.of("id", connectorId.getId()));
                 }),
             correlationId())
         .onFailure()

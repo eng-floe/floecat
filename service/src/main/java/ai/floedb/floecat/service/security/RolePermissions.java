@@ -47,6 +47,7 @@ public final class RolePermissions {
           "view.read",
           "view.write",
           "connector.manage",
+          "connector.export",
           "system-objects.read",
           "account.delete");
   private static final List<String> PLATFORM_PERMS =
