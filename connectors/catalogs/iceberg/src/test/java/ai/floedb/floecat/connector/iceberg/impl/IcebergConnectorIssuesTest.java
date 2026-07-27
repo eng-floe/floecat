@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.FileContent;
@@ -96,6 +97,40 @@ class IcebergConnectorIssuesTest {
             resolved,
             Set.of("old_col", "shared_col"),
             FloecatConnector.ColumnSelectorPolicy.defaults()));
+  }
+
+  @Test
+  void rejectsSnapshotWhoseDeclaredSchemaIsMissing() {
+    Schema currentSchema =
+        new Schema(20, List.of(Types.NestedField.optional(3, "new_col", Types.IntegerType.get())));
+    Table table =
+        (Table)
+            Proxy.newProxyInstance(
+                Table.class.getClassLoader(),
+                new Class<?>[] {Table.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schema" -> currentSchema;
+                      case "schemas" -> Map.of(20, currentSchema);
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+    Snapshot snapshot =
+        (Snapshot)
+            Proxy.newProxyInstance(
+                Snapshot.class.getClassLoader(),
+                new Class<?>[] {Snapshot.class},
+                (proxy, method, args) ->
+                    switch (method.getName()) {
+                      case "schemaId" -> 10;
+                      case "snapshotId" -> 123L;
+                      default -> throw new UnsupportedOperationException(method.getName());
+                    });
+
+    IllegalStateException failure =
+        assertThrows(
+            IllegalStateException.class, () -> IcebergConnector.schemaForSnapshot(table, snapshot));
+
+    assertEquals("Snapshot 123 references missing schema ID 10", failure.getMessage());
   }
 
   @Test

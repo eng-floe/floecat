@@ -1177,12 +1177,20 @@ public abstract class IcebergConnector implements FloecatConnector {
     if (table == null) {
       throw new IllegalArgumentException("table is required");
     }
-    Integer snapshotSchemaId = snapshot == null ? null : snapshot.schemaId();
-    int schemaId =
-        snapshotSchemaId != null && snapshotSchemaId >= 0
-            ? snapshotSchemaId
-            : table.schema().schemaId();
-    return Optional.ofNullable(table.schemas().get(schemaId)).orElse(table.schema());
+    if (snapshot == null) {
+      throw new IllegalArgumentException("snapshot is required");
+    }
+    Integer schemaId = snapshot.schemaId();
+    if (schemaId == null || schemaId < 0) {
+      throw new IllegalStateException(
+          "Snapshot " + snapshot.snapshotId() + " does not declare a valid schema ID");
+    }
+    Schema schema = table.schemas().get(schemaId);
+    if (schema == null) {
+      throw new IllegalStateException(
+          "Snapshot " + snapshot.snapshotId() + " references missing schema ID " + schemaId);
+    }
+    return schema;
   }
 
   static Set<Integer> resolveIncludedFieldIds(
