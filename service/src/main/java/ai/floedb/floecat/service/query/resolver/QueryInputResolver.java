@@ -440,14 +440,17 @@ public class QueryInputResolver {
       Map<NameRef, Optional<ResourceId>> resolvedNames) {
     AggregatingPhaseDiagnostics taskDiagnostics = new AggregatingPhaseDiagnostics();
     ResolutionState taskState = state.withDiagnostics(taskDiagnostics);
-    List<InputPlan> plans =
-        BoundedFanout.mapOrdered(
-            inputs,
-            maxParallelInputResolutions,
-            blockingExecutor,
-            in -> planInput(taskState, in, resolvedNames));
-    taskDiagnostics.flushInto(state.diagnostics);
-    return plans;
+    try {
+      return BoundedFanout.mapOrdered(
+          inputs,
+          maxParallelInputResolutions,
+          blockingExecutor,
+          in -> planInput(taskState, in, resolvedNames));
+    } finally {
+      // A failed or cancelled sibling can still leave completed tasks' pin work in this
+      // accumulator. Preserve those counters for the request's failure telemetry too.
+      taskDiagnostics.flushInto(state.diagnostics);
+    }
   }
 
   /**
