@@ -17,6 +17,7 @@
 package ai.floedb.floecat.storage.memory;
 
 import ai.floedb.floecat.storage.kv.AttrValue;
+import ai.floedb.floecat.storage.kv.AttrWriteRules;
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.MetadataAttrUpdates;
 import io.smallrye.mutiny.Uni;
@@ -39,6 +40,9 @@ public final class InMemoryKvStore implements KvStore {
 
   @Override
   public Uni<Boolean> putCas(Record record, long expectedVersion) {
+    // Synchronous, like the DynamoDB store's check in recordToAv: the fake has no wire types of its
+    // own, so matching what the real store refuses is the only thing that keeps a test honest.
+    AttrWriteRules.checkExpiryIsString(record.attrs());
     return Uni.createFrom()
         .item(
             records.compute(
@@ -235,6 +239,7 @@ public final class InMemoryKvStore implements KvStore {
     synchronized (this) {
       for (TxnOp op : ops) {
         if (op instanceof TxnPut put) {
+          AttrWriteRules.checkExpiryIsString(put.record().attrs());
           Record existing = records.get(put.record().key());
           if (put.expectedVersion() == 0L) {
             if (existing != null) {

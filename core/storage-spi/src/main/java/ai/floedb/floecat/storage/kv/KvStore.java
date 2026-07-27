@@ -84,6 +84,7 @@ public interface KvStore {
    * <p>On success, the backend should store {@code record.version} as the new ver attribute.
    *
    * @return true if write succeeded; false if the condition failed
+   * @throws IllegalArgumentException if the record's attrs break {@link AttrWriteRules}
    */
   Uni<Boolean> putCas(Record record, long expectedVersion);
 
@@ -120,12 +121,13 @@ public interface KvStore {
    * must target records whose consumers treat {@code Record.version} as authoritative.
    *
    * @param sets attribute values to replace; must not name a {@link KvAttributes#STRUCTURAL_ATTRS}
-   *     attribute
+   *     attribute, nor {@link KvAttributes#ATTR_EXPIRES_AT}, which only a whole-record write may
+   *     touch (see {@link AttrWriteRules#checkExpiryIsString})
    * @param increments deltas to add to numeric attributes; must not overlap {@code sets}
    * @return the new version if the record existed and was updated; empty if the record was absent
    *     or was refused for carrying a value
-   * @throws IllegalArgumentException if both maps are empty, or an attribute name is reserved,
-   *     blank, or present in both maps
+   * @throws IllegalArgumentException if both maps are empty, or an attribute name is reserved, the
+   *     expiry stamp, blank, or present in both maps
    */
   Uni<Optional<Long>> updateMetadataAttrsIfExists(
       Key key, Map<String, AttrValue> sets, Map<String, Long> increments);

@@ -86,6 +86,28 @@ public class MetadataAttrUpdatesTest {
   }
 
   @Test
+  void rejects_expiry_stamp_in_sets_in_either_form() {
+    // The string form is legal in a whole-record write and still refused here: this primitive
+    // updates attrs by themselves, and an expiry belongs to the record it expires.
+    for (AttrValue stamp : new AttrValue[] {AttrValue.of("2"), AttrValue.of(2L)}) {
+      assertMessageContains(
+          KvAttributes.ATTR_EXPIRES_AT,
+          () ->
+              MetadataAttrUpdates.validate(
+                  KEY, Map.of(KvAttributes.ATTR_EXPIRES_AT, stamp), Map.of()));
+    }
+  }
+
+  @Test
+  void rejects_expiry_stamp_in_increments() {
+    // An ADD would write the stamp as a native number, the one form old replicas drop on read.
+    assertMessageContains(
+        KvAttributes.ATTR_EXPIRES_AT,
+        () ->
+            MetadataAttrUpdates.validate(KEY, Map.of(), Map.of(KvAttributes.ATTR_EXPIRES_AT, 1L)));
+  }
+
+  @Test
   void rejects_same_attr_in_both_maps() {
     assertMessageContains(
         "ambiguous",

@@ -57,6 +57,18 @@ public final class MetadataAttrUpdates {
         throw new IllegalArgumentException(
             "attr name is reserved by the record structure: " + name + " (in " + what + ")");
       }
+      // Rejected outright here, where whole-record writes accept the string form (see
+      // AttrWriteRules#checkExpiryIsString). An increment can only produce the numeric form this
+      // primitive must not write, and no caller needs to bump an expiry without rewriting the
+      // record that carries it — so a flat rule beats a per-form one.
+      if (KvAttributes.ATTR_EXPIRES_AT.equals(name)) {
+        throw new IllegalArgumentException(
+            "attr must not be updated by itself, only by a whole-record write: "
+                + name
+                + " (in "
+                + what
+                + ")");
+      }
       if (e.getValue() == null) {
         throw new IllegalArgumentException(what + " contains a null value for attr " + name);
       }

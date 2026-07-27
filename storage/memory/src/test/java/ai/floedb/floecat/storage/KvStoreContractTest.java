@@ -138,6 +138,45 @@ class KvStoreContractTest {
   }
 
   @Test
+  void putCas_rejects_numeric_expiry_stamp() {
+    // Refused by the fake exactly as DynamoDB's writer refuses it, so an entity test cannot pass
+    // here on a record the real store would reject. Rule and reason: AttrWriteRules.
+    KvStore.Key k = key("pk1", "ttl");
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            kv.putCas(
+                attrsRecord(k, 1L, Map.of(KvAttributes.ATTR_EXPIRES_AT, AttrValue.of(2L))), 0L));
+    assertTrue(kv.get(k).await().indefinitely().isEmpty());
+  }
+
+  @Test
+  void putCas_accepts_string_expiry_stamp() {
+    KvStore.Key k = key("pk1", "ttl-ok");
+    assertTrue(
+        kv.putCas(attrsRecord(k, 1L, Map.of(KvAttributes.ATTR_EXPIRES_AT, AttrValue.of("2"))), 0L)
+            .await()
+            .indefinitely());
+    assertEquals(
+        AttrValue.of("2"),
+        kv.get(k).await().indefinitely().orElseThrow().attrs().get(KvAttributes.ATTR_EXPIRES_AT));
+  }
+
+  @Test
+  void txnWriteCas_rejects_numeric_expiry_stamp_before_applying_anything() {
+    var ops =
+        List.<KvStore.TxnOp>of(
+            new KvStore.TxnPut(record("pk1", "sk1", 1L, "v1"), 0L),
+            new KvStore.TxnPut(
+                attrsRecord(
+                    key("pk1", "ttl"), 1L, Map.of(KvAttributes.ATTR_EXPIRES_AT, AttrValue.of(2L))),
+                0L));
+
+    assertThrows(IllegalArgumentException.class, () -> kv.txnWriteCas(ops).await().indefinitely());
+    assertTrue(kv.get(key("pk1", "sk1")).await().indefinitely().isEmpty());
+  }
+
+  @Test
   void updateMetadataAttrsIfExists_sets_and_increments_and_bumps_version() {
     KvStore.Key k = key("pk1", "meta");
     assertTrue(

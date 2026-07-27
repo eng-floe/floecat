@@ -39,6 +39,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
 import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
+import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 
 @QuarkusTest
@@ -149,6 +150,61 @@ public class KvStoreContractTest {
     assertFalse(kv.txnWriteCas(ops).await().indefinitely());
     assertTrue(kv.get(key("pk1", "sk1")).await().indefinitely().isPresent());
     assertTrue(kv.get(key("pk1", "sk2")).await().indefinitely().isEmpty());
+  }
+
+  @Test
+  void putCas_rejects_numeric_expiry_stamp() {
+    // Written as N, the stamp is invisible to a replica that predates typed attributes, whose next
+    // whole-record write then drops the expiry for good. Rule and reason: AttrWriteRules.
+    KvStore.Key k = key("pk1", "ttl");
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            kv.putCas(
+                attrsRecord(k, 1L, Map.of(KvAttributes.ATTR_EXPIRES_AT, AttrValue.of(2L))), 0L));
+    assertTrue(kv.get(k).await().indefinitely().isEmpty());
+  }
+
+  @Test
+  void putCas_accepts_string_expiry_stamp_and_stores_it_as_S() {
+    KvStore.Key k = key("pk1", "ttl-ok");
+    assertTrue(
+        kv.putCas(attrsRecord(k, 1L, Map.of(KvAttributes.ATTR_EXPIRES_AT, AttrValue.of("2"))), 0L)
+            .await()
+            .indefinitely());
+
+    Map<String, AttributeValue> raw = getRawItem("pk1", "ttl-ok");
+    assertEquals("2", raw.get(KvAttributes.ATTR_EXPIRES_AT).s());
+    assertNull(raw.get(KvAttributes.ATTR_EXPIRES_AT).n());
+  }
+
+  @Test
+  void txnWriteCas_rejects_numeric_expiry_stamp_before_issuing_the_transaction() {
+    var ops =
+        List.<KvStore.TxnOp>of(
+            new KvStore.TxnPut(record("pk1", "sk1", 1L, "v1"), 0L),
+            new KvStore.TxnPut(
+                attrsRecord(
+                    key("pk1", "ttl"), 1L, Map.of(KvAttributes.ATTR_EXPIRES_AT, AttrValue.of(2L))),
+                0L));
+
+    assertThrows(IllegalArgumentException.class, () -> kv.txnWriteCas(ops).await().indefinitely());
+    assertTrue(kv.get(key("pk1", "sk1")).await().indefinitely().isEmpty());
+  }
+
+  @Test
+  void numeric_expiry_stamp_written_out_of_band_stays_readable() {
+    // Writes are strict, reads are not: a foreign writer's N-typed stamp must still decode, which
+    // is
+    // the whole reason AttrValue.asLong accepts both forms.
+    Map<String, AttributeValue> item = rawItem("pk1", "foreign-ttl");
+    item.put(KvAttributes.ATTR_VERSION, AttributeValue.fromN("1"));
+    item.put(KvAttributes.ATTR_EXPIRES_AT, AttributeValue.fromN("4321"));
+    putRawItem(item);
+
+    KvStore.Record got = kv.get(key("pk1", "foreign-ttl")).await().indefinitely().orElseThrow();
+    assertEquals(AttrValue.of(4321L), got.attrs().get(KvAttributes.ATTR_EXPIRES_AT));
+    assertEquals(4321L, got.attrs().get(KvAttributes.ATTR_EXPIRES_AT).asLong());
   }
 
   @Test
@@ -503,6 +559,24 @@ public class KvStoreContractTest {
 
   private void putRawItem(Map<String, AttributeValue> item) {
     ddb.putItem(PutItemRequest.builder().tableName(kvTable).item(item).build()).join();
+  }
+
+  /**
+   * The stored item with its native DynamoDB types, for assertions this store's reader would hide.
+   */
+  private Map<String, AttributeValue> getRawItem(String pk, String sk) {
+    return ddb.getItem(
+            GetItemRequest.builder()
+                .tableName(kvTable)
+                .key(
+                    Map.of(
+                        KvAttributes.ATTR_PARTITION_KEY,
+                        AttributeValue.fromS(pk),
+                        KvAttributes.ATTR_SORT_KEY,
+                        AttributeValue.fromS(sk)))
+                .build())
+        .join()
+        .item();
   }
 
   private static Map<String, AttributeValue> rawItem(String pk, String sk) {

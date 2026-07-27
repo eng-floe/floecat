@@ -16,6 +16,7 @@
 package ai.floedb.floecat.storage.kv.dynamodb;
 
 import ai.floedb.floecat.storage.kv.AttrValue;
+import ai.floedb.floecat.storage.kv.AttrWriteRules;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.MetadataAttrUpdates;
@@ -157,6 +158,9 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
   }
 
   private Map<String, AttributeValue> recordToAv(Record r) {
+    // The one place every write of a whole record passes through — putCas and txnWriteCas both
+    // serialize here, synchronously, before their request is built.
+    AttrWriteRules.checkExpiryIsString(r.attrs());
     var item = new HashMap<String, AttributeValue>();
     // Attrs first, structure second: Record's constructor already rejects structural attr names,
     // so this ordering is belt-and-braces — should that check ever gain a hole, the structural
