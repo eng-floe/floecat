@@ -21,6 +21,7 @@ import ai.floedb.floecat.storage.spi.PointerStore;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Singleton;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
@@ -36,6 +37,18 @@ public class InMemoryPointerStore implements PointerStore {
   @Override
   public Optional<Pointer> get(String key) {
     return Optional.ofNullable(map.get(key));
+  }
+
+  @Override
+  public Map<String, Pointer> getBatch(List<String> keys) {
+    Map<String, Pointer> out = new LinkedHashMap<>();
+    for (String key : keys == null ? List.<String>of() : keys) {
+      Pointer pointer = map.get(key);
+      if (pointer != null) {
+        out.put(key, pointer);
+      }
+    }
+    return Map.copyOf(out);
   }
 
   @Override

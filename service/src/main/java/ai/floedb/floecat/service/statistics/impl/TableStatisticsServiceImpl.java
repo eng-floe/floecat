@@ -492,7 +492,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
       }
       case AS_OF ->
           snapshots
-              .getAsOf(tableId, ref.getAsOf())
+              .getQueryableAsOf(tableId, ref.getAsOf())
               .map(Snapshot::getSnapshotId)
               .orElseThrow(
                   () ->

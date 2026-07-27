@@ -17,6 +17,8 @@
 package ai.floedb.floecat.service.repo.impl;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
@@ -30,6 +32,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.util.TestSupport;
+import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -449,6 +452,49 @@ class SnapshotRepositoryTest {
     assertTrue(snapshotRepo.getCurrentSnapshotPointer(tableRid).isEmpty());
     assertEquals(
         1L, snapshotRepo.latestRegisteredSnapshotPointer(tableRid).orElseThrow().getSnapshotId());
+  }
+
+  @Test
+  void queryableAsOfSkipsANewerUnfinalizedSnapshot() {
+    var tableRid = newSeededTable();
+    String account = tableRid.getAccountId();
+    long now = clock.millis();
+    long olderTime = now - 20_000;
+    long newerTime = now - 10_000;
+    seedSnapshot(snapshotRepo, account, tableRid, 1L, now, olderTime);
+    seedSnapshot(snapshotRepo, account, tableRid, 2L, now, newerTime);
+    seedRootWithCurrency(tableRid, 2L, newerTime);
+
+    var roots = new TableRootRepository(ptr, blobs);
+    var committer = new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(roots);
+    committer.commit(
+        tableRid,
+        ai.floedb.floecat.service.catalog.impl.TableRootMutations.setStatsGeneration(
+            roots,
+            tableRid,
+            1L,
+            ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
+                .setUri("/stats/generation/1")
+                .build(),
+            2L));
+
+    StatsStore statsStore = mock(StatsStore.class);
+    when(statsStore.tracksStatsGenerations()).thenReturn(true);
+    SnapshotRepository gated =
+        new SnapshotRepository(
+            ptr,
+            blobs,
+            tableRepo,
+            new CurrentSnapshotPointerRepository(ptr, blobs),
+            roots,
+            statsStore);
+
+    assertEquals(
+        1L,
+        gated
+            .getQueryableAsOf(tableRid, Timestamps.fromMillis(newerTime))
+            .orElseThrow()
+            .getSnapshotId());
   }
 
   @Test

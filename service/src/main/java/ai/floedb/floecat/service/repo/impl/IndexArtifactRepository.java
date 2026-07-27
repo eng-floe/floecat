@@ -23,6 +23,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -54,11 +55,18 @@ public class IndexArtifactRepository {
 
   private final PointerStore pointerStore;
   private final BlobStore blobStore;
+  private final ImmutableBlobCache blobCache;
 
   @Inject
-  public IndexArtifactRepository(PointerStore pointerStore, BlobStore blobStore) {
+  public IndexArtifactRepository(
+      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
     this.pointerStore = pointerStore;
     this.blobStore = blobStore;
+    this.blobCache = blobCache;
+  }
+
+  public IndexArtifactRepository(PointerStore pointerStore, BlobStore blobStore) {
+    this(pointerStore, blobStore, null);
   }
 
   public void putIndexArtifact(IndexArtifactRecord value) {
@@ -224,14 +232,10 @@ public class IndexArtifactRepository {
     if (manifestPointer == null || manifestPointer.getBlobUri().isBlank()) {
       return false;
     }
-    SnapshotCaptureManifest manifest;
-    try {
-      manifest = SnapshotCaptureManifest.parseFrom(blobStore.get(manifestPointer.getBlobUri()));
-    } catch (StorageNotFoundException e) {
+    SnapshotCaptureManifest manifest =
+        loadCaptureManifest(manifestPointer.getBlobUri()).orElse(null);
+    if (manifest == null) {
       return false;
-    } catch (InvalidProtocolBufferException e) {
-      throw new IllegalStateException(
-          "invalid snapshot capture manifest at " + manifestPointer.getBlobUri(), e);
     }
     if (manifest.getFormatVersion() != 1
         || !tableId.getAccountId().equals(manifest.getAccountId())
@@ -258,6 +262,25 @@ public class IndexArtifactRepository {
     return requestedSelectors == null
         || requestedSelectors.isEmpty()
         || capturedSelectors.containsAll(requestedSelectors);
+  }
+
+  private Optional<SnapshotCaptureManifest> loadCaptureManifest(String uri) {
+    return blobCache == null
+        ? loadCaptureManifestUncached(uri)
+        : blobCache.get(uri, this::loadCaptureManifestUncached);
+  }
+
+  private Optional<SnapshotCaptureManifest> loadCaptureManifestUncached(String uri) {
+    try {
+      byte[] bytes = blobStore.get(uri);
+      return bytes == null
+          ? Optional.empty()
+          : Optional.of(SnapshotCaptureManifest.parseFrom(bytes));
+    } catch (StorageNotFoundException e) {
+      return Optional.empty();
+    } catch (InvalidProtocolBufferException e) {
+      throw new IllegalStateException("invalid snapshot capture manifest at " + uri, e);
+    }
   }
 
   private void publishCaptureManifestPointer(

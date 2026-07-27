@@ -385,6 +385,30 @@ public final class SnapshotManifests {
   }
 
   /**
+   * The newest manifest entry at or before {@code asOfMs}, optionally requiring finalized stats.
+   * This is the shared AS_OF ordering and visibility rule for query pins and public artifact APIs.
+   */
+  public static Optional<SnapshotManifestEntry> entryAsOf(
+      TableRootRepository roots, BlobRef head, long asOfMs, boolean requireStatsGeneration) {
+    SnapshotManifestEntry[] best = {null};
+    forEachEntry(
+        roots,
+        head,
+        entry -> {
+          if (!entry.hasUpstreamCreatedAt()
+              || com.google.protobuf.util.Timestamps.toMillis(entry.getUpstreamCreatedAt())
+                  > asOfMs
+              || (requireStatsGeneration && !entry.hasStatsGenerationRef())) {
+            return;
+          }
+          if (best[0] == null || newer(entry, best[0])) {
+            best[0] = entry;
+          }
+        });
+    return Optional.ofNullable(best[0]);
+  }
+
+  /**
    * The advance rule's ordering, shared by every consumer (currency advance, AS_OF resolution,
    * legacy-currency import): newest {@code upstream_created_at} wins, snapshot id breaks ties; an
    * entry without a timestamp sorts oldest.

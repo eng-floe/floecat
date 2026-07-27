@@ -2503,7 +2503,7 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
-  void parentRefreshRecomputesFromCanonicalChildren() {
+  void parentRefreshRecomputesStaleWaitingStateBeforeAdvancingGeneration() {
     String tableJobId =
         store.enqueue(
             ACCOUNT_ID,
@@ -2549,9 +2549,29 @@ class DurableReconcileJobStoreTest {
                   current.plannedFiles = 1208L;
                   current.completedFileGroups = 85L;
                   current.completedFiles = 1208L;
+                  current.childrenFinalized = true;
                   current.projectionRequestedGeneration = 796L;
                   current.projectionAppliedGeneration = 794L;
                   current.updatedAtMs = 200L;
+                  return current;
+                }));
+    assertDoesNotThrow(
+        () ->
+            store.jobIndexStore.mutateByCanonicalPointerReturningRecord(
+                Keys.reconcileJobPointerById(ACCOUNT_ID, snapshotJobId),
+                current -> {
+                  current.state = "JS_SUCCEEDED";
+                  current.message = "Succeeded";
+                  current.snapshotsProcessed = 1L;
+                  current.statsProcessed = 1208L;
+                  current.indexesProcessed = 1208L;
+                  current.plannedFileGroups = 85L;
+                  current.plannedFiles = 1208L;
+                  current.completedFileGroups = 85L;
+                  current.completedFiles = 1208L;
+                  current.startedAtMs = 120L;
+                  current.finishedAtMs = 180L;
+                  current.updatedAtMs = 180L;
                   return current;
                 }));
 
@@ -2597,13 +2617,13 @@ class DurableReconcileJobStoreTest {
                 0L,
                 0L,
                 1L,
-                9999L,
-                9999L,
+                1208L,
+                1208L,
+                85L,
+                1208L,
+                85L,
                 0L,
-                0L,
-                0L,
-                0L,
-                0L,
+                1208L,
                 0L,
                 "",
                 true));
@@ -2614,10 +2634,157 @@ class DurableReconcileJobStoreTest {
     StoredReconcileJobProjection projection =
         projectionStore().load(ACCOUNT_ID, tableJobId).orElseThrow();
     assertTrue(projection.appliedGeneration() > 796L);
+    // The generation advance is only legitimate because the state was re-derived from the children.
+    // A counters-only patch used to advance it while republishing the stale JS_WAITING, which froze
+    // the projection forever: the applied generation then matched the requested one, so no later
+    // refresh or read ever recomputed the state again.
+    assertEquals("JS_SUCCEEDED", projection.state());
     assertEquals(86L, projection.tablesScanned());
     assertEquals(86L, projection.tablesChanged());
     assertEquals(1208L, projection.statsProcessed());
     assertEquals(1208L, projection.indexesProcessed());
+    // The recomputed state has to reach the public read path, not just the projection record:
+    // GetReconcileJob is what clients poll to completion.
+    assertEquals("JS_SUCCEEDED", store.get(ACCOUNT_ID, tableJobId).orElseThrow().state);
+  }
+
+  @Test
+  void rootRefreshRecomputesStaleWaitingStateWhenCanonicalCountersRunAhead() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "orders-id"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("src.ns", "orders", "orders-id", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    // Shape observed in CI: the root's canonical counters have caught up with the finished work
+    // (fileGroups 4/4, files 4/4) while its projection still carries the JS_WAITING state computed
+    // before the last child went terminal, and lagging counters. Because the counters differ the
+    // refresh used to take a counters-only patch, republish JS_WAITING, and mark generation 42
+    // applied - freezing the root as JS_WAITING for good.
+    assertDoesNotThrow(
+        () ->
+            store.jobIndexStore.mutateByCanonicalPointerReturningRecord(
+                Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId),
+                current -> {
+                  current.state = "JS_WAITING";
+                  current.message = "Waiting on child work";
+                  current.startedAtMs = 10L;
+                  current.tablesScanned = 1L;
+                  current.tablesChanged = 1L;
+                  current.snapshotsProcessed = 4L;
+                  current.statsProcessed = 4L;
+                  current.indexesProcessed = 4L;
+                  current.plannedFileGroups = 4L;
+                  current.plannedFiles = 4L;
+                  current.completedFileGroups = 4L;
+                  current.completedFiles = 4L;
+                  current.childrenFinalized = true;
+                  current.projectionRequestedGeneration = 42L;
+                  current.projectionAppliedGeneration = 39L;
+                  current.updatedAtMs = 40L;
+                  return current;
+                }));
+    assertDoesNotThrow(
+        () ->
+            store.jobIndexStore.mutateByCanonicalPointerReturningRecord(
+                Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId),
+                current -> {
+                  current.state = "JS_SUCCEEDED";
+                  current.message = "Succeeded";
+                  current.tablesScanned = 1L;
+                  current.tablesChanged = 1L;
+                  current.snapshotsProcessed = 4L;
+                  current.statsProcessed = 4L;
+                  current.indexesProcessed = 4L;
+                  current.plannedFileGroups = 4L;
+                  current.plannedFiles = 4L;
+                  current.completedFileGroups = 4L;
+                  current.completedFiles = 4L;
+                  current.startedAtMs = 20L;
+                  current.finishedAtMs = 30L;
+                  current.updatedAtMs = 30L;
+                  return current;
+                }));
+
+    projectionStore()
+        .upsert(
+            new StoredReconcileJobProjection(
+                ACCOUNT_ID,
+                connectorJobId,
+                39L,
+                "JS_WAITING",
+                "Waiting on child work",
+                10L,
+                0L,
+                1L,
+                1L,
+                0L,
+                0L,
+                0L,
+                3L,
+                3L,
+                3L,
+                4L,
+                4L,
+                3L,
+                0L,
+                3L,
+                0L,
+                "",
+                true));
+    projectionStore()
+        .upsert(
+            new StoredReconcileJobProjection(
+                ACCOUNT_ID,
+                tableJobId,
+                39L,
+                "JS_SUCCEEDED",
+                "Succeeded",
+                20L,
+                30L,
+                1L,
+                1L,
+                0L,
+                0L,
+                0L,
+                4L,
+                4L,
+                4L,
+                4L,
+                4L,
+                4L,
+                0L,
+                4L,
+                0L,
+                "",
+                true));
+
+    requestProjectionRefresh(connectorJobId);
+    runProjectionMaintenance(2);
+
+    StoredReconcileJobProjection projection =
+        projectionStore().load(ACCOUNT_ID, connectorJobId).orElseThrow();
+    assertEquals("JS_SUCCEEDED", projection.state());
+    assertTrue(projection.appliedGeneration() > 42L);
+    assertEquals(4L, projection.completedFileGroups());
+    assertEquals(4L, projection.completedFiles());
+    // The production symptom is GetReconcileJob polling forever, and that read prefers the
+    // canonical state over the projection, so recomputing the projection alone does not clear it.
+    assertEquals("JS_SUCCEEDED", store.get(ACCOUNT_ID, connectorJobId).orElseThrow().state);
   }
 
   @Test

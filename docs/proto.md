@@ -6,6 +6,17 @@ structures for resource identifiers, catalog services, query lifecycle metadata,
 helper schemas. Every other module depends on these contracts for serialization, validation, and
 compatibility.
 
+### Breaking remote-executor revision
+
+This release removes the chunked
+`ReconcileExecutorControl.SubmitLeasedFileGroupExecutionResult` RPC and replaces it with
+`CommitLeasedFileGroupResult`. The new RPC accepts immutable result, stats, and index-artifact
+descriptors written by the executor; it cannot decode or resume the old chunk/success flow.
+
+There is intentionally no compatibility shim. Remote executor and control-plane versions must be
+cut over together after existing leases are drained. Rolling or split deployments containing both
+protocol versions are unsupported.
+
 The contract files are organised by domain (`common/`, `catalog/`, `query/`, `execution/`,
 `connector/`, `account/`, `types/`, `statistics/`, `reconciler/`). Generated Java stubs live
 under the `ai.floedb.floecat.*.rpc` packages and are consumed by the Quarkus service, connectors,

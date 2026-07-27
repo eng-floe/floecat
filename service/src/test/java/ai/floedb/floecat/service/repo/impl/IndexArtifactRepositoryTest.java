@@ -34,11 +34,13 @@ import ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
+import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.types.Hashing;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -106,8 +108,12 @@ class IndexArtifactRepositoryTest {
   @Test
   void generationActivationPreservesExternallyOverriddenArtifactUri() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
-    InMemoryBlobStore blobs = new InMemoryBlobStore();
-    IndexArtifactRepository repository = new IndexArtifactRepository(pointers, blobs);
+    InMemoryBlobStore blobs = spy(new InMemoryBlobStore());
+    IndexArtifactRepository repository =
+        new IndexArtifactRepository(
+            pointers,
+            blobs,
+            new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)));
     long snapshotId = 716L;
     String generationId = "full-rescan-parent";
     String filePath = "s3://source/data.parquet";
@@ -197,6 +203,7 @@ class IndexArtifactRepositoryTest {
     assertThat(repository.getIndexArtifact(TABLE_ID, snapshotId, target)).contains(record);
     assertThat(repository.indexCaptureComplete(TABLE_ID, snapshotId, Set.of("customer_id")))
         .isTrue();
+    verify(blobs, times(1)).get(stableManifestUri);
   }
 
   @Test

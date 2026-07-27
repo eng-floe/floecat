@@ -995,13 +995,19 @@ public class StatsRepository implements StatsStore {
 
   private void updateTargetLatestSnapshotChunk(
       ResourceId tableId, long snapshotId, List<String> storageIds) {
+    Map<String, String> pointerKeys = new LinkedHashMap<>(storageIds.size());
+    for (String storageId : storageIds) {
+      pointerKeys.put(
+          storageId,
+          Keys.targetStatsLatestSnapshotPointer(
+              tableId.getAccountId(), tableId.getId(), storageId));
+    }
     for (int attempt = 0; attempt < BaseResourceRepository.CAS_MAX; attempt++) {
       Map<String, LatestSnapshotState> states = new LinkedHashMap<>(storageIds.size());
+      Map<String, Pointer> pointers =
+          pointerStore.getBatch(List.copyOf(pointerKeys.values()));
       for (String storageId : storageIds) {
-        String pointerKey =
-            Keys.targetStatsLatestSnapshotPointer(
-                tableId.getAccountId(), tableId.getId(), storageId);
-        Pointer pointer = pointerStore.get(pointerKey).orElse(null);
+        Pointer pointer = pointers.get(pointerKeys.get(storageId));
         long currentSnapshotId = latestSnapshotIdBoxed(pointer).orElse(0L);
         states.put(storageId, new LatestSnapshotState(pointer, currentSnapshotId));
       }
@@ -1017,9 +1023,7 @@ public class StatsRepository implements StatsStore {
       List<PointerStore.CasOp> ops = new ArrayList<>(pending.size());
       for (String storageId : pending) {
         LatestSnapshotState state = states.get(storageId);
-        String pointerKey =
-            Keys.targetStatsLatestSnapshotPointer(
-                tableId.getAccountId(), tableId.getId(), storageId);
+        String pointerKey = pointerKeys.get(storageId);
         long expectedVersion = state.pointer() == null ? 0L : state.pointer().getVersion();
         ops.add(
             new PointerStore.CasUpsert(

@@ -448,10 +448,13 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
             "duplicate target in snapshot stats publication: " + object.getTargetStorageId());
       }
     }
-    persistence.publishPreparedStatsGeneration(
-        tableId, snapshotTask.snapshotId(), generationId, finalStats);
     indexArtifactRepository.activateGeneration(
         tableId, snapshotTask.snapshotId(), generationId, manifest.toByteArray());
+    // The stats-generation root commit is the snapshot visibility point. Index activation must
+    // therefore complete first so a root-visible snapshot can never observe an inactive index
+    // generation. Both activation paths are idempotent, so a retry after either step converges.
+    persistence.publishPreparedStatsGeneration(
+        tableId, snapshotTask.snapshotId(), generationId, finalStats);
     persistence.clearPrewrittenArtifactProtections(
         tableId, snapshotTask.snapshotId(), generationId);
   }

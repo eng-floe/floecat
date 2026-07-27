@@ -31,7 +31,9 @@ import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -209,6 +211,26 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
 
   public Uni<Optional<Pointer>> get(String key) {
     return get(pointerKey(key));
+  }
+
+  public Uni<Map<String, Pointer>> getBatch(List<String> keys) {
+    Map<KvStore.Key, String> originals = new LinkedHashMap<>();
+    for (String key : keys == null ? List.<String>of() : keys) {
+      originals.put(pointerKey(key), key);
+    }
+    return getBatchRecords(List.copyOf(originals.keySet()))
+        .map(
+            values -> {
+              Map<String, Pointer> out = new LinkedHashMap<>();
+              values.forEach(
+                  (key, pointer) -> {
+                    String original = originals.get(key);
+                    if (original != null) {
+                      out.put(original, pointer);
+                    }
+                  });
+              return Map.copyOf(out);
+            });
   }
 
   /**

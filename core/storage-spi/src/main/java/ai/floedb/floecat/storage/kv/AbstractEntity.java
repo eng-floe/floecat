@@ -19,6 +19,7 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageLite;
 import io.smallrye.mutiny.Uni;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -98,6 +99,16 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
 
   protected Uni<Optional<M>> get(KvStore.Key key) {
     return kv.get(key).map(opt -> opt.map(this::decode));
+  }
+
+  protected Uni<Map<KvStore.Key, M>> getBatchRecords(List<KvStore.Key> keys) {
+    return kv.getBatch(keys)
+        .map(
+            records -> {
+              Map<KvStore.Key, M> out = new LinkedHashMap<>();
+              records.forEach((key, record) -> out.put(key, decode(record)));
+              return Map.copyOf(out);
+            });
   }
 
   // ---- CAS helpers

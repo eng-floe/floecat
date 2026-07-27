@@ -17,7 +17,9 @@
 package ai.floedb.floecat.storage.spi;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 public interface PointerStore {
@@ -91,6 +93,18 @@ public interface PointerStore {
   }
 
   Optional<Pointer> get(String key);
+
+  /**
+   * Reads multiple pointers. Backends should override with a native batch operation; the default
+   * preserves compatibility for decorators and specialized test stores.
+   */
+  default Map<String, Pointer> getBatch(List<String> keys) {
+    Map<String, Pointer> out = new LinkedHashMap<>();
+    for (String key : keys == null ? List.<String>of() : keys) {
+      get(key).ifPresent(pointer -> out.put(key, pointer));
+    }
+    return Map.copyOf(out);
+  }
 
   boolean compareAndSet(String key, long expectedVersion, Pointer next);
 

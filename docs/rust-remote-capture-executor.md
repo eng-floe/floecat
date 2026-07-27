@@ -4,6 +4,14 @@
 This page describes how to replace the current Java `EXEC_FILE_GROUP` worker with a Rust remote
 worker that speaks Floecat's leased reconcile protocol directly.
 
+> [!WARNING]
+> This protocol revision is breaking. `SubmitLeasedFileGroupExecutionResult` and its chunked
+> result flow were removed and replaced by `CommitLeasedFileGroupResult`, which commits
+> executor-written immutable artifact descriptors. Old workers receive `UNIMPLEMENTED` from a new
+> control plane, and new workers cannot submit results to an old control plane. Mixed-version
+> worker/control-plane deployments are unsupported: drain leased work, stop the old worker fleet,
+> deploy the control plane and matching workers as one coordinated cutover, then resume leasing.
+
 The goal is not to embed Rust into the JVM. The goal is to run a separate Rust process that:
 
 1. Leases eligible reconcile jobs from the control plane.

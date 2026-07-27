@@ -406,7 +406,7 @@ public class TableIndexServiceImpl extends BaseServiceImpl implements TableIndex
       }
       case AS_OF ->
           snapshots
-              .getAsOf(tableId, ref.getAsOf())
+              .getQueryableAsOf(tableId, ref.getAsOf())
               .map(Snapshot::getSnapshotId)
               .orElseThrow(
                   () ->

@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -137,6 +138,15 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     verify(service.indexArtifactRepository)
         .activateGeneration(
             any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), any(byte[].class));
+    var publicationOrder = inOrder(service.indexArtifactRepository, persistence);
+    publicationOrder
+        .verify(service.indexArtifactRepository)
+        .activateGeneration(
+            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), any(byte[].class));
+    publicationOrder
+        .verify(persistence)
+        .publishPreparedStatsGeneration(
+            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(List.of()));
     verify(currentSnapshotPointerService).maybeAdvance(any(), eq(SNAPSHOT_ID), eq(FINALIZE_JOB_ID));
   }
 

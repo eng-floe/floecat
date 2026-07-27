@@ -2256,12 +2256,26 @@ class StatsRepositoryTargetStorageTest {
   void prewrittenStatsReferencesAreCommittedInPointerBatchesWithoutBlobReads() {
     InMemoryPointerStore pointerDelegate = new InMemoryPointerStore();
     AtomicInteger batchCalls = new AtomicInteger();
+    AtomicInteger batchReads = new AtomicInteger();
+    AtomicInteger individualReads = new AtomicInteger();
     var pointerStore =
         new RepoTestPointerStores.DelegatingPointerStore(pointerDelegate) {
           @Override
           public boolean compareAndSetBatch(List<CasOp> ops) {
             batchCalls.incrementAndGet();
             return super.compareAndSetBatch(ops);
+          }
+
+          @Override
+          public Map<String, Pointer> getBatch(List<String> keys) {
+            batchReads.incrementAndGet();
+            return super.getBatch(keys);
+          }
+
+          @Override
+          public Optional<Pointer> get(String key) {
+            individualReads.incrementAndGet();
+            return super.get(key);
           }
         };
     InMemoryBlobStore blobStore = new InMemoryBlobStore();
@@ -2291,6 +2305,9 @@ class StatsRepositoryTargetStorageTest {
         TABLE_ID, snapshotId, generationId, references);
 
     assertThat(batchCalls).hasValue(6);
+    assertThat(batchReads).hasValue(3);
+    // The generation lifecycle check is a single point read; target pointers are batch-read.
+    assertThat(individualReads).hasValue(1);
     assertThat(
             pointerDelegate.countByPrefix(
                 Keys.snapshotTargetStatsGenerationDirectoryPointer(
