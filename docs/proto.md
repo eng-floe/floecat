@@ -114,9 +114,11 @@ engine release.
   These writes are ordered and idempotent rather than one atomic storage transaction. A timeout,
   retryable error, or uncertain outcome requires an exact replay of the same success request, even
   when the child job is already terminal. Snapshot finalization carries only group descriptors,
-  aggregate pointers, and counts; it requires every prepared marker and activates the generation
-  without repeating per-file pointers. Successful finalization clears protections; failed or
-  cancelled full rescans delete the unpublished generation.
+  aggregate pointers, and counts; it requires every prepared marker and activates the index
+  generation before committing the stats-generation root, without repeating per-file pointers.
+  The root commit is the snapshot visibility point, so readers cannot observe the snapshot before
+  both generations are active. Successful finalization clears protections; failed or cancelled
+  full rescans delete the unpublished generation.
   Index sidecar placement remains executor-controlled through `IndexArtifactRecord.artifact_uri`,
   but its serialized wrapper must be published beneath the leased `stats_object_prefix` as
   `index-artifacts/<sha256(target_storage_id)>/<payload_sha256>.pb`. Finalize manifests must repeat

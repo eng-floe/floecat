@@ -218,10 +218,9 @@ Required shape:
 Both the Java file-group executor and the remote executor follow this shape.
 
 Do not reuse one `result_id` for different payloads. The control plane rejects replay with the same
-`result_id` if the full request payload changes — and because chunk payloads are not byte-stable
-across re-serializations (protobuf map ordering is not canonical), two different lease attempts must
-not share a `result_id`, or the second attempt's staged chunks collide with the first and are
-rejected with `Conflict detected`. Including the `lease_epoch` guarantees that.
+`result_id` if the immutable result descriptor or either artifact-descriptor list changes. Two
+different lease attempts must not share a `result_id`, because the later attempt would conflict with
+the durable result accepted for the earlier attempt. Including the `lease_epoch` guarantees that.
 
 ## Idempotency and Retry Semantics
 The worker should assume the following:
@@ -338,6 +337,12 @@ lookup per file group. It does not read file-group payloads or per-file objects.
 file group has not written its digest-bound prepared marker, the service returns a retryable error.
 The finalizer must retry the exact same finalization result; it must not regenerate a different
 result ID or manifest for that retry.
+
+During successful publication, the control plane activates the index generation first and commits
+the stats-generation root last. The root commit is the snapshot visibility point, so readers cannot
+observe the finalized snapshot before both its stats and index generations are active. This
+ordering is internal to the control plane and requires no additional RPC or sequencing step from
+the external finalizer.
 
 The digest field is required and has no legacy fallback. Existing in-flight or persisted
 file-group results without it must be drained or replanned before a finalizer using this contract
