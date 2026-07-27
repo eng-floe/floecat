@@ -33,7 +33,9 @@ import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -44,6 +46,7 @@ import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultResponse;
 import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobResponse;
+import ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanConnectorInputResponse;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedPlanTableInputResponse;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedSnapshotFinalizeInputResponse;
@@ -69,6 +72,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -294,6 +298,67 @@ class GrpcRemoteReconcileExecutorClientTest {
     SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
     assertEquals(0, manifest.getFileGroupsCount());
     assertEquals(0, manifest.getSourceFileCount());
+  }
+
+  @Test
+  void submitSnapshotFinalizeSuccessPropagatesConsistentIndexPredecessor() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.submitLeasedSnapshotFinalizeResult(any()))
+        .thenReturn(
+            SubmitLeasedSnapshotFinalizeResultResponse.newBuilder().setAccepted(true).build());
+
+    assertThat(
+            client.submitSnapshotFinalizeSuccess(
+                remoteSnapshotFinalizeLease(1, indexCapturePolicy()),
+                "result-1",
+                "/stats/",
+                "/manifest.pb",
+                1,
+                List.of(fileGroupResultDescriptor(indexPredecessor())),
+                List.of(),
+                List.of(),
+                List.of()))
+        .isTrue();
+
+    ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
+    verify(client.blobStore)
+        .put(eq("/manifest.pb"), manifestBytes.capture(), eq("application/x-protobuf"));
+    SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
+    assertThat(manifest.hasIndexPredecessor()).isTrue();
+    assertThat(manifest.getIndexPredecessor().getGenerationId()).isEqualTo("generation-1");
+    assertThat(manifest.getFileGroups(0).getIndexPredecessor())
+        .isEqualTo(manifest.getIndexPredecessor());
+  }
+
+  @Test
+  void submitSnapshotFinalizeSuccessRejectsInconsistentIndexPredecessors() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    var otherPredecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-2", 8L, "/capture-2.pb", 10L);
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                client.submitSnapshotFinalizeSuccess(
+                    remoteSnapshotFinalizeLease(2, indexCapturePolicy()),
+                    "result-1",
+                    "/stats/",
+                    "/manifest.pb",
+                    2,
+                    List.of(
+                        fileGroupResultDescriptor(indexPredecessor()),
+                        fileGroupResultDescriptor(otherPredecessor)),
+                    List.of(),
+                    List.of(),
+                    List.of()));
+
+    assertThat(error).hasMessageContaining("inconsistent predecessors");
   }
 
   @Test
@@ -831,6 +896,43 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
+  void submitFileGroupSuccessPropagatesIndexPredecessor() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.commitLeasedFileGroupResult(any()))
+        .thenReturn(CommitLeasedFileGroupResultResponse.newBuilder().setAccepted(true).build());
+    var predecessor =
+        new StandaloneFileGroupExecutionPayload.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture-1.pb", 9L);
+    var payload = indexFileGroupPayload(predecessor);
+
+    assertThat(
+            client.submitSuccess(
+                remoteFileGroupLease(),
+                payload,
+                StandaloneFileGroupExecutionResult.empty("result-1")))
+        .isTrue();
+
+    ArgumentCaptor<CommitLeasedFileGroupResultRequest> requestCaptor =
+        ArgumentCaptor.forClass(CommitLeasedFileGroupResultRequest.class);
+    verify(stub).commitLeasedFileGroupResult(requestCaptor.capture());
+    var descriptorPredecessor =
+        requestCaptor.getValue().getSuccess().getResultDescriptor().getIndexPredecessor();
+    assertThat(descriptorPredecessor.getGenerationId()).isEqualTo("generation-1");
+    assertThat(descriptorPredecessor.getActivePointerVersion()).isEqualTo(7L);
+
+    ArgumentCaptor<byte[]> payloadBytes = ArgumentCaptor.forClass(byte[].class);
+    verify(client.blobStore)
+        .put(eq("/result.pb"), payloadBytes.capture(), eq("application/x-protobuf"));
+    FileGroupResultPayload packedPayload =
+        FileGroupResultPayload.parseFrom(payloadBytes.getValue());
+    assertThat(packedPayload.getIndexPredecessor()).isEqualTo(descriptorPredecessor);
+  }
+
+  @Test
   void progressiveFileStatsPublicationWritesObjectBeforeTerminalDescriptorSubmission()
       throws Exception {
     ExplicitTransportClient client = new ExplicitTransportClient();
@@ -1059,6 +1161,11 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   private static RemoteLeasedJob remoteSnapshotFinalizeLease(int fileGroupCount) {
+    return remoteSnapshotFinalizeLease(fileGroupCount, ReconcileCapturePolicy.empty());
+  }
+
+  private static RemoteLeasedJob remoteSnapshotFinalizeLease(
+      int fileGroupCount, ReconcileCapturePolicy capturePolicy) {
     return new RemoteLeasedJob(
         new ReconcileJobStore.LeasedJob(
             "finalize-job",
@@ -1066,7 +1173,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             "connector-1",
             false,
             ReconcilerService.CaptureMode.CAPTURE_ONLY,
-            ReconcileScope.empty(),
+            ReconcileScope.of(List.of(), "table-1", List.of(), capturePolicy),
             null,
             "lease-epoch",
             "",
@@ -1111,6 +1218,74 @@ class GrpcRemoteReconcileExecutorClientTest {
         "",
         List.of(),
         ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.empty());
+  }
+
+  private static StandaloneFileGroupExecutionPayload indexFileGroupPayload(
+      StandaloneFileGroupExecutionPayload.IndexGenerationPredecessor predecessor) {
+    return new StandaloneFileGroupExecutionPayload(
+        "job-lease",
+        "lease-epoch",
+        "",
+        ai.floedb.floecat.connector.rpc.Connector.getDefaultInstance(),
+        "db",
+        "events",
+        "s3://bucket/path",
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table-1")
+            .build(),
+        55L,
+        "plan-1",
+        "group-1",
+        "/result.pb",
+        "/stats/",
+        List.of(),
+        "",
+        List.of(),
+        indexCapturePolicy(),
+        predecessor,
+        List.of());
+  }
+
+  private static ReconcileCapturePolicy indexCapturePolicy() {
+    return ReconcileCapturePolicy.of(
+        List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+  }
+
+  private static ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor() {
+    return new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+        "generation-1", 7L, "/capture-1.pb", 9L);
+  }
+
+  private static ReconcileFileGroupResultDescriptor fileGroupResultDescriptor(
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor) {
+    return new ReconcileFileGroupResultDescriptor(
+        1,
+        "acct",
+        "connector-1",
+        "snapshot-job",
+        "file-group-job",
+        "plan-1",
+        "group-1",
+        "table-1",
+        55L,
+        "file-group-lease",
+        "file-group-result",
+        "/result.pb",
+        1L,
+        java.util.Base64.getEncoder().encodeToString(new byte[32]),
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        "/stats/",
+        0,
+        ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest.sha256(List.of(), List.of()),
+        predecessor,
+        1L);
   }
 
   private static final class ExplicitTransportClient extends GrpcRemoteReconcileExecutorClient {

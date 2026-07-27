@@ -1022,7 +1022,7 @@ class GrpcRemoteReconcileExecutorClient
     List<ReconcileFileResult> fileResults =
         FileGroupExecutionSupport.fileResultsForSuccess(
             plannedTask, fileStatsObjects, result.stagedIndexArtifacts());
-    FileGroupResultPayload packedPayload =
+    FileGroupResultPayload.Builder packedPayloadBuilder =
         FileGroupResultPayload.newBuilder()
             .setFormatVersion(1)
             .setAccountId(lease.lease().accountId)
@@ -1041,13 +1041,16 @@ class GrpcRemoteReconcileExecutorClient
                     .toList())
             .addAllPartialAggregateRecords(partialAggregates)
             .addAllIndexArtifacts(indexArtifacts)
-            .addAllFileStats(fileStatsObjects)
-            .build();
+            .addAllFileStats(fileStatsObjects);
+    if (payload.capturePageIndex()) {
+      packedPayloadBuilder.setIndexPredecessor(toProtoIndexPredecessor(payload.indexPredecessor()));
+    }
+    FileGroupResultPayload packedPayload = packedPayloadBuilder.build();
     byte[] packedBytes = packedPayload.toByteArray();
     blobStore.put(payload.resultPayloadUri(), packedBytes, "application/x-protobuf");
     String artifactReferencesSha256 =
         ArtifactReferenceDigest.sha256(fileStatsObjects, indexArtifacts);
-    FileGroupResultDescriptor descriptor =
+    FileGroupResultDescriptor.Builder descriptorBuilder =
         FileGroupResultDescriptor.newBuilder()
             .setFormatVersion(1)
             .setAccountId(lease.lease().accountId)
@@ -1071,8 +1074,11 @@ class GrpcRemoteReconcileExecutorClient
             .setFileStatsRecordCount(fileStatsObjects.size())
             .setArtifactReferencesSha256(
                 ByteString.copyFrom(HexFormat.of().parseHex(artifactReferencesSha256)))
-            .setCreatedAt(Timestamps.fromMillis(System.currentTimeMillis()))
-            .build();
+            .setCreatedAt(Timestamps.fromMillis(System.currentTimeMillis()));
+    if (payload.capturePageIndex()) {
+      descriptorBuilder.setIndexPredecessor(toProtoIndexPredecessor(payload.indexPredecessor()));
+    }
+    FileGroupResultDescriptor descriptor = descriptorBuilder.build();
     CommitLeasedFileGroupResultRequest.Success success =
         CommitLeasedFileGroupResultRequest.Success.newBuilder()
             .setResultId(resultId)
@@ -1266,6 +1272,9 @@ class GrpcRemoteReconcileExecutorClient
         descriptor.getStatsObjectPrefix(),
         descriptor.getFileStatsRecordCount(),
         HexFormat.of().formatHex(descriptor.getArtifactReferencesSha256().toByteArray()),
+        descriptor.hasIndexPredecessor()
+            ? fromProtoIndexPredecessor(descriptor.getIndexPredecessor())
+            : null,
         descriptor.hasCreatedAt() ? Timestamps.toMillis(descriptor.getCreatedAt()) : 0L);
   }
 
@@ -1318,6 +1327,10 @@ class GrpcRemoteReconcileExecutorClient
       throw new IllegalArgumentException(
           "file-group descriptors do not cover the planned snapshot files");
     }
+    ReconcileCapturePolicy capturePolicy =
+        leasedJob.scope == null ? ReconcileCapturePolicy.empty() : leasedJob.scope.capturePolicy();
+    ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor =
+        consistentIndexPredecessor(stableFileGroups, capturePolicy.requestsIndexes());
     List<StatsObjectDescriptor> finalStatsObjects =
         records.stream()
             .map(record -> publishStatsObject(stableStatsObjectPrefix, record))
@@ -1333,11 +1346,7 @@ class GrpcRemoteReconcileExecutorClient
             .setSnapshotId(snapshotTask.snapshotId())
             .setLeaseEpoch(leasedJob.leaseEpoch)
             .setResultId(stableResultId)
-            .setCapturePolicy(
-                toProtoCapturePolicy(
-                    leasedJob.scope == null
-                        ? ReconcileCapturePolicy.empty()
-                        : leasedJob.scope.capturePolicy()))
+            .setCapturePolicy(toProtoCapturePolicy(capturePolicy))
             .addAllFinalStats(finalStatsObjects)
             .setSourceFileCount(sourceFileCount)
             .setFileStatsRecordCount(stableFileStats.size())
@@ -1347,6 +1356,9 @@ class GrpcRemoteReconcileExecutorClient
                     .sum())
             .setFinalStatsRecordCount(records.size())
             .setIndexArtifactCount(stableIndexArtifacts.size());
+    if (indexPredecessor != null) {
+      manifest.setIndexPredecessor(toProtoIndexPredecessor(indexPredecessor));
+    }
     Set<String> indexedStatsTargets = new HashSet<>();
     for (ReconcileFileGroupResultDescriptor fileGroup : stableFileGroups) {
       manifest.addFileGroups(toProtoFileGroupResultDescriptor(fileGroup));
@@ -1447,10 +1459,72 @@ class GrpcRemoteReconcileExecutorClient
             .setArtifactReferencesSha256(
                 ByteString.copyFrom(
                     HexFormat.of().parseHex(descriptor.artifactReferencesSha256())));
+    if (descriptor.indexPredecessor() != null) {
+      out.setIndexPredecessor(toProtoIndexPredecessor(descriptor.indexPredecessor()));
+    }
     if (descriptor.createdAtMs() > 0L) {
       out.setCreatedAt(Timestamps.fromMillis(descriptor.createdAtMs()));
     }
     return out.build();
+  }
+
+  private static ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor
+      consistentIndexPredecessor(
+          List<ReconcileFileGroupResultDescriptor> fileGroups, boolean required) {
+    ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor = null;
+    for (ReconcileFileGroupResultDescriptor fileGroup : fileGroups) {
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor candidate =
+          fileGroup.indexPredecessor();
+      if (candidate == null) {
+        if (required) {
+          throw new IllegalArgumentException(
+              "index file-group descriptor is missing its predecessor");
+        }
+        continue;
+      }
+      if (predecessor == null) {
+        predecessor = candidate;
+      } else if (!predecessor.equals(candidate)) {
+        throw new IllegalArgumentException(
+            "index file-group descriptors have inconsistent predecessors");
+      }
+    }
+    if (required && predecessor == null) {
+      throw new IllegalArgumentException("index capture manifest is missing its predecessor");
+    }
+    return required ? predecessor : null;
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor
+      toProtoIndexPredecessor(
+          StandaloneFileGroupExecutionPayload.IndexGenerationPredecessor predecessor) {
+    return ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor.newBuilder()
+        .setGenerationId(predecessor.generationId())
+        .setActivePointerVersion(predecessor.activePointerVersion())
+        .setCaptureManifestUri(predecessor.captureManifestUri())
+        .setCaptureManifestPointerVersion(predecessor.captureManifestPointerVersion())
+        .build();
+  }
+
+  private static ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor
+      toProtoIndexPredecessor(
+          ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor) {
+    return ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor.newBuilder()
+        .setGenerationId(predecessor.generationId())
+        .setActivePointerVersion(predecessor.activePointerVersion())
+        .setCaptureManifestUri(predecessor.captureManifestUri())
+        .setCaptureManifestPointerVersion(predecessor.captureManifestPointerVersion())
+        .build();
+  }
+
+  private static ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor
+      fromProtoIndexPredecessor(
+          ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor predecessor) {
+    return new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+        predecessor.getGenerationId(),
+        predecessor.getActivePointerVersion(),
+        predecessor.getCaptureManifestUri(),
+        predecessor.getCaptureManifestPointerVersion());
   }
 
   private List<StatsObjectDescriptor> publishIndexArtifacts(

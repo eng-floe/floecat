@@ -363,6 +363,11 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       throw new IllegalArgumentException(
           "file-group result descriptor outcome counts do not match successful plan");
     }
+    if (lease.scope != null
+        && lease.scope.capturePolicy().requestsIndexes()
+        && descriptor.indexPredecessor() == null) {
+      throw new IllegalArgumentException("index file-group result is missing its predecessor");
+    }
     return descriptor;
   }
 

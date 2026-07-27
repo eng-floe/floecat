@@ -694,6 +694,7 @@ class DurableReconcileJobStoreLeaseOutcomeTest {
         "/results/" + jobId + "/stats/",
         1,
         "0".repeat(64),
+        null,
         1_500L);
   }
 

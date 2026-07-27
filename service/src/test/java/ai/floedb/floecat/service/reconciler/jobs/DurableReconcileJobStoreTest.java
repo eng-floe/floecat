@@ -6262,6 +6262,7 @@ class DurableReconcileJobStoreTest {
             "/test-results/" + jobId + "/stats/",
             task.fileCount(),
             "0".repeat(64),
+            null,
             System.currentTimeMillis()),
         System.currentTimeMillis(),
         "Succeeded");

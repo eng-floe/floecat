@@ -399,6 +399,7 @@ class LeasedSnapshotFinalizeInputServiceTest {
         "/accounts/acct/reconcile/jobs/child-job/file-group-result/stats/",
         plannedGroup.fileCount(),
         "0".repeat(64),
+        null,
         1L);
   }
 

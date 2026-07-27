@@ -1863,6 +1863,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     existing.fileGroupStatsObjectPrefix = descriptor.statsObjectPrefix();
     existing.fileGroupStatsRecordCount = descriptor.fileStatsRecordCount();
     existing.fileGroupArtifactReferencesSha256 = descriptor.artifactReferencesSha256();
+    ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor =
+        descriptor.indexPredecessor();
+    existing.fileGroupIndexPredecessorPresent = indexPredecessor != null;
+    existing.fileGroupIndexPredecessorGenerationId =
+        indexPredecessor == null ? "" : indexPredecessor.generationId();
+    existing.fileGroupIndexPredecessorActivePointerVersion =
+        indexPredecessor == null ? 0L : indexPredecessor.activePointerVersion();
+    existing.fileGroupIndexPredecessorCaptureManifestUri =
+        indexPredecessor == null ? "" : indexPredecessor.captureManifestUri();
+    existing.fileGroupIndexPredecessorCaptureManifestPointerVersion =
+        indexPredecessor == null ? 0L : indexPredecessor.captureManifestPointerVersion();
     existing.fileGroupResultCreatedAtMs = descriptor.createdAtMs();
     existing.statsProcessed =
         Math.max(existing.statsProcessed, descriptor.partialAggregateRecordCount());
@@ -4679,6 +4690,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         blankToEmpty(state.fileGroupStatsObjectPrefix),
         state.fileGroupStatsRecordCount,
         blankToEmpty(state.fileGroupArtifactReferencesSha256),
+        state.fileGroupIndexPredecessorPresent
+            ? new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+                blankToEmpty(state.fileGroupIndexPredecessorGenerationId),
+                state.fileGroupIndexPredecessorActivePointerVersion,
+                blankToEmpty(state.fileGroupIndexPredecessorCaptureManifestUri),
+                state.fileGroupIndexPredecessorCaptureManifestPointerVersion)
+            : null,
         state.fileGroupResultCreatedAtMs);
   }
 

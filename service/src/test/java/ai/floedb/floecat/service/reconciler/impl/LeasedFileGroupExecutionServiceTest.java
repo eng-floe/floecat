@@ -1024,6 +1024,7 @@ class LeasedFileGroupExecutionServiceTest {
         statsObjectPrefix(),
         fileStats.size(),
         ArtifactReferenceDigest.sha256(fileStatsDescriptors, indexArtifactDescriptors),
+        null,
         1L);
   }
 

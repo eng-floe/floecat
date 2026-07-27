@@ -36,6 +36,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -48,6 +49,7 @@ import ai.floedb.floecat.reconciler.rpc.CompleteLeasedReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetLeasedSnapshotFinalizeInputRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileCancellationRequest;
 import ai.floedb.floecat.reconciler.rpc.LeaseReconcileJobRequest;
+import ai.floedb.floecat.reconciler.rpc.ListLeasedSnapshotFileGroupResultsRequest;
 import ai.floedb.floecat.reconciler.rpc.ReconcileCompletionState;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryClass;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryDisposition;
@@ -555,7 +557,23 @@ class ReconcileExecutorControlImplTest {
 
     assertTrue(response.getAccepted());
     verify(service.leasedFileGroupExecutionService)
-        .persistSuccess(any(), eq("job-1"), eq("lease-1"), eq("result-1"), any(), any(), any());
+        .persistSuccess(
+            any(),
+            eq("job-1"),
+            eq("lease-1"),
+            eq("result-1"),
+            argThat(
+                descriptor ->
+                    descriptor.indexPredecessor() != null
+                        && descriptor.indexPredecessor().generationId().equals("generation-1")
+                        && descriptor.indexPredecessor().activePointerVersion() == 7L
+                        && descriptor
+                            .indexPredecessor()
+                            .captureManifestUri()
+                            .equals("/capture-1.pb")
+                        && descriptor.indexPredecessor().captureManifestPointerVersion() == 9L),
+            any(),
+            any());
   }
 
   @Test
@@ -584,6 +602,58 @@ class ReconcileExecutorControlImplTest {
     assertTrue(response.getAccepted());
     verify(service.leasedFileGroupExecutionService)
         .persistSuccess(any(), eq("leaf-1"), eq("lease-1"), eq("result-1"), any(), any(), any());
+  }
+
+  @Test
+  void listLeasedSnapshotFileGroupResultsPreservesIndexPredecessor() {
+    var predecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture-1.pb", 9L);
+    var descriptor =
+        new ReconcileFileGroupResultDescriptor(
+            1,
+            "acct",
+            "connector",
+            "parent-1",
+            "job-1",
+            "plan-1",
+            "group-1",
+            "table-1",
+            55L,
+            "lease-1",
+            "result-1",
+            "/result.pb",
+            100L,
+            java.util.Base64.getEncoder().encodeToString("sha256".getBytes()),
+            1,
+            1,
+            0,
+            0,
+            0,
+            1,
+            "/stats.pb",
+            1,
+            "0".repeat(64),
+            predecessor,
+            1L);
+    when(service.leasedSnapshotFinalizeInputService.descriptorPage(
+            any(), eq("job-1"), eq("lease-1"), eq(200), eq("")))
+        .thenReturn(new LeasedSnapshotFinalizeInputService.DescriptorPage(List.of(descriptor), ""));
+
+    var response =
+        service
+            .listLeasedSnapshotFileGroupResults(
+                ListLeasedSnapshotFileGroupResultsRequest.newBuilder()
+                    .setJobId("job-1")
+                    .setLeaseEpoch("lease-1")
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(1, response.getDescriptorsCount());
+    assertEquals(
+        "generation-1", response.getDescriptors(0).getIndexPredecessor().getGenerationId());
+    assertEquals(7L, response.getDescriptors(0).getIndexPredecessor().getActivePointerVersion());
   }
 
   @Test
@@ -943,6 +1013,13 @@ class ReconcileExecutorControlImplTest {
         .setSucceededFileCount(1)
         .setStatsObjectPrefix("/stats.pb")
         .setFileStatsRecordCount(1)
+        .setIndexPredecessor(
+            ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor.newBuilder()
+                .setGenerationId("generation-1")
+                .setActivePointerVersion(7L)
+                .setCaptureManifestUri("/capture-1.pb")
+                .setCaptureManifestPointerVersion(9L)
+                .build())
         .build();
   }
 

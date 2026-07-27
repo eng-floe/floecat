@@ -41,11 +41,24 @@ public record ReconcileFileGroupResultDescriptor(
     String statsObjectPrefix,
     int fileStatsRecordCount,
     String artifactReferencesSha256,
+    IndexGenerationPredecessor indexPredecessor,
     long createdAtMs) {
+
+  public record IndexGenerationPredecessor(
+      String generationId,
+      long activePointerVersion,
+      String captureManifestUri,
+      long captureManifestPointerVersion) {
+    public IndexGenerationPredecessor {
+      generationId = generationId == null ? "" : generationId;
+      captureManifestUri = captureManifestUri == null ? "" : captureManifestUri;
+    }
+  }
 
   public static ReconcileFileGroupResultDescriptor empty() {
     return new ReconcileFileGroupResultDescriptor(
-        0, "", "", "", "", "", "", "", 0L, "", "", "", 0L, "", 0, 0, 0, 0, 0, 0, "", 0, "", 0L);
+        0, "", "", "", "", "", "", "", 0L, "", "", "", 0L, "", 0, 0, 0, 0, 0, 0, "", 0, "", null,
+        0L);
   }
 
   public boolean isEmpty() {

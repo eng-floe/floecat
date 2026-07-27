@@ -1072,6 +1072,16 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
             .setArtifactReferencesSha256(
                 com.google.protobuf.ByteString.copyFrom(
                     java.util.HexFormat.of().parseHex(descriptor.artifactReferencesSha256())));
+    if (descriptor.indexPredecessor() != null) {
+      var predecessor = descriptor.indexPredecessor();
+      builder.setIndexPredecessor(
+          ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor.newBuilder()
+              .setGenerationId(predecessor.generationId())
+              .setActivePointerVersion(predecessor.activePointerVersion())
+              .setCaptureManifestUri(predecessor.captureManifestUri())
+              .setCaptureManifestPointerVersion(predecessor.captureManifestPointerVersion())
+              .build());
+    }
     if (descriptor.createdAtMs() > 0L) {
       builder.setCreatedAt(
           com.google.protobuf.util.Timestamps.fromMillis(descriptor.createdAtMs()));
@@ -1152,6 +1162,13 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         descriptor.getStatsObjectPrefix(),
         descriptor.getFileStatsRecordCount(),
         java.util.HexFormat.of().formatHex(descriptor.getArtifactReferencesSha256().toByteArray()),
+        descriptor.hasIndexPredecessor()
+            ? new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+                descriptor.getIndexPredecessor().getGenerationId(),
+                descriptor.getIndexPredecessor().getActivePointerVersion(),
+                descriptor.getIndexPredecessor().getCaptureManifestUri(),
+                descriptor.getIndexPredecessor().getCaptureManifestPointerVersion())
+            : null,
         descriptor.hasCreatedAt()
             ? com.google.protobuf.util.Timestamps.toMillis(descriptor.getCreatedAt())
             : 0L);

@@ -353,6 +353,23 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         || descriptor.indexArtifactCount() != payload.getIndexArtifactsCount()) {
       throw new IllegalArgumentException("snapshot file-group result payload count mismatch");
     }
+    if (capturePolicy.requestsIndexes()) {
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor =
+          descriptor.indexPredecessor();
+      if (predecessor == null
+          || !payload.hasIndexPredecessor()
+          || !predecessor.generationId().equals(payload.getIndexPredecessor().getGenerationId())
+          || predecessor.activePointerVersion()
+              != payload.getIndexPredecessor().getActivePointerVersion()
+          || !predecessor
+              .captureManifestUri()
+              .equals(payload.getIndexPredecessor().getCaptureManifestUri())
+          || predecessor.captureManifestPointerVersion()
+              != payload.getIndexPredecessor().getCaptureManifestPointerVersion()) {
+        throw new IllegalArgumentException(
+            "snapshot file-group index predecessor does not match its payload");
+      }
+    }
     String artifactReferencesSha256 =
         ArtifactReferenceDigest.sha256(payload.getFileStatsList(), payload.getIndexArtifactsList());
     if (!artifactReferencesSha256.equals(descriptor.artifactReferencesSha256())) {

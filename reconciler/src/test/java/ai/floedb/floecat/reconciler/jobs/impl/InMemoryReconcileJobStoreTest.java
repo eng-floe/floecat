@@ -304,6 +304,7 @@ class InMemoryReconcileJobStoreTest {
                 "/stats/",
                 1,
                 "0".repeat(64),
+                null,
                 System.currentTimeMillis()),
             System.currentTimeMillis(),
             "done"));
