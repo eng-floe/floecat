@@ -35,6 +35,7 @@ import ai.floedb.floecat.query.rpc.ScanHandle;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -76,7 +77,9 @@ public final class UserObjectBundleTestSupport {
     private final Map<String, NameRef> names = new HashMap<>();
     private final Map<String, CatalogNode> catalogs = new HashMap<>();
     private final Set<String> hidden = new HashSet<>();
+    private final Set<String> schemaFailures = new HashSet<>();
     private final Map<String, Integer> resolveCalls = new ConcurrentHashMap<>();
+    private final Map<NameRef, Integer> resolveNameCalls = new ConcurrentHashMap<>();
 
     public void clear() {
       nodes.clear();
@@ -84,7 +87,16 @@ public final class UserObjectBundleTestSupport {
       names.clear();
       catalogs.clear();
       hidden.clear();
+      schemaFailures.clear();
       resolveCalls.clear();
+      resolveNameCalls.clear();
+    }
+
+    /**
+     * Make {@link #tableSchema} throw for this relation, to exercise per-relation build failures.
+     */
+    public void failSchemaFor(ResourceId id) {
+      schemaFailures.add(id.getId());
     }
 
     public void registerTable(
@@ -197,10 +209,22 @@ public final class UserObjectBundleTestSupport {
 
     @Override
     public Optional<ResourceId> resolveName(String correlationId, NameRef ref) {
+      resolveNameCalls.merge(ref, 1, Integer::sum);
       return names.entrySet().stream()
           .filter(entry -> entry.getValue().equals(ref))
           .map(entry -> nodes.get(entry.getKey()).id())
           .findFirst();
+    }
+
+    @Override
+    public Optional<ResourceId> resolveName(
+        String correlationId, NameRef ref, EngineContext engineContext) {
+      return resolveName(correlationId, ref);
+    }
+
+    /** How many times {@link #resolveName} ran for the exact ref (batch loop included). */
+    public int resolveNameCount(NameRef ref) {
+      return resolveNameCalls.getOrDefault(ref, 0);
     }
 
     @Override
@@ -309,6 +333,9 @@ public final class UserObjectBundleTestSupport {
 
     @Override
     public List<ai.floedb.floecat.query.rpc.SchemaColumn> tableSchema(ResourceId tableId) {
+      if (schemaFailures.contains(tableId.getId())) {
+        throw new RuntimeException("schema unavailable for " + tableId.getId());
+      }
       return schemas.getOrDefault(tableId.getId(), List.of());
     }
   }
@@ -382,7 +409,8 @@ public final class UserObjectBundleTestSupport {
         List<QueryInput> inputs,
         Optional<Timestamp> asOfDefault,
         Optional<ResourceId> defaultCatalogId,
-        Map<ResourceId, TablePin> currentSnapshotPinCache,
+        java.util.concurrent.ConcurrentMap<ResourceId, CompletableFuture<TablePin>>
+            currentSnapshotPinCache,
         PhaseDiagnostics diagnostics) {
       List<ResourceId> resolved = new ArrayList<>(inputs.size());
       RelationPinSet.Builder pins = RelationPinSet.newBuilder();

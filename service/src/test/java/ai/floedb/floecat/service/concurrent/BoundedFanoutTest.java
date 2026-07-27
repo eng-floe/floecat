@@ -19,7 +19,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
@@ -87,5 +96,116 @@ class BoundedFanoutTest {
                     }))
         .isInstanceOf(IllegalStateException.class)
         .hasMessage("boom");
+  }
+
+  @Test
+  void submissionFailureWaitsForAlreadySubmittedTasks() throws Exception {
+    CountDownLatch taskStarted = new CountDownLatch(1);
+    CountDownLatch allowTaskCompletion = new CountDownLatch(1);
+    CountDownLatch mapReturned = new CountDownLatch(1);
+    AtomicInteger submissions = new AtomicInteger();
+    Executor rejectSecondSubmission =
+        command -> {
+          if (submissions.getAndIncrement() == 0) {
+            CompletableFuture.runAsync(command);
+            return;
+          }
+          throw new RejectedExecutionException("executor saturated");
+        };
+
+    CompletableFuture<Throwable> result =
+        CompletableFuture.supplyAsync(
+            () -> {
+              try {
+                BoundedFanout.mapOrdered(
+                    List.of(1, 2),
+                    2,
+                    rejectSecondSubmission,
+                    ignored -> {
+                      taskStarted.countDown();
+                      try {
+                        allowTaskCompletion.await();
+                      } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError("task interrupted", e);
+                      }
+                      return ignored;
+                    });
+                return null;
+              } catch (Throwable failure) {
+                return failure;
+              } finally {
+                mapReturned.countDown();
+              }
+            });
+
+    assertThat(taskStarted.await(1, TimeUnit.SECONDS)).isTrue();
+    assertThat(mapReturned.await(100, TimeUnit.MILLISECONDS)).isFalse();
+    allowTaskCompletion.countDown();
+    assertThat(result.join())
+        .isInstanceOf(RejectedExecutionException.class)
+        .hasMessage("executor saturated");
+  }
+
+  @Test
+  void cancellationInterruptsRunningTaskAndReturnsWithoutWaitingForIt() throws Exception {
+    CountDownLatch taskStarted = new CountDownLatch(1);
+    CountDownLatch taskInterrupted = new CountDownLatch(1);
+    CountDownLatch allowTaskCompletion = new CountDownLatch(1);
+    AtomicBoolean cancelled = new AtomicBoolean();
+
+    try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+      CompletableFuture<Throwable> result =
+          CompletableFuture.supplyAsync(
+              () -> {
+                try {
+                  BoundedFanout.mapOrdered(
+                      List.of(1, 2),
+                      2,
+                      executor,
+                      ignored -> {
+                        taskStarted.countDown();
+                        try {
+                          allowTaskCompletion.await();
+                        } catch (InterruptedException e) {
+                          taskInterrupted.countDown();
+                          Thread.currentThread().interrupt();
+                          throw new CancellationException("task interrupted");
+                        }
+                        return ignored;
+                      },
+                      cancelled::get);
+                  return null;
+                } catch (Throwable failure) {
+                  return failure;
+                }
+              });
+
+      assertThat(taskStarted.await(1, TimeUnit.SECONDS)).isTrue();
+      cancelled.set(true);
+      try {
+        assertThat(result.get(250, TimeUnit.MILLISECONDS))
+            .isInstanceOf(CancellationException.class)
+            .hasMessage("fan-out cancelled");
+        assertThat(taskInterrupted.await(1, TimeUnit.SECONDS)).isTrue();
+      } finally {
+        allowTaskCompletion.countDown();
+      }
+    }
+  }
+
+  @Test
+  void rejectsZeroAndNegativePermits() {
+    // A 0/negative permit count would hand out no permits, blocking every task forever on an
+    // uninterruptible acquire while the caller blocks joining — a permanent hang. Fail fast.
+    for (int badPermits : new int[] {0, -1, -8}) {
+      assertThatThrownBy(
+              () ->
+                  BoundedFanout.mapOrdered(
+                      List.of(1, 2, 3), badPermits, ForkJoinPool.commonPool(), i -> i))
+          .as("permits=%d", badPermits)
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("permits must be >= 1");
+    }
   }
 }
