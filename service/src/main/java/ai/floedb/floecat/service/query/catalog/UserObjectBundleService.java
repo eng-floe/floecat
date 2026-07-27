@@ -57,6 +57,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -1113,9 +1114,11 @@ public class UserObjectBundleService {
      */
     private void warmChunkStats(List<PendingItem> chunkItems) {
       List<ResourceId> tableIds = new ArrayList<>(chunkItems.size());
+      Set<ResourceId> seenTableIds = new HashSet<>();
       for (PendingItem item : chunkItems) {
         if (item instanceof PendingFound found
-            && found.relation().node().kind() == GraphNodeKind.TABLE) {
+            && found.relation().node().kind() == GraphNodeKind.TABLE
+            && seenTableIds.add(found.relation().relationId())) {
           tableIds.add(found.relation().relationId());
         }
       }
@@ -1224,8 +1227,10 @@ public class UserObjectBundleService {
       // buildOne does not recompute it. slots keeps every resolution in chunk order.
       RelationResolution[] slots = new RelationResolution[chunkItems.size()];
       List<PendingFound> toBuild = new ArrayList<>();
-      List<Integer> buildSlots = new ArrayList<>();
+      List<List<PendingFound>> buildFoundGroups = new ArrayList<>();
+      List<List<Integer>> buildSlotGroups = new ArrayList<>();
       List<Optional<RelationPinIdentity>> buildIdentities = new ArrayList<>();
+      Map<RelationCacheKey, Integer> buildIndexByKey = new HashMap<>();
       for (int i = 0; i < chunkItems.size(); i++) {
         PendingItem item = chunkItems.get(i);
         if (item instanceof PendingResolved resolved) {
@@ -1236,6 +1241,15 @@ public class UserObjectBundleService {
         RelationInfo cachedInfo = relationInfoCache.get(relationCacheKey(found.relation()));
         if (cachedInfo != null) {
           slots[i] = foundResolution(found.inputIndex(), cachedInfo);
+          continue;
+        }
+        RelationCacheKey cacheKey = relationCacheKey(found.relation());
+        Integer existingBuildIndex = buildIndexByKey.get(cacheKey);
+        if (existingBuildIndex != null) {
+          // The first full build produces an immutable payload that every same-key slot can share.
+          // Keep all slots so the emitted response still mirrors the requested inputs exactly.
+          buildFoundGroups.get(existingBuildIndex).add(found);
+          buildSlotGroups.get(existingBuildIndex).add(i);
           continue;
         }
         long statsBeforeNanos = timings.statsLookupNanos();
@@ -1263,8 +1277,10 @@ public class UserObjectBundleService {
           continue;
         }
         toBuild.add(found);
-        buildSlots.add(i);
+        buildFoundGroups.add(new ArrayList<>(List.of(found)));
+        buildSlotGroups.add(new ArrayList<>(List.of(i)));
         buildIdentities.add(scopedIdentity);
+        buildIndexByKey.put(cacheKey, toBuild.size() - 1);
       }
 
       // Build the remaining relations concurrently; each task times itself into its own
@@ -1286,14 +1302,23 @@ public class UserObjectBundleService {
         timings.addRelationBuildNanos(outcome.relationBuildNanos());
         timings.addDecorationNanos(outcome.decorationNanos());
         PendingFound found = outcome.source();
+        List<PendingFound> groupedFound = buildFoundGroups.get(j);
+        List<Integer> groupedSlots = buildSlotGroups.get(j);
         if (outcome.info() != null) {
           relationInfoCache.put(relationCacheKey(found.relation()), outcome.info());
-          slots[buildSlots.get(j)] = foundResolution(found.inputIndex(), outcome.info());
-        } else {
-          if (found.isRequestedInput()) {
-            timings.unrecordFound();
+          for (int k = 0; k < groupedFound.size(); k++) {
+            slots[groupedSlots.get(k)] =
+                foundResolution(groupedFound.get(k).inputIndex(), outcome.info());
           }
-          slots[buildSlots.get(j)] = outcome.error();
+        } else {
+          for (int k = 0; k < groupedFound.size(); k++) {
+            PendingFound grouped = groupedFound.get(k);
+            if (grouped.isRequestedInput()) {
+              timings.unrecordFound();
+            }
+            slots[groupedSlots.get(k)] =
+                outcome.error().toBuilder().setInputIndex(grouped.inputIndex()).build();
+          }
         }
       }
 

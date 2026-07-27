@@ -80,6 +80,7 @@ public final class UserObjectBundleTestSupport {
     private final Set<String> schemaFailures = new HashSet<>();
     private final Map<String, Integer> resolveCalls = new ConcurrentHashMap<>();
     private final Map<NameRef, Integer> resolveNameCalls = new ConcurrentHashMap<>();
+    private final Map<ResourceId, Integer> tableSchemaCalls = new ConcurrentHashMap<>();
 
     public void clear() {
       nodes.clear();
@@ -90,6 +91,7 @@ public final class UserObjectBundleTestSupport {
       schemaFailures.clear();
       resolveCalls.clear();
       resolveNameCalls.clear();
+      tableSchemaCalls.clear();
     }
 
     /**
@@ -227,6 +229,11 @@ public final class UserObjectBundleTestSupport {
       return resolveNameCalls.getOrDefault(ref, 0);
     }
 
+    /** How many times {@link #tableSchema(ResourceId)} ran for this relation. */
+    public int tableSchemaCount(ResourceId id) {
+      return tableSchemaCalls.getOrDefault(id, 0);
+    }
+
     @Override
     public Optional<ResourceId> resolveSystemTable(NameRef ref) {
       return names.entrySet().stream()
@@ -333,6 +340,7 @@ public final class UserObjectBundleTestSupport {
 
     @Override
     public List<ai.floedb.floecat.query.rpc.SchemaColumn> tableSchema(ResourceId tableId) {
+      tableSchemaCalls.merge(tableId, 1, Integer::sum);
       if (schemaFailures.contains(tableId.getId())) {
         throw new RuntimeException("schema unavailable for " + tableId.getId());
       }

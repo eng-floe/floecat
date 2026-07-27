@@ -988,6 +988,7 @@ class UserObjectBundleServiceTest {
     assertThat(items.get(1).getInputIndex()).isEqualTo(1);
     assertThat(items).allMatch(r -> r.getStatus() == ResolutionStatus.RESOLUTION_STATUS_FOUND);
     assertThat(items).allMatch(r -> r.getRelation().getRelationId().equals(TABLE_A));
+    assertThat(overlay.tableSchemaCount(TABLE_A)).isEqualTo(1);
   }
 
   @Test
