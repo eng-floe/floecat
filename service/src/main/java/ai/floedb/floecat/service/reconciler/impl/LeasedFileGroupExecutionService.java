@@ -111,8 +111,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     ReconcileCapturePolicy capturePolicy = FileGroupExecutionSupport.effectiveCapturePolicy(lease);
     IndexArtifactRepository.GenerationInput capturedIndexInput =
         capturePolicy.requestsIndexes()
-            ? indexArtifactRepository.captureGenerationInput(
-                tableId, plannedTask.snapshotId(), plannedTask.filePaths())
+            ? pinnedIndexInput(lease, tableId, plannedTask)
             : new IndexArtifactRepository.GenerationInput(
                 new IndexArtifactRepository.GenerationPredecessor("", 0L, "", 0L), List.of());
     IndexArtifactRepository.GenerationInput indexInput =
@@ -151,6 +150,43 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             indexInput.predecessor().captureManifestUri(),
             indexInput.predecessor().captureManifestPointerVersion()),
         indexInput.artifacts());
+  }
+
+  private IndexArtifactRepository.GenerationInput pinnedIndexInput(
+      ReconcileJobStore.LeasedJob lease, ResourceId tableId, ReconcileFileGroupTask plannedTask) {
+    ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor pinned =
+        pinnedIndexPredecessor(lease);
+    IndexArtifactRepository.GenerationPredecessor predecessor =
+        new IndexArtifactRepository.GenerationPredecessor(
+            pinned.generationId(),
+            pinned.activePointerVersion(),
+            pinned.captureManifestUri(),
+            pinned.captureManifestPointerVersion());
+    return lease.fullRescan
+        ? new IndexArtifactRepository.GenerationInput(predecessor, List.of())
+        : indexArtifactRepository.loadGenerationInput(
+            tableId, plannedTask.snapshotId(), predecessor, plannedTask.filePaths());
+  }
+
+  private ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor pinnedIndexPredecessor(
+      ReconcileJobStore.LeasedJob lease) {
+    ReconcileJobStore.ReconcileJob parent =
+        jobs.get(lease.accountId, lease.parentJobId)
+            .orElseThrow(
+                () ->
+                    Status.FAILED_PRECONDITION
+                        .withDescription("snapshot plan parent is required for index capture")
+                        .asRuntimeException());
+    ReconcileSnapshotTask snapshotTask =
+        parent.snapshotTask == null ? ReconcileSnapshotTask.empty() : parent.snapshotTask;
+    ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor pinned =
+        snapshotTask.indexPredecessor();
+    if (pinned == null) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription("snapshot index generation predecessor was not pinned before fan-out")
+          .asRuntimeException();
+    }
+    return pinned;
   }
 
   private Connector withTableStorageLocation(Connector connector, Table table) {
@@ -363,10 +399,14 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       throw new IllegalArgumentException(
           "file-group result descriptor outcome counts do not match successful plan");
     }
-    if (lease.scope != null
-        && lease.scope.capturePolicy().requestsIndexes()
-        && descriptor.indexPredecessor() == null) {
-      throw new IllegalArgumentException("index file-group result is missing its predecessor");
+    if (lease.scope != null && lease.scope.capturePolicy().requestsIndexes()) {
+      if (descriptor.indexPredecessor() == null) {
+        throw new IllegalArgumentException("index file-group result is missing its predecessor");
+      }
+      if (!pinnedIndexPredecessor(lease).equals(descriptor.indexPredecessor())) {
+        throw new IllegalArgumentException(
+            "index file-group result predecessor does not match the pinned snapshot predecessor");
+      }
     }
     return descriptor;
   }

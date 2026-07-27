@@ -136,7 +136,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       long manifestValidationStartNanos = System.nanoTime();
       SnapshotCaptureManifest manifest;
       try {
-        manifest = validateManifestObject(lease, validated);
+        manifest = validateManifestObject(lease, snapshotTask, validated);
       } finally {
         manifestValidationNanos[0] = System.nanoTime() - manifestValidationStartNanos;
       }
@@ -282,7 +282,9 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
   }
 
   private SnapshotCaptureManifest validateManifestObject(
-      ReconcileJobStore.LeasedJob lease, SnapshotCaptureManifestDescriptor descriptor) {
+      ReconcileJobStore.LeasedJob lease,
+      ReconcileSnapshotTask snapshotTask,
+      SnapshotCaptureManifestDescriptor descriptor) {
     String expectedUri = descriptor.getManifestUri();
     byte[] bytes =
         loadRequiredPublishedObject(expectedUri, "snapshot capture manifest jobId=" + lease.jobId);
@@ -316,6 +318,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       throw new IllegalArgumentException("snapshot capture manifest object identity mismatch");
     }
     validateCapturePolicy(lease, manifest.getCapturePolicy());
+    validateIndexPredecessor(lease, snapshotTask, manifest);
     if (manifest
             .getCapturePolicy()
             .getOutputsList()
@@ -325,6 +328,36 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           "snapshot capture manifest index artifacts do not cover planned files");
     }
     return manifest;
+  }
+
+  private static void validateIndexPredecessor(
+      ReconcileJobStore.LeasedJob lease,
+      ReconcileSnapshotTask snapshotTask,
+      SnapshotCaptureManifest manifest) {
+    boolean indexesRequested = lease.scope != null && lease.scope.capturePolicy().requestsIndexes();
+    if (!indexesRequested) {
+      if (manifest.hasIndexPredecessor()) {
+        throw new IllegalArgumentException(
+            "non-index snapshot capture manifest contains an index predecessor");
+      }
+      return;
+    }
+    var pinned = snapshotTask.indexPredecessor();
+    if (pinned == null) {
+      throw new IllegalArgumentException(
+          "snapshot index generation predecessor was not pinned before fan-out");
+    }
+    if (!manifest.hasIndexPredecessor()) {
+      throw new IllegalArgumentException("index capture manifest is missing its predecessor");
+    }
+    var submitted = manifest.getIndexPredecessor();
+    if (!pinned.generationId().equals(submitted.getGenerationId())
+        || pinned.activePointerVersion() != submitted.getActivePointerVersion()
+        || !pinned.captureManifestUri().equals(submitted.getCaptureManifestUri())
+        || pinned.captureManifestPointerVersion() != submitted.getCaptureManifestPointerVersion()) {
+      throw new IllegalArgumentException(
+          "index capture manifest predecessor does not match the pinned snapshot predecessor");
+    }
   }
 
   private static void validateCapturePolicy(

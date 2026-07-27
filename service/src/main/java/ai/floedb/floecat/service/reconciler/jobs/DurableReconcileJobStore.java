@@ -1438,6 +1438,24 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                         blankToEmpty(effective.directStatsBlobUri());
                     existing.snapshotTaskDirectStatsRecordCount =
                         effective.directStatsRecordCount();
+                    var snapshotIndexPredecessor = effective.indexPredecessor();
+                    existing.snapshotTaskIndexPredecessorPresent = snapshotIndexPredecessor != null;
+                    existing.snapshotTaskIndexPredecessorGenerationId =
+                        snapshotIndexPredecessor == null
+                            ? ""
+                            : snapshotIndexPredecessor.generationId();
+                    existing.snapshotTaskIndexPredecessorActivePointerVersion =
+                        snapshotIndexPredecessor == null
+                            ? 0L
+                            : snapshotIndexPredecessor.activePointerVersion();
+                    existing.snapshotTaskIndexPredecessorCaptureManifestUri =
+                        snapshotIndexPredecessor == null
+                            ? ""
+                            : snapshotIndexPredecessor.captureManifestUri();
+                    existing.snapshotTaskIndexPredecessorCaptureManifestPointerVersion =
+                        snapshotIndexPredecessor == null
+                            ? 0L
+                            : snapshotIndexPredecessor.captureManifestPointerVersion();
                     existing.snapshotPlanBlobUri = effectiveManifestUri;
                     JobProjection projection =
                         projector().projectSnapshotPlan(projectedSnapshotTask);
@@ -1604,7 +1622,25 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         && blankToEmpty(currentState.snapshotTaskDirectStatsBlobUri)
             .equals(blankToEmpty(effective.directStatsBlobUri()))
         && currentState.snapshotTaskDirectStatsRecordCount == effective.directStatsRecordCount()
+        && snapshotIndexPredecessorMatches(currentState, effective.indexPredecessor())
         && blankToEmpty(currentState.snapshotPlanBlobUri).equals(blankToEmpty(manifestUri));
+  }
+
+  private static boolean snapshotIndexPredecessorMatches(
+      StoredReconcileJob state,
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor) {
+    if (predecessor == null) {
+      return !state.snapshotTaskIndexPredecessorPresent;
+    }
+    return state.snapshotTaskIndexPredecessorPresent
+        && blankToEmpty(state.snapshotTaskIndexPredecessorGenerationId)
+            .equals(predecessor.generationId())
+        && state.snapshotTaskIndexPredecessorActivePointerVersion
+            == predecessor.activePointerVersion()
+        && blankToEmpty(state.snapshotTaskIndexPredecessorCaptureManifestUri)
+            .equals(predecessor.captureManifestUri())
+        && state.snapshotTaskIndexPredecessorCaptureManifestPointerVersion
+            == predecessor.captureManifestPointerVersion();
   }
 
   private void validateSnapshotPlanManifestHash(
@@ -1652,7 +1688,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         adoptedFileGroupCount,
         effective.sourceFileCount(),
         effective.directStatsBlobUri(),
-        effective.directStatsRecordCount());
+        effective.directStatsRecordCount(),
+        effective.indexPredecessor());
   }
 
   @Override
@@ -3531,7 +3568,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         Math.max(0, record.snapshotTaskFileGroupCount),
         Math.max(0, record.snapshotTaskSourceFileCount),
         blankToEmpty(record.snapshotTaskDirectStatsBlobUri),
-        Math.max(0, record.snapshotTaskDirectStatsRecordCount));
+        Math.max(0, record.snapshotTaskDirectStatsRecordCount),
+        record.snapshotTaskIndexPredecessorPresent
+            ? new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+                record.snapshotTaskIndexPredecessorGenerationId,
+                record.snapshotTaskIndexPredecessorActivePointerVersion,
+                record.snapshotTaskIndexPredecessorCaptureManifestUri,
+                record.snapshotTaskIndexPredecessorCaptureManifestPointerVersion)
+            : null);
   }
 
   private static String execFileGroupKey(ReconcileFileGroupTask fileGroupTask) {

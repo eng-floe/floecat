@@ -271,6 +271,48 @@ class ReconcileExecutorControlImplTest {
   }
 
   @Test
+  void leaseReconcileJobPreservesSnapshotIndexPredecessor() {
+    var predecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture.pb", 9L);
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders").withIndexPredecessor(predecessor);
+    when(service.jobs.leaseNext(any()))
+        .thenReturn(
+            Optional.of(
+                new ReconcileJobStore.LeasedJob(
+                    "job-1",
+                    "acct",
+                    "connector-1",
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    "lease-1",
+                    "",
+                    "",
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileTableTask.empty(),
+                    ReconcileViewTask.empty(),
+                    snapshotTask,
+                    ReconcileFileGroupTask.empty(),
+                    "parent-1")));
+
+    var response =
+        service
+            .leaseReconcileJob(LeaseReconcileJobRequest.getDefaultInstance())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getJob().getSnapshotTask().hasIndexPredecessor());
+    assertEquals(
+        "generation-1",
+        response.getJob().getSnapshotTask().getIndexPredecessor().getGenerationId());
+    assertEquals(
+        7L, response.getJob().getSnapshotTask().getIndexPredecessor().getActivePointerVersion());
+  }
+
+  @Test
   void leaseReconcileJobDoesNotUseExecutorIdAsPinnedRoutingFallback() {
     when(service.jobs.leaseNext(any())).thenReturn(Optional.empty());
 

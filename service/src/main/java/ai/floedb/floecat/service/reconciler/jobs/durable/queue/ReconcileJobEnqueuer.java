@@ -455,6 +455,18 @@ public class ReconcileJobEnqueuer {
     rec.snapshotTaskSourceFileCount = effectiveSnapshotTask.sourceFileCount();
     rec.snapshotTaskDirectStatsBlobUri = blankToEmpty(effectiveSnapshotTask.directStatsBlobUri());
     rec.snapshotTaskDirectStatsRecordCount = effectiveSnapshotTask.directStatsRecordCount();
+    var snapshotIndexPredecessor = effectiveSnapshotTask.indexPredecessor();
+    rec.snapshotTaskIndexPredecessorPresent = snapshotIndexPredecessor != null;
+    rec.snapshotTaskIndexPredecessorGenerationId =
+        snapshotIndexPredecessor == null ? "" : snapshotIndexPredecessor.generationId();
+    rec.snapshotTaskIndexPredecessorActivePointerVersion =
+        snapshotIndexPredecessor == null ? 0L : snapshotIndexPredecessor.activePointerVersion();
+    rec.snapshotTaskIndexPredecessorCaptureManifestUri =
+        snapshotIndexPredecessor == null ? "" : snapshotIndexPredecessor.captureManifestUri();
+    rec.snapshotTaskIndexPredecessorCaptureManifestPointerVersion =
+        snapshotIndexPredecessor == null
+            ? 0L
+            : snapshotIndexPredecessor.captureManifestPointerVersion();
     rec.fileGroupPlanId = blankToEmpty(effectiveFileGroupTask.planId());
     rec.fileGroupGroupId = blankToEmpty(effectiveFileGroupTask.groupId());
     rec.fileGroupTableId = blankToEmpty(effectiveFileGroupTask.tableId());

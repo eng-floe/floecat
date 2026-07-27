@@ -191,7 +191,21 @@ public class ReconcilePayloadStore {
         fileGroupCount,
         state.snapshotTaskSourceFileCount,
         blankToEmpty(state.snapshotTaskDirectStatsBlobUri),
-        state.snapshotTaskDirectStatsRecordCount);
+        state.snapshotTaskDirectStatsRecordCount,
+        snapshotIndexPredecessor(state));
+  }
+
+  private static ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor
+          .IndexGenerationPredecessor
+      snapshotIndexPredecessor(StoredReconcileJob state) {
+    return state.snapshotTaskIndexPredecessorPresent
+        ? new ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor
+            .IndexGenerationPredecessor(
+            state.snapshotTaskIndexPredecessorGenerationId,
+            state.snapshotTaskIndexPredecessorActivePointerVersion,
+            state.snapshotTaskIndexPredecessorCaptureManifestUri,
+            state.snapshotTaskIndexPredecessorCaptureManifestPointerVersion)
+        : null;
   }
 
   private ReconcileFileGroupTask buildFileGroupTask(StoredReconcileJob state) {

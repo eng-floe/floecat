@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -231,18 +232,21 @@ class InMemoryReconcileJobStoreTest {
 
     ReconcileSnapshotTask task =
         ReconcileSnapshotTask.of(
-            "table-1",
-            55L,
-            "db",
-            "events",
-            List.of(
-                ReconcileFileGroupTask.of(
-                    jobId,
-                    "snapshot-55-group-0",
-                    "table-1",
-                    55L,
-                    List.of("s3://bucket/data/file-1.parquet"))),
-            true);
+                "table-1",
+                55L,
+                "db",
+                "events",
+                List.of(
+                    ReconcileFileGroupTask.of(
+                        jobId,
+                        "snapshot-55-group-0",
+                        "table-1",
+                        55L,
+                        List.of("s3://bucket/data/file-1.parquet"))),
+                true)
+            .withIndexPredecessor(
+                new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+                    "generation-1", 7L, "/capture.pb", 9L));
     String manifestUri = store.persistSnapshotPlanManifest("acct", jobId, task);
     var lease = store.leaseNext().orElseThrow();
     assertTrue(store.adoptSnapshotPlanManifest(jobId, lease.leaseEpoch, task, manifestUri, true));
@@ -252,6 +256,7 @@ class InMemoryReconcileJobStoreTest {
     assertEquals(
         "s3://bucket/data/file-1.parquet",
         job.snapshotTask.fileGroups().getFirst().filePaths().getFirst());
+    assertEquals(task.indexPredecessor(), job.snapshotTask.indexPredecessor());
   }
 
   @Test

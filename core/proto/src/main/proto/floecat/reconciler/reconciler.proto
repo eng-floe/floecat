@@ -207,6 +207,9 @@ message ReconcileSnapshotTask {
   uint32 file_group_count = 9;
   // Number of source files expected to be represented for this snapshot capture.
   uint32 source_file_count = 12;
+  // Index generation baseline pinned before file-group fan-out. Required when index capture is
+  // requested so every file group inherits artifacts from the same generation.
+  IndexGenerationPredecessor index_predecessor = 13;
   // Optional blob URI for persisted direct target stats results.
   string direct_stats_blob_uri = 10;
   // Number of direct target stats records persisted in the blob.

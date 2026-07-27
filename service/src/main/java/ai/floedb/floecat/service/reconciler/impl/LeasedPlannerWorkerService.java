@@ -24,6 +24,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -40,6 +41,7 @@ import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
+import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
@@ -55,6 +57,7 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
   @Inject ReconcileJobStore jobs;
   @Inject ReconcilerBackend backend;
   @Inject ConnectorRepository connectorRepo;
+  @Inject IndexArtifactRepository indexArtifactRepository;
   @Inject IdempotencyRepository idempotencyStore;
 
   record PlanConnectorPayload(
@@ -320,6 +323,8 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
       if (snapshotJob == null || snapshotJob.snapshotTask().isEmpty()) {
         continue;
       }
+      ReconcileSnapshotTask pinnedSnapshotTask =
+          pinIndexPredecessor(lease, snapshotJob.scope(), snapshotJob.snapshotTask());
       childSpecs.add(
           ReconcileJobStore.BulkEnqueueSpec.of(
               lease.accountId,
@@ -330,7 +335,7 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
               ReconcileJobKind.PLAN_SNAPSHOT,
               ReconcileTableTask.empty(),
               ReconcileViewTask.empty(),
-              snapshotJob.snapshotTask(),
+              pinnedSnapshotTask,
               ReconcileFileGroupTask.empty(),
               effectiveExecutionPolicy(lease),
               lease.jobId,
@@ -361,6 +366,30 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
                         SubmitLeasedPlanTableResultRequest.Chunk::parseFrom))
             .body
         != null;
+  }
+
+  private ReconcileSnapshotTask pinIndexPredecessor(
+      ReconcileJobStore.LeasedJob lease, ReconcileScope scope, ReconcileSnapshotTask snapshotTask) {
+    ReconcileScope effectiveScope = scope == null ? ReconcileScope.empty() : scope;
+    if (!effectiveScope.capturePolicy().requestsIndexes()) {
+      return snapshotTask;
+    }
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(lease.accountId)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId(snapshotTask.tableId())
+            .build();
+    IndexArtifactRepository.GenerationPredecessor predecessor =
+        indexArtifactRepository
+            .captureGenerationInput(tableId, snapshotTask.snapshotId(), List.of())
+            .predecessor();
+    return snapshotTask.withIndexPredecessor(
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            predecessor.generationId(),
+            predecessor.activePointerVersion(),
+            predecessor.captureManifestUri(),
+            predecessor.captureManifestPointerVersion()));
   }
 
   public boolean persistPlanTableFailure(
@@ -493,6 +522,9 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
                 baseSnapshotTask.directStatsBlobUri(),
                 baseSnapshotTask.directStatsRecordCount())
             : plannedSnapshotTask;
+    finalizedSnapshotTask =
+        preservePinnedIndexPredecessor(
+            currentJob.scope, currentJob.snapshotTask, finalizedSnapshotTask);
     ReconcileSnapshotTask durableSnapshotTask = durableSnapshotTask(finalizedSnapshotTask);
     if ("JS_SUCCEEDED".equals(currentJob.state)) {
       if (durableSnapshotTask.equals(currentJob.snapshotTask)) {
@@ -598,7 +630,8 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
     if (cancelled != null) {
       return cancelled;
     }
-    ReconcileSnapshotTask durableSnapshotTask = durableSnapshotTask(plannedSnapshotTask);
+    ReconcileSnapshotTask durableSnapshotTask =
+        preservePinnedIndexPredecessor(lease, durableSnapshotTask(plannedSnapshotTask));
     SubmitLeasedPlanSnapshotResultRequest.Chunk stagedChunk =
         chunk == null
             ? SubmitLeasedPlanSnapshotResultRequest.Chunk.newBuilder().build()
@@ -741,7 +774,30 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
         effective.fileGroupCount(),
         effective.sourceFileCount(),
         effective.directStatsBlobUri(),
-        effective.directStatsRecordCount());
+        effective.directStatsRecordCount(),
+        effective.indexPredecessor());
+  }
+
+  private static ReconcileSnapshotTask preservePinnedIndexPredecessor(
+      ReconcileJobStore.LeasedJob lease, ReconcileSnapshotTask snapshotTask) {
+    return preservePinnedIndexPredecessor(lease.scope, lease.snapshotTask, snapshotTask);
+  }
+
+  private static ReconcileSnapshotTask preservePinnedIndexPredecessor(
+      ReconcileScope scope,
+      ReconcileSnapshotTask persistedSnapshotTask,
+      ReconcileSnapshotTask snapshotTask) {
+    if (scope == null || !scope.capturePolicy().requestsIndexes()) {
+      return snapshotTask;
+    }
+    ReconcileSnapshotTask leasedSnapshotTask =
+        persistedSnapshotTask == null ? ReconcileSnapshotTask.empty() : persistedSnapshotTask;
+    if (leasedSnapshotTask.indexPredecessor() == null) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription("snapshot index generation predecessor was not pinned before planning")
+          .asRuntimeException();
+    }
+    return snapshotTask.withIndexPredecessor(leasedSnapshotTask.indexPredecessor());
   }
 
   public boolean persistPlanSnapshotFailure(

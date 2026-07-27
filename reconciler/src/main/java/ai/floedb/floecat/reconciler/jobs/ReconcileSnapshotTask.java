@@ -31,7 +31,8 @@ public record ReconcileSnapshotTask(
     int fileGroupCount,
     int sourceFileCount,
     String directStatsBlobUri,
-    int directStatsRecordCount) {
+    int directStatsRecordCount,
+    ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor) {
 
   public enum CompletionMode {
     FILE_GROUPS,
@@ -190,6 +191,36 @@ public record ReconcileSnapshotTask(
       int sourceFileCount,
       String directStatsBlobUri,
       int directStatsRecordCount) {
+    return of(
+        tableId,
+        snapshotId,
+        sourceNamespace,
+        sourceTable,
+        fileGroups,
+        fileGroupPlanRecorded,
+        completionMode,
+        fileGroupPlanBlobUri,
+        fileGroupCount,
+        sourceFileCount,
+        directStatsBlobUri,
+        directStatsRecordCount,
+        null);
+  }
+
+  public static ReconcileSnapshotTask of(
+      String tableId,
+      long snapshotId,
+      String sourceNamespace,
+      String sourceTable,
+      List<ReconcileFileGroupTask> fileGroups,
+      boolean fileGroupPlanRecorded,
+      CompletionMode completionMode,
+      String fileGroupPlanBlobUri,
+      int fileGroupCount,
+      int sourceFileCount,
+      String directStatsBlobUri,
+      int directStatsRecordCount,
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor) {
     if ((tableId == null || tableId.isBlank())
         && snapshotId < 0L
         && (sourceNamespace == null || sourceNamespace.isBlank())
@@ -201,7 +232,8 @@ public record ReconcileSnapshotTask(
         && fileGroupCount <= 0
         && sourceFileCount <= 0
         && (directStatsBlobUri == null || directStatsBlobUri.isBlank())
-        && directStatsRecordCount <= 0) {
+        && directStatsRecordCount <= 0
+        && indexPredecessor == null) {
       return empty();
     }
     return new ReconcileSnapshotTask(
@@ -216,12 +248,31 @@ public record ReconcileSnapshotTask(
         fileGroupCount,
         sourceFileCount,
         directStatsBlobUri,
-        directStatsRecordCount);
+        directStatsRecordCount,
+        indexPredecessor);
+  }
+
+  public ReconcileSnapshotTask withIndexPredecessor(
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor) {
+    return of(
+        tableId,
+        snapshotId,
+        sourceNamespace,
+        sourceTable,
+        fileGroups,
+        fileGroupPlanRecorded,
+        completionMode,
+        fileGroupPlanBlobUri,
+        fileGroupCount,
+        sourceFileCount,
+        directStatsBlobUri,
+        directStatsRecordCount,
+        predecessor);
   }
 
   public static ReconcileSnapshotTask empty() {
     return new ReconcileSnapshotTask(
-        "", -1L, "", "", List.of(), false, CompletionMode.FILE_GROUPS, "", 0, 0, "", 0);
+        "", -1L, "", "", List.of(), false, CompletionMode.FILE_GROUPS, "", 0, 0, "", 0, null);
   }
 
   @JsonIgnore
@@ -237,6 +288,7 @@ public record ReconcileSnapshotTask(
         && fileGroupCount <= 0
         && sourceFileCount <= 0
         && directStatsBlobUri.isBlank()
-        && directStatsRecordCount <= 0;
+        && directStatsRecordCount <= 0
+        && indexPredecessor == null;
   }
 }

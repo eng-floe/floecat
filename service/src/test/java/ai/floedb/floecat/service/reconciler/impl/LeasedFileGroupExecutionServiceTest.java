@@ -319,6 +319,75 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   @Test
+  void persistSuccessRejectsIndexPredecessorThatDiffersFromParentPin() {
+    ReconcileFileGroupTask plannedGroup =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            TABLE_ID,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), java.util.Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    var pinned =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture.pb", 9L);
+    var submitted =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-2", 8L, "/capture-2.pb", 10L);
+    ReconcileJobStore.ReconcileJob childLeaseView =
+        job(
+            CHILD_JOB_ID,
+            ReconcileJobKind.EXEC_FILE_GROUP,
+            ReconcileSnapshotTask.empty(),
+            plannedGroup.asReference(),
+            PARENT_JOB_ID,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope);
+    ReconcileJobStore.ReconcileJob parent =
+        job(
+            PARENT_JOB_ID,
+            ReconcileJobKind.PLAN_SNAPSHOT,
+            ReconcileSnapshotTask.of(
+                    TABLE_ID,
+                    SNAPSHOT_ID,
+                    "db",
+                    "events",
+                    List.of(plannedGroup),
+                    true,
+                    ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                    "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                    1)
+                .withIndexPredecessor(pinned),
+            ReconcileFileGroupTask.empty(),
+            "");
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            service.persistSuccess(
+                principal,
+                CHILD_JOB_ID,
+                LEASE_EPOCH,
+                "result-1",
+                resultDescriptor(List.of(), List.of(), List.of(), submitted),
+                List.of(),
+                List.of()));
+
+    verify(jobs, never())
+        .completeFileGroupSuccess(
+            anyString(),
+            anyString(),
+            any(ReconcileFileGroupResultDescriptor.class),
+            anyLong(),
+            anyString());
+  }
+
+  @Test
   void persistSuccessProtectsEachIndividualStatsObjectWithoutReadingIt() {
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of(
@@ -699,6 +768,72 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   @Test
+  void resolveLoadsIndexArtifactsFromPinnedSnapshotGeneration() {
+    String filePath = "s3://bucket/data/file-1.parquet";
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of("plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of(filePath));
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            TABLE_ID,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), java.util.Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    var pinned =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture.pb", 9L);
+    var repositoryPredecessor =
+        new IndexArtifactRepository.GenerationPredecessor("generation-1", 7L, "/capture.pb", 9L);
+
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    CHILD_JOB_ID,
+                    ReconcileJobKind.EXEC_FILE_GROUP,
+                    ReconcileSnapshotTask.empty(),
+                    group.asReference(),
+                    PARENT_JOB_ID,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    scope)));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                            TABLE_ID,
+                            SNAPSHOT_ID,
+                            "db",
+                            "events",
+                            List.of(group),
+                            true,
+                            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                            1)
+                        .withIndexPredecessor(pinned),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(tableRepo.getById(tableId())).thenReturn(Optional.of(table()));
+    when(connectorRepo.getById(connectorId())).thenReturn(Optional.of(connector()));
+    when(indexArtifactRepository.loadGenerationInput(
+            eq(tableId()), eq(SNAPSHOT_ID), eq(repositoryPredecessor), eq(List.of(filePath))))
+        .thenReturn(new IndexArtifactRepository.GenerationInput(repositoryPredecessor, List.of()));
+
+    StandaloneFileGroupExecutionPayload payload =
+        service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH);
+
+    assertEquals("generation-1", payload.indexPredecessor().generationId());
+    assertEquals(7L, payload.indexPredecessor().activePointerVersion());
+    verify(indexArtifactRepository)
+        .loadGenerationInput(
+            eq(tableId()), eq(SNAPSHOT_ID), eq(repositoryPredecessor), eq(List.of(filePath)));
+    verify(indexArtifactRepository, never()).captureGenerationInput(any(), anyLong(), any());
+  }
+
+  @Test
   void resolveAddsTableStorageLocationHintToDeltaConnectorPayload() {
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(
@@ -999,6 +1134,14 @@ class LeasedFileGroupExecutionServiceTest {
       List<TargetStatsRecord> fileStats,
       List<StatsObjectDescriptor> fileStatsDescriptors,
       List<StatsObjectDescriptor> indexArtifactDescriptors) {
+    return resultDescriptor(fileStats, fileStatsDescriptors, indexArtifactDescriptors, null);
+  }
+
+  private ReconcileFileGroupResultDescriptor resultDescriptor(
+      List<TargetStatsRecord> fileStats,
+      List<StatsObjectDescriptor> fileStatsDescriptors,
+      List<StatsObjectDescriptor> indexArtifactDescriptors,
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor) {
     byte[] resultBytes = "result-payload".getBytes(java.nio.charset.StandardCharsets.UTF_8);
     return new ReconcileFileGroupResultDescriptor(
         1,
@@ -1024,7 +1167,7 @@ class LeasedFileGroupExecutionServiceTest {
         statsObjectPrefix(),
         fileStats.size(),
         ArtifactReferenceDigest.sha256(fileStatsDescriptors, indexArtifactDescriptors),
-        null,
+        indexPredecessor,
         1L);
   }
 

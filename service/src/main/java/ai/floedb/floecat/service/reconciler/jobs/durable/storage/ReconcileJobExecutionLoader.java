@@ -50,7 +50,21 @@ public class ReconcileJobExecutionLoader {
         Math.max(0, state.snapshotTaskFileGroupCount),
         (int) Math.max(0L, state.snapshotTaskSourceFileCount),
         state.snapshotTaskDirectStatsBlobUri == null ? "" : state.snapshotTaskDirectStatsBlobUri,
-        (int) Math.max(0L, state.snapshotTaskDirectStatsRecordCount));
+        (int) Math.max(0L, state.snapshotTaskDirectStatsRecordCount),
+        snapshotIndexPredecessor(state));
+  }
+
+  private static ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor
+          .IndexGenerationPredecessor
+      snapshotIndexPredecessor(StoredReconcileJob state) {
+    return state.snapshotTaskIndexPredecessorPresent
+        ? new ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor
+            .IndexGenerationPredecessor(
+            state.snapshotTaskIndexPredecessorGenerationId,
+            state.snapshotTaskIndexPredecessorActivePointerVersion,
+            state.snapshotTaskIndexPredecessorCaptureManifestUri,
+            state.snapshotTaskIndexPredecessorCaptureManifestPointerVersion)
+        : null;
   }
 
   public ReconcileFileGroupTask compactFileGroupTask(StoredReconcileJob state) {

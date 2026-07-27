@@ -1312,7 +1312,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         effective.fileGroupCount(),
         effective.sourceFileCount(),
         effective.directStatsBlobUri(),
-        effective.directStatsRecordCount());
+        effective.directStatsRecordCount(),
+        effective.indexPredecessor());
   }
 
   private static ReconcileFileGroupTask compactFileGroupTask(ReconcileFileGroupTask fileGroupTask) {
@@ -1374,27 +1375,38 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
       ReconcileSnapshotTask snapshotTask) {
     ReconcileSnapshotTask effective =
         snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
-    return ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.newBuilder()
-        .setTableId(effective.tableId())
-        .setSnapshotId(effective.snapshotId())
-        .setSourceNamespace(effective.sourceNamespace())
-        .setSourceTable(effective.sourceTable())
-        .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
-        .setFileGroupPlanBlobUri(effective.fileGroupPlanBlobUri())
-        .setFileGroupCount(effective.fileGroupCount())
-        .setSourceFileCount(effective.sourceFileCount())
-        .setDirectStatsBlobUri(effective.directStatsBlobUri())
-        .setDirectStatsRecordCount(effective.directStatsRecordCount())
-        .setCompletionMode(
-            switch (effective.completionMode()) {
-              case DIRECT_STATS ->
-                  ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
-                      .RSCM_DIRECT_STATS;
-              case FILE_GROUPS ->
-                  ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
-                      .RSCM_FILE_GROUPS;
-            })
-        .build();
+    ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.Builder builder =
+        ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.newBuilder()
+            .setTableId(effective.tableId())
+            .setSnapshotId(effective.snapshotId())
+            .setSourceNamespace(effective.sourceNamespace())
+            .setSourceTable(effective.sourceTable())
+            .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
+            .setFileGroupPlanBlobUri(effective.fileGroupPlanBlobUri())
+            .setFileGroupCount(effective.fileGroupCount())
+            .setSourceFileCount(effective.sourceFileCount())
+            .setDirectStatsBlobUri(effective.directStatsBlobUri())
+            .setDirectStatsRecordCount(effective.directStatsRecordCount())
+            .setCompletionMode(
+                switch (effective.completionMode()) {
+                  case DIRECT_STATS ->
+                      ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
+                          .RSCM_DIRECT_STATS;
+                  case FILE_GROUPS ->
+                      ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
+                          .RSCM_FILE_GROUPS;
+                });
+    if (effective.indexPredecessor() != null) {
+      var predecessor = effective.indexPredecessor();
+      builder.setIndexPredecessor(
+          ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor.newBuilder()
+              .setGenerationId(predecessor.generationId())
+              .setActivePointerVersion(predecessor.activePointerVersion())
+              .setCaptureManifestUri(predecessor.captureManifestUri())
+              .setCaptureManifestPointerVersion(predecessor.captureManifestPointerVersion())
+              .build());
+    }
+    return builder.build();
   }
 
   private static ai.floedb.floecat.reconciler.rpc.ReconcileFileGroupTask toProtoFileGroupTask(
@@ -1773,7 +1785,14 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         snapshotTask.getFileGroupCount(),
         snapshotTask.getSourceFileCount(),
         snapshotTask.getDirectStatsBlobUri(),
-        snapshotTask.getDirectStatsRecordCount());
+        snapshotTask.getDirectStatsRecordCount(),
+        snapshotTask.hasIndexPredecessor()
+            ? new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+                snapshotTask.getIndexPredecessor().getGenerationId(),
+                snapshotTask.getIndexPredecessor().getActivePointerVersion(),
+                snapshotTask.getIndexPredecessor().getCaptureManifestUri(),
+                snapshotTask.getIndexPredecessor().getCaptureManifestPointerVersion())
+            : null);
   }
 
   private static ReconcileFileGroupTask fromProtoFileGroupTask(

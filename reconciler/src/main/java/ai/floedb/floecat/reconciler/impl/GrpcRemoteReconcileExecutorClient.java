@@ -2041,27 +2041,31 @@ class GrpcRemoteReconcileExecutorClient
       ReconcileSnapshotTask snapshotTask) {
     ReconcileSnapshotTask effective =
         snapshotTask == null ? ReconcileSnapshotTask.empty() : snapshotTask;
-    return ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.newBuilder()
-        .setTableId(effective.tableId())
-        .setSnapshotId(effective.snapshotId())
-        .setSourceNamespace(effective.sourceNamespace())
-        .setSourceTable(effective.sourceTable())
-        .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
-        .setFileGroupPlanBlobUri(effective.fileGroupPlanBlobUri())
-        .setFileGroupCount(effective.fileGroupCount())
-        .setSourceFileCount(effective.sourceFileCount())
-        .setDirectStatsBlobUri(effective.directStatsBlobUri())
-        .setDirectStatsRecordCount(effective.directStatsRecordCount())
-        .setCompletionMode(
-            switch (effective.completionMode()) {
-              case DIRECT_STATS ->
-                  ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
-                      .RSCM_DIRECT_STATS;
-              case FILE_GROUPS ->
-                  ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
-                      .RSCM_FILE_GROUPS;
-            })
-        .build();
+    ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.Builder builder =
+        ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.newBuilder()
+            .setTableId(effective.tableId())
+            .setSnapshotId(effective.snapshotId())
+            .setSourceNamespace(effective.sourceNamespace())
+            .setSourceTable(effective.sourceTable())
+            .setFileGroupPlanRecorded(effective.fileGroupPlanRecorded())
+            .setFileGroupPlanBlobUri(effective.fileGroupPlanBlobUri())
+            .setFileGroupCount(effective.fileGroupCount())
+            .setSourceFileCount(effective.sourceFileCount())
+            .setDirectStatsBlobUri(effective.directStatsBlobUri())
+            .setDirectStatsRecordCount(effective.directStatsRecordCount())
+            .setCompletionMode(
+                switch (effective.completionMode()) {
+                  case DIRECT_STATS ->
+                      ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
+                          .RSCM_DIRECT_STATS;
+                  case FILE_GROUPS ->
+                      ai.floedb.floecat.reconciler.rpc.ReconcileSnapshotTask.CompletionMode
+                          .RSCM_FILE_GROUPS;
+                });
+    if (effective.indexPredecessor() != null) {
+      builder.setIndexPredecessor(toProtoIndexPredecessor(effective.indexPredecessor()));
+    }
+    return builder.build();
   }
 
   private static ai.floedb.floecat.reconciler.rpc.ReconcileFileGroupTask toProtoFileGroupTask(
@@ -2340,7 +2344,10 @@ class GrpcRemoteReconcileExecutorClient
         snapshotTask.getFileGroupCount(),
         snapshotTask.getSourceFileCount(),
         snapshotTask.getDirectStatsBlobUri(),
-        snapshotTask.getDirectStatsRecordCount());
+        snapshotTask.getDirectStatsRecordCount(),
+        snapshotTask.hasIndexPredecessor()
+            ? fromProtoIndexPredecessor(snapshotTask.getIndexPredecessor())
+            : null);
   }
 
   private static ReconcileFileGroupTask fromProtoFileGroupTask(

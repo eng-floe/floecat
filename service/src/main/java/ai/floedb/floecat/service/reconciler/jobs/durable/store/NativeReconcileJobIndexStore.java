@@ -878,6 +878,14 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     copy.snapshotTaskSourceFileCount = source.snapshotTaskSourceFileCount;
     copy.snapshotTaskDirectStatsBlobUri = source.snapshotTaskDirectStatsBlobUri;
     copy.snapshotTaskDirectStatsRecordCount = source.snapshotTaskDirectStatsRecordCount;
+    copy.snapshotTaskIndexPredecessorPresent = source.snapshotTaskIndexPredecessorPresent;
+    copy.snapshotTaskIndexPredecessorGenerationId = source.snapshotTaskIndexPredecessorGenerationId;
+    copy.snapshotTaskIndexPredecessorActivePointerVersion =
+        source.snapshotTaskIndexPredecessorActivePointerVersion;
+    copy.snapshotTaskIndexPredecessorCaptureManifestUri =
+        source.snapshotTaskIndexPredecessorCaptureManifestUri;
+    copy.snapshotTaskIndexPredecessorCaptureManifestPointerVersion =
+        source.snapshotTaskIndexPredecessorCaptureManifestPointerVersion;
     copy.fileGroupPlanId = source.fileGroupPlanId;
     copy.fileGroupGroupId = source.fileGroupGroupId;
     copy.fileGroupTableId = source.fileGroupTableId;

@@ -34,6 +34,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -70,6 +71,10 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   private static final String LEASE_EPOCH = "lease-1";
   private static final String TABLE_ID = "table-1";
   private static final long SNAPSHOT_ID = 55L;
+  private static final ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor
+      INDEX_PREDECESSOR =
+          new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+              "prior", 3L, "/prior-manifest.pb", 4L);
 
   private LeasedSnapshotFinalizeExecutionService service;
   private ReconcileJobStore jobs;
@@ -414,6 +419,52 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
+  void successRejectsManifestPredecessorThatDiffersFromSnapshotPin() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), policy);
+    byte[] manifestBytes =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(ACCOUNT_ID)
+            .setConnectorId("connector")
+            .setParentJobId("parent-job")
+            .setFinalizeJobId(FINALIZE_JOB_ID)
+            .setTableId(TABLE_ID)
+            .setSnapshotId(SNAPSHOT_ID)
+            .setLeaseEpoch(LEASE_EPOCH)
+            .setResultId("result-1")
+            .setIndexPredecessor(
+                IndexGenerationPredecessor.newBuilder()
+                    .setGenerationId("different")
+                    .setActivePointerVersion(5L)
+                    .setCaptureManifestUri("/different.pb")
+                    .setCaptureManifestPointerVersion(6L))
+            .setCapturePolicy(
+                ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
+                    .addOutputs(CaptureOutput.CO_PARQUET_PAGE_INDEX))
+            .build()
+            .toByteArray();
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJobView("JS_RUNNING", 0, 0, scope)));
+    when(blobs.get(manifestUri())).thenReturn(manifestBytes);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            service.persistSuccess(
+                principal,
+                FINALIZE_JOB_ID,
+                LEASE_EPOCH,
+                "result-1",
+                descriptor(manifestUri(), manifestBytes, 0, 0, 0)));
+
+    verify(service.indexArtifactRepository, never())
+        .activateGeneration(any(), anyLong(), anyString(), any(byte[].class), any(), anyBoolean());
+  }
+
+  @Test
   void successRejectsManifestPolicyThatDoesNotMatchLease() {
     ReconcileCapturePolicy policy =
         ReconcileCapturePolicy.of(
@@ -591,6 +642,9 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             sourceFileCount,
             "",
             0);
+    if (scope != null && scope.capturePolicy().requestsIndexes()) {
+      snapshotTask = snapshotTask.withIndexPredecessor(INDEX_PREDECESSOR);
+    }
     return new ReconcileJobStore.ReconcileJob(
         FINALIZE_JOB_ID,
         ACCOUNT_ID,

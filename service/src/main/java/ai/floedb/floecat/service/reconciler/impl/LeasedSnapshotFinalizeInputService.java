@@ -33,7 +33,6 @@ import jakarta.inject.Inject;
 public class LeasedSnapshotFinalizeInputService {
   @Inject ReconcileJobStore jobs;
   @Inject SnapshotFinalizeChildStateService childStateService;
-  @Inject IndexArtifactRepository indexArtifactRepository;
 
   record SnapshotFinalizeInput(
       String jobId,
@@ -94,6 +93,8 @@ public class LeasedSnapshotFinalizeInputService {
           .withDescription("snapshot finalization requires explicit snapshot coverage metadata")
           .asRuntimeException();
     }
+    IndexArtifactRepository.GenerationPredecessor pinnedIndexPredecessor =
+        pinnedIndexPredecessor(lease, snapshotTask);
     if (snapshotTask.completionMode() == ReconcileSnapshotTask.CompletionMode.DIRECT_STATS) {
       return new SnapshotFinalizeInput(
           lease.jobId,
@@ -115,12 +116,6 @@ public class LeasedSnapshotFinalizeInputService {
     if (snapshotTask.fileGroupCount() == 0) {
       requireNoUnexpectedChildren(lease.accountId, lease.parentJobId, lease.jobId);
       ResourceId tableId = tableId(lease, snapshotTask);
-      IndexArtifactRepository.GenerationPredecessor indexPredecessor =
-          lease.scope != null && lease.scope.capturePolicy().requestsIndexes()
-              ? indexArtifactRepository
-                  .captureGenerationInput(tableId, snapshotTask.snapshotId(), java.util.List.of())
-                  .predecessor()
-              : null;
       return new SnapshotFinalizeInput(
           lease.jobId,
           lease.leaseEpoch,
@@ -136,7 +131,7 @@ public class LeasedSnapshotFinalizeInputService {
           0,
           statsObjectPrefix(lease),
           captureManifestUri(lease),
-          indexPredecessor);
+          pinnedIndexPredecessor);
     }
     SnapshotFinalizeChildStateService.ChildState childState =
         childStateService.compactChildState(
@@ -157,7 +152,25 @@ public class LeasedSnapshotFinalizeInputService {
         snapshotTask.fileGroupCount(),
         statsObjectPrefix(lease),
         captureManifestUri(lease),
-        null);
+        pinnedIndexPredecessor);
+  }
+
+  private static IndexArtifactRepository.GenerationPredecessor pinnedIndexPredecessor(
+      ReconcileJobStore.LeasedJob lease, ReconcileSnapshotTask snapshotTask) {
+    if (lease.scope == null || !lease.scope.capturePolicy().requestsIndexes()) {
+      return null;
+    }
+    var predecessor = snapshotTask.indexPredecessor();
+    if (predecessor == null) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription("snapshot index generation predecessor was not pinned before fan-out")
+          .asRuntimeException();
+    }
+    return new IndexArtifactRepository.GenerationPredecessor(
+        predecessor.generationId(),
+        predecessor.activePointerVersion(),
+        predecessor.captureManifestUri(),
+        predecessor.captureManifestPointerVersion());
   }
 
   private static String statsObjectPrefix(ReconcileJobStore.LeasedJob lease) {

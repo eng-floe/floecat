@@ -59,7 +59,6 @@ class LeasedSnapshotFinalizeInputServiceTest {
   private SnapshotFinalizeChildStateService childStateService;
   private SnapshotFinalizeCoverageService coverageService;
   private ReconcileJobStore jobs;
-  private IndexArtifactRepository indexArtifactRepository;
   private PrincipalContext principal;
 
   @BeforeEach
@@ -68,11 +67,9 @@ class LeasedSnapshotFinalizeInputServiceTest {
     childStateService = new SnapshotFinalizeChildStateService();
     coverageService = mock(SnapshotFinalizeCoverageService.class);
     jobs = mock(ReconcileJobStore.class);
-    indexArtifactRepository = mock(IndexArtifactRepository.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
     service.childStateService = childStateService;
-    service.indexArtifactRepository = indexArtifactRepository;
     childStateService.jobs = jobs;
     when(principal.getCorrelationId()).thenReturn("corr");
   }
@@ -320,7 +317,43 @@ class LeasedSnapshotFinalizeInputServiceTest {
   }
 
   @Test
-  void resolveExplicitEmptyIndexSnapshotCapturesFinalizePredecessor() {
+  void resolveExplicitEmptyIndexSnapshotUsesPinnedPredecessor() {
+    var pinnedPredecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture-1.pb", 9L);
+    ReconcileSnapshotTask emptyTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            0);
+    emptyTask = emptyTask.withIndexPredecessor(pinnedPredecessor);
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            TABLE_ID,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJob("JS_RUNNING", true, emptyTask, scope)));
+    when(jobs.childJobsPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(List.of(), ""));
+    var payload = service.resolve(principal, FINALIZE_JOB_ID, LEASE_EPOCH);
+
+    assertEquals(
+        new IndexArtifactRepository.GenerationPredecessor("generation-1", 7L, "/capture-1.pb", 9L),
+        payload.indexPredecessor());
+  }
+
+  @Test
+  void resolveRejectsIndexSnapshotWithoutPinnedPredecessor() {
     ReconcileSnapshotTask emptyTask =
         ReconcileSnapshotTask.of(
             TABLE_ID,
@@ -339,22 +372,18 @@ class LeasedSnapshotFinalizeInputServiceTest {
             List.of(),
             ReconcileCapturePolicy.of(
                 List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
-    var predecessor =
-        new IndexArtifactRepository.GenerationPredecessor("generation-1", 7L, "/capture-1.pb", 9L);
     when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
         .thenReturn(Optional.of(finalizeJob("JS_RUNNING", true, emptyTask, scope)));
-    when(jobs.childJobsPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
-        .thenReturn(new ReconcileJobStore.ReconcileJobPage(List.of(), ""));
-    when(indexArtifactRepository.captureGenerationInput(
-            org.mockito.ArgumentMatchers.any(),
-            org.mockito.ArgumentMatchers.eq(SNAPSHOT_ID),
-            org.mockito.ArgumentMatchers.eq(List.of())))
-        .thenReturn(new IndexArtifactRepository.GenerationInput(predecessor, List.of()));
 
-    var payload = service.resolve(principal, FINALIZE_JOB_ID, LEASE_EPOCH);
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> service.resolve(principal, FINALIZE_JOB_ID, LEASE_EPOCH));
 
-    assertEquals(predecessor, payload.indexPredecessor());
+    assertEquals(
+        "FAILED_PRECONDITION: snapshot index generation predecessor was not pinned before fan-out",
+        error.getMessage());
   }
 
   private static ReconcileJobStore.ReconcileJob finalizeJob(

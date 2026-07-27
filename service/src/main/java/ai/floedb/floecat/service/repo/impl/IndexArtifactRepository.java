@@ -456,6 +456,28 @@ public class IndexArtifactRepository {
         "active index artifact generation changed repeatedly for snapshot " + snapshotId);
   }
 
+  public GenerationInput loadGenerationInput(
+      ResourceId tableId,
+      long snapshotId,
+      GenerationPredecessor predecessor,
+      List<String> filePaths) {
+    if (predecessor == null) {
+      throw new IllegalArgumentException("index generation predecessor is required");
+    }
+    List<IndexArtifactRecord> artifacts = new ArrayList<>();
+    if (!predecessor.generationId().isBlank()) {
+      for (String filePath : filePaths == null ? List.<String>of() : filePaths) {
+        String targetStorageId = "file:" + filePath;
+        pointerStore
+            .get(
+                generationPointer(tableId, snapshotId, predecessor.generationId(), targetStorageId))
+            .map(this::readRecord)
+            .ifPresent(artifacts::add);
+      }
+    }
+    return new GenerationInput(predecessor, List.copyOf(artifacts));
+  }
+
   private static boolean samePointer(Pointer left, Pointer right) {
     if (left == null || right == null) {
       return left == right;

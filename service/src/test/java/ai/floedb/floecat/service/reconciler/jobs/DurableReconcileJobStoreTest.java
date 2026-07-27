@@ -30,6 +30,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileIndexArtifactResult;
@@ -453,6 +454,70 @@ class DurableReconcileJobStoreTest {
     assertEquals(
         "JS_SUCCEEDED",
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, secondParentJobId)).state);
+  }
+
+  @Test
+  void snapshotIndexPredecessorSurvivesDurableEnqueueReadAndLease() {
+    var predecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture.pb", 9L);
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders").withIndexPredecessor(predecessor);
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    assertEquals(
+        predecessor, store.get(ACCOUNT_ID, jobId).orElseThrow().snapshotTask.indexPredecessor());
+    assertEquals(predecessor, leaseJob(jobId).snapshotTask.indexPredecessor());
+  }
+
+  @Test
+  void snapshotPlanRetryCannotReplaceItsPinnedIndexPredecessor() {
+    var firstPredecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture-1.pb", 9L);
+    var retryPredecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-2", 8L, "/capture-2.pb", 10L);
+    ReconcileSnapshotTask baseTask = ReconcileSnapshotTask.of("table-1", 55L, "db", "orders");
+    ReconcileScope scope = ReconcileScope.of(List.of(), "table-1");
+
+    String firstJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            baseTask.withIndexPredecessor(firstPredecessor),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    String retryJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            baseTask.withIndexPredecessor(retryPredecessor),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    assertEquals(firstJobId, retryJobId);
+    assertEquals(
+        firstPredecessor,
+        store.get(ACCOUNT_ID, firstJobId).orElseThrow().snapshotTask.indexPredecessor());
   }
 
   @Test

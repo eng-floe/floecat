@@ -215,7 +215,15 @@ public class ReconcileJobProjector {
         Math.max(0, stored.snapshotTaskFileGroupCount),
         (int) Math.max(0L, stored.snapshotTaskSourceFileCount),
         blankToEmpty(stored.snapshotTaskDirectStatsBlobUri),
-        (int) Math.max(0L, stored.snapshotTaskDirectStatsRecordCount));
+        (int) Math.max(0L, stored.snapshotTaskDirectStatsRecordCount),
+        stored.snapshotTaskIndexPredecessorPresent
+            ? new ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor
+                .IndexGenerationPredecessor(
+                stored.snapshotTaskIndexPredecessorGenerationId,
+                stored.snapshotTaskIndexPredecessorActivePointerVersion,
+                stored.snapshotTaskIndexPredecessorCaptureManifestUri,
+                stored.snapshotTaskIndexPredecessorCaptureManifestPointerVersion)
+            : null);
   }
 
   private static ReconcileFileGroupTask lightweightFileGroupTask(StoredReconcileJob stored) {
