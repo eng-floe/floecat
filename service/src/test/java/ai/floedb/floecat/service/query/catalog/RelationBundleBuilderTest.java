@@ -23,7 +23,9 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.RelationNode;
+import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.ColumnFailureCode;
 import ai.floedb.floecat.query.rpc.ColumnInfo;
 import ai.floedb.floecat.query.rpc.ColumnResult;
@@ -50,6 +52,7 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.DecorationException;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
+import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -255,6 +258,72 @@ class RelationBundleBuilderTest {
     assertThat(result.info().hasFlightEndpoint()).isTrue();
     assertThat(result.info().getFlightEndpoint().getHost()).isEqualTo("node-declared");
     assertThat(result.info().getFlightEndpoint().getPort()).isEqualTo(4111);
+  }
+
+  @Test
+  void buildEmitsViewDefinitionDecoration() {
+    ResourceId viewId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("VIEW_X")
+            .setKind(ResourceKind.RK_VIEW)
+            .build();
+    List<SchemaColumn> schema =
+        List.of(SchemaColumn.newBuilder().setId(1).setName("answer").setOrdinal(1).build());
+    ViewNode view =
+        new ViewNode(
+            viewId,
+            "blob://test/view-x",
+            CATALOG,
+            ResourceId.getDefaultInstance(),
+            "view_x",
+            "SELECT 42 AS answer",
+            "pg",
+            schema,
+            List.of(),
+            List.of(),
+            GraphNodeOrigin.USER,
+            Map.of(),
+            Optional.empty(),
+            Map.of(),
+            Map.of());
+    overlay.registerRelation(
+        viewId,
+        view,
+        schema,
+        NameRef.newBuilder().setCatalog("cat").setName("view_x").build());
+
+    EngineMetadataDecoratorProvider provider =
+        ignored ->
+            Optional.of(
+                new EngineMetadataDecorator() {
+                  @Override
+                  public void decorateView(EngineContext ctx, ViewDecoration decoration) {
+                    decoration
+                        .viewBuilder()
+                        .addEngineSpecific(
+                            EngineSpecific.newBuilder().setPayloadType("test.view-decoration"));
+                  }
+                });
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setViewId(viewId))
+            .build();
+
+    RelationInfo info =
+        builder(provider, true)
+            .build(
+                "cid",
+                resolved(viewId, candidate),
+                ctx,
+                resolutionContext(StatsProvider.NONE),
+                StatsProvider.NONE,
+                Optional.empty())
+            .info();
+
+    assertThat(info.getViewDefinition().getEngineSpecificList())
+        .extracting(EngineSpecific::getPayloadType)
+        .containsExactly("test.view-decoration");
   }
 
   @Test

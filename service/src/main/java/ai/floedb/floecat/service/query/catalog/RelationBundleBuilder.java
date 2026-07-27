@@ -265,7 +265,6 @@ final class RelationBundleBuilder {
     ViewDefinition.Builder viewBuilder = null;
     if (relation.node() instanceof ViewNode view) {
       viewBuilder = viewDefinitionBuilder(view);
-      builder.setViewDefinition(viewBuilder);
     }
 
     // The engine captured at iterator construction, not a live provider re-read: this runs on
@@ -336,6 +335,10 @@ final class RelationBundleBuilder {
               ctx.normalizedKind());
         }
       }
+    }
+
+    if (viewBuilder != null) {
+      builder.setViewDefinition(viewBuilder);
     }
 
     List<ColumnResult> columnResults =
