@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
+import ai.floedb.floecat.connector.rpc.ConnectorState;
 import ai.floedb.floecat.connector.rpc.ConnectorTransferBundle;
 import ai.floedb.floecat.connector.rpc.ConnectorTransferEntry;
 import org.junit.jupiter.api.Test;
@@ -55,9 +56,35 @@ class ConnectorTransferCliTest {
             .build();
     var bundle = ConnectorTransferBundle.newBuilder().setSourceAccountId("source-account").build();
 
-    String first = ConnectorTransferCli.idempotencyKey("run-1", bundle, entry, "");
+    String first = ConnectorTransferCli.idempotencyKey("run-1", bundle, entry);
 
-    assertThat(ConnectorTransferCli.idempotencyKey("run-1", bundle, entry, "")).isEqualTo(first);
-    assertThat(ConnectorTransferCli.idempotencyKey("run-2", bundle, entry, "")).isNotEqualTo(first);
+    assertThat(ConnectorTransferCli.idempotencyKey("run-1", bundle, entry)).isEqualTo(first);
+    assertThat(ConnectorTransferCli.idempotencyKey("run-2", bundle, entry)).isNotEqualTo(first);
+  }
+
+  @Test
+  void replacementUpdatesInPlaceAndCoversEveryPortableField() {
+    var current =
+        Connector.newBuilder()
+            .setResourceId(ResourceId.newBuilder().setId("target-connector"))
+            .build();
+    var request =
+        ConnectorTransferCli.replacementRequest(
+            current, ConnectorSpec.newBuilder().setDisplayName("connector").build());
+
+    assertThat(request.getConnectorId()).isEqualTo(current.getResourceId());
+    assertThat(request.getSpec().getState()).isEqualTo(ConnectorState.CS_ACTIVE);
+    assertThat(request.getUpdateMask().getPathsList())
+        .containsExactlyInAnyOrder(
+            "display_name",
+            "description",
+            "kind",
+            "source",
+            "destination",
+            "uri",
+            "auth",
+            "policy",
+            "state",
+            "properties");
   }
 }

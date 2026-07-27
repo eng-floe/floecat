@@ -574,63 +574,76 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                       Map.of("id", connectorId.getId())));
 
                   FieldMask normalizedMask = normalizeMask(request.getUpdateMask());
+                  String accountId = pc.getAccountId();
                   var desired =
                       applyConnectorSpecPatch(current, request.getSpec(), normalizedMask, corr)
                           .toBuilder()
                           .setUpdatedAt(nowTs())
                           .build();
+                  if (desired.hasDestination()) {
+                    desired =
+                        desired.toBuilder()
+                            .setDestination(
+                                resolveUpdatedDestination(
+                                    desired.getDestination(), accountId, corr))
+                            .build();
+                  }
                   validateConnectorProperties(
                       desired.getKind(), desired.getPropertiesMap(), corr, "properties");
                   validatePersistedAuthConfig(desired.getAuth(), corr);
                   validateReconcilePolicy(desired.getPolicy(), corr);
-                  String accountId = pc.getAccountId();
                   String secretId = connectorId.getId();
                   boolean authTouched =
                       maskTargets(normalizedMask, "auth")
                           || maskTargets(normalizedMask, "auth.credentials");
                   boolean incomingHasCredentials = hasAuthCredentials(desired.getAuth());
-                  Optional<AuthCredentials> priorCredentials = Optional.empty();
+                  boolean shouldDeleteSecret = authTouched && !incomingHasCredentials;
+                  Optional<AuthCredentials> priorCredentials =
+                      authTouched
+                          ? credentialResolver.resolve(accountId, secretId)
+                          : Optional.empty();
                   AuthConfig storedAuth = desired.getAuth();
                   if (incomingHasCredentials) {
-                    priorCredentials = credentialResolver.resolve(accountId, secretId);
                     storedAuth =
                         storeAuthCredentials(desired.getAuth(), accountId, connectorId.getId());
                     if (storedAuth != desired.getAuth()) {
                       desired = desired.toBuilder().setAuth(storedAuth).build();
                     }
+                  } else if (shouldDeleteSecret) {
+                    credentialResolver.delete(accountId, secretId);
                   }
                   ensureNoStoredCredentials(desired.getAuth());
-                  boolean shouldDeleteSecret = authTouched && !incomingHasCredentials;
 
                   if (desired.equals(current)) {
-                    if (shouldDeleteSecret) {
-                      credentialResolver.delete(accountId, secretId);
+                    try {
+                      var metaNoop = connectorRepo.metaFor(connectorId);
+                      boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                      if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
+                        throw GrpcErrors.preconditionFailed(
+                            corr,
+                            GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
+                            Map.of(
+                                "expected", Long.toString(meta.getPointerVersion()),
+                                "actual", Long.toString(metaNoop.getPointerVersion())));
+                      }
+                      MutationOps.BaseServiceChecks.enforcePreconditions(
+                          corr, metaNoop, request.getPrecondition());
+                      return UpdateConnectorResponse.newBuilder()
+                          .setConnector(maskConnector(current))
+                          .setMeta(metaNoop)
+                          .build();
+                    } catch (RuntimeException failure) {
+                      if (authTouched) {
+                        restoreCredentials(accountId, secretId, priorCredentials);
+                      }
+                      throw failure;
                     }
-                    var metaNoop = connectorRepo.metaFor(connectorId);
-                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
-                    if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
-                      throw GrpcErrors.preconditionFailed(
-                          corr,
-                          GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
-                          Map.of(
-                              "expected", Long.toString(meta.getPointerVersion()),
-                              "actual", Long.toString(metaNoop.getPointerVersion())));
-                    }
-                    MutationOps.BaseServiceChecks.enforcePreconditions(
-                        corr, metaNoop, request.getPrecondition());
-                    return UpdateConnectorResponse.newBuilder()
-                        .setConnector(maskConnector(current))
-                        .setMeta(metaNoop)
-                        .build();
                   }
 
                   try {
                     boolean ok = connectorRepo.update(desired, meta.getPointerVersion());
                     if (!ok) {
                       var nowMeta = connectorRepo.metaForSafe(connectorId);
-                      if (incomingHasCredentials) {
-                        restoreCredentials(accountId, secretId, priorCredentials);
-                      }
                       throw GrpcErrors.preconditionFailed(
                           corr,
                           GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
@@ -639,7 +652,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
-                    if (incomingHasCredentials) {
+                    if (authTouched) {
                       restoreCredentials(accountId, secretId, priorCredentials);
                     }
                     throw GrpcErrors.alreadyExists(
@@ -648,7 +661,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                         Map.of("display_name", desired.getDisplayName()));
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = connectorRepo.metaForSafe(connectorId);
-                    if (incomingHasCredentials) {
+                    if (authTouched) {
                       restoreCredentials(accountId, secretId, priorCredentials);
                     }
                     throw GrpcErrors.preconditionFailed(
@@ -657,10 +670,11 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                         Map.of(
                             "expected", Long.toString(meta.getPointerVersion()),
                             "actual", Long.toString(nowMeta.getPointerVersion())));
-                  }
-
-                  if (shouldDeleteSecret) {
-                    credentialResolver.delete(accountId, secretId);
+                  } catch (RuntimeException failure) {
+                    if (authTouched) {
+                      restoreCredentials(accountId, secretId, priorCredentials);
+                    }
+                    throw failure;
                   }
 
                   var outMeta = connectorRepo.metaForSafe(connectorId);
@@ -826,6 +840,43 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     }
     return auth.getCredentials().getCredentialCase()
         != AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET;
+  }
+
+  private DestinationTarget resolveUpdatedDestination(
+      DestinationTarget destination, String accountId, String corr) {
+    var resolved = destination.toBuilder();
+    if (destination.hasCatalogDisplayName()) {
+      String displayName = destination.getCatalogDisplayName().trim();
+      var catalog = catalogRepo.getByName(accountId, displayName);
+      if (catalog.isEmpty()) {
+        throw GrpcErrors.notFound(
+            corr,
+            GeneratedErrorMessages.MessageKey.CONNECTOR_DESTINATION_CATALOG_NOT_FOUND,
+            Map.of("display_name", displayName));
+      }
+      resolved.setCatalogId(catalog.get().getResourceId());
+    }
+    if (resolved.hasCatalogId() && destination.hasNamespace()) {
+      namespaceRepo
+          .getByPath(
+              accountId,
+              resolved.getCatalogId().getId(),
+              destination.getNamespace().getSegmentsList())
+          .ifPresent(namespace -> resolved.setNamespaceId(namespace.getResourceId()));
+    }
+    if (resolved.hasCatalogId() && resolved.hasNamespaceId() && destination.hasTableDisplayName()) {
+      String displayName = destination.getTableDisplayName().trim();
+      tableRepo
+          .getByName(
+              accountId,
+              resolved.getCatalogId().getId(),
+              resolved.getNamespaceId().getId(),
+              displayName)
+          .ifPresentOrElse(
+              table -> resolved.setTableId(table.getResourceId()),
+              () -> resolved.setTableDisplayName(displayName));
+    }
+    return resolved.build();
   }
 
   private void restoreCredentials(

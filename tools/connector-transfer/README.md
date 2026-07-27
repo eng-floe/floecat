@@ -51,9 +51,9 @@ tools/connector-transfer/floecat-connector-transfer \
   import connectors.zip
 ```
 
-`--conflict SKIP` leaves existing connectors unchanged. `--conflict REPLACE` deletes an existing
-same-name connector before creating the imported definition, so use it deliberately. The tool emits
-the source connector ID and new target connector ID for each successful import.
+`--conflict SKIP` leaves existing connectors unchanged. `--conflict REPLACE` updates the existing
+same-name connector in place, preserving its target connector ID. The tool emits the source
+connector ID and target connector ID for each successful import.
 
 Authentication can be provided through `--token`, `--session-token`, `FLOECAT_TOKEN`, or
 `FLOECAT_SESSION_TOKEN`. Connections are plaintext by default, matching the Floecat development

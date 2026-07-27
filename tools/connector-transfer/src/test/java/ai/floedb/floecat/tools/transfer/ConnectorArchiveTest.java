@@ -99,6 +99,66 @@ class ConnectorArchiveTest {
         .hasMessageContaining("--force");
   }
 
+  @Test
+  void rejectsDuplicateConnectorNamesBeforeImport() throws Exception {
+    Path archive = temporaryDirectory.resolve("duplicates.zip");
+    var first =
+        ConnectorTransferEntry.newBuilder()
+            .setConnector(
+                Connector.newBuilder()
+                    .setResourceId(ResourceId.newBuilder().setId("connector-1"))
+                    .setDisplayName("duplicate"))
+            .setPortableSpec(ConnectorSpec.newBuilder().setDisplayName("duplicate"))
+            .build();
+    var second =
+        first.toBuilder()
+            .setConnector(
+                first.getConnector().toBuilder()
+                    .setResourceId(ResourceId.newBuilder().setId("connector-2")))
+            .build();
+    var bundle =
+        ConnectorTransferBundle.newBuilder()
+            .setFormatVersion(ConnectorArchive.FORMAT_VERSION)
+            .addEntries(first)
+            .addEntries(second)
+            .build();
+    ConnectorArchive.write(archive, bundle, false);
+
+    assertThatThrownBy(() -> ConnectorArchive.read(archive))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("duplicate connector display name");
+  }
+
+  @Test
+  void rejectsCredentialsEmbeddedInPortableSpecification() throws Exception {
+    Path archive = temporaryDirectory.resolve("embedded-credentials.zip");
+    var credentials =
+        AuthCredentials.newBuilder()
+            .setBearer(AuthCredentials.BearerToken.newBuilder().setToken("secret"))
+            .build();
+    var bundle =
+        ConnectorTransferBundle.newBuilder()
+            .setFormatVersion(ConnectorArchive.FORMAT_VERSION)
+            .addEntries(
+                ConnectorTransferEntry.newBuilder()
+                    .setConnector(
+                        Connector.newBuilder()
+                            .setResourceId(ResourceId.newBuilder().setId("connector-1"))
+                            .setDisplayName("connector"))
+                    .setPortableSpec(
+                        ConnectorSpec.newBuilder()
+                            .setDisplayName("connector")
+                            .setAuth(
+                                ai.floedb.floecat.connector.rpc.AuthConfig.newBuilder()
+                                    .setCredentials(credentials))))
+            .build();
+    ConnectorArchive.write(archive, bundle, false);
+
+    assertThatThrownBy(() -> ConnectorArchive.read(archive))
+        .isInstanceOf(IOException.class)
+        .hasMessageContaining("embeds credentials");
+  }
+
   private static String read(ZipFile zip, String entry) throws IOException {
     try (var in = zip.getInputStream(zip.getEntry(entry))) {
       return new String(in.readAllBytes(), StandardCharsets.UTF_8);

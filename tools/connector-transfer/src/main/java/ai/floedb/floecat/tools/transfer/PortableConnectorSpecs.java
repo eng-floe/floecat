@@ -52,42 +52,65 @@ final class PortableConnectorSpecs {
       DestinationTarget destination, DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
     var portable = DestinationTarget.newBuilder();
     if (destination.hasCatalogId()) {
-      portable.setCatalogDisplayName(
-          directory
-              .lookupCatalog(
-                  LookupCatalogRequest.newBuilder()
-                      .setResourceId(destination.getCatalogId())
-                      .build())
-              .getDisplayName());
+      var response =
+          directory.lookupCatalog(
+              LookupCatalogRequest.newBuilder().setResourceId(destination.getCatalogId()).build());
+      String displayName = response.getDisplayName().trim();
+      if (displayName.isBlank()) {
+        throw unresolved("catalog", destination.getCatalogId().getId());
+      }
+      portable.setCatalogDisplayName(displayName);
     } else if (destination.hasCatalogDisplayName()) {
-      portable.setCatalogDisplayName(destination.getCatalogDisplayName());
+      String displayName = destination.getCatalogDisplayName().trim();
+      if (displayName.isBlank()) {
+        throw new IllegalArgumentException("destination catalog display name is blank");
+      }
+      portable.setCatalogDisplayName(displayName);
     }
 
     if (destination.hasNamespaceId()) {
-      var ref =
-          directory
-              .lookupNamespace(
-                  LookupNamespaceRequest.newBuilder()
-                      .setResourceId(destination.getNamespaceId())
-                      .build())
-              .getRef();
+      var response =
+          directory.lookupNamespace(
+              LookupNamespaceRequest.newBuilder()
+                  .setResourceId(destination.getNamespaceId())
+                  .build());
+      if (!response.hasRef()) {
+        throw unresolved("namespace", destination.getNamespaceId().getId());
+      }
+      var ref = response.getRef();
       var segments = new ArrayList<>(ref.getPathList());
       if (!ref.getName().isBlank()) segments.add(ref.getName());
+      if (segments.isEmpty() || segments.stream().anyMatch(String::isBlank)) {
+        throw unresolved("namespace", destination.getNamespaceId().getId());
+      }
       portable.setNamespace(NamespacePath.newBuilder().addAllSegments(segments));
     } else if (destination.hasNamespace()) {
+      if (destination.getNamespace().getSegmentsList().stream().anyMatch(String::isBlank)) {
+        throw new IllegalArgumentException("destination namespace contains a blank segment");
+      }
       portable.setNamespace(destination.getNamespace());
     }
 
     if (destination.hasTableId()) {
-      portable.setTableDisplayName(
-          directory
-              .lookupTable(
-                  LookupTableRequest.newBuilder().setResourceId(destination.getTableId()).build())
-              .getName()
-              .getName());
+      var response =
+          directory.lookupTable(
+              LookupTableRequest.newBuilder().setResourceId(destination.getTableId()).build());
+      if (!response.hasName() || response.getName().getName().isBlank()) {
+        throw unresolved("table", destination.getTableId().getId());
+      }
+      portable.setTableDisplayName(response.getName().getName().trim());
     } else if (destination.hasTableDisplayName()) {
-      portable.setTableDisplayName(destination.getTableDisplayName());
+      String displayName = destination.getTableDisplayName().trim();
+      if (displayName.isBlank()) {
+        throw new IllegalArgumentException("destination table display name is blank");
+      }
+      portable.setTableDisplayName(displayName);
     }
     return portable.build();
+  }
+
+  private static IllegalArgumentException unresolved(String kind, String id) {
+    return new IllegalArgumentException(
+        "cannot export connector: destination " + kind + " id could not be resolved: " + id);
   }
 }

@@ -28,6 +28,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -96,9 +97,41 @@ final class ConnectorArchive {
           throw new IOException(
               "unsupported connector archive format version: " + bundle.getFormatVersion());
         }
+        validate(bundle);
         return bundle;
       } catch (InvalidProtocolBufferException e) {
         throw new IOException("invalid connector archive bundle", e);
+      }
+    }
+  }
+
+  private static void validate(ConnectorTransferBundle bundle) throws IOException {
+    var connectorIds = new HashSet<String>();
+    var displayNames = new HashSet<String>();
+    for (var entry : bundle.getEntriesList()) {
+      String connectorId = entry.getConnector().getResourceId().getId().trim();
+      String connectorName = entry.getConnector().getDisplayName().trim();
+      String portableName = entry.getPortableSpec().getDisplayName().trim();
+      if (connectorId.isBlank()) {
+        throw new IOException("connector archive contains an entry without a source connector id");
+      }
+      if (!connectorIds.add(connectorId)) {
+        throw new IOException("connector archive contains duplicate connector id: " + connectorId);
+      }
+      if (portableName.isBlank()) {
+        throw new IOException("connector archive contains an entry without a display name");
+      }
+      if (!displayNames.add(portableName)) {
+        throw new IOException(
+            "connector archive contains duplicate connector display name: " + portableName);
+      }
+      if (!connectorName.equals(portableName)) {
+        throw new IOException(
+            "connector archive display name does not match portable specification: " + connectorId);
+      }
+      if (entry.getPortableSpec().hasAuth() && entry.getPortableSpec().getAuth().hasCredentials()) {
+        throw new IOException(
+            "connector archive embeds credentials in a portable specification: " + connectorId);
       }
     }
   }
