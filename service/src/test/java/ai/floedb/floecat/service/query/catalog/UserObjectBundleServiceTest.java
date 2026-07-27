@@ -2155,16 +2155,24 @@ class UserObjectBundleServiceTest {
 
   @Test
   void requestedInputAfterAnOverflowingViewSpillsToTheNextChunkInOrder() {
-    // Input 0 is a view whose eager base tables overflow one chunk; input 1 is a plain table.
-    // The base tables fill chunk 1 after the view, so the requested table cannot be emitted there
-    // and must appear in chunk 2 — after the view's remaining bases — with its input index intact.
+    assertRequestedInputAfterViewSpillsToNextChunk(30);
+  }
+
+  @Test
+  void requestedInputAfterAChunkFillingViewSpillsToTheNextChunkInOrder() {
+    assertRequestedInputAfterViewSpillsToNextChunk(24);
+  }
+
+  /** Verify that a requested relation after a view's eager bases retains its input position. */
+  private void assertRequestedInputAfterViewSpillsToNextChunk(int baseCount) {
+    // Input 0 is a view whose eager base tables fill chunk 1; input 1 is a plain table selected in
+    // the same batch and must be emitted in chunk 2.
     ResourceId viewId =
         ResourceId.newBuilder()
             .setAccountId("acct")
             .setId("WIDE_VIEW")
             .setKind(ResourceKind.RK_VIEW)
             .build();
-    int baseCount = 30; // > MAX_RESOLUTIONS_PER_CHUNK (25) so the bases span two chunks
     List<NameRef> baseRefs = new ArrayList<>(baseCount);
     for (int i = 0; i < baseCount; i++) {
       ResourceId baseId =
@@ -2216,7 +2224,6 @@ class UserObjectBundleServiceTest {
             .await()
             .indefinitely();
 
-    // header + two resolution chunks (bases span the cap) + end.
     List<RelationResolution> all =
         chunks.stream()
             .filter(UserObjectsBundleChunk::hasResolutions)
@@ -2228,7 +2235,7 @@ class UserObjectBundleServiceTest {
         .filter(UserObjectsBundleChunk::hasResolutions)
         .forEach(c -> assertThat(c.getResolutions().getItemsCount()).isLessThanOrEqualTo(25));
 
-    // The view (index 0) comes first, the requested table (index 1) last, with 30 synthetic bases
+    // The view (index 0) comes first, the requested table (index 1) last, with its synthetic bases
     // (index -1) in between — i.e. the table spilled past the bases but kept its request position.
     assertThat(all.get(0).getInputIndex()).isEqualTo(0);
     assertThat(all.get(0).getRelation().getRelationId()).isEqualTo(viewId);

@@ -1723,7 +1723,10 @@ public class UserObjectBundleService {
         return headerChunk(ctx.getQueryId(), seq++);
       }
 
-      if (pending.isEmpty() && (nextInputIndex < resolutionCount || !eagerBaseQueue.isEmpty())) {
+      if (pending.isEmpty()
+          && (nextInputIndex < resolutionCount
+              || !eagerBaseQueue.isEmpty()
+              || !resolvedSpillover.isEmpty())) {
         fillPending();
       }
 
