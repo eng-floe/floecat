@@ -223,7 +223,8 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
           descriptors,
           fileStats,
           finalStats,
-          indexArtifacts)) {
+          indexArtifacts,
+          input.indexPredecessor())) {
         throw terminalSubmissionUncertain(
             "snapshot finalizer result submission was rejected", null);
       }

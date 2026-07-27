@@ -678,7 +678,9 @@ class ReconcileExecutorControlImplTest {
                 "/accounts/acct/reconcile/jobs/parent-1/snapshot-plan/blob.json",
                 1,
                 "/accounts/acct/reconcile/result-payloads/finalize.stats.pb",
-                "/accounts/acct/reconcile/result-payloads/finalize.capture-manifest.pb"));
+                "/accounts/acct/reconcile/result-payloads/finalize.capture-manifest.pb",
+                new ai.floedb.floecat.service.repo.impl.IndexArtifactRepository
+                    .GenerationPredecessor("generation-1", 7L, "/capture-1.pb", 9L)));
 
     var response =
         service
@@ -710,6 +712,7 @@ class ReconcileExecutorControlImplTest {
     assertEquals(
         "/accounts/acct/reconcile/result-payloads/finalize.capture-manifest.pb",
         response.getInput().getCaptureManifestUri());
+    assertEquals("generation-1", response.getInput().getIndexPredecessor().getGenerationId());
   }
 
   @Test
@@ -734,7 +737,8 @@ class ReconcileExecutorControlImplTest {
                 "",
                 0,
                 "/accounts/acct/reconcile/result-payloads/finalize.stats.pb",
-                "/accounts/acct/reconcile/result-payloads/finalize.capture-manifest.pb"));
+                "/accounts/acct/reconcile/result-payloads/finalize.capture-manifest.pb",
+                null));
 
     var response =
         service

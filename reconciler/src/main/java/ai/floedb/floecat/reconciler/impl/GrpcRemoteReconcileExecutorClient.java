@@ -1197,7 +1197,10 @@ class GrpcRemoteReconcileExecutorClient
         input.getSnapshotPlanUri(),
         input.getFileGroupCount(),
         input.getStatsObjectPrefix(),
-        input.getCaptureManifestUri());
+        input.getCaptureManifestUri(),
+        input.hasIndexPredecessor()
+            ? fromProtoIndexPredecessor(input.getIndexPredecessor())
+            : null);
   }
 
   @Override
@@ -1288,7 +1291,8 @@ class GrpcRemoteReconcileExecutorClient
       List<ReconcileFileGroupResultDescriptor> fileGroups,
       List<StatsObjectDescriptor> fileStats,
       List<TargetStatsRecord> finalStats,
-      List<StatsObjectDescriptor> indexArtifacts) {
+      List<StatsObjectDescriptor> indexArtifacts,
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor finalizeIndexPredecessor) {
     String stableResultId = resultId == null ? "" : resultId.trim();
     String stableStatsObjectPrefix = statsObjectPrefix == null ? "" : statsObjectPrefix.trim();
     String stableManifestUri = captureManifestUri == null ? "" : captureManifestUri.trim();
@@ -1330,7 +1334,8 @@ class GrpcRemoteReconcileExecutorClient
     ReconcileCapturePolicy capturePolicy =
         leasedJob.scope == null ? ReconcileCapturePolicy.empty() : leasedJob.scope.capturePolicy();
     ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor =
-        consistentIndexPredecessor(stableFileGroups, capturePolicy.requestsIndexes());
+        consistentIndexPredecessor(
+            stableFileGroups, finalizeIndexPredecessor, capturePolicy.requestsIndexes());
     List<StatsObjectDescriptor> finalStatsObjects =
         records.stream()
             .map(record -> publishStatsObject(stableStatsObjectPrefix, record))
@@ -1470,7 +1475,9 @@ class GrpcRemoteReconcileExecutorClient
 
   private static ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor
       consistentIndexPredecessor(
-          List<ReconcileFileGroupResultDescriptor> fileGroups, boolean required) {
+          List<ReconcileFileGroupResultDescriptor> fileGroups,
+          ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor finalizePredecessor,
+          boolean required) {
     ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor = null;
     for (ReconcileFileGroupResultDescriptor fileGroup : fileGroups) {
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor candidate =
@@ -1488,6 +1495,15 @@ class GrpcRemoteReconcileExecutorClient
         throw new IllegalArgumentException(
             "index file-group descriptors have inconsistent predecessors");
       }
+    }
+    if (predecessor != null
+        && finalizePredecessor != null
+        && !predecessor.equals(finalizePredecessor)) {
+      throw new IllegalArgumentException(
+          "snapshot finalizer predecessor does not match file-group predecessors");
+    }
+    if (predecessor == null) {
+      predecessor = finalizePredecessor;
     }
     if (required && predecessor == null) {
       throw new IllegalArgumentException("index capture manifest is missing its predecessor");

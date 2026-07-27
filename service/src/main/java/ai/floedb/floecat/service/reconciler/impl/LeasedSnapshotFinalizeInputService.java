@@ -23,6 +23,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import io.grpc.Status;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -32,6 +33,7 @@ import jakarta.inject.Inject;
 public class LeasedSnapshotFinalizeInputService {
   @Inject ReconcileJobStore jobs;
   @Inject SnapshotFinalizeChildStateService childStateService;
+  @Inject IndexArtifactRepository indexArtifactRepository;
 
   record SnapshotFinalizeInput(
       String jobId,
@@ -47,7 +49,8 @@ public class LeasedSnapshotFinalizeInputService {
       String snapshotPlanUri,
       int fileGroupCount,
       String statsObjectPrefix,
-      String captureManifestUri) {}
+      String captureManifestUri,
+      IndexArtifactRepository.GenerationPredecessor indexPredecessor) {}
 
   enum FinalizeMode {
     FILE_GROUPS_NON_EMPTY,
@@ -106,15 +109,23 @@ public class LeasedSnapshotFinalizeInputService {
           snapshotTask.fileGroupPlanBlobUri(),
           snapshotTask.fileGroupCount(),
           statsObjectPrefix(lease),
-          captureManifestUri(lease));
+          captureManifestUri(lease),
+          null);
     }
     if (snapshotTask.fileGroupCount() == 0) {
       requireNoUnexpectedChildren(lease.accountId, lease.parentJobId, lease.jobId);
+      ResourceId tableId = tableId(lease, snapshotTask);
+      IndexArtifactRepository.GenerationPredecessor indexPredecessor =
+          lease.scope != null && lease.scope.capturePolicy().requestsIndexes()
+              ? indexArtifactRepository
+                  .captureGenerationInput(tableId, snapshotTask.snapshotId(), java.util.List.of())
+                  .predecessor()
+              : null;
       return new SnapshotFinalizeInput(
           lease.jobId,
           lease.leaseEpoch,
           lease.parentJobId,
-          tableId(lease, snapshotTask),
+          tableId,
           snapshotTask.snapshotId(),
           FinalizeMode.EXPLICIT_EMPTY,
           lease.fullRescan,
@@ -124,7 +135,8 @@ public class LeasedSnapshotFinalizeInputService {
           snapshotTask.fileGroupPlanBlobUri(),
           0,
           statsObjectPrefix(lease),
-          captureManifestUri(lease));
+          captureManifestUri(lease),
+          indexPredecessor);
     }
     SnapshotFinalizeChildStateService.ChildState childState =
         childStateService.compactChildState(
@@ -144,7 +156,8 @@ public class LeasedSnapshotFinalizeInputService {
         snapshotTask.fileGroupPlanBlobUri(),
         snapshotTask.fileGroupCount(),
         statsObjectPrefix(lease),
-        captureManifestUri(lease));
+        captureManifestUri(lease),
+        null);
   }
 
   private static String statsObjectPrefix(ReconcileJobStore.LeasedJob lease) {

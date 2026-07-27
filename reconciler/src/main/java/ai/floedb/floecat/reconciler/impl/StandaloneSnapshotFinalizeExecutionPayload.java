@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 
 /** Compact input for one remotely executed snapshot finalizer. */
 public record StandaloneSnapshotFinalizeExecutionPayload(
@@ -30,7 +31,8 @@ public record StandaloneSnapshotFinalizeExecutionPayload(
     String snapshotPlanUri,
     int fileGroupCount,
     String statsObjectPrefix,
-    String captureManifestUri) {
+    String captureManifestUri,
+    ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor) {
   public StandaloneSnapshotFinalizeExecutionPayload {
     jobId = trim(jobId);
     leaseEpoch = trim(leaseEpoch);

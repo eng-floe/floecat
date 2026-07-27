@@ -635,6 +635,9 @@ message LeasedSnapshotFinalizeInput {
   string stats_object_prefix = 13;
   // Server-allocated immutable object URI for this fenced finalizer's capture manifest.
   string capture_manifest_uri = 14;
+  // Index-generation state captured directly for a finalizer with no file-group children.
+  // Non-empty captures continue to derive and cross-check this value from file-group results.
+  IndexGenerationPredecessor index_predecessor = 15;
 }
 
 message GetLeasedSnapshotFinalizeInputResponse {

@@ -28,6 +28,7 @@ import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -38,9 +39,11 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import io.grpc.StatusRuntimeException;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -56,6 +59,7 @@ class LeasedSnapshotFinalizeInputServiceTest {
   private SnapshotFinalizeChildStateService childStateService;
   private SnapshotFinalizeCoverageService coverageService;
   private ReconcileJobStore jobs;
+  private IndexArtifactRepository indexArtifactRepository;
   private PrincipalContext principal;
 
   @BeforeEach
@@ -64,9 +68,11 @@ class LeasedSnapshotFinalizeInputServiceTest {
     childStateService = new SnapshotFinalizeChildStateService();
     coverageService = mock(SnapshotFinalizeCoverageService.class);
     jobs = mock(ReconcileJobStore.class);
+    indexArtifactRepository = mock(IndexArtifactRepository.class);
     principal = mock(PrincipalContext.class);
     service.jobs = jobs;
     service.childStateService = childStateService;
+    service.indexArtifactRepository = indexArtifactRepository;
     childStateService.jobs = jobs;
     when(principal.getCorrelationId()).thenReturn("corr");
   }
@@ -313,8 +319,51 @@ class LeasedSnapshotFinalizeInputServiceTest {
     assertTrue(payload.fullRescan());
   }
 
+  @Test
+  void resolveExplicitEmptyIndexSnapshotCapturesFinalizePredecessor() {
+    ReconcileSnapshotTask emptyTask =
+        ReconcileSnapshotTask.of(
+            TABLE_ID,
+            SNAPSHOT_ID,
+            "db",
+            "events",
+            List.of(),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+            0);
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            TABLE_ID,
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    var predecessor =
+        new IndexArtifactRepository.GenerationPredecessor("generation-1", 7L, "/capture-1.pb", 9L);
+    when(jobs.renewLease(FINALIZE_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJob("JS_RUNNING", true, emptyTask, scope)));
+    when(jobs.childJobsPage(ACCOUNT_ID, PARENT_JOB_ID, 200, ""))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(List.of(), ""));
+    when(indexArtifactRepository.captureGenerationInput(
+            org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.eq(SNAPSHOT_ID),
+            org.mockito.ArgumentMatchers.eq(List.of())))
+        .thenReturn(new IndexArtifactRepository.GenerationInput(predecessor, List.of()));
+
+    var payload = service.resolve(principal, FINALIZE_JOB_ID, LEASE_EPOCH);
+
+    assertEquals(predecessor, payload.indexPredecessor());
+  }
+
   private static ReconcileJobStore.ReconcileJob finalizeJob(
       String state, boolean fullRescan, ReconcileSnapshotTask snapshotTask) {
+    return finalizeJob(state, fullRescan, snapshotTask, ReconcileScope.empty());
+  }
+
+  private static ReconcileJobStore.ReconcileJob finalizeJob(
+      String state, boolean fullRescan, ReconcileSnapshotTask snapshotTask, ReconcileScope scope) {
     return new ReconcileJobStore.ReconcileJob(
         FINALIZE_JOB_ID,
         ACCOUNT_ID,
@@ -332,7 +381,7 @@ class LeasedSnapshotFinalizeInputServiceTest {
         CaptureMode.METADATA_AND_CAPTURE,
         0L,
         0L,
-        ReconcileScope.empty(),
+        scope,
         ReconcileExecutionPolicy.defaults(),
         "",
         ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE,

@@ -35,7 +35,8 @@ interface RemoteSnapshotFinalizeWorkerClient {
       List<ReconcileFileGroupResultDescriptor> fileGroups,
       List<StatsObjectDescriptor> fileStats,
       List<TargetStatsRecord> finalStats,
-      List<StatsObjectDescriptor> indexArtifacts);
+      List<StatsObjectDescriptor> indexArtifacts,
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor);
 
   boolean submitSnapshotFinalizeFailure(RemoteLeasedJob lease, String resultId, String message);
 }

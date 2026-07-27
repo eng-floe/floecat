@@ -141,7 +141,8 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             "/snapshot-plan.json",
             1,
             "/final-stats.pb",
-            "/capture-manifest.pb");
+            "/capture-manifest.pb",
+            null);
 
     assertDoesNotThrow(
         () ->
@@ -169,7 +170,8 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             "/snapshot-plan.json",
             1,
             "/final-stats.pb",
-            "/capture-manifest.pb");
+            "/capture-manifest.pb",
+            null);
 
     IllegalArgumentException error =
         assertThrows(
@@ -201,9 +203,15 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             "table-1",
             List.of(),
             ReconcileCapturePolicy.of(
-                List.of(), Set.of(ReconcileCapturePolicy.Output.TABLE_STATS)));
+                List.of(),
+                Set.of(
+                    ReconcileCapturePolicy.Output.TABLE_STATS,
+                    ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
     ReconcileJobStore.LeasedJob lease = leasedFinalizeJob(0, scope);
     RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
+    var predecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture-1.pb", 9L);
     StandaloneSnapshotFinalizeExecutionPayload input =
         new StandaloneSnapshotFinalizeExecutionPayload(
             "finalize-job",
@@ -216,11 +224,13 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             "",
             0,
             "/final-stats.pb",
-            "/capture-manifest.pb");
+            "/capture-manifest.pb",
+            predecessor);
 
     when(workerClient.getSnapshotFinalizeInput(remoteLease)).thenReturn(input);
     when(workerClient.submitSnapshotFinalizeSuccess(
-            any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList()))
+            any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
+            any()))
         .thenReturn(true);
 
     assertTrue(executor.supports(lease));
@@ -235,6 +245,9 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     verify(workerClient, never()).listSnapshotFileGroupResults(any());
     @SuppressWarnings("unchecked")
     ArgumentCaptor<List<TargetStatsRecord>> finalStats = ArgumentCaptor.forClass(List.class);
+    ArgumentCaptor<ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor> indexPredecessor =
+        ArgumentCaptor.forClass(
+            ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor.class);
     verify(workerClient)
         .submitSnapshotFinalizeSuccess(
             any(),
@@ -245,10 +258,12 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             anyList(),
             anyList(),
             finalStats.capture(),
-            anyList());
+            anyList(),
+            indexPredecessor.capture());
     assertEquals(1, finalStats.getValue().size());
     assertTrue(finalStats.getValue().get(0).hasTable());
     assertEquals(0L, finalStats.getValue().get(0).getTable().getRowCount());
+    assertEquals(predecessor, indexPredecessor.getValue());
   }
 
   @Test
@@ -274,7 +289,8 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             "/snapshot-plan.json",
             2,
             "/final-stats.pb",
-            "/capture-manifest.pb");
+            "/capture-manifest.pb",
+            null);
 
     when(workerClient.getSnapshotFinalizeInput(remoteLease)).thenReturn(input);
     when(snapshotPlanBlobStore.loadFileGroupsByUri("/snapshot-plan.json"))
@@ -295,7 +311,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             any(), any(), contains("unexpected snapshot file-group descriptor plan-1/group-c"));
     verify(workerClient, never())
         .submitSnapshotFinalizeSuccess(
-            any(), any(), any(), any(), anyInt(), any(), any(), any(), any());
+            any(), any(), any(), any(), anyInt(), any(), any(), any(), any(), any());
   }
 
   private static ReconcileJobStore.LeasedJob leasedFinalizeJob() {

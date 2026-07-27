@@ -257,6 +257,12 @@ class GrpcRemoteReconcileExecutorClientTest {
                         .setSourceFileCount(0)
                         .setStatsObjectPrefix("/stats.pb")
                         .setCaptureManifestUri("/manifest.pb")
+                        .setIndexPredecessor(
+                            ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor.newBuilder()
+                                .setGenerationId("generation-1")
+                                .setActivePointerVersion(7L)
+                                .setCaptureManifestUri("/capture-1.pb")
+                                .setCaptureManifestPointerVersion(9L))
                         .build())
                 .build());
 
@@ -266,6 +272,7 @@ class GrpcRemoteReconcileExecutorClientTest {
     assertEquals(0, payload.fileGroupCount());
     assertEquals(0, payload.sourceFileCount());
     assertEquals("/manifest.pb", payload.captureManifestUri());
+    assertEquals("generation-1", payload.indexPredecessor().generationId());
   }
 
   @Test
@@ -289,7 +296,8 @@ class GrpcRemoteReconcileExecutorClientTest {
                 List.of(),
                 List.of(),
                 List.of(),
-                List.of()))
+                List.of(),
+                null))
         .isTrue();
 
     ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
@@ -298,6 +306,39 @@ class GrpcRemoteReconcileExecutorClientTest {
     SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
     assertEquals(0, manifest.getFileGroupsCount());
     assertEquals(0, manifest.getSourceFileCount());
+  }
+
+  @Test
+  void submitSnapshotFinalizeSuccessPublishesZeroGroupIndexPredecessor() throws Exception {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel, stub);
+    when(stub.submitLeasedSnapshotFinalizeResult(any()))
+        .thenReturn(
+            SubmitLeasedSnapshotFinalizeResultResponse.newBuilder().setAccepted(true).build());
+
+    assertThat(
+            client.submitSnapshotFinalizeSuccess(
+                remoteSnapshotFinalizeLease(0, indexCapturePolicy()),
+                "result-1",
+                "/stats/",
+                "/manifest.pb",
+                0,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                indexPredecessor()))
+        .isTrue();
+
+    ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
+    verify(client.blobStore)
+        .put(eq("/manifest.pb"), manifestBytes.capture(), eq("application/x-protobuf"));
+    SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
+    assertThat(manifest.getFileGroupsCount()).isZero();
+    assertThat(manifest.getIndexPredecessor().getGenerationId()).isEqualTo("generation-1");
   }
 
   @Test
@@ -321,7 +362,8 @@ class GrpcRemoteReconcileExecutorClientTest {
                 List.of(fileGroupResultDescriptor(indexPredecessor())),
                 List.of(),
                 List.of(),
-                List.of()))
+                List.of(),
+                null))
         .isTrue();
 
     ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
@@ -356,7 +398,8 @@ class GrpcRemoteReconcileExecutorClientTest {
                         fileGroupResultDescriptor(otherPredecessor)),
                     List.of(),
                     List.of(),
-                    List.of()));
+                    List.of(),
+                    null));
 
     assertThat(error).hasMessageContaining("inconsistent predecessors");
   }

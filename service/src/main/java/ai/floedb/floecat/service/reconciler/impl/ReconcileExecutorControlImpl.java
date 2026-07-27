@@ -1005,6 +1005,16 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                       .setFileGroupCount(payload.fileGroupCount())
                       .setStatsObjectPrefix(payload.statsObjectPrefix())
                       .setCaptureManifestUri(payload.captureManifestUri());
+              if (payload.indexPredecessor() != null) {
+                var predecessor = payload.indexPredecessor();
+                inputBuilder.setIndexPredecessor(
+                    ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor.newBuilder()
+                        .setGenerationId(predecessor.generationId())
+                        .setActivePointerVersion(predecessor.activePointerVersion())
+                        .setCaptureManifestUri(predecessor.captureManifestUri())
+                        .setCaptureManifestPointerVersion(
+                            predecessor.captureManifestPointerVersion()));
+              }
               return GetLeasedSnapshotFinalizeInputResponse.newBuilder()
                   .setInput(inputBuilder.build())
                   .build();
