@@ -2664,6 +2664,9 @@ class DurableReconcileJobStoreTest {
     assertEquals(86L, projection.tablesChanged());
     assertEquals(1208L, projection.statsProcessed());
     assertEquals(1208L, projection.indexesProcessed());
+    // The recomputed state has to reach the public read path, not just the projection record:
+    // GetReconcileJob is what clients poll to completion.
+    assertEquals("JS_SUCCEEDED", store.get(ACCOUNT_ID, tableJobId).orElseThrow().state);
   }
 
   @Test
@@ -2806,6 +2809,9 @@ class DurableReconcileJobStoreTest {
     assertEquals(42L, projection.appliedGeneration());
     assertEquals(4L, projection.completedFileGroups());
     assertEquals(4L, projection.completedFiles());
+    // The production symptom is GetReconcileJob polling forever, and that read prefers the
+    // canonical state over the projection, so recomputing the projection alone does not clear it.
+    assertEquals("JS_SUCCEEDED", store.get(ACCOUNT_ID, connectorJobId).orElseThrow().state);
   }
 
   @Test

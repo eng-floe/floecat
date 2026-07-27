@@ -2169,6 +2169,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         && (requestedGeneration > previousAppliedGeneration || projectionChanged)) {
       markDirtyParent(parent.accountId, parent.parentJobId);
     }
+    // The read paths report the canonical state whenever it is nonblank, so a terminal rollup that
+    // only reaches the projection leaves get()/list() waiting forever. Runs last so the canonical
+    // advance sees the persisted projection and any finalizer this refresh enqueued.
+    if (isTerminalState(nextProjection.state())) {
+      advanceCanonicalSchedulingAfterRecordChange(parent);
+    }
   }
 
   private boolean hasLiveDirectChildLease(StoredReconcileJob parent) {
