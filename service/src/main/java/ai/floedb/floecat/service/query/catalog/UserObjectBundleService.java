@@ -910,7 +910,7 @@ public class UserObjectBundleService {
         }
       }
       if (!toPin.isEmpty()) {
-        pinBarrier.accumulate(toPin, diagnostics);
+        pinBarrier.accumulate(toPin, diagnostics, this::isCancelled);
       }
     }
 
@@ -1233,7 +1233,10 @@ public class UserObjectBundleService {
       }
       // Ensure pins are durable before accessing stats (which expect the QueryContext to be
       // pinned).
-      pinBarrier.commit();
+      pinBarrier.commit(this::isCancelled);
+      if (isCancelled()) {
+        throw new java.util.concurrent.CancellationException("GetUserObjects cancelled");
+      }
       warmChunkStats(chunkItems);
       QueryContext liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
 

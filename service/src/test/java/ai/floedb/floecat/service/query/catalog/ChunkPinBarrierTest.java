@@ -47,7 +47,9 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -160,6 +162,24 @@ class ChunkPinBarrierTest {
   }
 
   @Test
+  void cancellationBeforeCommitReleasesPendingRootsWithoutUpdatingContext() {
+    RecordingReleaseStore store = new RecordingReleaseStore();
+    store.seed(ctx());
+    ChunkPinBarrier barrier = new ChunkPinBarrier(resolver, store, ctx(), CID, timings);
+    AtomicBoolean cancelled = new AtomicBoolean();
+
+    barrier.accumulate(List.of(resolved(TABLE_A)), PhaseDiagnostics.NOOP, cancelled::get);
+    cancelled.set(true);
+
+    assertThatThrownBy(() -> barrier.commit(cancelled::get))
+        .isInstanceOf(CancellationException.class);
+    assertThat(store.updateCount()).isZero();
+    assertThat(barrier.pendingPinCount()).isZero();
+    assertThat(store.releasedQueryIds()).containsExactly(QID);
+    assertThat(store.releasedBlobUris()).isNotEmpty();
+  }
+
+  @Test
   void accumulateMergeFailureReleasesPriorAndIncomingPinBlobs() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
@@ -262,7 +282,8 @@ class ChunkPinBarrierTest {
         Optional<ResourceId> defaultCatalogId,
         Map<ResourceId, CompletableFuture<ai.floedb.floecat.query.rpc.TablePin>>
             currentSnapshotPinCache,
-        PhaseDiagnostics diagnostics) {
+        PhaseDiagnostics diagnostics,
+        java.util.function.BooleanSupplier cancelled) {
       RelationPinSet.Builder pins = RelationPinSet.newBuilder();
       List<ResourceId> resolved = new ArrayList<>(inputs.size());
       for (QueryInput input : inputs) {

@@ -36,9 +36,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.BooleanSupplier;
 import org.jboss.logging.Logger;
 
 /**
@@ -90,15 +92,30 @@ final class ChunkPinBarrier {
    * diagnostics}.
    */
   void accumulate(List<ResolvedRelation> toPin, PhaseDiagnostics diagnostics) {
+    accumulate(toPin, diagnostics, () -> false);
+  }
+
+  /**
+   * Resolve pins for a chunk while observing cancellation. Any roots collected before cancellation
+   * are released because they will not become durable on the query context.
+   */
+  void accumulate(
+      List<ResolvedRelation> toPin, PhaseDiagnostics diagnostics, BooleanSupplier cancelled) {
     long pinStartNs = System.nanoTime();
+    RelationPinSet chunkPins = RelationPinSet.getDefaultInstance();
     try {
-      RelationPinSet chunkPins = collectChunkPins(toPin, diagnostics);
+      throwIfCancelled(cancelled);
+      chunkPins = collectChunkPins(toPin, diagnostics, cancelled);
+      throwIfCancelled(cancelled);
       long accumulateStartNs = System.nanoTime();
       try {
         accumulateChunkPins(chunkPins);
       } finally {
         diagnostics.nanos("pin.accumulate", System.nanoTime() - accumulateStartNs);
       }
+    } catch (CancellationException e) {
+      releaseRoots(chunkPins);
+      throw e;
     } finally {
       timings.addPinCollectNanos(System.nanoTime() - pinStartNs);
     }
@@ -106,9 +123,21 @@ final class ChunkPinBarrier {
 
   /** Make the accumulated pins durable on the QueryContext. Records the pin-commit timing. */
   void commit() {
+    commit(() -> false);
+  }
+
+  /**
+   * Make pending pins durable unless cancellation stops the request. Cancellation releases their
+   * transient roots and leaves the query context unchanged.
+   */
+  void commit(BooleanSupplier cancelled) {
     long pinCommitStartNs = System.nanoTime();
     try {
-      commitChunkPins();
+      if (cancelled.getAsBoolean()) {
+        discardPendingPins();
+        throw new CancellationException("query pin commit cancelled");
+      }
+      commitChunkPins(cancelled);
     } finally {
       timings.addPinCommitNanos(System.nanoTime() - pinCommitStartNs);
     }
@@ -120,7 +149,7 @@ final class ChunkPinBarrier {
   }
 
   private RelationPinSet collectChunkPins(
-      List<ResolvedRelation> relations, PhaseDiagnostics diagnostics) {
+      List<ResolvedRelation> relations, PhaseDiagnostics diagnostics, BooleanSupplier cancelled) {
     if (relations == null || relations.isEmpty()) {
       return RelationPinSet.getDefaultInstance();
     }
@@ -150,7 +179,8 @@ final class ChunkPinBarrier {
             asOfDefault,
             Optional.of(ctx.getQueryDefaultCatalogId()),
             currentSnapshotPinCache,
-            diagnostics);
+            diagnostics,
+            cancelled);
     diagnostics.nanos("pin.resolver", System.nanoTime() - resolverStartNs);
     RelationPinSet incoming = resolution.relationPinSet();
     RelationPinSet pins = incoming == null ? RelationPinSet.getDefaultInstance() : incoming;
@@ -195,7 +225,7 @@ final class ChunkPinBarrier {
     }
   }
 
-  private void commitChunkPins() {
+  private void commitChunkPins(BooleanSupplier cancelled) {
     if (pendingChunkPins.getPinsCount() == 0) {
       return;
     }
@@ -211,9 +241,18 @@ final class ChunkPinBarrier {
     try {
       updated =
           queryStore.update(
-              ctx.getQueryId(), existing -> mergeRelationPins(existing, toCommit, correlationId));
+              ctx.getQueryId(),
+              existing -> {
+                if (cancelled.getAsBoolean()) {
+                  throw new CancellationException("query pin commit cancelled");
+                }
+                return mergeRelationPins(existing, toCommit, correlationId);
+              });
     } catch (RuntimeException | Error e) {
       queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
+      if (e instanceof CancellationException) {
+        pendingChunkPins = RelationPinSet.getDefaultInstance();
+      }
       throw e;
     }
     pendingChunkPins = RelationPinSet.getDefaultInstance();
@@ -225,6 +264,27 @@ final class ChunkPinBarrier {
     }
     if (LOG.isDebugEnabled()) {
       LOG.debugf("Committed chunk pins query_id=%s", ctx.getQueryId());
+    }
+  }
+
+  /** Release every pending transient root when the request will not reach a durable commit. */
+  private void discardPendingPins() {
+    RelationPinSet toRelease = pendingChunkPins;
+    pendingChunkPins = RelationPinSet.getDefaultInstance();
+    releaseRoots(toRelease);
+  }
+
+  /** Release the transient roots represented by {@code pins}, if any. */
+  private void releaseRoots(RelationPinSet pins) {
+    if (pins != null && pins.getPinsCount() > 0) {
+      queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(pins));
+    }
+  }
+
+  /** Stop the transaction before it creates a pin set that cannot be committed. */
+  private static void throwIfCancelled(BooleanSupplier cancelled) {
+    if (cancelled.getAsBoolean()) {
+      throw new CancellationException("query pin collection cancelled");
     }
   }
 

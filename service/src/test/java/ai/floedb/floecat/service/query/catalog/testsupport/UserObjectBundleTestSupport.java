@@ -429,7 +429,8 @@ public final class UserObjectBundleTestSupport {
         Optional<ResourceId> defaultCatalogId,
         java.util.concurrent.ConcurrentMap<ResourceId, CompletableFuture<TablePin>>
             currentSnapshotPinCache,
-        PhaseDiagnostics diagnostics) {
+        PhaseDiagnostics diagnostics,
+        java.util.function.BooleanSupplier cancelled) {
       List<ResourceId> resolved = new ArrayList<>(inputs.size());
       RelationPinSet.Builder pins = RelationPinSet.newBuilder();
       for (QueryInput input : inputs) {
