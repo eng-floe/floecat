@@ -24,7 +24,13 @@ import java.util.Optional;
 
 public interface PointerStore {
   sealed interface CasOp
-      permits CasUpsert, UnconditionalUpsert, CasDelete, CasCheck, CasCheckAbsent {}
+      permits CasUpsert, UnconditionalUpsert, CasDelete, CasCheck, CasCheckAbsent {
+    /**
+     * The pointer key this op constrains. Every op carries one, and callers assembling a batch from
+     * several sources need it to detect two ops contending on the same key.
+     */
+    String key();
+  }
 
   record CasUpsert(String key, long expectedVersion, Pointer next) implements CasOp {
     public CasUpsert {

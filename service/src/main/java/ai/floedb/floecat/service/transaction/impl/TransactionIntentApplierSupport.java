@@ -25,6 +25,9 @@ import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
@@ -87,6 +90,7 @@ public class TransactionIntentApplierSupport {
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject CatalogOverlay overlay;
+  @Inject MarkerStore markerStore;
 
   public boolean isTableByIdPointer(String pointerKey) {
     return pointerKey != null && pointerKey.contains("/tables/by-id/");
@@ -249,8 +253,9 @@ public class TransactionIntentApplierSupport {
 
     var ops = new ArrayList<PointerStore.CasOp>();
     Set<String> touchedKeys = new HashSet<>();
+    Set<String> fencedNamespaces = new HashSet<>();
     for (var intent : intents) {
-      ApplyOutcome planOutcome = planIntentOps(intent, ops, touchedKeys);
+      ApplyOutcome planOutcome = planIntentOps(intent, ops, touchedKeys, fencedNamespaces);
       if (planOutcome.status != ApplyStatus.APPLIED) {
         return planOutcome;
       }
@@ -293,8 +298,9 @@ public class TransactionIntentApplierSupport {
 
     var ops = new ArrayList<PointerStore.CasOp>();
     Set<String> touchedKeys = new HashSet<>();
+    Set<String> fencedNamespaces = new HashSet<>();
     for (var intent : intents) {
-      ApplyOutcome planOutcome = planIntentOps(intent, ops, touchedKeys);
+      ApplyOutcome planOutcome = planIntentOps(intent, ops, touchedKeys, fencedNamespaces);
       if (planOutcome.status != ApplyStatus.APPLIED) {
         return planOutcome;
       }
@@ -335,10 +341,13 @@ public class TransactionIntentApplierSupport {
   }
 
   private ApplyOutcome planIntentOps(
-      TransactionIntent intent, List<PointerStore.CasOp> ops, Set<String> touchedKeys) {
+      TransactionIntent intent,
+      List<PointerStore.CasOp> ops,
+      Set<String> touchedKeys,
+      Set<String> fencedNamespaces) {
     String pointerKey = intent.getTargetPointerKey();
     if (isTableByIdPointer(pointerKey)) {
-      return planTableIntentOps(intent, ops, touchedKeys);
+      return planTableIntentOps(intent, ops, touchedKeys, fencedNamespaces);
     }
     if (isConnectorByIdPointer(pointerKey)) {
       return planConnectorIntentOps(intent, ops, touchedKeys);
@@ -392,7 +401,10 @@ public class TransactionIntentApplierSupport {
   }
 
   private ApplyOutcome planTableIntentOps(
-      TransactionIntent intent, List<PointerStore.CasOp> ops, Set<String> touchedKeys) {
+      TransactionIntent intent,
+      List<PointerStore.CasOp> ops,
+      Set<String> touchedKeys,
+      Set<String> fencedNamespaces) {
     String pointerKey = intent.getTargetPointerKey();
     var current = pointerStore.get(pointerKey).orElse(null);
     long actualVersion = current == null ? 0L : current.getVersion();
@@ -434,6 +446,11 @@ public class TransactionIntentApplierSupport {
 
     long expected = intent.hasExpectedVersion() ? intent.getExpectedVersion() : actualVersion;
 
+    // A table with no pointer yet becomes visible in its namespace when this batch commits, so the
+    // batch is a child publish and needs the namespace fence. A reparent is one too, and is
+    // detected below once the old table has been read.
+    boolean publishesChild = current == null;
+
     if (current == null || !Objects.equals(current.getBlobUri(), intent.getBlobUri())) {
       Pointer next = PointerReferences.blobPointer(pointerKey, intent.getBlobUri(), expected + 1L);
       ApplyOutcome outcome =
@@ -473,6 +490,8 @@ public class TransactionIntentApplierSupport {
       if (oldTable == null) {
         return ApplyOutcome.retryable("NAME_POINTER_READ_FAILED", "old name pointer table missing");
       }
+      publishesChild =
+          !oldTable.getNamespaceId().getId().equals(nextTable.getNamespaceId().getId());
       String oldNameKey =
           Keys.tablePointerByName(
               oldTable.getResourceId().getAccountId(),
@@ -497,6 +516,54 @@ public class TransactionIntentApplierSupport {
         if (oldClaimOutcome.status != ApplyStatus.APPLIED) {
           return oldClaimOutcome;
         }
+      }
+    }
+
+    // Last, so a name collision is still reported as such rather than as namespace contention.
+    if (publishesChild) {
+      return appendNamespaceChildFence(
+          nextTable.getNamespaceId(), fencedNamespaces, touchedKeys, ops);
+    }
+    return ApplyOutcome.applied();
+  }
+
+  /**
+   * Folds the namespace child fence into this batch for a table that becomes newly visible in a
+   * namespace — a create, or a reparent into the destination.
+   *
+   * <p>The applier assembles its own {@link PointerStore#compareAndSetBatch} instead of going
+   * through the repository, so it does not inherit the guard the service-side create and reparent
+   * paths pass to {@code TableRepository} (see {@link MarkerStore#namespaceChildGuard}). Without
+   * the fence here, a committing transaction publishes a table into a namespace a concurrent {@code
+   * DeleteNamespace} is tearing down: the deleter's batch checks only the children marker, which an
+   * unfenced apply never moves, so both batches commit and the table survives under a namespace
+   * that is gone (see {@link BatchGuard}).
+   *
+   * <p>One fence per namespace per batch. The marker advance is a single CAS, so two tables created
+   * in the same namespace by one transaction share it — and issuing it twice would collide on that
+   * key.
+   */
+  private ApplyOutcome appendNamespaceChildFence(
+      ResourceId namespaceId,
+      Set<String> fencedNamespaces,
+      Set<String> touchedKeys,
+      List<PointerStore.CasOp> ops) {
+    if (!fencedNamespaces.add(namespaceId.getId())) {
+      return ApplyOutcome.applied();
+    }
+    List<PointerStore.CasOp> fenceOps;
+    try {
+      fenceOps = markerStore.namespaceChildGuard(namespaceId).ops();
+    } catch (BaseResourceRepository.BatchGuardFailedException namespaceGone) {
+      // No live namespace pointer to pin to, so there is nothing legitimate to publish into.
+      // Retryable: the transaction is re-planned against re-resolved state, which reports the
+      // natural conflict rather than orphaning the table.
+      return ApplyOutcome.retryable("NAMESPACE_MISSING", namespaceGone.getMessage());
+    }
+    for (var op : fenceOps) {
+      ApplyOutcome added = addOp(op, op.key(), touchedKeys, ops);
+      if (added.status != ApplyStatus.APPLIED) {
+        return added;
       }
     }
     return ApplyOutcome.applied();

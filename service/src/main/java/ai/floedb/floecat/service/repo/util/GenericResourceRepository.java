@@ -265,7 +265,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   private static void appendGuardOps(
       List<PointerStore.CasOp> ops, Set<String> batchedKeys, BatchGuard guard) {
     for (PointerStore.CasOp op : guard.ops()) {
-      String key = opKey(op);
+      String key = op.key();
       if (batchedKeys.contains(key)) {
         if (op instanceof PointerStore.CasCheck || op instanceof PointerStore.CasCheckAbsent) {
           continue;
@@ -275,19 +275,6 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       }
       ops.add(op);
     }
-  }
-
-  private static String opKey(PointerStore.CasOp op) {
-    if (op instanceof PointerStore.CasUpsert upsert) {
-      return upsert.key();
-    }
-    if (op instanceof PointerStore.CasDelete delete) {
-      return delete.key();
-    }
-    if (op instanceof PointerStore.CasCheck check) {
-      return check.key();
-    }
-    return ((PointerStore.CasCheckAbsent) op).key();
   }
 
   /**

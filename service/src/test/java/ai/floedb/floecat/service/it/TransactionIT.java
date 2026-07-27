@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.it;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
@@ -25,9 +26,14 @@ import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
+import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.transaction.rpc.BeginTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.GetTransactionRequest;
@@ -66,6 +72,7 @@ class TransactionIT {
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
+  @Inject PointerStore ptr;
 
   private static final Schema SCHEMA =
       new Schema(Types.NestedField.required(1, "id", Types.LongType.get()));
@@ -117,6 +124,64 @@ class TransactionIT {
     var fetched =
         table.getTable(GetTableRequest.newBuilder().setTableId(tbl.getResourceId()).build());
     assertEquals("orders_tx_renamed", fetched.getTable().getDisplayName());
+  }
+
+  /**
+   * A transaction that makes a table visible in a namespace must carry the same namespace child
+   * fence the CreateTable path does. The applier writes its own pointer batch instead of going
+   * through TableRepository, so without the fence a commit and a concurrent DeleteNamespace could
+   * both succeed. The observable half of that fence is the children-marker advance inside the
+   * commit batch — a marker that does not move is what lets a namespace delete wrongly commit.
+   */
+  @Test
+  void transactionCreatingATableAdvancesTheNamespaceChildMarker() {
+    var cat = TestSupport.createCatalog(catalog, "tx-cat-create", "tx catalog");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "it_ns_tx_create", List.of("db_tx"), "ns for tx");
+    String accountId = ns.getResourceId().getAccountId();
+    String markerKey = Keys.namespaceChildrenMarker(accountId, ns.getResourceId().getId());
+    long markerBefore = ptr.get(markerKey).map(Pointer::getVersion).orElse(0L);
+
+    var newTableId =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("tbl_tx_created")
+            .build();
+    var payload =
+        Table.newBuilder()
+            .setResourceId(newTableId)
+            .setCatalogId(cat.getResourceId())
+            .setNamespaceId(ns.getResourceId())
+            .setDisplayName("orders_tx_created")
+            .setSchemaJson(SchemaParser.toJson(SCHEMA))
+            .build();
+
+    var begin = transactions.beginTransaction(BeginTransactionRequest.newBuilder().build());
+    String txId = begin.getTransaction().getTxId();
+    transactions.prepareTransaction(
+        PrepareTransactionRequest.newBuilder()
+            .setTxId(txId)
+            .addChanges(TxChange.newBuilder().setTableId(newTableId).setTable(payload))
+            .build());
+    var commit =
+        transactions.commitTransaction(CommitTransactionRequest.newBuilder().setTxId(txId).build());
+
+    assertEquals(TransactionState.TS_APPLIED, commit.getTransaction().getState());
+    assertEquals(
+        "orders_tx_created",
+        table
+            .getTable(GetTableRequest.newBuilder().setTableId(newTableId).build())
+            .getTable()
+            .getDisplayName());
+    assertEquals(
+        markerBefore + 1,
+        ptr.get(markerKey).map(Pointer::getVersion).orElse(0L),
+        "the commit batch itself must advance the destination namespace's children marker");
+    assertTrue(
+        ptr.get(Keys.namespacePointerById(accountId, ns.getResourceId().getId())).isPresent(),
+        "the namespace the table was published into must still be pinned and present");
   }
 
   @Test

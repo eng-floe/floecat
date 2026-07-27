@@ -26,6 +26,7 @@ import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.transaction.impl.TransactionIntentApplierSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -673,6 +674,7 @@ class TransactionIntentApplierSupportTest {
             .build();
     String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
     blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
+    seedNamespace(pointers, accountId, namespaceId);
 
     TransactionIntent intent =
         TransactionIntent.newBuilder()
@@ -688,6 +690,153 @@ class TransactionIntentApplierSupportTest {
     assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
     assertTrue(pointers.get(relationKey).isPresent(), "shared relation-name claim must be created");
     assertEquals(tableId, pointers.get(relationKey).orElseThrow().getResourceId().getId());
+  }
+
+  /**
+   * The applier builds its own pointer batch instead of going through TableRepository, so it does
+   * not inherit the namespace child guard the service-side create path passes. Without the fence
+   * folded in here, a committing transaction and a concurrent DeleteNamespace can both succeed and
+   * leave the table orphaned: the deleter's batch only checks the children marker, which an
+   * unfenced apply never moves.
+   */
+  @Test
+  void applyTransactionAdvancesNamespaceChildMarkerWhenATableBecomesVisible() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    String namespaceId = "ns-1";
+    seedNamespace(pointers, accountId, namespaceId);
+    long markerBefore = markerVersion(pointers, accountId, namespaceId);
+
+    var outcome =
+        support.applyTransactionBestEffort(
+            List.of(tableCreateIntent(blobs, accountId, "cat-1", namespaceId, "table-1", "orders")),
+            intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertEquals(
+        markerBefore + 1,
+        markerVersion(pointers, accountId, namespaceId),
+        "the create batch itself must advance the namespace children marker");
+  }
+
+  @Test
+  void applyTransactionRefusesToPublishATableIntoAnAbsentNamespace() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    // No namespace pointer: the namespace never existed, or a DeleteNamespace already removed it.
+    var intent = tableCreateIntent(blobs, accountId, "cat-1", "ns-gone", "table-1", "orders");
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.RETRYABLE, outcome.status());
+    assertEquals("NAMESPACE_MISSING", outcome.errorCode());
+    assertTrue(
+        pointers.get(Keys.tablePointerById(accountId, "table-1")).isEmpty(),
+        "no pointer write may be applied when the destination namespace is gone");
+  }
+
+  /**
+   * The marker advance is a single CAS, so two tables published into one namespace by the same
+   * transaction share one fence — issuing it twice would collide on that key and fail the batch.
+   */
+  @Test
+  void applyTransactionFencesOnceForTwoTablesCreatedInTheSameNamespace() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    String namespaceId = "ns-1";
+    seedNamespace(pointers, accountId, namespaceId);
+    long markerBefore = markerVersion(pointers, accountId, namespaceId);
+
+    var outcome =
+        support.applyTransactionBestEffort(
+            List.of(
+                tableCreateIntent(blobs, accountId, "cat-1", namespaceId, "table-1", "orders"),
+                tableCreateIntent(blobs, accountId, "cat-1", namespaceId, "table-2", "returns")),
+            intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertEquals(markerBefore + 1, markerVersion(pointers, accountId, namespaceId));
+    assertTrue(pointers.get(Keys.tablePointerById(accountId, "table-1")).isPresent());
+    assertTrue(pointers.get(Keys.tablePointerById(accountId, "table-2")).isPresent());
+  }
+
+  /** A create fenced to a namespace pointer cannot commit once that pointer has moved or gone. */
+  @Test
+  void applyTransactionFailsWhenTheDestinationNamespacePointerMovesBeforeTheBatch()
+      throws Exception {
+    var pointers = new HookedPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    String namespaceId = "ns-1";
+    seedNamespace(pointers, accountId, namespaceId);
+    String namespaceKey = Keys.namespacePointerById(accountId, namespaceId);
+    var intent = tableCreateIntent(blobs, accountId, "cat-1", namespaceId, "table-1", "orders");
+
+    // DeleteNamespace wins the race between planning and the apply batch.
+    pointers.beforeBatch(() -> pointers.delete(namespaceKey));
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.RETRYABLE, outcome.status());
+    assertTrue(
+        pointers.get(Keys.tablePointerById(accountId, "table-1")).isEmpty(),
+        "the table must not be published under a namespace that is being removed");
+  }
+
+  private static TransactionIntent tableCreateIntent(
+      InMemoryBlobStore blobs,
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      String tableId,
+      String displayName) {
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(tableId)
+                    .setKind(ResourceKind.RK_TABLE))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
+            .setDisplayName(displayName)
+            .build();
+    String blobUri = "/accounts/" + accountId + "/tables/" + tableId + "/table/blob.pb";
+    blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
+    return TransactionIntent.newBuilder()
+        .setAccountId(accountId)
+        .setTxId("tx-1")
+        .setTargetPointerKey(Keys.tablePointerById(accountId, tableId))
+        .setBlobUri(blobUri)
+        .setCreatedAt(Timestamps.fromMillis(1))
+        .build();
   }
 
   @Test
@@ -835,7 +984,33 @@ class TransactionIntentApplierSupportTest {
     inject(support, "pointerStore", pointerStore);
     inject(support, "blobStore", blobStore);
     inject(support, "overlay", permissiveOverlay());
+    var markerStore = new MarkerStore();
+    inject(markerStore, "pointerStore", pointerStore);
+    inject(support, "markerStore", markerStore);
     return support;
+  }
+
+  /**
+   * A live namespace pointer for the destination of a table publish. Required by the namespace
+   * child fence: a table that becomes visible in a namespace pins that namespace's pointer, and the
+   * applier refuses to publish into one that has none rather than orphaning the table under a
+   * namespace a concurrent DeleteNamespace is removing.
+   */
+  private static void seedNamespace(
+      InMemoryPointerStore pointers, String accountId, String namespaceId) {
+    String key = Keys.namespacePointerById(accountId, namespaceId);
+    pointers.compareAndSet(
+        key,
+        0L,
+        PointerReferences.blobPointer(key, "s3://bucket/namespaces/" + namespaceId + "/v1", 1L));
+  }
+
+  private static long markerVersion(
+      InMemoryPointerStore pointers, String accountId, String namespaceId) {
+    return pointers
+        .get(Keys.namespaceChildrenMarker(accountId, namespaceId))
+        .map(ai.floedb.floecat.common.rpc.Pointer::getVersion)
+        .orElse(0L);
   }
 
   private static Transaction readTransaction(InMemoryBlobStore blobs, String blobUri)

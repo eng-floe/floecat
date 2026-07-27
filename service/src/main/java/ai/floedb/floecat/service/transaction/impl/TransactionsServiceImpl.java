@@ -108,7 +108,12 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   private static final Logger LOG = Logger.getLogger(TransactionsServiceImpl.class);
   private static final int MAX_POINTER_TXN_OPS = 100;
   private static final int APPLY_OPS_PER_PLAIN_INTENT = 3;
-  private static final int APPLY_OPS_PER_TABLE_OR_CONNECTOR_INTENT = 5;
+  // Canonical pointer, new by-name pointer, new relation claim, old by-name delete, old claim
+  // delete, plus the two namespace-fence ops (pointer pin + children-marker advance) a table intent
+  // that publishes into a namespace carries. Estimated per intent even though intents sharing a
+  // namespace share one fence and connector intents carry none: the apply-time budget is checked
+  // against the real op count, so this must never under-count.
+  private static final int APPLY_OPS_PER_TABLE_OR_CONNECTOR_INTENT = 7;
   private static final int APPLY_OPS_FOR_TRANSACTION_FINALIZE = 1;
   private static final int TABLE_NAME_REPLAY_SCAN_PAGE_SIZE = 200;
   private static final String CAPTURE_STATISTICS_PROPERTY = "floecat.connector.capture-statistics";
