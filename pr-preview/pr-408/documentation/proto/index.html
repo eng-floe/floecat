@@ -1174,6 +1174,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Overview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#breaking-remote-executor-revision" class="md-nav__link">
+    <span class="md-ellipsis">
+      Breaking remote-executor revision
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1716,6 +1731,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Overview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#breaking-remote-executor-revision" class="md-nav__link">
+    <span class="md-ellipsis">
+      Breaking remote-executor revision
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1859,6 +1889,14 @@
 structures for resource identifiers, catalog services, query lifecycle metadata, connectors, statistics, and
 helper schemas. Every other module depends on these contracts for serialization, validation, and
 compatibility.</p>
+<h3 id="breaking-remote-executor-revision">Breaking remote-executor revision<a class="headerlink" href="#breaking-remote-executor-revision" title="Permanent link">&para;</a></h3>
+<p>This release removes the chunked
+<code>ReconcileExecutorControl.SubmitLeasedFileGroupExecutionResult</code> RPC and replaces it with
+<code>CommitLeasedFileGroupResult</code>. The new RPC accepts immutable result, stats, and index-artifact
+descriptors written by the executor; it cannot decode or resume the old chunk/success flow.</p>
+<p>There is intentionally no compatibility shim. Remote executor and control-plane versions must be
+cut over together after existing leases are drained. Rolling or split deployments containing both
+protocol versions are unsupported.</p>
 <p>The contract files are organised by domain (<code>common/</code>, <code>catalog/</code>, <code>query/</code>, <code>execution/</code>,
 <code>connector/</code>, <code>account/</code>, <code>types/</code>, <code>statistics/</code>, <code>reconciler/</code>). Generated Java stubs live
 under the <code>ai.floedb.floecat.*.rpc</code> packages and are consumed by the Quarkus service, connectors,
