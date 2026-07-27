@@ -110,14 +110,11 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
     var out = new HashMap<String, AttrValue>();
     for (var e : item.entrySet()) {
       var k = e.getKey();
-      // Structural names are the record's own fields, and Record's constructor now rejects them as
-      // attrs. Other writers do put them on rows, so skipping them here is what keeps such a read
-      // from turning into an exception.
-      if (k.equals(ATTR_PARTITION_KEY)
-          || k.equals(ATTR_SORT_KEY)
-          || k.equals(ATTR_KIND)
-          || k.equals(ATTR_VALUE)
-          || k.equals(ATTR_VERSION)) continue;
+      // Reserved names carry the backend's own meaning, so Record's constructor refuses them as
+      // attrs. Other writers do put them on rows, and skipping them here is what keeps such a read
+      // from turning into an exception. Derived from the set rather than listed out, so that a name
+      // added there — ATTR_TTL, say — cannot turn into a read that throws.
+      if (KvAttributes.RESERVED_ATTRS.contains(k)) continue;
       var v = e.getValue();
       if (v.s() != null) {
         out.put(k, AttrValue.of(v.s()));
@@ -162,9 +159,11 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
     // serialize here, synchronously, before their request is built.
     AttrWriteRules.checkExpiryIsString(r.attrs());
     var item = new HashMap<String, AttributeValue>();
-    // Attrs first, structure second: Record's constructor already rejects structural attr names,
-    // so this ordering is belt-and-braces — should that check ever gain a hole, the structural
-    // fields still win instead of being clobbered by an attr of the same name.
+    // Attrs first, structure second: Record's constructor already rejects reserved attr names, so
+    // this ordering is belt-and-braces — should that check ever gain a hole, the structural fields
+    // still win instead of being clobbered by an attr of the same name. Only the five it writes,
+    // though: ATTR_TTL is reserved too but never written here, so the constructor is its only
+    // guard.
     item.putAll(attrsToAv(r.attrs()));
     item.put(ATTR_PARTITION_KEY, S(r.key().partitionKey()));
     item.put(ATTR_SORT_KEY, S(r.key().sortKey()));

@@ -343,6 +343,37 @@ public class DynamoDbKvStoreTest {
   }
 
   @Test
+  void reserved_attr_written_out_of_band_is_dropped_rather_than_failing_the_read() {
+    // ATTR_TTL is reserved because DynamoDB expires rows by it, and this store never writes it — so
+    // the only way a row carries one is another writer, and that row still has to be readable.
+    // Record's constructor rejects reserved names, so the decode has to drop it; letting it through
+    // would turn a foreign row into a read that throws.
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    DynamoDbKvStore store = newStore(handler);
+
+    Map<String, AttributeValue> item =
+        Map.of(
+            KvAttributes.ATTR_PARTITION_KEY,
+            AttributeValue.builder().s("pk").build(),
+            KvAttributes.ATTR_SORT_KEY,
+            AttributeValue.builder().s("sk").build(),
+            KvAttributes.ATTR_KIND,
+            AttributeValue.builder().s("K").build(),
+            KvAttributes.ATTR_VERSION,
+            AttributeValue.builder().n("4").build(),
+            KvAttributes.ATTR_TTL,
+            AttributeValue.builder().n("4321").build(),
+            "user",
+            AttributeValue.builder().s("ok").build());
+    handler.items.put(FakeDynamoDbHandler.keyFromItem(item), item);
+
+    KvStore.Record got = store.get(key("pk", "sk")).await().indefinitely().orElseThrow();
+    assertFalse(got.attrs().containsKey(KvAttributes.ATTR_TTL));
+    assertEquals(AttrValue.of("ok"), got.attrs().get("user"));
+    assertEquals(4L, got.version());
+  }
+
+  @Test
   void encodeToken_empty_returns_empty_optional() throws Exception {
     Optional<String> token = DynamoDbKvStore.encodeToken(Map.of());
     assertTrue(token.isEmpty());

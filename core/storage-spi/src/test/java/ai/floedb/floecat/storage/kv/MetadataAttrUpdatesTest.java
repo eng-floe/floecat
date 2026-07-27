@@ -70,16 +70,16 @@ public class MetadataAttrUpdatesTest {
   }
 
   @Test
-  void rejects_every_structural_attr_name_in_sets() {
-    for (String name : KvAttributes.STRUCTURAL_ATTRS) {
+  void rejects_every_reserved_attr_name_in_sets() {
+    for (String name : KvAttributes.RESERVED_ATTRS) {
       assertMessageContains(
           name, () -> MetadataAttrUpdates.validate(KEY, Map.of(name, AttrValue.of("x")), Map.of()));
     }
   }
 
   @Test
-  void rejects_every_structural_attr_name_in_increments() {
-    for (String name : KvAttributes.STRUCTURAL_ATTRS) {
+  void rejects_every_reserved_attr_name_in_increments() {
+    for (String name : KvAttributes.RESERVED_ATTRS) {
       assertMessageContains(
           name, () -> MetadataAttrUpdates.validate(KEY, Map.of(), Map.of(name, 1L)));
     }

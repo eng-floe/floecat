@@ -58,9 +58,11 @@ public class AttrWriteRulesTest {
   void accepts_numeric_values_for_every_other_attr() {
     // The rule is about one attribute's rollout constraint, not about numbers being suspect: index
     // bookkeeping is numeric precisely so it can be incremented server-side.
+    // Deliberately not ATTR_TTL: that name is reserved (DynamoDB expires rows by it), so it is no
+    // example of an ordinary attr — KvStoreRecordTest pins its rejection.
     assertDoesNotThrow(
         () ->
             AttrWriteRules.checkExpiryIsString(
-                Map.of("useCount", AttrValue.of(7L), KvAttributes.ATTR_TTL, AttrValue.of(9L))));
+                Map.of("useCount", AttrValue.of(7L), "hits", AttrValue.of(9L))));
   }
 }

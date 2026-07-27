@@ -58,9 +58,8 @@ public interface KvStore {
     public Record {
       attrs = (attrs == null) ? Map.of() : Map.copyOf(attrs);
       for (var name : attrs.keySet()) {
-        if (KvAttributes.STRUCTURAL_ATTRS.contains(name)) {
-          throw new IllegalArgumentException(
-              "attr name is reserved by the record structure: " + name);
+        if (KvAttributes.RESERVED_ATTRS.contains(name)) {
+          throw new IllegalArgumentException("attr name is reserved by the backend: " + name);
         }
       }
       value = (value == null) ? new byte[0] : value;
@@ -120,7 +119,7 @@ public interface KvStore {
    * for instance, are canonical entities that happen to store nothing in {@code value}. Callers
    * must target records whose consumers treat {@code Record.version} as authoritative.
    *
-   * @param sets attribute values to replace; must not name a {@link KvAttributes#STRUCTURAL_ATTRS}
+   * @param sets attribute values to replace; must not name a {@link KvAttributes#RESERVED_ATTRS}
    *     attribute, nor {@link KvAttributes#ATTR_EXPIRES_AT}, which only a whole-record write may
    *     touch (see {@link AttrWriteRules#checkExpiryIsString})
    * @param increments deltas to add to numeric attributes; must not overlap {@code sets}

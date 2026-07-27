@@ -53,9 +53,9 @@ public final class MetadataAttrUpdates {
       if (name == null || name.isBlank()) {
         throw new IllegalArgumentException(what + " contains a blank attr name");
       }
-      if (KvAttributes.STRUCTURAL_ATTRS.contains(name)) {
+      if (KvAttributes.RESERVED_ATTRS.contains(name)) {
         throw new IllegalArgumentException(
-            "attr name is reserved by the record structure: " + name + " (in " + what + ")");
+            "attr name is reserved by the backend: " + name + " (in " + what + ")");
       }
       // Rejected outright here, where whole-record writes accept the string form (see
       // AttrWriteRules#checkExpiryIsString). An increment can only produce the numeric form this

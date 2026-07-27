@@ -26,13 +26,13 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Constructor rules of {@link KvStore.Record} that every backend relies on: an attribute may not
- * borrow a structural field's name, and a null attrs map normalizes rather than blowing up.
+ * borrow a name the backend reserves, and a null attrs map normalizes rather than blowing up.
  */
 public class KvStoreRecordTest {
 
   @Test
-  void record_rejects_every_structural_attr_name() {
-    for (String name : KvAttributes.STRUCTURAL_ATTRS) {
+  void record_rejects_every_reserved_attr_name() {
+    for (String name : KvAttributes.RESERVED_ATTRS) {
       Map<String, AttrValue> attrs = Map.of(name, AttrValue.of("x"));
       IllegalArgumentException thrown =
           assertThrows(IllegalArgumentException.class, () -> newRecord(attrs));
@@ -41,10 +41,22 @@ public class KvStoreRecordTest {
   }
 
   @Test
-  void record_rejects_structural_attr_name_mixed_in_with_ordinary_ones() {
+  void record_rejects_reserved_attr_name_mixed_in_with_ordinary_ones() {
     Map<String, AttrValue> attrs =
         Map.of("ordinary", AttrValue.of("x"), KvAttributes.ATTR_VERSION, AttrValue.of(7L));
     assertThrows(IllegalArgumentException.class, () -> newRecord(attrs));
+  }
+
+  @Test
+  void record_rejects_a_ttl_attr() {
+    // Named on its own, not left to the loop above, because its reason differs and outlives a
+    // reader who prunes the set: DynamoDB's TTL feature is enabled on this attribute, so a
+    // bookkeeping counter that happens to be called "ttl" is an epoch-second deletion schedule for
+    // the row that carries it. No error, no trace — hence a write-time rejection.
+    Map<String, AttrValue> attrs = Map.of(KvAttributes.ATTR_TTL, AttrValue.of(9L));
+    IllegalArgumentException thrown =
+        assertThrows(IllegalArgumentException.class, () -> newRecord(attrs));
+    assertTrue(thrown.getMessage().contains(KvAttributes.ATTR_TTL), thrown.getMessage());
   }
 
   @Test

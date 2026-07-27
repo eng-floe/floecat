@@ -427,8 +427,8 @@ public class KvStoreContractTest {
   }
 
   @Test
-  void updateMetadataAttrsIfExists_rejects_structural_attr_names_in_sets() {
-    for (String name : KvAttributes.STRUCTURAL_ATTRS) {
+  void updateMetadataAttrsIfExists_rejects_reserved_attr_names_in_sets() {
+    for (String name : KvAttributes.RESERVED_ATTRS) {
       Map<String, AttrValue> sets = Map.of(name, AttrValue.of("x"));
       assertThrows(
           IllegalArgumentException.class,
