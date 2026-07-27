@@ -288,10 +288,7 @@ class RelationBundleBuilderTest {
             Map.of(),
             Map.of());
     overlay.registerRelation(
-        viewId,
-        view,
-        schema,
-        NameRef.newBuilder().setCatalog("cat").setName("view_x").build());
+        viewId, view, schema, NameRef.newBuilder().setCatalog("cat").setName("view_x").build());
 
     EngineMetadataDecoratorProvider provider =
         ignored ->
