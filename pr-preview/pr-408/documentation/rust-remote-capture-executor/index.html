@@ -2210,10 +2210,9 @@ retry runs under a fresh <code>lease_epoch</code>, and therefore a fresh <code>r
 </code></pre></div>
 <p>Both the Java file-group executor and the remote executor follow this shape.</p>
 <p>Do not reuse one <code>result_id</code> for different payloads. The control plane rejects replay with the same
-<code>result_id</code> if the full request payload changes — and because chunk payloads are not byte-stable
-across re-serializations (protobuf map ordering is not canonical), two different lease attempts must
-not share a <code>result_id</code>, or the second attempt's staged chunks collide with the first and are
-rejected with <code>Conflict detected</code>. Including the <code>lease_epoch</code> guarantees that.</p>
+<code>result_id</code> if the immutable result descriptor or either artifact-descriptor list changes. Two
+different lease attempts must not share a <code>result_id</code>, because the later attempt would conflict with
+the durable result accepted for the earlier attempt. Including the <code>lease_epoch</code> guarantees that.</p>
 <h2 id="idempotency-and-retry-semantics">Idempotency and Retry Semantics<a class="headerlink" href="#idempotency-and-retry-semantics" title="Permanent link">&para;</a></h2>
 <p>The worker should assume the following:</p>
 <ul>
@@ -2317,6 +2316,11 @@ lookup per file group. It does not read file-group payloads or per-file objects.
 file group has not written its digest-bound prepared marker, the service returns a retryable error.
 The finalizer must retry the exact same finalization result; it must not regenerate a different
 result ID or manifest for that retry.</p>
+<p>During successful publication, the control plane activates the index generation first and commits
+the stats-generation root last. The root commit is the snapshot visibility point, so readers cannot
+observe the finalized snapshot before both its stats and index generations are active. This
+ordering is internal to the control plane and requires no additional RPC or sequencing step from
+the external finalizer.</p>
 <p>The digest field is required and has no legacy fallback. Existing in-flight or persisted
 file-group results without it must be drained or replanned before a finalizer using this contract
 can complete them.</p>
