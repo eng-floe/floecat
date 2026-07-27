@@ -90,6 +90,15 @@ public class TableRepository {
         expectedPointerVersion);
   }
 
+  /** Guarded delete, for removing a table only while its namespace is unchanged. */
+  public boolean deleteWithPrecondition(
+      ResourceId tableResourceId, long expectedPointerVersion, BatchGuard namespaceGuard) {
+    return repo.deleteWithPrecondition(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()),
+        expectedPointerVersion,
+        namespaceGuard);
+  }
+
   public Optional<Table> getById(ResourceId tableResourceId) {
     return repo.getByKey(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }

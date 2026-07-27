@@ -119,8 +119,55 @@ public class MarkerStore {
     return new NamespaceDeleteGuard(namespaceId.getId(), markerKey, expectedMarkerVersion);
   }
 
+  /**
+   * Guard that pins a namespace to an exact pointer version without touching its children marker,
+   * for mutations that must only proceed while that namespace is unchanged.
+   *
+   * <p>Used by recursive delete to bind every removal inside a namespace to the namespace it
+   * scanned: a reparent moves a namespace by advancing its canonical pointer, so if it left the
+   * subtree mid-drop, the batches destroying its contents fail instead of emptying a namespace that
+   * escaped.
+   */
+  public BatchGuard namespacePinnedGuard(ResourceId namespaceId, long expectedPointerVersion) {
+    return new NamespacePinnedGuard(
+        namespaceId.getId(),
+        Keys.namespacePointerById(namespaceId.getAccountId(), namespaceId.getId()),
+        expectedPointerVersion);
+  }
+
   private long versionOf(String key) {
     return pointerStore.get(key).map(Pointer::getVersion).orElse(0L);
+  }
+
+  private final class NamespacePinnedGuard implements BatchGuard {
+    private final String namespaceId;
+    private final String namespacePointerKey;
+    private final long expectedPointerVersion;
+
+    private NamespacePinnedGuard(
+        String namespaceId, String namespacePointerKey, long expectedPointerVersion) {
+      this.namespaceId = namespaceId;
+      this.namespacePointerKey = namespacePointerKey;
+      this.expectedPointerVersion = expectedPointerVersion;
+    }
+
+    @Override
+    public List<PointerStore.CasOp> ops() {
+      return List.of(new PointerStore.CasCheck(namespacePointerKey, expectedPointerVersion));
+    }
+
+    @Override
+    public Outcome reevaluate() {
+      // Never RETRY: the namespace moving or changing invalidates the scan that chose this work.
+      return versionOf(namespacePointerKey) == expectedPointerVersion
+          ? Outcome.HOLDS
+          : Outcome.BROKEN;
+    }
+
+    @Override
+    public String describe() {
+      return "namespace " + namespaceId;
+    }
   }
 
   private final class NamespaceChildGuard implements BatchGuard {

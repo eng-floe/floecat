@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -28,6 +29,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
@@ -38,18 +40,24 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Behavior when {@code tableRepo.delete} returns {@code false} (a concurrent update/rename won the
- * canonical-pointer CAS). The guarded recursive path aborts for retry and never purges — the table
- * may still be alive under a namespace that survives. The unguarded account-teardown path purges
- * unconditionally — the whole account is going away, so a lost CAS must not leave the table pointer
- * and its root-resync marker as durable orphans — and never raises a retryable abort.
+ * Recursive-delete safety around resources that change under a stale subtree scan.
+ *
+ * <p>The scans that drive the dropper produce ids, and deleting by id resolves whatever that id
+ * points at <em>now</em>. The guarded path therefore re-reads each scanned resource, confirms it
+ * still belongs to the namespace/subtree being dropped, and deletes pinned to the pointer version
+ * that proved it — so a reparent that moved a resource out cannot have it destroyed in its new
+ * home. The unguarded account-teardown path keeps deleting unconditionally and never raises a
+ * retryable abort: the whole account is going away, and a lost CAS there must not leave the table
+ * pointer and its root-resync marker as durable orphans.
  */
 class RecursiveResourceDropperTest {
 
@@ -65,6 +73,12 @@ class RecursiveResourceDropperTest {
           .setId("ns")
           .setKind(ResourceKind.RK_NAMESPACE)
           .build();
+  private static final ResourceId OTHER_NS =
+      ResourceId.newBuilder()
+          .setAccountId("acct")
+          .setId("ns-keep")
+          .setKind(ResourceKind.RK_NAMESPACE)
+          .build();
   private static final ResourceId TABLE_ID =
       ResourceId.newBuilder()
           .setAccountId("acct")
@@ -72,12 +86,17 @@ class RecursiveResourceDropperTest {
           .setKind(ResourceKind.RK_TABLE)
           .build();
 
+  private static final String TABLE_BLOB = "blob://acct/tables/tbl/v1";
+  private static final long TABLE_POINTER_VERSION = 7L;
+  private static final long ROOT_POINTER_VERSION = 3L;
+
   private NamespaceRepository namespaceRepo;
   private TableRepository tableRepo;
   private TableRootRepository tableRoots;
   private ViewRepository viewRepo;
   private StatsRepository statsRepo;
   private PointerStore pointerStore;
+  private MarkerStore markerStore;
   private RecursiveResourceDropper dropper;
 
   private final Namespace root =
@@ -94,6 +113,10 @@ class RecursiveResourceDropperTest {
           .setDisplayName("orders")
           .build();
 
+  private static MutationMeta meta(String blobUri, long version) {
+    return MutationMeta.newBuilder().setBlobUri(blobUri).setPointerVersion(version).build();
+  }
+
   @BeforeEach
   void setUp() {
     namespaceRepo = mock(NamespaceRepository.class);
@@ -102,6 +125,7 @@ class RecursiveResourceDropperTest {
     viewRepo = mock(ViewRepository.class);
     statsRepo = mock(StatsRepository.class);
     pointerStore = mock(PointerStore.class);
+    markerStore = mock(MarkerStore.class);
 
     dropper = new RecursiveResourceDropper();
     dropper.namespaceRepo = namespaceRepo;
@@ -111,7 +135,7 @@ class RecursiveResourceDropperTest {
     dropper.statsRepo = statsRepo;
     dropper.metadataGraph = mock(UserGraph.class);
     dropper.topology = mock(TopologyGraph.class);
-    dropper.markerStore = mock(MarkerStore.class);
+    dropper.markerStore = markerStore;
     dropper.pointerStore = pointerStore;
 
     // No descendants: dropNamespaceContents processes only the root's own relations.
@@ -122,18 +146,111 @@ class RecursiveResourceDropperTest {
         .thenReturn(List.of(table));
     when(viewRepo.list(anyString(), anyString(), anyString(), anyInt(), anyString(), any()))
         .thenReturn(List.of());
+
+    // The root pointer the guarded path pins its relation removals to.
+    when(namespaceRepo.metaForSafe(any()))
+        .thenReturn(meta("blob://acct/namespaces/ns/v1", ROOT_POINTER_VERSION));
+    when(markerStore.namespacePinnedGuard(any(), anyLong())).thenReturn(BatchGuard.NONE);
+
+    // The scanned table, still where the scan found it.
+    when(tableRepo.metaForSafe(eq(TABLE_ID))).thenReturn(meta(TABLE_BLOB, TABLE_POINTER_VERSION));
+    when(tableRepo.getByBlobUri(eq(TABLE_BLOB))).thenReturn(Optional.of(table));
   }
 
   @Test
-  void guardedDropAbortsWhenTableDeleteDoesNotCommit() {
-    when(tableRepo.delete(eq(TABLE_ID))).thenReturn(false);
+  void guardedDropDeletesPinnedToTheVersionThatProvedMembership() {
+    when(tableRepo.deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any()))
+        .thenReturn(true);
+
+    var summary = dropper.dropNamespaceContents(root, true);
+
+    assertEquals(1, summary.tablesDeleted);
+    assertEquals(1, summary.snapshotPrefixesDeleted);
+    verify(tableRoots).purgeRoot(eq(TABLE_ID));
+    verify(statsRepo).deleteAllStatsForTable(eq(TABLE_ID));
+    // Never the unconditional by-id delete, which would resolve the table's CURRENT pointer.
+    verify(tableRepo, never()).delete(any());
+  }
+
+  @Test
+  void guardedDropRefusesToDeleteATableThatMovedToAnotherNamespace() {
+    // The scan saw this table under the root, but by the time it is re-read at its own pointer it
+    // has been reparented into a namespace outside the subtree. Deleting by id here would destroy
+    // it in its new home.
+    when(tableRepo.getByBlobUri(eq(TABLE_BLOB)))
+        .thenReturn(Optional.of(table.toBuilder().setNamespaceId(OTHER_NS).build()));
 
     assertThrows(
         BaseResourceRepository.AbortRetryableException.class,
         () -> dropper.dropNamespaceContents(root, true));
 
-    // The surviving table's owned state must not be purged.
+    verify(tableRepo, never()).delete(any());
+    verify(tableRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
     verify(pointerStore, never()).deleteByPrefix(anyString());
+    verify(tableRoots, never()).purgeRoot(any());
+    verify(statsRepo, never()).deleteAllStatsForTable(any());
+  }
+
+  @Test
+  void guardedDropSkipsATableAlreadyRemovedConcurrently() {
+    // A concurrent DeleteTable won and already ran this same cleanup: nothing to delete or purge.
+    when(tableRepo.metaForSafe(eq(TABLE_ID))).thenReturn(meta("", 0L));
+
+    var summary = dropper.dropNamespaceContents(root, true);
+
+    assertEquals(0, summary.tablesDeleted);
+    verify(tableRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
+    verify(tableRoots, never()).purgeRoot(any());
+  }
+
+  @Test
+  void guardedDropAbortsWhenThePinnedTableDeleteDoesNotCommit() {
+    // The table changed between the membership check and the delete, so the pinned CAS loses. Its
+    // owned state must not be purged — it may still be alive under a namespace that survives.
+    when(tableRepo.deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any()))
+        .thenReturn(false);
+
+    assertThrows(
+        BaseResourceRepository.AbortRetryableException.class,
+        () -> dropper.dropNamespaceContents(root, true));
+
+    verify(pointerStore, never()).deleteByPrefix(anyString());
+    verify(tableRoots, never()).purgeRoot(any());
+    verify(statsRepo, never()).deleteAllStatsForTable(any());
+  }
+
+  @Test
+  void guardedDropRefusesToDeleteADescendantNamespaceThatMovedOutOfTheSubtree() {
+    var movedId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("ns-child")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    // Scanned as a child of the root ("ns"), so it is in the drop set...
+    var scanned =
+        Namespace.newBuilder()
+            .setResourceId(movedId)
+            .setCatalogId(CATALOG)
+            .addParents("ns")
+            .setDisplayName("child")
+            .build();
+    when(namespaceRepo.list(anyString(), anyString(), any(), anyInt(), anyString(), any()))
+        .thenReturn(List.of(scanned));
+    when(namespaceRepo.metaForSafe(eq(movedId)))
+        .thenReturn(meta("blob://acct/namespaces/ns-child/v2", 5L));
+    // ...but re-reading it at its own pointer shows it now hangs off a different root entirely.
+    when(namespaceRepo.getByBlobUri(eq("blob://acct/namespaces/ns-child/v2")))
+        .thenReturn(Optional.of(scanned.toBuilder().clearParents().addParents("other").build()));
+
+    assertThrows(
+        BaseResourceRepository.AbortRetryableException.class,
+        () -> dropper.dropNamespaceContents(root, true));
+
+    // Neither the escaped namespace nor anything inside it is touched.
+    verify(namespaceRepo, never()).delete(any(), any());
+    verify(namespaceRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
+    verify(tableRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
     verify(tableRoots, never()).purgeRoot(any());
   }
 
@@ -152,14 +269,13 @@ class RecursiveResourceDropperTest {
   }
 
   @Test
-  void committedTableDeletePurgesOwnedStateIncludingStats() {
+  void unguardedDropNeverPinsOrVerifiesMembership() {
     when(tableRepo.delete(eq(TABLE_ID))).thenReturn(true);
 
-    var summary = dropper.dropNamespaceContents(root, true);
+    dropper.dropNamespaceContents(root, false);
 
-    assertEquals(1, summary.tablesDeleted);
-    assertEquals(1, summary.snapshotPrefixesDeleted);
-    verify(tableRoots).purgeRoot(eq(TABLE_ID));
-    verify(statsRepo).deleteAllStatsForTable(eq(TABLE_ID));
+    // Teardown must not depend on membership: the tree is going away wholesale, and a pinned CAS
+    // that lost would strand owned state.
+    verify(tableRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
   }
 }

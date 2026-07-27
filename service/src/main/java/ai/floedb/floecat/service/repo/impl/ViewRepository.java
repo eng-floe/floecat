@@ -89,6 +89,15 @@ public class ViewRepository {
         new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()), expectedPointerVersion);
   }
 
+  /** Guarded delete, for removing a view only while its namespace is unchanged. */
+  public boolean deleteWithPrecondition(
+      ResourceId viewResourceId, long expectedPointerVersion, BatchGuard namespaceGuard) {
+    return repo.deleteWithPrecondition(
+        new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()),
+        expectedPointerVersion,
+        namespaceGuard);
+  }
+
   public Optional<View> getById(ResourceId viewResourceId) {
     return repo.getByKey(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
   }

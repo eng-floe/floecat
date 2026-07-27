@@ -17,6 +17,9 @@
 package ai.floedb.floecat.service.catalog.impl;
 
 import ai.floedb.floecat.catalog.rpc.Namespace;
+import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
@@ -38,6 +41,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import org.jboss.logging.Logger;
 
@@ -105,9 +109,11 @@ public class RecursiveResourceDropper {
         });
     descendants.sort(Comparator.comparingInt(Namespace::getParentsCount).reversed());
     for (var descendant : descendants) {
-      dropNamespace(descendant, summary, rootId, guarded);
+      dropNamespace(descendant, summary, rootId, rootPath, guarded);
     }
-    dropNamespaceRelations(root, summary, guarded);
+    // The root's own relations are pinned to the root the caller resolved, so a concurrent reparent
+    // of the root cannot have its contents emptied out from under it either.
+    dropNamespaceRelations(root, summary, guarded, subtreePin(rootId, guarded));
     return summary;
   }
 
@@ -152,11 +158,80 @@ public class RecursiveResourceDropper {
   }
 
   private void dropNamespace(
-      Namespace namespace, DropSummary summary, ResourceId rootId, boolean guarded) {
-    dropNamespaceRelations(namespace, summary, guarded);
-    var childrenGuard = guarded ? requireNamespaceEmptyAndStable(namespace) : BatchGuard.NONE;
-    deleteNamespace(namespace, rootId, childrenGuard);
+      Namespace namespace,
+      DropSummary summary,
+      ResourceId rootId,
+      List<String> rootPath,
+      boolean guarded) {
+    var namespaceId = namespace.getResourceId();
+
+    if (!guarded) {
+      dropNamespaceRelations(namespace, summary, false, BatchGuard.NONE);
+      deleteNamespace(namespace, rootId, BatchGuard.NONE, UNPINNED);
+      summary.namespacesDeleted++;
+      return;
+    }
+
+    // Confirm this scanned descendant is STILL inside the subtree before destroying anything in it,
+    // and capture the pointer version that proved it. A reparent out of the subtree advances that
+    // pointer, so pinning every removal below to this version means a namespace that escaped
+    // mid-drop
+    // is neither emptied nor deleted.
+    long pinnedVersion = pinDescendantToSubtree(namespace, rootPath);
+    if (pinnedVersion == UNPINNED) {
+      CLEANUP_LOG.infof(
+          "recursive_drop_namespace_skipped_absent account_id=%s namespace_id=%s",
+          namespaceId.getAccountId(), namespaceId.getId());
+      return;
+    }
+    var subtreePin = markerStore.namespacePinnedGuard(namespaceId, pinnedVersion);
+
+    dropNamespaceRelations(namespace, summary, true, subtreePin);
+    var childrenGuard = requireNamespaceEmptyAndStable(namespace);
+    deleteNamespace(namespace, rootId, childrenGuard, pinnedVersion);
     summary.namespacesDeleted++;
+  }
+
+  /** Sentinel for "no pointer version pinned" — account teardown, or a resource already gone. */
+  private static final long UNPINNED = -1L;
+
+  /**
+   * Pins the root's own relations to the root pointer the caller resolved, so a concurrent reparent
+   * of the root cannot have its contents emptied. Unguarded teardown pins nothing.
+   */
+  private BatchGuard subtreePin(ResourceId namespaceId, boolean guarded) {
+    if (!guarded) {
+      return BatchGuard.NONE;
+    }
+    long version = namespaceRepo.metaForSafe(namespaceId).getPointerVersion();
+    if (version == 0L) {
+      throw namespaceChanged(namespaceId);
+    }
+    return markerStore.namespacePinnedGuard(namespaceId, version);
+  }
+
+  /**
+   * Re-reads a scanned descendant and returns the canonical pointer version that proves it is still
+   * under {@code rootPath}, or {@link #UNPINNED} when it no longer exists at all.
+   *
+   * <p>The version and the content come from a single pointer read, so the pair is coherent: the
+   * namespace path checked here is exactly the one that version resolved to. Verifying membership
+   * against a separately-read version could otherwise pin a resource that had already moved.
+   */
+  private long pinDescendantToSubtree(Namespace scanned, List<String> rootPath) {
+    var namespaceId = scanned.getResourceId();
+    var meta = namespaceRepo.metaForSafe(namespaceId);
+    if (meta.getPointerVersion() == 0L) {
+      return UNPINNED;
+    }
+    var live = namespaceRepo.getByBlobUri(meta.getBlobUri());
+    if (live.isEmpty()) {
+      throw namespaceChanged(namespaceId);
+    }
+    if (!isDescendant(live.get(), rootPath)) {
+      throw movedOutOfSubtree(namespaceId, String.join(".", rootPath));
+    }
+    return meta.getPointerVersion();
   }
 
   /**
@@ -219,6 +294,56 @@ public class RecursiveResourceDropper {
         "relation changed during recursive delete: " + relationId.getId());
   }
 
+  private static BaseResourceRepository.AbortRetryableException movedOutOfSubtree(
+      ResourceId resourceId, String from) {
+    return new BaseResourceRepository.AbortRetryableException(
+        "resource moved out of the subtree during recursive delete: "
+            + resourceId.getId()
+            + " no longer under "
+            + from);
+  }
+
+  /**
+   * Resolves the pointer version to delete a scanned resource at, but only while it still belongs
+   * to the part of the tree being dropped.
+   *
+   * <p>The subtree scans that feed this dropper produce ids, and deleting by id resolves whatever
+   * that id points at <em>now</em>. A concurrent reparent that moved the resource out between the
+   * scan and the delete would therefore have it destroyed in its new home, along with its owned
+   * state — a silent data loss that no marker can prevent, because a marker can only be checked
+   * after the fact.
+   *
+   * <p>The fix is to make membership and the delete precondition come from the same observation.
+   * {@code metaReader} performs a single canonical-pointer read, yielding a coherent {@code
+   * (blobUri, pointerVersion)} pair; {@code ownerOfBlob} then reads the content <em>that exact
+   * version</em> pointed at and reports which namespace it declared. Deleting pinned to that
+   * version means any later mutation — every reparent advances the canonical pointer — loses the
+   * CAS instead of destroying a resource that had legitimately moved away.
+   *
+   * @return the version to delete at, or empty when the resource is already gone (a concurrent
+   *     delete won and ran the same cleanup, so there is nothing left to do)
+   */
+  private <T> Optional<Long> pinToNamespace(
+      ResourceId resourceId,
+      ResourceId expectedOwner,
+      Function<ResourceId, MutationMeta> metaReader,
+      Function<String, Optional<ResourceId>> ownerOfBlob) {
+    var meta = metaReader.apply(resourceId);
+    if (meta.getPointerVersion() == 0L) {
+      return Optional.empty();
+    }
+    var owner = ownerOfBlob.apply(meta.getBlobUri());
+    if (owner.isEmpty()) {
+      // The pointer moved between the version read and the content read, or it dangles. Either way
+      // this scan is stale and must not be acted on.
+      throw relationChanged(resourceId);
+    }
+    if (!owner.get().getId().equals(expectedOwner.getId())) {
+      throw movedOutOfSubtree(resourceId, expectedOwner.getId());
+    }
+    return Optional.of(meta.getPointerVersion());
+  }
+
   @FunctionalInterface
   private interface PageFetcher<T> {
     List<T> fetch(String pageToken, StringBuilder nextOut);
@@ -274,7 +399,8 @@ public class RecursiveResourceDropper {
     return token;
   }
 
-  private void dropNamespaceRelations(Namespace namespace, DropSummary summary, boolean guarded) {
+  private void dropNamespaceRelations(
+      Namespace namespace, DropSummary summary, boolean guarded, BatchGuard subtreePin) {
     var namespaceId = namespace.getResourceId();
     var catalogId = namespace.getCatalogId();
 
@@ -288,7 +414,13 @@ public class RecursiveResourceDropper {
                 token,
                 next),
         table ->
-            dropTable(namespace, table.getResourceId(), table.getNamespaceId(), summary, guarded));
+            dropTable(
+                namespace,
+                table.getResourceId(),
+                table.getNamespaceId(),
+                summary,
+                guarded,
+                subtreePin));
 
     drainPages(
         (token, next) ->
@@ -299,7 +431,7 @@ public class RecursiveResourceDropper {
                 200,
                 token,
                 next),
-        view -> dropView(namespace, view.getResourceId(), summary, guarded));
+        view -> dropView(namespace, view.getResourceId(), summary, guarded, subtreePin));
   }
 
   private void dropTable(
@@ -307,16 +439,44 @@ public class RecursiveResourceDropper {
       ResourceId tableId,
       ResourceId tableNamespaceId,
       DropSummary summary,
-      boolean guarded) {
+      boolean guarded,
+      BatchGuard subtreePin) {
     var namespaceId = namespace.getResourceId();
     var catalogId = namespace.getCatalogId();
-    boolean committed = tableRepo.delete(tableId);
-    if (!committed && guarded) {
-      // Recursive namespace delete: tableRepo.delete returned false, so a concurrent update/rename
-      // won the canonical-pointer CAS and the table may still be alive. Do not purge its owned
-      // state; abort and let runWithRetry re-read (prior deletes this pass are idempotent).
-      throw relationChanged(tableId);
+
+    if (guarded) {
+      var pinned =
+          pinToNamespace(
+              tableId,
+              namespaceId,
+              tableRepo::metaForSafe,
+              blobUri -> tableRepo.getByBlobUri(blobUri).map(Table::getNamespaceId));
+      if (pinned.isEmpty()) {
+        // Already gone — a concurrent DeleteTable won and ran this same cleanup. Nothing to purge,
+        // and the namespace emptiness check still has to pass before the namespace itself goes.
+        CLEANUP_LOG.infof(
+            "recursive_drop_table_skipped_absent account_id=%s namespace_id=%s table_id=%s",
+            namespaceId.getAccountId(), namespaceId.getId(), tableId.getId());
+        return;
+      }
+      // Delete pinned to the exact pointer version the membership check observed. Any concurrent
+      // mutation — crucially a reparent that moved this table out of the subtree — advances the
+      // canonical pointer, so the CAS fails and no owned state is purged. Deleting by id alone
+      // would resolve the table's CURRENT pointer and destroy it in whatever namespace it had just
+      // moved to.
+      if (!tableRepo.deleteWithPrecondition(tableId, pinned.get(), subtreePin)) {
+        throw relationChanged(tableId);
+      }
+      cleanupDeletedTable(tableId, tableNamespaceId, false);
+      summary.tablesDeleted++;
+      summary.snapshotPrefixesDeleted++;
+      CLEANUP_LOG.infof(
+          "recursive_drop_table account_id=%s catalog_id=%s namespace_id=%s table_id=%s committed=true",
+          namespaceId.getAccountId(), catalogId.getId(), namespaceId.getId(), tableId.getId());
+      return;
     }
+
+    boolean committed = tableRepo.delete(tableId);
     // Committed delete, or unguarded account teardown. In teardown there is no survivor to protect
     // —
     // the account, its catalogs, and namespaces are all going away — so purge owned state
@@ -337,13 +497,42 @@ public class RecursiveResourceDropper {
   }
 
   private void dropView(
-      Namespace namespace, ResourceId viewId, DropSummary summary, boolean guarded) {
+      Namespace namespace,
+      ResourceId viewId,
+      DropSummary summary,
+      boolean guarded,
+      BatchGuard subtreePin) {
     var namespaceId = namespace.getResourceId();
     var catalogId = namespace.getCatalogId();
-    boolean committed = viewRepo.delete(viewId);
-    if (!committed && guarded) {
-      throw relationChanged(viewId);
+
+    if (guarded) {
+      // Same stale-scan hazard as tables: delete pinned to the version whose content was verified
+      // to still live here, so a view that moved out cannot be destroyed in its new namespace.
+      var pinned =
+          pinToNamespace(
+              viewId,
+              namespaceId,
+              viewRepo::metaForSafe,
+              blobUri -> viewRepo.getByBlobUri(blobUri).map(View::getNamespaceId));
+      if (pinned.isEmpty()) {
+        CLEANUP_LOG.infof(
+            "recursive_drop_view_skipped_absent account_id=%s namespace_id=%s view_id=%s",
+            namespaceId.getAccountId(), namespaceId.getId(), viewId.getId());
+        return;
+      }
+      if (!viewRepo.deleteWithPrecondition(viewId, pinned.get(), subtreePin)) {
+        throw relationChanged(viewId);
+      }
+      topology.evict(viewId);
+      metadataGraph.invalidate(viewId);
+      summary.viewsDeleted++;
+      CLEANUP_LOG.infof(
+          "recursive_drop_view account_id=%s catalog_id=%s namespace_id=%s view_id=%s committed=true",
+          namespaceId.getAccountId(), catalogId.getId(), namespaceId.getId(), viewId.getId());
+      return;
     }
+
+    boolean committed = viewRepo.delete(viewId);
     topology.evict(viewId);
     metadataGraph.invalidate(viewId);
     summary.viewsDeleted++;
@@ -359,7 +548,7 @@ public class RecursiveResourceDropper {
   private void deleteNamespace(Namespace namespace) {
     // Account teardown: the whole tree and its account pointer are going away, so there is nothing
     // for a fence to protect and nothing a late child could be orphaned under.
-    deleteNamespace(namespace, null, BatchGuard.NONE);
+    deleteNamespace(namespace, null, BatchGuard.NONE, UNPINNED);
   }
 
   /**
@@ -371,11 +560,23 @@ public class RecursiveResourceDropper {
    * <p>{@code childrenGuard} makes the pointer removal atomic with the emptiness the caller
    * established: a child published since then raises {@link
    * BaseResourceRepository.BatchGuardFailedException}, which is retryable and re-runs the drop.
+   *
+   * <p>{@code expectedVersion} pins the removal to the pointer that was proven to be inside the
+   * subtree ({@link #UNPINNED} in account teardown, where there is no subtree to leave). Without
+   * it, deleting by id would resolve the namespace's current pointer and remove one that had been
+   * reparented out of the subtree since the scan.
    */
   private void deleteNamespace(
-      Namespace namespace, ResourceId skipMarkerId, BatchGuard childrenGuard) {
+      Namespace namespace,
+      ResourceId skipMarkerId,
+      BatchGuard childrenGuard,
+      long expectedVersion) {
     var namespaceId = namespace.getResourceId();
-    namespaceRepo.delete(namespaceId, childrenGuard);
+    if (expectedVersion == UNPINNED) {
+      namespaceRepo.delete(namespaceId, childrenGuard);
+    } else if (!namespaceRepo.deleteWithPrecondition(namespaceId, expectedVersion, childrenGuard)) {
+      throw namespaceChanged(namespaceId);
+    }
     topology.evictRelationRefs(namespaceId);
     topology.evictNamespaceRefs(namespace.getCatalogId());
     metadataGraph.invalidate(namespaceId);
