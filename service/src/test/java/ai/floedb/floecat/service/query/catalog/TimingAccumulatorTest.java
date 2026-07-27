@@ -56,6 +56,7 @@ class TimingAccumulatorTest {
           "relation_build",
           "decoration",
           "stats_lookup",
+          "stats_warm",
           "decorate_relation",
           "decorate_view",
           "decorate_columns",

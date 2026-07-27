@@ -113,12 +113,17 @@ public class UserObjectBundleService {
 
   // Caps how many of a chunk's relations resolve concurrently, across the select and build
   // fan-outs. Each is an independent, mostly store-bound resolution; a small fan-out overlaps their
-  // round-trips without flooding the store. Local per-request bound; total store concurrency is
-  // bounded by the shared executor pool, not this.
+  // round-trips without flooding the store. Per-request bound only: the virtual-thread executor has
+  // no shared-pool ceiling, so total store concurrency scales with concurrent requests times this
+  // value (upstream gRPC concurrency bounds the request count).
   private final int maxParallelRelations;
 
-  // The stream driver blocks while it gathers this fan-out. Keep its blocking metadata work off
-  // the application worker pool so concurrent drivers cannot starve the executor that runs them.
+  // Runs per-relation resolution off the request thread on virtual threads, deliberately NOT the
+  // shared Quarkus worker pool: the stream driver runs on that pool and blocks joining this
+  // fan-out, so submitting the fan-out back to the same pool can starve it under load (all workers
+  // parked on joins, none left to run the joined tasks). Virtual threads park cheaply while blocked
+  // on the store and BoundedFanout's semaphore bounds real concurrency; OTel context is
+  // re-established per task inside BoundedFanout.
   private final ExecutorService blockingExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
   private static void warnFlightHost(String flightHost, String quarkusProfile) {
@@ -178,7 +183,15 @@ public class UserObjectBundleService {
     this.engineContext = engineContext;
     this.decorationEpoch = safe(decorationEpoch);
     this.slowRpcMs = Math.max(0L, slowRpcMs);
-    this.maxParallelRelations = maxParallelRelations;
+    // A permit count of 0 or negative would wedge every GetUserObjects request forever in the
+    // fan-out's permit wait, so reject it at startup: clamp to serial and warn rather than serve
+    // in a permanently-hanging state.
+    if (maxParallelRelations < 1) {
+      LOG.warnf(
+          "floecat.catalog.bundle.max_parallel_relations=%d is invalid; clamping to 1 (serial)",
+          maxParallelRelations);
+    }
+    this.maxParallelRelations = Math.max(1, maxParallelRelations);
     FlightEndpointRef advertisedFlightEndpoint =
         FlightEndpointRef.newBuilder()
             .setHost(flightHost)
@@ -377,8 +390,9 @@ public class UserObjectBundleService {
     private final LongAdder pinCommitNanos = new LongAdder();
     private final LongAdder relationBuildNanos = new LongAdder();
     private final LongAdder decorationNanos = new LongAdder();
-    // Driver-only wall-clock of the chunk batch stats warm pass, kept separate from per-relation
-    // stats lookup time so warm cache hits are not double-counted.
+    // Driver-only: wall-clock of the chunk's batch stats WARM pass. Kept distinct from
+    // statsLookupNanos so the one-shot warm fetch is not double-counted against the per-relation
+    // stats reads it turns into cache hits during build.
     private final LongAdder statsWarmNanos = new LongAdder();
     // Aggregate sub-totals written from the parallel select tasks.
     private final LongAdder selectRelationNanos = new LongAdder();
@@ -611,8 +625,7 @@ public class UserObjectBundleService {
      * Write every summary metric onto {@code diagnostics} and emit the summary event. The request
      * context ({@link SummaryContext}) carries the non-tally values (ids, chunk/candidate counts,
      * live cache sizes, outcome) and the three derived durations. Every key and its write verb
-     * ({@code nanos} vs {@code put}) matches the pre-consolidation emit exactly — the
-     * docs/telemetry/diagnostics.md contract is unchanged.
+     * ({@code nanos} vs {@code put}) matches the docs/telemetry/diagnostics.md contract.
      */
     void flushInto(PhaseDiagnostics diagnostics, SummaryContext ctx) {
       diagnostics.put("query_id", ctx.queryId());
@@ -1165,8 +1178,10 @@ public class UserObjectBundleService {
             "stats batch warm failed query_id=%s; build will resolve stats per relation",
             ctx.getQueryId());
       } finally {
-        // The reads happen here; the per-relation tableStats during build then hits the cache.
-        timings.addStatsLookupNanos(System.nanoTime() - startNs);
+        // The batch fetch happens here; the per-relation tableStats during build then hits the
+        // cache. Record under stats_warm, NOT stats_lookup: charging both this warm fetch and the
+        // build-time cache-hit reads to stats_lookup would double-count the same logical fetch.
+        timings.addStatsWarmNanos(System.nanoTime() - startNs);
       }
       if (isCancelled()) {
         throw new java.util.concurrent.CancellationException("GetUserObjects cancelled");

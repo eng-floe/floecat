@@ -42,6 +42,7 @@ import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
@@ -53,6 +54,7 @@ import ai.floedb.floecat.systemcatalog.spi.decorator.RelationDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ViewDecoration;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
+import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -172,6 +174,23 @@ final class RelationBundleBuilder {
           buildRelation(
               correlationId, relation, liveCtx, resolutionContext, stats, timings, scopedIdentity);
       return BuildResult.success(info, timings);
+    } catch (StatusRuntimeException e) {
+      // A structured gRPC error carries a specific code and diagnostic fields — notably
+      // pinValidator.validate on genuine catalog-integrity breakage (QUERY_PINNED_ROOT_MISSING,
+      // QUERY_PINNED_BLOB_VERSION_MISMATCH, with table_id/pinned_version/found_version). Preserve
+      // that structured code and its params instead of flattening to build_failed, so a hard
+      // integrity fault is distinguishable from an ordinary decoration/schema fault in metrics and
+      // logs. Falls back to build_failed for a status without a structured payload.
+      FloecatStatus status = FloecatStatus.fromThrowable(e);
+      if (status != null && !status.messageKey().isBlank()) {
+        String message =
+            status.params().isEmpty() ? status.message() : status.message() + " " + status.params();
+        return BuildResult.failure(
+            new BuildError(status.messageKey(), message, relation.relationId().getId()), timings);
+      }
+      String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+      return BuildResult.failure(
+          new BuildError(BUILD_FAILED_CODE, message, relation.relationId().getId()), timings);
     } catch (RuntimeException e) {
       String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
       return BuildResult.failure(

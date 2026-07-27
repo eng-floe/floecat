@@ -17,7 +17,6 @@
 package ai.floedb.floecat.service.query.catalog;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
@@ -26,7 +25,6 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.PlannedInput;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.TimingAccumulator;
 import java.util.ArrayList;
 import java.util.List;
@@ -122,34 +120,6 @@ final class RelationResolutionCache {
       return nameOnly;
     }
     return ns.relationNameRef(node.displayName(), node.id(), catalog.displayName());
-  }
-
-  /**
-   * Resolve every NAME candidate of the plan in one batch, seeding the name memo. Names sharing a
-   * catalog/namespace resolve their scope once here instead of once per candidate during select,
-   * and the memo turns each candidate's later {@link #resolveName} into a hit. Already-cached names
-   * (e.g. from a prior chunk's base-table drain) are left as they are.
-   */
-  void seed(List<PlannedInput> plan) {
-    List<NameRef> refs = new ArrayList<>();
-    for (PlannedInput planned : plan) {
-      for (QueryInput candidate : planned.normalized()) {
-        if (candidate.getTargetCase() == QueryInput.TargetCase.NAME) {
-          refs.add(candidate.getName());
-        }
-      }
-    }
-    if (refs.isEmpty()) {
-      return;
-    }
-    long startNs = System.nanoTime();
-    try {
-      overlay
-          .resolveNames(correlationId, refs)
-          .forEach((ref, id) -> nameResolutionCache.putIfAbsent(normalizedNameRef(ref), id));
-    } finally {
-      timings.addNameResolveNanos(System.nanoTime() - startNs);
-    }
   }
 
   /** Live count of distinct names resolved so far; read at telemetry flush. */

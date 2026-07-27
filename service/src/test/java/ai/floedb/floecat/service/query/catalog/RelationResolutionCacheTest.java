@@ -19,20 +19,16 @@ package ai.floedb.floecat.service.query.catalog;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.RelationNode;
-import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.PlannedInput;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.SummaryContext;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.TimingAccumulator;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogOverlay;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -41,10 +37,9 @@ import org.junit.jupiter.api.Test;
 /**
  * Direct tests of {@link RelationResolutionCache}: the per-request name/node memo the {@link
  * UserObjectBundleService} driver resolves through. Verifies single-flight memoization (present and
- * empty-negative), batch {@link RelationResolutionCache#seed} pre-population, name normalization
- * collapsing to one key, and that every hit/miss and resolve-nanos lands in the shared {@link
- * TimingAccumulator}. A counting {@link FakeCatalogOverlay} proves the resolve ran at most once per
- * key.
+ * empty-negative), name normalization collapsing to one key, and that every hit/miss and
+ * resolve-nanos lands in the shared {@link TimingAccumulator}. A counting {@link
+ * FakeCatalogOverlay} proves the resolve ran at most once per key.
  */
 class RelationResolutionCacheTest {
 
@@ -164,29 +159,6 @@ class RelationResolutionCacheTest {
     Recording rec = flush();
     assertThat(rec.get("node_cache_misses")).isEqualTo(1L);
     assertThat(rec.get("node_cache_hits")).isEqualTo(1L);
-  }
-
-  @Test
-  void seedPrePopulatesSoLaterResolveNameIsAHit() {
-    PlannedInput planned =
-        new PlannedInput(
-            0,
-            TableReferenceCandidate.getDefaultInstance(),
-            List.of(QueryInput.newBuilder().setName(NAME).build()));
-
-    cache.seed(List.of(planned));
-    // seed resolved the name in its batch; the memo now holds it.
-    assertThat(overlay.resolveNameCount(NAME)).isEqualTo(1);
-    assertThat(cache.nameEntries()).isEqualTo(1);
-
-    Optional<ResourceId> resolved = cache.resolveName(NAME);
-    assertThat(resolved).contains(TABLE);
-    // The lookup is a pure hit: no additional overlay call.
-    assertThat(overlay.resolveNameCount(NAME)).isEqualTo(1);
-
-    Recording rec = flush();
-    assertThat(rec.get("name_cache_hits")).isEqualTo(1L);
-    assertThat(rec.get("name_cache_misses")).isEqualTo(0L);
   }
 
   @Test
