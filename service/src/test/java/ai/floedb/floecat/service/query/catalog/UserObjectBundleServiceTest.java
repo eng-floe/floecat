@@ -76,8 +76,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
@@ -882,19 +880,7 @@ class UserObjectBundleServiceTest {
               List<QueryInput> inputs,
               Optional<Timestamp> asOfDefault,
               Optional<ResourceId> defaultCatalogId,
-              ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
-              PhaseDiagnostics diagnostics) {
-            return emptyPinResolution(inputs);
-          }
-
-          @Override
-          public ResolutionResult resolveInputs(
-              String queryId,
-              String correlationId,
-              List<QueryInput> inputs,
-              Optional<Timestamp> asOfDefault,
-              Optional<ResourceId> defaultCatalogId,
-              ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+              QueryInputResolver.CurrentSnapshotPinCache currentSnapshotPinCache,
               PhaseDiagnostics diagnostics,
               java.util.function.BooleanSupplier cancelled) {
             return emptyPinResolution(inputs);

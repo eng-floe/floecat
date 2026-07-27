@@ -427,8 +427,7 @@ public final class UserObjectBundleTestSupport {
         List<QueryInput> inputs,
         Optional<Timestamp> asOfDefault,
         Optional<ResourceId> defaultCatalogId,
-        java.util.concurrent.ConcurrentMap<ResourceId, CompletableFuture<TablePin>>
-            currentSnapshotPinCache,
+        QueryInputResolver.CurrentSnapshotPinCache currentSnapshotPinCache,
         PhaseDiagnostics diagnostics,
         java.util.function.BooleanSupplier cancelled) {
       List<ResourceId> resolved = new ArrayList<>(inputs.size());

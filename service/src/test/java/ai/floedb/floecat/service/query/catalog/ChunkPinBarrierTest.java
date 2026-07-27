@@ -45,10 +45,8 @@ import com.google.protobuf.Timestamp;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.BeforeEach;
@@ -280,8 +278,7 @@ class ChunkPinBarrierTest {
         List<QueryInput> inputs,
         Optional<Timestamp> asOfDefault,
         Optional<ResourceId> defaultCatalogId,
-        Map<ResourceId, CompletableFuture<ai.floedb.floecat.query.rpc.TablePin>>
-            currentSnapshotPinCache,
+        QueryInputResolver.CurrentSnapshotPinCache currentSnapshotPinCache,
         PhaseDiagnostics diagnostics,
         java.util.function.BooleanSupplier cancelled) {
       RelationPinSet.Builder pins = RelationPinSet.newBuilder();

@@ -54,7 +54,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 import org.jboss.logging.Logger;
 
 /**
@@ -119,8 +118,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                                     request.getInputsList(),
                                     asOfDefault,
                                     Optional.of(ctx.getQueryDefaultCatalogId()),
-                                    new java.util.concurrent.ConcurrentHashMap<
-                                        ResourceId, CompletableFuture<TablePin>>(),
+                                    new QueryInputResolver.CurrentSnapshotPinCache(),
                                     diagnostics));
                     diagnostics.put("resolved_inputs", rr.resolved().size());
 

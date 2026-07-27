@@ -19,11 +19,9 @@ package ai.floedb.floecat.service.query.catalog;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
 import ai.floedb.floecat.common.rpc.QueryInput;
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
-import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
@@ -31,15 +29,13 @@ import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.ResolvedR
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleService.TimingAccumulator;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
+import ai.floedb.floecat.service.query.resolver.QueryInputResolver.CurrentSnapshotPinCache;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.function.BooleanSupplier;
 import org.jboss.logging.Logger;
 
@@ -68,8 +64,7 @@ final class ChunkPinBarrier {
 
   // First-touch snapshot per relation id, shared with the resolver so a relation pins to one
   // snapshot for the life of the request.
-  private final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache =
-      new ConcurrentHashMap<>();
+  private final CurrentSnapshotPinCache currentSnapshotPinCache = new CurrentSnapshotPinCache();
   // Pins gathered but not yet made durable; folded across chunks, drained by commit().
   private RelationPinSet pendingChunkPins = RelationPinSet.getDefaultInstance();
 

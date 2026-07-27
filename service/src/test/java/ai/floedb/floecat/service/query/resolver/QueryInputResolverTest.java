@@ -33,6 +33,7 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.query.resolver.QueryInputResolver.CurrentSnapshotPinCache;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
@@ -42,8 +43,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
@@ -95,7 +94,7 @@ public class QueryInputResolverTest {
         List.of(QueryInput.newBuilder().setName(n).build()),
         Optional.empty(),
         Optional.empty(),
-        new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+        new CurrentSnapshotPinCache(),
         null);
 
     // Registered under the stable query id (not the per-RPC correlation id), so the committing RPC
@@ -127,8 +126,7 @@ public class QueryInputResolverTest {
                         QueryInput.newBuilder().setTableId(fast).build()),
                     Optional.empty(),
                     Optional.empty(),
-                    new java.util.concurrent.ConcurrentHashMap<
-                        ResourceId, CompletableFuture<TablePin>>(),
+                    new CurrentSnapshotPinCache(),
                     null));
 
     try {
@@ -161,7 +159,7 @@ public class QueryInputResolverTest {
                         QueryInput.newBuilder().setTableId(rid("FAST")).build()),
                     Optional.empty(),
                     Optional.empty(),
-                    new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+                    new CurrentSnapshotPinCache(),
                     null,
                     cancelled::get);
                 return null;
@@ -179,6 +177,51 @@ public class QueryInputResolverTest {
     } finally {
       blockingGraph.allowSlowPin.countDown();
     }
+  }
+
+  /** A late non-interruptible lookup cannot register a root after cancellation cleanup. */
+  @Test
+  void cancellationDoesNotRegisterRootsFromLatePinLookup() throws Exception {
+    var blockingGraph = new NonInterruptiblePinGraph("SLOW");
+    var store = org.mockito.Mockito.mock(QueryContextStore.class);
+    var withStore = new QueryInputResolver(blockingGraph, store);
+    AtomicBoolean cancelled = new AtomicBoolean();
+
+    CompletableFuture<Throwable> resolution =
+        CompletableFuture.supplyAsync(
+            () -> {
+              try {
+                withStore.resolveInputs(
+                    "q-cancel-late-pin",
+                    "cid",
+                    List.of(
+                        QueryInput.newBuilder().setTableId(rid("SLOW")).build(),
+                        QueryInput.newBuilder().setTableId(rid("FAST")).build()),
+                    Optional.empty(),
+                    Optional.empty(),
+                    new CurrentSnapshotPinCache(),
+                    null,
+                    cancelled::get);
+                return null;
+              } catch (Throwable failure) {
+                return failure;
+              }
+            });
+
+    assertTrue(blockingGraph.slowPinStarted.await(1, TimeUnit.SECONDS));
+    cancelled.set(true);
+    try {
+      assertTrue(
+          resolution.get(250, TimeUnit.MILLISECONDS)
+              instanceof java.util.concurrent.CancellationException);
+    } finally {
+      blockingGraph.allowSlowPin.countDown();
+    }
+    assertTrue(blockingGraph.slowPinCompleted.await(1, TimeUnit.SECONDS));
+    org.mockito.Mockito.verify(store, org.mockito.Mockito.never())
+        .registerResolvingPinBlobs(
+            org.mockito.ArgumentMatchers.eq("q-cancel-late-pin"),
+            org.mockito.ArgumentMatchers.argThat(uris -> uris.contains("s3://SLOW/table.pb")));
   }
 
   /** A failed parallel plan releases every provisional root it constructed. */
@@ -199,8 +242,7 @@ public class QueryInputResolverTest {
                     QueryInput.newBuilder().setTableId(rid("FAST")).build()),
                 Optional.empty(),
                 Optional.empty(),
-                new java.util.concurrent.ConcurrentHashMap<
-                    ResourceId, CompletableFuture<TablePin>>(),
+                new CurrentSnapshotPinCache(),
                 null));
 
     org.mockito.Mockito.verify(store)
@@ -439,7 +481,7 @@ public class QueryInputResolverTest {
                 List.of(qi),
                 Optional.<com.google.protobuf.Timestamp>empty(),
                 Optional.<ResourceId>empty(),
-                new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+                new CurrentSnapshotPinCache(),
                 null)
             .snapshotSet()
             .getPins(0);
@@ -505,7 +547,7 @@ public class QueryInputResolverTest {
                 List.of(qi),
                 Optional.<com.google.protobuf.Timestamp>empty(),
                 Optional.<ResourceId>empty(),
-                new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+                new CurrentSnapshotPinCache(),
                 null)
             .snapshotSet()
             .getPins(0);
@@ -560,7 +602,7 @@ public class QueryInputResolverTest {
             List.of(qi),
             Optional.<com.google.protobuf.Timestamp>empty(),
             Optional.<ResourceId>empty(),
-            new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+            new CurrentSnapshotPinCache(),
             null)
         .snapshotSet();
 
@@ -1148,7 +1190,7 @@ public class QueryInputResolverTest {
     ResourceId tableId = rid("CACHE_TABLE");
     metadataGraph.setCurrentSnapshot(tableId, 1234L);
     QueryInput input = QueryInput.newBuilder().setTableId(tableId).build();
-    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache = new ConcurrentHashMap<>();
+    CurrentSnapshotPinCache cache = new CurrentSnapshotPinCache();
 
     resolver.resolveInputs(
         "", "cid-a", List.of(input), Optional.empty(), Optional.empty(), cache, null);
@@ -1158,7 +1200,6 @@ public class QueryInputResolverTest {
     long tablePinCalls =
         metadataGraph.pinCalls().stream().filter(call -> call.tableId().equals(tableId)).count();
     assertEquals(1L, tablePinCalls);
-    assertEquals(1, cache.size());
   }
 
   // ----------------------------------------------------------------------

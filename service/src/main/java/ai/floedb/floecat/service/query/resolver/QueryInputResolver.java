@@ -147,6 +147,47 @@ public class QueryInputResolver {
     }
   }
 
+  /**
+   * Per-request single-flight cache for CURRENT-snapshot table pins. Failed lookups are evicted so
+   * a later caller may retry, while successful pins remain frozen for the cache lifetime.
+   */
+  public static final class CurrentSnapshotPinCache {
+    private final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> pins;
+
+    public CurrentSnapshotPinCache() {
+      this(new ConcurrentHashMap<>());
+    }
+
+    private CurrentSnapshotPinCache(
+        ConcurrentMap<ResourceId, CompletableFuture<TablePin>> pins) {
+      this.pins = pins;
+    }
+
+    /**
+     * Return one pin for {@code tableId}, executing {@code resolver} at most once concurrently. The
+     * winning caller's failure reaches every waiter and removes the failed entry.
+     */
+    private Lookup resolve(ResourceId tableId, Supplier<TablePin> resolver) {
+      CompletableFuture<TablePin> holder = new CompletableFuture<>();
+      CompletableFuture<TablePin> inflight = pins.putIfAbsent(tableId, holder);
+      if (inflight != null) {
+        return new Lookup(Futures.join(inflight), false);
+      }
+      try {
+        TablePin pin = resolver.get();
+        holder.complete(pin);
+        return new Lookup(pin, true);
+      } catch (RuntimeException | Error e) {
+        pins.remove(tableId, holder);
+        holder.completeExceptionally(e);
+        throw e;
+      }
+    }
+
+    /** Result of one lookup, including whether this caller performed the table-pin read. */
+    private record Lookup(TablePin pin, boolean miss) {}
+  }
+
   // =============================================================================
   // Per-call accumulation state
   // =============================================================================
@@ -170,7 +211,7 @@ public class QueryInputResolver {
     // Keep insertion order (matching input order) while deduplicating by table ID.
     final Map<ResourceId, TablePin> pinByTableId = new LinkedHashMap<>();
     // Request-local cache for current-snapshot table pins (no override, no as-of).
-    final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache;
+    final CurrentSnapshotPinCache currentSnapshotPinCache;
     // Tracks transient roots owned by this resolution attempt until they are retained or discarded.
     final ResolvingPinRoots resolvingPinRoots;
     final PhaseDiagnostics diagnostics;
@@ -180,7 +221,7 @@ public class QueryInputResolver {
         String correlationId,
         Optional<Timestamp> asOfDefault,
         Optional<String> defaultCatalog,
-        ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+        CurrentSnapshotPinCache currentSnapshotPinCache,
         ResolvingPinRoots resolvingPinRoots,
         PhaseDiagnostics diagnostics) {
       this.queryId = queryId;
@@ -297,7 +338,7 @@ public class QueryInputResolver {
         inputs,
         asOfDefault,
         defaultCatalogId,
-        new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>(),
+        new CurrentSnapshotPinCache(),
         null);
   }
 
@@ -315,8 +356,31 @@ public class QueryInputResolver {
    * <p>{@code defaultCatalogId} is used only when expanding view base relations: if a base-relation
    * {@link NameRef} has a blank catalog or empty path it is enriched with the query's default
    * catalog / creation search-path before resolution. Non-view inputs are unaffected. {@code
-   * currentSnapshotPinCache} is shared by concurrent input tasks, so it must provide atomic {@link
-   * ConcurrentMap#putIfAbsent} and conditional removal.
+   * currentSnapshotPinCache} is shared by concurrent input tasks and freezes each table's CURRENT
+   * snapshot for the cache lifetime.
+   */
+  public ResolutionResult resolveInputs(
+      String queryId,
+      String correlationId,
+      List<QueryInput> inputs,
+      Optional<Timestamp> asOfDefault,
+      Optional<ResourceId> defaultCatalogId,
+      CurrentSnapshotPinCache currentSnapshotPinCache,
+      PhaseDiagnostics diagnostics) {
+    return resolveInputs(
+        queryId,
+        correlationId,
+        inputs,
+        asOfDefault,
+        defaultCatalogId,
+        currentSnapshotPinCache,
+        diagnostics,
+        () -> false);
+  }
+
+  /**
+   * Compatibility bridge for callers that adopted the concurrent single-flight map before the
+   * cache became a domain type.
    */
   public ResolutionResult resolveInputs(
       String queryId,
@@ -332,9 +396,29 @@ public class QueryInputResolver {
         inputs,
         asOfDefault,
         defaultCatalogId,
-        currentSnapshotPinCache,
+        new CurrentSnapshotPinCache(currentSnapshotPinCache),
+        diagnostics);
+  }
+
+  /** Compatibility bridge for the cancellable concurrent-map overload. */
+  public ResolutionResult resolveInputs(
+      String queryId,
+      String correlationId,
+      List<QueryInput> inputs,
+      Optional<Timestamp> asOfDefault,
+      Optional<ResourceId> defaultCatalogId,
+      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+      PhaseDiagnostics diagnostics,
+      BooleanSupplier cancelled) {
+    return resolveInputs(
+        queryId,
+        correlationId,
+        inputs,
+        asOfDefault,
+        defaultCatalogId,
+        new CurrentSnapshotPinCache(currentSnapshotPinCache),
         diagnostics,
-        () -> false);
+        cancelled);
   }
 
   /**
@@ -352,11 +436,11 @@ public class QueryInputResolver {
       Optional<ResourceId> defaultCatalogId,
       Map<ResourceId, TablePin> currentSnapshotPinCache,
       PhaseDiagnostics diagnostics) {
-    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> singleFlightCache =
-        new ConcurrentHashMap<>();
+    CurrentSnapshotPinCache singleFlightCache = new CurrentSnapshotPinCache();
     synchronized (currentSnapshotPinCache) {
       currentSnapshotPinCache.forEach(
-          (tableId, pin) -> singleFlightCache.put(tableId, CompletableFuture.completedFuture(pin)));
+          (tableId, pin) ->
+              singleFlightCache.pins.put(tableId, CompletableFuture.completedFuture(pin)));
     }
     try {
       return resolveInputs(
@@ -369,7 +453,7 @@ public class QueryInputResolver {
           diagnostics);
     } finally {
       synchronized (currentSnapshotPinCache) {
-        singleFlightCache.forEach(
+        singleFlightCache.pins.forEach(
             (tableId, pinFuture) -> {
               if (pinFuture.isDone()
                   && !pinFuture.isCompletedExceptionally()
@@ -382,7 +466,7 @@ public class QueryInputResolver {
   }
 
   /**
-   * As {@link #resolveInputs(String, String, List, Optional, Optional, ConcurrentMap,
+   * As {@link #resolveInputs(String, String, List, Optional, Optional, CurrentSnapshotPinCache,
    * PhaseDiagnostics)}, but stops before additional metadata work and interrupts fan-out tasks when
    * {@code cancelled} becomes true.
    */
@@ -392,7 +476,7 @@ public class QueryInputResolver {
       List<QueryInput> inputs,
       Optional<Timestamp> asOfDefault,
       Optional<ResourceId> defaultCatalogId,
-      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
+      CurrentSnapshotPinCache currentSnapshotPinCache,
       PhaseDiagnostics diagnostics,
       BooleanSupplier cancelled) {
     throwIfCancelled(cancelled);
@@ -633,43 +717,28 @@ public class QueryInputResolver {
       SnapshotRef override,
       Optional<Timestamp> asOfDefault) {
     if (usesCurrentSnapshotFallback(override, asOfDefault)) {
-      // Single-flight per table: two references to the same table's CURRENT snapshot must freeze
-      // the
-      // SAME snapshot even when they resolve on different threads, or an ingest landing between two
-      // independent lookups would give them different snapshots and turn a compatible pair into a
-      // pin conflict. A CompletableFuture placeholder gives that single-flight WITHOUT
-      // computeIfAbsent
-      // holding the map's bin lock across the store round-trip — which would serialize unrelated
-      // table ids that hash to the same bin. The winner (whoever inserts the incomplete future)
-      // runs
-      // the one lookup; concurrent same-id callers await its result.
-      CompletableFuture<TablePin> holder = new CompletableFuture<>();
-      CompletableFuture<TablePin> inflight = state.currentSnapshotPinCache.putIfAbsent(rid, holder);
-      TablePin pin;
-      if (inflight == null) {
-        try {
-          long snapshotPinStartNs = System.nanoTime();
-          pin =
-              withMetadataGraph(
-                  () -> metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault));
-          state.resolvingPinRoots.register(pin);
-          state.diagnostics.count("pin.snapshot_calls");
-          state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
-        } catch (RuntimeException | Error e) {
-          // Never cache a failure: drop the placeholder so a retry re-resolves, and release any
-          // callers already awaiting this id with the same error.
-          state.currentSnapshotPinCache.remove(rid, holder);
-          holder.completeExceptionally(e);
-          throw e;
-        }
-        holder.complete(pin);
+      long snapshotPinStartNs = System.nanoTime();
+      CurrentSnapshotPinCache.Lookup lookup =
+          state.currentSnapshotPinCache.resolve(
+              rid,
+              () -> {
+                TablePin pin =
+                    withMetadataGraph(
+                        () ->
+                            metadataGraph.tablePinFor(
+                                state.correlationId, rid, override, asOfDefault));
+                state.resolvingPinRoots.register(pin);
+                return pin;
+              });
+      state.resolvingPinRoots.register(lookup.pin());
+      if (lookup.miss()) {
+        state.diagnostics.count("pin.snapshot_calls");
+        state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
         state.diagnostics.count("pin.current_snapshot_cache_misses");
       } else {
-        pin = Futures.join(inflight);
-        state.resolvingPinRoots.register(pin);
         state.diagnostics.count("pin.current_snapshot_cache_hits");
       }
-      return pin;
+      return lookup.pin();
     }
     state.diagnostics.count(
         "pin.explicit_snapshot_pins", override != null && override.hasSnapshotId());
