@@ -33,6 +33,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
+import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -292,6 +293,57 @@ class IndexArtifactRepositoryTest {
 
     assertThat(repository.indexCaptureComplete(TABLE_ID, 718L, Set.of())).isTrue();
     verify(blobs, times(1)).get(stableManifestUri);
+  }
+
+  @Test
+  void allColumnCaptureSatisfiesAnyRequestedSelector() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = new IndexArtifactRepository(pointers, blobs);
+    SnapshotCaptureManifest manifest =
+        captureManifest(720L, 1, 1, "").toBuilder()
+            .setCapturePolicy(
+                CapturePolicy.newBuilder()
+                    .addOutputs(CaptureOutput.CO_PARQUET_PAGE_INDEX)
+                    .setDefaultColumnScope(DefaultColumnScope.DCS_ALL))
+            .build();
+
+    repository.activateGeneration(TABLE_ID, 720L, "full-rescan-parent", manifest.toByteArray());
+
+    assertThat(repository.indexCaptureComplete(TABLE_ID, 720L, Set.of("#123"))).isTrue();
+  }
+
+  @Test
+  void additiveActivationRetainsPriorSelectorCoverageAndFencesItsPredecessor() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = new IndexArtifactRepository(pointers, blobs);
+    long snapshotId = 721L;
+    repository.activateGeneration(
+        TABLE_ID,
+        snapshotId,
+        "full-rescan-parent",
+        captureManifest(snapshotId, 1, 1, "#1").toByteArray());
+    IndexArtifactRepository.GenerationPredecessor predecessor =
+        repository.captureGenerationInput(TABLE_ID, snapshotId, List.of()).predecessor();
+    SnapshotCaptureManifest incremental =
+        captureManifest(snapshotId, 1, 1, "#2").toBuilder().setParentJobId("next").build();
+
+    repository.activateGeneration(
+        TABLE_ID, snapshotId, "full-rescan-next", incremental.toByteArray(), predecessor, true);
+
+    assertThat(repository.indexCaptureComplete(TABLE_ID, snapshotId, Set.of("#1", "#2"))).isTrue();
+    assertThatThrownBy(
+            () ->
+                repository.activateGeneration(
+                    TABLE_ID,
+                    snapshotId,
+                    "full-rescan-stale",
+                    incremental.toBuilder().setParentJobId("stale").build().toByteArray(),
+                    predecessor,
+                    true))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessageContaining("predecessor changed");
   }
 
   private static SnapshotCaptureManifest captureManifest(

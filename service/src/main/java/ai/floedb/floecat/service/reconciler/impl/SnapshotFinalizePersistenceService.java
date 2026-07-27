@@ -76,19 +76,30 @@ public class SnapshotFinalizePersistenceService {
     return stable.size();
   }
 
-  public long publishPreparedStatsGeneration(
+  public boolean publishPreparedStatsGeneration(
       ResourceId tableId,
       long snapshotId,
       String generationId,
-      List<StatsStore.PrewrittenTargetStatsReference> finalReferences) {
+      List<StatsStore.PrewrittenTargetStatsReference> finalReferences,
+      StatsStore.StatsGenerationPredecessor predecessor,
+      StatsStore.PublicationFence publicationFence) {
     List<StatsStore.PrewrittenTargetStatsReference> stable =
         finalReferences == null
             ? List.of()
             : finalReferences.stream().filter(java.util.Objects::nonNull).toList();
-    statsStore.publishPreparedStatsGeneration(tableId, snapshotId, generationId, stable);
+    if (!statsStore.publishPreparedStatsGeneration(
+        tableId, snapshotId, generationId, stable, predecessor, publicationFence)) {
+      return false;
+    }
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
     commitGenerationToRoot(tableId, snapshotId);
-    return stable.size();
+    return true;
+  }
+
+  public StatsStore.StatsGenerationPredecessor prepareStatsGenerationForPublication(
+      ResourceId tableId, long snapshotId, String generationId, boolean inheritMissingTargets) {
+    return statsStore.prepareStatsGenerationForPublication(
+        tableId, snapshotId, generationId, inheritMissingTargets);
   }
 
   public void clearPrewrittenArtifactProtections(

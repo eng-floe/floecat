@@ -269,6 +269,16 @@ message FileExecutionPlan {
   repeated IcebergDeleteFile iceberg_delete_files = 7;
 }
 
+// Immutable index-generation state against which an additive sidecar capture was planned.
+// Workers echo this value through their result descriptors; Floecat activates the replacement
+// generation only while this predecessor remains active.
+message IndexGenerationPredecessor {
+  string generation_id = 1;
+  uint64 active_pointer_version = 2;
+  string capture_manifest_uri = 3;
+  uint64 capture_manifest_pointer_version = 4;
+}
+
 message IcebergDeleteFile {
   enum Content {
     IDFC_UNSPECIFIED = 0;
@@ -309,6 +319,7 @@ message FileGroupResultPayload {
   repeated ai.floedb.floecat.catalog.TargetStatsRecord partial_aggregate_records = 13;
   repeated StatsObjectDescriptor index_artifacts = 14;
   repeated StatsObjectDescriptor file_stats = 15;
+  IndexGenerationPredecessor index_predecessor = 16;
 }
 
 // Immutable publication unit produced by the snapshot-finalize executor after it has verified all
@@ -334,6 +345,7 @@ message SnapshotCaptureManifest {
   uint32 partial_aggregate_record_count = 17;
   uint32 final_stats_record_count = 18;
   uint32 index_artifact_count = 19;
+  IndexGenerationPredecessor index_predecessor = 20;
 }
 
 // Compact reference to a committed SnapshotCaptureManifest at the URI allocated for this fenced
@@ -387,6 +399,7 @@ message FileGroupResultDescriptor {
   // SHA-256 over the canonical file-stats and index-artifact descriptor sets.
   // Binds the bounded commit-time mappings to this durable result descriptor.
   bytes artifact_references_sha256 = 26;
+  IndexGenerationPredecessor index_predecessor = 27;
 }
 
 // Scheduler hints that influence where and how a reconcile job should run.
@@ -887,6 +900,10 @@ message LeasedFileGroupExecution {
   string stats_object_prefix = 15;
   string execution_schema_json = 16;
   repeated FileExecutionPlan file_execution_plans = 17;
+  // Active wrapper metadata for this group's files. Floecat never reads the referenced sidecar
+  // content; the remote executor owns additive sidecar reconstruction.
+  IndexGenerationPredecessor index_predecessor = 18;
+  repeated ai.floedb.floecat.catalog.IndexArtifactRecord predecessor_index_artifacts = 19;
 }
 
 message GetLeasedFileGroupExecutionResponse {

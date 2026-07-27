@@ -42,6 +42,27 @@ public interface StatsStore {
 
   record PrewrittenStatsObject(String blobUri, long blobBytes, byte[] blobSha256) {}
 
+  record StatsGenerationPredecessor(String generationId, long manifestVersion) {
+    public StatsGenerationPredecessor {
+      generationId = generationId == null ? "" : generationId;
+      if (manifestVersion < 0L) {
+        throw new IllegalArgumentException("manifestVersion must be non-negative");
+      }
+    }
+  }
+
+  record PublicationFence(String pointerKey, String value, long version) {
+    public PublicationFence {
+      if (pointerKey == null || pointerKey.isBlank()) {
+        throw new IllegalArgumentException("pointerKey is required");
+      }
+      value = value == null ? "" : value;
+      if (version <= 0L) {
+        throw new IllegalArgumentException("version must be positive");
+      }
+    }
+  }
+
   enum UnpublishedGenerationDeleteResult {
     DELETED,
     NOT_DELETABLE_PUBLISHED,
@@ -303,12 +324,19 @@ public interface StatsStore {
    * registered by this call. Implementations must activate the already-prepared generation without
    * enumerating or reading its worker-written objects.
    */
-  default void publishPreparedStatsGeneration(
+  default boolean publishPreparedStatsGeneration(
       ResourceId tableId,
       long snapshotId,
       String generationId,
-      List<PrewrittenTargetStatsReference> finalReferences) {
+      List<PrewrittenTargetStatsReference> finalReferences,
+      StatsGenerationPredecessor predecessor,
+      PublicationFence publicationFence) {
     throw new UnsupportedOperationException("prepared stats generation publish is not supported");
+  }
+
+  default StatsGenerationPredecessor prepareStatsGenerationForPublication(
+      ResourceId tableId, long snapshotId, String generationId, boolean inheritMissingTargets) {
+    throw new UnsupportedOperationException("prepared stats generation rebasing is not supported");
   }
 
   /**

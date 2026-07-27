@@ -918,6 +918,17 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                               payload.parentJobId(),
                               payload.jobId(),
                               payload.leaseEpoch()))
+                      .setIndexPredecessor(
+                          ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor.newBuilder()
+                              .setGenerationId(payload.indexPredecessor().generationId())
+                              .setActivePointerVersion(
+                                  payload.indexPredecessor().activePointerVersion())
+                              .setCaptureManifestUri(
+                                  payload.indexPredecessor().captureManifestUri())
+                              .setCaptureManifestPointerVersion(
+                                  payload.indexPredecessor().captureManifestPointerVersion())
+                              .build())
+                      .addAllPredecessorIndexArtifacts(payload.predecessorIndexArtifacts())
                       .setCapturePolicy(
                           ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
                               .addAllColumns(

@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.reconciler.impl;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -42,6 +43,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor;
+import ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
@@ -49,6 +51,7 @@ import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -102,6 +105,12 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     when(service.statsStore.isPreparedFileGroup(
             any(), anyLong(), anyString(), anyString(), anyString(), anyString()))
         .thenReturn(true);
+    when(persistence.prepareStatsGenerationForPublication(
+            any(), anyLong(), anyString(), anyBoolean()))
+        .thenReturn(new StatsStore.StatsGenerationPredecessor("", 0L));
+    when(persistence.publishPreparedStatsGeneration(
+            any(), anyLong(), anyString(), any(), any(), any()))
+        .thenReturn(true);
     when(jobs.getCompactLeaseView(FINALIZE_JOB_ID)).thenReturn(Optional.of(finalizeJobView()));
     when(jobs.completeSnapshotFinalizeSuccess(
             eq(FINALIZE_JOB_ID),
@@ -134,19 +143,9 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());
     verify(persistence)
         .publishPreparedStatsGeneration(
-            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(List.of()));
-    verify(service.indexArtifactRepository)
-        .activateGeneration(
-            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), any(byte[].class));
-    var publicationOrder = inOrder(service.indexArtifactRepository, persistence);
-    publicationOrder
-        .verify(service.indexArtifactRepository)
-        .activateGeneration(
-            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), any(byte[].class));
-    publicationOrder
-        .verify(persistence)
-        .publishPreparedStatsGeneration(
-            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(List.of()));
+            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(List.of()), any(), any());
+    verify(service.indexArtifactRepository, never())
+        .activateGeneration(any(), anyLong(), anyString(), any(byte[].class));
     verify(currentSnapshotPointerService).maybeAdvance(any(), eq(SNAPSHOT_ID), eq(FINALIZE_JOB_ID));
   }
 
@@ -228,10 +227,9 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     verify(blobs, never()).get(statsUri);
     verify(persistence)
         .publishPreparedStatsGeneration(
-            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(List.of()));
-    verify(service.indexArtifactRepository)
-        .activateGeneration(
-            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), any(byte[].class));
+            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(List.of()), any(), any());
+    verify(service.indexArtifactRepository, never())
+        .activateGeneration(any(), anyLong(), anyString(), any(byte[].class));
   }
 
   @Test
@@ -301,7 +299,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     verify(blobs, times(1)).get(manifestUri());
     verify(blobs, never()).get("/file-group-result.pb");
     verify(persistence, never())
-        .publishPreparedStatsGeneration(any(), anyLong(), anyString(), any());
+        .publishPreparedStatsGeneration(any(), anyLong(), anyString(), any(), any(), any());
     verify(service.indexArtifactRepository, never())
         .activateGeneration(any(), anyLong(), anyString(), any(byte[].class));
   }
@@ -349,6 +347,73 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
+  void incrementalFinalizeActivatesTheRemoteAdditiveIndexGeneration() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#7", true, true)),
+            Set.of(
+                ReconcileCapturePolicy.Output.COLUMN_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), policy);
+    byte[] manifestBytes =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(ACCOUNT_ID)
+            .setConnectorId("connector")
+            .setParentJobId("parent-job")
+            .setFinalizeJobId(FINALIZE_JOB_ID)
+            .setTableId(TABLE_ID)
+            .setSnapshotId(SNAPSHOT_ID)
+            .setLeaseEpoch(LEASE_EPOCH)
+            .setResultId("result-1")
+            .setIndexPredecessor(
+                IndexGenerationPredecessor.newBuilder()
+                    .setGenerationId("prior")
+                    .setActivePointerVersion(3L)
+                    .setCaptureManifestUri("/prior-manifest.pb")
+                    .setCaptureManifestPointerVersion(4L))
+            .setCapturePolicy(
+                ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
+                    .addOutputs(CaptureOutput.CO_COLUMN_STATS)
+                    .addOutputs(CaptureOutput.CO_PARQUET_PAGE_INDEX)
+                    .addColumns(
+                        ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy.newBuilder()
+                            .setSelector("#7")
+                            .setCaptureStats(true)
+                            .setCaptureIndex(true)))
+            .build()
+            .toByteArray();
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJobView("JS_RUNNING", 0, 0, scope)));
+    when(blobs.get(manifestUri())).thenReturn(manifestBytes);
+    when(service.indexArtifactRepository.activateGeneration(
+            any(), anyLong(), anyString(), any(byte[].class), any(), anyBoolean()))
+        .thenReturn(new IndexArtifactRepository.ActivationFence("/active", "next", 4L));
+
+    service.persistSuccess(
+        principal,
+        FINALIZE_JOB_ID,
+        LEASE_EPOCH,
+        "result-1",
+        descriptor(manifestUri(), manifestBytes, 0, 0, 0));
+
+    var publicationOrder = inOrder(service.indexArtifactRepository, persistence);
+    publicationOrder
+        .verify(service.indexArtifactRepository)
+        .activateGeneration(
+            any(),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-parent-job"),
+            any(byte[].class),
+            any(),
+            eq(true));
+    publicationOrder
+        .verify(persistence)
+        .publishPreparedStatsGeneration(
+            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), any(), any(), any());
+  }
+
+  @Test
   void successRejectsManifestPolicyThatDoesNotMatchLease() {
     ReconcileCapturePolicy policy =
         ReconcileCapturePolicy.of(
@@ -370,7 +435,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                 descriptor(manifestUri(), manifestBytes, 0, 0, 0)));
 
     verify(persistence, never())
-        .publishPreparedStatsGeneration(any(), anyLong(), anyString(), any());
+        .publishPreparedStatsGeneration(any(), anyLong(), anyString(), any(), any(), any());
     verify(service.indexArtifactRepository, never())
         .activateGeneration(any(), anyLong(), anyString(), any(byte[].class));
   }

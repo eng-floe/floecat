@@ -568,7 +568,9 @@ public class ReconcilerService {
     for (ReconcileScope.ScopedCaptureRequest request : scopedCaptureRequests) {
       Optional<StatsTarget> decoded =
           ai.floedb.floecat.stats.identity.StatsTargetScopeCodec.decode(request.targetSpec());
-      if (decoded.isEmpty() || decoded.get().getTargetCase() != StatsTarget.TargetCase.TABLE) {
+      if (decoded.isEmpty()
+          || (decoded.get().getTargetCase() != StatsTarget.TargetCase.TABLE
+              && decoded.get().getTargetCase() != StatsTarget.TargetCase.COLUMN)) {
         return false;
       }
     }

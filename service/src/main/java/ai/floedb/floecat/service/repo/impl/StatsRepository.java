@@ -396,12 +396,16 @@ public class StatsRepository implements StatsStore {
   }
 
   @Override
-  public void publishPreparedStatsGeneration(
+  public boolean publishPreparedStatsGeneration(
       ResourceId tableId,
       long snapshotId,
       String generationId,
-      List<StatsStore.PrewrittenTargetStatsReference> finalReferences) {
+      List<StatsStore.PrewrittenTargetStatsReference> finalReferences,
+      StatsStore.StatsGenerationPredecessor predecessor,
+      StatsStore.PublicationFence publicationFence) {
     String effectiveGenerationId = requireGenerationId(generationId);
+    StatsStore.StatsGenerationPredecessor requiredPredecessor =
+        java.util.Objects.requireNonNull(predecessor, "predecessor");
     List<PrewrittenStatsWrite> finalWrites =
         prewrittenStatsWrites(tableId, snapshotId, effectiveGenerationId, finalReferences);
     String lifecycleState = generationLifecycleState(tableId, snapshotId, effectiveGenerationId);
@@ -421,15 +425,25 @@ public class StatsRepository implements StatsStore {
               + lifecycleState);
     }
     Optional<ActiveSnapshotStats> current = activeGenerationLive(tableId, snapshotId);
-    if (GENERATION_PUBLISHED.equals(lifecycleState)
-        && current
+    boolean alreadyActive =
+        current
             .map(ActiveSnapshotStats::generationId)
             .filter(effectiveGenerationId::equals)
-            .isEmpty()) {
+            .isPresent();
+    if (GENERATION_PUBLISHED.equals(lifecycleState) && !alreadyActive) {
       throw new BaseResourceRepository.AbortRetryableException(
           "published target stats generation is no longer active: " + effectiveGenerationId);
     }
-    publishActiveGenerationPointer(tableId, snapshotId, effectiveGenerationId, current);
+    if (!alreadyActive
+        && (!matchesPredecessor(current, requiredPredecessor)
+            || !publishActiveGenerationPointer(
+                tableId,
+                snapshotId,
+                effectiveGenerationId,
+                requiredPredecessor,
+                publicationFence))) {
+      return false;
+    }
     updateTargetLatestSnapshotsIfNewer(
         tableId,
         snapshotId,
@@ -442,6 +456,67 @@ public class StatsRepository implements StatsStore {
                 .toList());
     updateLatestStatsSnapshotIfNewer(tableId, snapshotId);
     markGenerationPublished(tableId, snapshotId, effectiveGenerationId);
+    return true;
+  }
+
+  @Override
+  public StatsStore.StatsGenerationPredecessor prepareStatsGenerationForPublication(
+      ResourceId tableId, long snapshotId, String generationId, boolean inheritMissingTargets) {
+    String effectiveGenerationId = requireGenerationId(generationId);
+    Optional<ActiveSnapshotStats> active = activeGenerationLive(tableId, snapshotId);
+    StatsStore.StatsGenerationPredecessor predecessor = predecessorOf(active);
+    if (!inheritMissingTargets
+        || active.isEmpty()
+        || effectiveGenerationId.equals(active.orElseThrow().generationId())) {
+      return predecessor;
+    }
+    ensureGenerationCanRebase(tableId, snapshotId, effectiveGenerationId);
+    String sourcePrefix =
+        Keys.snapshotTargetStatsGenerationPrefix(
+            tableId.getAccountId(),
+            tableId.getId(),
+            snapshotId,
+            active.orElseThrow().generationId());
+    String destinationPrefix =
+        Keys.snapshotTargetStatsGenerationPrefix(
+            tableId.getAccountId(), tableId.getId(), snapshotId, effectiveGenerationId);
+    String capturedBlobPrefix =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+            tableId.getAccountId(), tableId.getId(), snapshotId, effectiveGenerationId);
+    String pageToken = "";
+    do {
+      StringBuilder next = new StringBuilder();
+      List<Pointer> sourcePointers =
+          pointerStore.listPointersByPrefix(sourcePrefix, 500, pageToken, next);
+      for (Pointer source : sourcePointers) {
+        String destinationKey =
+            destinationPrefix + source.getKey().substring(sourcePrefix.length());
+        rebaseInheritedStatsPointer(destinationKey, source, capturedBlobPrefix);
+      }
+      pageToken = next.toString();
+    } while (!pageToken.isBlank());
+    return predecessor;
+  }
+
+  private void rebaseInheritedStatsPointer(
+      String destinationKey, Pointer source, String capturedBlobPrefix) {
+    for (int attempt = 0; attempt < 4; attempt++) {
+      Pointer destination = pointerStore.get(destinationKey).orElse(null);
+      if (destination != null && destination.getBlobUri().startsWith(capturedBlobPrefix)) {
+        return;
+      }
+      long expectedVersion = destination == null ? 0L : destination.getVersion();
+      long referencedBytes =
+          source.hasReferencedObjectSizeBytes() ? source.getReferencedObjectSizeBytes() : 0L;
+      Pointer inherited =
+          PointerReferences.blobPointer(
+              destinationKey, source.getBlobUri(), expectedVersion + 1L, referencedBytes);
+      if (pointerStore.compareAndSet(destinationKey, expectedVersion, inherited)) {
+        return;
+      }
+    }
+    throw new BaseResourceRepository.AbortRetryableException(
+        "target stats inheritance conflicted repeatedly for " + destinationKey);
   }
 
   @Override
@@ -1414,6 +1489,96 @@ public class StatsRepository implements StatsStore {
       throw new BaseResourceRepository.AbortRetryableException(
           "active target stats generation update conflicted for snapshot " + snapshotId);
     }
+  }
+
+  private boolean publishActiveGenerationPointer(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      StatsStore.StatsGenerationPredecessor predecessor,
+      StatsStore.PublicationFence publicationFence) {
+    String manifestPointer =
+        Keys.snapshotTargetStatsManifestPointer(
+            tableId.getAccountId(), tableId.getId(), snapshotId);
+    String manifestBlobUri =
+        Keys.snapshotTargetStatsManifestBlobUri(
+            tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
+    markGenerationPublishing(tableId, snapshotId, generationId);
+    targetStatsStorage.putManifestBlob(manifestBlobUri, StringValue.of(generationId));
+    if (blobCache != null) {
+      blobCache.put(manifestBlobUri, generationId);
+    }
+    Pointer active = pointerStore.get(manifestPointer).orElse(null);
+    if (active != null && manifestBlobUri.equals(active.getBlobUri())) {
+      return true;
+    }
+    if (!matchesPredecessor(active, predecessor)) {
+      return false;
+    }
+    long expectedVersion = predecessor.manifestVersion();
+    Pointer next =
+        PointerReferences.blobPointer(manifestPointer, manifestBlobUri, expectedVersion + 1L);
+    if (publicationFence == null) {
+      return pointerStore.compareAndSet(manifestPointer, expectedVersion, next);
+    }
+    Pointer fenced = pointerStore.get(publicationFence.pointerKey()).orElse(null);
+    if (fenced == null
+        || fenced.getVersion() != publicationFence.version()
+        || !publicationFence.value().equals(fenced.getBlobUri())) {
+      return false;
+    }
+    Pointer advancedFence =
+        PointerReferences.opaqueMarkerPointer(
+            publicationFence.pointerKey(),
+            publicationFence.value(),
+            publicationFence.version() + 1L);
+    return pointerStore.compareAndSetBatch(
+        List.of(
+            new PointerStore.CasUpsert(manifestPointer, expectedVersion, next),
+            new PointerStore.CasUpsert(
+                publicationFence.pointerKey(), publicationFence.version(), advancedFence)));
+  }
+
+  private static StatsStore.StatsGenerationPredecessor predecessorOf(
+      Optional<ActiveSnapshotStats> active) {
+    return active
+        .map(
+            value ->
+                new StatsStore.StatsGenerationPredecessor(
+                    value.generationId(), value.manifestVersion()))
+        .orElseGet(() -> new StatsStore.StatsGenerationPredecessor("", 0L));
+  }
+
+  private static boolean matchesPredecessor(
+      Optional<ActiveSnapshotStats> active, StatsStore.StatsGenerationPredecessor predecessor) {
+    return active
+        .map(
+            value ->
+                value.manifestVersion() == predecessor.manifestVersion()
+                    && value.generationId().equals(predecessor.generationId()))
+        .orElseGet(
+            () -> predecessor.manifestVersion() == 0L && predecessor.generationId().isBlank());
+  }
+
+  private static boolean matchesPredecessor(
+      Pointer active, StatsStore.StatsGenerationPredecessor predecessor) {
+    if (active == null) {
+      return predecessor.manifestVersion() == 0L && predecessor.generationId().isBlank();
+    }
+    return active.getVersion() == predecessor.manifestVersion();
+  }
+
+  private void ensureGenerationCanRebase(ResourceId tableId, long snapshotId, String generationId) {
+    String lifecycleState = generationLifecycleState(tableId, snapshotId, generationId);
+    if (lifecycleState.isBlank() || GENERATION_WRITING.equals(lifecycleState)) {
+      ensureWritableGeneration(tableId, snapshotId, generationId);
+      return;
+    }
+    if (GENERATION_PUBLISHING.equals(lifecycleState)) {
+      return;
+    }
+    throw new BaseResourceRepository.AbortRetryableException(
+        "target stats generation cannot rebase: " + generationId + " state=" + lifecycleState);
   }
 
   private String generationLifecycleState(

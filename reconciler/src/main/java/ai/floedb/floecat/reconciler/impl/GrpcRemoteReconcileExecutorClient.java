@@ -982,7 +982,15 @@ class GrpcRemoteReconcileExecutorClient
                 fromProtoDefaultColumnScope(execution.getCapturePolicy().getDefaultColumnScope()),
                 execution.getCapturePolicy().getMaxDefaultColumns(),
                 execution.getCapturePolicy().getPropertiesMap())
-            : ReconcileCapturePolicy.empty());
+            : ReconcileCapturePolicy.empty(),
+        execution.hasIndexPredecessor()
+            ? new StandaloneFileGroupExecutionPayload.IndexGenerationPredecessor(
+                execution.getIndexPredecessor().getGenerationId(),
+                execution.getIndexPredecessor().getActivePointerVersion(),
+                execution.getIndexPredecessor().getCaptureManifestUri(),
+                execution.getIndexPredecessor().getCaptureManifestPointerVersion())
+            : null,
+        execution.getPredecessorIndexArtifactsList());
   }
 
   public boolean submitSuccess(

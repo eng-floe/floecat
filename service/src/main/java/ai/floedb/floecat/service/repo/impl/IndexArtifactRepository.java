@@ -21,7 +21,10 @@ import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
+import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
+import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -50,6 +53,22 @@ public class IndexArtifactRepository {
 
   public record PrewrittenIndexArtifactReference(
       String targetStorageId, String blobUri, long blobBytes, byte[] blobSha256) {}
+
+  public record GenerationPredecessor(
+      String generationId,
+      long activePointerVersion,
+      String captureManifestUri,
+      long captureManifestPointerVersion) {
+    public GenerationPredecessor {
+      generationId = generationId == null ? "" : generationId;
+      captureManifestUri = captureManifestUri == null ? "" : captureManifestUri;
+    }
+  }
+
+  public record GenerationInput(
+      GenerationPredecessor predecessor, List<IndexArtifactRecord> artifacts) {}
+
+  public record ActivationFence(String pointerKey, String value, long version) {}
 
   private record PrewrittenIndexWrite(String pointerKey, String blobUri, long blobBytes) {}
 
@@ -180,43 +199,156 @@ public class IndexArtifactRepository {
     registerWrites(new ArrayList<>(unique.values()));
   }
 
-  public void activateGeneration(
+  public ActivationFence activateGeneration(
       ResourceId tableId, long snapshotId, String generationId, byte[] captureManifestBytes) {
+    return activateGeneration(
+        tableId,
+        snapshotId,
+        generationId,
+        captureManifestBytes,
+        captureGenerationInput(tableId, snapshotId, List.of()).predecessor(),
+        false);
+  }
+
+  public ActivationFence activateGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      byte[] captureManifestBytes,
+      GenerationPredecessor predecessor,
+      boolean inheritCoverage) {
     if (generationId == null || generationId.isBlank()) {
       throw new IllegalArgumentException("generationId is required");
     }
     if (captureManifestBytes == null || captureManifestBytes.length == 0) {
       throw new IllegalArgumentException("capture manifest bytes are required");
     }
+    byte[] effectiveManifestBytes =
+        inheritCoverage
+            ? mergeCaptureManifestCoverage(predecessor.captureManifestUri(), captureManifestBytes)
+            : captureManifestBytes;
     String captureManifestUri =
         Keys.snapshotIndexArtifactCaptureManifestBlobUri(
             tableId.getAccountId(),
             tableId.getId(),
             snapshotId,
-            Hashing.sha256Hex(captureManifestBytes));
-    blobStore.put(captureManifestUri, captureManifestBytes, "application/x-protobuf");
-    publishCaptureManifestPointer(
-        tableId, snapshotId, captureManifestUri, captureManifestBytes.length);
-    String pointerKey =
+            Hashing.sha256Hex(effectiveManifestBytes));
+    blobStore.put(captureManifestUri, effectiveManifestBytes, "application/x-protobuf");
+    String activePointerKey =
         Keys.snapshotIndexArtifactActiveGenerationPointer(
             tableId.getAccountId(), tableId.getId(), snapshotId);
-    for (int attempt = 0; attempt < 8; attempt++) {
-      Pointer current = pointerStore.get(pointerKey).orElse(null);
-      if (current != null && generationId.equals(current.getBlobUri())) {
-        return;
-      }
-      long expectedVersion = current == null ? 0L : current.getVersion();
-      Pointer next =
-          PointerReferences.opaqueMarkerPointer(pointerKey, generationId, expectedVersion + 1L);
-      if (pointerStore.compareAndSet(pointerKey, expectedVersion, next)) {
-        if (current != null && DIRECT_GENERATION.equals(current.getBlobUri())) {
-          deleteDirectGenerationPointers(tableId, snapshotId);
-        }
-        return;
-      }
+    String manifestPointerKey =
+        Keys.snapshotIndexArtifactCaptureManifestPointer(
+            tableId.getAccountId(), tableId.getId(), snapshotId);
+    Pointer active = pointerStore.get(activePointerKey).orElse(null);
+    Pointer manifest = pointerStore.get(manifestPointerKey).orElse(null);
+    if (active != null
+        && generationId.equals(active.getBlobUri())
+        && manifest != null
+        && captureManifestUri.equals(manifest.getBlobUri())) {
+      return new ActivationFence(activePointerKey, generationId, active.getVersion());
     }
-    throw new BaseResourceRepository.AbortRetryableException(
-        "index artifact generation activation conflicted repeatedly for snapshot " + snapshotId);
+    if (!matches(active, predecessor.generationId(), predecessor.activePointerVersion())
+        || !matches(
+            manifest,
+            predecessor.captureManifestUri(),
+            predecessor.captureManifestPointerVersion())) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "index artifact generation predecessor changed for snapshot " + snapshotId);
+    }
+    Pointer nextActive =
+        PointerReferences.opaqueMarkerPointer(
+            activePointerKey, generationId, predecessor.activePointerVersion() + 1L);
+    Pointer nextManifest =
+        PointerReferences.blobPointer(
+            manifestPointerKey,
+            captureManifestUri,
+            predecessor.captureManifestPointerVersion() + 1L,
+            effectiveManifestBytes.length);
+    if (!pointerStore.compareAndSetBatch(
+        List.of(
+            new PointerStore.CasUpsert(
+                activePointerKey, predecessor.activePointerVersion(), nextActive),
+            new PointerStore.CasUpsert(
+                manifestPointerKey, predecessor.captureManifestPointerVersion(), nextManifest)))) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "index artifact generation activation conflicted for snapshot " + snapshotId);
+    }
+    if (DIRECT_GENERATION.equals(predecessor.generationId())) {
+      deleteDirectGenerationPointers(tableId, snapshotId);
+    }
+    return new ActivationFence(activePointerKey, generationId, nextActive.getVersion());
+  }
+
+  private byte[] mergeCaptureManifestCoverage(
+      String predecessorManifestUri, byte[] submittedBytes) {
+    SnapshotCaptureManifest submitted = parseCaptureManifest(submittedBytes, "submitted");
+    if (predecessorManifestUri == null || predecessorManifestUri.isBlank()) {
+      return submittedBytes;
+    }
+    SnapshotCaptureManifest inherited;
+    try {
+      inherited = SnapshotCaptureManifest.parseFrom(blobStore.get(predecessorManifestUri));
+    } catch (StorageNotFoundException e) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "predecessor index capture manifest is unavailable: " + predecessorManifestUri);
+    } catch (InvalidProtocolBufferException e) {
+      throw new IllegalStateException(
+          "invalid predecessor index capture manifest at " + predecessorManifestUri, e);
+    }
+    LinkedHashMap<String, CaptureColumnPolicy> columns = new LinkedHashMap<>();
+    for (CaptureColumnPolicy column : submitted.getCapturePolicy().getColumnsList()) {
+      columns.put(column.getSelector().trim(), column);
+    }
+    for (CaptureColumnPolicy column : inherited.getCapturePolicy().getColumnsList()) {
+      if (!column.getCaptureIndex() || column.getSelector().isBlank()) {
+        continue;
+      }
+      columns.merge(
+          column.getSelector().trim(),
+          CaptureColumnPolicy.newBuilder()
+              .setSelector(column.getSelector().trim())
+              .setCaptureIndex(true)
+              .build(),
+          (current, ignored) -> current.toBuilder().setCaptureIndex(true).build());
+    }
+    CapturePolicy current = submitted.getCapturePolicy();
+    DefaultColumnScope inheritedScope = inherited.getCapturePolicy().getDefaultColumnScope();
+    DefaultColumnScope scope =
+        mergeDefaultColumnScope(current.getDefaultColumnScope(), inheritedScope);
+    CapturePolicy mergedPolicy =
+        current.toBuilder()
+            .clearColumns()
+            .addAllColumns(columns.values())
+            .setDefaultColumnScope(scope)
+            .setMaxDefaultColumns(
+                Math.max(
+                    current.getMaxDefaultColumns(),
+                    inherited.getCapturePolicy().getMaxDefaultColumns()))
+            .build();
+    return submitted.toBuilder().setCapturePolicy(mergedPolicy).build().toByteArray();
+  }
+
+  private static DefaultColumnScope mergeDefaultColumnScope(
+      DefaultColumnScope current, DefaultColumnScope inherited) {
+    if (current == DefaultColumnScope.DCS_ALL || inherited == DefaultColumnScope.DCS_ALL) {
+      return DefaultColumnScope.DCS_ALL;
+    }
+    if (current == DefaultColumnScope.DCS_FIRST_N
+        || inherited == DefaultColumnScope.DCS_FIRST_N
+        || current == DefaultColumnScope.DCS_UNSPECIFIED
+        || inherited == DefaultColumnScope.DCS_UNSPECIFIED) {
+      return DefaultColumnScope.DCS_FIRST_N;
+    }
+    return DefaultColumnScope.DCS_EXPLICIT_ONLY;
+  }
+
+  private static SnapshotCaptureManifest parseCaptureManifest(byte[] bytes, String description) {
+    try {
+      return SnapshotCaptureManifest.parseFrom(bytes);
+    } catch (InvalidProtocolBufferException e) {
+      throw new IllegalArgumentException("invalid " + description + " index capture manifest", e);
+    }
   }
 
   public boolean indexCaptureComplete(
@@ -259,7 +391,10 @@ public class IndexArtifactRepository {
                 capturedSelectors.add(column.getSelector().trim());
               }
             });
-    return requestedSelectors == null
+    boolean capturesAllColumns =
+        manifest.getCapturePolicy().getDefaultColumnScope() == DefaultColumnScope.DCS_ALL;
+    return capturesAllColumns
+        || requestedSelectors == null
         || requestedSelectors.isEmpty()
         || capturedSelectors.containsAll(requestedSelectors);
   }
@@ -283,26 +418,58 @@ public class IndexArtifactRepository {
     }
   }
 
-  private void publishCaptureManifestPointer(
-      ResourceId tableId, long snapshotId, String manifestUri, long manifestBytes) {
-    String pointerKey =
+  public GenerationInput captureGenerationInput(
+      ResourceId tableId, long snapshotId, List<String> filePaths) {
+    String activePointerKey =
+        Keys.snapshotIndexArtifactActiveGenerationPointer(
+            tableId.getAccountId(), tableId.getId(), snapshotId);
+    String manifestPointerKey =
         Keys.snapshotIndexArtifactCaptureManifestPointer(
             tableId.getAccountId(), tableId.getId(), snapshotId);
-    for (int attempt = 0; attempt < 8; attempt++) {
-      Pointer current = pointerStore.get(pointerKey).orElse(null);
-      if (current != null && manifestUri.equals(current.getBlobUri())) {
-        return;
+    for (int attempt = 0; attempt < 4; attempt++) {
+      Pointer active = pointerStore.get(activePointerKey).orElse(null);
+      Pointer manifest = pointerStore.get(manifestPointerKey).orElse(null);
+      String generationId = active == null ? "" : active.getBlobUri();
+      List<IndexArtifactRecord> artifacts = new ArrayList<>();
+      if (!generationId.isBlank()) {
+        for (String filePath : filePaths == null ? List.<String>of() : filePaths) {
+          String targetStorageId = "file:" + filePath;
+          pointerStore
+              .get(generationPointer(tableId, snapshotId, generationId, targetStorageId))
+              .map(this::readRecord)
+              .ifPresent(artifacts::add);
+        }
       }
-      long expectedVersion = current == null ? 0L : current.getVersion();
-      Pointer next =
-          PointerReferences.blobPointer(
-              pointerKey, manifestUri, expectedVersion + 1L, manifestBytes);
-      if (pointerStore.compareAndSet(pointerKey, expectedVersion, next)) {
-        return;
+      Pointer activeAfter = pointerStore.get(activePointerKey).orElse(null);
+      Pointer manifestAfter = pointerStore.get(manifestPointerKey).orElse(null);
+      if (samePointer(active, activeAfter) && samePointer(manifest, manifestAfter)) {
+        return new GenerationInput(
+            new GenerationPredecessor(
+                generationId,
+                active == null ? 0L : active.getVersion(),
+                manifest == null ? "" : manifest.getBlobUri(),
+                manifest == null ? 0L : manifest.getVersion()),
+            List.copyOf(artifacts));
       }
     }
     throw new BaseResourceRepository.AbortRetryableException(
-        "index capture manifest publication conflicted repeatedly for snapshot " + snapshotId);
+        "active index artifact generation changed repeatedly for snapshot " + snapshotId);
+  }
+
+  private static boolean samePointer(Pointer left, Pointer right) {
+    if (left == null || right == null) {
+      return left == right;
+    }
+    return left.getVersion() == right.getVersion()
+        && java.util.Objects.equals(left.getBlobUri(), right.getBlobUri());
+  }
+
+  private static boolean matches(Pointer pointer, String value, long version) {
+    if (pointer == null) {
+      return version == 0L && (value == null || value.isBlank());
+    }
+    return pointer.getVersion() == version
+        && java.util.Objects.equals(pointer.getBlobUri(), value == null ? "" : value);
   }
 
   private boolean activateDirectGenerationIfAbsent(ResourceId tableId, long snapshotId) {

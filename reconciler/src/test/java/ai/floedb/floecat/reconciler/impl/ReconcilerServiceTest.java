@@ -56,6 +56,54 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
   private static final List<String> DEST_NAMESPACE_PATH = List.of("dest_ns");
 
   @Test
+  void completedColumnBackfillIncludesIndexCoverageAndIsNotRecaptured() {
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("table-1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    var target = StatsTargetIdentity.columnTarget(7L);
+    class Backend extends DefaultBackend {
+      int indexChecks;
+
+      @Override
+      public boolean statsCapturedForTargets(
+          ReconcileContext ctx,
+          ResourceId ignoredTableId,
+          long snapshotId,
+          Set<ai.floedb.floecat.catalog.rpc.StatsTarget> targets) {
+        return targets.equals(Set.of(target));
+      }
+
+      @Override
+      public boolean indexCaptureComplete(
+          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId, Set<String> selectors) {
+        indexChecks++;
+        return selectors.equals(Set.of("#7"));
+      }
+    }
+    Backend backend = new Backend();
+    service.backend = backend;
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#7", true, true)),
+            Set.of(
+                ReconcileCapturePolicy.Output.COLUMN_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    List<ReconcileScope.ScopedCaptureRequest> requests =
+        List.of(
+            new ReconcileScope.ScopedCaptureRequest(
+                tableId.getId(), 42L, StatsTargetScopeCodec.encode(target), List.of()));
+
+    assertThat(
+            service.isSnapshotCaptureCompleteForScope(
+                null, tableId, 42L, policy, requests, Set.of()))
+        .isTrue();
+    assertThat(backend.indexChecks).isEqualTo(1);
+  }
+
+  @Test
   void tableFilterPlanningRejectsMetadataWithoutSourceIdentity() {
     service.backend =
         new DefaultBackend() {

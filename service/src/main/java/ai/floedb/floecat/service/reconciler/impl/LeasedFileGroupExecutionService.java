@@ -38,6 +38,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.impl.StandaloneFileGroupExecutionPayload;
 import ai.floedb.floecat.reconciler.jobs.ArtifactReferenceDigest;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
@@ -107,6 +108,18 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
                     GrpcErrors.notFound(
                         corr, CONNECTOR, Map.of("connector_id", connectorId.getId())));
     Connector resolvedConnector = resolvedConnectorPayload(connector, table);
+    ReconcileCapturePolicy capturePolicy = FileGroupExecutionSupport.effectiveCapturePolicy(lease);
+    IndexArtifactRepository.GenerationInput capturedIndexInput =
+        capturePolicy.requestsIndexes()
+            ? indexArtifactRepository.captureGenerationInput(
+                tableId, plannedTask.snapshotId(), plannedTask.filePaths())
+            : new IndexArtifactRepository.GenerationInput(
+                new IndexArtifactRepository.GenerationPredecessor("", 0L, "", 0L), List.of());
+    IndexArtifactRepository.GenerationInput indexInput =
+        lease.fullRescan
+            ? new IndexArtifactRepository.GenerationInput(
+                capturedIndexInput.predecessor(), List.of())
+            : capturedIndexInput;
     return new StandaloneFileGroupExecutionPayload(
         lease.jobId,
         lease.leaseEpoch,
@@ -131,7 +144,13 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         plannedTask.filePaths(),
         plannedTask.executionSchemaJson(),
         plannedTask.fileExecutionPlans(),
-        FileGroupExecutionSupport.effectiveCapturePolicy(lease));
+        capturePolicy,
+        new StandaloneFileGroupExecutionPayload.IndexGenerationPredecessor(
+            indexInput.predecessor().generationId(),
+            indexInput.predecessor().activePointerVersion(),
+            indexInput.predecessor().captureManifestUri(),
+            indexInput.predecessor().captureManifestPointerVersion()),
+        indexInput.artifacts());
   }
 
   private Connector withTableStorageLocation(Connector connector, Table table) {
@@ -252,7 +271,8 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
               existing.fileGroupTask,
               descriptor,
               fileStats,
-              indexArtifacts);
+              indexArtifacts,
+              publishesFileStats(existing.scope.capturePolicy()));
       boolean replayed =
           jobs.completeFileGroupSuccess(
               jobId, leaseEpoch, descriptor, System.currentTimeMillis(), "Executed file group");
@@ -273,7 +293,8 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             plannedTask,
             validated,
             fileStats,
-            indexArtifacts);
+            indexArtifacts,
+            publishesFileStats(lease.scope.capturePolicy()));
     boolean accepted =
         jobs.completeFileGroupSuccess(
             lease.jobId,
@@ -365,7 +386,8 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       ReconcileFileGroupTask plannedTask,
       ReconcileFileGroupResultDescriptor descriptor,
       List<StatsObjectDescriptor> fileStats,
-      List<StatsObjectDescriptor> indexArtifacts) {
+      List<StatsObjectDescriptor> indexArtifacts,
+      boolean publishFileStats) {
     List<StatsObjectDescriptor> requiredFileStats = fileStats == null ? List.of() : fileStats;
     List<StatsObjectDescriptor> requiredIndexArtifacts =
         indexArtifacts == null ? List.of() : indexArtifacts;
@@ -410,12 +432,14 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         throw new IllegalArgumentException(
             "duplicate file stats target: " + object.getTargetStorageId());
       }
-      statsReferences.add(
-          new StatsStore.PrewrittenTargetStatsReference(
-              object.getTargetStorageId(),
-              object.getPayloadUri(),
-              object.getPayloadBytes(),
-              object.getPayloadSha256().toByteArray()));
+      if (publishFileStats) {
+        statsReferences.add(
+            new StatsStore.PrewrittenTargetStatsReference(
+                object.getTargetStorageId(),
+                object.getPayloadUri(),
+                object.getPayloadBytes(),
+                object.getPayloadSha256().toByteArray()));
+      }
     }
     HashSet<String> indexTargets = new HashSet<>();
     for (StatsObjectDescriptor object : requiredIndexArtifacts) {
@@ -450,6 +474,12 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         List.copyOf(objects),
         List.copyOf(statsReferences),
         List.copyOf(indexReferences));
+  }
+
+  private static boolean publishesFileStats(ReconcileCapturePolicy policy) {
+    return policy == null
+        || policy.outputs().isEmpty()
+        || policy.outputs().contains(ReconcileCapturePolicy.Output.FILE_STATS);
   }
 
   private void stageArtifactReferences(StagedArtifactReferences staged) {

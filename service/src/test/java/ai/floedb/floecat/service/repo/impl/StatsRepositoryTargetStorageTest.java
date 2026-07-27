@@ -2359,8 +2359,10 @@ class StatsRepositoryTargetStorageTest {
       assertThat(latest.getBlobUri()).isEqualTo(Long.toString(snapshotId));
     }
 
+    StatsStore.StatsGenerationPredecessor predecessor =
+        repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
     repository.publishPreparedStatsGeneration(
-        TABLE_ID, snapshotId, generationId, List.of(finalReference));
+        TABLE_ID, snapshotId, generationId, List.of(finalReference), predecessor, null);
 
     assertThat(blobGets).hasValue(0);
     assertThat(blobPuts)
@@ -2371,6 +2373,46 @@ class StatsRepositoryTargetStorageTest {
                 Keys.snapshotTargetStatsGenerationPrefix(
                     TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)))
         .isEqualTo(206);
+  }
+
+  @Test
+  void scopedGenerationInheritsMissingActiveTargetsWithoutOverwritingNewTargets() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    StatsRepository repository = new StatsRepository(pointers, new InMemoryBlobStore());
+    long snapshotId = 7153L;
+    TargetStatsRecord tableRecord =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(10L).build(), null);
+    TargetStatsRecord oldColumn =
+        TargetStatsRecords.columnRecord(
+            TABLE_ID, snapshotId, 7L, ScalarStats.newBuilder().setDisplayName("old").build(), null);
+    repository.putTargetStats(tableRecord);
+    repository.putTargetStats(oldColumn);
+    String generationId = "full-rescan-scoped";
+    String columnTargetStorageId = StatsTargetIdentity.storageId(oldColumn.getTarget());
+    StatsStore.PrewrittenTargetStatsReference replacement =
+        prewrittenReference(snapshotId, generationId, columnTargetStorageId, "replacement");
+    repository.registerPrewrittenStatsReferencesInGeneration(
+        TABLE_ID, snapshotId, generationId, List.of(replacement));
+
+    repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, true);
+
+    String targetPrefix =
+        Keys.snapshotTargetStatsGenerationPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
+    assertThat(pointers.countByPrefix(targetPrefix)).isEqualTo(2);
+    assertThat(
+            pointers
+                .get(
+                    Keys.snapshotTargetStatsGenerationPointer(
+                        TABLE_ID.getAccountId(),
+                        TABLE_ID.getId(),
+                        snapshotId,
+                        generationId,
+                        columnTargetStorageId))
+                .orElseThrow()
+                .getBlobUri())
+        .isEqualTo(replacement.blobUri());
   }
 
   @Test

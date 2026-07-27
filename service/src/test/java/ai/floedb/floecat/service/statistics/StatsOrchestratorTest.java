@@ -209,7 +209,9 @@ class StatsOrchestratorTest {
     assertThat(scope.destinationTableId()).isEqualTo(request.tableId().getId());
     assertThat(scope.destinationCaptureRequests()).hasSize(1);
     assertThat(scope.capturePolicy().outputs())
-        .containsExactly(ReconcileCapturePolicy.Output.TABLE_STATS);
+        .containsExactlyInAnyOrder(
+            ReconcileCapturePolicy.Output.TABLE_STATS,
+            ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
     assertThat(scope.capturePolicy().columns())
         .extracting(ReconcileCapturePolicy.Column::selector)
         .containsExactlyInAnyOrder("id", "region");
@@ -283,7 +285,9 @@ class StatsOrchestratorTest {
     assertThat(scope.destinationCaptureRequests()).hasSize(2);
     assertThat(scope.capturePolicy().outputs())
         .containsExactlyInAnyOrder(
-            ReconcileCapturePolicy.Output.TABLE_STATS, ReconcileCapturePolicy.Output.COLUMN_STATS);
+            ReconcileCapturePolicy.Output.TABLE_STATS,
+            ReconcileCapturePolicy.Output.COLUMN_STATS,
+            ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
     assertThat(scope.capturePolicy().selectorsForStats())
         .containsExactlyInAnyOrder("id", "region", "#9");
   }
@@ -322,8 +326,11 @@ class StatsOrchestratorTest {
             Mockito.eq(ReconcilerService.CaptureMode.CAPTURE_ONLY),
             scopeCaptor.capture());
     assertThat(scopeCaptor.getValue().capturePolicy().outputs())
-        .containsExactly(ReconcileCapturePolicy.Output.COLUMN_STATS);
+        .containsExactlyInAnyOrder(
+            ReconcileCapturePolicy.Output.COLUMN_STATS,
+            ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
     assertThat(scopeCaptor.getValue().capturePolicy().selectorsForStats()).containsExactly("#9");
+    assertThat(scopeCaptor.getValue().capturePolicy().selectorsForIndex()).containsExactly("#9");
   }
 
   @Test

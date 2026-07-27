@@ -177,9 +177,16 @@ class SnapshotFinalizePersistenceServiceTest {
                 ai.floedb.floecat.service.repo.model.Keys.snapshotTargetStatsManifestBlobUri(
                     tableId.getAccountId(), tableId.getId(), 5L, generationId)));
 
-    persistence.publishPreparedStatsGeneration(tableId, 5L, generationId, List.of());
+    StatsStore.StatsGenerationPredecessor predecessor =
+        new StatsStore.StatsGenerationPredecessor(generationId, 1L);
+    when(persistence.statsStore.publishPreparedStatsGeneration(
+            tableId, 5L, generationId, List.of(), predecessor, null))
+        .thenReturn(true);
+
+    persistence.publishPreparedStatsGeneration(
+        tableId, 5L, generationId, List.of(), predecessor, null);
 
     verify(persistence.statsStore)
-        .publishPreparedStatsGeneration(tableId, 5L, generationId, List.of());
+        .publishPreparedStatsGeneration(tableId, 5L, generationId, List.of(), predecessor, null);
   }
 }

@@ -25,6 +25,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
@@ -408,6 +409,8 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           || manifest.getSnapshotId() != fileGroup.getSnapshotId()
           || !fileGroups.add(fileGroup.getPlanId() + ":" + fileGroup.getGroupId())
           || !expectedStatsPrefix.equals(fileGroup.getStatsObjectPrefix())
+          || (manifest.hasIndexPredecessor()
+              && !manifest.getIndexPredecessor().equals(fileGroup.getIndexPredecessor()))
           || fileGroup.getArtifactReferencesSha256().size() != 32) {
         throw new IllegalArgumentException(
             "snapshot file-group descriptor is outside the fenced worker location");
@@ -448,13 +451,49 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
             "duplicate target in snapshot stats publication: " + object.getTargetStorageId());
       }
     }
-    indexArtifactRepository.activateGeneration(
-        tableId, snapshotTask.snapshotId(), generationId, manifest.toByteArray());
-    // The stats-generation root commit is the snapshot visibility point. Index activation must
-    // therefore complete first so a root-visible snapshot can never observe an inactive index
-    // generation. Both activation paths are idempotent, so a retry after either step converges.
-    persistence.publishPreparedStatsGeneration(
-        tableId, snapshotTask.snapshotId(), generationId, finalStats);
+    boolean capturedIndexes =
+        manifest.getCapturePolicy().getOutputsList().contains(CaptureOutput.CO_PARQUET_PAGE_INDEX);
+    StatsStore.PublicationFence publicationFence = null;
+    if (capturedIndexes) {
+      if (!manifest.hasIndexPredecessor()) {
+        throw new IllegalArgumentException("index capture manifest is missing its predecessor");
+      }
+      var predecessor = manifest.getIndexPredecessor();
+      IndexArtifactRepository.ActivationFence activated =
+          indexArtifactRepository.activateGeneration(
+              tableId,
+              snapshotTask.snapshotId(),
+              generationId,
+              manifest.toByteArray(),
+              new IndexArtifactRepository.GenerationPredecessor(
+                  predecessor.getGenerationId(),
+                  predecessor.getActivePointerVersion(),
+                  predecessor.getCaptureManifestUri(),
+                  predecessor.getCaptureManifestPointerVersion()),
+              !lease.fullRescan);
+      publicationFence =
+          new StatsStore.PublicationFence(
+              activated.pointerKey(), activated.value(), activated.version());
+    }
+    boolean published = false;
+    for (int attempt = 0; attempt < 4 && !published; attempt++) {
+      StatsStore.StatsGenerationPredecessor statsPredecessor =
+          persistence.prepareStatsGenerationForPublication(
+              tableId, snapshotTask.snapshotId(), generationId, !lease.fullRescan);
+      published =
+          persistence.publishPreparedStatsGeneration(
+              tableId,
+              snapshotTask.snapshotId(),
+              generationId,
+              finalStats,
+              statsPredecessor,
+              publicationFence);
+    }
+    if (!published) {
+      throw new StorageAbortRetryableException(
+          "snapshot stats publication conflicted repeatedly for snapshot "
+              + snapshotTask.snapshotId());
+    }
     persistence.clearPrewrittenArtifactProtections(
         tableId, snapshotTask.snapshotId(), generationId);
   }

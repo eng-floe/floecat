@@ -797,10 +797,11 @@ public class StatsOrchestrator {
         case TABLE -> outputs.add(ReconcileCapturePolicy.Output.TABLE_STATS);
         case COLUMN -> {
           outputs.add(ReconcileCapturePolicy.Output.COLUMN_STATS);
+          outputs.add(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
           columns.put(
               "#" + request.target().getColumn().getColumnId(),
               new ReconcileCapturePolicy.Column(
-                  "#" + request.target().getColumn().getColumnId(), true, false));
+                  "#" + request.target().getColumn().getColumnId(), true, true));
         }
         case FILE -> outputs.add(ReconcileCapturePolicy.Output.FILE_STATS);
         case TARGET_NOT_SET, EXPRESSION -> {}
@@ -809,7 +810,8 @@ public class StatsOrchestrator {
         if (selector == null || selector.isBlank()) {
           continue;
         }
-        columns.put(selector, new ReconcileCapturePolicy.Column(selector, true, false));
+        outputs.add(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX);
+        columns.put(selector, new ReconcileCapturePolicy.Column(selector, true, true));
       }
     }
     return ReconcileCapturePolicy.of(List.copyOf(columns.values()), Set.copyOf(outputs));
