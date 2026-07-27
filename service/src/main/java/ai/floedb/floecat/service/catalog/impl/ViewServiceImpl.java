@@ -50,6 +50,7 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -230,7 +231,10 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                               "namespace_id", spec.getNamespaceId().getId()));
                     }
                     try {
-                      viewRepo.create(view);
+                      // The namespace guard advances the children marker inside the create batch
+                      // and pins the namespace pointer, so this view and a concurrent
+                      // DeleteNamespace cannot both commit (see BatchGuard).
+                      viewRepo.create(view, markerStore.namespaceChildGuard(namespaceId));
                     } catch (BaseResourceRepository.NameConflictException nce) {
                       // The shared relation-name claim enforces cross-kind uniqueness (see
                       // TransactionIntentApplierSupport#buildRelationClaimUpsertOp), so this fires
@@ -239,7 +243,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                     }
                     metadataGraph.invalidate(viewResourceId);
                     topology.evictRelationRefs(view.getNamespaceId());
-                    markerStore.bumpNamespaceMarker(view.getNamespaceId());
                     var meta = viewRepo.metaForSafe(viewResourceId);
                     return CreateViewResponse.newBuilder().setView(view).setMeta(meta).build();
                   }
@@ -254,7 +257,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                                   () -> fingerprint,
                                   () -> {
                                     try {
-                                      viewRepo.create(view);
+                                      viewRepo.create(
+                                          view, markerStore.namespaceChildGuard(namespaceId));
                                     } catch (BaseResourceRepository.NameConflictException nce) {
                                       var existingOpt =
                                           viewRepo.getByName(
@@ -282,7 +286,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                                     }
                                     metadataGraph.invalidate(viewResourceId);
                                     topology.evictRelationRefs(view.getNamespaceId());
-                                    markerStore.bumpNamespaceMarker(view.getNamespaceId());
                                     return new IdempotencyGuard.CreateResult<>(
                                         view, viewResourceId);
                                   },
@@ -379,8 +382,19 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           "catalog_id", desired.getCatalogId().getId(),
                           "namespace_id", desired.getNamespaceId().getId());
 
+                  // A reparent republishes the view under a different namespace, so it is a
+                  // child-publishing write into the destination and needs the same fence a create
+                  // does; an in-place update touches no namespace and stays unguarded.
+                  boolean reparented =
+                      !current.getNamespaceId().getId().equals(desired.getNamespaceId().getId());
+                  var destinationGuard =
+                      reparented
+                          ? markerStore.namespaceChildGuard(desired.getNamespaceId())
+                          : BatchGuard.NONE;
+
                   try {
-                    boolean ok = viewRepo.update(desired, meta.getPointerVersion());
+                    boolean ok =
+                        viewRepo.update(desired, meta.getPointerVersion(), destinationGuard);
                     if (!ok) {
                       var nowMeta = viewRepo.metaForSafe(viewId);
                       throw GrpcErrors.preconditionFailed(
@@ -402,10 +416,12 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                             "actual", Long.toString(nowMeta.getPointerVersion())));
                   }
                   topology.evict(viewId);
-                  if (!current.getNamespaceId().getId().equals(desired.getNamespaceId().getId())) {
+                  if (reparented) {
                     topology.evictRelationRefs(desired.getNamespaceId());
+                    // The destination marker was advanced inside the update batch by the guard.
+                    // Only the source still needs a bump, and moving a relation OUT can never
+                    // orphan it, so that one stays a plain post-hoc bump.
                     markerStore.bumpNamespaceMarker(current.getNamespaceId());
-                    markerStore.bumpNamespaceMarker(desired.getNamespaceId());
                   }
                   metadataGraph.invalidate(viewId);
 

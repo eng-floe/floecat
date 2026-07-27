@@ -25,6 +25,7 @@ import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.ViewKey;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -63,8 +64,20 @@ public class ViewRepository {
     repo.create(view);
   }
 
+  /**
+   * Publishes a view atomically with respect to deletion of its namespace; see {@link BatchGuard}.
+   */
+  public void create(View view, BatchGuard namespaceGuard) {
+    repo.create(view, namespaceGuard);
+  }
+
   public boolean update(View view, long expectedPointerVersion) {
     return repo.update(view, expectedPointerVersion);
+  }
+
+  /** Guarded update, for a reparent that publishes the view into a different namespace. */
+  public boolean update(View view, long expectedPointerVersion, BatchGuard namespaceGuard) {
+    return repo.update(view, expectedPointerVersion, namespaceGuard);
   }
 
   public boolean delete(ResourceId viewResourceId) {

@@ -30,6 +30,7 @@ import ai.floedb.floecat.catalog.rpc.NamespaceService;
 import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
 import ai.floedb.floecat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateNamespaceResponse;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogOverlay;
@@ -51,6 +52,7 @@ import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -257,7 +259,14 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                             .build();
 
                                     try {
-                                      namespaceRepo.create(built);
+                                      // Publishing a child namespace is fenced exactly like a
+                                      // relation create: the guard advances the parent's children
+                                      // marker inside this batch, so a concurrent DeleteNamespace
+                                      // on the parent cannot also commit (see BatchGuard).
+                                      namespaceRepo.create(
+                                          built,
+                                          parentNamespaceGuard(
+                                              accountId, spec.getCatalogId(), parents));
                                     } catch (BaseResourceRepository.NameConflictException nce) {
                                       var existingOpt =
                                           namespaceRepo.getByPath(
@@ -293,9 +302,9 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                               "path",
                                               String.join(".", fullPath)));
                                     }
+                                    // The parent's children marker was advanced inside the create
+                                    // batch by the guard above; only the catalog marker is left.
                                     markerStore.bumpCatalogMarker(spec.getCatalogId());
-                                    bumpParentNamespaceMarker(
-                                        accountId, spec.getCatalogId(), parents);
                                     metadataGraph.invalidate(namespaceId);
                                     topology.evictNamespaceRefs(spec.getCatalogId());
                                     return new IdempotencyGuard.CreateResult<>(built, namespaceId);
@@ -355,9 +364,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
               .setCreatedAt(tsNow)
               .build();
       try {
-        namespaceRepo.create(ns);
+        // Each implicitly created level is a child publish like any other and is fenced on the
+        // level above it, so a concurrent delete partway down the chain cannot leave the rest of
+        // the chain orphaned. The guard advances the parent's marker inside the create batch.
+        namespaceRepo.create(ns, parentNamespaceGuard(accountId, catalogId, parentList));
         markerStore.bumpCatalogMarker(catalogId);
-        bumpParentNamespaceMarker(accountId, catalogId, parentList);
         metadataGraph.invalidate(rid);
         topology.evictNamespaceRefs(catalogId);
       } catch (BaseResourceRepository.NameConflictException nce) {
@@ -438,8 +449,23 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   var conflictInfo =
                       Map.of("catalog", conflictCatalog, "path", String.join(".", conflictPath));
 
+                  // Moving a namespace under a different parent republishes it as that parent's
+                  // child, so the destination gets the same fence a create would; an in-place
+                  // rename or property edit keeps its parent and stays unguarded.
+                  boolean reparented =
+                      !current.getParentsList().equals(desired.getParentsList())
+                          || !current.getCatalogId().getId().equals(desired.getCatalogId().getId());
+                  var destinationGuard =
+                      reparented
+                          ? parentNamespaceGuard(
+                              desired.getResourceId().getAccountId(),
+                              desired.getCatalogId(),
+                              desired.getParentsList())
+                          : BatchGuard.NONE;
+
                   try {
-                    boolean ok = namespaceRepo.update(desired, meta.getPointerVersion());
+                    boolean ok =
+                        namespaceRepo.update(desired, meta.getPointerVersion(), destinationGuard);
                     if (!ok) {
                       var nowMeta = namespaceRepo.metaForSafe(nsId);
                       throw GrpcErrors.preconditionFailed(
@@ -470,6 +496,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   var outMeta = namespaceRepo.metaForSafe(nsId);
                   var latest = namespaceRepo.getById(nsId).orElse(desired);
 
+                  // Bumps the source and destination parent markers plus the catalog markers. On a
+                  // reparent the destination was already advanced inside the update batch by the
+                  // guard; advancing it a second time is harmless (markers are opaque monotonic
+                  // counters that every reader re-reads) and keeps this one call responsible for
+                  // the whole move.
                   bumpParentMoveMarkers(current, desired);
                   return UpdateNamespaceResponse.newBuilder()
                       .setNamespace(latest)
@@ -661,15 +692,41 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     }
                   }
 
-                  var meta =
-                      MutationOps.deleteWithPreconditions(
-                          () -> namespaceRepo.metaFor(namespaceId),
-                          request.getPrecondition(),
-                          expected -> namespaceRepo.deleteWithPrecondition(namespaceId, expected),
-                          () -> namespaceRepo.metaForSafe(namespaceId),
-                          correlationId,
-                          "namespace",
-                          Map.of("id", namespaceId.getId()));
+                  // The emptiness scans above are reads, and no read can be part of a CAS batch, so
+                  // on their own they always leave a window in which a child is published after the
+                  // last scan but before the pointer goes away. Carrying the marker into the delete
+                  // batch closes it: every child-publishing write advances this marker inside its
+                  // own batch (see BatchGuard), so a child that slipped past the scan makes this
+                  // delete fail rather than orphaning itself under a namespace that no longer
+                  // exists.
+                  final long fencedMarkerVersion = markerVersion + 1;
+                  final var childrenGuard =
+                      markerStore.namespaceDeleteGuard(namespaceId, fencedMarkerVersion);
+
+                  final MutationMeta meta;
+                  try {
+                    meta =
+                        MutationOps.deleteWithPreconditions(
+                            () -> namespaceRepo.metaFor(namespaceId),
+                            request.getPrecondition(),
+                            expected ->
+                                namespaceRepo.deleteWithPrecondition(
+                                    namespaceId, expected, childrenGuard),
+                            () -> namespaceRepo.metaForSafe(namespaceId),
+                            correlationId,
+                            "namespace",
+                            Map.of("id", namespaceId.getId()));
+                  } catch (BaseResourceRepository.BatchGuardFailedException childAppeared) {
+                    if (request.getRecursive()) {
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "namespace children changed during recursive delete: "
+                              + namespaceId.getId());
+                    }
+                    throw GrpcErrors.preconditionFailed(
+                        correlationId,
+                        GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
+                        Map.of());
+                  }
 
                   topology.evictRelationRefs(namespaceId);
                   topology.evictNamespaceRefs(catalogId);
@@ -852,6 +909,26 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         .map(Catalog::getDisplayName)
         .filter(name -> !name.isBlank())
         .orElse(catalogId.getId());
+  }
+
+  /**
+   * Fence for publishing a namespace under {@code parentPath}, so the new child and a concurrent
+   * delete of its parent cannot both commit. Root-level namespaces have no parent namespace to
+   * fence against — their containment is the catalog, whose own children marker is not part of this
+   * protocol — so they are published unguarded.
+   */
+  private BatchGuard parentNamespaceGuard(
+      String accountId, ResourceId catalogId, List<String> parentPath) {
+    if (parentPath == null || parentPath.isEmpty()) {
+      return BatchGuard.NONE;
+    }
+    return namespaceRepo
+        .getByPath(accountId, catalogId.getId(), parentPath)
+        .map(parent -> markerStore.namespaceChildGuard(parent.getResourceId()))
+        .orElseThrow(
+            () ->
+                new BaseResourceRepository.BatchGuardFailedException(
+                    "parent namespace no longer exists: " + String.join(".", parentPath)));
   }
 
   private void bumpParentNamespaceMarker(

@@ -27,6 +27,7 @@ import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -153,18 +154,21 @@ public class RecursiveResourceDropper {
   private void dropNamespace(
       Namespace namespace, DropSummary summary, ResourceId rootId, boolean guarded) {
     dropNamespaceRelations(namespace, summary, guarded);
-    if (guarded) {
-      requireNamespaceEmptyAndStable(namespace);
-    }
-    deleteNamespace(namespace, rootId);
+    var childrenGuard = guarded ? requireNamespaceEmptyAndStable(namespace) : BatchGuard.NONE;
+    deleteNamespace(namespace, rootId, childrenGuard);
     summary.namespacesDeleted++;
   }
 
   /**
    * Uses the same marker protocol as ordinary namespace deletion. This prevents a concurrently
    * created table or immediate child namespace from being orphaned by a recursive parent drop.
+   *
+   * @return the fence to carry into this descendant's delete batch, asserting the marker is still
+   *     where these scans left it. The scans alone cannot close the window — they are reads, and a
+   *     read cannot join a CAS batch — so the delete itself has to contend on the marker that every
+   *     child-publishing write advances (see {@link BatchGuard}).
    */
-  private void requireNamespaceEmptyAndStable(Namespace namespace) {
+  private BatchGuard requireNamespaceEmptyAndStable(Namespace namespace) {
     var namespaceId = namespace.getResourceId();
     var catalogId = namespace.getCatalogId();
     var parentPath = new ArrayList<>(namespace.getParentsList());
@@ -182,6 +186,7 @@ public class RecursiveResourceDropper {
         || hasImmediateChildren(catalogId, parentPath)) {
       throw namespaceChanged(namespaceId);
     }
+    return markerStore.namespaceDeleteGuard(namespaceId, markerVersion + 1);
   }
 
   private boolean hasRelations(ResourceId namespaceId, ResourceId catalogId) {
@@ -352,7 +357,9 @@ public class RecursiveResourceDropper {
   }
 
   private void deleteNamespace(Namespace namespace) {
-    deleteNamespace(namespace, null);
+    // Account teardown: the whole tree and its account pointer are going away, so there is nothing
+    // for a fence to protect and nothing a late child could be orphaned under.
+    deleteNamespace(namespace, null, BatchGuard.NONE);
   }
 
   /**
@@ -360,10 +367,15 @@ public class RecursiveResourceDropper {
    * skipMarkerId} — the root of a recursive drop. Skipping the root keeps the dropper's own
    * descendant removals from advancing the root marker, so the recursive-delete caller can
    * distinguish its single intentional advance from a concurrent write to the root's children.
+   *
+   * <p>{@code childrenGuard} makes the pointer removal atomic with the emptiness the caller
+   * established: a child published since then raises {@link
+   * BaseResourceRepository.BatchGuardFailedException}, which is retryable and re-runs the drop.
    */
-  private void deleteNamespace(Namespace namespace, ResourceId skipMarkerId) {
+  private void deleteNamespace(
+      Namespace namespace, ResourceId skipMarkerId, BatchGuard childrenGuard) {
     var namespaceId = namespace.getResourceId();
-    namespaceRepo.delete(namespaceId);
+    namespaceRepo.delete(namespaceId, childrenGuard);
     topology.evictRelationRefs(namespaceId);
     topology.evictNamespaceRefs(namespace.getCatalogId());
     metadataGraph.invalidate(namespaceId);

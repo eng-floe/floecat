@@ -184,6 +184,22 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    * all is a transient transaction conflict and is signalled as retryable.
    */
   public void create(T value) {
+    create(value, BatchGuard.NONE);
+  }
+
+  /**
+   * Guarded {@link #create(Object)}: {@code guard}'s preconditions join the same all-or-nothing
+   * batch, so the resource becomes visible only while the guarded state still holds. Used to
+   * publish a child into a parent namespace atomically with respect to that namespace's deletion —
+   * see {@link BatchGuard}.
+   *
+   * <p>Benign guard contention (a sibling create advancing the same children marker) is absorbed
+   * here by re-reading the guard and re-running the batch, keeping its cost equivalent to the
+   * marker's own CAS loop rather than escalating to an RPC retry. A guard that is {@link
+   * BatchGuard.Outcome#BROKEN} — the parent is gone — raises {@link
+   * BaseResourceRepository.BatchGuardFailedException}.
+   */
+  public void create(T value, BatchGuard guard) {
     observeRepository(
         "create",
         () -> {
@@ -207,24 +223,100 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           uniqueKeys.addAll(secondaries.values());
           List<String> pointerKeys = new ArrayList<>(uniqueKeys);
 
-          List<PointerStore.CasOp> ops = new ArrayList<>(pointerKeys.size());
-          for (String pointerKey : pointerKeys) {
-            ops.add(
-                new PointerStore.CasUpsert(
-                    pointerKey, 0L, reserve(pointerKey, blobUri, value, blobBytes)));
-          }
+          for (int attempt = 0; ; attempt++) {
+            List<PointerStore.CasOp> ops = new ArrayList<>(pointerKeys.size());
+            for (String pointerKey : pointerKeys) {
+              ops.add(
+                  new PointerStore.CasUpsert(
+                      pointerKey, 0L, reserve(pointerKey, blobUri, value, blobBytes)));
+            }
+            appendGuardOps(ops, uniqueKeys, guard);
 
-          if (pointerStore.compareAndSetBatch(ops)) {
-            healCanonicalBlobIfMissing(blobUri, value);
-            return;
-          }
+            if (pointerStore.compareAndSetBatch(ops)) {
+              healCanonicalBlobIfMissing(blobUri, value);
+              return;
+            }
 
-          // The batch committed nothing (atomic) because at least one pointer already existed. Read
-          // back
-          // and classify, walking canonical-then-secondary order so a conflict reports the same
-          // key/message as before.
-          classifyCreateConflict(blobUri, pointerKeys);
+            if (!guardPermitsRetry(guard, "create", attempt)) {
+              // The batch committed nothing (atomic) because at least one pointer already existed.
+              // Read back and classify, walking canonical-then-secondary order so a conflict
+              // reports
+              // the same key/message as before.
+              classifyCreateConflict(blobUri, pointerKeys);
+              return;
+            }
+          }
         });
+  }
+
+  /**
+   * Appends a guard's preconditions to a batch, skipping any check whose key the mutation already
+   * constrains. A transactional batch must not carry two operations on one key — DynamoDB rejects
+   * duplicate items outright — and this can legitimately happen when a resource is republished
+   * under a parent that resolves to the resource itself (a namespace moved beneath its own path).
+   * Dropping such a check is loss-free: the mutation's own CAS on that key already pins it to a
+   * version.
+   *
+   * <p>A guard <em>write</em> that collides is a different matter — silently dropping it would
+   * weaken the fence to nothing — so it is refused rather than merged. No key layout produces that
+   * today (a children marker is never a resource pointer); the check exists so a future schema
+   * cannot introduce it quietly.
+   */
+  private static void appendGuardOps(
+      List<PointerStore.CasOp> ops, Set<String> batchedKeys, BatchGuard guard) {
+    for (PointerStore.CasOp op : guard.ops()) {
+      String key = opKey(op);
+      if (batchedKeys.contains(key)) {
+        if (op instanceof PointerStore.CasCheck || op instanceof PointerStore.CasCheckAbsent) {
+          continue;
+        }
+        throw new IllegalStateException(
+            "batch guard writes a key the mutation already mutates: " + key);
+      }
+      ops.add(op);
+    }
+  }
+
+  private static String opKey(PointerStore.CasOp op) {
+    if (op instanceof PointerStore.CasUpsert upsert) {
+      return upsert.key();
+    }
+    if (op instanceof PointerStore.CasDelete delete) {
+      return delete.key();
+    }
+    if (op instanceof PointerStore.CasCheck check) {
+      return check.key();
+    }
+    return ((PointerStore.CasCheckAbsent) op).key();
+  }
+
+  /**
+   * Classifies a failed batch against {@code guard}: true when the guard was the (benign) cause and
+   * the batch should be re-attempted with re-captured ops, false when the guard held and the caller
+   * should classify the conflict on its own pointers. Throws when the guard is broken, or when
+   * benign contention fails to settle within {@link #CAS_MAX} attempts — an unbounded retry here
+   * would spin a worker on a hot marker.
+   */
+  private boolean guardPermitsRetry(BatchGuard guard, String operation, int attempt) {
+    switch (guard.reevaluate()) {
+      case HOLDS:
+        return false;
+      case RETRY:
+        if (attempt < CAS_MAX) {
+          return true;
+        }
+        throw new AbortRetryableException(
+            operation
+                + " contended on guard for "
+                + guard.describe()
+                + " after "
+                + CAS_MAX
+                + " attempts");
+      case BROKEN:
+      default:
+        throw new BatchGuardFailedException(
+            operation + " lost the race against deletion of " + guard.describe());
+    }
   }
 
   private void classifyCreateConflict(String blobUri, List<String> pointerKeys) {
@@ -436,6 +528,17 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    * version shift) is signalled as retryable.
    */
   public boolean update(T updatedValue, long expectedCanonicalVersion) {
+    return update(updatedValue, expectedCanonicalVersion, BatchGuard.NONE);
+  }
+
+  /**
+   * Guarded {@link #update(Object, long)}: {@code guard}'s preconditions join the same
+   * all-or-nothing batch. Used when an update republishes a resource under a <em>different</em>
+   * parent (a relation or namespace reparent), which is a child-publishing write into the
+   * destination and must be atomic with respect to that destination's deletion — see {@link
+   * BatchGuard}.
+   */
+  public boolean update(T updatedValue, long expectedCanonicalVersion, BatchGuard guard) {
     return observeRepository(
         "update",
         () -> {
@@ -478,38 +581,18 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           // the canonical advance taking precedence. Because the batch is atomic the update can
           // never
           // leave partial pointer state; a conflict commits nothing and is classified below.
-          Set<String> batchedKeys = new HashSet<>();
-          List<PointerStore.CasOp> ops = new ArrayList<>();
+          for (int attempt = 0; ; attempt++) {
+            Set<String> batchedKeys = new HashSet<>();
+            List<PointerStore.CasOp> ops = new ArrayList<>();
 
-          batchedKeys.add(canonicalPointer);
-          ops.add(
-              new PointerStore.CasUpsert(
-                  canonicalPointer,
-                  expectedCanonicalVersion,
-                  reserve(canonicalPointer, blobUri, updatedValue, blobBytes)));
+            batchedKeys.add(canonicalPointer);
+            ops.add(
+                new PointerStore.CasUpsert(
+                    canonicalPointer,
+                    expectedCanonicalVersion,
+                    reserve(canonicalPointer, blobUri, updatedValue, blobBytes)));
 
-          for (String p : toAdd) {
-            if (!batchedKeys.add(p)) {
-              continue;
-            }
-            Pointer existing = pointerStore.get(p).orElse(null);
-            if (existing == null) {
-              ops.add(
-                  new PointerStore.CasUpsert(p, 0L, reserve(p, blobUri, updatedValue, blobBytes)));
-            } else if (!blobUri.equals(existing.getBlobUri())) {
-              // The new name already belongs to a different blob. Nothing has been committed, so
-              // failing
-              // fast here leaves no partial state.
-              throw new NameConflictException("pointer bound to different blob: " + p);
-            }
-            // else: already reserved to our blob — idempotent, no op needed.
-          }
-
-          if (blobChanged) {
-            // Kept secondaries still point at the old content-addressed blob; advance each onto the
-            // new
-            // one (or reserve it if a legacy gap left it absent).
-            for (String p : kept) {
+            for (String p : toAdd) {
               if (!batchedKeys.add(p)) {
                 continue;
               }
@@ -519,29 +602,57 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
                     new PointerStore.CasUpsert(
                         p, 0L, reserve(p, blobUri, updatedValue, blobBytes)));
               } else if (!blobUri.equals(existing.getBlobUri())) {
-                ops.add(
-                    new PointerStore.CasUpsert(
-                        p, existing.getVersion(), reserve(p, blobUri, updatedValue, blobBytes)));
+                // The new name already belongs to a different blob. Nothing has been committed, so
+                // failing
+                // fast here leaves no partial state.
+                throw new NameConflictException("pointer bound to different blob: " + p);
               }
-              // else: already on the new blob — no op needed.
+              // else: already reserved to our blob — idempotent, no op needed.
             }
-          }
 
-          for (String p : toDelete) {
-            if (!batchedKeys.add(p)) {
-              continue;
+            if (blobChanged) {
+              // Kept secondaries still point at the old content-addressed blob; advance each onto
+              // the new
+              // one (or reserve it if a legacy gap left it absent).
+              for (String p : kept) {
+                if (!batchedKeys.add(p)) {
+                  continue;
+                }
+                Pointer existing = pointerStore.get(p).orElse(null);
+                if (existing == null) {
+                  ops.add(
+                      new PointerStore.CasUpsert(
+                          p, 0L, reserve(p, blobUri, updatedValue, blobBytes)));
+                } else if (!blobUri.equals(existing.getBlobUri())) {
+                  ops.add(
+                      new PointerStore.CasUpsert(
+                          p, existing.getVersion(), reserve(p, blobUri, updatedValue, blobBytes)));
+                }
+                // else: already on the new blob — no op needed.
+              }
             }
-            Pointer existing = pointerStore.get(p).orElse(null);
-            if (existing != null) {
-              ops.add(new PointerStore.CasDelete(p, existing.getVersion()));
-            }
-          }
 
-          if (pointerStore.compareAndSetBatch(ops)) {
-            healCanonicalBlobIfMissing(blobUri, updatedValue);
-            return true;
+            for (String p : toDelete) {
+              if (!batchedKeys.add(p)) {
+                continue;
+              }
+              Pointer existing = pointerStore.get(p).orElse(null);
+              if (existing != null) {
+                ops.add(new PointerStore.CasDelete(p, existing.getVersion()));
+              }
+            }
+
+            appendGuardOps(ops, batchedKeys, guard);
+
+            if (pointerStore.compareAndSetBatch(ops)) {
+              healCanonicalBlobIfMissing(blobUri, updatedValue);
+              return true;
+            }
+            if (!guardPermitsRetry(guard, "update", attempt)) {
+              return classifyUpdateConflict(
+                  canonicalPointer, expectedCanonicalVersion, blobUri, toAdd);
+            }
           }
-          return classifyUpdateConflict(canonicalPointer, expectedCanonicalVersion, blobUri, toAdd);
         });
   }
 
@@ -589,6 +700,16 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   public boolean delete(K key) {
+    return delete(key, BatchGuard.NONE);
+  }
+
+  /**
+   * Guarded {@link #delete(Object)}: {@code guard}'s preconditions join the same all-or-nothing
+   * batch, so the resource disappears only while the guarded state still holds. Used to remove a
+   * parent namespace atomically with respect to any child being published into it — see {@link
+   * BatchGuard}.
+   */
+  public boolean delete(K key, BatchGuard guard) {
     return observeRepository(
         "delete",
         () -> {
@@ -603,7 +724,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           try {
             current = getByKeyUnobserved(key);
           } catch (CorruptionException e) {
-            if (!deleteCanonicalPointer(canonicalPointer, canonicalPtr.getVersion())) {
+            if (!deleteCanonicalPointer(canonicalPointer, canonicalPtr.getVersion(), guard)) {
               return false;
             }
             if (!schema.casBlobs && !blobUri.isBlank()) {
@@ -619,7 +740,8 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           if (!deleteAtomically(
               canonicalPointer,
               canonicalPtr.getVersion(),
-              new HashSet<>(schema.secondaryPointersFromValue.apply(currentValue).values()))) {
+              new HashSet<>(schema.secondaryPointersFromValue.apply(currentValue).values()),
+              guard)) {
             return false;
           }
 
@@ -631,6 +753,14 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   public boolean deleteWithPrecondition(K key, long expectedCanonicalVersion) {
+    return deleteWithPrecondition(key, expectedCanonicalVersion, BatchGuard.NONE);
+  }
+
+  /**
+   * Guarded {@link #deleteWithPrecondition(ResourceKey, long)}; see {@link #delete(Object,
+   * BatchGuard)}.
+   */
+  public boolean deleteWithPrecondition(K key, long expectedCanonicalVersion, BatchGuard guard) {
     return observeRepository(
         "delete_with_precondition",
         () -> {
@@ -641,7 +771,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           try {
             current = getByKeyUnobserved(key);
           } catch (CorruptionException e) {
-            if (!deleteCanonicalPointer(canonicalPointer, expectedCanonicalVersion)) {
+            if (!deleteCanonicalPointer(canonicalPointer, expectedCanonicalVersion, guard)) {
               return false;
             }
             if (!schema.casBlobs && !blobUri.isBlank()) {
@@ -657,7 +787,8 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           if (!deleteAtomically(
               canonicalPointer,
               expectedCanonicalVersion,
-              new HashSet<>(schema.secondaryPointersFromValue.apply(currentValue).values()))) {
+              new HashSet<>(schema.secondaryPointersFromValue.apply(currentValue).values()),
+              guard)) {
             return false;
           }
 
@@ -669,7 +800,10 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   private boolean deleteAtomically(
-      String canonicalPointer, long expectedCanonicalVersion, Set<String> currentSecondary) {
+      String canonicalPointer,
+      long expectedCanonicalVersion,
+      Set<String> currentSecondary,
+      BatchGuard guard) {
     Set<String> batchedKeys = new HashSet<>();
     List<PointerStore.CasOp> ops = new ArrayList<>();
 
@@ -688,12 +822,34 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       }
     }
 
-    return pointerStore.compareAndSetBatch(ops);
+    appendGuardOps(ops, batchedKeys, guard);
+
+    return commitGuardedDelete(ops, guard);
   }
 
-  private boolean deleteCanonicalPointer(String canonicalPointer, long expectedCanonicalVersion) {
-    return pointerStore.compareAndSetBatch(
-        List.of(new PointerStore.CasDelete(canonicalPointer, expectedCanonicalVersion)));
+  private boolean deleteCanonicalPointer(
+      String canonicalPointer, long expectedCanonicalVersion, BatchGuard guard) {
+    List<PointerStore.CasOp> ops = new ArrayList<>();
+    ops.add(new PointerStore.CasDelete(canonicalPointer, expectedCanonicalVersion));
+    appendGuardOps(ops, Set.of(canonicalPointer), guard);
+    return commitGuardedDelete(ops, guard);
+  }
+
+  /**
+   * Commits a delete batch, distinguishing a guard failure from an ordinary precondition miss. A
+   * broken guard is never retried here: it means a child may have been published, and only the
+   * caller's emptiness scan can decide whether the delete is still legal, so it is surfaced for the
+   * caller to re-run that scan.
+   */
+  private boolean commitGuardedDelete(List<PointerStore.CasOp> ops, BatchGuard guard) {
+    if (pointerStore.compareAndSetBatch(ops)) {
+      return true;
+    }
+    if (guard.reevaluate() != BatchGuard.Outcome.HOLDS) {
+      throw new BatchGuardFailedException(
+          "delete lost the race against a child published into " + guard.describe());
+    }
+    return false;
   }
 
   public MutationMeta metaFor(K key) {

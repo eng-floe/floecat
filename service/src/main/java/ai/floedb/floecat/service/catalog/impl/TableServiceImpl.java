@@ -52,6 +52,7 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -218,7 +219,11 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               "namespace_id", spec.getNamespaceId().getId()));
                     }
                     try {
-                      tableRepo.create(table);
+                      // The namespace guard advances the children marker inside the create batch
+                      // and pins the namespace pointer, so this table and a concurrent
+                      // DeleteNamespace cannot both commit (see BatchGuard).
+                      tableRepo.create(
+                          table, markerStore.namespaceChildGuard(spec.getNamespaceId()));
                     } catch (BaseResourceRepository.NameConflictException nce) {
                       throw GrpcErrors.alreadyExists(
                           corr,
@@ -228,7 +233,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               "catalog_id", spec.getCatalogId().getId(),
                               "namespace_id", spec.getNamespaceId().getId()));
                     }
-                    markerStore.bumpNamespaceMarker(table.getNamespaceId());
                     metadataGraph.invalidate(tableResourceId);
                     topology.evictRelationRefs(table.getNamespaceId());
                     var meta = tableRepo.metaForSafe(tableResourceId);
@@ -246,7 +250,9 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                   () -> fingerprint,
                                   () -> {
                                     try {
-                                      tableRepo.create(table);
+                                      tableRepo.create(
+                                          table,
+                                          markerStore.namespaceChildGuard(spec.getNamespaceId()));
                                     } catch (BaseResourceRepository.NameConflictException nce) {
                                       var existingOpt =
                                           tableRepo.getByName(
@@ -276,7 +282,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                               "catalog_id", spec.getCatalogId().getId(),
                                               "namespace_id", spec.getNamespaceId().getId()));
                                     }
-                                    markerStore.bumpNamespaceMarker(table.getNamespaceId());
                                     metadataGraph.invalidate(tableResourceId);
                                     topology.evictRelationRefs(table.getNamespaceId());
                                     return new IdempotencyGuard.CreateResult<>(
@@ -387,8 +392,19 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           "catalog_id", desired.getCatalogId().getId(),
                           "namespace_id", desired.getNamespaceId().getId());
 
+                  // A reparent republishes the table under a different namespace, so it is a
+                  // child-publishing write into the destination and needs the same fence a create
+                  // does; an in-place update touches no namespace and stays unguarded.
+                  boolean reparented =
+                      !current.getNamespaceId().getId().equals(desired.getNamespaceId().getId());
+                  var destinationGuard =
+                      reparented
+                          ? markerStore.namespaceChildGuard(desired.getNamespaceId())
+                          : BatchGuard.NONE;
+
                   try {
-                    boolean ok = tableRepo.update(desired, meta.getPointerVersion());
+                    boolean ok =
+                        tableRepo.update(desired, meta.getPointerVersion(), destinationGuard);
                     if (!ok) {
                       throw tableUpdateConflict(
                           corr,
@@ -408,10 +424,12 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   topology.evict(tableId);
                   metadataGraph.invalidate(tableId);
 
-                  if (!current.getNamespaceId().getId().equals(desired.getNamespaceId().getId())) {
+                  if (reparented) {
                     topology.evictRelationRefs(desired.getNamespaceId());
+                    // The destination marker was advanced inside the update batch by the guard.
+                    // Only the source still needs a bump, and moving a relation OUT can never
+                    // orphan it, so that one stays a plain post-hoc bump.
                     markerStore.bumpNamespaceMarker(current.getNamespaceId());
-                    markerStore.bumpNamespaceMarker(desired.getNamespaceId());
                   }
 
                   var outMeta = tableRepo.metaForSafe(tableId);

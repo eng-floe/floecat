@@ -45,6 +45,8 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.testsupport.TestPrincipals;
@@ -83,6 +85,11 @@ class ViewServiceImplSystemViewTest {
     svc.authz = authz;
     svc.overlay = overlay;
     svc.metadataGraph = mock(UserGraph.class);
+    // These tests resolve namespaces through the overlay, not a real pointer store, so there is no
+    // namespace pointer for a real fence to pin. The fence itself is covered by
+    // NamespaceChildFenceTest; here it is stubbed out so the subject stays error mapping.
+    svc.markerStore = mock(MarkerStore.class);
+    when(svc.markerStore.namespaceChildGuard(any())).thenReturn(BatchGuard.NONE);
 
     var pc = TestPrincipals.stubPrincipal(principal, authz);
   }
@@ -208,7 +215,7 @@ class ViewServiceImplSystemViewTest {
             StatusRuntimeException.class, () -> svc.updateView(req).await().indefinitely());
 
     assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
-    verify(viewRepo, never()).update(any(), anyLong());
+    verify(viewRepo, never()).update(any(), anyLong(), any());
   }
 
   @Test
@@ -220,7 +227,7 @@ class ViewServiceImplSystemViewTest {
     when(viewRepo.getByName(any(), any(), any(), any())).thenReturn(Optional.empty());
     doThrow(new BaseResourceRepository.NameConflictException("claimed by a table"))
         .when(viewRepo)
-        .create(any());
+        .create(any(), any());
 
     StatusRuntimeException ex =
         assertThrows(
@@ -244,7 +251,7 @@ class ViewServiceImplSystemViewTest {
         .thenReturn(Optional.of(View.newBuilder().setDisplayName("orders").build()));
     doThrow(new BaseResourceRepository.NameConflictException("concurrent view"))
         .when(viewRepo)
-        .create(any());
+        .create(any(), any());
 
     StatusRuntimeException ex =
         assertThrows(

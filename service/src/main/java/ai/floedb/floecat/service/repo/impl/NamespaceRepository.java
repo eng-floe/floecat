@@ -25,6 +25,7 @@ import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.NamespaceKey;
 import ai.floedb.floecat.service.repo.model.Schemas;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -65,8 +66,21 @@ public class NamespaceRepository {
     repo.create(namespace);
   }
 
+  /**
+   * Publishes a child namespace atomically with respect to deletion of its parent; see {@link
+   * BatchGuard}.
+   */
+  public void create(Namespace namespace, BatchGuard parentGuard) {
+    repo.create(namespace, parentGuard);
+  }
+
   public boolean update(Namespace namespace, long expectedPointerVersion) {
     return repo.update(namespace, expectedPointerVersion);
+  }
+
+  /** Guarded update, for a reparent that publishes the namespace under a different parent. */
+  public boolean update(Namespace namespace, long expectedPointerVersion, BatchGuard parentGuard) {
+    return repo.update(namespace, expectedPointerVersion, parentGuard);
   }
 
   public boolean delete(ResourceId namespaceResourceId) {
@@ -74,11 +88,33 @@ public class NamespaceRepository {
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
   }
 
+  /**
+   * Removes a namespace atomically with respect to any child being published into it; see {@link
+   * BatchGuard}.
+   */
+  public boolean delete(ResourceId namespaceResourceId, BatchGuard childrenGuard) {
+    return repo.delete(
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()),
+        childrenGuard);
+  }
+
   public boolean deleteWithPrecondition(
       ResourceId namespaceResourceId, long expectedPointerVersion) {
     return repo.deleteWithPrecondition(
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()),
         expectedPointerVersion);
+  }
+
+  /**
+   * Guarded {@link #deleteWithPrecondition(ResourceId, long)}; see {@link #delete(ResourceId,
+   * BatchGuard)}.
+   */
+  public boolean deleteWithPrecondition(
+      ResourceId namespaceResourceId, long expectedPointerVersion, BatchGuard childrenGuard) {
+    return repo.deleteWithPrecondition(
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()),
+        expectedPointerVersion,
+        childrenGuard);
   }
 
   public Optional<Namespace> getById(ResourceId namespaceResourceId) {

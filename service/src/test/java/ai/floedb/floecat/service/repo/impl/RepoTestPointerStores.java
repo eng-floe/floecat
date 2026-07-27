@@ -25,15 +25,15 @@ import java.util.Optional;
 import java.util.Set;
 
 /** Shared {@link PointerStore} decorators used by repository behavioral tests. */
-final class RepoTestPointerStores {
+public final class RepoTestPointerStores {
 
   private RepoTestPointerStores() {}
 
   /** Forwards every {@link PointerStore} call to a delegate; subclasses override one behavior. */
-  abstract static class DelegatingPointerStore implements PointerStore {
+  public abstract static class DelegatingPointerStore implements PointerStore {
     final PointerStore delegate;
 
-    DelegatingPointerStore(PointerStore delegate) {
+    protected DelegatingPointerStore(PointerStore delegate) {
       this.delegate = delegate;
     }
 
@@ -150,8 +150,8 @@ final class RepoTestPointerStores {
   }
 
   /** Mimics DynamoDB: a transaction with two operations on the same key is rejected. */
-  static final class DuplicateKeyRejectingPointerStore extends DelegatingPointerStore {
-    DuplicateKeyRejectingPointerStore(PointerStore delegate) {
+  public static final class DuplicateKeyRejectingPointerStore extends DelegatingPointerStore {
+    public DuplicateKeyRejectingPointerStore(PointerStore delegate) {
       super(delegate);
     }
 

@@ -106,6 +106,19 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     }
   }
 
+  /**
+   * A mutation lost the atomic race against the deletion of the parent it was writing into (see
+   * {@link BatchGuard}). Retryable by design: the parent is gone, so re-running the enclosing RPC
+   * re-resolves it and fails with the natural NOT_FOUND for that surface rather than a bespoke
+   * error duplicated at every call site. Should the parent turn out to still exist — a version move
+   * rather than a delete — the retry simply re-captures the guard and proceeds.
+   */
+  public static class BatchGuardFailedException extends AbortRetryableException {
+    public BatchGuardFailedException(String msg) {
+      super(msg);
+    }
+  }
+
   public static class NotFoundException extends RepoException {
     public NotFoundException(String msg) {
       super(msg);

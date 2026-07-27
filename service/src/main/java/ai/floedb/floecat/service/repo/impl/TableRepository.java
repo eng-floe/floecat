@@ -25,6 +25,7 @@ import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TableKey;
+import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -63,8 +64,20 @@ public class TableRepository {
     repo.create(table);
   }
 
+  /**
+   * Publishes a table atomically with respect to deletion of its namespace; see {@link BatchGuard}.
+   */
+  public void create(Table table, BatchGuard namespaceGuard) {
+    repo.create(table, namespaceGuard);
+  }
+
   public boolean update(Table table, long expectedPointerVersion) {
     return repo.update(table, expectedPointerVersion);
+  }
+
+  /** Guarded update, for a reparent that publishes the table into a different namespace. */
+  public boolean update(Table table, long expectedPointerVersion, BatchGuard namespaceGuard) {
+    return repo.update(table, expectedPointerVersion, namespaceGuard);
   }
 
   public boolean delete(ResourceId tableResourceId) {
