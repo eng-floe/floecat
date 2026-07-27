@@ -173,6 +173,35 @@ public class QueryInputResolverTest {
             org.mockito.ArgumentMatchers.argThat(uris -> uris.contains("s3://FAST/table.pb")));
   }
 
+  /** Completed sibling work still contributes pin diagnostics when another parallel plan fails. */
+  @Test
+  void flushesParallelPinDiagnosticsWhenSiblingPlanningFails() {
+    var failingGraph = new FailingAfterFastPinGraph();
+    var withStore = new QueryInputResolver(failingGraph);
+    var diagnostics = org.mockito.Mockito.mock(ai.floedb.floecat.telemetry.PhaseDiagnostics.class);
+
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            withStore.resolveInputs(
+                "q-diagnostics-failure",
+                "cid",
+                List.of(
+                    QueryInput.newBuilder().setTableId(rid("FAIL")).build(),
+                    QueryInput.newBuilder().setTableId(rid("FAST")).build()),
+                Optional.empty(),
+                Optional.empty(),
+                new java.util.concurrent.ConcurrentHashMap<>(),
+                diagnostics));
+
+    org.mockito.Mockito.verify(diagnostics).add("pin.snapshot_calls", 1L);
+    org.mockito.Mockito.verify(diagnostics).add("pin.current_snapshot_cache_misses", 1L);
+    org.mockito.Mockito.verify(diagnostics)
+        .nanos(
+            org.mockito.ArgumentMatchers.eq("pin.snapshot_lookup"),
+            org.mockito.ArgumentMatchers.anyLong());
+  }
+
   /** Resolving a name that maps only to a table should return the table id. */
   @Test
   void resolve_table_only() {
