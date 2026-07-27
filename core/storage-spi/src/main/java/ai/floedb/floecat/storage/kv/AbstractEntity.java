@@ -65,9 +65,11 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
         return null;
       }
       var m = (M) defaultInstance.getParserForType().parseFrom(data);
-      long ts = AttrValue.longOr(r.attrs(), ATTR_EXPIRES_AT, 0L);
-      if (ts > 0) {
-        m = setExpiresAt(m, ts);
+      var ts = r.attrs().get(ATTR_EXPIRES_AT);
+      if (ts != null) {
+        // Accepts both the legacy string form and the native numeric one; a present but malformed
+        // stamp throws, so corrupt expiry data cannot read as "no expiry".
+        m = setExpiresAt(m, ts.asLong());
       }
       return m;
     } catch (InvalidProtocolBufferException e) {

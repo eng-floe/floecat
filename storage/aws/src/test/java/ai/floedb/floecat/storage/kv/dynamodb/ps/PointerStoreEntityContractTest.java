@@ -328,6 +328,35 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
   }
 
   @Test
+  void decode_sets_expiresAt_from_numeric_ATTR_EXPIRES_AT() {
+    // Same stamp in the native numeric form: retyped rows must decode like the legacy string ones.
+    KvStore.Record rec =
+        new KvStore.Record(
+            new KvStore.Key(PointerStoreEntity.GLOBAL_PK, "accounts/by-id/7/catalog/ttl"),
+            PointerStoreEntity.KIND_POINTER,
+            new byte[0],
+            Map.of(KvAttributes.ATTR_EXPIRES_AT, AttrValue.of(4321L)),
+            1L);
+
+    Pointer decoded = pointers.decode(rec);
+    assertEquals(4321000L, Timestamps.toMillis(decoded.getExpiresAt()));
+  }
+
+  @Test
+  void decode_throws_on_malformed_ATTR_EXPIRES_AT() {
+    // Fail loud: silently reading a corrupt stamp as "no expiry" would make the pointer immortal.
+    KvStore.Record rec =
+        new KvStore.Record(
+            new KvStore.Key(PointerStoreEntity.GLOBAL_PK, "accounts/by-id/7/catalog/ttl"),
+            PointerStoreEntity.KIND_POINTER,
+            new byte[0],
+            Map.of(KvAttributes.ATTR_EXPIRES_AT, AttrValue.of("not-a-timestamp")),
+            1L);
+
+    assertThrows(NumberFormatException.class, () -> pointers.decode(rec));
+  }
+
+  @Test
   void getExpiresAt_returns_0_when_absent() {
     Pointer p = Pointer.newBuilder().setKey("/accounts/by-id/8/catalog/ttl").build();
     assertEquals(0L, pointers.getExpiresAt(p));

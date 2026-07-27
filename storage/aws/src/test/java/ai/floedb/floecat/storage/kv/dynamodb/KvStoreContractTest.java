@@ -475,7 +475,7 @@ public class KvStoreContractTest {
     KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
     assertInstanceOf(AttrValue.NumberValue.class, got.attrs().get("hits"));
     assertEquals(AttrValue.of(7L), got.attrs().get("hits"));
-    assertEquals(7L, got.attrs().get("hits").asLong().orElseThrow());
+    assertEquals(7L, got.attrs().get("hits").asLong());
     assertEquals(AttrValue.of("t"), got.attrs().get("target"));
   }
 

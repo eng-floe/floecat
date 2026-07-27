@@ -158,6 +158,38 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
   }
 
   @Test
+  void decode_reads_expires_at_from_either_attribute_form() {
+    // Rows written before the attribute was retyped hold the stamp as a string; both must decode.
+    for (AttrValue stamp : List.of(AttrValue.of("2"), AttrValue.of(2L))) {
+      Pointer decoded =
+          entity.decodeForTest(
+              record(
+                  "pk",
+                  "sk1",
+                  TestEntity.KIND,
+                  pointerBytes("k1"),
+                  Map.of(KvAttributes.ATTR_EXPIRES_AT, stamp),
+                  1L));
+      assertEquals(2000L, Timestamps.toMillis(decoded.getExpiresAt()));
+    }
+  }
+
+  @Test
+  void decode_throws_on_malformed_expires_at() {
+    // Fail loud: silently reading a corrupt stamp as "no expiry" would make the record immortal.
+    KvStore.Record rec =
+        record(
+            "pk",
+            "sk1",
+            TestEntity.KIND,
+            pointerBytes("k1"),
+            Map.of(KvAttributes.ATTR_EXPIRES_AT, AttrValue.of("not-a-timestamp")),
+            1L);
+
+    assertThrows(NumberFormatException.class, () -> entity.decodeForTest(rec));
+  }
+
+  @Test
   void deleteCas_calls_kv_deleteCas_with_expectedVersion() {
     RecordingKvStore kv = new RecordingKvStore();
     TestEntity entity = new TestEntity(kv);
@@ -365,6 +397,10 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
 
     private static long nextVersionForTest(long expectedVersion) {
       return nextVersion(expectedVersion);
+    }
+
+    private Pointer decodeForTest(KvStore.Record r) {
+      return decode(r);
     }
 
     @Override

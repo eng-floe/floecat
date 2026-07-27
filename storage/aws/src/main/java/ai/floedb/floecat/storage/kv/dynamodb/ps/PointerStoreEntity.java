@@ -149,9 +149,11 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
         // Preserve legacy behavior for unknown values by leaving the kind unspecified.
       }
     }
-    long ts = AttrValue.longOr(r.attrs(), ATTR_EXPIRES_AT, 0L);
-    if (ts > 0) {
-      builder.setExpiresAt(Timestamps.fromMillis(ts * 1000L));
+    var expiresAt = r.attrs().get(ATTR_EXPIRES_AT);
+    if (expiresAt != null) {
+      // Accepts both the legacy string form and the native numeric one; a present but malformed
+      // stamp throws, so corrupt expiry data cannot read as "no expiry".
+      builder.setExpiresAt(Timestamps.fromMillis(expiresAt.asLong() * 1000L));
     }
     String rid = AttrValue.stringOr(r.attrs(), ATTR_RESOURCE_ID, null);
     String rkStr = AttrValue.stringOr(r.attrs(), ATTR_RESOURCE_KIND, null);
