@@ -504,6 +504,14 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                 "actual",
                                 Long.toString(tableRepo.metaForSafe(tableId).getPointerVersion())));
                       }
+                      // The pointer moved between the safe read and this CAS, so the table still
+                      // exists — a concurrent writer republished it, possibly with a readable blob.
+                      // Falling through here would purge the snapshots, stats, root, and
+                      // root-resync pointer of a LIVE table and still answer OK. Retry instead:
+                      // the next attempt re-reads the pointer and either deletes it cleanly or
+                      // reports the conflict.
+                      throw new BaseResourceRepository.AbortRetryableException(
+                          "table pointer changed during corrupt-blob delete: " + tableId.getId());
                     }
                     recursiveDropper.cleanupDeletedTable(
                         tableId, existing == null ? null : existing.getNamespaceId());
