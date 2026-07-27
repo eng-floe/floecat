@@ -15,9 +15,9 @@
  */
 package ai.floedb.floecat.storage.kv.dynamodb;
 
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.kv.KvStore;
-import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import java.nio.charset.StandardCharsets;
@@ -224,8 +224,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
   @Override
   public Uni<Map<Key, Record>> getBatch(List<Key> keys) {
-    List<Key> stable =
-        keys == null ? List.of() : new ArrayList<>(new LinkedHashSet<>(keys));
+    List<Key> stable = keys == null ? List.of() : new ArrayList<>(new LinkedHashSet<>(keys));
     if (stable.isEmpty()) {
       return Uni.createFrom().item(Map.of());
     }

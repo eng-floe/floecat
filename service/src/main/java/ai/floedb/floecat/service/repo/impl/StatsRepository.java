@@ -1004,8 +1004,7 @@ public class StatsRepository implements StatsStore {
     }
     for (int attempt = 0; attempt < BaseResourceRepository.CAS_MAX; attempt++) {
       Map<String, LatestSnapshotState> states = new LinkedHashMap<>(storageIds.size());
-      Map<String, Pointer> pointers =
-          pointerStore.getBatch(List.copyOf(pointerKeys.values()));
+      Map<String, Pointer> pointers = pointerStore.getBatch(List.copyOf(pointerKeys.values()));
       for (String storageId : storageIds) {
         Pointer pointer = pointers.get(pointerKeys.get(storageId));
         long currentSnapshotId = latestSnapshotIdBoxed(pointer).orElse(0L);

@@ -111,9 +111,7 @@ class IndexArtifactRepositoryTest {
     InMemoryBlobStore blobs = spy(new InMemoryBlobStore());
     IndexArtifactRepository repository =
         new IndexArtifactRepository(
-            pointers,
-            blobs,
-            new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)));
+            pointers, blobs, new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)));
     long snapshotId = 716L;
     String generationId = "full-rescan-parent";
     String filePath = "s3://source/data.parquet";

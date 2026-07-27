@@ -396,8 +396,7 @@ public final class SnapshotManifests {
         head,
         entry -> {
           if (!entry.hasUpstreamCreatedAt()
-              || com.google.protobuf.util.Timestamps.toMillis(entry.getUpstreamCreatedAt())
-                  > asOfMs
+              || com.google.protobuf.util.Timestamps.toMillis(entry.getUpstreamCreatedAt()) > asOfMs
               || (requireStatsGeneration && !entry.hasStatsGenerationRef())) {
             return;
           }
