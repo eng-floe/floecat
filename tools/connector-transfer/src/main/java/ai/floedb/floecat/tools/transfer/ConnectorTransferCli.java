@@ -49,6 +49,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 import picocli.CommandLine;
@@ -177,6 +178,13 @@ public final class ConnectorTransferCli implements Runnable {
     REPLACE
   }
 
+  enum ImportAction {
+    CREATE,
+    FAIL,
+    SKIP,
+    REPLACE
+  }
+
   @CommandLine.Command(
       name = "import",
       mixinStandardHelpOptions = true,
@@ -210,6 +218,11 @@ public final class ConnectorTransferCli implements Runnable {
 
         int imported = 0;
         int skipped = 0;
+        int wouldCreate = 0;
+        int wouldReplace = 0;
+        int wouldSkip = 0;
+        int wouldFail = 0;
+        String importRunNonce = UUID.randomUUID().toString();
         for (var entry : bundle.getEntriesList()) {
           ConnectorSpec spec = specWithCredentials(entry);
           if (spec.getState() == ConnectorState.CS_DELETING) {
@@ -226,31 +239,51 @@ public final class ConnectorTransferCli implements Runnable {
                     + ": "
                     + validation.getSummary());
           }
+          Connector current = existing.get(spec.getDisplayName());
+          ImportAction action = importAction(current != null, conflictMode);
           if (dryRun) {
-            System.out.printf("VALID %s: %s%n", spec.getDisplayName(), validation.getSummary());
+            switch (action) {
+              case CREATE -> {
+                System.out.printf(
+                    "WOULD CREATE %s: %s%n", spec.getDisplayName(), validation.getSummary());
+                wouldCreate++;
+                existing.put(spec.getDisplayName(), entry.getConnector());
+              }
+              case FAIL -> {
+                System.out.println("WOULD FAIL existing connector " + spec.getDisplayName());
+                wouldFail++;
+              }
+              case SKIP -> {
+                System.out.println("WOULD SKIP existing connector " + spec.getDisplayName());
+                wouldSkip++;
+              }
+              case REPLACE -> {
+                System.out.println("WOULD REPLACE existing connector " + spec.getDisplayName());
+                wouldReplace++;
+                existing.put(spec.getDisplayName(), entry.getConnector());
+              }
+            }
             continue;
           }
 
-          Connector current = existing.get(spec.getDisplayName());
           String replacementId = "";
-          if (current != null) {
-            switch (conflictMode) {
-              case FAIL ->
-                  throw new IllegalArgumentException(
-                      "connector already exists: " + spec.getDisplayName());
-              case SKIP -> {
-                System.out.println("Skipped existing connector " + spec.getDisplayName());
-                skipped++;
-                continue;
-              }
-              case REPLACE -> {
-                replacementId = current.getResourceId().getId();
-                client.connectors.deleteConnector(
-                    DeleteConnectorRequest.newBuilder()
-                        .setConnectorId(current.getResourceId())
-                        .build());
-              }
+          switch (action) {
+            case FAIL ->
+                throw new IllegalArgumentException(
+                    "connector already exists: " + spec.getDisplayName());
+            case SKIP -> {
+              System.out.println("Skipped existing connector " + spec.getDisplayName());
+              skipped++;
+              continue;
             }
+            case REPLACE -> {
+              replacementId = current.getResourceId().getId();
+              client.connectors.deleteConnector(
+                  DeleteConnectorRequest.newBuilder()
+                      .setConnectorId(current.getResourceId())
+                      .build());
+            }
+            case CREATE -> {}
           }
 
           var created =
@@ -261,10 +294,12 @@ public final class ConnectorTransferCli implements Runnable {
                           .setSpec(spec)
                           .setIdempotency(
                               IdempotencyKey.newBuilder()
-                                  .setKey(idempotencyKey(bundle, entry, replacementId)))
+                                  .setKey(
+                                      idempotencyKey(importRunNonce, bundle, entry, replacementId)))
                           .build())
                   .getConnector();
           restoreState(client.connectors, created, spec.getState());
+          existing.put(spec.getDisplayName(), created);
           System.out.printf(
               "%s -> %s%n",
               entry.getConnector().getResourceId().getId(), created.getResourceId().getId());
@@ -272,11 +307,12 @@ public final class ConnectorTransferCli implements Runnable {
         }
         if (dryRun) {
           System.out.printf(
-              "Validated %d connector(s); no changes made%n", bundle.getEntriesCount());
+              "Dry run: would create %d, replace %d, skip %d, fail %d; no changes made%n",
+              wouldCreate, wouldReplace, wouldSkip, wouldFail);
         } else {
           System.out.printf("Imported %d connector(s); skipped %d%n", imported, skipped);
         }
-        return 0;
+        return dryRun && wouldFail > 0 ? 1 : 0;
       }
     }
   }
@@ -358,11 +394,25 @@ public final class ConnectorTransferCli implements Runnable {
     return selected;
   }
 
-  private static String idempotencyKey(
-      ConnectorTransferBundle bundle, ConnectorTransferEntry entry, String replacementId)
+  static ImportAction importAction(boolean exists, ConflictMode conflictMode) {
+    if (!exists) return ImportAction.CREATE;
+    return switch (conflictMode) {
+      case FAIL -> ImportAction.FAIL;
+      case SKIP -> ImportAction.SKIP;
+      case REPLACE -> ImportAction.REPLACE;
+    };
+  }
+
+  static String idempotencyKey(
+      String importRunNonce,
+      ConnectorTransferBundle bundle,
+      ConnectorTransferEntry entry,
+      String replacementId)
       throws Exception {
     String source =
-        bundle.getSourceAccountId()
+        importRunNonce
+            + "\n"
+            + bundle.getSourceAccountId()
             + "\n"
             + entry.getConnector().getResourceId().getId()
             + "\n"

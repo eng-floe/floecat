@@ -40,6 +40,9 @@ tools/connector-transfer/floecat-connector-transfer \
   import connectors.zip --dry-run
 ```
 
+The dry run reports whether each connector would be created, skipped, replaced, or rejected. It
+returns a nonzero exit status when `--conflict FAIL` encounters an existing display name.
+
 Import and fail if a display name already exists:
 
 ```shell
