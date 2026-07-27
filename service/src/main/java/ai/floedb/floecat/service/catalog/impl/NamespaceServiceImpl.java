@@ -590,12 +590,22 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   if (hasRelations(
                       catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())) {
-                    var pretty =
-                        prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
-                    throw GrpcErrors.conflict(
-                        correlationId,
-                        GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
-                        Map.of("display_name", pretty));
+                    // This gate counts by-name index rows, but only a live relation can be deleted.
+                    // A row whose relation is already gone — what the corrupt-blob delete path
+                    // leaves behind — would otherwise make a namespace holding nothing report
+                    // NOT_EMPTY forever, with no delete path able to clear it. Reconcile those rows
+                    // once and re-ask, so the answer reflects live relations only.
+                    recursiveDropper.reclaimStrandedRelationNames(namespace);
+                    if (hasRelations(
+                        catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())) {
+                      var pretty =
+                          prettyNamespacePath(
+                              namespace.getParentsList(), namespace.getDisplayName());
+                      throw GrpcErrors.conflict(
+                          correlationId,
+                          GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
+                          Map.of("display_name", pretty));
+                    }
                   }
 
                   var parentPath = append(namespace.getParentsList(), namespace.getDisplayName());

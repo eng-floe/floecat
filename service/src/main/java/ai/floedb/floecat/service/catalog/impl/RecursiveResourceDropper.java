@@ -20,7 +20,9 @@ import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
@@ -404,6 +406,8 @@ public class RecursiveResourceDropper {
     var namespaceId = namespace.getResourceId();
     var catalogId = namespace.getCatalogId();
 
+    reclaimStrandedRelationNames(namespace, guarded, subtreePin);
+
     drainPages(
         (token, next) ->
             tableRepo.list(
@@ -432,6 +436,119 @@ public class RecursiveResourceDropper {
                 token,
                 next),
         view -> dropView(namespace, view.getResourceId(), summary, guarded, subtreePin));
+  }
+
+  /**
+   * Reconciles leftover by-name index rows for a namespace whose emptiness a caller is about to
+   * decide, outside any drop. Best-effort: a row that changes under the batch is left for the
+   * caller's own re-check rather than aborting the request.
+   */
+  public void reclaimStrandedRelationNames(Namespace namespace) {
+    reclaimStrandedRelationNames(namespace, false, BatchGuard.NONE);
+  }
+
+  /**
+   * Releases by-name pointers whose relation no longer exists, so the emptiness gate and the
+   * removal step agree on what counts as a relation.
+   *
+   * <p>{@link #hasRelations} counts by-name pointers, while every removal resolves its relation
+   * through the canonical by-id pointer. A relation whose canonical pointer is gone but whose
+   * by-name pointer survived — the corrupt-blob delete path in {@code GenericResourceRepository}
+   * removes only the canonical pointer, and legacy partial state has the same shape — is therefore
+   * invisible to the drop and permanently fatal to the gate: nothing left can remove it, so every
+   * retry re-counts it and the namespace can never be deleted, recursively or otherwise. Reclaiming
+   * it here is what makes the subtree deletable, and it destroys nothing reachable: no live
+   * relation resolves through a pointer whose owner is already gone.
+   *
+   * <p>Runs before the by-name listing that drives the drop, which fetches each row's blob and
+   * would otherwise raise {@code CorruptionException} on a stranded pointer whose blob was deleted
+   * with it.
+   */
+  private void reclaimStrandedRelationNames(
+      Namespace namespace, boolean guarded, BatchGuard subtreePin) {
+    var namespaceId = namespace.getResourceId();
+    var catalogId = namespace.getCatalogId();
+    String accountId = namespaceId.getAccountId();
+
+    for (var pointer :
+        tableRepo.listNamePointers(accountId, catalogId.getId(), namespaceId.getId())) {
+      reclaimIfOrphaned(pointer, namespace, ResourceKind.RK_TABLE, guarded, subtreePin);
+    }
+    for (var pointer :
+        viewRepo.listNamePointers(accountId, catalogId.getId(), namespaceId.getId())) {
+      reclaimIfOrphaned(pointer, namespace, ResourceKind.RK_VIEW, guarded, subtreePin);
+    }
+  }
+
+  /**
+   * Deletes one by-name pointer, and the relation-name claim it shares, if and only if the relation
+   * they name has no canonical pointer left.
+   *
+   * <p>The batch asserts that absence rather than trusting the read, so a relation being created or
+   * restored under this name right now keeps its index intact. Under a guarded drop the removal
+   * also carries {@code subtreePin}, binding it to the namespace the scan observed.
+   */
+  private void reclaimIfOrphaned(
+      Pointer namePointer,
+      Namespace namespace,
+      ResourceKind kind,
+      boolean guarded,
+      BatchGuard subtreePin) {
+    var namespaceId = namespace.getResourceId();
+    String accountId = namespaceId.getAccountId();
+    String ownerId = ownerIdOf(namePointer);
+    if (ownerId.isEmpty()) {
+      // Neither the pointer's ref nor its blob URI names an owner, so orphanhood cannot be proven.
+      // Leave it: the emptiness gate reports a non-empty namespace, which is the honest answer.
+      return;
+    }
+    String canonicalKey =
+        kind == ResourceKind.RK_TABLE
+            ? Keys.tablePointerById(accountId, ownerId)
+            : Keys.viewPointerById(accountId, ownerId);
+    if (pointerStore.get(canonicalKey).isPresent()) {
+      return;
+    }
+
+    var ops = new ArrayList<PointerStore.CasOp>();
+    ops.add(new PointerStore.CasCheckAbsent(canonicalKey));
+    ops.add(new PointerStore.CasDelete(namePointer.getKey(), namePointer.getVersion()));
+
+    String displayName =
+        namePointer.getDisplayName().isEmpty()
+            ? Keys.extractLastSegment(namePointer.getKey())
+            : namePointer.getDisplayName();
+    String claimKey =
+        Keys.relationPointerByName(
+            accountId, namespace.getCatalogId().getId(), namespaceId.getId(), displayName);
+    pointerStore
+        .get(claimKey)
+        .filter(claim -> ownerId.equals(claim.getResourceId().getId()))
+        .ifPresent(claim -> ops.add(new PointerStore.CasDelete(claimKey, claim.getVersion())));
+
+    ops.addAll(subtreePin.ops());
+
+    if (!pointerStore.compareAndSetBatch(ops)) {
+      // Something moved under us. Guarded: re-scan rather than guess. Teardown: the whole tree is
+      // going away and must not abort, so leave the row for the account's own cleanup to sweep.
+      if (guarded) {
+        throw relationChanged(
+            ResourceId.newBuilder().setAccountId(accountId).setKind(kind).setId(ownerId).build());
+      }
+      return;
+    }
+    CLEANUP_LOG.infof(
+        "recursive_drop_reclaimed_stranded_name account_id=%s namespace_id=%s kind=%s"
+            + " relation_id=%s pointer_key=%s",
+        accountId, namespaceId.getId(), kind.name(), ownerId, namePointer.getKey());
+  }
+
+  /** The relation a by-name pointer names: its ref if present, else parsed from its blob URI. */
+  private static String ownerIdOf(Pointer namePointer) {
+    String fromRef = namePointer.getResourceId().getId();
+    return fromRef.isEmpty()
+        ? Keys.extractResourceIdFromBlobUri(namePointer.getBlobUri())
+        : fromRef;
   }
 
   private void dropTable(

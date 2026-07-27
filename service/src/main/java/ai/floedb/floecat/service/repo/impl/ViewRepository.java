@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.impl;
 
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
@@ -120,6 +121,11 @@ public class ViewRepository {
 
   public int count(String accountId, String catalogId, String namespaceId) {
     return repo.countByPrefix(Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId));
+  }
+
+  /** The raw by-name pointer rows {@link #count} counts; see {@code TableRepository}. */
+  public List<Pointer> listNamePointers(String accountId, String catalogId, String namespaceId) {
+    return repo.listRefsByPrefix(Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId));
   }
 
   /**

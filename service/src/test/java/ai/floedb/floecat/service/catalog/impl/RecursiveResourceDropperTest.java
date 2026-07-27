@@ -30,6 +30,7 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
@@ -39,6 +40,7 @@ import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.BatchGuard;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
@@ -47,6 +49,7 @@ import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 /**
  * Recursive-delete safety around resources that change under a stale subtree scan.
@@ -252,6 +255,75 @@ class RecursiveResourceDropperTest {
     verify(namespaceRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
     verify(tableRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
     verify(tableRoots, never()).purgeRoot(any());
+  }
+
+  /**
+   * The emptiness gate counts by-name pointers while every removal resolves its relation through
+   * the canonical by-id pointer. A by-name pointer whose relation is already gone — what the
+   * corrupt-blob delete path leaves behind — is therefore unreachable by the drop and fatal to the
+   * gate forever: without reclaiming it, the namespace can never be deleted by any means.
+   */
+  @Test
+  void guardedDropReclaimsAByNamePointerWhoseRelationIsAlreadyGone() {
+    String strandedKey = Keys.tablePointerByName("acct", "cat", "ns", "orders");
+    // Nothing resolvable is left to drop: the blob-loading listing sees no table...
+    when(tableRepo.list(anyString(), anyString(), anyString(), anyInt(), anyString(), any()))
+        .thenReturn(List.of());
+    // ...but the by-name pointer the gate counts is still there.
+    when(tableRepo.listNamePointers(eq("acct"), eq("cat"), eq("ns")))
+        .thenReturn(
+            List.of(
+                Pointer.newBuilder()
+                    .setKey(strandedKey)
+                    .setVersion(1L)
+                    .setBlobUri(TABLE_BLOB)
+                    .setResourceId(TABLE_ID)
+                    .setDisplayName("orders")
+                    .build()));
+    when(pointerStore.compareAndSetBatch(any())).thenReturn(true);
+
+    var summary = dropper.dropNamespaceContents(root, true);
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<PointerStore.CasOp>> batch = ArgumentCaptor.forClass(List.class);
+    verify(pointerStore).compareAndSetBatch(batch.capture());
+    // The removal asserts the relation is still gone, so a create racing under this name keeps its
+    // index intact.
+    assertEquals(
+        List.<PointerStore.CasOp>of(
+            new PointerStore.CasCheckAbsent(Keys.tablePointerById("acct", "tbl")),
+            new PointerStore.CasDelete(strandedKey, 1L)),
+        batch.getValue());
+    // Nothing was "deleted": there was no relation left, only its leftover index entry.
+    assertEquals(0, summary.tablesDeleted);
+    verify(tableRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
+    verify(tableRoots, never()).purgeRoot(any());
+  }
+
+  @Test
+  void guardedDropLeavesAByNamePointerWhoseRelationStillExists() {
+    when(tableRepo.listNamePointers(eq("acct"), eq("cat"), eq("ns")))
+        .thenReturn(
+            List.of(
+                Pointer.newBuilder()
+                    .setKey(Keys.tablePointerByName("acct", "cat", "ns", "orders"))
+                    .setVersion(1L)
+                    .setBlobUri(TABLE_BLOB)
+                    .setResourceId(TABLE_ID)
+                    .setDisplayName("orders")
+                    .build()));
+    // The relation is alive, so its index entry is not leftover state and must not be touched.
+    when(pointerStore.get(eq(Keys.tablePointerById("acct", "tbl"))))
+        .thenReturn(
+            Optional.of(
+                Pointer.newBuilder().setKey("x").setVersion(TABLE_POINTER_VERSION).build()));
+    when(tableRepo.deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any()))
+        .thenReturn(true);
+
+    var summary = dropper.dropNamespaceContents(root, true);
+
+    assertEquals(1, summary.tablesDeleted);
+    verify(pointerStore, never()).compareAndSetBatch(any());
   }
 
   @Test

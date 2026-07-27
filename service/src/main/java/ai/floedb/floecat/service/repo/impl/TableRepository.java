@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.impl;
 
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
@@ -121,6 +122,17 @@ public class TableRepository {
 
   public int count(String accountId, String catalogId, String namespaceId) {
     return repo.countByPrefix(Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId));
+  }
+
+  /**
+   * The raw by-name pointer rows {@link #count} counts, with no blob fetch.
+   *
+   * <p>{@link #list} resolves each row's blob and so cannot enumerate a by-name pointer whose table
+   * is gone or whose blob dangles — exactly the rows a caller reconciling leftover index state
+   * needs to see.
+   */
+  public List<Pointer> listNamePointers(String accountId, String catalogId, String namespaceId) {
+    return repo.listRefsByPrefix(Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId));
   }
 
   /**

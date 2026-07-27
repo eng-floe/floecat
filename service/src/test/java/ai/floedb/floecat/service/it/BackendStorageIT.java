@@ -423,6 +423,52 @@ class BackendStorageIT {
     table.deleteTable(DeleteTableRequest.newBuilder().setTableId(tid2).build());
   }
 
+  /**
+   * A corrupt-blob delete removes the table's canonical pointer but leaves its by-name pointer, and
+   * that row is what every emptiness check counts. Nothing can resolve the relation any more, so
+   * without reconciling the leftover row the namespace would report NOT_EMPTY forever — neither a
+   * plain nor a recursive delete could ever clear it.
+   */
+  @Test
+  void namespaceStillDeletableAfterCorruptBlobTableDelete() {
+    var cat = TestSupport.createCatalog(catalog, "cat_stranded_" + clock.millis(), "stranded");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_stranded"), "stranded");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "t",
+            "s3://b/p",
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+            "d");
+    var tid = tbl.getResourceId();
+
+    String byName =
+        Keys.tablePointerByName(
+            tid.getAccountId(), cat.getResourceId().getId(), ns.getResourceId().getId(), "t");
+    String byId = Keys.tablePointerById(tid.getAccountId(), tid.getId());
+
+    // Delete the blob out from under the table, then delete it: the canonical pointer goes...
+    assertTrue(blobs.delete(ptr.get(byId).orElseThrow().getBlobUri()));
+    table.deleteTable(DeleteTableRequest.newBuilder().setTableId(tid).build());
+    assertTrue(ptr.get(byId).isEmpty());
+    // ...while the by-name row the emptiness gate counts is left stranded.
+    assertTrue(ptr.get(byName).isPresent());
+
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder().setNamespaceId(ns.getResourceId()).build());
+
+    assertTrue(ptr.get(byName).isEmpty(), "the stranded by-name pointer must be reclaimed");
+    assertTrue(
+        ptr.get(
+                Keys.namespacePointerById(
+                    ns.getResourceId().getAccountId(), ns.getResourceId().getId()))
+            .isEmpty());
+  }
+
   @Test
   void casContentionTwoConcurrentUpdates() throws InterruptedException {
     var catName = "cat_cas_" + System.currentTimeMillis();
