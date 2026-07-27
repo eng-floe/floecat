@@ -16,13 +16,16 @@
 
 package ai.floedb.floecat.service.connector.impl;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -34,18 +37,169 @@ import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
+import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.rpc.UpdateConnectorRequest;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
+import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
 import java.lang.reflect.Field;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class ConnectorsImplUpdateConnectorTest {
+  @Test
+  void uriUpdateDoesNotResolveExistingDestinationReferences() throws Exception {
+    var service = new ConnectorsImpl();
+    service.connectorRepo = mock(ConnectorRepository.class);
+    service.tableRepo = mock(TableRepository.class);
+    service.principalProvider = mock(PrincipalProvider.class);
+    service.authz = mock(Authorizer.class);
+    service.credentialResolver = mock(CredentialResolver.class);
+    installBasePrincipal(service, service.principalProvider);
+
+    var connectorId = resourceId("connector-1", ResourceKind.RK_CONNECTOR);
+    var destination =
+        DestinationTarget.newBuilder()
+            .setCatalogId(resourceId("catalog-1", ResourceKind.RK_CATALOG))
+            .setNamespaceId(resourceId("namespace-1", ResourceKind.RK_NAMESPACE))
+            .setTableDisplayName("orders")
+            .build();
+    var current =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setDisplayName("connector")
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setUri("old-uri")
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(NamespacePath.newBuilder().addSegments("sales")))
+            .setDestination(destination)
+            .build();
+    stubSuccessfulUpdate(service, connectorId, current);
+
+    service
+        .updateConnector(
+            UpdateConnectorRequest.newBuilder()
+                .setConnectorId(connectorId)
+                .setSpec(ConnectorSpec.newBuilder().setUri("new-uri"))
+                .setUpdateMask(FieldMask.newBuilder().addPaths("uri"))
+                .build())
+        .await()
+        .indefinitely();
+
+    var updated = captureUpdatedConnector(service);
+    assertEquals(destination, updated.getDestination());
+    verifyNoInteractions(service.tableRepo);
+  }
+
+  @Test
+  void destinationUpdateDoesNotPinNamespaceDiscoveryConnectorToExistingTable() throws Exception {
+    var service = new ConnectorsImpl();
+    service.connectorRepo = mock(ConnectorRepository.class);
+    service.tableRepo = mock(TableRepository.class);
+    service.principalProvider = mock(PrincipalProvider.class);
+    service.authz = mock(Authorizer.class);
+    service.credentialResolver = mock(CredentialResolver.class);
+    installBasePrincipal(service, service.principalProvider);
+
+    var connectorId = resourceId("connector-1", ResourceKind.RK_CONNECTOR);
+    var current =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setDisplayName("connector")
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setUri("uri")
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(NamespacePath.newBuilder().addSegments("sales")))
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(resourceId("catalog-1", ResourceKind.RK_CATALOG))
+                    .setNamespaceId(resourceId("namespace-1", ResourceKind.RK_NAMESPACE))
+                    .setTableDisplayName("old-name"))
+            .build();
+    var replacement =
+        DestinationTarget.newBuilder()
+            .setCatalogId(resourceId("catalog-1", ResourceKind.RK_CATALOG))
+            .setNamespaceId(resourceId("namespace-1", ResourceKind.RK_NAMESPACE))
+            .setTableDisplayName("orders")
+            .build();
+    stubSuccessfulUpdate(service, connectorId, current);
+
+    service
+        .updateConnector(
+            UpdateConnectorRequest.newBuilder()
+                .setConnectorId(connectorId)
+                .setSpec(ConnectorSpec.newBuilder().setDestination(replacement))
+                .setUpdateMask(FieldMask.newBuilder().addPaths("destination"))
+                .build())
+        .await()
+        .indefinitely();
+
+    var updated = captureUpdatedConnector(service);
+    assertEquals(replacement, updated.getDestination());
+    verifyNoInteractions(service.tableRepo);
+  }
+
+  @Test
+  void destinationUpdateStillResolvesTableForSingleTableConnector() throws Exception {
+    var service = new ConnectorsImpl();
+    service.connectorRepo = mock(ConnectorRepository.class);
+    service.tableRepo = mock(TableRepository.class);
+    service.principalProvider = mock(PrincipalProvider.class);
+    service.authz = mock(Authorizer.class);
+    service.credentialResolver = mock(CredentialResolver.class);
+    installBasePrincipal(service, service.principalProvider);
+
+    var connectorId = resourceId("connector-1", ResourceKind.RK_CONNECTOR);
+    var catalogId = resourceId("catalog-1", ResourceKind.RK_CATALOG);
+    var namespaceId = resourceId("namespace-1", ResourceKind.RK_NAMESPACE);
+    var tableId = resourceId("table-1", ResourceKind.RK_TABLE);
+    var current =
+        Connector.newBuilder()
+            .setResourceId(connectorId)
+            .setDisplayName("connector")
+            .setKind(ConnectorKind.CK_ICEBERG)
+            .setUri("uri")
+            .setSource(
+                SourceSelector.newBuilder()
+                    .setNamespace(NamespacePath.newBuilder().addSegments("sales"))
+                    .setTable("orders"))
+            .setDestination(
+                DestinationTarget.newBuilder()
+                    .setCatalogId(catalogId)
+                    .setNamespaceId(namespaceId)
+                    .setTableDisplayName("old-name"))
+            .build();
+    var replacement =
+        DestinationTarget.newBuilder()
+            .setCatalogId(catalogId)
+            .setNamespaceId(namespaceId)
+            .setTableDisplayName("orders")
+            .build();
+    stubSuccessfulUpdate(service, connectorId, current);
+    when(service.tableRepo.getByName("acct", "catalog-1", "namespace-1", "orders"))
+        .thenReturn(Optional.of(Table.newBuilder().setResourceId(tableId).build()));
+
+    service
+        .updateConnector(
+            UpdateConnectorRequest.newBuilder()
+                .setConnectorId(connectorId)
+                .setSpec(ConnectorSpec.newBuilder().setDestination(replacement))
+                .setUpdateMask(FieldMask.newBuilder().addPaths("destination"))
+                .build())
+        .await()
+        .indefinitely();
+
+    var updated = captureUpdatedConnector(service);
+    assertEquals(tableId, updated.getDestination().getTableId());
+  }
+
   @Test
   void restoresRemovedCredentialsWhenRepositoryUpdateFails() throws Exception {
     var service = new ConnectorsImpl();
@@ -234,5 +388,33 @@ class ConnectorsImplUpdateConnectorTest {
     } catch (ReflectiveOperationException e) {
       throw new AssertionError("Failed to inject BaseServiceImpl principal provider", e);
     }
+  }
+
+  private static ResourceId resourceId(String id, ResourceKind kind) {
+    return ResourceId.newBuilder().setAccountId("acct").setId(id).setKind(kind).build();
+  }
+
+  private static void stubSuccessfulUpdate(
+      ConnectorsImpl service, ResourceId connectorId, Connector current) {
+    var principal =
+        PrincipalContext.newBuilder()
+            .setAccountId("acct")
+            .setCorrelationId("corr-1")
+            .addPermissions("connector.manage")
+            .build();
+    var meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    when(service.principalProvider.get()).thenReturn(principal);
+    when(service.connectorRepo.metaFor(connectorId)).thenReturn(meta);
+    when(service.connectorRepo.getById(connectorId)).thenReturn(Optional.of(current));
+    when(service.connectorRepo.update(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq(7L)))
+        .thenReturn(true);
+    when(service.connectorRepo.metaForSafe(connectorId)).thenReturn(meta);
+  }
+
+  private static Connector captureUpdatedConnector(ConnectorsImpl service) {
+    var captor = ArgumentCaptor.forClass(Connector.class);
+    verify(service.connectorRepo).update(captor.capture(), org.mockito.ArgumentMatchers.eq(7L));
+    return captor.getValue();
   }
 }

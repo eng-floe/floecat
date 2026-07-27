@@ -378,7 +378,10 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                   if (destB.hasCatalogId()
                       && destB.hasNamespaceId()
                       && dest.hasTableDisplayName()
-                      && !dest.hasTableId()) {
+                      && !dest.hasTableId()
+                      && spec.hasSource()
+                      && spec.getSource().hasTable()
+                      && !spec.getSource().getTable().isBlank()) {
                     String dTbl = dest.getTableDisplayName().trim();
                     var tblOpt =
                         tableRepo.getByName(
@@ -580,12 +583,15 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           .toBuilder()
                           .setUpdatedAt(nowTs())
                           .build();
-                  if (desired.hasDestination()) {
+                  boolean destinationTouched =
+                      maskTargets(normalizedMask, "destination")
+                          || maskTargetsUnder(normalizedMask, "destination");
+                  if (destinationTouched && desired.hasDestination()) {
                     desired =
                         desired.toBuilder()
                             .setDestination(
                                 resolveUpdatedDestination(
-                                    desired.getDestination(), accountId, corr))
+                                    desired.getDestination(), desired.getSource(), accountId, corr))
                             .build();
                   }
                   validateConnectorProperties(
@@ -843,7 +849,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   }
 
   private DestinationTarget resolveUpdatedDestination(
-      DestinationTarget destination, String accountId, String corr) {
+      DestinationTarget destination, SourceSelector source, String accountId, String corr) {
     var resolved = destination.toBuilder();
     if (destination.hasCatalogDisplayName()) {
       String displayName = destination.getCatalogDisplayName().trim();
@@ -864,7 +870,11 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
               destination.getNamespace().getSegmentsList())
           .ifPresent(namespace -> resolved.setNamespaceId(namespace.getResourceId()));
     }
-    if (resolved.hasCatalogId() && resolved.hasNamespaceId() && destination.hasTableDisplayName()) {
+    if (resolved.hasCatalogId()
+        && resolved.hasNamespaceId()
+        && destination.hasTableDisplayName()
+        && source.hasTable()
+        && !source.getTable().isBlank()) {
       String displayName = destination.getTableDisplayName().trim();
       tableRepo
           .getByName(
