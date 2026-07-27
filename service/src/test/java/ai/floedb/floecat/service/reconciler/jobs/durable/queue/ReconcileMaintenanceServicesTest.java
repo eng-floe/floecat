@@ -839,13 +839,8 @@ class ReconcileMaintenanceServicesTest {
     public void clearLaneLeaseIfOwned(StoredReconcileJob record, String expectedReference) {}
 
     @Override
-    public boolean tryAcquireSnapshotLease(
-        StoredReconcileJob record, String canonicalPointerKey, long nowMs) {
-      return false;
-    }
-
-    @Override
-    public void clearSnapshotLeaseIfOwned(StoredReconcileJob record, String expectedReference) {}
+    public void clearSnapshotOwnershipIfOwned(
+        StoredReconcileJob record, String expectedReference) {}
 
     @Override
     public String leaseExpiryPointerKey(StoredJobLease lease) {

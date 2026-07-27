@@ -146,7 +146,7 @@ public class ReconcileJobCancellationService {
       } else if (updated.isPresent() && "JS_CANCELLED".equals(post.get().state)) {
         leaseManager.clearLaneLeaseIfOwned(
             updated.get().record(), updated.get().canonicalPointerKey());
-        leaseManager.clearSnapshotLeaseIfOwned(
+        leaseManager.clearSnapshotOwnershipIfOwned(
             updated.get().record(), updated.get().canonicalPointerKey());
       }
       return post;

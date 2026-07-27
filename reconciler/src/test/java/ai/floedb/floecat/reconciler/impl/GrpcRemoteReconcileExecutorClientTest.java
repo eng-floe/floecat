@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -57,6 +58,7 @@ import ai.floedb.floecat.reconciler.rpc.ListLeasedSnapshotFileGroupResultsRespon
 import ai.floedb.floecat.reconciler.rpc.ReconcileExecutorControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseResponse;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultResponse;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
@@ -286,19 +288,21 @@ class GrpcRemoteReconcileExecutorClientTest {
         .thenReturn(
             SubmitLeasedSnapshotFinalizeResultResponse.newBuilder().setAccepted(true).build());
 
-    assertThat(
-            client.submitSnapshotFinalizeSuccess(
-                remoteSnapshotFinalizeLease(),
-                "result-1",
-                "/stats/",
-                "/manifest.pb",
-                0,
-                List.of(),
-                List.of(),
-                List.of(),
-                List.of(),
-                null))
-        .isTrue();
+    RemoteLeasedJob lease = remoteSnapshotFinalizeLease();
+    var prepared =
+        client.prepareSnapshotFinalizeSuccess(
+            lease,
+            "result-1",
+            "/stats/",
+            "/manifest.pb",
+            0,
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            null);
+
+    assertThat(client.submitSnapshotFinalizeSuccess(lease, prepared)).isTrue();
 
     ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
     verify(client.blobStore)
@@ -319,19 +323,21 @@ class GrpcRemoteReconcileExecutorClientTest {
         .thenReturn(
             SubmitLeasedSnapshotFinalizeResultResponse.newBuilder().setAccepted(true).build());
 
-    assertThat(
-            client.submitSnapshotFinalizeSuccess(
-                remoteSnapshotFinalizeLease(0, indexCapturePolicy()),
-                "result-1",
-                "/stats/",
-                "/manifest.pb",
-                0,
-                List.of(),
-                List.of(),
-                List.of(),
-                List.of(),
-                indexPredecessor()))
-        .isTrue();
+    RemoteLeasedJob lease = remoteSnapshotFinalizeLease(0, indexCapturePolicy());
+    var prepared =
+        client.prepareSnapshotFinalizeSuccess(
+            lease,
+            "result-1",
+            "/stats/",
+            "/manifest.pb",
+            0,
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            indexPredecessor());
+
+    assertThat(client.submitSnapshotFinalizeSuccess(lease, prepared)).isTrue();
 
     ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
     verify(client.blobStore)
@@ -352,19 +358,21 @@ class GrpcRemoteReconcileExecutorClientTest {
         .thenReturn(
             SubmitLeasedSnapshotFinalizeResultResponse.newBuilder().setAccepted(true).build());
 
-    assertThat(
-            client.submitSnapshotFinalizeSuccess(
-                remoteSnapshotFinalizeLease(1, indexCapturePolicy()),
-                "result-1",
-                "/stats/",
-                "/manifest.pb",
-                1,
-                List.of(fileGroupResultDescriptor(indexPredecessor())),
-                List.of(),
-                List.of(),
-                List.of(),
-                null))
-        .isTrue();
+    RemoteLeasedJob lease = remoteSnapshotFinalizeLease(1, indexCapturePolicy());
+    var prepared =
+        client.prepareSnapshotFinalizeSuccess(
+            lease,
+            "result-1",
+            "/stats/",
+            "/manifest.pb",
+            1,
+            List.of(fileGroupResultDescriptor(indexPredecessor())),
+            List.of(),
+            List.of(),
+            List.of(),
+            null);
+
+    assertThat(client.submitSnapshotFinalizeSuccess(lease, prepared)).isTrue();
 
     ArgumentCaptor<byte[]> manifestBytes = ArgumentCaptor.forClass(byte[].class);
     verify(client.blobStore)
@@ -387,7 +395,7 @@ class GrpcRemoteReconcileExecutorClientTest {
         assertThrows(
             IllegalArgumentException.class,
             () ->
-                client.submitSnapshotFinalizeSuccess(
+                client.prepareSnapshotFinalizeSuccess(
                     remoteSnapshotFinalizeLease(2, indexCapturePolicy()),
                     "result-1",
                     "/stats/",
@@ -402,6 +410,39 @@ class GrpcRemoteReconcileExecutorClientTest {
                     null));
 
     assertThat(error).hasMessageContaining("inconsistent predecessors");
+    verify(client.blobStore, never()).put(any(), any(), any());
+  }
+
+  @Test
+  void submitSnapshotFinalizeSuccessClassifiesUnknownRpcOutcomeAsStateUncertain() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ManagedChannel channel1 = mock(ManagedChannel.class);
+    ManagedChannel channel2 = mock(ManagedChannel.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub1 =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub stub2 =
+        mock(ReconcileExecutorControlGrpc.ReconcileExecutorControlBlockingStub.class);
+    client.enqueueTransport(channel1, stub1);
+    client.enqueueTransport(channel2, stub2);
+    when(stub1.submitLeasedSnapshotFinalizeResult(any()))
+        .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE));
+    when(stub2.submitLeasedSnapshotFinalizeResult(any()))
+        .thenThrow(new StatusRuntimeException(Status.UNAVAILABLE));
+    var prepared =
+        new RemoteSnapshotFinalizeWorkerClient.PreparedSnapshotFinalizeSuccess(
+            "result-1", SnapshotCaptureManifestDescriptor.getDefaultInstance());
+
+    ReconcileFailureException error =
+        assertThrows(
+            ReconcileFailureException.class,
+            () -> client.submitSnapshotFinalizeSuccess(remoteSnapshotFinalizeLease(), prepared));
+
+    assertThat(error.retryDisposition())
+        .isEqualTo(ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE);
+    assertThat(error.retryClass())
+        .isEqualTo(ReconcileExecutor.ExecutionResult.RetryClass.STATE_UNCERTAIN);
+    verify(stub1).submitLeasedSnapshotFinalizeResult(any());
+    verify(stub2).submitLeasedSnapshotFinalizeResult(any());
   }
 
   @Test

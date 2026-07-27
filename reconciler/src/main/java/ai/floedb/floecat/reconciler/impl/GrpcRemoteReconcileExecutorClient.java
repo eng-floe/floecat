@@ -1282,7 +1282,7 @@ class GrpcRemoteReconcileExecutorClient
   }
 
   @Override
-  public boolean submitSnapshotFinalizeSuccess(
+  public PreparedSnapshotFinalizeSuccess prepareSnapshotFinalizeSuccess(
       RemoteLeasedJob lease,
       String resultId,
       String statsObjectPrefix,
@@ -1415,23 +1415,43 @@ class GrpcRemoteReconcileExecutorClient
             .setStatsRecordCount(stableFileStats.size() + records.size())
             .setIndexArtifactCount(stableIndexArtifacts.size())
             .build();
-    return invokeWorkerControl(
-        "submitLeasedSnapshotFinalizeResult",
-        correlationId(lease),
-        lease.lease().accountId,
-        true,
-        stub ->
-            stub.submitLeasedSnapshotFinalizeResult(
-                    SubmitLeasedSnapshotFinalizeResultRequest.newBuilder()
-                        .setJobId(lease.lease().jobId)
-                        .setLeaseEpoch(lease.lease().leaseEpoch)
-                        .setSuccess(
-                            SubmitLeasedSnapshotFinalizeResultRequest.Success.newBuilder()
-                                .setResultId(stableResultId)
-                                .setManifestDescriptor(manifestDescriptor)
-                                .build())
-                        .build())
-                .getAccepted());
+    return new PreparedSnapshotFinalizeSuccess(stableResultId, manifestDescriptor);
+  }
+
+  @Override
+  public boolean submitSnapshotFinalizeSuccess(
+      RemoteLeasedJob lease, PreparedSnapshotFinalizeSuccess prepared) {
+    try {
+      return invokeWorkerControl(
+          "submitLeasedSnapshotFinalizeResult",
+          correlationId(lease),
+          lease.lease().accountId,
+          true,
+          stub ->
+              stub.submitLeasedSnapshotFinalizeResult(
+                      SubmitLeasedSnapshotFinalizeResultRequest.newBuilder()
+                          .setJobId(lease.lease().jobId)
+                          .setLeaseEpoch(lease.lease().leaseEpoch)
+                          .setSuccess(
+                              SubmitLeasedSnapshotFinalizeResultRequest.Success.newBuilder()
+                                  .setResultId(prepared.resultId())
+                                  .setManifestDescriptor(prepared.manifestDescriptor())
+                                  .build())
+                          .build())
+                  .getAccepted());
+    } catch (RuntimeException error) {
+      RuntimeException classified =
+          leasePreconditionOrOriginal("submitLeasedSnapshotFinalizeResult", error);
+      if (isTransportFailure(classified)) {
+        throw new ReconcileFailureException(
+            ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
+            ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+            ReconcileExecutor.ExecutionResult.RetryClass.STATE_UNCERTAIN,
+            "snapshot finalizer result submission outcome is unknown",
+            classified);
+      }
+      throw classified;
+    }
   }
 
   private static FileGroupResultDescriptor toProtoFileGroupResultDescriptor(

@@ -25,6 +25,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ReconcilePolicy;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -139,7 +141,22 @@ class StatsSyncCaptureTest {
   void returnsFailedWithoutEnqueueWhenConnectorDeleted() {
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
-    when(connectorRepository.existsById(any())).thenReturn(false);
+    when(connectorRepository.getById(any())).thenReturn(Optional.empty());
+
+    StatsSyncCapture capture = new StatsSyncCapture(jobStore, connectorRepository);
+    StatsSyncOutcome outcome = capture.capture("acct", "conn-1", SCOPE, Duration.ofSeconds(5));
+
+    assertThat(outcome).isEqualTo(StatsSyncOutcome.FAILED);
+    verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+  }
+
+  @Test
+  void returnsFailedWithoutEnqueueWhenConnectorPolicyIsDisabled() {
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
+    Connector connector =
+        Connector.newBuilder().setPolicy(ReconcilePolicy.newBuilder().setEnabled(false)).build();
+    when(connectorRepository.getById(any())).thenReturn(Optional.of(connector));
 
     StatsSyncCapture capture = new StatsSyncCapture(jobStore, connectorRepository);
     StatsSyncOutcome outcome = capture.capture("acct", "conn-1", SCOPE, Duration.ofSeconds(5));
@@ -150,7 +167,8 @@ class StatsSyncCaptureTest {
 
   private static StatsSyncCapture capture(ReconcileJobStore jobStore) {
     ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
-    when(connectorRepository.existsById(any())).thenReturn(true);
+    when(connectorRepository.getById(any()))
+        .thenReturn(Optional.of(Connector.getDefaultInstance()));
     return new StatsSyncCapture(jobStore, connectorRepository);
   }
 

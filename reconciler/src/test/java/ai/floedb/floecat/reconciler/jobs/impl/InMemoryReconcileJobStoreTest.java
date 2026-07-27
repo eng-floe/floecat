@@ -35,6 +35,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class InMemoryReconcileJobStoreTest {
@@ -257,6 +258,149 @@ class InMemoryReconcileJobStoreTest {
         "s3://bucket/data/file-1.parquet",
         job.snapshotTask.fileGroups().getFirst().filePaths().getFirst());
     assertEquals(task.indexPredecessor(), job.snapshotTask.indexPredecessor());
+  }
+
+  @Test
+  void snapshotOwnershipSurvivesWaitingUntilOwnerTerminates() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileSnapshotTask task = ReconcileSnapshotTask.of("table-1", 55L, "db", "events");
+    String first =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    String second =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-2",
+            "");
+
+    var firstLease = store.leaseNext().orElseThrow();
+    assertEquals(first, firstLease.jobId);
+    store.markWaiting(
+        first,
+        firstLease.leaseEpoch,
+        System.currentTimeMillis(),
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    assertTrue(store.leaseNext().isEmpty());
+
+    store.cancel("acct", first, "cancel owner");
+    assertEquals(second, store.leaseNext().orElseThrow().jobId);
+  }
+
+  @Test
+  void snapshotOwnershipSurvivesRetryableFailure() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileSnapshotTask task = ReconcileSnapshotTask.of("table-1", 55L, "db", "events");
+    String first =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    String second =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty(),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-2",
+            "");
+
+    var firstLease = store.leaseNext().orElseThrow();
+    store.markFailed(
+        first,
+        firstLease.leaseEpoch,
+        System.currentTimeMillis(),
+        "retry owner",
+        0L,
+        0L,
+        0L,
+        0L,
+        1L,
+        0L,
+        0L);
+
+    assertTrue(store.leaseNext().isEmpty());
+    assertEquals("JS_QUEUED", store.get("acct", second).orElseThrow().state);
+
+    store.cancel("acct", first, "cancel owner");
+    assertEquals(second, store.leaseNext().orElseThrow().jobId);
+  }
+
+  @Test
+  void leasedSnapshotPinsIndexPredecessorOnlyOnce() {
+    var store = new InMemoryReconcileJobStore();
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            List.of(),
+            ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.of(
+                List.of(),
+                Set.of(
+                    ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy.Output
+                        .PARQUET_PAGE_INDEX)));
+    String jobId =
+        store.enqueueSnapshotPlan(
+            "acct",
+            "conn",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "events"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    var lease = store.leaseNext().orElseThrow();
+    var firstPredecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture-1.pb", 9L);
+    var laterPredecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-2", 8L, "/capture-2.pb", 10L);
+
+    assertEquals(
+        firstPredecessor,
+        store
+            .pinSnapshotIndexPredecessor(jobId, lease.leaseEpoch, firstPredecessor)
+            .orElseThrow()
+            .indexPredecessor());
+    assertEquals(
+        firstPredecessor,
+        store
+            .pinSnapshotIndexPredecessor(jobId, lease.leaseEpoch, laterPredecessor)
+            .orElseThrow()
+            .indexPredecessor());
   }
 
   @Test

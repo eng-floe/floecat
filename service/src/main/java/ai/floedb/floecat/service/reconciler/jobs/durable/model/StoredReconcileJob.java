@@ -45,6 +45,7 @@ public class StoredReconcileJob {
   public int snapshotTaskSourceFileCount;
   public String snapshotTaskDirectStatsBlobUri;
   public int snapshotTaskDirectStatsRecordCount;
+  public boolean snapshotTaskIndexPredecessorPinPending;
   public boolean snapshotTaskIndexPredecessorPresent;
   public String snapshotTaskIndexPredecessorGenerationId;
   public long snapshotTaskIndexPredecessorActivePointerVersion;

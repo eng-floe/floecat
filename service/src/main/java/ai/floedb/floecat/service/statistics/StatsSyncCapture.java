@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.statistics;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
@@ -61,9 +62,17 @@ class StatsSyncCapture {
   StatsSyncOutcome capture(
       String accountId, String connectorId, ReconcileScope scope, Duration budget) {
     try {
-      if (!connectorRepository.existsById(connectorResourceId(accountId, connectorId))) {
+      Optional<Connector> connector =
+          connectorRepository.getById(connectorResourceId(accountId, connectorId));
+      if (connector.isEmpty()) {
         LOG.debugf(
             "stats_sync_capture skipped missing connector account=%s connector=%s",
+            accountId, connectorId);
+        return StatsSyncOutcome.FAILED;
+      }
+      if (connector.get().hasPolicy() && !connector.get().getPolicy().getEnabled()) {
+        LOG.debugf(
+            "stats_sync_capture skipped disabled connector account=%s connector=%s",
             accountId, connectorId);
         return StatsSyncOutcome.FAILED;
       }

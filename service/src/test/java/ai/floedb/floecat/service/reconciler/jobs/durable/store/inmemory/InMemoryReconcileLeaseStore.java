@@ -357,7 +357,7 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
           jobIndexStore.buildJobIndexWriteBatch(snapshot, previous, next);
       ReconcileLeaseBackend.LeaseWriteBatch leaseBatch =
           completionReleaseBatch(
-              previous, loaded.canonicalPointerKey(), lease, leaseSnapshot.version());
+              previous, next, loaded.canonicalPointerKey(), lease, leaseSnapshot.version());
       List<PointerStore.UnconditionalUpsert> atomicPointerTouches =
           pointerTouches.apply(jobIndexStore.cloneStoredRecord(next));
       if (leaseBackend.compareAndSetBatch(
@@ -370,10 +370,12 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
               .laneOwnerByKey
               .entrySet()
               .removeIf(entry -> loaded.canonicalPointerKey().equals(entry.getValue()));
-          state
-              .snapshotOwnerByKey
-              .entrySet()
-              .removeIf(entry -> loaded.canonicalPointerKey().equals(entry.getValue()));
+          if (isTerminalState(next.state)) {
+            state
+                .snapshotOwnerByKey
+                .entrySet()
+                .removeIf(entry -> loaded.canonicalPointerKey().equals(entry.getValue()));
+          }
         }
         return Optional.of(
             new ReconcileJobIndexStore.CanonicalEnvelope(
@@ -385,6 +387,7 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
 
   private ReconcileLeaseBackend.LeaseWriteBatch completionReleaseBatch(
       StoredReconcileJob record,
+      StoredReconcileJob next,
       String canonicalPointerKey,
       StoredJobLease lease,
       long leaseVersion) {
@@ -402,8 +405,8 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
     if (!blank(record.laneKey)) {
       ownerKeys.add(Keys.reconcileLaneLeasePointer(record.accountId, record.laneKey));
     }
-    String snapshotOwnerKey = snapshotLeasePointerKey(record);
-    if (!snapshotOwnerKey.isBlank()) {
+    String snapshotOwnerKey = snapshotOwnershipPointerKey(record);
+    if (!snapshotOwnerKey.isBlank() && isTerminalState(next.state)) {
       ownerKeys.add(snapshotOwnerKey);
     }
     for (String ownerKey : ownerKeys) {
@@ -588,71 +591,8 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
   }
 
   @Override
-  public boolean tryAcquireSnapshotLease(
-      StoredReconcileJob record, String canonicalPointerKey, long nowMs) {
-    String pointerKey = snapshotLeasePointerKey(record);
-    if (pointerKey.isBlank()) {
-      return true;
-    }
-    for (int i = 0; i < casMax; i++) {
-      var existing = leaseBackend.loadOwner(pointerKey).orElse(null);
-      if (existing == null) {
-        if (leaseBackend.compareAndSetBatch(
-            ReconcileJobIndexStore.JobIndexWriteBatch.empty(),
-            new ReconcileLeaseBackend.LeaseWriteBatch(
-                List.of(
-                    new ReconcileLeaseBackend.LeaseOwnerUpsert(
-                        pointerKey, 0L, canonicalPointerKey))))) {
-          synchronized (state) {
-            state.snapshotOwnerByKey.put(pointerKey, canonicalPointerKey);
-          }
-          return true;
-        }
-        continue;
-      }
-      synchronized (state) {
-        state.snapshotOwnerByKey.put(pointerKey, existing.canonicalPointerKey());
-      }
-      if (canonicalPointerKey.equals(existing.canonicalPointerKey())) {
-        return true;
-      }
-      StoredReconcileJob owner =
-          jobIndexStore.readCanonicalRecordByKey(existing.canonicalPointerKey()).orElse(null);
-      if (owner == null) {
-        if (leaseBackend.compareAndSetBatch(
-            ReconcileJobIndexStore.JobIndexWriteBatch.empty(),
-            new ReconcileLeaseBackend.LeaseWriteBatch(
-                List.of(
-                    new ReconcileLeaseBackend.LeaseOwnerDelete(pointerKey, existing.version()))))) {
-          synchronized (state) {
-            state.snapshotOwnerByKey.remove(pointerKey);
-          }
-        }
-        continue;
-      }
-      if (record.jobId.equals(owner.jobId) && record.accountId.equals(owner.accountId)) {
-        return true;
-      }
-      if (!hasActiveSnapshotLease(owner, nowMs)) {
-        if (leaseBackend.compareAndSetBatch(
-            ReconcileJobIndexStore.JobIndexWriteBatch.empty(),
-            new ReconcileLeaseBackend.LeaseWriteBatch(
-                List.of(
-                    new ReconcileLeaseBackend.LeaseOwnerDelete(pointerKey, existing.version()))))) {
-          synchronized (state) {
-            state.snapshotOwnerByKey.remove(pointerKey);
-          }
-        }
-        continue;
-      }
-      return false;
-    }
-    return false;
-  }
-
-  @Override
-  public void clearSnapshotLeaseIfOwned(StoredReconcileJob record, String expectedReference) {
-    String pointerKey = snapshotLeasePointerKey(record);
+  public void clearSnapshotOwnershipIfOwned(StoredReconcileJob record, String expectedReference) {
+    String pointerKey = snapshotOwnershipPointerKey(record);
     if (pointerKey.isBlank()) {
       return;
     }
@@ -680,9 +620,6 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
     if (owner == null
         || !record.jobId.equals(owner.jobId)
         || !record.accountId.equals(owner.accountId)) {
-      return;
-    }
-    if (holdsExecutionLease(owner) && hasActiveSnapshotLease(owner, System.currentTimeMillis())) {
       return;
     }
     if (leaseBackend.compareAndSetBatch(
@@ -740,7 +677,7 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
     }
     clearLeaseIfEpochMatches(baseline.accountId, baseline.jobId, leaseEpoch);
     clearLaneLeaseIfOwned(baseline, canonicalPointerKey);
-    clearSnapshotLeaseIfOwned(baseline, canonicalPointerKey);
+    clearSnapshotOwnershipIfOwned(baseline, canonicalPointerKey);
   }
 
   private void failLeaseCanonicalOnHydrationFailure(
@@ -778,7 +715,7 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
     }
     clearLeaseIfEpochMatches(baseline.accountId, baseline.jobId, leaseEpoch);
     clearLaneLeaseIfOwned(baseline, canonicalPointerKey);
-    clearSnapshotLeaseIfOwned(baseline, canonicalPointerKey);
+    clearSnapshotOwnershipIfOwned(baseline, canonicalPointerKey);
   }
 
   private ReconcileLeaseBackend.LeaseWriteBatch mergeLeaseWrites(
@@ -802,8 +739,8 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
       writes.addAll(laneWrites);
     }
     var snapshotWrites =
-        buildSnapshotLeaseClaimWrites(record, canonicalPointerKey, nowMs).orElse(null);
-    if (snapshotWrites == null && requiresSnapshotLease(record)) {
+        buildSnapshotOwnershipClaimWrites(record, canonicalPointerKey).orElse(null);
+    if (snapshotWrites == null && requiresSnapshotOwnership(record)) {
       return Optional.empty();
     }
     if (snapshotWrites != null) {
@@ -847,12 +784,12 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
             lanePointerKey, existing.version(), canonicalPointerKey, owner, ownerLeaseSnapshot));
   }
 
-  private Optional<List<ReconcileLeaseBackend.LeaseWriteOp>> buildSnapshotLeaseClaimWrites(
-      StoredReconcileJob record, String canonicalPointerKey, long nowMs) {
-    if (!requiresSnapshotLease(record) || blank(canonicalPointerKey)) {
+  private Optional<List<ReconcileLeaseBackend.LeaseWriteOp>> buildSnapshotOwnershipClaimWrites(
+      StoredReconcileJob record, String canonicalPointerKey) {
+    if (!requiresSnapshotOwnership(record) || blank(canonicalPointerKey)) {
       return Optional.empty();
     }
-    String pointerKey = snapshotLeasePointerKey(record);
+    String pointerKey = snapshotOwnershipPointerKey(record);
     var existing = leaseBackend.loadOwner(pointerKey).orElse(null);
     if (existing == null) {
       return Optional.of(
@@ -863,13 +800,9 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
     var ownerLeaseSnapshot =
         owner == null ? null : leaseBackend.loadLease(owner.accountId, owner.jobId).orElse(null);
     if (canonicalPointerKey.equals(existing.canonicalPointerKey()) || sameJobOwner(record, owner)) {
-      return owner != null && hasActiveSnapshotLease(owner, nowMs)
-          ? Optional.empty()
-          : Optional.of(
-              ownerClaimWrites(
-                  pointerKey, existing.version(), canonicalPointerKey, owner, ownerLeaseSnapshot));
+      return Optional.of(List.of());
     }
-    if (owner != null && hasActiveSnapshotLease(owner, nowMs)) {
+    if (owner != null && hasActiveSnapshotOwnership(owner)) {
       return Optional.empty();
     }
     return Optional.of(
@@ -974,8 +907,8 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
         && !blank(record.laneKey);
   }
 
-  private boolean requiresSnapshotLease(StoredReconcileJob record) {
-    return !snapshotLeasePointerKey(record).isBlank();
+  private boolean requiresSnapshotOwnership(StoredReconcileJob record) {
+    return !snapshotOwnershipPointerKey(record).isBlank();
   }
 
   private boolean sameJobOwner(StoredReconcileJob claimant, StoredReconcileJob owner) {
@@ -985,23 +918,29 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
         && Objects.equals(claimant.accountId, owner.accountId);
   }
 
-  private boolean hasActiveSnapshotLease(StoredReconcileJob record, long nowMs) {
+  private boolean hasActiveSnapshotOwnership(StoredReconcileJob record) {
     return record != null
         && record.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
         && !blank(record.snapshotTaskTableId)
         && record.snapshotTaskSnapshotId >= 0L
-        && hasUnexpiredJobLease(record.accountId, record.jobId, nowMs);
+        && !isTerminalState(record.state);
   }
 
-  private String snapshotLeasePointerKey(StoredReconcileJob record) {
+  private String snapshotOwnershipPointerKey(StoredReconcileJob record) {
     if (record == null
         || record.jobKind() != ReconcileJobKind.PLAN_SNAPSHOT
         || blank(record.snapshotTaskTableId)
         || record.snapshotTaskSnapshotId < 0L) {
       return "";
     }
-    return Keys.reconcileSnapshotLeasePointer(
-        record.snapshotTaskTableId, record.snapshotTaskSnapshotId);
+    return Keys.reconcileSnapshotOwnershipPointer(
+        record.accountId, record.snapshotTaskTableId, record.snapshotTaskSnapshotId);
+  }
+
+  private static boolean isTerminalState(String state) {
+    return "JS_SUCCEEDED".equals(state)
+        || "JS_FAILED".equals(state)
+        || "JS_CANCELLED".equals(state);
   }
 
   private ReconcileLeaseBackend.LeaseWriteBatch buildLeaseWriteBatch(

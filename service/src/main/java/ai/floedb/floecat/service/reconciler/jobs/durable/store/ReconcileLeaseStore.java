@@ -125,10 +125,7 @@ public interface ReconcileLeaseStore {
 
   void clearLaneLeaseIfOwned(StoredReconcileJob record, String expectedReference);
 
-  boolean tryAcquireSnapshotLease(
-      StoredReconcileJob record, String canonicalPointerKey, long nowMs);
-
-  void clearSnapshotLeaseIfOwned(StoredReconcileJob record, String expectedReference);
+  void clearSnapshotOwnershipIfOwned(StoredReconcileJob record, String expectedReference);
 
   String leaseExpiryPointerKey(StoredJobLease lease);
 

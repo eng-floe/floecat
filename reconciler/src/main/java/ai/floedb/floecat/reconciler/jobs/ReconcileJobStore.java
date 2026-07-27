@@ -348,6 +348,11 @@ public interface ReconcileJobStore {
 
   Optional<ReconcileJob> getCompactLeaseView(String jobId);
 
+  Optional<ReconcileSnapshotTask> pinSnapshotIndexPredecessor(
+      String jobId,
+      String leaseEpoch,
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor);
+
   ReconcileJobPage list(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states);
 

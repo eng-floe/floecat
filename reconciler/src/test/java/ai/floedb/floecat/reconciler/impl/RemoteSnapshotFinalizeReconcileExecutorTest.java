@@ -45,9 +45,11 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -228,10 +230,13 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             predecessor);
 
     when(workerClient.getSnapshotFinalizeInput(remoteLease)).thenReturn(input);
-    when(workerClient.submitSnapshotFinalizeSuccess(
+    RemoteSnapshotFinalizeWorkerClient.PreparedSnapshotFinalizeSuccess prepared =
+        preparedSnapshotFinalizeSuccess();
+    when(workerClient.prepareSnapshotFinalizeSuccess(
             any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
             any()))
-        .thenReturn(true);
+        .thenReturn(prepared);
+    when(workerClient.submitSnapshotFinalizeSuccess(any(), any())).thenReturn(true);
 
     assertTrue(executor.supports(lease));
     ReconcileExecutor.ExecutionResult result =
@@ -249,7 +254,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
         ArgumentCaptor.forClass(
             ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor.class);
     verify(workerClient)
-        .submitSnapshotFinalizeSuccess(
+        .prepareSnapshotFinalizeSuccess(
             any(),
             any(),
             any(),
@@ -260,6 +265,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             finalStats.capture(),
             anyList(),
             indexPredecessor.capture());
+    verify(workerClient).submitSnapshotFinalizeSuccess(remoteLease, prepared);
     assertEquals(1, finalStats.getValue().size());
     assertTrue(finalStats.getValue().get(0).hasTable());
     assertEquals(0L, finalStats.getValue().get(0).getTable().getRowCount());
@@ -310,12 +316,135 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
         .submitSnapshotFinalizeFailure(
             any(), any(), contains("unexpected snapshot file-group descriptor plan-1/group-c"));
     verify(workerClient, never())
-        .submitSnapshotFinalizeSuccess(
+        .prepareSnapshotFinalizeSuccess(
             any(), any(), any(), any(), anyInt(), any(), any(), any(), any(), any());
+    verify(workerClient, never()).submitSnapshotFinalizeSuccess(any(), any());
+  }
+
+  @Test
+  void preflightValidationFailureIsTerminalBeforeSubmissionBoundary() {
+    RemoteSnapshotFinalizeWorkerClient workerClient =
+        mock(RemoteSnapshotFinalizeWorkerClient.class);
+    RemoteSnapshotFinalizeReconcileExecutor executor =
+        new RemoteSnapshotFinalizeReconcileExecutor(
+            workerClient, mock(BlobStore.class), mock(SnapshotPlanBlobStore.class), true);
+    ReconcileJobStore.LeasedJob lease = leasedFinalizeJob(0, ReconcileScope.empty());
+    StandaloneSnapshotFinalizeExecutionPayload input = emptyFinalizeInput();
+    AtomicBoolean submissionStarted = new AtomicBoolean();
+
+    when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(input);
+    when(workerClient.prepareSnapshotFinalizeSuccess(
+            any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
+            any()))
+        .thenThrow(new IllegalArgumentException("inconsistent predecessors"));
+    when(workerClient.submitSnapshotFinalizeFailure(any(), any(), any())).thenReturn(true);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (a, b, c, d, e, f, g, h) -> {},
+                () -> submissionStarted.set(true)));
+
+    assertEquals(ReconcileExecutor.ExecutionResult.JobOutcome.TERMINAL_FAILURE, result.outcome);
+    assertEquals(
+        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL, result.retryDisposition);
+    assertEquals(ReconcileExecutor.ExecutionResult.RetryClass.NONE, result.retryClass);
+    assertFalse(submissionStarted.get());
+    verify(workerClient, never()).submitSnapshotFinalizeSuccess(any(), any());
+  }
+
+  @Test
+  void definitiveSubmissionRejectionIsTerminal() {
+    RemoteSnapshotFinalizeWorkerClient workerClient =
+        mock(RemoteSnapshotFinalizeWorkerClient.class);
+    RemoteSnapshotFinalizeReconcileExecutor executor =
+        new RemoteSnapshotFinalizeReconcileExecutor(
+            workerClient, mock(BlobStore.class), mock(SnapshotPlanBlobStore.class), true);
+    ReconcileJobStore.LeasedJob lease = leasedFinalizeJob(0, ReconcileScope.empty());
+    AtomicBoolean submissionStarted = new AtomicBoolean();
+
+    when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(emptyFinalizeInput());
+    when(workerClient.prepareSnapshotFinalizeSuccess(
+            any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
+            any()))
+        .thenReturn(preparedSnapshotFinalizeSuccess());
+    when(workerClient.submitSnapshotFinalizeSuccess(any(), any())).thenReturn(false);
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease,
+                () -> false,
+                (a, b, c, d, e, f, g, h) -> {},
+                () -> submissionStarted.set(true)));
+
+    assertEquals(ReconcileExecutor.ExecutionResult.JobOutcome.TERMINAL_FAILURE, result.outcome);
+    assertEquals(ReconcileExecutor.ExecutionResult.RetryClass.NONE, result.retryClass);
+    assertTrue(submissionStarted.get());
+  }
+
+  @Test
+  void uncertainRpcOutcomeRemainsRetryableStateUncertain() {
+    RemoteSnapshotFinalizeWorkerClient workerClient =
+        mock(RemoteSnapshotFinalizeWorkerClient.class);
+    RemoteSnapshotFinalizeReconcileExecutor executor =
+        new RemoteSnapshotFinalizeReconcileExecutor(
+            workerClient, mock(BlobStore.class), mock(SnapshotPlanBlobStore.class), true);
+    ReconcileJobStore.LeasedJob lease = leasedFinalizeJob(0, ReconcileScope.empty());
+    ReconcileFailureException uncertain =
+        new ReconcileFailureException(
+            ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
+            ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE,
+            ReconcileExecutor.ExecutionResult.RetryClass.STATE_UNCERTAIN,
+            "outcome unknown",
+            null);
+
+    when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(emptyFinalizeInput());
+    when(workerClient.prepareSnapshotFinalizeSuccess(
+            any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
+            any()))
+        .thenReturn(preparedSnapshotFinalizeSuccess());
+    when(workerClient.submitSnapshotFinalizeSuccess(any(), any())).thenThrow(uncertain);
+
+    ReconcileFailureException thrown =
+        assertThrows(
+            ReconcileFailureException.class,
+            () ->
+                executor.execute(
+                    new ReconcileExecutor.ExecutionContext(
+                        lease, () -> false, (a, b, c, d, e, f, g, h) -> {})));
+
+    assertEquals(
+        ReconcileExecutor.ExecutionResult.RetryDisposition.RETRYABLE, thrown.retryDisposition());
+    assertEquals(ReconcileExecutor.ExecutionResult.RetryClass.STATE_UNCERTAIN, thrown.retryClass());
   }
 
   private static ReconcileJobStore.LeasedJob leasedFinalizeJob() {
     return leasedFinalizeJob(2, ReconcileScope.empty());
+  }
+
+  private static StandaloneSnapshotFinalizeExecutionPayload emptyFinalizeInput() {
+    return new StandaloneSnapshotFinalizeExecutionPayload(
+        "finalize-job",
+        "lease-1",
+        "snapshot-job",
+        tableId(),
+        55L,
+        true,
+        0,
+        "",
+        0,
+        "/final-stats.pb",
+        "/capture-manifest.pb",
+        null);
+  }
+
+  private static RemoteSnapshotFinalizeWorkerClient.PreparedSnapshotFinalizeSuccess
+      preparedSnapshotFinalizeSuccess() {
+    return new RemoteSnapshotFinalizeWorkerClient.PreparedSnapshotFinalizeSuccess(
+        "result-1", SnapshotCaptureManifestDescriptor.getDefaultInstance());
   }
 
   private static ReconcileJobStore.LeasedJob leasedFinalizeJob(

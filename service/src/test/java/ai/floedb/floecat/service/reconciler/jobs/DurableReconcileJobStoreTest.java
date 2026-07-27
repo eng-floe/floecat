@@ -28,6 +28,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
@@ -83,6 +84,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
@@ -343,6 +347,198 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void enqueueDedupesEquivalentResolvedScopeShapes() {
+    ReconcileCapturePolicy policy = capturePolicy("#11", "#22");
+    List<ReconcileScope.ScopedCaptureRequest> requests =
+        List.of(captureRequest("tbl", 101L, "column:11"), captureRequest("tbl", 101L, "column:22"));
+    ReconcileScope queryDerived =
+        ReconcileScope.of(
+            List.of("incidental-namespace"),
+            null,
+            null,
+            requests,
+            policy,
+            ReconcileSnapshotSelection.current());
+    ReconcileScope connectorDerived =
+        ReconcileScope.of(
+            List.of(),
+            "tbl",
+            null,
+            List.of(requests.get(1), requests.get(0)),
+            capturePolicy("#22", "#11"),
+            ReconcileSnapshotSelection.explicit(List.of(101L)));
+
+    String first =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, queryDerived);
+    String second =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, connectorDerived);
+
+    assertEquals(first, second);
+  }
+
+  @Test
+  void enqueueDedupesCurrentLatestAndExplicitWhenCaptureRequestsResolveSameSnapshot() {
+    ReconcileCapturePolicy policy = capturePolicy("#11");
+    List<ReconcileScope.ScopedCaptureRequest> requests =
+        List.of(captureRequest("tbl", 101L, "column:11"));
+
+    String current =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            resolvedCaptureScope(requests, policy, ReconcileSnapshotSelection.current()));
+    String latest =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            resolvedCaptureScope(requests, policy, ReconcileSnapshotSelection.latestN(1)));
+    String explicit =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            resolvedCaptureScope(
+                requests, policy, ReconcileSnapshotSelection.explicit(List.of(101L))));
+
+    assertEquals(current, latest);
+    assertEquals(current, explicit);
+  }
+
+  @Test
+  void metadataInclusiveScopeDoesNotTreatCaptureRequestsAsExactTableSelection() {
+    ReconcileCapturePolicy policy = capturePolicy("#11");
+    List<ReconcileScope.ScopedCaptureRequest> requests =
+        List.of(captureRequest("tbl", 101L, "column:11"));
+    ReconcileScope namespaceScope =
+        ReconcileScope.of(
+            List.of("namespace-1"),
+            null,
+            null,
+            requests,
+            policy,
+            ReconcileSnapshotSelection.current());
+    ReconcileScope tableScope =
+        resolvedCaptureScope(requests, policy, ReconcileSnapshotSelection.explicit(List.of(101L)));
+
+    String namespaceJob =
+        store.enqueue(
+            ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, namespaceScope);
+    String tableJob =
+        store.enqueue(
+            ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.METADATA_AND_CAPTURE, tableScope);
+
+    assertNotEquals(namespaceJob, tableJob);
+  }
+
+  @Test
+  void concurrentEquivalentEnqueueAtomicallyDedupes() throws Exception {
+    ReconcileCapturePolicy policy = capturePolicy("#11");
+    List<ReconcileScope.ScopedCaptureRequest> requests =
+        List.of(captureRequest("tbl", 101L, "column:11"));
+    ReconcileScope current =
+        resolvedCaptureScope(requests, policy, ReconcileSnapshotSelection.current());
+    ReconcileScope explicit =
+        resolvedCaptureScope(requests, policy, ReconcileSnapshotSelection.explicit(List.of(101L)));
+    CountDownLatch start = new CountDownLatch(1);
+    try (var executor = Executors.newFixedThreadPool(2)) {
+      var first =
+          executor.submit(
+              () -> {
+                start.await(5, TimeUnit.SECONDS);
+                return store.enqueue(
+                    ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, current);
+              });
+      var second =
+          executor.submit(
+              () -> {
+                start.await(5, TimeUnit.SECONDS);
+                return store.enqueue(
+                    ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, explicit);
+              });
+
+      start.countDown();
+
+      assertEquals(first.get(10, TimeUnit.SECONDS), second.get(10, TimeUnit.SECONDS));
+    }
+    assertEquals(1, store.listRootJobs(ACCOUNT_ID, 10, "", "", null).jobs.size());
+  }
+
+  @Test
+  void enqueueDoesNotDedupeDifferentResolvedSnapshotsPoliciesOrRescanModes() {
+    ReconcileCapturePolicy firstPolicy = capturePolicy("#11");
+    ReconcileCapturePolicy secondPolicy = capturePolicy("#22");
+    ReconcileScope snapshot101 =
+        resolvedCaptureScope(
+            List.of(captureRequest("tbl", 101L, "column:11")),
+            firstPolicy,
+            ReconcileSnapshotSelection.current());
+    ReconcileScope snapshot202 =
+        resolvedCaptureScope(
+            List.of(captureRequest("tbl", 202L, "column:11")),
+            firstPolicy,
+            ReconcileSnapshotSelection.current());
+    ReconcileScope differentPolicy =
+        resolvedCaptureScope(
+            List.of(captureRequest("tbl", 101L, "column:22")),
+            secondPolicy,
+            ReconcileSnapshotSelection.current());
+    ReconcileScope differentPolicyProperties =
+        resolvedCaptureScope(
+            List.of(captureRequest("tbl", 101L, "column:11")),
+            capturePolicy(Map.of("engine.mode", "alternate"), "#11"),
+            ReconcileSnapshotSelection.current());
+
+    String baseline =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, snapshot101);
+    String otherSnapshot =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, snapshot202);
+    String otherPolicy =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, differentPolicy);
+    String otherPolicyProperties =
+        store.enqueue(
+            ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, differentPolicyProperties);
+    String fullRescan =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, true, CaptureMode.CAPTURE_ONLY, snapshot101);
+
+    assertNotEquals(baseline, otherSnapshot);
+    assertNotEquals(baseline, otherPolicy);
+    assertNotEquals(baseline, otherPolicyProperties);
+    assertNotEquals(baseline, fullRescan);
+  }
+
+  @Test
+  void terminalResolvedWorkDoesNotBlockLaterReconcile() {
+    ReconcileCapturePolicy policy = capturePolicy("#11");
+    ReconcileScope current =
+        resolvedCaptureScope(
+            List.of(captureRequest("tbl", 101L, "column:11")),
+            policy,
+            ReconcileSnapshotSelection.current());
+    String first =
+        store.enqueue(ACCOUNT_ID, CONNECTOR_ID, false, CaptureMode.CAPTURE_ONLY, current);
+    var lease = store.leaseNext().orElseThrow();
+    store.markSucceeded(first, lease.leaseEpoch, System.currentTimeMillis(), 1, 1, 0, 0);
+
+    String second =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            resolvedCaptureScope(
+                List.of(captureRequest("tbl", 101L, "column:11")),
+                policy,
+                ReconcileSnapshotSelection.explicit(List.of(101L))));
+
+    assertNotEquals(first, second);
+  }
+
+  @Test
   void enqueueSnapshotPlanDoesNotDedupeAcrossDifferentPlanTableParents() {
     String firstParentJobId =
         store.enqueue(
@@ -481,6 +677,97 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void leasedSnapshotPinsIndexPredecessorOnceAndPersistsIt() {
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    ReconcileSnapshotTask snapshotTask = ReconcileSnapshotTask.of("table-1", 55L, "db", "orders");
+    var firstPredecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture-1.pb", 9L);
+    var laterPredecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-2", 8L, "/capture-2.pb", 10L);
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    var lease = leaseJob(jobId);
+
+    assertEquals(
+        firstPredecessor,
+        store
+            .pinSnapshotIndexPredecessor(jobId, lease.leaseEpoch, firstPredecessor)
+            .orElseThrow()
+            .indexPredecessor());
+    assertEquals(
+        firstPredecessor,
+        store
+            .pinSnapshotIndexPredecessor(jobId, lease.leaseEpoch, laterPredecessor)
+            .orElseThrow()
+            .indexPredecessor());
+    assertEquals(
+        firstPredecessor,
+        store.get(ACCOUNT_ID, jobId).orElseThrow().snapshotTask.indexPredecessor());
+    StoredReconcileJob stored = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    assertTrue(stored.snapshotTaskIndexPredecessorPresent);
+    assertFalse(stored.snapshotTaskIndexPredecessorPinPending);
+    assertEquals(
+        firstPredecessor,
+        store.getCompactLeaseView(jobId).orElseThrow().snapshotTask.indexPredecessor());
+  }
+
+  @Test
+  void legacyUnpinnedSnapshotJobMustBeRecreated() {
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "table-1",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            ReconcileSnapshotTask.of("table-1", 55L, "db", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    store.jobIndexStore.mutateByJobIdReturningRecord(
+        jobId,
+        current -> {
+          current.snapshotTaskIndexPredecessorPinPending = false;
+          return current;
+        });
+    var lease = leaseJob(jobId);
+    var predecessor =
+        new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture.pb", 9L);
+
+    IllegalStateException error =
+        assertThrows(
+            IllegalStateException.class,
+            () -> store.pinSnapshotIndexPredecessor(jobId, lease.leaseEpoch, predecessor));
+
+    assertTrue(error.getMessage().contains("recreate the job"));
+  }
+
+  @Test
   void snapshotPlanRetryCannotReplaceItsPinnedIndexPredecessor() {
     var firstPredecessor =
         new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
@@ -563,6 +850,95 @@ class DurableReconcileJobStoreTest {
     assertEquals(secondJobId, secondLease.jobId);
     assertEquals(ReconcileJobKind.PLAN_SNAPSHOT, secondLease.jobKind);
     assertEquals(202L, secondLease.snapshotTask.snapshotId());
+  }
+
+  @Test
+  void snapshotOwnershipSurvivesWaitingUntilOwnerTerminates() {
+    ReconcileSnapshotTask task = ReconcileSnapshotTask.of("table-1", 55L, "db", "orders");
+    String first =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    String second =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-2",
+            "");
+
+    var firstLease = leaseJob(first);
+    store.markRunning(first, firstLease.leaseEpoch, 100L, "executor-snapshot-1");
+    store.markWaiting(
+        first,
+        firstLease.leaseEpoch,
+        110L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    assertTrue(
+        store
+            .leaseNext(
+                ReconcileJobStore.LeaseRequest.of(
+                    java.util.EnumSet.of(ReconcileExecutionClass.DEFAULT),
+                    Set.of(ReconcileJobStore.LeaseRequest.anyLaneToken()),
+                    Set.of(),
+                    java.util.EnumSet.of(ReconcileJobKind.PLAN_SNAPSHOT)))
+            .isEmpty());
+
+    store.cancel(ACCOUNT_ID, first, "cancel owner");
+    assertEquals(second, leaseJob(second).jobId);
+  }
+
+  @Test
+  void snapshotOwnershipAllowsOnlyOwnerToRetry() {
+    ReconcileSnapshotTask task = ReconcileSnapshotTask.of("table-1", 55L, "db", "orders");
+    String first =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+    String second =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-2",
+            "");
+
+    var firstLease = leaseJob(first);
+    store.markFailed(first, firstLease.leaseEpoch, 100L, "retry owner", 0L, 0L, 0L, 0L, 1L, 0L, 0L);
+
+    assertEquals(first, leaseJob(first).jobId);
+    assertEquals("JS_QUEUED", store.get(ACCOUNT_ID, second).orElseThrow().state);
   }
 
   @Test
@@ -6331,6 +6707,36 @@ class DurableReconcileJobStoreTest {
             System.currentTimeMillis()),
         System.currentTimeMillis(),
         "Succeeded");
+  }
+
+  private static ReconcileScope resolvedCaptureScope(
+      List<ReconcileScope.ScopedCaptureRequest> requests,
+      ReconcileCapturePolicy policy,
+      ReconcileSnapshotSelection selection) {
+    return ReconcileScope.of(List.of(), "tbl", null, requests, policy, selection);
+  }
+
+  private static ReconcileScope.ScopedCaptureRequest captureRequest(
+      String tableId, long snapshotId, String targetSpec) {
+    return new ReconcileScope.ScopedCaptureRequest(tableId, snapshotId, targetSpec, List.of());
+  }
+
+  private static ReconcileCapturePolicy capturePolicy(String... selectors) {
+    return capturePolicy(Map.of(), selectors);
+  }
+
+  private static ReconcileCapturePolicy capturePolicy(
+      Map<String, String> properties, String... selectors) {
+    return ReconcileCapturePolicy.of(
+        java.util.Arrays.stream(selectors)
+            .map(selector -> new ReconcileCapturePolicy.Column(selector, true, true))
+            .toList(),
+        Set.of(
+            ReconcileCapturePolicy.Output.COLUMN_STATS,
+            ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+        ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+        ReconcileCapturePolicy.DEFAULT_MAX_COLUMNS,
+        properties);
   }
 
   private static ResourceId connectorResourceId() {

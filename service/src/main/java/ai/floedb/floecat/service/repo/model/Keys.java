@@ -1485,18 +1485,17 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/reconcile/dedupe/";
   }
 
-  public static String reconcileSnapshotLeasePointer(String tableId, long snapshotId) {
+  public static String reconcileSnapshotOwnershipPointer(
+      String accountId, String tableId, long snapshotId) {
+    String aid = req("account_id", accountId);
     String tid = req("table_id", tableId);
     long sid = reqNonNegative("snapshot_id", snapshotId);
-    return "/accounts/by-id/reconcile/snapshot-leases/"
+    return "/accounts/"
+        + encode(aid)
+        + "/reconcile/snapshot-owners/"
         + encode(tid)
         + "/"
         + String.format("%019d", sid);
-  }
-
-  public static String reconcileSnapshotLeasePointer(
-      String accountId, String tableId, long snapshotId) {
-    return reconcileSnapshotLeasePointer(tableId, snapshotId);
   }
 
   public static String reconcileLaneLeasePointer(String accountId, String laneKey) {

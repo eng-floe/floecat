@@ -26,6 +26,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueItemResult
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueSpec;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileScopeCanonicalizer;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
@@ -315,6 +316,12 @@ public class ReconcileJobEnqueuer {
             effectiveJobKind,
             effectiveTableTask,
             effectiveViewTask);
+    ReconcileScope identityScope =
+        ReconcileScopeCanonicalizer.resolvedWorkScope(
+            scope,
+            effectiveJobKind,
+            effectiveSnapshotTask,
+            spec.captureMode == CaptureMode.CAPTURE_ONLY);
     ReconcileExecutionPolicy policy =
         spec.executionPolicy == null ? ReconcileExecutionPolicy.defaults() : spec.executionPolicy;
     String laneKey =
@@ -343,7 +350,7 @@ public class ReconcileJobEnqueuer {
             spec.connectorId,
             spec.fullRescan,
             spec.captureMode,
-            scope,
+            identityScope,
             effectiveJobKind,
             effectiveTableTask,
             effectiveViewTask,
@@ -380,6 +387,10 @@ public class ReconcileJobEnqueuer {
             indexes.connectorIndexPointerKey(spec.accountId, spec.connectorId, now, jobId),
             definition,
             snapshotPlanBlobUri);
+    record.snapshotTaskIndexPredecessorPinPending =
+        effectiveJobKind == ReconcileJobKind.PLAN_SNAPSHOT
+            && scope.capturePolicy().requestsIndexes()
+            && effectiveSnapshotTask.indexPredecessor() == null;
     if (effectiveJobKind == ReconcileJobKind.PLAN_SNAPSHOT) {
       LOG.debugf(
           "enqueue persisted PLAN_SNAPSHOT jobId=%s parentJobId=%s connectorId=%s tableId=%s snapshotId=%d source=%s.%s fileGroups=%d",
@@ -902,7 +913,13 @@ public class ReconcileJobEnqueuer {
         + "|"
         + policy.defaultColumnScope().name()
         + "|"
-        + policy.maxDefaultColumns();
+        + policy.maxDefaultColumns()
+        + "|"
+        + policy.properties().entrySet().stream()
+            .sorted(java.util.Map.Entry.comparingByKey())
+            .map(entry -> entry.getKey() + "=" + entry.getValue())
+            .reduce((a, b) -> a + "," + b)
+            .orElse("");
   }
 
   private static String canonicalSnapshotSelection(ReconcileSnapshotSelection selection) {

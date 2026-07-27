@@ -211,31 +211,53 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       if (context.shouldStop().getAsBoolean()) {
         return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
       }
+      String resultId = resultId(lease, "success");
+      RemoteSnapshotFinalizeWorkerClient.PreparedSnapshotFinalizeSuccess prepared =
+          workerClient.prepareSnapshotFinalizeSuccess(
+              remoteLease,
+              resultId,
+              input.statsObjectPrefix(),
+              input.captureManifestUri(),
+              input.sourceFileCount(),
+              descriptors,
+              fileStats,
+              finalStats,
+              indexArtifacts,
+              input.indexPredecessor());
+      if (context.shouldStop().getAsBoolean()) {
+        return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
+      }
       terminalSubmissionStarted = true;
       context.beforeHandledCompletion().run();
-      String resultId = resultId(lease, "success");
-      if (!workerClient.submitSnapshotFinalizeSuccess(
-          remoteLease,
-          resultId,
-          input.statsObjectPrefix(),
-          input.captureManifestUri(),
-          input.sourceFileCount(),
-          descriptors,
-          fileStats,
-          finalStats,
-          indexArtifacts,
-          input.indexPredecessor())) {
-        throw terminalSubmissionUncertain(
-            "snapshot finalizer result submission was rejected", null);
+      if (!workerClient.submitSnapshotFinalizeSuccess(remoteLease, prepared)) {
+        IllegalStateException error =
+            new IllegalStateException("snapshot finalizer result submission was rejected");
+        return ExecutionResult.terminalFailure(0, 0, 0, 0, 1, 0, 0, error.getMessage(), error);
       }
       return ExecutionResult.successHandled(
           0, 0, 0, 0, 0, 1, finalStats.size(), "Finalized snapshot " + input.snapshotId());
     } catch (ReconcileFailureException error) {
       throw error;
+    } catch (IllegalArgumentException | IllegalStateException error) {
+      String message =
+          "Snapshot finalize failed: "
+              + (error.getMessage() == null
+                  ? error.getClass().getSimpleName()
+                  : error.getMessage());
+      LOG.errorf(error, "%s jobId=%s", message, lease.jobId);
+      if (!terminalSubmissionStarted) {
+        workerClient.submitSnapshotFinalizeFailure(
+            remoteLease, resultId(lease, "failure"), message);
+      }
+      return ExecutionResult.terminalFailure(0, 0, 0, 0, 1, 0, 0, message, error);
     } catch (RuntimeException error) {
       if (terminalSubmissionStarted) {
-        throw terminalSubmissionUncertain(
-            "snapshot finalizer result submission did not complete cleanly", error);
+        String message =
+            "Snapshot finalize submission failed: "
+                + (error.getMessage() == null
+                    ? error.getClass().getSimpleName()
+                    : error.getMessage());
+        return ExecutionResult.terminalFailure(0, 0, 0, 0, 1, 0, 0, message, error);
       }
       if (context.shouldStop().getAsBoolean()) {
         return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
@@ -280,16 +302,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       }
     }
     return groupsByKey;
-  }
-
-  private static ReconcileFailureException terminalSubmissionUncertain(
-      String message, RuntimeException cause) {
-    return new ReconcileFailureException(
-        ExecutionResult.FailureKind.INTERNAL,
-        ExecutionResult.RetryDisposition.RETRYABLE,
-        ExecutionResult.RetryClass.STATE_UNCERTAIN,
-        message,
-        cause);
   }
 
   private ValidatedFileGroupArtifacts loadValidatedArtifacts(

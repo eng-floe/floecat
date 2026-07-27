@@ -323,8 +323,6 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
       if (snapshotJob == null || snapshotJob.snapshotTask().isEmpty()) {
         continue;
       }
-      ReconcileSnapshotTask pinnedSnapshotTask =
-          pinIndexPredecessor(lease, snapshotJob.scope(), snapshotJob.snapshotTask());
       childSpecs.add(
           ReconcileJobStore.BulkEnqueueSpec.of(
               lease.accountId,
@@ -335,7 +333,7 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
               ReconcileJobKind.PLAN_SNAPSHOT,
               ReconcileTableTask.empty(),
               ReconcileViewTask.empty(),
-              pinnedSnapshotTask,
+              snapshotJob.snapshotTask().withIndexPredecessor(null),
               ReconcileFileGroupTask.empty(),
               effectiveExecutionPolicy(lease),
               lease.jobId,
@@ -369,9 +367,8 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
   }
 
   private ReconcileSnapshotTask pinIndexPredecessor(
-      ReconcileJobStore.LeasedJob lease, ReconcileScope scope, ReconcileSnapshotTask snapshotTask) {
-    ReconcileScope effectiveScope = scope == null ? ReconcileScope.empty() : scope;
-    if (!effectiveScope.capturePolicy().requestsIndexes()) {
+      ReconcileJobStore.LeasedJob lease, ReconcileSnapshotTask snapshotTask) {
+    if (snapshotTask.indexPredecessor() != null) {
       return snapshotTask;
     }
     ResourceId tableId =
@@ -384,12 +381,24 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
         indexArtifactRepository
             .captureGenerationInput(tableId, snapshotTask.snapshotId(), List.of())
             .predecessor();
-    return snapshotTask.withIndexPredecessor(
+    ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor pinnedPredecessor =
         new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
             predecessor.generationId(),
             predecessor.activePointerVersion(),
             predecessor.captureManifestUri(),
-            predecessor.captureManifestPointerVersion()));
+            predecessor.captureManifestPointerVersion());
+    try {
+      return jobs.pinSnapshotIndexPredecessor(lease.jobId, lease.leaseEpoch, pinnedPredecessor)
+          .orElseThrow(
+              () ->
+                  ReconcileLeaseGrpcStatus.leasePreconditionFailed(
+                      "reconcile lease is no longer valid"));
+    } catch (IllegalStateException e) {
+      throw Status.FAILED_PRECONDITION
+          .withDescription(e.getMessage())
+          .withCause(e)
+          .asRuntimeException();
+    }
   }
 
   public boolean persistPlanTableFailure(
@@ -475,6 +484,11 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
     ReconcileJobStore.LeasedJob lease =
         requireLeasedJob(
             principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_SNAPSHOT);
+    ReconcileSnapshotTask snapshotTask =
+        lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
+    if (effectiveScope(lease).capturePolicy().requestsIndexes()) {
+      snapshotTask = pinIndexPredecessor(lease, snapshotTask);
+    }
     return new PlanSnapshotPayload(
         lease.jobId,
         lease.leaseEpoch,
@@ -483,7 +497,7 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
         lease.captureMode,
         lease.fullRescan,
         effectiveScope(lease),
-        lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask);
+        snapshotTask);
   }
 
   public boolean persistPlanSnapshotSuccess(

@@ -21,6 +21,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -593,11 +594,18 @@ public class StatsOrchestrator {
       ResourceId connectorId =
           connectorResourceId(
               first.tableId().getAccountId(), table.get().getUpstream().getConnectorId().getId());
-      if (!connectorRepository.existsById(connectorId)) {
+      Optional<Connector> connector = connectorRepository.getById(connectorId);
+      if (connector.isEmpty()) {
         return recordAsyncSkipGroup(
             groupedRequests,
             "missing_connector",
             "Skipping async enqueue because canonical connector lookup failed");
+      }
+      if (connector.get().hasPolicy() && !connector.get().getPolicy().getEnabled()) {
+        return recordAsyncSkipGroup(
+            groupedRequests,
+            "policy_disabled",
+            "Skipping async enqueue because connector reconcile policy is disabled");
       }
       LinkedHashSet<ReconcileScope.ScopedCaptureRequest> captureRequests = new LinkedHashSet<>();
       for (IndexedRequest indexedRequest : groupedRequests) {

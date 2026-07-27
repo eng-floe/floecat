@@ -1341,6 +1341,64 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
+  public Optional<ReconcileSnapshotTask> pinSnapshotIndexPredecessor(
+      String jobId,
+      String leaseEpoch,
+      ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor) {
+    return onHotPath(
+        () -> {
+          ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor effectivePredecessor =
+              Objects.requireNonNull(predecessor, "predecessor");
+          final ReconcileSnapshotTask[] pinnedTask = {null};
+          Optional<StoredEnvelope> updated =
+              mutateByJobIdReturningRecord(
+                  jobId,
+                  existing -> {
+                    if (!leaseManager()
+                        .hasActiveLease(
+                            jobId,
+                            leaseEpoch,
+                            existing,
+                            "pinSnapshotIndexPredecessor",
+                            true,
+                            true,
+                            false)) {
+                      return null;
+                    }
+                    if (existing.jobKind() != ReconcileJobKind.PLAN_SNAPSHOT) {
+                      throw new IllegalArgumentException(
+                          "pinSnapshotIndexPredecessor requires a PLAN_SNAPSHOT job");
+                    }
+                    ReconcileSnapshotTask currentTask =
+                        executionLoader().compactSnapshotTask(existing);
+                    if (currentTask.indexPredecessor() != null) {
+                      pinnedTask[0] = currentTask;
+                      return null;
+                    }
+                    if (!existing.snapshotTaskIndexPredecessorPinPending) {
+                      throw new IllegalStateException(
+                          "PLAN_SNAPSHOT job is missing lease-time predecessor pin eligibility; recreate the job");
+                    }
+                    existing.snapshotTaskIndexPredecessorPinPending = false;
+                    existing.snapshotTaskIndexPredecessorPresent = true;
+                    existing.snapshotTaskIndexPredecessorGenerationId =
+                        effectivePredecessor.generationId();
+                    existing.snapshotTaskIndexPredecessorActivePointerVersion =
+                        effectivePredecessor.activePointerVersion();
+                    existing.snapshotTaskIndexPredecessorCaptureManifestUri =
+                        effectivePredecessor.captureManifestUri();
+                    existing.snapshotTaskIndexPredecessorCaptureManifestPointerVersion =
+                        effectivePredecessor.captureManifestPointerVersion();
+                    return existing;
+                  });
+          if (updated.isPresent()) {
+            return Optional.of(executionLoader().compactSnapshotTask(updated.get().record));
+          }
+          return Optional.ofNullable(pinnedTask[0]);
+        });
+  }
+
+  @Override
   public String persistSnapshotPlanManifest(
       String accountId, String jobId, ReconcileSnapshotTask snapshotTask) {
     ReconcileSnapshotTask effective =
@@ -2156,7 +2214,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     leaseManager().clearLeaseIfEpochMatches(env.record.accountId, jobId, leaseEpoch);
     leaseManager().clearLaneLeaseIfOwned(env.record, env.canonicalPointerKey);
-    leaseManager().clearSnapshotLeaseIfOwned(env.record, env.canonicalPointerKey);
   }
 
   private void onHotPath(Runnable runnable) {
@@ -2300,6 +2357,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (!pointerStore.compareAndDelete(markerKey, markerVersion)) {
         return RefreshResult.MARKER_ACK_CONFLICT;
       }
+      releaseSnapshotOwnershipIfTerminal(nextParent, canonicalPointerKey);
       LOG.debugf(
           "reconcile projection unchanged accountId=%s jobId=%s kind=%s children=%d"
               + " projectionGeneration=%d total_ms=%d",
@@ -2344,6 +2402,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (!isTerminalState(parent.state) && isTerminalState(nextParent.state)) {
       cleanupAbandonedFullRescanStatsGenerationIfTerminal(nextParent);
     }
+    releaseSnapshotOwnershipIfTerminal(nextParent, canonicalPointerKey);
     long rootSummaryStartedNanos = System.nanoTime();
     if (blankToEmpty(nextParent.parentJobId).isBlank()) {
       rootSummaries().upsert(toRootListSummary(nextParent, nextProjection));
@@ -2388,6 +2447,15 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         Long.valueOf((finishedNanos - rootSummaryStartedNanos) / 1_000_000L),
         Long.valueOf((finishedNanos - startedNanos) / 1_000_000L));
     return markerAcknowledged ? RefreshResult.COMMITTED : RefreshResult.MARKER_ACK_CONFLICT;
+  }
+
+  private void releaseSnapshotOwnershipIfTerminal(
+      StoredReconcileJob record, String canonicalPointerKey) {
+    if (record != null
+        && record.jobKind() == ReconcileJobKind.PLAN_SNAPSHOT
+        && isTerminalState(record.state)) {
+      leaseManager().clearSnapshotOwnershipIfOwned(record, canonicalPointerKey);
+    }
   }
 
   private boolean sameExternallyVisibleProjection(

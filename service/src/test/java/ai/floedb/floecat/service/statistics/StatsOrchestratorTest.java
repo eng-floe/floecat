@@ -37,6 +37,8 @@ import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.connector.rpc.Connector;
+import ai.floedb.floecat.connector.rpc.ReconcilePolicy;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
@@ -235,6 +237,34 @@ class StatsOrchestratorTest {
 
     assertThat(result.outcome()).isEqualTo(StatsSyncOutcome.SKIPPED);
     assertThat(result.stats()).isEmpty();
+    verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+  }
+
+  @Test
+  void plannerMissDoesNotEnqueueWhenConnectorPolicyIsDisabled() {
+    StatsStore statsStore = Mockito.mock(StatsStore.class);
+    ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsSyncCapture syncCapture = Mockito.mock(StatsSyncCapture.class);
+    StatsOrchestrator orchestrator =
+        new StatsOrchestrator(
+            statsStore,
+            jobStore,
+            tableRepository,
+            connectorRepositoryDisabled(),
+            syncCapture,
+            true,
+            null);
+
+    StatsCaptureRequest request = columnRequest(42L, 7L);
+    when(tableRepository.getById(request.tableId())).thenReturn(Optional.of(upstreamTable()));
+
+    Map<String, StatsResolutionResult> result =
+        orchestrator.resolvePlannerBatch(List.of(request), false, Long.MAX_VALUE);
+
+    assertThat(result.get(StatsTargetIdentity.storageId(request.target())).outcome())
+        .isEqualTo(StatsSyncOutcome.SKIPPED);
+    verify(syncCapture, never()).capture(anyString(), anyString(), any(), any());
     verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
   }
 
@@ -595,13 +625,22 @@ class StatsOrchestratorTest {
 
   private static ConnectorRepository connectorRepositoryWith() {
     ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
-    when(connectorRepository.existsById(any())).thenReturn(true);
+    when(connectorRepository.getById(any()))
+        .thenReturn(Optional.of(Connector.getDefaultInstance()));
     return connectorRepository;
   }
 
   private static ConnectorRepository connectorRepositoryMissing() {
     ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
-    when(connectorRepository.existsById(any())).thenReturn(false);
+    when(connectorRepository.getById(any())).thenReturn(Optional.empty());
+    return connectorRepository;
+  }
+
+  private static ConnectorRepository connectorRepositoryDisabled() {
+    ConnectorRepository connectorRepository = Mockito.mock(ConnectorRepository.class);
+    Connector connector =
+        Connector.newBuilder().setPolicy(ReconcilePolicy.newBuilder().setEnabled(false)).build();
+    when(connectorRepository.getById(any())).thenReturn(Optional.of(connector));
     return connectorRepository;
   }
 
