@@ -305,6 +305,32 @@ public class KvStoreContractTest {
   }
 
   @Test
+  void updateMetadataAttrsIfExists_increment_past_long_max_does_not_wrap() {
+    // The counterpart to the in-memory store's ArithmeticException, and deliberately not the same
+    // outcome. ADD is server-side arbitrary precision, so DynamoDB stores the true sum instead of
+    // wrapping; the narrowing is what fails, on the way back out. The shared guarantee is only that
+    // neither store ever reports success while holding a wrapped value — the in-memory store is the
+    // stricter of the two, so a caller it rejects is never one this store would have mangled.
+    KvStore.Key k = key("pk1", "meta");
+    assertTrue(
+        kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of(Long.MAX_VALUE))), 0L)
+            .await()
+            .indefinitely());
+
+    assertEquals(
+        Optional.of(2L),
+        kv.updateMetadataAttrsIfExists(k, Map.of(), Map.of("hits", 1L)).await().indefinitely());
+
+    KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
+    AttrValue hits = got.attrs().get("hits");
+    // Not wrapped, and not silently narrowed: the row holds a number no long can express, so the
+    // decoder keeps it as text and asLong refuses it rather than inventing a value.
+    assertNotEquals(AttrValue.of(Long.MIN_VALUE), hits);
+    assertNotEquals(AttrValue.of(Long.MAX_VALUE), hits);
+    assertThrows(NumberFormatException.class, hits::asLong);
+  }
+
+  @Test
   void updateMetadataAttrsIfExists_absent_key_returns_empty_and_creates_nothing() {
     KvStore.Key k = key("pk1", "ghost");
 

@@ -106,6 +106,14 @@ public interface KvStore {
    *   <li>{@code increments} adds a delta to a numeric attribute, creating it with the delta value
    *       if absent. Incrementing an attribute that currently holds a non-numeric string fails the
    *       {@link Uni} with a store-specific error; it never silently overwrites.
+   *   <li>A sum outside {@code long} is not a value this SPI can carry, since {@link
+   *       AttrValue.NumberValue} is a {@code long}. Callers must not drive a counter to the
+   *       boundary. Stores differ in how they say so, and the difference is deliberately in the
+   *       strict direction: the in-memory store fails the {@link Uni} with {@link
+   *       ArithmeticException}, whereas DynamoDB's {@code ADD} is server-side arbitrary precision
+   *       and stores the true value, which {@link AttrValue#asLong()} then refuses to narrow on the
+   *       way back out. So a caller the in-memory store rejects is never one DynamoDB would have
+   *       silently mangled — the failure cannot appear first in production.
    *   <li>The record's version is advanced by one in the same request. A record whose stored
    *       version is missing counts as 0 and becomes 1.
    *   <li>The record is never created as a side effect.
@@ -122,9 +130,12 @@ public interface KvStore {
    * @param sets attribute values to replace; must not name a {@link KvAttributes#RESERVED_ATTRS}
    *     attribute, nor {@link KvAttributes#ATTR_EXPIRES_AT}, which only a whole-record write may
    *     touch (see {@link AttrWriteRules#checkExpiryIsString})
-   * @param increments deltas to add to numeric attributes; must not overlap {@code sets}
+   * @param increments deltas to add to numeric attributes; must not overlap {@code sets}, and must
+   *     not carry a counter past {@code long}
    * @return the new version if the record existed and was updated; empty if the record was absent
-   *     or was refused for carrying a value
+   *     or was refused for carrying a value. Never empty to report an increment that could not be
+   *     applied — that arrives as a failed {@link Uni}, because a caller reading empty as "no such
+   *     record" would swallow it.
    * @throws IllegalArgumentException if both maps are empty, or an attribute name is reserved, the
    *     expiry stamp, blank, or present in both maps
    */

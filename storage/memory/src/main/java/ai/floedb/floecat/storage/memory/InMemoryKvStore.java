@@ -120,7 +120,12 @@ public final class InMemoryKvStore implements KvStore {
                                 + ": it currently holds a string value");
                       }
                       long base = current == null ? 0L : ((AttrValue.NumberValue) current).value();
-                      attrs.put(name, AttrValue.of(base + increment.getValue()));
+                      // addExact, not +: a wrapped sum would report a successful update while
+                      // storing a number nowhere near the one asked for. AttrValue cannot model a
+                      // result outside long, so an out-of-range sum is an error, not a value.
+                      // Throws from the same remap as the type check above, with the same
+                      // all-or-nothing guarantee.
+                      attrs.put(name, AttrValue.of(Math.addExact(base, increment.getValue())));
                     }
 
                     newVersion[0] = existing.version() + 1;

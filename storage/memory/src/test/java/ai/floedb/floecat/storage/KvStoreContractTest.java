@@ -389,6 +389,66 @@ class KvStoreContractTest {
   }
 
   @Test
+  void updateMetadataAttrsIfExists_increment_past_long_max_fails_and_changes_nothing() {
+    // A wrap would have reported success while storing MIN_VALUE. Failing is the whole point: a
+    // counter silently 18 quintillion off is worse than an update that refuses.
+    KvStore.Key k = key("pk1", "meta");
+    assertTrue(
+        kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of(Long.MAX_VALUE))), 0L)
+            .await()
+            .indefinitely());
+
+    assertThrows(
+        ArithmeticException.class,
+        () ->
+            kv.updateMetadataAttrsIfExists(k, Map.of(), Map.of("hits", 1L)).await().indefinitely());
+
+    // Not half-applied: the version must not advance either, since the remap threw.
+    KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
+    assertEquals(1L, got.version());
+    assertEquals(AttrValue.of(Long.MAX_VALUE), got.attrs().get("hits"));
+  }
+
+  @Test
+  void updateMetadataAttrsIfExists_increment_past_long_min_fails() {
+    // The negative boundary matters too: deltas are signed, so a decrementing counter can walk off
+    // the other end.
+    KvStore.Key k = key("pk1", "meta");
+    assertTrue(
+        kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of(Long.MIN_VALUE))), 0L)
+            .await()
+            .indefinitely());
+
+    assertThrows(
+        ArithmeticException.class,
+        () ->
+            kv.updateMetadataAttrsIfExists(k, Map.of(), Map.of("hits", -1L))
+                .await()
+                .indefinitely());
+
+    KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
+    assertEquals(1L, got.version());
+    assertEquals(AttrValue.of(Long.MIN_VALUE), got.attrs().get("hits"));
+  }
+
+  @Test
+  void updateMetadataAttrsIfExists_increment_to_exactly_long_max_succeeds() {
+    // The guard rejects only what it cannot represent — the boundary value itself is fine.
+    KvStore.Key k = key("pk1", "meta");
+    assertTrue(
+        kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of(Long.MAX_VALUE - 1L))), 0L)
+            .await()
+            .indefinitely());
+
+    assertEquals(
+        Optional.of(2L),
+        kv.updateMetadataAttrsIfExists(k, Map.of(), Map.of("hits", 1L)).await().indefinitely());
+
+    KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
+    assertEquals(AttrValue.of(Long.MAX_VALUE), got.attrs().get("hits"));
+  }
+
+  @Test
   void updateMetadataAttrsIfExists_version_bump_is_visible_to_putCas() {
     KvStore.Key k = key("pk1", "meta");
     assertTrue(
