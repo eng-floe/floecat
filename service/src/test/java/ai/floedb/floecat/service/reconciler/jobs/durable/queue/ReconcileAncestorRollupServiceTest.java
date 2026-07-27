@@ -156,6 +156,60 @@ class ReconcileAncestorRollupServiceTest {
   }
 
   @Test
+  void tableAndConnectorRollupsUseFinalizedSnapshotArtifactCounts() {
+    ReconcileAncestorRollupService rollups = rollups();
+    StoredReconcileJob table = job("table", ReconcileJobKind.PLAN_TABLE, "connector", "JS_WAITING");
+    table.childrenFinalized = true;
+    table.expectedDirectChildren = 1L;
+    table.statsProcessed = 14_195L;
+    table.indexesProcessed = 14_195L;
+
+    StoredReconcileJob snapshot =
+        job("snapshot", ReconcileJobKind.PLAN_SNAPSHOT, table.jobId, "JS_SUCCEEDED");
+    snapshot.snapshotsProcessed = 1L;
+    snapshot.statsProcessed = 12_371L;
+    snapshot.indexesProcessed = 12_352L;
+
+    var tableProjection = rollups.recomputeParentProjection(table, List.of(snapshot));
+
+    assertEquals(12_371L, tableProjection.statsProcessed());
+    assertEquals(12_352L, tableProjection.indexesProcessed());
+
+    StoredReconcileJob connector =
+        job("connector", ReconcileJobKind.PLAN_CONNECTOR, "", "JS_WAITING");
+    connector.childrenFinalized = true;
+    connector.expectedDirectChildren = 1L;
+    table.state = tableProjection.state();
+    table.statsProcessed = tableProjection.statsProcessed();
+    table.indexesProcessed = tableProjection.indexesProcessed();
+
+    var connectorProjection = rollups.recomputeParentProjection(connector, List.of(table));
+
+    assertEquals(12_371L, connectorProjection.statsProcessed());
+    assertEquals(12_352L, connectorProjection.indexesProcessed());
+  }
+
+  @Test
+  void tableRollupKeepsCanonicalArtifactProgressUntilSnapshotsSucceed() {
+    ReconcileAncestorRollupService rollups = rollups();
+    StoredReconcileJob table = job("table", ReconcileJobKind.PLAN_TABLE, "connector", "JS_WAITING");
+    table.childrenFinalized = true;
+    table.expectedDirectChildren = 1L;
+    table.statsProcessed = 14_195L;
+    table.indexesProcessed = 14_195L;
+
+    StoredReconcileJob snapshot =
+        job("snapshot", ReconcileJobKind.PLAN_SNAPSHOT, table.jobId, "JS_RUNNING");
+    snapshot.statsProcessed = 12_371L;
+    snapshot.indexesProcessed = 12_352L;
+
+    var projection = rollups.recomputeParentProjection(table, List.of(snapshot));
+
+    assertEquals(14_195L, projection.statsProcessed());
+    assertEquals(14_195L, projection.indexesProcessed());
+  }
+
+  @Test
   void cancellingParentBecomesCancelledWhenFinalizedChildrenAreTerminal() {
     ReconcileAncestorRollupService rollups = rollups();
     StoredReconcileJob parent =

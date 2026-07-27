@@ -153,8 +153,13 @@ public class ReconcileAncestorRollupService {
       snapshotsProcessed =
           tableSnapshotsProcessed(
               parent, canonicalSnapshotsProcessed, aggregate.snapshotsProcessed());
-      statsProcessed = Math.max(canonicalStatsProcessed, aggregate.statsProcessed());
-      indexesProcessed = Math.max(canonicalIndexesProcessed, aggregate.indexesProcessed());
+      if (successfulSnapshotChildCountsAreAuthoritative(parent, aggregate)) {
+        statsProcessed = Math.max(0L, aggregate.statsProcessed());
+        indexesProcessed = Math.max(0L, aggregate.indexesProcessed());
+      } else {
+        statsProcessed = Math.max(canonicalStatsProcessed, aggregate.statsProcessed());
+        indexesProcessed = Math.max(canonicalIndexesProcessed, aggregate.indexesProcessed());
+      }
     }
     if (parent.jobKind() == ReconcileJobKind.PLAN_CONNECTOR) {
       tablesScanned =
@@ -484,6 +489,26 @@ public class ReconcileAncestorRollupService {
       return Math.max(0L, childSnapshotsProcessed);
     }
     return Math.max(0L, Math.max(canonicalSnapshotsProcessed, childSnapshotsProcessed));
+  }
+
+  private static boolean successfulSnapshotChildCountsAreAuthoritative(
+      StoredReconcileJob parent, ChildAggregate aggregate) {
+    if (parent == null
+        || parent.jobKind() != ReconcileJobKind.PLAN_TABLE
+        || aggregate == null
+        || !childSetFinalized(parent)) {
+      return false;
+    }
+    long expectedDirectChildren =
+        Math.max(Math.max(0L, parent.expectedDirectChildren), aggregate.directChildObserved());
+    return expectedDirectChildren > 0L
+        && aggregate.completedChildJobs() >= expectedDirectChildren
+        && aggregate.failedChildJobs() == 0L
+        && aggregate.cancelledChildJobs() == 0L
+        && aggregate.queuedChildJobs() == 0L
+        && aggregate.waitingChildJobs() == 0L
+        && aggregate.runningChildJobs() == 0L
+        && aggregate.cancellingChildJobs() == 0L;
   }
 
   private static boolean isDependencyWaitingQueuedChild(ProjectedPublicJob projected) {
