@@ -352,13 +352,7 @@ public final class MetaGraph implements CatalogOverlay, TopologyGraph {
    */
   @Override
   public Map<NameRef, Optional<ResourceId>> resolveNames(String correlationId, List<NameRef> refs) {
-    return resolveNames(correlationId, refs, engineContext());
-  }
-
-  @Override
-  public Map<NameRef, Optional<ResourceId>> resolveNames(
-      String correlationId, List<NameRef> refs, EngineContext engineContext) {
-    EngineContext ctx = orRequestEngine(engineContext, this::engineContext);
+    EngineContext ctx = engineContext();
     var out = new LinkedHashMap<NameRef, Optional<ResourceId>>(refs.size());
     var userRefs = new ArrayList<NameRef>(refs.size());
     for (NameRef ref : refs) {
