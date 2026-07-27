@@ -335,7 +335,7 @@ class StatsProviderFactoryTest {
   }
 
   @Test
-  void tableStatsBatchCancelsBlockedStatsWarm() throws Exception {
+  void tableStatsBatchReturnsWhenCancelledStatsWarmIgnoresInterrupts() throws Exception {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
     TableRepository tableRepository = Mockito.mock(TableRepository.class);
@@ -345,15 +345,24 @@ class StatsProviderFactoryTest {
     store.seed(ctx);
     CountDownLatch started = new CountDownLatch(1);
     CountDownLatch interrupted = new CountDownLatch(1);
+    CountDownLatch allowCompletion = new CountDownLatch(1);
+    CountDownLatch completed = new CountDownLatch(1);
     when(orchestrator.resolveInGeneration(any(), any()))
         .thenAnswer(
             ignored -> {
               started.countDown();
               try {
-                Thread.sleep(TimeUnit.SECONDS.toMillis(10));
-              } catch (InterruptedException e) {
-                interrupted.countDown();
-                Thread.currentThread().interrupt();
+                while (true) {
+                  try {
+                    allowCompletion.await();
+                    break;
+                  } catch (InterruptedException e) {
+                    // Deliberately ignore interruption to model a non-cooperative remote call.
+                    interrupted.countDown();
+                  }
+                }
+              } finally {
+                completed.countDown();
               }
               return StatsResolutionResult.skipped("cancelled");
             });
@@ -371,13 +380,18 @@ class StatsProviderFactoryTest {
               }
             });
 
-    assertTrue(started.await(1, TimeUnit.SECONDS));
-    cancelled.set(true);
+    try {
+      assertTrue(started.await(1, TimeUnit.SECONDS));
+      cancelled.set(true);
 
-    assertTrue(
-        batch.get(250, TimeUnit.MILLISECONDS)
-            instanceof java.util.concurrent.CancellationException);
-    assertTrue(interrupted.await(1, TimeUnit.SECONDS));
+      assertTrue(
+          batch.get(250, TimeUnit.MILLISECONDS)
+              instanceof java.util.concurrent.CancellationException);
+      assertTrue(interrupted.await(1, TimeUnit.SECONDS));
+    } finally {
+      allowCompletion.countDown();
+    }
+    assertTrue(completed.await(1, TimeUnit.SECONDS));
   }
 
   @Test

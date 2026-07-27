@@ -209,7 +209,8 @@ public final class StatsProviderFactory {
       // (on cheap virtual threads); each call populates the shared tableCache, so the subsequent
       // per-relation tableStats() is a hit. A single table's failure yields empty, never aborts the
       // batch.
-      try (var exec = Executors.newVirtualThreadPerTaskExecutor()) {
+      var exec = Executors.newVirtualThreadPerTaskExecutor();
+      try {
         List<Optional<StatsProvider.TableStatsView>> results =
             BoundedFanout.mapOrdered(
                 ids,
@@ -228,6 +229,10 @@ public final class StatsProviderFactory {
         for (int i = 0; i < ids.size(); i++) {
           out.put(ids.get(i), results.get(i));
         }
+      } finally {
+        // mapOrdered has joined all tasks on normal completion. On cancellation, do not close the
+        // executor: close waits for a task blocked in non-cooperative remote I/O.
+        exec.shutdownNow();
       }
       return out;
     }
