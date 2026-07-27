@@ -166,12 +166,17 @@ enum ResolutionStatus {
 }
 
 /**
- * Result for one input entry from `request.tables[]`.
+ * Result for one input entry from `request.tables[]`, or a base relation eagerly emitted for a
+ * resolved view.
  *
- * `input_index` ties the response back to the planner’s reference list.
+ * `input_index` ties requested results back to the planner’s reference list. An eagerly emitted
+ * base relation uses the synthetic index `-1`, because it has no corresponding request entry.
  */
 message RelationResolution {
-  /** Index into `request.tables[]` so the planner can correlate responses. */
+  /**
+   * Index into `request.tables[]` so the planner can correlate requested responses. Eager base
+   * relations emitted for a view use `-1` (`0xffffffff` on the uint32 wire) as a synthetic index.
+   */
   uint32 input_index = 1;
 
   /** Resolution outcome for this input. */
