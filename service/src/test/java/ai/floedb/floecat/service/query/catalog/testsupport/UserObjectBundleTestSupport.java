@@ -99,13 +99,6 @@ public final class UserObjectBundleTestSupport {
       schemaFailures.add(id.getId());
     }
 
-    /**
-     * Make {@link #tableSchema} throw for this relation, to exercise per-relation build failures.
-     */
-    public void failSchemaFor(ResourceId id) {
-      schemaFailures.add(id.getId());
-    }
-
     public void registerTable(
         ResourceId id, List<ai.floedb.floecat.query.rpc.SchemaColumn> schema, NameRef name) {
       registerTable(id, schema, name, GraphNodeOrigin.USER);
