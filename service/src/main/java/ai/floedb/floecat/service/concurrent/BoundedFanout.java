@@ -15,67 +15,256 @@
  */
 package ai.floedb.floecat.service.concurrent;
 
-import io.opentelemetry.context.Context;
-import io.opentelemetry.context.Scope;
+import ai.floedb.floecat.service.context.PropagatedContext;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 
 /** Runs independent, mostly-blocking tasks on a shared executor with a concurrency bound. */
 public final class BoundedFanout {
 
+  private static final long CANCELLATION_POLL_MILLIS = 10;
+
   private BoundedFanout() {}
 
   /**
    * Apply {@code task} to each item on {@code executor}, at most {@code permits} running at once,
-   * and return the results in input order. Each task runs under the caller's OpenTelemetry context.
-   * A task failure surfaces unwrapped — its original {@link RuntimeException} or {@link Error},
-   * never a {@link CompletionException} wrapper — and the first such failure propagates to the
-   * caller once its future is joined.
+   * and return the results in input order. Each task runs under the caller's request context
+   * (OpenTelemetry, engine/principal/correlation, MDC) re-established via {@link
+   * PropagatedContext}, so ambient reads behave off-thread as they do on the caller's thread. A
+   * task failure surfaces unwrapped — its original {@link RuntimeException} or {@link Error}, never
+   * a {@link CompletionException} wrapper. With no cancellation, every task future completes before
+   * the first joined failure propagates, so callers can safely clean up task-owned resources.
    */
   public static <I, O> List<O> mapOrdered(
       List<I> items, int permits, Executor executor, Function<I, O> task) {
+    validatePermits(permits);
     Semaphore gate = new Semaphore(permits);
-    Context otelContext = Context.current();
-    List<CompletableFuture<O>> futures =
-        items.stream()
-            .map(
-                item ->
-                    CompletableFuture.supplyAsync(
-                        () -> {
-                          gate.acquireUninterruptibly();
-                          try (Scope ignored = otelContext.makeCurrent()) {
-                            return task.apply(item);
-                          } finally {
-                            gate.release();
-                          }
-                        },
-                        executor))
-            .toList();
+    PropagatedContext context = PropagatedContext.capture();
+    List<CompletableFuture<O>> futures = new ArrayList<>(items.size());
+    try {
+      for (I item : items) {
+        futures.add(
+            CompletableFuture.supplyAsync(
+                () -> runTask(gate, context, task, item, () -> false), executor));
+      }
+    } catch (RuntimeException | Error submissionFailure) {
+      awaitCompletedFutures(futures);
+      throw submissionFailure;
+    }
+    return collectCompletedFutures(futures);
+  }
+
+  /**
+   * As {@link #mapOrdered(List, int, Executor, Function)}, but {@code cancelled} is polled so a
+   * cancelled stream interrupts every submitted task and returns without waiting for a slow task's
+   * completion. Tasks must cooperate with interruption while blocked in downstream calls. The
+   * permit wait is interruptible for the same reason.
+   */
+  public static <I, O> List<O> mapOrdered(
+      List<I> items,
+      int permits,
+      ExecutorService executor,
+      Function<I, O> task,
+      BooleanSupplier cancelled) {
+    validatePermits(permits);
+    Semaphore gate = new Semaphore(permits);
+    PropagatedContext context = PropagatedContext.capture();
+    List<Future<O>> futures = new ArrayList<>(items.size());
+    try {
+      for (I item : items) {
+        if (cancelled.getAsBoolean()) {
+          cancelSubmittedTasks(futures);
+          throw cancelled();
+        }
+        futures.add(executor.submit(() -> runTask(gate, context, task, item, cancelled)));
+      }
+    } catch (CancellationException cancellationFailure) {
+      cancelSubmittedTasks(futures);
+      throw cancellationFailure;
+    } catch (RuntimeException | Error submissionFailure) {
+      awaitSubmittedTasks(futures);
+      throw submissionFailure;
+    }
 
     List<O> results = new ArrayList<>(items.size());
-    for (CompletableFuture<O> future : futures) {
-      results.add(join(future));
+    RuntimeException firstRuntimeFailure = null;
+    Error firstErrorFailure = null;
+    for (Future<O> future : futures) {
+      try {
+        results.add(awaitCancellable(future, futures, cancelled));
+      } catch (RuntimeException e) {
+        if (firstRuntimeFailure == null && firstErrorFailure == null) {
+          firstRuntimeFailure = e;
+        }
+      } catch (Error e) {
+        if (firstRuntimeFailure == null && firstErrorFailure == null) {
+          firstErrorFailure = e;
+        }
+      }
+    }
+    if (firstRuntimeFailure != null) {
+      throw firstRuntimeFailure;
+    }
+    if (firstErrorFailure != null) {
+      throw firstErrorFailure;
     }
     return results;
   }
 
-  private static <O> O join(CompletableFuture<O> future) {
+  /** Run one task under the captured context while holding one concurrency permit. */
+  private static <I, O> O runTask(
+      Semaphore gate,
+      PropagatedContext context,
+      Function<I, O> task,
+      I item,
+      BooleanSupplier cancelled) {
+    acquire(gate);
     try {
-      return future.join();
-    } catch (CompletionException ce) {
-      Throwable cause = ce.getCause();
-      if (cause instanceof RuntimeException re) {
-        throw re;
+      return context.supply(
+          () -> {
+            if (cancelled.getAsBoolean()) {
+              throw cancelled();
+            }
+            return task.apply(item);
+          });
+    } finally {
+      gate.release();
+    }
+  }
+
+  /** Collect every completed future, preserving the first unwrapped task failure. */
+  private static <O> List<O> collectCompletedFutures(List<CompletableFuture<O>> futures) {
+    List<O> results = new ArrayList<>(futures.size());
+    RuntimeException firstRuntimeFailure = null;
+    Error firstErrorFailure = null;
+    for (CompletableFuture<O> future : futures) {
+      try {
+        results.add(Futures.join(future));
+      } catch (RuntimeException e) {
+        if (firstRuntimeFailure == null && firstErrorFailure == null) {
+          firstRuntimeFailure = e;
+        }
+      } catch (Error e) {
+        if (firstRuntimeFailure == null && firstErrorFailure == null) {
+          firstErrorFailure = e;
+        }
       }
-      if (cause instanceof Error e) {
-        throw e;
+    }
+    if (firstRuntimeFailure != null) {
+      throw firstRuntimeFailure;
+    }
+    if (firstErrorFailure != null) {
+      throw firstErrorFailure;
+    }
+    return results;
+  }
+
+  /** Await each already-submitted completion future after a submission failure. */
+  private static void awaitCompletedFutures(List<? extends CompletableFuture<?>> futures) {
+    for (CompletableFuture<?> future : futures) {
+      try {
+        Futures.join(future);
+      } catch (RuntimeException | Error ignored) {
+        // The submission failure is the caller-visible outcome; task failures only complete
+        // cleanup.
       }
-      throw new IllegalStateException("unexpected checked exception from parallel task", cause);
+    }
+  }
+
+  /** Await each already-submitted task while preserving an executor submission failure. */
+  private static void awaitSubmittedTasks(List<? extends Future<?>> futures) {
+    boolean interrupted = false;
+    for (Future<?> future : futures) {
+      try {
+        future.get();
+      } catch (InterruptedException e) {
+        interrupted = true;
+        cancelSubmittedTasks(futures);
+        break;
+      } catch (ExecutionException | CancellationException ignored) {
+        // The submission failure is the caller-visible outcome; task failures only complete
+        // cleanup.
+      }
+    }
+    if (interrupted) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  /** Await one task while repeatedly observing stream cancellation. */
+  private static <O> O awaitCancellable(
+      Future<O> future, List<? extends Future<?>> futures, BooleanSupplier cancelled) {
+    while (true) {
+      if (cancelled.getAsBoolean()) {
+        cancelSubmittedTasks(futures);
+        throw cancelled();
+      }
+      try {
+        return future.get(CANCELLATION_POLL_MILLIS, TimeUnit.MILLISECONDS);
+      } catch (TimeoutException ignored) {
+        // A bounded wait lets the next loop observe cancellation.
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        cancelSubmittedTasks(futures);
+        throw cancelled();
+      } catch (ExecutionException e) {
+        rethrowTaskFailure(e.getCause());
+      }
+    }
+  }
+
+  /** Interrupt every submitted task, including work already inside a downstream call. */
+  private static void cancelSubmittedTasks(List<? extends Future<?>> futures) {
+    for (Future<?> future : futures) {
+      future.cancel(true);
+    }
+  }
+
+  /** Rethrow a task failure without an execution-wrapper layer. */
+  private static void rethrowTaskFailure(Throwable failure) {
+    if (failure instanceof RuntimeException runtime) {
+      throw runtime;
+    }
+    if (failure instanceof Error error) {
+      throw error;
+    }
+    throw new CompletionException(failure);
+  }
+
+  /** Validate the concurrency bound before any tasks are submitted. */
+  private static void validatePermits(int permits) {
+    if (permits < 1) {
+      throw new IllegalArgumentException("BoundedFanout permits must be >= 1, got " + permits);
+    }
+  }
+
+  /** Build the canonical cancellation failure returned to a stopped stream driver. */
+  private static CancellationException cancelled() {
+    return new CancellationException("fan-out cancelled");
+  }
+
+  /**
+   * Interruptible permit acquire: a shutdown/interrupt aborts the task instead of pinning the
+   * thread on an uninterruptible wait.
+   */
+  private static void acquire(Semaphore gate) {
+    try {
+      gate.acquire();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new CancellationException("interrupted while awaiting fan-out permit");
     }
   }
 }

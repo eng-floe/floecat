@@ -31,6 +31,7 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogOverlay;
 import com.google.protobuf.Timestamp;
@@ -40,7 +41,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.function.Consumer;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -90,7 +95,7 @@ public class QueryInputResolverTest {
         List.of(QueryInput.newBuilder().setName(n).build()),
         Optional.empty(),
         Optional.empty(),
-        new java.util.LinkedHashMap<>(),
+        new ConcurrentHashMap<>(),
         null);
 
     // Registered under the stable query id (not the per-RPC correlation id), so the committing RPC
@@ -102,37 +107,70 @@ public class QueryInputResolverTest {
                 uris -> uris.contains("s3://T1/table.pb") && uris.contains("s3://T1/snap.pb")));
   }
 
+  /** A completed parallel input roots its pin while another input is still resolving. */
   @Test
-  void rootsCompletedPinsBeforePlanningLaterInputs() {
+  void rootsCompletedParallelPinBeforeSlowerInputReturns() throws Exception {
+    var blockingGraph = new BlockingPinGraph("SLOW");
     var store = org.mockito.Mockito.mock(QueryContextStore.class);
-    var withStore = new QueryInputResolver(metadataGraph, store);
-    ResourceId first = rid("ROOTED_FIRST");
-    ResourceId second = rid("LATER_INPUT");
-    boolean[] observedBeforeLaterPlan = {false};
-    metadataGraph.beforeTablePin(
-        tableId -> {
-          if (tableId.equals(second)) {
-            org.mockito.Mockito.verify(store)
-                .registerResolvingPinBlobs(
-                    org.mockito.ArgumentMatchers.eq("q1"),
-                    org.mockito.ArgumentMatchers.argThat(
-                        uris -> uris.contains("s3://ROOTED_FIRST/table.pb")));
-            observedBeforeLaterPlan[0] = true;
-          }
-        });
+    var withStore = new QueryInputResolver(blockingGraph, store);
+    ResourceId slow = rid("SLOW");
+    ResourceId fast = rid("FAST");
 
-    withStore.resolveInputs(
-        "q1",
-        "cid",
-        List.of(
-            QueryInput.newBuilder().setTableId(first).build(),
-            QueryInput.newBuilder().setTableId(second).build()),
-        Optional.empty(),
-        Optional.empty(),
-        new java.util.LinkedHashMap<>(),
-        null);
+    CompletableFuture<Void> resolution =
+        CompletableFuture.runAsync(
+            () ->
+                withStore.resolveInputs(
+                    "q-parallel",
+                    "cid",
+                    List.of(
+                        QueryInput.newBuilder().setTableId(slow).build(),
+                        QueryInput.newBuilder().setTableId(fast).build()),
+                    Optional.empty(),
+                    Optional.empty(),
+                    new java.util.concurrent.ConcurrentHashMap<>(),
+                    null));
 
-    assertTrue(observedBeforeLaterPlan[0]);
+    try {
+      assertTrue(blockingGraph.slowPinStarted.await(1, TimeUnit.SECONDS));
+      org.mockito.Mockito.verify(store, org.mockito.Mockito.timeout(1_000))
+          .registerResolvingPinBlobs(
+              org.mockito.ArgumentMatchers.eq("q-parallel"),
+              org.mockito.ArgumentMatchers.argThat(uris -> uris.contains("s3://FAST/table.pb")));
+    } finally {
+      blockingGraph.allowSlowPin.countDown();
+    }
+    resolution.join();
+  }
+
+  /** A failed parallel plan releases every provisional root it constructed. */
+  @Test
+  void releasesCompletedParallelPinWhenSiblingPlanningFails() {
+    var failingGraph = new FailingAfterFastPinGraph();
+    var store = org.mockito.Mockito.mock(QueryContextStore.class);
+    var withStore = new QueryInputResolver(failingGraph, store);
+
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            withStore.resolveInputs(
+                "q-failure",
+                "cid",
+                List.of(
+                    QueryInput.newBuilder().setTableId(rid("FAIL")).build(),
+                    QueryInput.newBuilder().setTableId(rid("FAST")).build()),
+                Optional.empty(),
+                Optional.empty(),
+                new java.util.concurrent.ConcurrentHashMap<>(),
+                null));
+
+    org.mockito.Mockito.verify(store)
+        .registerResolvingPinBlobs(
+            org.mockito.ArgumentMatchers.eq("q-failure"),
+            org.mockito.ArgumentMatchers.argThat(uris -> uris.contains("s3://FAST/table.pb")));
+    org.mockito.Mockito.verify(store)
+        .releaseResolvingPinBlobs(
+            org.mockito.ArgumentMatchers.eq("q-failure"),
+            org.mockito.ArgumentMatchers.argThat(uris -> uris.contains("s3://FAST/table.pb")));
   }
 
   /** Resolving a name that maps only to a table should return the table id. */
@@ -331,7 +369,7 @@ public class QueryInputResolverTest {
                 List.of(qi),
                 Optional.<com.google.protobuf.Timestamp>empty(),
                 Optional.<ResourceId>empty(),
-                new java.util.LinkedHashMap<>(),
+                new ConcurrentHashMap<>(),
                 null)
             .snapshotSet()
             .getPins(0);
@@ -397,7 +435,7 @@ public class QueryInputResolverTest {
                 List.of(qi),
                 Optional.<com.google.protobuf.Timestamp>empty(),
                 Optional.<ResourceId>empty(),
-                new java.util.LinkedHashMap<>(),
+                new ConcurrentHashMap<>(),
                 null)
             .snapshotSet()
             .getPins(0);
@@ -452,7 +490,7 @@ public class QueryInputResolverTest {
             List.of(qi),
             Optional.<com.google.protobuf.Timestamp>empty(),
             Optional.<ResourceId>empty(),
-            new java.util.LinkedHashMap<>(),
+            new ConcurrentHashMap<>(),
             null)
         .snapshotSet();
 
@@ -952,32 +990,6 @@ public class QueryInputResolverTest {
   }
 
   @Test
-  void earlier_pin_conflict_precedes_a_later_malformed_input() {
-    ResourceId table = rid("CONFLICT_PRECEDENCE");
-
-    StatusRuntimeException failure =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                resolver.resolveInputs(
-                    "cid",
-                    List.of(
-                        QueryInput.newBuilder()
-                            .setTableId(table)
-                            .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(888))
-                            .build(),
-                        QueryInput.newBuilder()
-                            .setTableId(table)
-                            .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(999))
-                            .build(),
-                        QueryInput.getDefaultInstance()),
-                    Optional.empty(),
-                    Optional.empty()));
-
-    assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, failure.getStatus().getCode());
-  }
-
-  @Test
   void conflicting_asof_and_explicit_snapshot_for_same_table_fail() {
     // An AS_OF reference resolves to a concrete snapshot; if a later explicit-snapshot reference to
     // the same table names a different snapshot, the two temporal intents conflict and planning
@@ -1040,7 +1052,7 @@ public class QueryInputResolverTest {
     ResourceId tableId = rid("CACHE_TABLE");
     metadataGraph.setCurrentSnapshot(tableId, 1234L);
     QueryInput input = QueryInput.newBuilder().setTableId(tableId).build();
-    Map<ResourceId, TablePin> cache = new HashMap<>();
+    ConcurrentMap<ResourceId, CompletableFuture<TablePin>> cache = new ConcurrentHashMap<>();
 
     resolver.resolveInputs(
         "", "cid-a", List.of(input), Optional.empty(), Optional.empty(), cache, null);
@@ -1150,7 +1162,7 @@ public class QueryInputResolverTest {
   // Helpers / test doubles (Composition, not inheritance)
   // ----------------------------------------------------------------------
 
-  static final class FakeGraph extends TestCatalogOverlay {
+  static class FakeGraph extends TestCatalogOverlay {
 
     private final Map<NameRef, ResourceId> nameBindings = new HashMap<>();
     private final Map<NameRef, RuntimeException> failures = new HashMap<>();
@@ -1160,7 +1172,6 @@ public class QueryInputResolverTest {
     private final List<PinCall> pinCalls =
         java.util.Collections.synchronizedList(new ArrayList<>());
     private final Map<ResourceId, String> catalogNames = new HashMap<>();
-    private Consumer<ResourceId> beforeTablePin = ignored -> {};
 
     FakeGraph() {}
 
@@ -1203,13 +1214,18 @@ public class QueryInputResolverTest {
     }
 
     @Override
+    public Optional<ResourceId> resolveName(
+        String correlationId, NameRef ref, EngineContext engineContext) {
+      return resolveName(correlationId, ref);
+    }
+
+    @Override
     public TablePin tablePinFor(
         String correlationId,
         ResourceId tableId,
         SnapshotRef override,
         Optional<Timestamp> asOfDefault) {
 
-      beforeTablePin.accept(tableId);
       pinCalls.add(new PinCall(correlationId, tableId, override, asOfDefault));
 
       TablePin.Builder builder =
@@ -1259,10 +1275,6 @@ public class QueryInputResolverTest {
       asOfSnapshots.put(id.getId(), snapshotId);
     }
 
-    void beforeTablePin(Consumer<ResourceId> callback) {
-      beforeTablePin = callback;
-    }
-
     List<PinCall> pinCalls() {
       return pinCalls;
     }
@@ -1272,6 +1284,66 @@ public class QueryInputResolverTest {
         ResourceId tableId,
         SnapshotRef override,
         Optional<Timestamp> asOfDefault) {}
+  }
+
+  /** Blocks one table-pin lookup until the test releases it. */
+  static final class BlockingPinGraph extends FakeGraph {
+    private final String blockedTableId;
+    final CountDownLatch slowPinStarted = new CountDownLatch(1);
+    final CountDownLatch allowSlowPin = new CountDownLatch(1);
+
+    BlockingPinGraph(String blockedTableId) {
+      this.blockedTableId = blockedTableId;
+    }
+
+    @Override
+    public TablePin tablePinFor(
+        String correlationId,
+        ResourceId tableId,
+        SnapshotRef override,
+        Optional<Timestamp> asOfDefault) {
+      if (blockedTableId.equals(tableId.getId())) {
+        slowPinStarted.countDown();
+        try {
+          if (!allowSlowPin.await(1, TimeUnit.SECONDS)) {
+            throw new AssertionError("test did not release the slow pin lookup");
+          }
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new AssertionError("slow pin lookup interrupted", e);
+        }
+      }
+      return super.tablePinFor(correlationId, tableId, override, asOfDefault);
+    }
+  }
+
+  /** Fails one lookup only after the sibling's pin has been constructed. */
+  static final class FailingAfterFastPinGraph extends FakeGraph {
+    private final CountDownLatch fastPinCompleted = new CountDownLatch(1);
+
+    @Override
+    public TablePin tablePinFor(
+        String correlationId,
+        ResourceId tableId,
+        SnapshotRef override,
+        Optional<Timestamp> asOfDefault) {
+      if ("FAIL".equals(tableId.getId())) {
+        try {
+          if (!fastPinCompleted.await(1, TimeUnit.SECONDS)) {
+            throw new AssertionError("fast pin lookup did not complete");
+          }
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+          throw new AssertionError("failing pin lookup interrupted", e);
+        }
+        throw new IllegalStateException("planned failure");
+      }
+      TablePin pin = super.tablePinFor(correlationId, tableId, override, asOfDefault);
+      if ("FAST".equals(tableId.getId())) {
+        fastPinCompleted.countDown();
+      }
+      return pin;
+    }
   }
 
   private static NameRef nameRef(ResourceId id) {

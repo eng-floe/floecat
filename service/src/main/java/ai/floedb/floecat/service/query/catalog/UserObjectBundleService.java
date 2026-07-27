@@ -94,7 +94,9 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -348,7 +350,7 @@ public class UserObjectBundleService {
       String correlationId,
       QueryContext ctx,
       List<ResolvedRelation> relations,
-      Map<ResourceId, TablePin> currentSnapshotPinCache,
+      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
       PhaseDiagnostics diagnostics) {
     if (relations == null || relations.isEmpty()) {
       return RelationPinSet.getDefaultInstance();
@@ -1592,7 +1594,8 @@ public class UserObjectBundleService {
     private final ArrayDeque<EagerBaseCursor> eagerBaseQueue = new ArrayDeque<>();
     private final Set<String> eagerBaseSeen = new HashSet<>();
     private final Map<RelationCacheKey, RelationInfo> relationInfoCache = new HashMap<>();
-    private final Map<ResourceId, TablePin> currentSnapshotPinCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache =
+        new ConcurrentHashMap<>();
     private final TimingAccumulator timings = new TimingAccumulator();
     private final PhaseDiagnostics diagnostics = diagnostics("get_user_objects");
     private final long streamStartNs = System.nanoTime();
