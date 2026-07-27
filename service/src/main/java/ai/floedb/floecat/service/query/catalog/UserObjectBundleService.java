@@ -1763,7 +1763,6 @@ public class UserObjectBundleService {
           plan.add(planInput(nextInputIndex + i));
         }
         nextInputIndex += planCount;
-        seedNameResolutions(plan);
         // Resolve the planned inputs concurrently; results come back in plan order so the gather
         // below stays deterministic. resolveNanos is the wall-clock of this stage.
         long selectStageStartNs = System.nanoTime();

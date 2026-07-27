@@ -1309,6 +1309,27 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
+  void successfulLeadingCandidateDoesNotResolveLaterNameFallback() {
+    // Candidate order is semantic: once the table id succeeds, the later NAME fallback must not
+    // be resolved. In particular, that avoids surfacing an irrelevant name-resolution failure.
+    NameRef unusedFallback =
+        NameRef.newBuilder().setCatalog("cat").setName("unused_fallback").build();
+    TableReferenceCandidate candidate =
+        TableReferenceCandidate.newBuilder()
+            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+            .addCandidates(QueryInput.newBuilder().setName(unusedFallback))
+            .build();
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, List.of(candidate)).collect().asList().await().indefinitely();
+
+    RelationResolution resolution = chunks.get(1).getResolutions().getItems(0);
+    assertThat(resolution.getStatus()).isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(resolution.getRelation().getRelationId()).isEqualTo(TABLE_A);
+    assertThat(overlay.resolveNameCount(unusedFallback)).isZero();
+  }
+
+  @Test
   void appliesDefaultCatalogWhenNameMissingCatalog() {
     TableReferenceCandidate candidate =
         TableReferenceCandidate.newBuilder()
