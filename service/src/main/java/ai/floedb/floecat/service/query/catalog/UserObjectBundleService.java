@@ -1130,6 +1130,9 @@ public class UserObjectBundleService {
      * during build resolves stats as before.
      */
     private void warmChunkStats(List<PendingItem> chunkItems) {
+      if (isCancelled()) {
+        throw new java.util.concurrent.CancellationException("GetUserObjects cancelled");
+      }
       List<ResourceId> tableIds = new ArrayList<>(chunkItems.size());
       Set<ResourceId> seenTableIds = new HashSet<>();
       for (PendingItem item : chunkItems) {
@@ -1144,7 +1147,9 @@ public class UserObjectBundleService {
       }
       long startNs = System.nanoTime();
       try {
-        statsProvider.tableStatsBatch(tableIds);
+        statsProvider.tableStatsBatch(tableIds, this::isCancelled);
+      } catch (java.util.concurrent.CancellationException e) {
+        throw e;
       } catch (RuntimeException e) {
         LOG.debugf(
             e,
@@ -1153,6 +1158,9 @@ public class UserObjectBundleService {
       } finally {
         // The reads happen here; the per-relation tableStats during build then hits the cache.
         timings.addStatsLookupNanos(System.nanoTime() - startNs);
+      }
+      if (isCancelled()) {
+        throw new java.util.concurrent.CancellationException("GetUserObjects cancelled");
       }
     }
 
@@ -1238,6 +1246,9 @@ public class UserObjectBundleService {
         throw new java.util.concurrent.CancellationException("GetUserObjects cancelled");
       }
       warmChunkStats(chunkItems);
+      if (isCancelled()) {
+        throw new java.util.concurrent.CancellationException("GetUserObjects cancelled");
+      }
       QueryContext liveCtx = queryStore.get(ctx.getQueryId()).orElse(ctx);
 
       // Driver pre-pass: everything cheap and order/state-sensitive stays here — passthrough

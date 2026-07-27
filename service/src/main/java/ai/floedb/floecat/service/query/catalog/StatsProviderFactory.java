@@ -202,7 +202,7 @@ public final class StatsProviderFactory {
 
     @Override
     public Map<ResourceId, Optional<StatsProvider.TableStatsView>> tableStatsBatch(
-        Collection<ResourceId> tableIds) {
+        Collection<ResourceId> tableIds, java.util.function.BooleanSupplier cancelled) {
       List<ResourceId> ids = tableIds.stream().distinct().toList();
       Map<ResourceId, Optional<StatsProvider.TableStatsView>> out = new LinkedHashMap<>();
       // A per-relation read can block on the sync-capture budget, so resolve the set concurrently
@@ -218,10 +218,13 @@ public final class StatsProviderFactory {
                 id -> {
                   try {
                     return tableStats(id);
+                  } catch (java.util.concurrent.CancellationException e) {
+                    throw e;
                   } catch (RuntimeException e) {
                     return Optional.<StatsProvider.TableStatsView>empty();
                   }
-                });
+                },
+                cancelled);
         for (int i = 0; i < ids.size(); i++) {
           out.put(ids.get(i), results.get(i));
         }

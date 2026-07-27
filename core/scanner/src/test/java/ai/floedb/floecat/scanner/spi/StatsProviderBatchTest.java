@@ -16,6 +16,7 @@
 package ai.floedb.floecat.scanner.spi;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import java.util.List;
@@ -23,6 +24,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 class StatsProviderBatchTest {
@@ -104,6 +106,25 @@ class StatsProviderBatchTest {
     // The failure between them must not skip either neighbor.
     assertThat(out.get(id("a"))).isPresent();
     assertThat(out.get(id("b"))).isPresent();
+  }
+
+  @Test
+  void defaultBatchStopsBeforeTheNextTableWhenCancelled() {
+    AtomicBoolean cancelled = new AtomicBoolean();
+    Map<ResourceId, Integer> calls = new ConcurrentHashMap<>();
+    StatsProvider provider =
+        new StatsProvider() {
+          @Override
+          public Optional<TableStatsView> tableStats(ResourceId tableId) {
+            calls.merge(tableId, 1, Integer::sum);
+            cancelled.set(true);
+            return Optional.of(view(tableId));
+          }
+        };
+
+    assertThatThrownBy(() -> provider.tableStatsBatch(List.of(id("a"), id("b")), cancelled::get))
+        .isInstanceOf(java.util.concurrent.CancellationException.class);
+    assertThat(calls).containsOnlyKeys(id("a"));
   }
 
   private static StatsProvider.TableStatsView view(ResourceId tableId) {

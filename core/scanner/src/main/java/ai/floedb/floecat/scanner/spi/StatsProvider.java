@@ -23,6 +23,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 
 /** Shared provider that surfaces table/column stats to metadata consumers. */
 public interface StatsProvider {
@@ -39,8 +41,20 @@ public interface StatsProvider {
    */
   default Map<ResourceId, Optional<TableStatsView>> tableStatsBatch(
       Collection<ResourceId> tableIds) {
+    return tableStatsBatch(tableIds, () -> false);
+  }
+
+  /**
+   * {@link #tableStatsBatch(Collection)} with a cooperative cancellation signal. Implementations
+   * that fan out remote reads should override this method to interrupt in-flight work promptly.
+   */
+  default Map<ResourceId, Optional<TableStatsView>> tableStatsBatch(
+      Collection<ResourceId> tableIds, BooleanSupplier cancelled) {
     Map<ResourceId, Optional<TableStatsView>> out = new LinkedHashMap<>();
     for (ResourceId tableId : tableIds) {
+      if (cancelled.getAsBoolean()) {
+        throw new CancellationException("table stats batch cancelled");
+      }
       out.computeIfAbsent(
           tableId,
           id -> {
@@ -49,6 +63,8 @@ public interface StatsProvider {
             // it.
             try {
               return tableStats(id);
+            } catch (CancellationException e) {
+              throw e;
             } catch (RuntimeException e) {
               return Optional.empty();
             }

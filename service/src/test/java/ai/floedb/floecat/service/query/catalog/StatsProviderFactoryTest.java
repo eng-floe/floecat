@@ -55,6 +55,10 @@ import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import java.time.Duration;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
@@ -328,6 +332,52 @@ class StatsProviderFactoryTest {
     assertEquals("iceberg", requestCaptor.getValue().connectorType());
     assertEquals(Duration.ofSeconds(1), requestCaptor.getValue().latencyBudget().orElseThrow());
     assertEquals(StatsExecutionMode.SYNC, requestCaptor.getValue().executionMode());
+  }
+
+  @Test
+  void tableStatsBatchCancelsBlockedStatsWarm() throws Exception {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
+    StatsProviderFactory factory = new StatsProviderFactory(orchestrator, tableRepository, store);
+    QueryContext ctx = queryContextWithPin(500L);
+    store.seed(ctx);
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch interrupted = new CountDownLatch(1);
+    when(orchestrator.resolveInGeneration(any(), any()))
+        .thenAnswer(
+            ignored -> {
+              started.countDown();
+              try {
+                Thread.sleep(TimeUnit.SECONDS.toMillis(10));
+              } catch (InterruptedException e) {
+                interrupted.countDown();
+                Thread.currentThread().interrupt();
+              }
+              return StatsResolutionResult.skipped("cancelled");
+            });
+    AtomicBoolean cancelled = new AtomicBoolean();
+    var provider = factory.forQuery(ctx, "corr");
+
+    CompletableFuture<Throwable> batch =
+        CompletableFuture.supplyAsync(
+            () -> {
+              try {
+                provider.tableStatsBatch(java.util.List.of(TABLE), cancelled::get);
+                return null;
+              } catch (Throwable failure) {
+                return failure;
+              }
+            });
+
+    assertTrue(started.await(1, TimeUnit.SECONDS));
+    cancelled.set(true);
+
+    assertTrue(
+        batch.get(250, TimeUnit.MILLISECONDS)
+            instanceof java.util.concurrent.CancellationException);
+    assertTrue(interrupted.await(1, TimeUnit.SECONDS));
   }
 
   @Test
