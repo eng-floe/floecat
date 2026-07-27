@@ -260,6 +260,7 @@ public class QueryInputResolver {
     private final QueryContextStore queryStore;
     private final String queryId;
     private final Map<TablePin, List<String>> rootsByPin = new IdentityHashMap<>();
+    // Once terminal, no task may create a registration that the resolution attempt no longer owns.
     private boolean terminal;
 
     ResolvingPinRoots(QueryContextStore queryStore, String queryId) {

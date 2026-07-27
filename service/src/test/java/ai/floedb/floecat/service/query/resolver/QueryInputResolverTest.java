@@ -1459,6 +1459,47 @@ public class QueryInputResolverTest {
     }
   }
 
+  /** Completes its blocked lookup after interruption so cancellation cleanup runs first. */
+  static final class NonInterruptiblePinGraph extends FakeGraph {
+    private final String blockedTableId;
+    final CountDownLatch slowPinStarted = new CountDownLatch(1);
+    final CountDownLatch allowSlowPin = new CountDownLatch(1);
+    final CountDownLatch slowPinCompleted = new CountDownLatch(1);
+
+    NonInterruptiblePinGraph(String blockedTableId) {
+      this.blockedTableId = blockedTableId;
+    }
+
+    @Override
+    public TablePin tablePinFor(
+        String correlationId,
+        ResourceId tableId,
+        SnapshotRef override,
+        Optional<Timestamp> asOfDefault) {
+      if (blockedTableId.equals(tableId.getId())) {
+        slowPinStarted.countDown();
+        awaitUninterruptibly(allowSlowPin);
+        slowPinCompleted.countDown();
+      }
+      return super.tablePinFor(correlationId, tableId, override, asOfDefault);
+    }
+
+    private static void awaitUninterruptibly(CountDownLatch latch) {
+      boolean interrupted = false;
+      while (true) {
+        try {
+          latch.await();
+          break;
+        } catch (InterruptedException e) {
+          interrupted = true;
+        }
+      }
+      if (interrupted) {
+        Thread.currentThread().interrupt();
+      }
+    }
+  }
+
   /** Fails one lookup only after the sibling's pin has been constructed. */
   static final class FailingAfterFastPinGraph extends FakeGraph {
     private final CountDownLatch fastPinCompleted = new CountDownLatch(1);
