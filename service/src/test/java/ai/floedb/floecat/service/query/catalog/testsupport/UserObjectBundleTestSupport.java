@@ -78,6 +78,7 @@ public final class UserObjectBundleTestSupport {
     private final Map<String, CatalogNode> catalogs = new HashMap<>();
     private final Set<String> hidden = new HashSet<>();
     private final Set<String> schemaFailures = new HashSet<>();
+    private final Set<String> nullSchemas = new HashSet<>();
     private final Map<String, Integer> resolveCalls = new ConcurrentHashMap<>();
     private final Map<NameRef, Integer> resolveNameCalls = new ConcurrentHashMap<>();
     private final Map<ResourceId, Integer> tableSchemaCalls = new ConcurrentHashMap<>();
@@ -89,6 +90,7 @@ public final class UserObjectBundleTestSupport {
       catalogs.clear();
       hidden.clear();
       schemaFailures.clear();
+      nullSchemas.clear();
       resolveCalls.clear();
       resolveNameCalls.clear();
       tableSchemaCalls.clear();
@@ -99,6 +101,11 @@ public final class UserObjectBundleTestSupport {
      */
     public void failSchemaFor(ResourceId id) {
       schemaFailures.add(id.getId());
+    }
+
+    /** Make {@link #tableSchema(ResourceId)} return null for this relation. */
+    public void returnNullSchemaFor(ResourceId id) {
+      nullSchemas.add(id.getId());
     }
 
     public void registerTable(
@@ -343,6 +350,9 @@ public final class UserObjectBundleTestSupport {
       tableSchemaCalls.merge(tableId, 1, Integer::sum);
       if (schemaFailures.contains(tableId.getId())) {
         throw new RuntimeException("schema unavailable for " + tableId.getId());
+      }
+      if (nullSchemas.contains(tableId.getId())) {
+        return null;
       }
       return schemas.getOrDefault(tableId.getId(), List.of());
     }

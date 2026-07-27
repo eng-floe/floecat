@@ -417,6 +417,30 @@ class RelationBundleBuilderTest {
   }
 
   @Test
+  void nullOverlaySchemaBuildsAnEmptyColumnList() {
+    // Generic RelationNode implementations use the overlay schema path. A connector that has no
+    // schema must produce a valid empty payload rather than a build-error resolution.
+    overlay.registerTable(
+        TABLE,
+        UserObjectBundleTestSupport.schemaFor("id_x"),
+        NameRef.newBuilder().setCatalog("cat").setName("x").build());
+    overlay.returnNullSchemaFor(TABLE);
+
+    RelationBundleBuilder.BuildResult result =
+        builder(ctxIgnored -> Optional.empty(), false)
+            .build(
+                "cid",
+                resolved(TABLE, fullCandidate()),
+                ctx,
+                resolutionContext(StatsProvider.NONE),
+                StatsProvider.NONE,
+                Optional.empty());
+
+    assertThat(result.isSuccess()).isTrue();
+    assertThat(result.info().getColumnsList()).isEmpty();
+  }
+
+  @Test
   void possessionTokenStampedForFullCacheablePayload() {
     overlay.registerTable(
         TABLE,

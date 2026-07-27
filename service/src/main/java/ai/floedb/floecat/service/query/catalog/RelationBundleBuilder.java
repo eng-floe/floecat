@@ -226,7 +226,8 @@ final class RelationBundleBuilder {
                     logicalSchemaForRelation(
                             correlationId, relation.relationId(), userTable, queryContext)
                         .getColumnsList())
-                : overlay.tableSchema(relation.node().id());
+                : Optional.ofNullable(overlay.tableSchema(relation.node().id()))
+                    .orElseGet(List::of);
 
     List<SchemaColumn> pruned =
         UserObjectBundleUtils.pruneSchema(schemaColumns, relation.candidate(), correlationId);
