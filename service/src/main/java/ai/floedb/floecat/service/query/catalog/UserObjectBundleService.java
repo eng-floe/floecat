@@ -377,6 +377,9 @@ public class UserObjectBundleService {
     private final LongAdder pinCommitNanos = new LongAdder();
     private final LongAdder relationBuildNanos = new LongAdder();
     private final LongAdder decorationNanos = new LongAdder();
+    // Driver-only wall-clock of the chunk batch stats warm pass, kept separate from per-relation
+    // stats lookup time so warm cache hits are not double-counted.
+    private final LongAdder statsWarmNanos = new LongAdder();
     // Aggregate sub-totals written from the parallel select tasks.
     private final LongAdder selectRelationNanos = new LongAdder();
     private final LongAdder nameResolveNanos = new LongAdder();
@@ -392,6 +395,10 @@ public class UserObjectBundleService {
 
     void addStatsLookupNanos(long nanos) {
       statsLookupNanos.add(nanos);
+    }
+
+    void addStatsWarmNanos(long nanos) {
+      statsWarmNanos.add(nanos);
     }
 
     long statsLookupNanos() {
@@ -587,6 +594,7 @@ public class UserObjectBundleService {
       pinCommitNanos.add(other.pinCommitNanos.sum());
       relationBuildNanos.add(other.relationBuildNanos.sum());
       decorationNanos.add(other.decorationNanos.sum());
+      statsWarmNanos.add(other.statsWarmNanos.sum());
       selectRelationNanos.add(other.selectRelationNanos.sum());
       nameResolveNanos.add(other.nameResolveNanos.sum());
       nodeResolveNanos.add(other.nodeResolveNanos.sum());
@@ -627,6 +635,7 @@ public class UserObjectBundleService {
       diagnostics.nanos("relation_build", relationBuildNanos.sum());
       diagnostics.nanos("decoration", decorationNanos.sum());
       diagnostics.nanos("stats_lookup", statsLookupNanos.sum());
+      diagnostics.nanos("stats_warm", statsWarmNanos.sum());
       diagnostics.nanos("decorate_relation", decorateRelationNanos.sum());
       diagnostics.nanos("decorate_view", decorateViewNanos.sum());
       diagnostics.nanos("decorate_columns", decorateColumnsNanos.sum());

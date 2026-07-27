@@ -273,8 +273,7 @@ public class QueryInputResolverTest {
                     QueryInput.newBuilder().setTableId(rid("FAST")).build()),
                 Optional.empty(),
                 Optional.empty(),
-                new java.util.concurrent.ConcurrentHashMap<
-                    ResourceId, CompletableFuture<TablePin>>(),
+                new CurrentSnapshotPinCache(),
                 diagnostics));
 
     org.mockito.Mockito.verify(diagnostics).add("pin.snapshot_calls", 1L);
