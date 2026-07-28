@@ -105,4 +105,30 @@ class MutationOpsDeleteTest {
 
     assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
   }
+
+  /**
+   * The fourth corner: a caller who named a version, against a resource another deleter already
+   * removed. Its precondition can no longer be satisfied by anything, so this is NOT_FOUND rather
+   * than the version mismatch above or the silent success the unconditional caller gets.
+   */
+  @Test
+  void conditionalDeleteReportsNotFoundOnceTheResourceIsGone() {
+    MutationMeta absent = MutationMeta.getDefaultInstance();
+    Precondition precondition = Precondition.newBuilder().setExpectedVersion(7L).build();
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                MutationOps.deleteWithPreconditions(
+                    () -> INITIAL,
+                    precondition,
+                    ignored -> false,
+                    () -> absent,
+                    "corr",
+                    "table",
+                    Map.of("id", "table-1")));
+
+    assertEquals(Status.Code.NOT_FOUND, error.getStatus().getCode());
+  }
 }
