@@ -575,10 +575,14 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   if (request.getRecursive()) {
                     // Check the supplied condition before deleting descendants. The final delete
                     // below still uses the same condition to catch a concurrent root mutation.
-                    MutationOps.BaseServiceChecks.enforcePreconditions(
+                    // On a retry this check runs again, and by then an earlier attempt may have
+                    // already destroyed part of the subtree, so it reports partial teardown rather
+                    // than a bare precondition failure that reads like a no-op.
+                    enforceRootPrecondition(
                         correlationId,
                         namespaceRepo.metaFor(namespaceId),
-                        request.getPrecondition());
+                        request.getPrecondition(),
+                        destroyed);
                     if (!markerStore.advanceNamespaceMarker(namespaceId, markerVersion)) {
                       throw new BaseResourceRepository.AbortRetryableException(
                           "namespace children changed before recursive delete: "
@@ -676,32 +680,16 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                         Map.of("display_name", pretty));
                   }
 
-                  if (request.getRecursive() && destroyed.total() > 0) {
-                    // Descendants are already irreversibly gone. If the caller's precondition on
+                  if (request.getRecursive()) {
+                    // Descendants may already be irreversibly gone. If the caller's precondition on
                     // the root no longer holds (a concurrent metadata bump, or a now-stale --etag),
                     // the final delete below would report a generic precondition failure that reads
-                    // like a no-op. Surface the partial teardown with counts so callers can tell a
-                    // true no-op from a subtree that has actually been destroyed. The counts span
-                    // every attempt, so an earlier attempt's destruction is still reported when a
-                    // later one starts from an already-emptied subtree.
-                    try {
-                      MutationOps.BaseServiceChecks.enforcePreconditions(
-                          correlationId,
-                          namespaceRepo.metaForSafe(namespaceId),
-                          request.getPrecondition());
-                    } catch (StatusRuntimeException pfe) {
-                      throw GrpcErrors.preconditionFailed(
-                          correlationId,
-                          GeneratedErrorMessages.MessageKey.NAMESPACE_RECURSIVE_PARTIAL,
-                          Map.of(
-                              "deleted_namespaces",
-                              Integer.toString(destroyed.namespacesDeleted),
-                              "deleted_tables",
-                              Integer.toString(destroyed.tablesDeleted),
-                              "deleted_views",
-                              Integer.toString(destroyed.viewsDeleted)),
-                          pfe);
-                    }
+                    // like a no-op, so pre-empt it here where the counts are known.
+                    enforceRootPrecondition(
+                        correlationId,
+                        namespaceRepo.metaForSafe(namespaceId),
+                        request.getPrecondition(),
+                        destroyed);
                   }
 
                   // The emptiness scans above are reads, and no read can be part of a CAS batch, so
@@ -738,6 +726,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                         correlationId,
                         GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
                         Map.of());
+                  } catch (StatusRuntimeException failed) {
+                    // The root's metadata can still change between the check above and this CAS, so
+                    // the last precondition failure gets the same treatment: never report a no-op
+                    // for an operation that has already destroyed part of the subtree.
+                    throw asPartialTeardown(correlationId, failed, destroyed);
                   }
 
                   topology.evictRelationRefs(namespaceId);
@@ -753,6 +746,54 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  /**
+   * Enforces the caller's precondition on the root, reporting it as {@code
+   * NAMESPACE_RECURSIVE_PARTIAL} once this operation has already destroyed something.
+   *
+   * <p>A recursive delete is irreversible but retryable, so every precondition check after the first
+   * attempt runs against a subtree that may already be partly gone — including the pre-drop check at
+   * the top of a later attempt. A bare precondition failure there says "nothing happened" about an
+   * operation that has destroyed resources, which is the one thing this error exists to prevent.
+   * Routing every root precondition check through here keeps that guarantee independent of where in
+   * the method the check happens to sit.
+   */
+  private void enforceRootPrecondition(
+      String correlationId,
+      MutationMeta meta,
+      ai.floedb.floecat.common.rpc.Precondition precondition,
+      RecursiveResourceDropper.DropSummary destroyed) {
+    try {
+      MutationOps.BaseServiceChecks.enforcePreconditions(correlationId, meta, precondition);
+    } catch (StatusRuntimeException failed) {
+      throw asPartialTeardown(correlationId, failed, destroyed);
+    }
+  }
+
+  /**
+   * Re-labels {@code failed} as a partial teardown when this operation has already destroyed
+   * something, and returns it unchanged otherwise. Only the counts are added — the failure itself is
+   * still reported, and remains the cause.
+   */
+  private StatusRuntimeException asPartialTeardown(
+      String correlationId,
+      StatusRuntimeException failed,
+      RecursiveResourceDropper.DropSummary destroyed) {
+    if (destroyed.total() == 0) {
+      return failed;
+    }
+    return GrpcErrors.preconditionFailed(
+        correlationId,
+        GeneratedErrorMessages.MessageKey.NAMESPACE_RECURSIVE_PARTIAL,
+        Map.of(
+            "deleted_namespaces",
+            Integer.toString(destroyed.namespacesDeleted),
+            "deleted_tables",
+            Integer.toString(destroyed.tablesDeleted),
+            "deleted_views",
+            Integer.toString(destroyed.viewsDeleted)),
+        failed);
   }
 
   /**
