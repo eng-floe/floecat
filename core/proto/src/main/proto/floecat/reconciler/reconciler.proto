@@ -214,6 +214,12 @@ message ReconcileSnapshotTask {
   string direct_stats_blob_uri = 10;
   // Number of direct target stats records persisted in the blob.
   uint32 direct_stats_record_count = 11;
+  // Connector-derived immutable source-content revision. Snapshot id alone is not sufficient.
+  string source_revision = 14;
+  // Canonical fingerprint of the desired snapshot metadata, excluding incidental ingest fields.
+  string metadata_fingerprint = 15;
+  // Canonical set-like capture coverage requested by this snapshot plan.
+  repeated string requested_coverage = 16;
 }
 
 // One grouped file execution unit emitted by snapshot planning.
@@ -323,6 +329,8 @@ message FileGroupResultPayload {
   repeated StatsObjectDescriptor index_artifacts = 14;
   repeated StatsObjectDescriptor file_stats = 15;
   IndexGenerationPredecessor index_predecessor = 16;
+  // Concrete column selectors present in this file group's published index artifacts.
+  repeated string realized_index_selectors = 17;
 }
 
 // Immutable publication unit produced by the snapshot-finalize executor after it has verified all
@@ -349,6 +357,8 @@ message SnapshotCaptureManifest {
   uint32 final_stats_record_count = 18;
   uint32 index_artifact_count = 19;
   IndexGenerationPredecessor index_predecessor = 20;
+  // Concrete column selectors present in the activated index generation.
+  repeated string realized_index_selectors = 21;
 }
 
 // Compact reference to a committed SnapshotCaptureManifest at the URI allocated for this fenced

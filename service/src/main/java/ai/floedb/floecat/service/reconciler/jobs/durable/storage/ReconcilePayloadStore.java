@@ -192,6 +192,9 @@ public class ReconcilePayloadStore {
         state.snapshotTaskSourceFileCount,
         blankToEmpty(state.snapshotTaskDirectStatsBlobUri),
         state.snapshotTaskDirectStatsRecordCount,
+        state.snapshotTaskSourceRevision,
+        state.snapshotTaskMetadataFingerprint,
+        state.snapshotTaskRequestedCoverage,
         snapshotIndexPredecessor(state));
   }
 

@@ -29,6 +29,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
+import ai.floedb.floecat.catalog.rpc.IndexArtifactState;
 import ai.floedb.floecat.catalog.rpc.IndexFileTarget;
 import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.common.rpc.BlobHeader;
@@ -300,6 +301,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             null);
 
     assertThat(client.submitSnapshotFinalizeSuccess(lease, prepared)).isTrue();
@@ -331,6 +333,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             "/stats/",
             "/manifest.pb",
             0,
+            List.of(),
             List.of(),
             List.of(),
             List.of(),
@@ -370,6 +373,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of("customer_id"),
             null);
 
     assertThat(client.submitSnapshotFinalizeSuccess(lease, prepared)).isTrue();
@@ -380,6 +384,7 @@ class GrpcRemoteReconcileExecutorClientTest {
     SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
     assertThat(manifest.hasIndexPredecessor()).isTrue();
     assertThat(manifest.getIndexPredecessor().getGenerationId()).isEqualTo("generation-1");
+    assertThat(manifest.getRealizedIndexSelectorsList()).containsExactly("customer_id");
     assertThat(manifest.getFileGroups(0).getIndexPredecessor())
         .isEqualTo(manifest.getIndexPredecessor());
   }
@@ -404,6 +409,7 @@ class GrpcRemoteReconcileExecutorClientTest {
                     List.of(
                         fileGroupResultDescriptor(indexPredecessor()),
                         fileGroupResultDescriptor(otherPredecessor)),
+                    List.of(),
                     List.of(),
                     List.of(),
                     List.of(),
@@ -1017,6 +1023,50 @@ class GrpcRemoteReconcileExecutorClientTest {
   }
 
   @Test
+  void submitFileGroupSuccessRejectsDefaultIndexArtifactWithoutResolvedColumns() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.ALL,
+            32);
+    var payload = indexFileGroupPayload("s3://bucket/file.parquet", policy);
+    var result =
+        new StandaloneFileGroupExecutionResult(
+            "result-1",
+            List.of(),
+            List.of(),
+            List.of(indexArtifact("s3://bucket/file.parquet", "")));
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> client.submitSuccess(remoteFileGroupLease(), payload, result));
+  }
+
+  @Test
+  void submitFileGroupSuccessRejectsDefaultIndexArtifactExceedingFirstNLimit() {
+    ExplicitTransportClient client = new ExplicitTransportClient();
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+            2);
+    var payload = indexFileGroupPayload("s3://bucket/file.parquet", policy);
+    var result =
+        new StandaloneFileGroupExecutionResult(
+            "result-1",
+            List.of(),
+            List.of(),
+            List.of(indexArtifact("s3://bucket/file.parquet", "a,b,c")));
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> client.submitSuccess(remoteFileGroupLease(), payload, result));
+  }
+
+  @Test
   void progressiveFileStatsPublicationWritesObjectBeforeTerminalDescriptorSubmission()
       throws Exception {
     ExplicitTransportClient client = new ExplicitTransportClient();
@@ -1330,6 +1380,51 @@ class GrpcRemoteReconcileExecutorClientTest {
         indexCapturePolicy(),
         predecessor,
         List.of());
+  }
+
+  private static StandaloneFileGroupExecutionPayload indexFileGroupPayload(
+      String filePath, ReconcileCapturePolicy policy) {
+    return new StandaloneFileGroupExecutionPayload(
+        "job-lease",
+        "lease-epoch",
+        "",
+        ai.floedb.floecat.connector.rpc.Connector.getDefaultInstance(),
+        "db",
+        "events",
+        "s3://bucket/path",
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setKind(ResourceKind.RK_TABLE)
+            .setId("table-1")
+            .build(),
+        55L,
+        "plan-1",
+        "group-1",
+        "/result.pb",
+        "/stats/",
+        List.of(filePath),
+        "",
+        List.of(),
+        policy,
+        new StandaloneFileGroupExecutionPayload.IndexGenerationPredecessor(
+            "generation-1", 7L, "/capture-1.pb", 9L),
+        List.of());
+  }
+
+  private static ReconcilerBackend.StagedIndexArtifact indexArtifact(
+      String filePath, String indexedColumns) {
+    IndexArtifactRecord.Builder record =
+        IndexArtifactRecord.newBuilder()
+            .setTarget(
+                IndexTarget.newBuilder()
+                    .setFile(IndexFileTarget.newBuilder().setFilePath(filePath)))
+            .setState(IndexArtifactState.IAS_READY)
+            .setArtifactUri(filePath + ".idx");
+    if (indexedColumns != null && !indexedColumns.isBlank()) {
+      record.putProperties("indexed_columns", indexedColumns);
+    }
+    return new ReconcilerBackend.StagedIndexArtifact(
+        record.build(), new byte[] {1}, "application/x-parquet");
   }
 
   private static ReconcileCapturePolicy indexCapturePolicy() {

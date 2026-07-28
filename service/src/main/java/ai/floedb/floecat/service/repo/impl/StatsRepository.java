@@ -1521,22 +1521,17 @@ public class StatsRepository implements StatsStore {
     if (publicationFence == null) {
       return pointerStore.compareAndSet(manifestPointer, expectedVersion, next);
     }
-    Pointer fenced = pointerStore.get(publicationFence.pointerKey()).orElse(null);
-    if (fenced == null
-        || fenced.getVersion() != publicationFence.version()
-        || !publicationFence.value().equals(fenced.getBlobUri())) {
-      return false;
-    }
-    Pointer advancedFence =
-        PointerReferences.opaqueMarkerPointer(
-            publicationFence.pointerKey(),
-            publicationFence.value(),
-            publicationFence.version() + 1L);
-    return pointerStore.compareAndSetBatch(
-        List.of(
-            new PointerStore.CasUpsert(manifestPointer, expectedVersion, next),
-            new PointerStore.CasUpsert(
-                publicationFence.pointerKey(), publicationFence.version(), advancedFence)));
+    List<PointerStore.CasOp> publication =
+        new ArrayList<>(publicationFence.pointerUpdates().size() + 1);
+    publication.add(new PointerStore.CasUpsert(manifestPointer, expectedVersion, next));
+    publicationFence.pointerUpdates().stream()
+        .map(
+            update ->
+                (PointerStore.CasOp)
+                    new PointerStore.CasUpsert(
+                        update.pointerKey(), update.expectedVersion(), update.next()))
+        .forEach(publication::add);
+    return pointerStore.compareAndSetBatch(publication);
   }
 
   private static StatsStore.StatsGenerationPredecessor predecessorOf(

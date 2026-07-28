@@ -156,6 +156,22 @@ class ReconcileAncestorRollupServiceTest {
   }
 
   @Test
+  void tableRollupDoesNotCountContentDeduplicatedSnapshotChild() {
+    ReconcileAncestorRollupService rollups = rollups();
+    StoredReconcileJob table = job("table", ReconcileJobKind.PLAN_TABLE, "connector", "JS_WAITING");
+    table.childrenFinalized = true;
+    table.expectedDirectChildren = 1L;
+
+    StoredReconcileJob snapshot =
+        job("snapshot", ReconcileJobKind.PLAN_SNAPSHOT, table.jobId, "JS_SUCCEEDED");
+    snapshot.snapshotsProcessed = 0L;
+
+    var projection = rollups.recomputeParentProjection(table, List.of(snapshot));
+
+    assertEquals(0L, projection.snapshotsProcessed());
+  }
+
+  @Test
   void tableAndConnectorRollupsUseFinalizedSnapshotArtifactCounts() {
     ReconcileAncestorRollupService rollups = rollups();
     StoredReconcileJob table = job("table", ReconcileJobKind.PLAN_TABLE, "connector", "JS_WAITING");

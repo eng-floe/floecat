@@ -61,7 +61,8 @@ final class JavaConnectorFileGroupCaptureAdapter {
       List<TargetStatsRecord> fileStats =
           uniqueFileStats(captured.statsRecords(), publishedFileTargets);
       List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries =
-          filterPageIndexEntries(captured.pageIndexEntries(), request.indexColumns());
+          filterPageIndexEntries(
+              captured.pageIndexEntries(), request.indexColumns(), request.columnSelectorPolicy());
       if (!fileStats.isEmpty()) {
         partialAggregates = mergePartialAggregates(request, partialAggregates, fileStats);
       }
@@ -122,12 +123,32 @@ final class JavaConnectorFileGroupCaptureAdapter {
   }
 
   private static List<FloecatConnector.ParquetPageIndexEntry> filterPageIndexEntries(
-      List<FloecatConnector.ParquetPageIndexEntry> entries, Set<String> indexColumns) {
-    if (entries == null || entries.isEmpty() || indexColumns == null || indexColumns.isEmpty()) {
-      return entries == null ? List.of() : entries;
+      List<FloecatConnector.ParquetPageIndexEntry> entries,
+      Set<String> indexColumns,
+      FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy) {
+    if (entries == null || entries.isEmpty()) {
+      return List.of();
+    }
+    List<String> availableColumns =
+        entries.stream()
+            .filter(java.util.Objects::nonNull)
+            .map(FloecatConnector.ParquetPageIndexEntry::columnName)
+            .filter(name -> name != null && !name.isBlank())
+            .map(String::trim)
+            .distinct()
+            .toList();
+    Set<String> selectedColumns =
+        FloecatConnector.resolveIncludedColumns(
+            availableColumns, indexColumns, columnSelectorPolicy);
+    if (selectedColumns.isEmpty()) {
+      return List.of();
     }
     return entries.stream()
-        .filter(entry -> entry != null && indexColumns.contains(entry.columnName()))
+        .filter(
+            entry ->
+                entry != null
+                    && entry.columnName() != null
+                    && selectedColumns.contains(entry.columnName().trim()))
         .toList();
   }
 }

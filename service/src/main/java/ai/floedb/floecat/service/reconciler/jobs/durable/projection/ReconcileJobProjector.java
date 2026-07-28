@@ -216,6 +216,9 @@ public class ReconcileJobProjector {
         (int) Math.max(0L, stored.snapshotTaskSourceFileCount),
         blankToEmpty(stored.snapshotTaskDirectStatsBlobUri),
         (int) Math.max(0L, stored.snapshotTaskDirectStatsRecordCount),
+        stored.snapshotTaskSourceRevision,
+        stored.snapshotTaskMetadataFingerprint,
+        stored.snapshotTaskRequestedCoverage,
         stored.snapshotTaskIndexPredecessorPresent
             ? new ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor
                 .IndexGenerationPredecessor(

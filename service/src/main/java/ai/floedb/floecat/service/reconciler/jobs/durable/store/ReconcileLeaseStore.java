@@ -127,6 +127,10 @@ public interface ReconcileLeaseStore {
 
   void clearSnapshotOwnershipIfOwned(StoredReconcileJob record, String expectedReference);
 
+  default boolean isSnapshotOwnershipHeldBy(StoredReconcileJob record, String expectedReference) {
+    return false;
+  }
+
   String leaseExpiryPointerKey(StoredJobLease lease);
 
   String leaseExpiryPointerKey(long expiresAtMs, String accountId, String jobId);

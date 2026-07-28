@@ -105,21 +105,21 @@ public final class FileGroupIndexArtifactStager {
     }
     Map<String, List<FloecatConnector.ParquetPageIndexEntry>> pageEntriesByFile =
         pageIndexEntriesByFile(pageIndexEntries);
-    Map<String, FileTargetStats> byPath = fileStatsByPath(stats);
-    if (byPath.isEmpty() && pageEntriesByFile.isEmpty()) {
+    if (pageEntriesByFile.isEmpty()) {
       return List.of();
     }
+    Map<String, FileTargetStats> byPath = fileStatsByPath(stats);
     var now = nowTs();
     List<ReconcilerBackend.StagedIndexArtifact> artifacts = new ArrayList<>();
     for (String filePath : plannedFilePaths) {
       List<FloecatConnector.ParquetPageIndexEntry> filePageEntries =
           pageEntriesByFile.getOrDefault(filePath, List.of());
-      FileTargetStats fileStats = byPath.get(filePath);
-      if (fileStats == null && !filePageEntries.isEmpty()) {
-        fileStats = synthesizeIndexOnlyFileStats(filePath, filePageEntries);
-      }
-      if (fileStats == null) {
+      if (filePageEntries.isEmpty()) {
         continue;
+      }
+      FileTargetStats fileStats = byPath.get(filePath);
+      if (fileStats == null) {
+        fileStats = synthesizeIndexOnlyFileStats(filePath, filePageEntries);
       }
       byte[] sidecar = writeIndexSidecar(fileStats, filePageEntries);
       String contentSha256B64 = sha256B64(sidecar);
@@ -148,8 +148,7 @@ public final class FileGroupIndexArtifactStager {
               .setRefreshedAt(now)
               .setSourceFileFormat(
                   fileStats.getFileFormat().isBlank() ? "parquet" : fileStats.getFileFormat())
-              .putProperties(
-                  "materialization", filePageEntries.isEmpty() ? "bootstrap" : "page_index");
+              .putProperties("materialization", "page_index");
       if (fileStats.hasSequenceNumber()) {
         record.putProperties(
             "source_sequence_number", Long.toString(fileStats.getSequenceNumber()));

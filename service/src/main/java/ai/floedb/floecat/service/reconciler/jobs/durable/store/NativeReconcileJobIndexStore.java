@@ -878,6 +878,13 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     copy.snapshotTaskSourceFileCount = source.snapshotTaskSourceFileCount;
     copy.snapshotTaskDirectStatsBlobUri = source.snapshotTaskDirectStatsBlobUri;
     copy.snapshotTaskDirectStatsRecordCount = source.snapshotTaskDirectStatsRecordCount;
+    copy.snapshotTaskSourceRevision = source.snapshotTaskSourceRevision;
+    copy.snapshotTaskMetadataFingerprint = source.snapshotTaskMetadataFingerprint;
+    copy.snapshotTaskRequestedCoverage =
+        source.snapshotTaskRequestedCoverage == null
+            ? java.util.List.of()
+            : java.util.List.copyOf(source.snapshotTaskRequestedCoverage);
+    copy.snapshotTaskCoverageFrozen = source.snapshotTaskCoverageFrozen;
     copy.snapshotTaskIndexPredecessorPinPending = source.snapshotTaskIndexPredecessorPinPending;
     copy.snapshotTaskIndexPredecessorPresent = source.snapshotTaskIndexPredecessorPresent;
     copy.snapshotTaskIndexPredecessorGenerationId = source.snapshotTaskIndexPredecessorGenerationId;
@@ -1040,6 +1047,10 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
         source.capturePolicyOutputs == null ? List.of() : List.copyOf(source.capturePolicyOutputs);
     copy.capturePolicyDefaultColumnScope = source.capturePolicyDefaultColumnScope;
     copy.capturePolicyMaxDefaultColumns = source.capturePolicyMaxDefaultColumns;
+    copy.capturePolicyProperties =
+        source.capturePolicyProperties == null
+            ? java.util.Map.of()
+            : java.util.Map.copyOf(source.capturePolicyProperties);
     copy.snapshotSelectionKind = source.snapshotSelectionKind;
     copy.snapshotSelectionSnapshotIds =
         source.snapshotSelectionSnapshotIds == null

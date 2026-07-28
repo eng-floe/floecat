@@ -50,6 +50,7 @@ import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.StringValue;
@@ -2373,6 +2374,66 @@ class StatsRepositoryTargetStorageTest {
                 Keys.snapshotTargetStatsGenerationPrefix(
                     TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId)))
         .isEqualTo(206);
+  }
+
+  @Test
+  void preparedGenerationPublishesExternalPointersAtomicallyWithStats() {
+    AtomicBoolean failAtomicPublication = new AtomicBoolean(true);
+    long snapshotId = 7154L;
+    String statsPointerKey =
+        Keys.snapshotTargetStatsManifestPointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId);
+    InMemoryPointerStore pointers =
+        new InMemoryPointerStore() {
+          @Override
+          public boolean compareAndSetBatch(List<PointerStore.CasOp> ops) {
+            boolean publication =
+                ops.stream()
+                    .anyMatch(
+                        op ->
+                            op instanceof PointerStore.CasUpsert upsert
+                                && statsPointerKey.equals(upsert.key()));
+            if (publication && failAtomicPublication.compareAndSet(true, false)) {
+              return false;
+            }
+            return super.compareAndSetBatch(ops);
+          }
+        };
+    StatsRepository repository = new StatsRepository(pointers, new InMemoryBlobStore());
+    String generationId = "atomic-generation";
+    String indexActiveKey = "/test/index-active";
+    String indexManifestKey = "/test/index-manifest";
+    StatsStore.PublicationFence publicationFence =
+        new StatsStore.PublicationFence(
+            List.of(
+                new StatsStore.PublicationPointerUpdate(
+                    indexActiveKey,
+                    0L,
+                    PointerReferences.opaqueMarkerPointer(indexActiveKey, generationId, 1L)),
+                new StatsStore.PublicationPointerUpdate(
+                    indexManifestKey,
+                    0L,
+                    PointerReferences.blobPointer(indexManifestKey, "/manifest.pb", 1L))));
+    StatsStore.StatsGenerationPredecessor firstPredecessor =
+        repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+
+    assertThat(
+            repository.publishPreparedStatsGeneration(
+                TABLE_ID, snapshotId, generationId, List.of(), firstPredecessor, publicationFence))
+        .isFalse();
+    assertThat(pointers.get(statsPointerKey)).isEmpty();
+    assertThat(pointers.get(indexActiveKey)).isEmpty();
+    assertThat(pointers.get(indexManifestKey)).isEmpty();
+
+    StatsStore.StatsGenerationPredecessor retryPredecessor =
+        repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+    assertThat(
+            repository.publishPreparedStatsGeneration(
+                TABLE_ID, snapshotId, generationId, List.of(), retryPredecessor, publicationFence))
+        .isTrue();
+    assertThat(pointers.get(statsPointerKey)).isPresent();
+    assertThat(pointers.get(indexActiveKey).orElseThrow().getBlobUri()).isEqualTo(generationId);
+    assertThat(pointers.get(indexManifestKey).orElseThrow().getBlobUri()).isEqualTo("/manifest.pb");
   }
 
   @Test

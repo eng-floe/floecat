@@ -18,15 +18,18 @@ package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -382,9 +385,6 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
   private List<ReconcileSnapshotTask> snapshotTasksForSuccessfulPlan(
       StandalonePlanTablePayload payload,
       QueuedReconcileWorkerSupport.TableExecutionResult tableExecution) {
-    if (payload.captureMode() == ReconcilerService.CaptureMode.METADATA_ONLY) {
-      return List.of();
-    }
     ReconcileTableTask task =
         resolvedTableTaskForSnapshotPlanning(payload.tableTask(), tableExecution.matchedTableIds());
     if (task.isEmpty()
@@ -392,17 +392,60 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
         || task.destinationTableId().isBlank()) {
       return List.of();
     }
+    Map<Long, FloecatConnector.SnapshotBundle> bundles =
+        tableExecution.captureSnapshotBundles().stream()
+            .collect(
+                java.util.stream.Collectors.toMap(
+                    FloecatConnector.SnapshotBundle::snapshotId,
+                    bundle -> bundle,
+                    (left, right) -> right,
+                    java.util.LinkedHashMap::new));
     return tableExecution.captureSnapshotIds().stream()
         .filter(snapshotId -> snapshotId != null && snapshotId >= 0L)
         .map(
-            snapshotId ->
-                ReconcileSnapshotTask.of(
-                    task.destinationTableId(),
-                    snapshotId,
-                    task.sourceNamespace(),
-                    task.sourceTable()))
+            snapshotId -> {
+              FloecatConnector.SnapshotBundle bundle = bundles.get(snapshotId);
+              String sourceRevision = sourceRevision(bundle, snapshotId);
+              String metadataFingerprint = metadataFingerprint(bundle, snapshotId);
+              List<String> coverage =
+                  ReconcileSnapshotContentState.coverage(payload.captureMode(), payload.scope());
+              return ReconcileSnapshotTask.of(
+                      task.destinationTableId(),
+                      snapshotId,
+                      task.sourceNamespace(),
+                      task.sourceTable())
+                  .withContentState(sourceRevision, metadataFingerprint, coverage);
+            })
         .distinct()
         .toList();
+  }
+
+  static String sourceRevision(FloecatConnector.SnapshotBundle bundle, long snapshotId) {
+    if (bundle == null) {
+      return "";
+    }
+    return Long.toString(snapshotId);
+  }
+
+  static String metadataFingerprint(FloecatConnector.SnapshotBundle bundle, long snapshotId) {
+    if (bundle == null) {
+      return "";
+    }
+    return ReconcileSnapshotContentState.fingerprint(
+        Map.ofEntries(
+            Map.entry("snapshotId", snapshotId),
+            Map.entry("parentId", bundle.parentId()),
+            Map.entry("schemaJson", blankToEmpty(bundle.schemaJson())),
+            Map.entry(
+                "partitionSpec",
+                bundle.partitionSpec() == null
+                    ? ""
+                    : java.util.Base64.getEncoder()
+                        .encodeToString(bundle.partitionSpec().toByteArray())),
+            Map.entry("sequenceNumber", bundle.sequenceNumber()),
+            Map.entry("manifestList", blankToEmpty(bundle.manifestList())),
+            Map.entry("summary", bundle.summary() == null ? Map.of() : bundle.summary()),
+            Map.entry("schemaId", bundle.schemaId())));
   }
 
   private String workerAuthorizationHeader(String accountId) {

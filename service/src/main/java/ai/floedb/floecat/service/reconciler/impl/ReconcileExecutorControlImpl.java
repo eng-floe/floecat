@@ -1313,6 +1313,9 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         effective.sourceFileCount(),
         effective.directStatsBlobUri(),
         effective.directStatsRecordCount(),
+        effective.sourceRevision(),
+        effective.metadataFingerprint(),
+        effective.requestedCoverage(),
         effective.indexPredecessor());
   }
 
@@ -1387,6 +1390,9 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
             .setSourceFileCount(effective.sourceFileCount())
             .setDirectStatsBlobUri(effective.directStatsBlobUri())
             .setDirectStatsRecordCount(effective.directStatsRecordCount())
+            .setSourceRevision(effective.sourceRevision())
+            .setMetadataFingerprint(effective.metadataFingerprint())
+            .addAllRequestedCoverage(effective.requestedCoverage())
             .setCompletionMode(
                 switch (effective.completionMode()) {
                   case DIRECT_STATS ->
@@ -1786,6 +1792,9 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
         snapshotTask.getSourceFileCount(),
         snapshotTask.getDirectStatsBlobUri(),
         snapshotTask.getDirectStatsRecordCount(),
+        snapshotTask.getSourceRevision(),
+        snapshotTask.getMetadataFingerprint(),
+        snapshotTask.getRequestedCoverageList(),
         snapshotTask.hasIndexPredecessor()
             ? new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
                 snapshotTask.getIndexPredecessor().getGenerationId(),

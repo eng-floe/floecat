@@ -712,6 +712,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
                   effective.sourceFileCount(),
                   effective.directStatsBlobUri(),
                   effective.directStatsRecordCount(),
+                  effective.sourceRevision(),
+                  effective.metadataFingerprint(),
+                  effective.requestedCoverage(),
                   effective.indexPredecessor());
           if (existing.snapshotTask.equals(adoptedTask)) {
             return existing;
@@ -855,6 +858,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       int sourceFileCount,
       long statsRecordCount,
       long indexArtifactCount,
+      List<String> materializedCoverage,
       long finishedAtMs,
       String message) {
     ReconcileJob existing = jobs.get(jobId);

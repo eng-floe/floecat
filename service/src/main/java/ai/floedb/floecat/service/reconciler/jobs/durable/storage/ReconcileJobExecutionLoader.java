@@ -51,6 +51,9 @@ public class ReconcileJobExecutionLoader {
         (int) Math.max(0L, state.snapshotTaskSourceFileCount),
         state.snapshotTaskDirectStatsBlobUri == null ? "" : state.snapshotTaskDirectStatsBlobUri,
         (int) Math.max(0L, state.snapshotTaskDirectStatsRecordCount),
+        state.snapshotTaskSourceRevision,
+        state.snapshotTaskMetadataFingerprint,
+        state.snapshotTaskRequestedCoverage,
         snapshotIndexPredecessor(state));
   }
 

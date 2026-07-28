@@ -19,6 +19,7 @@ package ai.floedb.floecat.stats.spi;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import com.google.protobuf.Timestamp;
@@ -51,14 +52,25 @@ public interface StatsStore {
     }
   }
 
-  record PublicationFence(String pointerKey, String value, long version) {
-    public PublicationFence {
+  record PublicationPointerUpdate(String pointerKey, long expectedVersion, Pointer next) {
+    public PublicationPointerUpdate {
       if (pointerKey == null || pointerKey.isBlank()) {
         throw new IllegalArgumentException("pointerKey is required");
       }
-      value = value == null ? "" : value;
-      if (version <= 0L) {
-        throw new IllegalArgumentException("version must be positive");
+      if (expectedVersion < 0L) {
+        throw new IllegalArgumentException("expectedVersion must be non-negative");
+      }
+      if (next == null) {
+        throw new IllegalArgumentException("next pointer is required");
+      }
+    }
+  }
+
+  record PublicationFence(List<PublicationPointerUpdate> pointerUpdates) {
+    public PublicationFence {
+      pointerUpdates = pointerUpdates == null ? List.of() : List.copyOf(pointerUpdates);
+      if (pointerUpdates.isEmpty()) {
+        throw new IllegalArgumentException("pointerUpdates are required");
       }
     }
   }

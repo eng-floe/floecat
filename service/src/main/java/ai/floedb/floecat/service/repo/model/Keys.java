@@ -1498,6 +1498,39 @@ public final class Keys {
         + String.format("%019d", sid);
   }
 
+  public static String reconcileSnapshotCoverageClaimPointer(
+      String accountId,
+      String connectorId,
+      String sourceNamespace,
+      String sourceTable,
+      String tableId,
+      long snapshotId,
+      String sourceRevision,
+      String semanticsHash) {
+    return "/accounts/"
+        + encode(req("account_id", accountId))
+        + "/reconcile/snapshot-coverage-claims/"
+        + encode(req("connector_id", connectorId))
+        + "/"
+        + encode(req("source_namespace", sourceNamespace))
+        + "/"
+        + encode(req("source_table", sourceTable))
+        + "/"
+        + encode(req("table_id", tableId))
+        + "/"
+        + String.format("%019d", reqNonNegative("snapshot_id", snapshotId))
+        + "/"
+        + encode(req("source_revision", sourceRevision))
+        + "/"
+        + encode(req("semantics_hash", semanticsHash));
+  }
+
+  public static String reconcileSnapshotCoverageClaimPointerPrefix(String accountId) {
+    return "/accounts/"
+        + encode(req("account_id", accountId))
+        + "/reconcile/snapshot-coverage-claims/";
+  }
+
   public static String reconcileLaneLeasePointer(String accountId, String laneKey) {
     String tid = req("account_id", accountId);
     String lane = req("lane_key", laneKey);

@@ -45,6 +45,10 @@ public class StoredReconcileJob {
   public int snapshotTaskSourceFileCount;
   public String snapshotTaskDirectStatsBlobUri;
   public int snapshotTaskDirectStatsRecordCount;
+  public String snapshotTaskSourceRevision;
+  public String snapshotTaskMetadataFingerprint;
+  public java.util.List<String> snapshotTaskRequestedCoverage = java.util.List.of();
+  public boolean snapshotTaskCoverageFrozen;
   public boolean snapshotTaskIndexPredecessorPinPending;
   public boolean snapshotTaskIndexPredecessorPresent;
   public String snapshotTaskIndexPredecessorGenerationId;

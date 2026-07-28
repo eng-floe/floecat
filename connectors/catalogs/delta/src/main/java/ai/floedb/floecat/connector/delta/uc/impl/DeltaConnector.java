@@ -623,9 +623,20 @@ abstract class DeltaConnector implements FloecatConnector {
     switch (selectionKind) {
       case CURRENT -> candidates.add(latestVersion);
       case LATEST_N -> {
-        long start = Math.max(0L, latestVersion - Math.max(0, latestN) + 1L);
-        for (long version = start; version <= latestVersion; version++) {
-          candidates.add(version);
+        int keep = Math.max(0, latestN);
+        if (targetSnapshotIds != null && !targetSnapshotIds.isEmpty()) {
+          List<Long> eligibleTargets =
+              targetSnapshotIds.stream()
+                  .filter(version -> version != null && version >= 0L && version <= latestVersion)
+                  .sorted()
+                  .toList();
+          int from = Math.max(0, eligibleTargets.size() - keep);
+          candidates.addAll(eligibleTargets.subList(from, eligibleTargets.size()));
+        } else {
+          long start = Math.max(0L, latestVersion - keep + 1L);
+          for (long version = start; version <= latestVersion; version++) {
+            candidates.add(version);
+          }
         }
       }
       case EXPLICIT ->

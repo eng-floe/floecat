@@ -12,6 +12,12 @@ worker that speaks Floecat's leased reconcile protocol directly.
 > worker/control-plane deployments are unsupported: drain leased work, stop the old worker fleet,
 > deploy the control plane and matching workers as one coordinated cutover, then resume leasing.
 
+The current protocol also adds content-state and realized-index-selector fields. These protobuf
+additions are wire-compatible, but some are conditionally required by the control plane. Regenerate
+Rust protobuf bindings from `core/proto` and deploy matching workers with the control plane. An old
+file-group worker can continue to submit stats-only results, but an old worker cannot complete
+page-index capture because it cannot populate `FileGroupResultPayload.realized_index_selectors`.
+
 The goal is not to embed Rust into the JVM. The goal is to run a separate Rust process that:
 
 1. Leases eligible reconcile jobs from the control plane.
@@ -22,6 +28,11 @@ The goal is not to embed Rust into the JVM. The goal is to run a separate Rust p
 If you only need file-group capture replacement, you do not need to replace the Java planner
 workers. `PLAN_CONNECTOR`, `PLAN_TABLE`, `PLAN_VIEW`, and `PLAN_SNAPSHOT` can remain in the
 existing JVM control plane or executor fleet.
+
+If a remote implementation also owns `PLAN_SNAPSHOT`, it must preserve the leased snapshot task's
+`source_revision`, `metadata_fingerprint`, and complete `requested_coverage` in its successful
+planned task. Dropping those fields disables or corrupts content-state deduplication. A remote
+snapshot finalizer must likewise populate the realized-selector fields described below.
 
 ## What You Are Replacing
 The current JVM path for file-group execution is:
@@ -272,6 +283,8 @@ The service expects the same logical outputs the Java runner currently produces:
 - worker-chosen parquet sidecars plus one fenced, hash-addressed `IndexArtifactRecord` wrapper per
   sidecar
 - a bounded `FileGroupResultPayload` containing compact file-stats and index-wrapper descriptors
+- the concrete index selectors present in the published wrappers, repeated in
+  `FileGroupResultPayload.realized_index_selectors`
 - a `ReconcileFileGroupResultDescriptor` sent in the success RPC
 
 The worker is responsible for ensuring:
@@ -281,6 +294,13 @@ The worker is responsible for ensuring:
 - every referenced stats object, sidecar, and index wrapper is committed before the success RPC
 - every index wrapper uses the leased `stats_object_prefix` plus the required
   `index-artifacts/<target-hash>/<payload-hash>.pb` suffix
+- every index wrapper records its concrete comma-separated selector set in the
+  `indexed_columns` property
+- `realized_index_selectors` is the sorted, distinct selector set represented by the file group's
+  index wrappers; omit it only when page-index output was not requested
+- explicit index selection covers every requested selector; default selection resolves to a
+  non-empty selector set for non-empty snapshots, uses the same set for every file in the group,
+  and does not exceed `max_default_columns` for `FIRST_N`
 - every stats descriptor identifies its target storage ID and the object size and SHA-256
 - the result descriptor's `artifact_references_sha256` is the canonical digest of its file-stats
   and index-artifact descriptor sets
@@ -328,6 +348,13 @@ The finalizer's `SnapshotCaptureManifest` must carry each durable file-group des
 its `artifact_references_sha256`, but must not repeat the per-file stats or index descriptor lists.
 It carries only file-group descriptors, snapshot-wide aggregate descriptors, and counts.
 
+For page-index capture, the finalizer must also populate
+`SnapshotCaptureManifest.realized_index_selectors` with the sorted, distinct selectors represented
+by the activated index generation. It must cover all explicitly requested selectors. For default
+selection on a non-empty snapshot, it must be non-empty and must not exceed `max_default_columns`
+when the policy uses `FIRST_N`. The Java snapshot finalizer derives this set from the file-group
+payloads; a non-Java finalizer must perform the same validation and aggregation.
+
 The manifest must also repeat the leased capture policy exactly, including outputs, column
 policies, default column scope, maximum default-column count, and the complete opaque properties
 map. The control plane rejects policy drift during finalization.
@@ -338,11 +365,11 @@ file group has not written its digest-bound prepared marker, the service returns
 The finalizer must retry the exact same finalization result; it must not regenerate a different
 result ID or manifest for that retry.
 
-During successful publication, the control plane activates the index generation first and commits
-the stats-generation root last. The root commit is the snapshot visibility point, so readers cannot
-observe the finalized snapshot before both its stats and index generations are active. This
-ordering is internal to the control plane and requires no additional RPC or sequencing step from
-the external finalizer.
+During successful publication, the control plane commits the stats-generation root and the index
+generation's active and capture-manifest pointers in one atomic pointer batch. Readers therefore
+cannot observe a finalized snapshot with only one generation activated. This publication fence is
+internal to the control plane and requires no additional RPC or sequencing step from the external
+finalizer.
 
 The digest field is required and has no legacy fallback. Existing in-flight or persisted
 file-group results without it must be drained or replanned before a finalizer using this contract

@@ -89,7 +89,11 @@ public class SnapshotPlanBlobStore {
         sanitizedJobs.size(),
         sourceFileCount,
         effective.directStatsBlobUri(),
-        effective.directStatsRecordCount());
+        effective.directStatsRecordCount(),
+        effective.sourceRevision(),
+        effective.metadataFingerprint(),
+        effective.requestedCoverage(),
+        effective.indexPredecessor());
   }
 
   public ReconcileSnapshotTask persistDirectStats(
@@ -129,7 +133,11 @@ public class SnapshotPlanBlobStore {
         effective.fileGroupCount(),
         effective.sourceFileCount(),
         blobUri,
-        sanitizedStats.size());
+        sanitizedStats.size(),
+        effective.sourceRevision(),
+        effective.metadataFingerprint(),
+        effective.requestedCoverage(),
+        effective.indexPredecessor());
   }
 
   public List<PlannedFileGroupJob> loadPlanJobs(ReconcileSnapshotTask snapshotTask) {

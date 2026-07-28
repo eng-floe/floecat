@@ -30,6 +30,7 @@ import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -69,6 +70,11 @@ public class IndexArtifactRepository {
       GenerationPredecessor predecessor, List<IndexArtifactRecord> artifacts) {}
 
   public record ActivationFence(String pointerKey, String value, long version) {}
+
+  public record PreparedActivation(
+      ActivationFence activationFence,
+      StatsStore.PublicationFence publicationFence,
+      boolean deleteDirectPredecessor) {}
 
   private record PrewrittenIndexWrite(String pointerKey, String blobUri, long blobBytes) {}
 
@@ -217,6 +223,34 @@ public class IndexArtifactRepository {
       byte[] captureManifestBytes,
       GenerationPredecessor predecessor,
       boolean inheritCoverage) {
+    PreparedActivation prepared =
+        prepareGenerationActivation(
+            tableId, snapshotId, generationId, captureManifestBytes, predecessor, inheritCoverage);
+    if (prepared.publicationFence() != null) {
+      List<PointerStore.CasOp> updates =
+          prepared.publicationFence().pointerUpdates().stream()
+              .map(
+                  update ->
+                      (PointerStore.CasOp)
+                          new PointerStore.CasUpsert(
+                              update.pointerKey(), update.expectedVersion(), update.next()))
+              .toList();
+      if (!pointerStore.compareAndSetBatch(updates)) {
+        throw new BaseResourceRepository.AbortRetryableException(
+            "index artifact generation activation conflicted for snapshot " + snapshotId);
+      }
+    }
+    completePreparedGenerationActivation(tableId, snapshotId, prepared);
+    return prepared.activationFence();
+  }
+
+  public PreparedActivation prepareGenerationActivation(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      byte[] captureManifestBytes,
+      GenerationPredecessor predecessor,
+      boolean inheritCoverage) {
     if (generationId == null || generationId.isBlank()) {
       throw new IllegalArgumentException("generationId is required");
     }
@@ -246,7 +280,8 @@ public class IndexArtifactRepository {
         && generationId.equals(active.getBlobUri())
         && manifest != null
         && captureManifestUri.equals(manifest.getBlobUri())) {
-      return new ActivationFence(activePointerKey, generationId, active.getVersion());
+      return new PreparedActivation(
+          new ActivationFence(activePointerKey, generationId, active.getVersion()), null, false);
     }
     if (!matches(active, predecessor.generationId(), predecessor.activePointerVersion())
         || !matches(
@@ -265,19 +300,24 @@ public class IndexArtifactRepository {
             captureManifestUri,
             predecessor.captureManifestPointerVersion() + 1L,
             effectiveManifestBytes.length);
-    if (!pointerStore.compareAndSetBatch(
-        List.of(
-            new PointerStore.CasUpsert(
-                activePointerKey, predecessor.activePointerVersion(), nextActive),
-            new PointerStore.CasUpsert(
-                manifestPointerKey, predecessor.captureManifestPointerVersion(), nextManifest)))) {
-      throw new BaseResourceRepository.AbortRetryableException(
-          "index artifact generation activation conflicted for snapshot " + snapshotId);
-    }
-    if (DIRECT_GENERATION.equals(predecessor.generationId())) {
+    return new PreparedActivation(
+        new ActivationFence(activePointerKey, generationId, nextActive.getVersion()),
+        new StatsStore.PublicationFence(
+            List.of(
+                new StatsStore.PublicationPointerUpdate(
+                    activePointerKey, predecessor.activePointerVersion(), nextActive),
+                new StatsStore.PublicationPointerUpdate(
+                    manifestPointerKey,
+                    predecessor.captureManifestPointerVersion(),
+                    nextManifest))),
+        DIRECT_GENERATION.equals(predecessor.generationId()));
+  }
+
+  public void completePreparedGenerationActivation(
+      ResourceId tableId, long snapshotId, PreparedActivation prepared) {
+    if (prepared != null && prepared.deleteDirectPredecessor()) {
       deleteDirectGenerationPointers(tableId, snapshotId);
     }
-    return new ActivationFence(activePointerKey, generationId, nextActive.getVersion());
   }
 
   private byte[] mergeCaptureManifestCoverage(

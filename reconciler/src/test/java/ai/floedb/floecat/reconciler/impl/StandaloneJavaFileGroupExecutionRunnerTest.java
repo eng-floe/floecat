@@ -175,6 +175,26 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         .containsExactly(plannedFile);
   }
 
+  @Test
+  void executeDoesNotStageEmptyBootstrapIndexArtifacts() {
+    var runner = new StandaloneJavaFileGroupExecutionRunner();
+    runner.captureEngineRegistry = mock(CaptureEngineRegistry.class);
+    runner.reconcileWorkerAuthProvider = ignored -> Optional.empty();
+    String plannedFile = "s3://bucket/path/file.parquet";
+    when(runner.captureEngineRegistry.capture(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              ai.floedb.floecat.reconciler.spi.capture.CaptureFileResultConsumer consumer =
+                  invocation.getArgument(1);
+              consumer.accept(List.of(fileStats(plannedFile)), List.of());
+              return CaptureEngineResult.empty();
+            });
+
+    CaptureEngineResult result = runner.execute(indexPayload(), () -> false, ignored -> {});
+
+    assertThat(result.stagedIndexArtifacts()).isEmpty();
+  }
+
   private static StandaloneFileGroupExecutionPayload payload() {
     return payload("acct");
   }

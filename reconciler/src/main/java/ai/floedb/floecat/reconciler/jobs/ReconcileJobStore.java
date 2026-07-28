@@ -456,6 +456,11 @@ public interface ReconcileJobStore {
     return Optional.empty();
   }
 
+  /** Freezes a snapshot plan's aggregate capture coverage before planning creates child work. */
+  default Optional<LeasedJob> freezeSnapshotPlanCoverage(String jobId, String leaseEpoch) {
+    return getCompletionLeaseView(jobId, leaseEpoch, false);
+  }
+
   default ProgressUpdate reportProgress(
       String jobId,
       String leaseEpoch,
@@ -718,6 +723,11 @@ public interface ReconcileJobStore {
     return renewLease(jobId, leaseEpoch);
   }
 
+  /** Whether this store enforces durable snapshot-publication ownership fences. */
+  default boolean enforcesSnapshotFinalizeOwnership() {
+    return false;
+  }
+
   boolean completeSnapshotFinalizeSuccess(
       String jobId,
       String leaseEpoch,
@@ -729,6 +739,7 @@ public interface ReconcileJobStore {
       int sourceFileCount,
       long statsRecordCount,
       long indexArtifactCount,
+      List<String> materializedCoverage,
       long finishedAtMs,
       String message);
 
@@ -1943,6 +1954,13 @@ public interface ReconcileJobStore {
     public final long snapshotId;
     public final long finalizedAtMs;
     public final String finalizerJobId;
+    public final int formatVersion;
+    public final String connectorId;
+    public final String sourceNamespace;
+    public final String sourceTable;
+    public final String sourceRevision;
+    public final String metadataFingerprint;
+    public final List<String> captureCoverage;
 
     public FinalizedSnapshotEvent(
         String eventId,
@@ -1957,6 +1975,43 @@ public interface ReconcileJobStore {
       this.snapshotId = Math.max(0L, snapshotId);
       this.finalizedAtMs = Math.max(0L, finalizedAtMs);
       this.finalizerJobId = finalizerJobId == null ? "" : finalizerJobId;
+      this.formatVersion = 1;
+      this.connectorId = "";
+      this.sourceNamespace = "";
+      this.sourceTable = "";
+      this.sourceRevision = "";
+      this.metadataFingerprint = "";
+      this.captureCoverage = List.of();
+    }
+
+    public FinalizedSnapshotEvent(
+        String eventId,
+        String accountId,
+        String tableId,
+        long snapshotId,
+        long finalizedAtMs,
+        String finalizerJobId,
+        int formatVersion,
+        String connectorId,
+        String sourceNamespace,
+        String sourceTable,
+        String sourceRevision,
+        String metadataFingerprint,
+        List<String> captureCoverage) {
+      this.eventId = eventId == null ? "" : eventId;
+      this.accountId = accountId == null ? "" : accountId;
+      this.tableId = tableId == null ? "" : tableId;
+      this.snapshotId = Math.max(0L, snapshotId);
+      this.finalizedAtMs = Math.max(0L, finalizedAtMs);
+      this.finalizerJobId = finalizerJobId == null ? "" : finalizerJobId;
+      this.formatVersion = Math.max(1, formatVersion);
+      this.connectorId = connectorId == null ? "" : connectorId;
+      this.sourceNamespace = sourceNamespace == null ? "" : sourceNamespace;
+      this.sourceTable = sourceTable == null ? "" : sourceTable;
+      this.sourceRevision = sourceRevision == null ? "" : sourceRevision;
+      this.metadataFingerprint = metadataFingerprint == null ? "" : metadataFingerprint;
+      this.captureCoverage =
+          captureCoverage == null ? List.of() : captureCoverage.stream().sorted().toList();
     }
   }
 

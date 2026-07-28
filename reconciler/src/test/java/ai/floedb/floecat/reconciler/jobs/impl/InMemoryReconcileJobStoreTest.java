@@ -553,6 +553,7 @@ class InMemoryReconcileJobStoreTest {
             2,
             9L,
             7L,
+            List.of(),
             200L,
             "Succeeded"));
     assertTrue(
@@ -567,6 +568,7 @@ class InMemoryReconcileJobStoreTest {
             2,
             9L,
             7L,
+            List.of(),
             300L,
             "Replayed"));
     assertFalse(
@@ -581,6 +583,7 @@ class InMemoryReconcileJobStoreTest {
             2,
             9L,
             7L,
+            List.of(),
             300L,
             "Conflicting replay"));
 

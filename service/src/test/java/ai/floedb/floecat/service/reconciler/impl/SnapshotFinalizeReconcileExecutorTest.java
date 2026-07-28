@@ -240,7 +240,7 @@ class SnapshotFinalizeReconcileExecutorTest {
   }
 
   @Test
-  void executeReturnsSuccessWhenDifferentFinalizerAlreadyFinalizedSnapshot() {
+  void priorFinalizerReceiptDoesNotAuthorizeAStaleAttempt() {
     var store =
         new InMemoryReconcileJobStore() {
           @Override
@@ -296,13 +296,9 @@ class SnapshotFinalizeReconcileExecutorTest {
         executor.execute(
             new ExecutionContext(finalizerLease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
 
-    assertTrue(result.success());
-    assertEquals(ExecutionResult.JobOutcome.SUCCESS, result.outcome);
-    assertEquals(0, result.errors);
-    assertEquals(ExecutionResult.FailureKind.NONE, result.failureKind);
-    assertNull(result.error);
-    assertEquals(1, result.snapshotsProcessed);
-    assertTrue(result.message.contains("already finalized by job winning-finalizer"));
+    assertEquals(ExecutionResult.JobOutcome.TERMINAL_FAILURE, result.outcome);
+    assertEquals(1, result.errors);
+    assertTrue(result.message.contains("remote descriptor-driven finalizer"));
   }
 
   @Test

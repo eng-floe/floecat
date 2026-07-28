@@ -949,6 +949,16 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
             List.of(new ReconcileLeaseBackend.LeaseOwnerDelete(pointerKey, existing.version()))));
   }
 
+  @Override
+  public boolean isSnapshotOwnershipHeldBy(StoredReconcileJob record, String expectedReference) {
+    String pointerKey = snapshotOwnershipPointerKey(record);
+    if (pointerKey.isBlank() || blank(expectedReference)) {
+      return false;
+    }
+    var existing = leaseBackend.loadOwner(pointerKey).orElse(null);
+    return existing != null && expectedReference.equals(existing.canonicalPointerKey());
+  }
+
   public String leaseExpiryPointerKey(StoredJobLease lease) {
     if (lease == null) {
       return "";

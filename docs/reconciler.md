@@ -321,9 +321,10 @@ perform a post-completion final lease confirmation after that RPC has durably co
   `connector trigger demo-glue --incremental --current --mode metadata-and-capture --capture stats`.
   The reconcile path
   captures table/file/column stats for matching table work while still allowing metadata mutation.
-- **Incremental run**: `--incremental` restricts work to snapshots not already ingested, and the
-  explicit snapshot scope (`--current`, `--latest-n`, `--snapshot`, or `--all`) controls which
-  upstream snapshots are eligible for planning.
+- **Incremental run**: `--incremental` enumerates snapshots selected by the explicit snapshot scope
+  (`--current`, `--latest-n`, `--snapshot`, or `--all`). Durable content state then skips snapshots
+  whose metadata fingerprint and requested capture coverage are already complete, or narrows work
+  to only the missing coverage. Full rescans bypass this content-state deduplication.
 
 ## Cross-References
 - Connector SPI details: [`docs/connectors-spi.md`](connectors-spi.md)

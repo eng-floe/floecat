@@ -383,6 +383,28 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       ReconcileJobStore.LeasedJob lease,
       StandalonePlanSnapshotPayload payload,
       ReconcileSnapshotTask task) {
+    if (payload.captureMode() == ReconcilerService.CaptureMode.METADATA_ONLY
+        || (!task.sourceRevision().isBlank() && task.requestedCoverage().isEmpty())) {
+      return PlannedSnapshotCapture.fileGroups(
+          ReconcileSnapshotTask.of(
+              task.tableId(),
+              task.snapshotId(),
+              task.sourceNamespace(),
+              task.sourceTable(),
+              List.of(),
+              true,
+              ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+              "",
+              0,
+              0,
+              "",
+              0,
+              task.sourceRevision(),
+              task.metadataFingerprint(),
+              task.requestedCoverage(),
+              task.indexPredecessor()),
+          List.of());
+    }
     Optional<PlannedSnapshotCapture> directSnapshotTask =
         tryDirectStatsCapture(lease, payload, task);
     if (directSnapshotTask.isPresent()) {
@@ -402,7 +424,11 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
             fileGroupTasks.size(),
             plannedSourceFileCount(fileGroupTasks),
             "",
-            0),
+            0,
+            task.sourceRevision(),
+            task.metadataFingerprint(),
+            task.requestedCoverage(),
+            task.indexPredecessor()),
         fileGroupTasks);
   }
 
@@ -446,7 +472,11 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
                 0,
                 directStats.get().sourceFileCount(),
                 "",
-                directStats.get().records().size()),
+                directStats.get().records().size(),
+                task.sourceRevision(),
+                task.metadataFingerprint(),
+                task.requestedCoverage(),
+                task.indexPredecessor()),
             directStats.get().records()));
   }
 

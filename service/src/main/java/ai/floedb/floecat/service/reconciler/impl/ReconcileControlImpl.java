@@ -1260,6 +1260,9 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
             .setSourceFileCount(effective.sourceFileCount())
             .setDirectStatsBlobUri(effective.directStatsBlobUri())
             .setDirectStatsRecordCount(effective.directStatsRecordCount())
+            .setSourceRevision(effective.sourceRevision())
+            .setMetadataFingerprint(effective.metadataFingerprint())
+            .addAllRequestedCoverage(effective.requestedCoverage())
             .setCompletionMode(
                 switch (effective.completionMode()) {
                   case DIRECT_STATS ->

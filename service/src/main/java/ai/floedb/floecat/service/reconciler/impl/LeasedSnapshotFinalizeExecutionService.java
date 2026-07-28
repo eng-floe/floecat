@@ -24,6 +24,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
@@ -105,6 +106,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                 descriptor == null ? 0 : descriptor.getSourceFileCount(),
                 descriptor == null ? 0L : descriptor.getStatsRecordCount(),
                 descriptor == null ? 0L : descriptor.getIndexArtifactCount(),
+                null,
                 System.currentTimeMillis(),
                 "Registered snapshot capture manifest");
         requireAcceptedLeaseOutcome(replayed, jobId);
@@ -182,6 +184,8 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                   validated.getSourceFileCount(),
                   validated.getStatsRecordCount(),
                   validated.getIndexArtifactCount(),
+                  ReconcileSnapshotContentState.materializedCoverage(
+                      snapshotTask.requestedCoverage(), manifest.getRealizedIndexSelectorsList()),
                   System.currentTimeMillis(),
                   "Registered snapshot capture manifest " + snapshotTask.snapshotId());
           requireAcceptedLeaseOutcome(accepted, lease.jobId);
@@ -319,6 +323,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     }
     validateCapturePolicy(lease, manifest.getCapturePolicy());
     validateIndexPredecessor(lease, snapshotTask, manifest);
+    validateRealizedIndexSelectors(lease, manifest);
     if (manifest
             .getCapturePolicy()
             .getOutputsList()
@@ -328,6 +333,49 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           "snapshot capture manifest index artifacts do not cover planned files");
     }
     return manifest;
+  }
+
+  private static void validateRealizedIndexSelectors(
+      ReconcileJobStore.LeasedJob lease, SnapshotCaptureManifest manifest) {
+    ReconcileCapturePolicy policy =
+        lease.scope == null ? ReconcileCapturePolicy.empty() : lease.scope.capturePolicy();
+    List<String> submitted = manifest.getRealizedIndexSelectorsList();
+    Set<String> realized = new HashSet<>();
+    for (String selector : submitted) {
+      if (selector == null || selector.isBlank() || !realized.add(selector.trim())) {
+        throw new IllegalArgumentException(
+            "snapshot capture manifest contains invalid realized index selectors");
+      }
+    }
+    if (!policy.requestsIndexes()) {
+      if (!realized.isEmpty()) {
+        throw new IllegalArgumentException(
+            "non-index snapshot capture manifest contains realized index selectors");
+      }
+      return;
+    }
+    Set<String> required = policy.selectorsForIndex();
+    if (!realized.containsAll(required)) {
+      throw new IllegalArgumentException(
+          "snapshot capture manifest does not cover requested index selectors");
+    }
+    boolean defaultSelection =
+        required.isEmpty()
+            && policy.defaultColumnScope()
+                != ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
+    if (manifest.getSourceFileCount() == 0) {
+      return;
+    }
+    if (defaultSelection && realized.isEmpty()) {
+      throw new IllegalArgumentException(
+          "snapshot capture manifest does not report resolved default index selectors");
+    }
+    if (defaultSelection
+        && policy.defaultColumnScope() == ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
+        && realized.size() > policy.maxDefaultColumns()) {
+      throw new IllegalArgumentException(
+          "snapshot capture manifest exceeds the requested default index limit");
+    }
   }
 
   private static void validateIndexPredecessor(
@@ -422,6 +470,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       ReconcileSnapshotTask snapshotTask,
       SnapshotCaptureManifest manifest) {
     String generationId = "full-rescan-" + lease.parentJobId;
+    boolean inheritPriorStats = mayInheritPriorStats(lease, snapshotTask);
     Set<String> fileGroups = new HashSet<>();
     int declaredFileStats = 0;
     int declaredIndexArtifacts = 0;
@@ -486,33 +535,37 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     }
     boolean capturedIndexes =
         manifest.getCapturePolicy().getOutputsList().contains(CaptureOutput.CO_PARQUET_PAGE_INDEX);
-    StatsStore.PublicationFence publicationFence = null;
+    IndexArtifactRepository.GenerationPredecessor indexPredecessor = null;
+    IndexArtifactRepository.PreparedActivation preparedIndexActivation = null;
     if (capturedIndexes) {
       if (!manifest.hasIndexPredecessor()) {
         throw new IllegalArgumentException("index capture manifest is missing its predecessor");
       }
       var predecessor = manifest.getIndexPredecessor();
-      IndexArtifactRepository.ActivationFence activated =
-          indexArtifactRepository.activateGeneration(
-              tableId,
-              snapshotTask.snapshotId(),
-              generationId,
-              manifest.toByteArray(),
-              new IndexArtifactRepository.GenerationPredecessor(
-                  predecessor.getGenerationId(),
-                  predecessor.getActivePointerVersion(),
-                  predecessor.getCaptureManifestUri(),
-                  predecessor.getCaptureManifestPointerVersion()),
-              !lease.fullRescan);
-      publicationFence =
-          new StatsStore.PublicationFence(
-              activated.pointerKey(), activated.value(), activated.version());
+      indexPredecessor =
+          new IndexArtifactRepository.GenerationPredecessor(
+              predecessor.getGenerationId(),
+              predecessor.getActivePointerVersion(),
+              predecessor.getCaptureManifestUri(),
+              predecessor.getCaptureManifestPointerVersion());
     }
     boolean published = false;
     for (int attempt = 0; attempt < 4 && !published; attempt++) {
+      StatsStore.PublicationFence publicationFence = null;
+      if (capturedIndexes) {
+        preparedIndexActivation =
+            indexArtifactRepository.prepareGenerationActivation(
+                tableId,
+                snapshotTask.snapshotId(),
+                generationId,
+                manifest.toByteArray(),
+                indexPredecessor,
+                false);
+        publicationFence = preparedIndexActivation.publicationFence();
+      }
       StatsStore.StatsGenerationPredecessor statsPredecessor =
           persistence.prepareStatsGenerationForPublication(
-              tableId, snapshotTask.snapshotId(), generationId, !lease.fullRescan);
+              tableId, snapshotTask.snapshotId(), generationId, inheritPriorStats);
       published =
           persistence.publishPreparedStatsGeneration(
               tableId,
@@ -527,8 +580,29 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           "snapshot stats publication conflicted repeatedly for snapshot "
               + snapshotTask.snapshotId());
     }
+    if (preparedIndexActivation != null) {
+      indexArtifactRepository.completePreparedGenerationActivation(
+          tableId, snapshotTask.snapshotId(), preparedIndexActivation);
+    }
     persistence.clearPrewrittenArtifactProtections(
         tableId, snapshotTask.snapshotId(), generationId);
+  }
+
+  private boolean mayInheritPriorStats(
+      ReconcileJobStore.LeasedJob lease, ReconcileSnapshotTask snapshotTask) {
+    if (lease.fullRescan || snapshotTask.sourceRevision().isBlank()) {
+      return false;
+    }
+    ReconcileJobStore.FinalizedSnapshotEvent prior =
+        jobs.getFinalizedSnapshot(
+                lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId())
+            .orElse(null);
+    return prior != null
+        && prior.formatVersion >= ReconcileSnapshotContentState.FORMAT_VERSION
+        && lease.connectorId.equals(prior.connectorId)
+        && snapshotTask.sourceNamespace().equals(prior.sourceNamespace)
+        && snapshotTask.sourceTable().equals(prior.sourceTable)
+        && snapshotTask.sourceRevision().equals(prior.sourceRevision);
   }
 
   private StatsStore.PrewrittenTargetStatsReference prewrittenStatsReference(

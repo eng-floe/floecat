@@ -484,6 +484,13 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
     ReconcileJobStore.LeasedJob lease =
         requireLeasedJob(
             principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_SNAPSHOT);
+    lease =
+        jobs.freezeSnapshotPlanCoverage(jobId, leaseEpoch)
+            .orElseThrow(
+                () ->
+                    Status.FAILED_PRECONDITION
+                        .withDescription("snapshot plan coverage could not be frozen")
+                        .asRuntimeException());
     ReconcileSnapshotTask snapshotTask =
         lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
     if (effectiveScope(lease).capturePolicy().requestsIndexes()) {
@@ -534,7 +541,11 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
                 baseSnapshotTask.fileGroupCount(),
                 baseSnapshotTask.sourceFileCount(),
                 baseSnapshotTask.directStatsBlobUri(),
-                baseSnapshotTask.directStatsRecordCount())
+                baseSnapshotTask.directStatsRecordCount(),
+                baseSnapshotTask.sourceRevision(),
+                baseSnapshotTask.metadataFingerprint(),
+                baseSnapshotTask.requestedCoverage(),
+                baseSnapshotTask.indexPredecessor())
             : plannedSnapshotTask;
     finalizedSnapshotTask =
         preservePinnedIndexPredecessor(
@@ -789,6 +800,9 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
         effective.sourceFileCount(),
         effective.directStatsBlobUri(),
         effective.directStatsRecordCount(),
+        effective.sourceRevision(),
+        effective.metadataFingerprint(),
+        effective.requestedCoverage(),
         effective.indexPredecessor());
   }
 

@@ -1010,6 +1010,15 @@ class GrpcRemoteReconcileExecutorClient
     validateIndexArtifactCoverage(payload, result);
     List<StatsObjectDescriptor> indexArtifacts =
         publishIndexArtifacts(result, payload.statsObjectPrefix());
+    List<String> realizedIndexSelectors =
+        result.stagedIndexArtifacts().stream()
+            .filter(java.util.Objects::nonNull)
+            .map(artifact -> artifact.record())
+            .filter(java.util.Objects::nonNull)
+            .flatMap(record -> persistedIndexSelectors(record).stream())
+            .distinct()
+            .sorted()
+            .toList();
     List<StatsObjectDescriptor> fileStatsObjects = result.fileStats();
     List<TargetStatsRecord> partialAggregates = result.partialAggregateRecords();
     ReconcileFileGroupTask plannedTask =
@@ -1041,7 +1050,8 @@ class GrpcRemoteReconcileExecutorClient
                     .toList())
             .addAllPartialAggregateRecords(partialAggregates)
             .addAllIndexArtifacts(indexArtifacts)
-            .addAllFileStats(fileStatsObjects);
+            .addAllFileStats(fileStatsObjects)
+            .addAllRealizedIndexSelectors(realizedIndexSelectors);
     if (payload.capturePageIndex()) {
       packedPayloadBuilder.setIndexPredecessor(toProtoIndexPredecessor(payload.indexPredecessor()));
     }
@@ -1292,6 +1302,7 @@ class GrpcRemoteReconcileExecutorClient
       List<StatsObjectDescriptor> fileStats,
       List<TargetStatsRecord> finalStats,
       List<StatsObjectDescriptor> indexArtifacts,
+      List<String> realizedIndexSelectors,
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor finalizeIndexPredecessor) {
     String stableResultId = resultId == null ? "" : resultId.trim();
     String stableStatsObjectPrefix = statsObjectPrefix == null ? "" : statsObjectPrefix.trim();
@@ -1323,6 +1334,15 @@ class GrpcRemoteReconcileExecutorClient
         indexArtifacts == null
             ? List.of()
             : indexArtifacts.stream().filter(java.util.Objects::nonNull).toList();
+    List<String> stableRealizedIndexSelectors =
+        realizedIndexSelectors == null
+            ? List.of()
+            : realizedIndexSelectors.stream()
+                .filter(selector -> selector != null && !selector.isBlank())
+                .map(String::trim)
+                .distinct()
+                .sorted()
+                .toList();
     if (stableFileGroups.size() != snapshotTask.fileGroupCount()
         || stableFileGroups.stream()
                 .mapToInt(ReconcileFileGroupResultDescriptor::succeededFileCount)
@@ -1360,7 +1380,8 @@ class GrpcRemoteReconcileExecutorClient
                     .mapToInt(ReconcileFileGroupResultDescriptor::partialAggregateRecordCount)
                     .sum())
             .setFinalStatsRecordCount(records.size())
-            .setIndexArtifactCount(stableIndexArtifacts.size());
+            .setIndexArtifactCount(stableIndexArtifacts.size())
+            .addAllRealizedIndexSelectors(stableRealizedIndexSelectors);
     if (indexPredecessor != null) {
       manifest.setIndexPredecessor(toProtoIndexPredecessor(indexPredecessor));
     }
@@ -1610,6 +1631,11 @@ class GrpcRemoteReconcileExecutorClient
     Set<String> planned = new HashSet<>(payload.plannedFilePaths());
     Set<String> captured = new HashSet<>();
     Set<String> requiredSelectors = policy.selectorsForIndex();
+    boolean defaultSelection =
+        requiredSelectors.isEmpty()
+            && policy.defaultColumnScope()
+                != ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
+    Set<String> resolvedDefaultSelectors = null;
     for (var artifact : result.stagedIndexArtifacts()) {
       var record = artifact == null ? null : artifact.record();
       if (record == null
@@ -1624,8 +1650,27 @@ class GrpcRemoteReconcileExecutorClient
         throw new IllegalArgumentException(
             "index artifact targets do not match the planned file group");
       }
-      if (!persistedIndexSelectors(record).containsAll(requiredSelectors)) {
+      Set<String> persistedSelectors = persistedIndexSelectors(record);
+      if (!persistedSelectors.containsAll(requiredSelectors)) {
         throw new IllegalArgumentException("index artifact does not cover the requested selectors");
+      }
+      if (defaultSelection && persistedSelectors.isEmpty()) {
+        throw new IllegalArgumentException(
+            "index artifact does not report its resolved default column coverage");
+      }
+      if (defaultSelection) {
+        if (resolvedDefaultSelectors == null) {
+          resolvedDefaultSelectors = persistedSelectors;
+        } else if (!resolvedDefaultSelectors.equals(persistedSelectors)) {
+          throw new IllegalArgumentException(
+              "index artifacts report inconsistent resolved default column coverage");
+        }
+      }
+      if (defaultSelection
+          && policy.defaultColumnScope() == ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
+          && persistedSelectors.size() > policy.maxDefaultColumns()) {
+        throw new IllegalArgumentException(
+            "index artifact exceeds the requested default column limit");
       }
     }
     if (!captured.equals(planned)) {
@@ -2073,6 +2118,9 @@ class GrpcRemoteReconcileExecutorClient
             .setSourceFileCount(effective.sourceFileCount())
             .setDirectStatsBlobUri(effective.directStatsBlobUri())
             .setDirectStatsRecordCount(effective.directStatsRecordCount())
+            .setSourceRevision(effective.sourceRevision())
+            .setMetadataFingerprint(effective.metadataFingerprint())
+            .addAllRequestedCoverage(effective.requestedCoverage())
             .setCompletionMode(
                 switch (effective.completionMode()) {
                   case DIRECT_STATS ->
@@ -2365,6 +2413,9 @@ class GrpcRemoteReconcileExecutorClient
         snapshotTask.getSourceFileCount(),
         snapshotTask.getDirectStatsBlobUri(),
         snapshotTask.getDirectStatsRecordCount(),
+        snapshotTask.getSourceRevision(),
+        snapshotTask.getMetadataFingerprint(),
+        snapshotTask.getRequestedCoverageList(),
         snapshotTask.hasIndexPredecessor()
             ? fromProtoIndexPredecessor(snapshotTask.getIndexPredecessor())
             : null);

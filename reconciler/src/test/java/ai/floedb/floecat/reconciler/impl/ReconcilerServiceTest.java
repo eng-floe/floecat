@@ -56,54 +56,6 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
   private static final List<String> DEST_NAMESPACE_PATH = List.of("dest_ns");
 
   @Test
-  void completedColumnBackfillIncludesIndexCoverageAndIsNotRecaptured() {
-    ResourceId tableId =
-        ResourceId.newBuilder()
-            .setAccountId("acct")
-            .setId("table-1")
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    var target = StatsTargetIdentity.columnTarget(7L);
-    class Backend extends DefaultBackend {
-      int indexChecks;
-
-      @Override
-      public boolean statsCapturedForTargets(
-          ReconcileContext ctx,
-          ResourceId ignoredTableId,
-          long snapshotId,
-          Set<ai.floedb.floecat.catalog.rpc.StatsTarget> targets) {
-        return targets.equals(Set.of(target));
-      }
-
-      @Override
-      public boolean indexCaptureComplete(
-          ReconcileContext ctx, ResourceId ignoredTableId, long snapshotId, Set<String> selectors) {
-        indexChecks++;
-        return selectors.equals(Set.of("#7"));
-      }
-    }
-    Backend backend = new Backend();
-    service.backend = backend;
-    ReconcileCapturePolicy policy =
-        ReconcileCapturePolicy.of(
-            List.of(new ReconcileCapturePolicy.Column("#7", true, true)),
-            Set.of(
-                ReconcileCapturePolicy.Output.COLUMN_STATS,
-                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
-    List<ReconcileScope.ScopedCaptureRequest> requests =
-        List.of(
-            new ReconcileScope.ScopedCaptureRequest(
-                tableId.getId(), 42L, StatsTargetScopeCodec.encode(target), List.of()));
-
-    assertThat(
-            service.isSnapshotCaptureCompleteForScope(
-                null, tableId, 42L, policy, requests, Set.of()))
-        .isTrue();
-    assertThat(backend.indexChecks).isEqualTo(1);
-  }
-
-  @Test
   void tableFilterPlanningRejectsMetadataWithoutSourceIdentity() {
     service.backend =
         new DefaultBackend() {
@@ -1526,7 +1478,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
   }
 
   @Test
-  void metadataExecutionReturnsOnlyCaptureIncompleteSnapshotsFromSingleEnumeration() {
+  void captureOnlyReturnsSelectedSnapshotsWithoutPhysicalStatsDeduplication() {
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId("acct")
@@ -1676,13 +1628,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                     ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
 
     var result =
-        reconcileTableTask(
-            tableId, false, scope, ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
+        reconcileTableTask(tableId, false, scope, ReconcilerService.CaptureMode.CAPTURE_ONLY);
 
     assertThat(result.ok()).isTrue();
-    assertThat(backend.capturedKnownSnapshotIds).containsExactly(43L);
-    assertThat(result.captureSnapshotIds()).containsExactly(42L, 44L);
-    assertThat(backend.indexCompletenessCalls).isEqualTo(2);
+    assertThat(backend.capturedKnownSnapshotIds).isEmpty();
+    assertThat(result.captureSnapshotIds()).containsExactly(42L, 43L);
+    assertThat(backend.indexCompletenessCalls).isZero();
   }
 
   @Test

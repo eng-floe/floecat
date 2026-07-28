@@ -39,6 +39,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
@@ -128,6 +129,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             anyInt(),
             anyLong(),
             anyLong(),
+            any(),
             anyLong(),
             anyString()))
         .thenReturn(true);
@@ -353,47 +355,21 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
 
   @Test
   void incrementalFinalizeActivatesTheRemoteAdditiveIndexGeneration() {
-    ReconcileCapturePolicy policy =
-        ReconcileCapturePolicy.of(
-            List.of(new ReconcileCapturePolicy.Column("#7", true, true)),
-            Set.of(
-                ReconcileCapturePolicy.Output.COLUMN_STATS,
-                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    ReconcileCapturePolicy policy = indexCapturePolicy();
     ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), policy);
-    byte[] manifestBytes =
-        SnapshotCaptureManifest.newBuilder()
-            .setFormatVersion(1)
-            .setAccountId(ACCOUNT_ID)
-            .setConnectorId("connector")
-            .setParentJobId("parent-job")
-            .setFinalizeJobId(FINALIZE_JOB_ID)
-            .setTableId(TABLE_ID)
-            .setSnapshotId(SNAPSHOT_ID)
-            .setLeaseEpoch(LEASE_EPOCH)
-            .setResultId("result-1")
-            .setIndexPredecessor(
-                IndexGenerationPredecessor.newBuilder()
-                    .setGenerationId("prior")
-                    .setActivePointerVersion(3L)
-                    .setCaptureManifestUri("/prior-manifest.pb")
-                    .setCaptureManifestPointerVersion(4L))
-            .setCapturePolicy(
-                ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
-                    .addOutputs(CaptureOutput.CO_COLUMN_STATS)
-                    .addOutputs(CaptureOutput.CO_PARQUET_PAGE_INDEX)
-                    .addColumns(
-                        ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy.newBuilder()
-                            .setSelector("#7")
-                            .setCaptureStats(true)
-                            .setCaptureIndex(true)))
-            .build()
-            .toByteArray();
+    byte[] manifestBytes = indexCaptureManifestBytes();
     when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
         .thenReturn(Optional.of(finalizeJobView("JS_RUNNING", 0, 0, scope)));
     when(blobs.get(manifestUri())).thenReturn(manifestBytes);
-    when(service.indexArtifactRepository.activateGeneration(
+    StatsStore.PublicationFence publicationFence = mock(StatsStore.PublicationFence.class);
+    IndexArtifactRepository.PreparedActivation preparedActivation =
+        new IndexArtifactRepository.PreparedActivation(
+            new IndexArtifactRepository.ActivationFence("/active", "next", 4L),
+            publicationFence,
+            false);
+    when(service.indexArtifactRepository.prepareGenerationActivation(
             any(), anyLong(), anyString(), any(byte[].class), any(), anyBoolean()))
-        .thenReturn(new IndexArtifactRepository.ActivationFence("/active", "next", 4L));
+        .thenReturn(preparedActivation);
 
     service.persistSuccess(
         principal,
@@ -405,17 +381,125 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     var publicationOrder = inOrder(service.indexArtifactRepository, persistence);
     publicationOrder
         .verify(service.indexArtifactRepository)
-        .activateGeneration(
+        .prepareGenerationActivation(
             any(),
             eq(SNAPSHOT_ID),
             eq("full-rescan-parent-job"),
             any(byte[].class),
             any(),
-            eq(true));
+            eq(false));
     publicationOrder
         .verify(persistence)
         .publishPreparedStatsGeneration(
-            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), any(), any(), any());
+            any(),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-parent-job"),
+            any(),
+            any(),
+            eq(publicationFence));
+    publicationOrder
+        .verify(service.indexArtifactRepository)
+        .completePreparedGenerationActivation(any(), eq(SNAPSHOT_ID), eq(preparedActivation));
+  }
+
+  @Test
+  void indexAndStatsPublicationConflictRepreparesAndPublishesOnce() {
+    ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), indexCapturePolicy());
+    byte[] manifestBytes = indexCaptureManifestBytes();
+    StatsStore.PublicationFence firstFence = mock(StatsStore.PublicationFence.class);
+    StatsStore.PublicationFence secondFence = mock(StatsStore.PublicationFence.class);
+    IndexArtifactRepository.PreparedActivation first =
+        new IndexArtifactRepository.PreparedActivation(
+            new IndexArtifactRepository.ActivationFence("/active", "next", 4L), firstFence, false);
+    IndexArtifactRepository.PreparedActivation second =
+        new IndexArtifactRepository.PreparedActivation(
+            new IndexArtifactRepository.ActivationFence("/active", "next", 4L), secondFence, false);
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJobView("JS_RUNNING", 0, 0, scope)));
+    when(blobs.get(manifestUri())).thenReturn(manifestBytes);
+    when(service.indexArtifactRepository.prepareGenerationActivation(
+            any(), anyLong(), anyString(), any(byte[].class), any(), eq(false)))
+        .thenReturn(first, second);
+    when(persistence.publishPreparedStatsGeneration(
+            any(), anyLong(), anyString(), any(), any(), any()))
+        .thenReturn(false, true);
+
+    service.persistSuccess(
+        principal,
+        FINALIZE_JOB_ID,
+        LEASE_EPOCH,
+        "result-1",
+        descriptor(manifestUri(), manifestBytes, 0, 0, 0));
+
+    verify(service.indexArtifactRepository, times(2))
+        .prepareGenerationActivation(
+            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), any(), any(), eq(false));
+    verify(persistence)
+        .publishPreparedStatsGeneration(
+            any(), eq(SNAPSHOT_ID), anyString(), any(), any(), eq(firstFence));
+    verify(persistence)
+        .publishPreparedStatsGeneration(
+            any(), eq(SNAPSHOT_ID), anyString(), any(), any(), eq(secondFence));
+    verify(service.indexArtifactRepository)
+        .completePreparedGenerationActivation(any(), eq(SNAPSHOT_ID), eq(second));
+  }
+
+  @Test
+  void sameRevisionIncrementalCaptureInheritsPriorStatsTargets() {
+    when(blobs.get(manifestUri())).thenReturn(manifestBytes());
+    when(jobs.getFinalizedSnapshot(ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID))
+        .thenReturn(
+            Optional.of(
+                new ReconcileJobStore.FinalizedSnapshotEvent(
+                    "event",
+                    ACCOUNT_ID,
+                    TABLE_ID,
+                    SNAPSHOT_ID,
+                    10L,
+                    "prior-finalizer",
+                    ReconcileSnapshotContentState.FORMAT_VERSION,
+                    "connector",
+                    "db",
+                    "events",
+                    "revision-1",
+                    "metadata-1",
+                    List.of())));
+
+    service.persistSuccess(
+        principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor(manifestUri()));
+
+    verify(persistence)
+        .prepareStatsGenerationForPublication(
+            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(true));
+  }
+
+  @Test
+  void changedRevisionIncrementalCaptureReplacesPriorStatsTargets() {
+    when(blobs.get(manifestUri())).thenReturn(manifestBytes());
+    when(jobs.getFinalizedSnapshot(ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID))
+        .thenReturn(
+            Optional.of(
+                new ReconcileJobStore.FinalizedSnapshotEvent(
+                    "event",
+                    ACCOUNT_ID,
+                    TABLE_ID,
+                    SNAPSHOT_ID,
+                    10L,
+                    "prior-finalizer",
+                    ReconcileSnapshotContentState.FORMAT_VERSION,
+                    "connector",
+                    "db",
+                    "events",
+                    "revision-0",
+                    "metadata-0",
+                    List.of())));
+
+    service.persistSuccess(
+        principal, FINALIZE_JOB_ID, LEASE_EPOCH, "result-1", descriptor(manifestUri()));
+
+    verify(persistence)
+        .prepareStatsGenerationForPublication(
+            any(), eq(SNAPSHOT_ID), eq("full-rescan-parent-job"), eq(false));
   }
 
   @Test
@@ -590,6 +674,45 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         .toByteArray();
   }
 
+  private static ReconcileCapturePolicy indexCapturePolicy() {
+    return ReconcileCapturePolicy.of(
+        List.of(new ReconcileCapturePolicy.Column("#7", true, true)),
+        Set.of(
+            ReconcileCapturePolicy.Output.COLUMN_STATS,
+            ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+  }
+
+  private static byte[] indexCaptureManifestBytes() {
+    return SnapshotCaptureManifest.newBuilder()
+        .setFormatVersion(1)
+        .setAccountId(ACCOUNT_ID)
+        .setConnectorId("connector")
+        .setParentJobId("parent-job")
+        .setFinalizeJobId(FINALIZE_JOB_ID)
+        .setTableId(TABLE_ID)
+        .setSnapshotId(SNAPSHOT_ID)
+        .setLeaseEpoch(LEASE_EPOCH)
+        .setResultId("result-1")
+        .addRealizedIndexSelectors("#7")
+        .setIndexPredecessor(
+            IndexGenerationPredecessor.newBuilder()
+                .setGenerationId("prior")
+                .setActivePointerVersion(3L)
+                .setCaptureManifestUri("/prior-manifest.pb")
+                .setCaptureManifestPointerVersion(4L))
+        .setCapturePolicy(
+            ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
+                .addOutputs(CaptureOutput.CO_COLUMN_STATS)
+                .addOutputs(CaptureOutput.CO_PARQUET_PAGE_INDEX)
+                .addColumns(
+                    ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy.newBuilder()
+                        .setSelector("#7")
+                        .setCaptureStats(true)
+                        .setCaptureIndex(true)))
+        .build()
+        .toByteArray();
+  }
+
   private static byte[] sha256(byte[] bytes) {
     try {
       return MessageDigest.getInstance("SHA-256").digest(bytes);
@@ -630,18 +753,19 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
       String state, int fileGroupCount, int sourceFileCount, ReconcileScope scope) {
     ReconcileSnapshotTask snapshotTask =
         ReconcileSnapshotTask.of(
-            TABLE_ID,
-            SNAPSHOT_ID,
-            "db",
-            "events",
-            List.of(),
-            true,
-            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
-            "/snapshot-plan.pb",
-            fileGroupCount,
-            sourceFileCount,
-            "",
-            0);
+                TABLE_ID,
+                SNAPSHOT_ID,
+                "db",
+                "events",
+                List.of(),
+                true,
+                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                "/snapshot-plan.pb",
+                fileGroupCount,
+                sourceFileCount,
+                "",
+                0)
+            .withContentState("revision-1", "metadata-1", List.of());
     if (scope != null && scope.capturePolicy().requestsIndexes()) {
       snapshotTask = snapshotTask.withIndexPredecessor(INDEX_PREDECESSOR);
     }

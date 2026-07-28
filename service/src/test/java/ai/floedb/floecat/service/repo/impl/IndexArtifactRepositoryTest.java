@@ -40,6 +40,7 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.types.Hashing;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -344,6 +345,67 @@ class IndexArtifactRepositoryTest {
                     true))
         .isInstanceOf(RuntimeException.class)
         .hasMessageContaining("predecessor changed");
+  }
+
+  @Test
+  void preparedActivationDoesNotExposeIndexPointersBeforeAtomicPublication() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = new IndexArtifactRepository(pointers, blobs);
+    long snapshotId = 722L;
+    repository.activateGeneration(
+        TABLE_ID,
+        snapshotId,
+        "generation-one",
+        captureManifest(snapshotId, 1, 1, "#1").toByteArray());
+    IndexArtifactRepository.GenerationPredecessor predecessor =
+        repository.captureGenerationInput(TABLE_ID, snapshotId, List.of()).predecessor();
+
+    IndexArtifactRepository.PreparedActivation prepared =
+        repository.prepareGenerationActivation(
+            TABLE_ID,
+            snapshotId,
+            "generation-two",
+            captureManifest(snapshotId, 1, 1, "#2").toByteArray(),
+            predecessor,
+            false);
+
+    assertThat(
+            repository
+                .captureGenerationInput(TABLE_ID, snapshotId, List.of())
+                .predecessor()
+                .generationId())
+        .isEqualTo("generation-one");
+    assertThat(
+            repository
+                .captureGenerationInput(TABLE_ID, snapshotId, List.of())
+                .predecessor()
+                .captureManifestUri())
+        .isEqualTo(predecessor.captureManifestUri());
+
+    assertThat(
+            pointers.compareAndSetBatch(
+                prepared.publicationFence().pointerUpdates().stream()
+                    .map(
+                        update ->
+                            (PointerStore.CasOp)
+                                new PointerStore.CasUpsert(
+                                    update.pointerKey(), update.expectedVersion(), update.next()))
+                    .toList()))
+        .isTrue();
+
+    assertThat(
+            repository
+                .captureGenerationInput(TABLE_ID, snapshotId, List.of())
+                .predecessor()
+                .generationId())
+        .isEqualTo("generation-two");
+    assertThat(
+            repository
+                .captureGenerationInput(TABLE_ID, snapshotId, List.of())
+                .predecessor()
+                .captureManifestUri())
+        .isNotEqualTo(predecessor.captureManifestUri());
   }
 
   private static SnapshotCaptureManifest captureManifest(

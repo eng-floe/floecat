@@ -37,6 +37,7 @@ interface RemoteSnapshotFinalizeWorkerClient {
       List<StatsObjectDescriptor> fileStats,
       List<TargetStatsRecord> finalStats,
       List<StatsObjectDescriptor> indexArtifacts,
+      List<String> realizedIndexSelectors,
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor);
 
   boolean submitSnapshotFinalizeSuccess(

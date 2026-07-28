@@ -466,6 +466,9 @@ public class ReconcileJobEnqueuer {
     rec.snapshotTaskSourceFileCount = effectiveSnapshotTask.sourceFileCount();
     rec.snapshotTaskDirectStatsBlobUri = blankToEmpty(effectiveSnapshotTask.directStatsBlobUri());
     rec.snapshotTaskDirectStatsRecordCount = effectiveSnapshotTask.directStatsRecordCount();
+    rec.snapshotTaskSourceRevision = blankToEmpty(effectiveSnapshotTask.sourceRevision());
+    rec.snapshotTaskMetadataFingerprint = blankToEmpty(effectiveSnapshotTask.metadataFingerprint());
+    rec.snapshotTaskRequestedCoverage = effectiveSnapshotTask.requestedCoverage();
     var snapshotIndexPredecessor = effectiveSnapshotTask.indexPredecessor();
     rec.snapshotTaskIndexPredecessorPresent = snapshotIndexPredecessor != null;
     rec.snapshotTaskIndexPredecessorGenerationId =

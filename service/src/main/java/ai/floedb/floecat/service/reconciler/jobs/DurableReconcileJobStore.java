@@ -22,16 +22,19 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.impl.SnapshotPlanBlobStore.SnapshotPlanBlob;
+import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.jobs.SnapshotPlanManifestIds;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
@@ -100,7 +103,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -156,8 +161,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   // off.
   private static final long DEFAULT_LEASE_SCAN_BUDGET_MS = 8_000L;
   private static final int CAS_MAX = 16;
+  private static final long DEFAULT_SNAPSHOT_COVERAGE_CLAIM_RETENTION_MS = 7L * 24 * 60 * 60 * 1000;
+  private static final int SNAPSHOT_COVERAGE_CLAIM_GC_PAGE_SIZE = 16;
   private static final String INLINE_FINALIZED_SNAPSHOT_EVENT_PREFIX =
       "inline:reconcile-finalized-snapshot:";
+  private static final String INLINE_SNAPSHOT_COVERAGE_CLAIM_PREFIX =
+      "inline:reconcile-snapshot-coverage-claim:";
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject ObjectMapper mapper;
@@ -202,6 +211,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private int leaseMaxConcurrency = DEFAULT_LEASE_MAX_CONCURRENCY;
   long leaseAcquireTimeoutMs = DEFAULT_LEASE_ACQUIRE_TIMEOUT_MS;
   private long leaseScanBudgetMs = DEFAULT_LEASE_SCAN_BUDGET_MS;
+  long snapshotCoverageClaimRetentionMs = DEFAULT_SNAPSHOT_COVERAGE_CLAIM_RETENTION_MS;
+  private final Map<String, String> snapshotCoverageClaimGcTokens = new ConcurrentHashMap<>();
   volatile Semaphore leaseScanPermits = new Semaphore(DEFAULT_LEASE_MAX_CONCURRENCY, true);
   private volatile String statsCleanupScanToken = "";
 
@@ -416,7 +427,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return completer;
   }
 
-  private ReconcileJobEnqueuer enqueuer() {
+  private synchronized ReconcileJobEnqueuer enqueuer() {
     if (enqueuer == null) {
       enqueuer = new ReconcileJobEnqueuer();
     }
@@ -561,6 +572,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             config
                 .getOptionalValue("floecat.reconciler.job-store.lease-scan-budget-ms", Long.class)
                 .orElse(DEFAULT_LEASE_SCAN_BUDGET_MS));
+    snapshotCoverageClaimRetentionMs =
+        Math.max(
+            1_000L,
+            config
+                .getOptionalValue(
+                    "floecat.reconciler.snapshot-coverage-claim-retention-ms", Long.class)
+                .orElse(DEFAULT_SNAPSHOT_COVERAGE_CLAIM_RETENTION_MS));
     leaseScanPermits = new Semaphore(leaseMaxConcurrency, true);
     observeLeaseScanPermitGauges();
     jobIndexStore();
@@ -661,12 +679,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (spec == null) {
         continue;
       }
+      coalescePendingSnapshotCoverage(item.jobId, spec);
       upsertRootSummaryByJobId(item.jobId);
       if (shouldMarkSelfDirtyAfterEnqueue(spec)) {
         markDirtyParent(spec.accountId, item.jobId);
       }
       if (item.created) {
-        resetFinalizedSnapshotIfEligible(spec);
         requestProjectionRefresh(spec.accountId, spec.parentJobId);
       } else {
         markDirtyParent(spec.accountId, spec.parentJobId);
@@ -679,6 +697,304 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return spec != null
         && spec.jobKind == ReconcileJobKind.PLAN_CONNECTOR
         && blankToEmpty(spec.parentJobId).isBlank();
+  }
+
+  private void coalescePendingSnapshotCoverage(String followerJobId, BulkEnqueueSpec spec) {
+    if (spec == null
+        || spec.jobKind != ReconcileJobKind.PLAN_SNAPSHOT
+        || spec.fullRescan
+        || spec.snapshotTask == null
+        || spec.snapshotTask.isEmpty()
+        || blank(spec.snapshotTask.sourceRevision())
+        || spec.snapshotTask.requestedCoverage().isEmpty()) {
+      return;
+    }
+    cleanupExpiredSnapshotCoverageClaims(spec.accountId, System.currentTimeMillis());
+    ReconcileScope scope = spec.scope == null ? ReconcileScope.empty() : spec.scope;
+    ReconcileExecutionPolicy policy =
+        spec.executionPolicy == null ? ReconcileExecutionPolicy.defaults() : spec.executionPolicy;
+    String semantics =
+        ReconcileSnapshotContentState.fingerprint(
+            Map.of(
+                "captureMode", spec.captureMode.name(),
+                "execution", ReconcileSnapshotContentState.executionSemantics(policy),
+                "defaultColumnScope", scope.capturePolicy().defaultColumnScope().name(),
+                "maxDefaultColumns", scope.capturePolicy().maxDefaultColumns(),
+                "properties", scope.capturePolicy().properties()));
+    String claimKey =
+        Keys.reconcileSnapshotCoverageClaimPointer(
+            spec.accountId,
+            spec.connectorId,
+            spec.snapshotTask.sourceNamespace(),
+            spec.snapshotTask.sourceTable(),
+            spec.snapshotTask.tableId(),
+            spec.snapshotTask.snapshotId(),
+            spec.snapshotTask.sourceRevision(),
+            semantics);
+    for (int attempt = 0; attempt < 16; attempt++) {
+      Pointer current = pointerStore.get(claimKey).orElse(null);
+      if (current == null) {
+        Pointer created =
+            PointerReferences.inlineJsonPointer(
+                claimKey, snapshotCoverageClaimReference(followerJobId), 1L);
+        if (pointerStore.compareAndSet(claimKey, 0L, created)) {
+          return;
+        }
+        continue;
+      }
+      String ownerJobId = snapshotCoverageClaimOwner(current.getBlobUri());
+      if (snapshotCoverageClaimExpired(current.getBlobUri(), System.currentTimeMillis())) {
+        Pointer replacement =
+            PointerReferences.inlineJsonPointer(
+                claimKey, snapshotCoverageClaimReference(followerJobId), current.getVersion() + 1L);
+        if (pointerStore.compareAndSet(claimKey, current.getVersion(), replacement)) {
+          completeSnapshotCoverageClaimReplacement(
+              spec.accountId, claimKey, followerJobId, ownerJobId);
+          return;
+        }
+        continue;
+      }
+      if (ownerJobId.isBlank() || ownerJobId.equals(followerJobId)) {
+        return;
+      }
+      String ownerCanonicalPointerKey = Keys.reconcileJobPointerById(spec.accountId, ownerJobId);
+      StoredReconcileJob ownerRecord =
+          jobIndexStore().readCanonicalRecordByKey(ownerCanonicalPointerKey).orElse(null);
+      StoredEnvelope owner =
+          ownerRecord == null ? null : new StoredEnvelope(ownerCanonicalPointerKey, ownerRecord);
+      if (owner == null || isTerminalState(owner.record.state)) {
+        Pointer replacement =
+            PointerReferences.inlineJsonPointer(
+                claimKey, snapshotCoverageClaimReference(followerJobId), current.getVersion() + 1L);
+        if (pointerStore.compareAndSet(claimKey, current.getVersion(), replacement)) {
+          completeSnapshotCoverageClaimReplacement(
+              spec.accountId, claimKey, followerJobId, ownerRecord);
+          return;
+        }
+        continue;
+      }
+      if (!("JS_QUEUED".equals(owner.record.state) || "JS_RUNNING".equals(owner.record.state))
+          || owner.record.snapshotTaskFileGroupPlanRecorded
+          || owner.record.snapshotTaskCoverageFrozen) {
+        Pointer replacement =
+            PointerReferences.inlineJsonPointer(
+                claimKey, snapshotCoverageClaimReference(followerJobId), current.getVersion() + 1L);
+        if (pointerStore.compareAndSet(claimKey, current.getVersion(), replacement)) {
+          completeSnapshotCoverageClaimReplacement(
+              spec.accountId, claimKey, followerJobId, owner.record);
+          return;
+        }
+        continue;
+      }
+      Optional<StoredEnvelope> merged =
+          mutateByCanonicalPointerReturningRecord(
+              ownerCanonicalPointerKey,
+              existing -> {
+                if (!("JS_QUEUED".equals(existing.state) || "JS_RUNNING".equals(existing.state))
+                    || existing.snapshotTaskFileGroupPlanRecorded
+                    || existing.snapshotTaskCoverageFrozen) {
+                  return null;
+                }
+                existing.snapshotTaskRequestedCoverage =
+                    ReconcileSnapshotContentState.unionCoverage(
+                        existing.snapshotTaskRequestedCoverage,
+                        spec.snapshotTask.requestedCoverage());
+                mergeCaptureDefinition(existing.definition, scope);
+                refreshSnapshotIndexPredecessorPinEligibility(existing);
+                existing.message = "Coalesced pending snapshot capture coverage";
+                return existing;
+              });
+      if (merged.isPresent()) {
+        return;
+      }
+    }
+  }
+
+  private void completeSnapshotCoverageClaimReplacement(
+      String accountId, String claimKey, String followerJobId, String previousOwnerJobId) {
+    StoredReconcileJob previousOwner =
+        blank(previousOwnerJobId)
+            ? null
+            : jobIndexStore()
+                .readCanonicalRecordByKey(
+                    Keys.reconcileJobPointerById(accountId, previousOwnerJobId))
+                .orElse(null);
+    completeSnapshotCoverageClaimReplacement(accountId, claimKey, followerJobId, previousOwner);
+  }
+
+  private void completeSnapshotCoverageClaimReplacement(
+      String accountId, String claimKey, String followerJobId, StoredReconcileJob previousOwner) {
+    inheritSnapshotCoverageClaimOwner(followerJobId, previousOwner);
+    String currentOwnerJobId =
+        pointerStore
+            .get(claimKey)
+            .map(Pointer::getBlobUri)
+            .map(DurableReconcileJobStore::snapshotCoverageClaimOwner)
+            .orElse("");
+    if (currentOwnerJobId.isBlank() || currentOwnerJobId.equals(followerJobId)) {
+      return;
+    }
+    inheritSnapshotCoverageClaimOwner(accountId, currentOwnerJobId, followerJobId);
+  }
+
+  private void inheritSnapshotCoverageClaimOwner(
+      String accountId, String followerJobId, String ownerJobId) {
+    if (blank(ownerJobId) || ownerJobId.equals(followerJobId)) {
+      return;
+    }
+    StoredReconcileJob owner =
+        jobIndexStore()
+            .readCanonicalRecordByKey(Keys.reconcileJobPointerById(accountId, ownerJobId))
+            .orElse(null);
+    inheritSnapshotCoverageClaimOwner(followerJobId, owner);
+  }
+
+  private void inheritSnapshotCoverageClaimOwner(String followerJobId, StoredReconcileJob owner) {
+    if (owner == null || owner.definition == null) {
+      return;
+    }
+    mutateByCanonicalPointerReturningRecord(
+        Keys.reconcileJobPointerById(owner.accountId, followerJobId),
+        existing -> {
+          if (!"JS_QUEUED".equals(existing.state)
+              || existing.snapshotTaskFileGroupPlanRecorded
+              || existing.snapshotTaskCoverageFrozen) {
+            return null;
+          }
+          existing.snapshotTaskRequestedCoverage =
+              ReconcileSnapshotContentState.unionCoverage(
+                  owner.snapshotTaskRequestedCoverage, existing.snapshotTaskRequestedCoverage);
+          mergeCaptureDefinition(existing.definition, owner.definition.toScope());
+          refreshSnapshotIndexPredecessorPinEligibility(existing);
+          return existing;
+        });
+  }
+
+  private static void mergeCaptureDefinition(
+      StoredJobDefinition definition, ReconcileScope incomingScope) {
+    if (definition == null || incomingScope == null) {
+      return;
+    }
+    ReconcileScope current = definition.toScope();
+    ReconcileCapturePolicy left = current.capturePolicy();
+    ReconcileCapturePolicy right = incomingScope.capturePolicy();
+    Map<String, ReconcileCapturePolicy.Column> columns = new java.util.LinkedHashMap<>();
+    for (ReconcileCapturePolicy.Column column : left.columns()) {
+      columns.put(column.selector(), column);
+    }
+    for (ReconcileCapturePolicy.Column column : right.columns()) {
+      columns.merge(
+          column.selector(),
+          column,
+          (a, b) ->
+              new ReconcileCapturePolicy.Column(
+                  a.selector(),
+                  a.captureStats() || b.captureStats(),
+                  a.captureIndex() || b.captureIndex()));
+    }
+    Set<ReconcileCapturePolicy.Output> outputs = new java.util.LinkedHashSet<>(left.outputs());
+    outputs.addAll(right.outputs());
+    List<ReconcileScope.ScopedCaptureRequest> requests =
+        java.util.stream.Stream.concat(
+                current.destinationCaptureRequests().stream(),
+                incomingScope.destinationCaptureRequests().stream())
+            .distinct()
+            .toList();
+    ReconcileCapturePolicy merged =
+        ReconcileCapturePolicy.of(
+            List.copyOf(columns.values()),
+            outputs,
+            left.defaultColumnScope(),
+            left.maxDefaultColumns(),
+            left.properties());
+    definition.destinationCaptureRequests = requests;
+    definition.capturePolicyColumns = merged.columns();
+    definition.capturePolicyOutputs = merged.outputs().stream().map(Enum::name).toList();
+    definition.capturePolicyDefaultColumnScope = merged.defaultColumnScope().name();
+    definition.capturePolicyMaxDefaultColumns = merged.maxDefaultColumns();
+    definition.capturePolicyProperties = merged.properties();
+  }
+
+  private static void replaceCaptureDefinition(
+      StoredJobDefinition definition, ReconcileScope scope) {
+    if (definition == null || scope == null) {
+      return;
+    }
+    ReconcileCapturePolicy policy = scope.capturePolicy();
+    definition.destinationCaptureRequests = scope.destinationCaptureRequests();
+    definition.capturePolicyColumns = policy.columns();
+    definition.capturePolicyOutputs = policy.outputs().stream().map(Enum::name).toList();
+    definition.capturePolicyDefaultColumnScope = policy.defaultColumnScope().name();
+    definition.capturePolicyMaxDefaultColumns = policy.maxDefaultColumns();
+    definition.capturePolicyProperties = policy.properties();
+  }
+
+  private static void refreshSnapshotIndexPredecessorPinEligibility(StoredReconcileJob record) {
+    if (record == null || record.definition == null || record.snapshotTaskIndexPredecessorPresent) {
+      return;
+    }
+    record.snapshotTaskIndexPredecessorPinPending =
+        record.definition.toScope().capturePolicy().requestsIndexes();
+  }
+
+  private static String snapshotCoverageClaimOwner(String reference) {
+    if (reference == null || !reference.startsWith(INLINE_SNAPSHOT_COVERAGE_CLAIM_PREFIX)) {
+      return "";
+    }
+    String payload = reference.substring(INLINE_SNAPSHOT_COVERAGE_CLAIM_PREFIX.length()).trim();
+    int separator = payload.indexOf('|');
+    return separator < 0 ? payload : payload.substring(separator + 1).trim();
+  }
+
+  private String snapshotCoverageClaimReference(String jobId) {
+    return INLINE_SNAPSHOT_COVERAGE_CLAIM_PREFIX
+        + (System.currentTimeMillis() + snapshotCoverageClaimRetentionMs)
+        + "|"
+        + jobId;
+  }
+
+  private static boolean snapshotCoverageClaimExpired(String reference, long nowMs) {
+    if (reference == null || !reference.startsWith(INLINE_SNAPSHOT_COVERAGE_CLAIM_PREFIX)) {
+      return true;
+    }
+    String payload = reference.substring(INLINE_SNAPSHOT_COVERAGE_CLAIM_PREFIX.length()).trim();
+    int separator = payload.indexOf('|');
+    if (separator < 0) {
+      return false;
+    }
+    try {
+      return Long.parseLong(payload.substring(0, separator)) <= nowMs;
+    } catch (NumberFormatException ignored) {
+      return true;
+    }
+  }
+
+  private void cleanupExpiredSnapshotCoverageClaims(String accountId, long nowMs) {
+    String prefix = Keys.reconcileSnapshotCoverageClaimPointerPrefix(accountId);
+    String token = snapshotCoverageClaimGcTokens.getOrDefault(accountId, "");
+    StringBuilder next = new StringBuilder();
+    List<Pointer> pointers =
+        pointerStore.listPointersByPrefix(
+            prefix, SNAPSHOT_COVERAGE_CLAIM_GC_PAGE_SIZE, token, next);
+    for (Pointer pointer : pointers) {
+      String ownerJobId = pointer == null ? "" : snapshotCoverageClaimOwner(pointer.getBlobUri());
+      StoredReconcileJob owner =
+          ownerJobId.isBlank()
+              ? null
+              : jobIndexStore()
+                  .readCanonicalRecordByKey(Keys.reconcileJobPointerById(accountId, ownerJobId))
+                  .orElse(null);
+      if (pointer != null
+          && snapshotCoverageClaimExpired(pointer.getBlobUri(), nowMs)
+          && (owner == null || isTerminalState(owner.state))) {
+        pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion());
+      }
+    }
+    if (next.isEmpty()) {
+      snapshotCoverageClaimGcTokens.remove(accountId);
+    } else {
+      snapshotCoverageClaimGcTokens.put(accountId, next.toString());
+    }
   }
 
   private void throwIfConnectorDeleted(BulkEnqueueResult result) {
@@ -920,14 +1236,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (spec == null) {
         continue;
       }
+      coalescePendingSnapshotCoverage(item.jobId, spec);
       upsertRootSummaryByJobId(item.jobId);
       if (shouldMarkSelfDirtyAfterEnqueue(spec)) {
         markDirtyParent(spec.accountId, item.jobId);
       }
       boolean directPlannerChild = jobId.equals(blankToEmpty(spec.parentJobId));
-      if (item.created) {
-        resetFinalizedSnapshotIfEligible(spec);
-      }
       // Direct children were reserved on the parent in the outcome transaction. Keep the
       // per-child increment as the fallback for any non-direct enqueue routed through this path.
       if (item.created && !directPlannerChild) {
@@ -1127,7 +1441,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                     blankToEmpty(stored.tableId),
                     stored.snapshotId,
                     stored.finalizedAtMs,
-                    blankToEmpty(stored.finalizerJobId)));
+                    blankToEmpty(stored.finalizerJobId),
+                    stored.formatVersion,
+                    blankToEmpty(stored.connectorId),
+                    blankToEmpty(stored.sourceNamespace),
+                    blankToEmpty(stored.sourceTable),
+                    blankToEmpty(stored.sourceRevision),
+                    blankToEmpty(stored.metadataFingerprint),
+                    stored.captureCoverage));
   }
 
   @Override
@@ -1196,6 +1517,31 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       String outcome;
       try {
         leased = leaseReadyDue(startedAtMs, effective, scanStats);
+        int contentSkips = 0;
+        while (leased.isPresent() && contentSkips < 32) {
+          SnapshotLeaseDecision decision = snapshotLeaseDecision(leased.orElseThrow());
+          if (decision.execute()) {
+            leased = Optional.of(applySnapshotLeaseDecision(leased.orElseThrow(), decision));
+            break;
+          }
+          LeasedJob skipped = leased.orElseThrow();
+          applyLeaseOutcomeInternal(
+              skipped.jobId,
+              skipped.leaseEpoch,
+              CompletionKind.SUCCEEDED,
+              System.currentTimeMillis(),
+              decision.message(),
+              0L,
+              0L,
+              0L,
+              0L,
+              0L,
+              0L,
+              0L,
+              0L);
+          contentSkips++;
+          leased = leaseReadyDue(System.currentTimeMillis(), effective, scanStats);
+        }
       } catch (LeaseScanAbortedException aborted) {
         if (aborted.callerCancelled()) {
           scanStats.abortedByCaller = true;
@@ -1242,6 +1588,125 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       throw e;
     } finally {
       permits.release();
+    }
+  }
+
+  private SnapshotLeaseDecision snapshotLeaseDecision(LeasedJob lease) {
+    if (lease == null
+        || lease.jobKind != ReconcileJobKind.PLAN_SNAPSHOT
+        || lease.fullRescan
+        || lease.snapshotTask == null
+        || lease.snapshotTask.isEmpty()
+        || blank(lease.snapshotTask.sourceRevision())) {
+      return SnapshotLeaseDecision.execute(
+          lease == null || lease.snapshotTask == null
+              ? List.of()
+              : lease.snapshotTask.requestedCoverage(),
+          List.of());
+    }
+    FinalizedSnapshotEvent state =
+        getFinalizedSnapshot(
+                lease.accountId, lease.snapshotTask.tableId(), lease.snapshotTask.snapshotId())
+            .orElse(null);
+    if (state == null
+        || state.formatVersion < ReconcileSnapshotContentState.FORMAT_VERSION
+        || !lease.connectorId.equals(state.connectorId)
+        || !lease.snapshotTask.sourceNamespace().equals(state.sourceNamespace)
+        || !lease.snapshotTask.sourceTable().equals(state.sourceTable)) {
+      return SnapshotLeaseDecision.execute(lease.snapshotTask.requestedCoverage(), List.of());
+    }
+    boolean sameRevision = lease.snapshotTask.sourceRevision().equals(state.sourceRevision);
+    boolean metadataNeeded =
+        lease.captureMode != CaptureMode.CAPTURE_ONLY
+            && !lease.snapshotTask.metadataFingerprint().equals(state.metadataFingerprint);
+    List<String> missingCoverage =
+        lease.captureMode == CaptureMode.METADATA_ONLY || !sameRevision
+            ? lease.snapshotTask.requestedCoverage()
+            : ReconcileSnapshotContentState.missingCoverage(
+                lease.snapshotTask.requestedCoverage(), state.captureCoverage);
+    boolean captureNeeded =
+        lease.captureMode != CaptureMode.METADATA_ONLY && !missingCoverage.isEmpty();
+    if (!metadataNeeded && !captureNeeded) {
+      return SnapshotLeaseDecision.skip(
+          "Snapshot content unchanged; completed by content-state deduplication");
+    }
+    return SnapshotLeaseDecision.execute(
+        missingCoverage, sameRevision ? state.captureCoverage : List.of());
+  }
+
+  private LeasedJob applySnapshotLeaseDecision(LeasedJob lease, SnapshotLeaseDecision decision) {
+    if (lease.jobKind != ReconcileJobKind.PLAN_SNAPSHOT
+        || lease.snapshotTask == null
+        || (lease.snapshotTask.requestedCoverage().equals(decision.missingCoverage())
+            && decision.materializedCoverage().isEmpty())) {
+      return lease;
+    }
+    ReconcileScope executionScope =
+        ReconcileSnapshotContentState.narrowScope(
+            lease.scope, decision.missingCoverage(), decision.materializedCoverage());
+    Optional<StoredEnvelope> updated =
+        mutateByJobIdReturningRecord(
+            lease.jobId,
+            existing -> {
+              if (!leaseManager()
+                  .hasActiveLease(
+                      lease.jobId,
+                      lease.leaseEpoch,
+                      existing,
+                      "applySnapshotLeaseDecision",
+                      true,
+                      true,
+                      false)) {
+                return null;
+              }
+              existing.snapshotTaskRequestedCoverage = decision.missingCoverage();
+              replaceCaptureDefinition(existing.definition, executionScope);
+              return existing;
+            });
+    ReconcileSnapshotTask task =
+        updated
+            .map(envelope -> executionLoader().compactSnapshotTask(envelope.record))
+            .orElse(
+                lease.snapshotTask.withContentState(
+                    lease.snapshotTask.sourceRevision(),
+                    lease.snapshotTask.metadataFingerprint(),
+                    decision.missingCoverage()));
+    return new LeasedJob(
+        lease.jobId,
+        lease.accountId,
+        lease.connectorId,
+        lease.fullRescan,
+        lease.captureMode,
+        executionScope,
+        lease.executionPolicy,
+        lease.leaseEpoch,
+        lease.pinnedExecutorId,
+        lease.executorId,
+        lease.jobKind,
+        lease.tableTask,
+        lease.viewTask,
+        task,
+        lease.fileGroupTask,
+        lease.parentJobId,
+        lease.laneKey);
+  }
+
+  private record SnapshotLeaseDecision(
+      boolean execute,
+      List<String> missingCoverage,
+      List<String> materializedCoverage,
+      String message) {
+    static SnapshotLeaseDecision execute(
+        List<String> missingCoverage, List<String> materializedCoverage) {
+      return new SnapshotLeaseDecision(
+          true,
+          missingCoverage == null ? List.of() : List.copyOf(missingCoverage),
+          materializedCoverage == null ? List.of() : List.copyOf(materializedCoverage),
+          "");
+    }
+
+    static SnapshotLeaseDecision skip(String message) {
+      return new SnapshotLeaseDecision(false, List.of(), List.of(), message);
     }
   }
 
@@ -1319,6 +1784,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       return Optional.empty();
     }
     ReconcileJob job = projector().toCanonicalLeaseView(existing);
+    ReconcileScope effectiveScope =
+        job.jobKind == ReconcileJobKind.PLAN_SNAPSHOT
+                && job.snapshotTask != null
+                && !job.snapshotTask.sourceRevision().isBlank()
+            ? ReconcileSnapshotContentState.narrowScope(
+                job.scope, job.snapshotTask.requestedCoverage())
+            : job.scope;
     return Optional.of(
         new LeasedJob(
             job.jobId,
@@ -1326,7 +1798,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             job.connectorId,
             job.fullRescan,
             job.captureMode,
-            job.scope,
+            effectiveScope,
             job.executionPolicy,
             leaseEpoch,
             job.pinnedExecutorId,
@@ -1338,6 +1810,33 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             job.fileGroupTask,
             job.parentJobId,
             existing.laneKey));
+  }
+
+  @Override
+  public Optional<LeasedJob> freezeSnapshotPlanCoverage(String jobId, String leaseEpoch) {
+    Optional<StoredEnvelope> frozen =
+        mutateByJobIdReturningRecord(
+            jobId,
+            existing -> {
+              if (existing == null
+                  || existing.jobKind() != ReconcileJobKind.PLAN_SNAPSHOT
+                  || !"JS_RUNNING".equals(existing.state)
+                  || !leaseManager()
+                      .hasActiveLease(
+                          jobId,
+                          leaseEpoch,
+                          existing,
+                          "freezeSnapshotPlanCoverage",
+                          false,
+                          true,
+                          false)) {
+                return null;
+              }
+              existing.snapshotTaskCoverageFrozen = true;
+              existing.updatedAtMs = System.currentTimeMillis();
+              return existing;
+            });
+    return frozen.isEmpty() ? Optional.empty() : getCompletionLeaseView(jobId, leaseEpoch, false);
   }
 
   @Override
@@ -1496,6 +1995,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                         blankToEmpty(effective.directStatsBlobUri());
                     existing.snapshotTaskDirectStatsRecordCount =
                         effective.directStatsRecordCount();
+                    existing.snapshotTaskSourceRevision = effective.sourceRevision();
+                    existing.snapshotTaskMetadataFingerprint = effective.metadataFingerprint();
+                    existing.snapshotTaskRequestedCoverage = effective.requestedCoverage();
                     var snapshotIndexPredecessor = effective.indexPredecessor();
                     existing.snapshotTaskIndexPredecessorPresent = snapshotIndexPredecessor != null;
                     existing.snapshotTaskIndexPredecessorGenerationId =
@@ -1680,6 +2182,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         && blankToEmpty(currentState.snapshotTaskDirectStatsBlobUri)
             .equals(blankToEmpty(effective.directStatsBlobUri()))
         && currentState.snapshotTaskDirectStatsRecordCount == effective.directStatsRecordCount()
+        && blankToEmpty(currentState.snapshotTaskSourceRevision).equals(effective.sourceRevision())
+        && blankToEmpty(currentState.snapshotTaskMetadataFingerprint)
+            .equals(effective.metadataFingerprint())
+        && java.util.Objects.equals(
+            currentState.snapshotTaskRequestedCoverage, effective.requestedCoverage())
         && snapshotIndexPredecessorMatches(currentState, effective.indexPredecessor())
         && blankToEmpty(currentState.snapshotPlanBlobUri).equals(blankToEmpty(manifestUri));
   }
@@ -1747,6 +2254,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         effective.sourceFileCount(),
         effective.directStatsBlobUri(),
         effective.directStatsRecordCount(),
+        effective.sourceRevision(),
+        effective.metadataFingerprint(),
+        effective.requestedCoverage(),
         effective.indexPredecessor());
   }
 
@@ -1833,29 +2343,46 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   @Override
   public boolean beginSnapshotFinalizeCommit(String jobId, String leaseEpoch) {
     return onHotPath(
-        () ->
-            mutateByJobIdReturningRecord(
-                    jobId,
-                    existing -> {
-                      if (existing == null
-                          || existing.jobKind() != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
-                          || !"JS_RUNNING".equals(existing.state)
-                          || !leaseManager()
-                              .hasActiveLease(
-                                  jobId,
-                                  leaseEpoch,
-                                  existing,
-                                  "beginSnapshotFinalizeCommit",
-                                  true,
-                                  true,
-                                  false)) {
-                        return null;
-                      }
-                      existing.snapshotFinalizeCommitStarted = true;
-                      existing.updatedAtMs = System.currentTimeMillis();
-                      return existing;
-                    })
-                .isPresent());
+        () -> {
+          StoredEnvelope finalizer = loadByAnyAccount(jobId).orElse(null);
+          if (finalizer == null || blank(finalizer.record.parentJobId)) {
+            return false;
+          }
+          StoredEnvelope parent = loadByAnyAccount(finalizer.record.parentJobId).orElse(null);
+          if (parent == null
+              || parent.record.jobKind() != ReconcileJobKind.PLAN_SNAPSHOT
+              || !leaseManager()
+                  .isSnapshotOwnershipHeldBy(parent.record, parent.canonicalPointerKey)) {
+            return false;
+          }
+          return mutateByJobIdReturningRecord(
+                  jobId,
+                  existing -> {
+                    if (existing == null
+                        || existing.jobKind() != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+                        || !"JS_RUNNING".equals(existing.state)
+                        || !leaseManager()
+                            .hasActiveLease(
+                                jobId,
+                                leaseEpoch,
+                                existing,
+                                "beginSnapshotFinalizeCommit",
+                                true,
+                                true,
+                                false)) {
+                      return null;
+                    }
+                    existing.snapshotFinalizeCommitStarted = true;
+                    existing.updatedAtMs = System.currentTimeMillis();
+                    return existing;
+                  })
+              .isPresent();
+        });
+  }
+
+  @Override
+  public boolean enforcesSnapshotFinalizeOwnership() {
+    return true;
   }
 
   @Override
@@ -1870,6 +2397,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       int sourceFileCount,
       long statsRecordCount,
       long indexArtifactCount,
+      List<String> materializedCoverage,
       long finishedAtMs,
       String message) {
     return onHotPath(
@@ -1892,6 +2420,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                         existing.snapshotFinalizeFileGroupCount = fileGroupCount;
                         existing.snapshotFinalizeSourceFileCount = sourceFileCount;
                         existing.snapshotFinalizeStatsRecordCount = statsRecordCount;
+                        if (materializedCoverage != null) {
+                          existing.snapshotTaskRequestedCoverage =
+                              ReconcileSnapshotContentState.unionCoverage(
+                                  List.of(), materializedCoverage);
+                        }
                         return applyLeaseOutcomeToRecord(
                             existing.canonicalPointerKey,
                             existing,
@@ -3527,7 +4060,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             loaded.record.snapshotTaskTableId,
             loaded.record.snapshotTaskSnapshotId,
             Math.max(0L, loaded.record.finishedAtMs),
-            loaded.record.jobId));
+            loaded.record.jobId,
+            ReconcileSnapshotContentState.FORMAT_VERSION,
+            loaded.record.connectorId,
+            loaded.record.snapshotTaskSourceNamespace,
+            loaded.record.snapshotTaskSourceTable,
+            loaded.record.snapshotTaskSourceRevision,
+            loaded.record.captureMode() == CaptureMode.CAPTURE_ONLY
+                ? ""
+                : loaded.record.snapshotTaskMetadataFingerprint,
+            loaded.record.snapshotTaskRequestedCoverage,
+            loaded.record.fullRescan));
   }
 
   private boolean enqueueSnapshotFinalizationForPlanSnapshotIfEligible(
@@ -3549,12 +4092,16 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         || parent.jobKind != ReconcileJobKind.PLAN_SNAPSHOT
         || snapshotTask.completionMode() != ReconcileSnapshotTask.CompletionMode.FILE_GROUPS
         || !snapshotTask.fileGroupPlanRecorded()
-        || snapshotTask.fileGroupCount() <= 0L) {
+        || snapshotTask.fileGroupCount() < 0L) {
       return false;
     }
 
     List<ReconcileFileGroupTask> expectedGroups = materializeSnapshotPlanFileGroups(snapshotTask);
-    if (expectedGroups.isEmpty()) {
+    if (expectedGroups.isEmpty()
+        && (snapshotTask.fileGroupCount() != 0 || snapshotTask.sourceFileCount() != 0)) {
+      return false;
+    }
+    if (expectedGroups.isEmpty() && snapshotTask.sourceRevision().isBlank()) {
       return false;
     }
     java.util.Set<String> expectedKeys = new java.util.LinkedHashSet<>();
@@ -3637,6 +4184,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         Math.max(0, record.snapshotTaskSourceFileCount),
         blankToEmpty(record.snapshotTaskDirectStatsBlobUri),
         Math.max(0, record.snapshotTaskDirectStatsRecordCount),
+        blankToEmpty(record.snapshotTaskSourceRevision),
+        blankToEmpty(record.snapshotTaskMetadataFingerprint),
+        record.snapshotTaskRequestedCoverage,
         record.snapshotTaskIndexPredecessorPresent
             ? new ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor(
                 record.snapshotTaskIndexPredecessorGenerationId,
@@ -3658,19 +4208,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return planId + "|" + groupId;
   }
 
-  private void resetFinalizedSnapshotIfEligible(BulkEnqueueSpec spec) {
-    if (spec == null
-        || spec.jobKind != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
-        || blank(spec.accountId)
-        || spec.snapshotTask == null
-        || blank(spec.snapshotTask.tableId())) {
-      return;
-    }
-    pointerStore.delete(
-        Keys.reconcileFinalizedSnapshotIdentityPointer(
-            spec.accountId, spec.snapshotTask.tableId(), spec.snapshotTask.snapshotId()));
-  }
-
   private void upsertFinalizedSnapshotEvent(StoredFinalizedSnapshotEvent event) {
     if (event == null
         || blank(event.accountId)
@@ -3681,11 +4218,66 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     String identityKey =
         Keys.reconcileFinalizedSnapshotIdentityPointer(
             event.accountId, event.tableId, event.snapshotId);
-    String blobUri = encodeInlineFinalizedSnapshotEvent(event);
-    Pointer created = PointerReferences.inlineJsonPointer(identityKey, blobUri, 1L);
-    if (!pointerStore.compareAndSet(identityKey, 0L, created)) {
-      return;
+    for (int attempt = 0; attempt < 16; attempt++) {
+      Pointer currentPointer = pointerStore.get(identityKey).orElse(null);
+      long expectedVersion = currentPointer == null ? 0L : currentPointer.getVersion();
+      StoredFinalizedSnapshotEvent current =
+          currentPointer == null
+              ? null
+              : readFinalizedSnapshotEvent(currentPointer.getBlobUri()).orElse(null);
+      StoredFinalizedSnapshotEvent next = mergeFinalizedSnapshotEvent(current, event);
+      if (next == null) {
+        return;
+      }
+      String blobUri = encodeInlineFinalizedSnapshotEvent(next);
+      Pointer pointer =
+          PointerReferences.inlineJsonPointer(identityKey, blobUri, expectedVersion + 1L);
+      if (pointerStore.compareAndSet(identityKey, expectedVersion, pointer)) {
+        return;
+      }
     }
+    throw new IllegalStateException("Finalized snapshot content-state CAS retries exhausted");
+  }
+
+  private StoredFinalizedSnapshotEvent mergeFinalizedSnapshotEvent(
+      StoredFinalizedSnapshotEvent current, StoredFinalizedSnapshotEvent update) {
+    if (current == null || current.formatVersion < ReconcileSnapshotContentState.FORMAT_VERSION) {
+      return update;
+    }
+    if (current.finalizedAtMs > update.finalizedAtMs) {
+      return null;
+    }
+    if (update.rebuild) {
+      return update;
+    }
+    if (!blankToEmpty(current.connectorId).equals(blankToEmpty(update.connectorId))
+        || !blankToEmpty(current.sourceNamespace).equals(blankToEmpty(update.sourceNamespace))
+        || !blankToEmpty(current.sourceTable).equals(blankToEmpty(update.sourceTable))
+        || !blankToEmpty(current.sourceRevision).equals(blankToEmpty(update.sourceRevision))) {
+      return update;
+    }
+    if (current.finalizedAtMs > update.finalizedAtMs
+        && !blankToEmpty(current.finalizerJobId).equals(blankToEmpty(update.finalizerJobId))) {
+      return null;
+    }
+    return new StoredFinalizedSnapshotEvent(
+        update.eventId,
+        update.accountId,
+        update.tableId,
+        update.snapshotId,
+        Math.max(current.finalizedAtMs, update.finalizedAtMs),
+        update.finalizerJobId,
+        ReconcileSnapshotContentState.FORMAT_VERSION,
+        update.connectorId,
+        update.sourceNamespace,
+        update.sourceTable,
+        update.sourceRevision,
+        blankToEmpty(update.metadataFingerprint).isBlank()
+            ? current.metadataFingerprint
+            : update.metadataFingerprint,
+        ReconcileSnapshotContentState.unionCoverage(
+            current.captureCoverage, update.captureCoverage),
+        false);
   }
 
   private String encodeInlineFinalizedSnapshotEvent(StoredFinalizedSnapshotEvent event) {
@@ -4886,6 +5478,14 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     public long snapshotId;
     public long finalizedAtMs;
     public String finalizerJobId;
+    public int formatVersion;
+    public String connectorId;
+    public String sourceNamespace;
+    public String sourceTable;
+    public String sourceRevision;
+    public String metadataFingerprint;
+    public List<String> captureCoverage = List.of();
+    public boolean rebuild;
 
     StoredFinalizedSnapshotEvent(
         String eventId,
@@ -4893,13 +5493,30 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         String tableId,
         long snapshotId,
         long finalizedAtMs,
-        String finalizerJobId) {
+        String finalizerJobId,
+        int formatVersion,
+        String connectorId,
+        String sourceNamespace,
+        String sourceTable,
+        String sourceRevision,
+        String metadataFingerprint,
+        List<String> captureCoverage,
+        boolean rebuild) {
       this.eventId = eventId == null ? "" : eventId;
       this.accountId = accountId == null ? "" : accountId;
       this.tableId = tableId == null ? "" : tableId;
       this.snapshotId = Math.max(0L, snapshotId);
       this.finalizedAtMs = Math.max(0L, finalizedAtMs);
       this.finalizerJobId = finalizerJobId == null ? "" : finalizerJobId;
+      this.formatVersion = formatVersion;
+      this.connectorId = connectorId == null ? "" : connectorId;
+      this.sourceNamespace = sourceNamespace == null ? "" : sourceNamespace;
+      this.sourceTable = sourceTable == null ? "" : sourceTable;
+      this.sourceRevision = sourceRevision == null ? "" : sourceRevision;
+      this.metadataFingerprint = metadataFingerprint == null ? "" : metadataFingerprint;
+      this.captureCoverage =
+          captureCoverage == null ? List.of() : captureCoverage.stream().sorted().toList();
+      this.rebuild = rebuild;
     }
 
     StoredFinalizedSnapshotEvent() {}

@@ -688,6 +688,118 @@ class JavaConnectorCaptureEngineTest {
     assertThat(result.get().pageIndexEntries()).isEmpty();
   }
 
+  @Test
+  void captureResolvesDefaultFirstNPageIndexSelectors() {
+    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
+    engine.connectorOpener = ignored -> connector;
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    String plannedFile = "s3://bucket/path/file-1.parquet";
+    when(connector.capturePlannedFileGroup(
+            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
+        .thenReturn(
+            FloecatConnector.FileGroupCaptureResult.of(
+                List.of(),
+                List.of(
+                    pageIndexEntry(plannedFile, "first"),
+                    pageIndexEntry(plannedFile, "second"),
+                    pageIndexEntry(plannedFile, "third"))));
+    CaptureEngineRequest request =
+        new CaptureEngineRequest(
+            SOURCE_CONNECTOR,
+            "db",
+            "events",
+            tableId,
+            55L,
+            "plan-1",
+            "group-1",
+            List.of(plannedFile),
+            Set.of(),
+            Set.of(),
+            new FloecatConnector.ColumnSelectorPolicy(
+                FloecatConnector.DefaultColumnScope.FIRST_N, 2),
+            Set.of(),
+            true,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            () -> false);
+
+    var outputs = new CapturedFileOutputs();
+    engine.capture(request, outputs::accept);
+
+    assertThat(outputs.pageIndexEntries)
+        .extracting(FloecatConnector.ParquetPageIndexEntry::columnName)
+        .containsExactly("first", "second");
+  }
+
+  @Test
+  void captureProducesNoPageIndexCoverageForExplicitOnlyWithoutSelectors() {
+    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
+    engine.connectorOpener = ignored -> connector;
+
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
+    String plannedFile = "s3://bucket/path/file-1.parquet";
+    when(connector.capturePlannedFileGroup(
+            any(), any(), any(), anyLong(), any(), any(), any(), anyBoolean(), any()))
+        .thenReturn(
+            FloecatConnector.FileGroupCaptureResult.of(
+                List.of(), List.of(pageIndexEntry(plannedFile, "first"))));
+    CaptureEngineRequest request =
+        new CaptureEngineRequest(
+            SOURCE_CONNECTOR,
+            "db",
+            "events",
+            tableId,
+            55L,
+            "plan-1",
+            "group-1",
+            List.of(plannedFile),
+            Set.of(),
+            Set.of(),
+            new FloecatConnector.ColumnSelectorPolicy(
+                FloecatConnector.DefaultColumnScope.EXPLICIT_ONLY, 32),
+            Set.of(),
+            true,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            () -> false);
+
+    var outputs = new CapturedFileOutputs();
+    engine.capture(request, outputs::accept);
+
+    assertThat(outputs.pageIndexEntries).isEmpty();
+  }
+
+  private static FloecatConnector.ParquetPageIndexEntry pageIndexEntry(
+      String filePath, String columnName) {
+    return new FloecatConnector.ParquetPageIndexEntry(
+        filePath,
+        columnName,
+        0,
+        0,
+        0L,
+        1,
+        1,
+        16L,
+        32,
+        8L,
+        8,
+        true,
+        "INT64",
+        "ZSTD",
+        (short) 1,
+        (short) 0,
+        null,
+        null,
+        null);
+  }
+
   private static TargetStatsRecord fileRecordWithColumnNdv(
       ResourceId tableId, long snapshotId, String filePath, Ndv ndv) {
     return TargetStatsRecord.newBuilder()

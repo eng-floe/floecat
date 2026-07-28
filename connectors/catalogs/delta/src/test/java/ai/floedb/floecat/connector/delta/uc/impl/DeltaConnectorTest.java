@@ -83,6 +83,53 @@ class DeltaConnectorTest {
   }
 
   @Test
+  void latestNSelectsLatestVersionsWithinTargetEligibility() {
+    Snapshot latest = snapshot(9L, 9000L);
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(latest, Map.of(9L, latest)));
+
+    List<Long> versions =
+        connector.versionsToEnumerate(
+            9L,
+            true,
+            Set.of(),
+            Set.of(2L, 5L, 8L),
+            FloecatConnector.SnapshotSelectionKind.LATEST_N,
+            Set.of(),
+            2);
+
+    assertEquals(List.of(5L, 8L), versions);
+  }
+
+  @Test
+  void currentSelectsUpstreamCurrentOnlyWhenItIsTargetEligible() {
+    Snapshot latest = snapshot(9L, 9000L);
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(latest, Map.of(9L, latest)));
+
+    assertEquals(
+        List.of(),
+        connector.versionsToEnumerate(
+            9L,
+            true,
+            Set.of(),
+            Set.of(8L),
+            FloecatConnector.SnapshotSelectionKind.CURRENT,
+            Set.of(),
+            0));
+    assertEquals(
+        List.of(9L),
+        connector.versionsToEnumerate(
+            9L,
+            true,
+            Set.of(),
+            Set.of(9L),
+            FloecatConnector.SnapshotSelectionKind.CURRENT,
+            Set.of(),
+            0));
+  }
+
+  @Test
   void planSnapshotFilesReturnsEmptyForMissingVersion() {
     Snapshot latest = snapshot(7L, 7000L);
     TestDeltaConnector connector =

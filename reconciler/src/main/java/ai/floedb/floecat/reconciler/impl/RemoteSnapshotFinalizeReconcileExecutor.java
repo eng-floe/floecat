@@ -190,6 +190,15 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       List<TargetStatsRecord> partials = new ArrayList<>();
       List<StatsObjectDescriptor> fileStats = new ArrayList<>();
       List<StatsObjectDescriptor> indexArtifacts = new ArrayList<>();
+      Set<String> realizedIndexSelectors = new java.util.TreeSet<>();
+      Set<String> resolvedDefaultIndexSelectors = null;
+      ReconcileCapturePolicy capturePolicy =
+          lease.scope == null ? ReconcileCapturePolicy.empty() : lease.scope.capturePolicy();
+      boolean defaultIndexSelection =
+          capturePolicy.requestsIndexes()
+              && capturePolicy.selectorsForIndex().isEmpty()
+              && capturePolicy.defaultColumnScope()
+                  != ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
       for (ReconcileFileGroupResultDescriptor descriptor : descriptors) {
         if (context.shouldStop().getAsBoolean()) {
           return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
@@ -201,6 +210,16 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         partials.addAll(artifacts.partialAggregates());
         fileStats.addAll(artifacts.fileStats());
         indexArtifacts.addAll(artifacts.indexArtifacts());
+        if (defaultIndexSelection) {
+          Set<String> groupSelectors = Set.copyOf(artifacts.realizedIndexSelectors());
+          if (resolvedDefaultIndexSelectors == null) {
+            resolvedDefaultIndexSelectors = groupSelectors;
+          } else if (!resolvedDefaultIndexSelectors.equals(groupSelectors)) {
+            throw new IllegalArgumentException(
+                "snapshot file groups report inconsistent resolved default index selectors");
+          }
+        }
+        realizedIndexSelectors.addAll(artifacts.realizedIndexSelectors());
       }
       Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
       List<TargetStatsRecord> finalStats =
@@ -223,6 +242,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
               fileStats,
               finalStats,
               indexArtifacts,
+              List.copyOf(realizedIndexSelectors),
               input.indexPredecessor());
       if (context.shouldStop().getAsBoolean()) {
         return ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
@@ -366,6 +386,17 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         || descriptor.indexArtifactCount() != payload.getIndexArtifactsCount()) {
       throw new IllegalArgumentException("snapshot file-group result payload count mismatch");
     }
+    List<String> realizedIndexSelectors =
+        payload.getRealizedIndexSelectorsList().stream()
+            .filter(selector -> selector != null && !selector.isBlank())
+            .map(String::trim)
+            .distinct()
+            .sorted()
+            .toList();
+    if (capturePolicy.requestsIndexes() && realizedIndexSelectors.isEmpty()) {
+      throw new IllegalArgumentException(
+          "snapshot file-group result does not report realized index selectors");
+    }
     if (capturePolicy.requestsIndexes()) {
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor predecessor =
           descriptor.indexPredecessor();
@@ -444,7 +475,8 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
     return new ValidatedFileGroupArtifacts(
         payload.getPartialAggregateRecordsList(),
         fileStatsObjects,
-        payload.getIndexArtifactsList());
+        payload.getIndexArtifactsList(),
+        realizedIndexSelectors);
   }
 
   static Set<String> expectedFileStatsTargets(
@@ -631,5 +663,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
   private record ValidatedFileGroupArtifacts(
       List<TargetStatsRecord> partialAggregates,
       List<StatsObjectDescriptor> fileStats,
-      List<StatsObjectDescriptor> indexArtifacts) {}
+      List<StatsObjectDescriptor> indexArtifacts,
+      List<String> realizedIndexSelectors) {}
 }
