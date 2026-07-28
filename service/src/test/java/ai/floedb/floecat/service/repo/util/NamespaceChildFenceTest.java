@@ -25,11 +25,14 @@ import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
+import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.DelegatingPointerStore;
 import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.DuplicateKeyRejectingPointerStore;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -171,6 +174,63 @@ class NamespaceChildFenceTest {
     assertThat(viewRepo.getById(resourceId("view-1", ResourceKind.RK_VIEW))).isPresent();
     assertThat(viewRepo.getById(resourceId("view-2", ResourceKind.RK_VIEW))).isPresent();
     assertThat(markerVersion()).isEqualTo(2L);
+  }
+
+  @Test
+  void nameCollisionIsReportedAsSuchEvenWhileTheMarkerIsContended() {
+    // A create that both collides on its name AND keeps losing the fence. Occasional contention
+    // self-corrects on the next attempt, so this reproduces the case that does not: a namespace
+    // busy
+    // enough that the marker moves before every attempt. Asking the guard first then burned the
+    // whole
+    // retry budget and reported guard contention, so the client never learned the name was taken.
+    // The name's owner is created without contention; only the colliding create faces the busy
+    // namespace, or the setup would exhaust its own retry budget too.
+    viewRepo.create(view("view-1", "orders"), markers.namespaceChildGuard(namespaceId));
+
+    var contendedViews =
+        new ViewRepository(new MarkerMovingPointerStore(ptr, this::bumpMarkerAsIfBySibling), blobs);
+
+    assertThatThrownBy(
+            () ->
+                contendedViews.create(
+                    view("view-2", "orders"), markers.namespaceChildGuard(namespaceId)))
+        .isInstanceOf(BaseResourceRepository.NameConflictException.class)
+        .hasMessageContaining("pointer bound to different blob");
+  }
+
+  private void bumpMarkerAsIfBySibling() {
+    markers.bumpNamespaceMarker(namespaceId);
+  }
+
+  /** Advances the children marker before every batch, as a namespace under constant DDL would. */
+  private static final class MarkerMovingPointerStore extends DelegatingPointerStore {
+    private final Runnable moveMarker;
+
+    private MarkerMovingPointerStore(PointerStore delegate, Runnable moveMarker) {
+      super(delegate);
+      this.moveMarker = moveMarker;
+    }
+
+    @Override
+    public boolean compareAndSetBatch(List<PointerStore.CasOp> ops) {
+      moveMarker.run();
+      return super.compareAndSetBatch(ops);
+    }
+  }
+
+  @Test
+  void deletionOfTheNamespaceOutranksACollisionInsideIt() {
+    // Both would refuse the create, but the parent's fate is the more fundamental fact: the guarded
+    // namespace is gone, so a retry re-resolves it and reports NOT_FOUND rather than a name that is
+    // about to cease to exist.
+    viewRepo.create(view("view-1", "orders"), markers.namespaceChildGuard(namespaceId));
+
+    var guard = markers.namespaceChildGuard(namespaceId);
+    assertThat(namespaceRepo.delete(namespaceId)).isTrue();
+
+    assertThatThrownBy(() -> viewRepo.create(view("view-2", "orders"), guard))
+        .isInstanceOf(BaseResourceRepository.BatchGuardFailedException.class);
   }
 
   @Test

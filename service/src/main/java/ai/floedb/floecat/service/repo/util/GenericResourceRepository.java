@@ -237,14 +237,30 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
               return;
             }
 
-            if (!guardPermitsRetry(guard, "create", attempt)) {
-              // The batch committed nothing (atomic) because at least one pointer already existed.
-              // Read back and classify, walking canonical-then-secondary order so a conflict
-              // reports
-              // the same key/message as before.
-              classifyCreateConflict(blobUri, pointerKeys);
+            // Re-read the guard once — NamespaceChildGuard re-captures its marker on RETRY, so a
+            // second reevaluate would report HOLDS and lose the contention it just absorbed.
+            BatchGuard.Outcome verdict = guard.reevaluate();
+            requireGuardIntact(verdict, guard, "create");
+
+            // Classify this mutation's own conflict BEFORE honouring a guard retry. A name
+            // collision
+            // is terminal no matter how busy the guarded marker is; deciding retry first meant that
+            // under sustained sibling contention the retries ran out and the collision surfaced as
+            // a
+            // retryable abort instead of ALREADY_EXISTS.
+            if (classifyCreateConflict(blobUri, pointerKeys)) {
               return;
             }
+
+            // Nothing of ours is present, so the batch failed on the guard or on a transient store
+            // conflict. Absorbing a moved marker here keeps concurrent sibling creates as cheap as
+            // the marker's own CAS loop rather than escalating to an RPC retry.
+            if (verdict == BatchGuard.Outcome.RETRY) {
+              requireRetryBudget(guard, "create", attempt);
+              continue;
+            }
+            throw new AbortRetryableException(
+                "create conflict, no pointer present: " + pointerKeys.get(0));
           }
         });
   }
@@ -284,29 +300,41 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    * benign contention fails to settle within {@link #CAS_MAX} attempts — an unbounded retry here
    * would spin a worker on a hot marker.
    */
-  private boolean guardPermitsRetry(BatchGuard guard, String operation, int attempt) {
-    switch (guard.reevaluate()) {
-      case HOLDS:
-        return false;
-      case RETRY:
-        if (attempt < CAS_MAX) {
-          return true;
-        }
-        throw new AbortRetryableException(
-            operation
-                + " contended on guard for "
-                + guard.describe()
-                + " after "
-                + CAS_MAX
-                + " attempts");
-      case BROKEN:
-      default:
-        throw new BatchGuardFailedException(
-            operation + " lost the race against deletion of " + guard.describe());
+  /**
+   * Refuses to go any further when the guarded parent is gone or has changed. Checked before the
+   * mutation classifies its own conflict: the parent's fate is more fundamental than anything
+   * happening inside it, and a retry re-resolves the parent and reports the accurate NOT_FOUND.
+   */
+  private void requireGuardIntact(BatchGuard.Outcome verdict, BatchGuard guard, String operation) {
+    if (verdict == BatchGuard.Outcome.BROKEN) {
+      throw new BatchGuardFailedException(
+          operation + " lost the race against deletion of " + guard.describe());
     }
   }
 
-  private void classifyCreateConflict(String blobUri, List<String> pointerKeys) {
+  /** Bounds in-repository absorption of guard contention, so a hot marker cannot spin forever. */
+  private void requireRetryBudget(BatchGuard guard, String operation, int attempt) {
+    if (attempt >= CAS_MAX) {
+      throw new AbortRetryableException(
+          operation
+              + " contended on guard for "
+              + guard.describe()
+              + " after "
+              + CAS_MAX
+              + " attempts");
+    }
+  }
+
+  /**
+   * Reads back the batch's own pointers, walking canonical-then-secondary order so a conflict
+   * reports the same key and message it always has.
+   *
+   * @return true when the read-back settled the outcome — every pointer already resolves to this
+   *     blob, so the create is a byte-identical no-op. False when no pointer is present at all,
+   *     which means the failure was not this mutation's own conflict and the caller decides what it
+   *     was. A genuine collision or a stored inconsistency throws.
+   */
+  private boolean classifyCreateConflict(String blobUri, List<String> pointerKeys) {
     int present = 0;
     int absent = 0;
     for (String pointerKey : pointerKeys) {
@@ -322,14 +350,12 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     }
     if (absent == 0) {
       // Every pointer already resolves to our blob: a byte-identical re-create is a no-op.
-      return;
+      return true;
     }
     if (present == 0) {
-      // The batch reported a conflict yet read-back finds no pointer at all: a transient batch
-      // conflict (e.g. a DynamoDB TransactionConflict) or a concurrent delete, not a stable state.
-      // Re-running the atomic batch can still make progress, so signal a retry.
-      throw new AbortRetryableException(
-          "create conflict, no pointer present: " + pointerKeys.get(0));
+      // Read-back finds no pointer at all, so nothing here conflicted with us — the guard moved, or
+      // the store reported a transient batch conflict. Either way it is the caller's call.
+      return false;
     }
     // Mixed: some pointers present (bound to our blob), some absent. An atomic create cannot
     // produce this, so it is a stored inconsistency (a legacy orphan, or a non-atomic
@@ -635,10 +661,22 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
               healCanonicalBlobIfMissing(blobUri, updatedValue);
               return true;
             }
-            if (!guardPermitsRetry(guard, "update", attempt)) {
-              return classifyUpdateConflict(
-                  canonicalPointer, expectedCanonicalVersion, blobUri, toAdd);
+
+            // One reevaluate per failed batch (see create), and the same precedence: a lost
+            // optimistic-concurrency check or a name bound elsewhere is this mutation's own answer,
+            // and must not be re-labelled as guard contention just because a sibling is publishing
+            // into the same namespace.
+            BatchGuard.Outcome verdict = guard.reevaluate();
+            requireGuardIntact(verdict, guard, "update");
+
+            var ownConflict =
+                classifyUpdateConflict(
+                    canonicalPointer, expectedCanonicalVersion, blobUri, toAdd, verdict);
+            if (ownConflict != null) {
+              return ownConflict;
             }
+
+            requireRetryBudget(guard, "update", attempt);
           }
         });
   }
@@ -665,8 +703,20 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     }
   }
 
-  private boolean classifyUpdateConflict(
-      String canonicalPointer, long expectedCanonicalVersion, String blobUri, Set<String> toAdd) {
+  /**
+   * Classifies a failed update against its own pointers.
+   *
+   * @return {@code false} when the canonical pointer moved — an optimistic-concurrency miss, which
+   *     is the caller's answer — or {@code null} when nothing here explains the failure and {@code
+   *     guardVerdict} says the guarded marker moved, so the batch is worth re-running. A name owned
+   *     by a different blob throws, as does an unexplained failure with the guard holding.
+   */
+  private Boolean classifyUpdateConflict(
+      String canonicalPointer,
+      long expectedCanonicalVersion,
+      String blobUri,
+      Set<String> toAdd,
+      BatchGuard.Outcome guardVerdict) {
     Pointer canonical = pointerStore.get(canonicalPointer).orElse(null);
     if (canonical == null || canonical.getVersion() != expectedCanonicalVersion) {
       // Optimistic-concurrency miss: the canonical pointer moved or vanished under us. Same
@@ -682,6 +732,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       if (secondary != null && !blobUri.equals(secondary.getBlobUri())) {
         throw new NameConflictException("pointer bound to different blob: " + p);
       }
+    }
+    if (guardVerdict == BatchGuard.Outcome.RETRY) {
+      return null;
     }
     throw new AbortRetryableException("update conflict for: " + canonicalPointer);
   }
