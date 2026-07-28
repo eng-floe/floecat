@@ -200,6 +200,36 @@ public class NamespaceRepository {
     return refs;
   }
 
+  /**
+   * The ref at an exact path, from its by-path pointer row alone.
+   *
+   * <p>{@link #getByPath} parses the namespace's blob, so it throws {@code CorruptionException} for
+   * a namespace that exists but cannot be read. Callers that only need identity — bumping a marker,
+   * say — should not fail for that reason, least of all when they run after destructive work.
+   */
+  public Optional<NamespaceRef> refByPath(
+      String accountId, String catalogId, List<String> pathSegments) {
+    return repo.refByPointer(Keys.namespacePointerByPath(accountId, catalogId, pathSegments))
+        .flatMap(
+            p -> toNamespaceRef(accountId, catalogId, catalogResourceId(accountId, catalogId), p));
+  }
+
+  /**
+   * Namespace ids in a catalog, from by-path pointer rows rather than content.
+   *
+   * <p>For teardown, which runs after the account pointer is already gone: {@link #listIds} parses
+   * every namespace blob, so one unreadable namespace aborts cleanup at a point where the operation
+   * cannot be retried, orphaning everything it had not reached yet.
+   */
+  public List<ResourceId> listIdsFromPointers(String accountId, String catalogId) {
+    var refs = listRefsUnder(accountId, catalogId, List.of());
+    var ids = new ArrayList<ResourceId>(refs.size());
+    for (var ref : refs) {
+      ids.add(ref.id());
+    }
+    return ids;
+  }
+
   /** Reads exact by-path namespace pointers and returns refs without fetching blobs from S3. */
   public List<NamespaceRef> listRefsByName(String accountId, String catalogId, Set<String> names) {
     if (names == null || names.isEmpty()) {

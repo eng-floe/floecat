@@ -404,6 +404,12 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, safe, request.getPrecondition());
+                    // The pointer is already gone, but cleanup runs after that removal and can have
+                    // died part-way — and this is the path a retry of such a delete lands on.
+                    // Returning success here without finishing the job is what makes those orphans
+                    // permanent, so sweep again. Teardown is idempotent: everything it removes is
+                    // deleted unconditionally and re-scans find nothing on a second pass.
+                    cleanupAccountResources(accountId);
                     return DeleteAccountResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -480,18 +486,17 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     CLEANUP_LOG.infof(
         "account_delete_cleanup_catalog account_id=%s catalog_id=%s",
         catalogId.getAccountId(), catalogId.getId());
-    for (var namespaceId :
-        recursiveDropper.namespaceIds(catalogId.getAccountId(), catalogId.getId())) {
-      // A previous tree may have removed this namespace as its descendant.
-      recursiveDropper
-          .dropNamespaceTree(namespaceId)
-          .ifPresent(
-              dropped -> {
-                summary.namespacesDeleted += dropped.namespacesDeleted;
-                summary.tablesDeleted += dropped.tablesDeleted;
-                summary.viewsDeleted += dropped.viewsDeleted;
-                summary.snapshotPrefixesDeleted += dropped.snapshotPrefixesDeleted;
-              });
+    for (var namespaceRef :
+        recursiveDropper.namespaceRefs(catalogId.getAccountId(), catalogId.getId())) {
+      // Driven from pointer rows: a namespace whose blob cannot be parsed must still be torn down,
+      // because this runs after the account pointer is gone and cannot be retried.
+      // A previous tree may have removed this namespace as its descendant, in which case the drop
+      // finds nothing left to do.
+      var dropped = recursiveDropper.dropNamespaceTree(namespaceRef, catalogId);
+      summary.namespacesDeleted += dropped.namespacesDeleted;
+      summary.tablesDeleted += dropped.tablesDeleted;
+      summary.viewsDeleted += dropped.viewsDeleted;
+      summary.snapshotPrefixesDeleted += dropped.snapshotPrefixesDeleted;
     }
     catalogRepo.delete(catalogId);
     metadataGraph.invalidate(catalogId);

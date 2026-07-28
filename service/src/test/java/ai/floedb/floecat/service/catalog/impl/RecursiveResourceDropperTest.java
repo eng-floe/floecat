@@ -312,6 +312,42 @@ class RecursiveResourceDropperTest {
   }
 
   /**
+   * Ancestor markers are bumped after the namespace and everything under it are gone, so an
+   * ancestor whose blob cannot be parsed must not fail that step: CorruptionException is neither
+   * retryable nor a precondition failure, so it would surface as an internal error over a
+   * half-finished teardown. Only the ancestor's id is needed, and a pointer row carries it.
+   */
+  @Test
+  void guardedDropCompletesWhenAnAncestorBlobCannotBeParsed() {
+    var nested =
+        Namespace.newBuilder()
+            .setResourceId(ROOT_NS)
+            .setCatalogId(CATALOG)
+            .addParents("db")
+            .setDisplayName("ns")
+            .build();
+    var ancestorId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("ns-db")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    // Content-bearing resolution of the ancestor is what used to run here, and it throws.
+    when(namespaceRepo.getByPath(anyString(), anyString(), any()))
+        .thenThrow(new BaseResourceRepository.CorruptionException("parse failed", null));
+    when(namespaceRepo.refByPath(eq("acct"), eq("cat"), eq(List.of("db"))))
+        .thenReturn(
+            Optional.of(new TopologyGraph.NamespaceRef(ancestorId, "db", CATALOG, List.of("db"))));
+    when(tableRepo.listNamePointers(eq("acct"), eq("cat"), eq("ns"))).thenReturn(List.of());
+
+    // dropNamespaceTree is the teardown entry point: it deletes the root itself, bumping ancestors.
+    var summary = dropper.dropNamespaceTree(nested);
+
+    assertEquals(1, summary.namespacesDeleted);
+    verify(markerStore).bumpNamespaceMarker(eq(ancestorId));
+  }
+
+  /**
    * A descendant whose canonical pointer is already gone still leaves the by-path row the walk
    * followed, and every immediate-child probe counts that row. Skipping without reclaiming it
    * wedges the drop permanently: the parent reports a child nothing can resolve, let alone delete.

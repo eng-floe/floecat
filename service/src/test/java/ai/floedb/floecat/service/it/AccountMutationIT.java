@@ -43,6 +43,7 @@ import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
@@ -84,6 +85,7 @@ class AccountMutationIT {
   @Inject TableRepository tableRepository;
   @Inject ViewRepository viewRepository;
   @Inject PointerStore ptr;
+  @Inject BlobStore blobs;
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
 
@@ -596,6 +598,57 @@ class AccountMutationIT {
         0,
         viewRepository.count(
             seedAccountId, cat.getResourceId().getId(), schema.getResourceId().getId()));
+    assertEquals(0, catalogRepository.count(seedAccountId));
+    assertEquals(0, ptr.countByPrefix(Keys.tableRootPrefix(seedAccountId)));
+  }
+
+  @Test
+  void deleteAccountCleansUpDespiteACorruptNamespaceBlob() throws Exception {
+    // Teardown runs after the account pointer is gone, so anything that throws in it cannot be
+    // retried — the retry finds no account and reports success. Namespace discovery therefore must
+    // not depend on every namespace blob being parseable, or one corrupt blob orphans everything
+    // cleanup had not reached yet (regression for #397).
+    var cat = TestSupport.createCatalog(catalog, accountPrefix + "corrupt_cat", "");
+    var db =
+        TestSupport.createNamespace(namespace, cat.getResourceId(), "db", List.of(), "corrupt db");
+    var other =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "other", List.of(), "second ns");
+    TestSupport.createTable(
+        table,
+        cat.getResourceId(),
+        other.getResourceId(),
+        accountPrefix + "other_table",
+        "s3://bucket/",
+        SchemaParser.toJson(SIMPLE_SCHEMA),
+        "table");
+
+    // One namespace's pointer still resolves; its bytes no longer parse as a Namespace.
+    String dbById = Keys.namespacePointerById(seedAccountId, db.getResourceId().getId());
+    String corruptBlob = ptr.get(dbById).orElseThrow().getBlobUri();
+    blobs.put(
+        corruptBlob, new byte[] {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF}, "application/x-protobuf");
+
+    var seededAccountId = seedAccountResourceId();
+    var seededMeta = accountRepository.metaForSafe(seededAccountId);
+    tenancy.deleteAccount(
+        DeleteAccountRequest.newBuilder()
+            .setAccountId(seededAccountId)
+            .setPrecondition(
+                Precondition.newBuilder()
+                    .setExpectedVersion(seededMeta.getPointerVersion())
+                    .setExpectedEtag(seededMeta.getEtag())
+                    .build())
+            .build());
+
+    // Nothing is left behind: not the corrupt namespace, not the intact one, not its table.
+    assertEquals(
+        0,
+        namespaceRepository.listIdsFromPointers(seedAccountId, cat.getResourceId().getId()).size());
+    assertEquals(
+        0,
+        tableRepository.count(
+            seedAccountId, cat.getResourceId().getId(), other.getResourceId().getId()));
     assertEquals(0, catalogRepository.count(seedAccountId));
     assertEquals(0, ptr.countByPrefix(Keys.tableRootPrefix(seedAccountId)));
   }

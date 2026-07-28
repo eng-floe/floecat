@@ -141,12 +141,24 @@ public class RecursiveResourceDropper {
     return summary;
   }
 
-  public Optional<DropSummary> dropNamespaceTree(ResourceId namespaceId) {
-    return namespaceRepo.getById(namespaceId).map(this::dropNamespaceTree);
+  /**
+   * The namespaces to tear down in a catalog, as pointer rows.
+   *
+   * <p>Teardown runs after the account pointer has been removed, so anything that throws in it
+   * cannot be retried — the retry finds no account and reports success, leaving whatever cleanup
+   * had not reached permanently orphaned. Neither discovery nor the drop may therefore depend on a
+   * namespace blob being parseable, and a row carries the id and path that both need.
+   */
+  public List<TopologyGraph.NamespaceRef> namespaceRefs(String accountId, String catalogId) {
+    return namespaceRepo.listRefsUnder(accountId, catalogId, List.of());
   }
 
-  public List<ResourceId> namespaceIds(String accountId, String catalogId) {
-    return namespaceRepo.listIds(accountId, catalogId);
+  /**
+   * Teardown entry point for one namespace and everything under it, driven from its pointer row so
+   * an unparseable namespace is still removed rather than aborting the account's cleanup.
+   */
+  public DropSummary dropNamespaceTree(TopologyGraph.NamespaceRef ref, ResourceId catalogId) {
+    return dropNamespaceTree(namespaceFromRef(ref, catalogId));
   }
 
   /** Removes a table after its pointer has already been deleted through a public mutation. */
@@ -816,13 +828,22 @@ public class RecursiveResourceDropper {
         accountId, namespaceId.getId(), byPathKey);
   }
 
+  /**
+   * Advances each surviving ancestor's children marker.
+   *
+   * <p>Resolved from by-path pointer rows, not content. This runs <em>after</em> the namespace and
+   * everything under it are already gone, so an ancestor whose blob cannot be parsed must not fail
+   * it: {@code CorruptionException} is neither retryable nor a precondition failure, so it surfaces
+   * as an internal error and the teardown is left half-done with no way to resume. Only the
+   * ancestor's id is needed here, and a pointer row carries it.
+   */
   private void bumpParentNamespaceMarkers(Namespace namespace, ResourceId skipMarkerId) {
     var catalogId = namespace.getCatalogId();
     var parents = namespace.getParentsList();
     for (int i = 0; i < parents.size(); i++) {
       namespaceRepo
-          .getByPath(catalogId.getAccountId(), catalogId.getId(), parents.subList(0, i + 1))
-          .map(Namespace::getResourceId)
+          .refByPath(catalogId.getAccountId(), catalogId.getId(), parents.subList(0, i + 1))
+          .map(TopologyGraph.NamespaceRef::id)
           .filter(id -> skipMarkerId == null || !id.equals(skipMarkerId))
           .ifPresent(markerStore::bumpNamespaceMarker);
     }
