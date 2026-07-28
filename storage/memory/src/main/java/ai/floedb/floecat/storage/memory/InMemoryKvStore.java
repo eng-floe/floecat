@@ -16,11 +16,15 @@
 
 package ai.floedb.floecat.storage.memory;
 
+import ai.floedb.floecat.storage.kv.AttrValue;
+import ai.floedb.floecat.storage.kv.AttrWriteRules;
 import ai.floedb.floecat.storage.kv.KvStore;
+import ai.floedb.floecat.storage.kv.MetadataAttrUpdates;
 import io.smallrye.mutiny.Uni;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -36,6 +40,8 @@ public final class InMemoryKvStore implements KvStore {
 
   @Override
   public Uni<Boolean> putCas(Record record, long expectedVersion) {
+    // Synchronous, matching when and what the DynamoDB store refuses.
+    AttrWriteRules.checkExpiryIsString(record.attrs());
     return Uni.createFrom()
         .item(
             records.compute(
@@ -65,6 +71,71 @@ public final class InMemoryKvStore implements KvStore {
                       return null;
                     })
                 == null);
+  }
+
+  @Override
+  public Uni<Optional<Long>> updateMetadataAttrsIfExists(
+      Key key, Map<String, AttrValue> sets, Map<String, Long> increments) {
+    MetadataAttrUpdates.validate(key, sets, increments);
+
+    // Applied eagerly: a Uni may be subscribed more than once, and a mutation deferred to
+    // subscription time would increment on every subscription. The failure is still handed back
+    // as a failed Uni, matching how DynamoDB reports ADD on a string-typed attribute.
+    Optional<Long> newVersion;
+    try {
+      newVersion = applyMetadataAttrUpdates(key, sets, increments);
+    } catch (RuntimeException failure) {
+      return Uni.createFrom().failure(failure);
+    }
+    return Uni.createFrom().item(newVersion);
+  }
+
+  /**
+   * Applies the update in place, returning the post-update version, or empty if the key is absent
+   * or the record was refused. Throws — leaving the record untouched — if an increment cannot be
+   * applied.
+   */
+  private Optional<Long> applyMetadataAttrUpdates(
+      Key key, Map<String, AttrValue> sets, Map<String, Long> increments) {
+    // A successful update always yields version >= 1, so 0 means "never ran or refused";
+    // computeIfPresent's return value cannot tell a refusal from success.
+    long[] newVersion = {0L};
+    records.computeIfPresent(
+        key,
+        (unused, existing) -> {
+          if (existing.value().length > 0) {
+            // Refused: a value payload embeds its own copy of the version, which this update does
+            // not rewrite.
+            return existing;
+          }
+
+          var attrs = new HashMap<>(existing.attrs());
+          attrs.putAll(sets);
+          for (var increment : increments.entrySet()) {
+            var name = increment.getKey();
+            var current = attrs.get(name);
+            // Rejected on the type, not parseability: DynamoDB's ADD rejects any S-typed
+            // attribute, numeric-looking ones like "42" included. Throwing from the remap leaves
+            // the mapping unchanged, so nothing is half-applied.
+            if (current != null && !(current instanceof AttrValue.NumberValue)) {
+              throw new IllegalStateException(
+                  "cannot increment attr "
+                      + name
+                      + " on "
+                      + key
+                      + ": it currently holds a string value");
+            }
+            long base = current == null ? 0L : ((AttrValue.NumberValue) current).value();
+            // addExact, not +: AttrValue cannot model a sum outside long, and a wrap would report
+            // success while storing a wildly wrong value.
+            attrs.put(name, AttrValue.of(Math.addExact(base, increment.getValue())));
+          }
+
+          newVersion[0] = existing.version() + 1;
+          return new Record(
+              existing.key(), existing.kind(), existing.value(), attrs, newVersion[0]);
+        });
+    return newVersion[0] == 0L ? Optional.<Long>empty() : Optional.of(newVersion[0]);
   }
 
   @Override
@@ -175,6 +246,7 @@ public final class InMemoryKvStore implements KvStore {
     synchronized (this) {
       for (TxnOp op : ops) {
         if (op instanceof TxnPut put) {
+          AttrWriteRules.checkExpiryIsString(put.record().attrs());
           Record existing = records.get(put.record().key());
           if (put.expectedVersion() == 0L) {
             if (existing != null) {

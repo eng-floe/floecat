@@ -20,6 +20,7 @@ import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.storage.kv.AbstractEntity;
+import ai.floedb.floecat.storage.kv.AttrValue;
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.KvStore.Key;
 import ai.floedb.floecat.storage.kv.cdi.KvTable;
@@ -138,9 +139,9 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     var builder =
         Pointer.newBuilder()
             .setKey(keyOf(r.key()))
-            .setBlobUri(r.attrs().getOrDefault(ATTR_BLOB_URI, ""))
+            .setBlobUri(AttrValue.stringOr(r.attrs(), ATTR_BLOB_URI, ""))
             .setVersion(r.version());
-    String referenceKind = r.attrs().get(ATTR_REFERENCE_KIND);
+    String referenceKind = AttrValue.stringOr(r.attrs(), ATTR_REFERENCE_KIND, null);
     if (referenceKind != null && !referenceKind.isBlank()) {
       try {
         builder.setReferenceKind(PointerReferenceKind.valueOf(referenceKind));
@@ -148,13 +149,14 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
         // Preserve legacy behavior for unknown values by leaving the kind unspecified.
       }
     }
-    var expiresAtStr = r.attrs().get(ATTR_EXPIRES_AT);
-    if (expiresAtStr != null) {
-      long ts = Long.parseLong(expiresAtStr);
-      builder.setExpiresAt(Timestamps.fromMillis(ts * 1000L));
+    var expiresAt = r.attrs().get(ATTR_EXPIRES_AT);
+    if (expiresAt != null) {
+      // String or numeric form both decode; a malformed stamp throws rather than reading as
+      // "no expiry".
+      builder.setExpiresAt(Timestamps.fromMillis(expiresAt.asLong() * 1000L));
     }
-    String rid = r.attrs().get(ATTR_RESOURCE_ID);
-    String rkStr = r.attrs().get(ATTR_RESOURCE_KIND);
+    String rid = AttrValue.stringOr(r.attrs(), ATTR_RESOURCE_ID, null);
+    String rkStr = AttrValue.stringOr(r.attrs(), ATTR_RESOURCE_KIND, null);
     if (rid != null && rkStr != null) {
       try {
         String pk = r.key().partitionKey();
@@ -170,7 +172,7 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
       } catch (IllegalArgumentException ignored) {
       }
     }
-    String dn = r.attrs().get(ATTR_DISPLAY_NAME);
+    String dn = AttrValue.stringOr(r.attrs(), ATTR_DISPLAY_NAME, null);
     if (dn != null && !dn.isEmpty()) {
       builder.setDisplayName(dn);
     }
@@ -253,7 +255,9 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
         var attrs = attrsFor(upsert.next());
         if (upsert.next().hasExpiresAt()) {
           long ttl = Timestamps.toMillis(upsert.next().getExpiresAt()) / 1000L;
-          attrs.put(ATTR_EXPIRES_AT, Long.toString(ttl));
+          // String, not number: an older replica drops non-string attrs on read and would then
+          // rewrite the record without its expiry (see AttrWriteRules).
+          attrs.put(ATTR_EXPIRES_AT, AttrValue.of(Long.toString(ttl)));
         }
         var rec =
             new KvStore.Record(
@@ -270,18 +274,18 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     return kv.txnWriteCas(txOps);
   }
 
-  private static HashMap<String, String> attrsFor(Pointer pointer) {
-    var attrs = new HashMap<String, String>();
-    attrs.put(ATTR_BLOB_URI, pointer.getBlobUri());
+  private static HashMap<String, AttrValue> attrsFor(Pointer pointer) {
+    var attrs = new HashMap<String, AttrValue>();
+    attrs.put(ATTR_BLOB_URI, AttrValue.of(pointer.getBlobUri()));
     if (pointer.getReferenceKind() != PointerReferenceKind.PRK_UNSPECIFIED) {
-      attrs.put(ATTR_REFERENCE_KIND, pointer.getReferenceKind().name());
+      attrs.put(ATTR_REFERENCE_KIND, AttrValue.of(pointer.getReferenceKind().name()));
     }
     if (pointer.hasResourceId() && !pointer.getResourceId().getId().isEmpty()) {
-      attrs.put(ATTR_RESOURCE_ID, pointer.getResourceId().getId());
-      attrs.put(ATTR_RESOURCE_KIND, pointer.getResourceId().getKind().name());
+      attrs.put(ATTR_RESOURCE_ID, AttrValue.of(pointer.getResourceId().getId()));
+      attrs.put(ATTR_RESOURCE_KIND, AttrValue.of(pointer.getResourceId().getKind().name()));
     }
     if (!pointer.getDisplayName().isEmpty()) {
-      attrs.put(ATTR_DISPLAY_NAME, pointer.getDisplayName());
+      attrs.put(ATTR_DISPLAY_NAME, AttrValue.of(pointer.getDisplayName()));
     }
     return attrs;
   }

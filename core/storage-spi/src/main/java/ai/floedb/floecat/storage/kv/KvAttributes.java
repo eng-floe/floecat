@@ -15,6 +15,8 @@
  */
 package ai.floedb.floecat.storage.kv;
 
+import java.util.Set;
+
 public interface KvAttributes {
   String ATTR_PARTITION_KEY = "pk";
   String ATTR_SORT_KEY = "sk";
@@ -26,4 +28,16 @@ public interface KvAttributes {
 
   String TARGET_PARTITION_KEY = "targetPk";
   String TARGET_SORT_KEY = "targetSk";
+
+  /**
+   * Names the backend gives its own meaning; a record attribute may not use one. Most would collide
+   * with the structural field of the same name. {@link #ATTR_TTL} is quieter: DynamoDB's TTL
+   * feature is enabled on that attribute, so a numeric attr named {@code ttl} silently schedules
+   * the row's deletion.
+   *
+   * <p>Reserved on writes only — rows written by others may carry these names, so decoders drop
+   * them rather than refusing the record.
+   */
+  Set<String> RESERVED_ATTRS =
+      Set.of(ATTR_PARTITION_KEY, ATTR_SORT_KEY, ATTR_KIND, ATTR_VALUE, ATTR_VERSION, ATTR_TTL);
 }

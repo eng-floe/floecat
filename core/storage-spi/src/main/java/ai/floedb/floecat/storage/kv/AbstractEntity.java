@@ -67,7 +67,9 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
       var m = (M) defaultInstance.getParserForType().parseFrom(data);
       var ts = r.attrs().get(ATTR_EXPIRES_AT);
       if (ts != null) {
-        m = setExpiresAt(m, Long.parseLong(ts));
+        // String or numeric form both decode; a malformed stamp throws rather than reading as
+        // "no expiry".
+        m = setExpiresAt(m, ts.asLong());
       }
       return m;
     } catch (InvalidProtocolBufferException e) {
@@ -84,10 +86,10 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
     return 0L;
   }
 
-  protected static Map<String, String> pointerAttrs(KvStore.Key target) {
+  protected static Map<String, AttrValue> pointerAttrs(KvStore.Key target) {
     return Map.of(
-        TARGET_PARTITION_KEY, target.partitionKey(),
-        TARGET_SORT_KEY, target.sortKey());
+        TARGET_PARTITION_KEY, AttrValue.of(target.partitionKey()),
+        TARGET_SORT_KEY, AttrValue.of(target.sortKey()));
   }
 
   protected static String normalize(String s) {
@@ -117,14 +119,16 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
    * <p>The written record.version and protobuf message version are both set to nextVersion.
    */
   protected Uni<Optional<M>> putCanonicalCas(
-      KvStore.Key key, String kind, M message, Map<String, String> attrs, long expectedVersion) {
+      KvStore.Key key, String kind, M message, Map<String, AttrValue> attrs, long expectedVersion) {
 
     long nv = nextVersion(expectedVersion);
     M withVer = versionAccessor != null ? versionAccessor.withVersion(message, nv) : message;
     long ts = getExpiresAt(withVer);
     if (ts > 0) {
       attrs = new java.util.HashMap<>(attrs);
-      attrs.put(ATTR_EXPIRES_AT, Long.toString(ts));
+      // String, not number: an older replica drops non-string attrs on read and would then
+      // rewrite the record without its expiry (see AttrWriteRules).
+      attrs.put(ATTR_EXPIRES_AT, AttrValue.of(Long.toString(ts)));
     }
     var rec = new KvStore.Record(key, kind, encode(withVer), attrs, nv);
     return kv.putCas(rec, expectedVersion).map(ok -> ok ? Optional.of(withVer) : Optional.empty());
@@ -141,7 +145,11 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
    * <p>Caller supplies raw value bytes; we still write a monotonically increasing version.
    */
   protected Uni<Boolean> putRawCas(
-      KvStore.Key key, String kind, byte[] value, Map<String, String> attrs, long expectedVersion) {
+      KvStore.Key key,
+      String kind,
+      byte[] value,
+      Map<String, AttrValue> attrs,
+      long expectedVersion) {
 
     long nv = nextVersion(expectedVersion);
     var rec = new KvStore.Record(key, kind, value, attrs, nv);
@@ -157,8 +165,8 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
             optPtr -> {
               if (optPtr.isEmpty()) return Uni.createFrom().item(Optional.empty());
               var ptr = optPtr.get();
-              var tpk = ptr.attrs().get(TARGET_PARTITION_KEY);
-              var tsk = ptr.attrs().get(TARGET_SORT_KEY);
+              var tpk = AttrValue.stringOr(ptr.attrs(), TARGET_PARTITION_KEY, null);
+              var tsk = AttrValue.stringOr(ptr.attrs(), TARGET_SORT_KEY, null);
               if (tpk == null || tsk == null) return Uni.createFrom().item(Optional.empty());
               return get(new KvStore.Key(tpk, tsk));
             });
@@ -190,8 +198,11 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
                   page.items().stream()
                       .map(
                           r -> {
-                            String pk = r.attrs().get(KvAttributes.TARGET_PARTITION_KEY);
-                            String sk = r.attrs().get(KvAttributes.TARGET_SORT_KEY);
+                            String pk =
+                                AttrValue.stringOr(
+                                    r.attrs(), KvAttributes.TARGET_PARTITION_KEY, null);
+                            String sk =
+                                AttrValue.stringOr(r.attrs(), KvAttributes.TARGET_SORT_KEY, null);
                             return kv.get(new KvStore.Key(pk, sk));
                           })
                       .toList();

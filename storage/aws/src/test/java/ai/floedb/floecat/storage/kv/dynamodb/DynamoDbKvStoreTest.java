@@ -17,6 +17,7 @@ package ai.floedb.floecat.storage.kv.dynamodb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.floecat.storage.kv.AttrValue;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.kv.KvStore;
 import java.lang.reflect.InvocationHandler;
@@ -131,12 +132,12 @@ public class DynamoDbKvStoreTest {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     DynamoDbKvStore store = newStore(handler);
 
-    KvStore.Record record = record("pk", "sk", "K", "v1", 3L, Map.of("foo", "bar"));
+    KvStore.Record record = record("pk", "sk", "K", "v1", 3L, Map.of("foo", AttrValue.of("bar")));
     assertTrue(store.putCas(record, 0L).await().indefinitely());
 
     KvStore.Record got = store.get(key("pk", "sk")).await().indefinitely().orElseThrow();
     assertEquals(3L, got.version());
-    assertEquals("bar", got.attrs().get("foo"));
+    assertEquals(AttrValue.of("bar"), got.attrs().get("foo"));
   }
 
   @Test
@@ -327,18 +328,47 @@ public class DynamoDbKvStoreTest {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     DynamoDbKvStore store = newStore(handler);
 
-    Map<String, String> attrs = Map.of("user", "ok");
+    Map<String, AttrValue> attrs = Map.of("user", AttrValue.of("ok"));
 
     KvStore.Record record = record("pk", "sk", "K", "v1", 1L, attrs);
     assertTrue(store.putCas(record, 0L).await().indefinitely());
 
     KvStore.Record got = store.get(key("pk", "sk")).await().indefinitely().orElseThrow();
-    assertEquals("ok", got.attrs().get("user"));
+    assertEquals(AttrValue.of("ok"), got.attrs().get("user"));
     assertFalse(got.attrs().containsKey(KvAttributes.ATTR_PARTITION_KEY));
     assertFalse(got.attrs().containsKey(KvAttributes.ATTR_SORT_KEY));
     assertFalse(got.attrs().containsKey(KvAttributes.ATTR_KIND));
     assertFalse(got.attrs().containsKey(KvAttributes.ATTR_VALUE));
     assertFalse(got.attrs().containsKey(KvAttributes.ATTR_VERSION));
+  }
+
+  @Test
+  void reserved_attr_written_out_of_band_is_dropped_rather_than_failing_the_read() {
+    // Only a foreign writer can put a reserved name like ttl on a row; the row must stay readable,
+    // and Record's constructor rejects reserved names, so the decode has to drop it.
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    DynamoDbKvStore store = newStore(handler);
+
+    Map<String, AttributeValue> item =
+        Map.of(
+            KvAttributes.ATTR_PARTITION_KEY,
+            AttributeValue.builder().s("pk").build(),
+            KvAttributes.ATTR_SORT_KEY,
+            AttributeValue.builder().s("sk").build(),
+            KvAttributes.ATTR_KIND,
+            AttributeValue.builder().s("K").build(),
+            KvAttributes.ATTR_VERSION,
+            AttributeValue.builder().n("4").build(),
+            KvAttributes.ATTR_TTL,
+            AttributeValue.builder().n("4321").build(),
+            "user",
+            AttributeValue.builder().s("ok").build());
+    handler.items.put(FakeDynamoDbHandler.keyFromItem(item), item);
+
+    KvStore.Record got = store.get(key("pk", "sk")).await().indefinitely().orElseThrow();
+    assertFalse(got.attrs().containsKey(KvAttributes.ATTR_TTL));
+    assertEquals(AttrValue.of("ok"), got.attrs().get("user"));
+    assertEquals(4L, got.version());
   }
 
   @Test
@@ -763,7 +793,7 @@ public class DynamoDbKvStoreTest {
   }
 
   private static KvStore.Record record(
-      String pk, String sk, String kind, String value, long version, Map<String, String> attrs) {
+      String pk, String sk, String kind, String value, long version, Map<String, AttrValue> attrs) {
     return new KvStore.Record(
         new KvStore.Key(pk, sk), kind, value.getBytes(StandardCharsets.UTF_8), attrs, version);
   }
