@@ -18,7 +18,6 @@ package ai.floedb.floecat.service.catalog.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -151,9 +150,10 @@ class RecursiveResourceDropperTest {
     dropper.markerStore = markerStore;
     dropper.pointerStore = pointerStore;
 
-    // No descendants: dropNamespaceContents processes only the root's own relations.
-    when(namespaceRepo.list(anyString(), anyString(), any(), anyInt(), anyString(), any()))
-        .thenReturn(List.of());
+    // No descendants: dropNamespaceContents processes only the root's own relations. Descendants
+    // are enumerated from by-path pointer rows, so an unparseable namespace blob cannot break the
+    // walk either.
+    when(namespaceRepo.listRefsUnder(anyString(), anyString(), any())).thenReturn(List.of());
     // One table under the root. Relations are enumerated through their by-name pointer rows, not
     // their blobs, so a corrupt relation cannot break the listing itself.
     when(tableRepo.listNamePointers(eq("acct"), eq("cat"), eq("ns")))
@@ -248,8 +248,10 @@ class RecursiveResourceDropperTest {
             .addParents("ns")
             .setDisplayName("child")
             .build();
-    when(namespaceRepo.list(anyString(), anyString(), any(), anyInt(), anyString(), any()))
-        .thenReturn(List.of(scanned));
+    when(namespaceRepo.listRefsUnder(eq("acct"), eq("cat"), eq(List.of("ns"))))
+        .thenReturn(
+            List.of(
+                new TopologyGraph.NamespaceRef(movedId, "child", CATALOG, List.of("ns", "child"))));
     when(namespaceRepo.metaForSafe(eq(movedId)))
         .thenReturn(meta("blob://acct/namespaces/ns-child/v2", 5L));
     // ...but re-reading it at its own pointer shows it now hangs off a different root entirely.
@@ -307,6 +309,44 @@ class RecursiveResourceDropperTest {
 
     assertEquals(1, summary.tablesDeleted);
     verify(pointerStore, never()).compareAndSetBatch(any());
+  }
+
+  /**
+   * The namespace analogue, and the stakes are higher: descendants are dropped deepest-first, so
+   * refusing on an unparseable namespace blob aborts an operation that has already destroyed
+   * everything below it, leaving the tree half torn down. Placement came from the by-path row the
+   * walk followed, and the removal stays pinned to the canonical version read here.
+   */
+  @Test
+  void guardedDropDeletesADescendantNamespaceWhoseBlobCannotBeParsed() {
+    var childId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("ns-child")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    when(namespaceRepo.listRefsUnder(eq("acct"), eq("cat"), eq(List.of("ns"))))
+        .thenReturn(
+            List.of(
+                new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("ns", "child"))));
+    when(namespaceRepo.metaForSafe(eq(childId)))
+        .thenReturn(meta("blob://acct/namespaces/ns-child/v9", 5L));
+    when(namespaceRepo.getByBlobUri(eq("blob://acct/namespaces/ns-child/v9")))
+        .thenThrow(new BaseResourceRepository.CorruptionException("parse failed", null));
+    // Empty and stable, so the marker protocol lets it go.
+    when(markerStore.advanceNamespaceMarker(eq(childId), anyLong())).thenReturn(true);
+    when(markerStore.namespaceMarkerVersion(eq(childId))).thenReturn(0L, 1L, 1L);
+    when(namespaceRepo.deleteWithPrecondition(eq(childId), eq(5L), any())).thenReturn(true);
+    // The root's own table is incidental here; let it drop cleanly.
+    when(tableRepo.deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any()))
+        .thenReturn(true);
+
+    var summary = dropper.dropNamespaceContents(root, true);
+
+    assertEquals(1, summary.namespacesDeleted);
+    // Pinned to the version the by-path walk resolved, so a reparent still loses the CAS.
+    verify(namespaceRepo).deleteWithPrecondition(eq(childId), eq(5L), any());
+    verify(namespaceRepo, never()).delete(any(), any());
   }
 
   /**

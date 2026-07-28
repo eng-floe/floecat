@@ -144,6 +144,26 @@ public class NamespaceRepository {
   }
 
   /**
+   * The refs {@link #count} counts under {@code parentSegmentsOrEmpty}, with no blob fetch: id and
+   * full path come from the by-path pointer row itself.
+   *
+   * <p>{@link #list} resolves each row's blob, so one present-but-unparseable namespace fails the
+   * whole scan. Callers that only need identity and placement — a subtree walk, an immediate-child
+   * probe — should not inherit that dependency.
+   */
+  public List<NamespaceRef> listRefsUnder(
+      String accountId, String catalogId, List<String> parentSegmentsOrEmpty) {
+    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
+    var pointers = repo.listRefsByPrefix(prefix);
+    var refs = new ArrayList<NamespaceRef>(pointers.size());
+    ResourceId catalogResourceId = catalogResourceId(accountId, catalogId);
+    for (var p : pointers) {
+      toNamespaceRef(accountId, catalogId, catalogResourceId, p).ifPresent(refs::add);
+    }
+    return refs;
+  }
+
+  /**
    * Page token resuming a {@link #list} scan immediately after the namespace at {@code fullPath}.
    * Lets callers that post-filter scanned rows continue exactly after the last row they emitted
    * instead of after the whole over-fetched batch.

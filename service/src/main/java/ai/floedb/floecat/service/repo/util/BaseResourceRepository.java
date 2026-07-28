@@ -39,6 +39,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -398,11 +399,21 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
         "list_refs_by_prefix",
         () -> {
           List<Pointer> out = new ArrayList<>();
+          var seenTokens = new HashSet<String>();
           String token = "";
           do {
             var next = new StringBuilder();
             out.addAll(pointerStore.listPointersByPrefix(prefix, REFS_PAGE_SIZE, token, next));
             token = next.toString();
+            // A pointer store that returns a non-advancing cursor would spin this loop forever with
+            // no observable failure. Treat a repeated token as a hard error instead: callers
+            // include
+            // teardown paths on worker threads, where a silent spin is indistinguishable from a
+            // hang.
+            if (!token.isBlank() && !seenTokens.add(token)) {
+              throw new IllegalStateException(
+                  "pointer scan did not advance; repeated page token: " + token);
+            }
           } while (!token.isBlank());
           return out;
         });

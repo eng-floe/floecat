@@ -39,12 +39,9 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
-import java.util.function.Consumer;
 import java.util.function.Function;
-import java.util.function.Predicate;
 import org.jboss.logging.Logger;
 
 /** Removes the dependent state owned by tables and namespace trees. */
@@ -110,21 +107,19 @@ public class RecursiveResourceDropper {
     rootPath.add(root.getDisplayName());
     // Scan only the root's subtree by its path prefix rather than the whole catalog; the by-path
     // prefix over-returns the root itself, which isDescendant filters out.
+    //
+    // Enumerated from the by-path pointer rows, not their content: a by-path row carries the
+    // namespace's id and its full path, which is everything the drop needs, and the content-bearing
+    // scan would fail outright on one present-but-unparseable namespace blob — mid-subtree, after
+    // deeper namespaces had already been destroyed, since descendants are dropped deepest-first.
     var descendants = new ArrayList<Namespace>();
-    drainPages(
-        (token, next) ->
-            namespaceRepo.list(
-                root.getResourceId().getAccountId(),
-                root.getCatalogId().getId(),
-                rootPath,
-                200,
-                token,
-                next),
-        namespace -> {
-          if (isDescendant(namespace, rootPath)) {
-            descendants.add(namespace);
-          }
-        });
+    for (var ref :
+        namespaceRepo.listRefsUnder(rootId.getAccountId(), root.getCatalogId().getId(), rootPath)) {
+      var scanned = namespaceFromRef(ref, root.getCatalogId());
+      if (isDescendant(scanned, rootPath)) {
+        descendants.add(scanned);
+      }
+    }
     descendants.sort(Comparator.comparingInt(Namespace::getParentsCount).reversed());
     for (var descendant : descendants) {
       dropNamespace(descendant, summary, rootId, rootPath, guarded);
@@ -242,7 +237,20 @@ public class RecursiveResourceDropper {
     if (meta.getPointerVersion() == 0L) {
       return UNPINNED;
     }
-    var live = namespaceRepo.getByBlobUri(meta.getBlobUri());
+    Optional<Namespace> live;
+    try {
+      live = namespaceRepo.getByBlobUri(meta.getBlobUri());
+    } catch (BaseResourceRepository.CorruptionException unparseable) {
+      // Same reasoning as a relation with an unreadable blob (see pinToNamespace), and the stakes
+      // are higher here: descendants are dropped deepest-first, so refusing at this point aborts
+      // an operation that has already destroyed everything below this namespace. Placement was
+      // established by the by-path row this scan followed, and the removal stays pinned to the
+      // canonical version read here, so a reparent still loses the CAS.
+      CLEANUP_LOG.warnf(
+          "recursive_drop_namespace_blob_unparseable account_id=%s namespace_id=%s blob_uri=%s",
+          namespaceId.getAccountId(), namespaceId.getId(), meta.getBlobUri());
+      return meta.getPointerVersion();
+    }
     if (live.isEmpty()) {
       throw namespaceChanged(namespaceId);
     }
@@ -287,17 +295,16 @@ public class RecursiveResourceDropper {
         || viewRepo.count(namespaceId.getAccountId(), catalogId.getId(), namespaceId.getId()) > 0;
   }
 
+  /**
+   * Whether {@code parentPath} has a direct child namespace. Reads by-path rows rather than
+   * content: this gates a delete, so an unparseable child must be able to block it — but not by
+   * failing the probe outright.
+   */
   private boolean hasImmediateChildren(ResourceId catalogId, List<String> parentPath) {
-    return anyPage(
-        (token, next) ->
-            namespaceRepo.list(
-                catalogId.getAccountId(), catalogId.getId(), parentPath, 200, token, next),
-        child -> isImmediateChildOf(child, parentPath));
-  }
-
-  private static boolean isImmediateChildOf(Namespace namespace, List<String> parentPath) {
-    return namespace.getParentsCount() == parentPath.size()
-        && namespace.getParentsList().equals(parentPath);
+    return namespaceRepo
+        .listRefsUnder(catalogId.getAccountId(), catalogId.getId(), parentPath)
+        .stream()
+        .anyMatch(child -> child.pathSegments().size() == parentPath.size() + 1);
   }
 
   private static BaseResourceRepository.AbortRetryableException namespaceChanged(
@@ -385,61 +392,6 @@ public class RecursiveResourceDropper {
    * drop the canonical pointer when it cannot parse the resource.
    */
   private record RelationPin(long pointerVersion, boolean membershipVerified) {}
-
-  @FunctionalInterface
-  private interface PageFetcher<T> {
-    List<T> fetch(String pageToken, StringBuilder nextOut);
-  }
-
-  /**
-   * Drains a key-paginated listing, invoking {@code consumer} for every item across all pages.
-   *
-   * <p>Guards against a {@link PointerStore} that returns a non-advancing page token: a repeated
-   * cursor is treated as a hard error rather than spinning the worker thread forever with no
-   * observable failure. This preserves the stagnant-token protection the replaced {@code
-   * AccountServiceImpl.listAllPages} provided.
-   */
-  private static <T> void drainPages(PageFetcher<T> fetcher, Consumer<T> consumer) {
-    var seenTokens = new HashSet<String>();
-    String token = "";
-    while (true) {
-      var next = new StringBuilder();
-      for (var item : fetcher.fetch(token, next)) {
-        consumer.accept(item);
-      }
-      token = advanceToken(next, seenTokens);
-      if (token.isBlank()) {
-        return;
-      }
-    }
-  }
-
-  /** Like {@link #drainPages} but short-circuits, returning true on the first matching item. */
-  private static <T> boolean anyPage(PageFetcher<T> fetcher, Predicate<T> match) {
-    var seenTokens = new HashSet<String>();
-    String token = "";
-    while (true) {
-      var next = new StringBuilder();
-      for (var item : fetcher.fetch(token, next)) {
-        if (match.test(item)) {
-          return true;
-        }
-      }
-      token = advanceToken(next, seenTokens);
-      if (token.isBlank()) {
-        return false;
-      }
-    }
-  }
-
-  private static String advanceToken(StringBuilder next, HashSet<String> seenTokens) {
-    String token = next.toString();
-    if (!token.isBlank() && !seenTokens.add(token)) {
-      throw new IllegalStateException(
-          "recursive delete pagination did not advance; repeated page token: " + token);
-    }
-    return token;
-  }
 
   /**
    * Drops every relation in {@code namespace}, enumerating them through their by-name pointer rows
@@ -783,6 +735,7 @@ public class RecursiveResourceDropper {
     } else if (!namespaceRepo.deleteWithPrecondition(namespaceId, expectedVersion, childrenGuard)) {
       throw namespaceChanged(namespaceId);
     }
+    reclaimStrandedNamespacePath(namespace);
     topology.evictRelationRefs(namespaceId);
     topology.evictNamespaceRefs(namespace.getCatalogId());
     metadataGraph.invalidate(namespaceId);
@@ -796,6 +749,47 @@ public class RecursiveResourceDropper {
         namespace.getDisplayName());
   }
 
+  /**
+   * Releases a deleted namespace's by-path row when the repository could only remove its canonical
+   * pointer — the case for a namespace whose blob does not parse, since the repository cannot read
+   * the secondary keys it would otherwise remove in the same batch.
+   *
+   * <p>That row is what every immediate-child probe counts, so leaving it makes the parent look
+   * non-empty forever and the subtree undeletable. A no-op on the ordinary path: a parseable
+   * namespace has its by-path row removed atomically with the canonical pointer, so there is
+   * nothing here to find.
+   *
+   * <p>Only ever removes a row that still names the namespace just deleted — a namespace recreated
+   * at the same path owns its own row, and the absent-canonical check alone would not notice.
+   */
+  private void reclaimStrandedNamespacePath(Namespace namespace) {
+    var namespaceId = namespace.getResourceId();
+    String accountId = namespaceId.getAccountId();
+    var path = new ArrayList<>(namespace.getParentsList());
+    path.add(namespace.getDisplayName());
+    String byPathKey =
+        Keys.namespacePointerByPath(accountId, namespace.getCatalogId().getId(), path);
+    var row = pointerStore.get(byPathKey).orElse(null);
+    if (row == null || !namespaceId.getId().equals(ownerIdOf(row))) {
+      return;
+    }
+    String canonicalKey = Keys.namespacePointerById(accountId, namespaceId.getId());
+    var ops =
+        List.<PointerStore.CasOp>of(
+            new PointerStore.CasCheckAbsent(canonicalKey),
+            new PointerStore.CasDelete(byPathKey, row.getVersion()));
+    if (!pointerStore.compareAndSetBatch(ops)) {
+      CLEANUP_LOG.infof(
+          "recursive_drop_reclaim_stranded_path_contended account_id=%s namespace_id=%s"
+              + " pointer_key=%s",
+          accountId, namespaceId.getId(), byPathKey);
+      return;
+    }
+    CLEANUP_LOG.infof(
+        "recursive_drop_reclaimed_stranded_path account_id=%s namespace_id=%s pointer_key=%s",
+        accountId, namespaceId.getId(), byPathKey);
+  }
+
   private void bumpParentNamespaceMarkers(Namespace namespace, ResourceId skipMarkerId) {
     var catalogId = namespace.getCatalogId();
     var parents = namespace.getParentsList();
@@ -806,6 +800,23 @@ public class RecursiveResourceDropper {
           .filter(id -> skipMarkerId == null || !id.equals(skipMarkerId))
           .ifPresent(markerStore::bumpNamespaceMarker);
     }
+  }
+
+  /**
+   * The scanned namespace as the drop needs to see it, from a by-path pointer row alone.
+   *
+   * <p>Identity, placement, and name are all recoverable from the row: the key encodes the full
+   * path, so the parents are that path minus its last segment. Nothing below reads any other field,
+   * so this stands in for the stored proto without depending on the blob being parseable.
+   */
+  private static Namespace namespaceFromRef(TopologyGraph.NamespaceRef ref, ResourceId catalogId) {
+    var path = ref.pathSegments();
+    return Namespace.newBuilder()
+        .setResourceId(ref.id())
+        .setCatalogId(catalogId)
+        .setDisplayName(ref.name())
+        .addAllParents(path.isEmpty() ? List.of() : path.subList(0, path.size() - 1))
+        .build();
   }
 
   private static boolean isDescendant(Namespace namespace, java.util.List<String> rootPath) {

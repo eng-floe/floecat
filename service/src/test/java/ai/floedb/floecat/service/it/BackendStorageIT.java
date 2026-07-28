@@ -474,6 +474,46 @@ class BackendStorageIT {
   }
 
   /**
+   * The namespace version of the same hazard, and worse: descendants are dropped deepest-first, so
+   * failing on an unparseable namespace blob would abort after everything below it was already
+   * destroyed, leaving the tree half torn down.
+   */
+  @Test
+  void recursiveNamespaceDeleteSucceedsWithAnUnparseableChildNamespaceBlob() {
+    var cat = TestSupport.createCatalog(catalog, "cat_nscorrupt_" + clock.millis(), "corrupt");
+    var parent =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "parent", List.of("db_nscorrupt"), "parent");
+    var child =
+        TestSupport.createNamespace(
+            namespace,
+            cat.getResourceId(),
+            "child",
+            List.of("db_nscorrupt", "parent"),
+            "child of parent");
+    String childById =
+        Keys.namespacePointerById(
+            child.getResourceId().getAccountId(), child.getResourceId().getId());
+    String parentById =
+        Keys.namespacePointerById(
+            parent.getResourceId().getAccountId(), parent.getResourceId().getId());
+
+    // The child's pointer still resolves; its bytes no longer parse as a Namespace.
+    String blobUri = ptr.get(childById).orElseThrow().getBlobUri();
+    blobs.put(
+        blobUri, new byte[] {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF}, "application/x-protobuf");
+
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder()
+            .setNamespaceId(parent.getResourceId())
+            .setRecursive(true)
+            .build());
+
+    assertTrue(ptr.get(childById).isEmpty(), "the corrupt child namespace must be removed");
+    assertTrue(ptr.get(parentById).isEmpty(), "and its parent with it");
+  }
+
+  /**
    * A corrupt-blob delete removes the table's canonical pointer but leaves its by-name pointer, and
    * that row is what every emptiness check counts. Nothing can resolve the relation any more, so
    * without reconciling the leftover row the namespace would report NOT_EMPTY forever — neither a

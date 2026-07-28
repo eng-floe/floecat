@@ -112,23 +112,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         .invoke(L::ok);
   }
 
-  private static boolean isImmediateChildOf(Namespace ns, List<String> parentPath) {
-    return isImmediateChildOf(ns.getParentsList(), parentPath);
-  }
-
-  private static boolean isImmediateChildOf(List<String> nsParentPath, List<String> parentPath) {
-    if (nsParentPath.size() != parentPath.size()) {
-      return false;
-    }
-
-    for (int i = 0; i < parentPath.size(); i++) {
-      if (!nsParentPath.get(i).equals(parentPath.get(i))) {
-        return false;
-      }
-    }
-    return true;
-  }
-
   private static ArrayList<String> append(List<String> parents, String last) {
     var pp = new ArrayList<String>(parents.size() + 1);
     pp.addAll(parents);
@@ -752,12 +735,12 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
    * Enforces the caller's precondition on the root, reporting it as {@code
    * NAMESPACE_RECURSIVE_PARTIAL} once this operation has already destroyed something.
    *
-   * <p>A recursive delete is irreversible but retryable, so every precondition check after the first
-   * attempt runs against a subtree that may already be partly gone — including the pre-drop check at
-   * the top of a later attempt. A bare precondition failure there says "nothing happened" about an
-   * operation that has destroyed resources, which is the one thing this error exists to prevent.
-   * Routing every root precondition check through here keeps that guarantee independent of where in
-   * the method the check happens to sit.
+   * <p>A recursive delete is irreversible but retryable, so every precondition check after the
+   * first attempt runs against a subtree that may already be partly gone — including the pre-drop
+   * check at the top of a later attempt. A bare precondition failure there says "nothing happened"
+   * about an operation that has destroyed resources, which is the one thing this error exists to
+   * prevent. Routing every root precondition check through here keeps that guarantee independent of
+   * where in the method the check happens to sit.
    */
   private void enforceRootPrecondition(
       String correlationId,
@@ -773,8 +756,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
   /**
    * Re-labels {@code failed} as a partial teardown when this operation has already destroyed
-   * something, and returns it unchanged otherwise. Only the counts are added — the failure itself is
-   * still reported, and remains the cause.
+   * something, and returns it unchanged otherwise. Only the counts are added — the failure itself
+   * is still reported, and remains the cause.
    */
   private StatusRuntimeException asPartialTeardown(
       String correlationId,
@@ -806,23 +789,15 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         || viewRepo.count(accountId, catalogId, namespaceId) > 0;
   }
 
+  /**
+   * Whether {@code parentPath} has a direct child namespace, decided from by-path pointer rows
+   * rather than content. This gates a delete, so an unparseable child namespace must be able to
+   * block it — but by being counted, not by failing the probe with a corruption error.
+   */
   private boolean hasImmediateChildren(
       String accountId, String catalogId, List<String> parentPath) {
-    String cursor = "";
-    while (true) {
-      var next = new StringBuilder();
-      var page = namespaceRepo.list(accountId, catalogId, parentPath, 200, cursor, next);
-      for (var ns : page) {
-        if (isImmediateChildOf(ns, parentPath)) {
-          return true;
-        }
-      }
-      cursor = next.toString();
-      if (cursor.isBlank()) {
-        break;
-      }
-    }
-    return false;
+    return namespaceRepo.listRefsUnder(accountId, catalogId, parentPath).stream()
+        .anyMatch(child -> child.pathSegments().size() == parentPath.size() + 1);
   }
 
   private CatalogSurfaceNamespaces namespaceSurface() {
