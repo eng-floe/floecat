@@ -580,36 +580,8 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     markerVersion++;
                   }
 
-                  if (hasRelations(
-                      catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())) {
-                    // This gate counts by-name index rows, but only a live relation can be deleted.
-                    // A row whose relation is already gone — what the corrupt-blob delete path
-                    // leaves behind — would otherwise make a namespace holding nothing report
-                    // NOT_EMPTY forever, with no delete path able to clear it. Reconcile those rows
-                    // once and re-ask, so the answer reflects live relations only.
-                    recursiveDropper.reclaimStrandedRelationNames(namespace);
-                    if (hasRelations(
-                        catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())) {
-                      var pretty =
-                          prettyNamespacePath(
-                              namespace.getParentsList(), namespace.getDisplayName());
-                      throw GrpcErrors.conflict(
-                          correlationId,
-                          GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
-                          Map.of("display_name", pretty));
-                    }
-                  }
-
                   var parentPath = append(namespace.getParentsList(), namespace.getDisplayName());
-                  if (hasImmediateChildren(
-                      catalogId.getAccountId(), catalogId.getId(), parentPath)) {
-                    var pretty =
-                        prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
-                    throw GrpcErrors.conflict(
-                        correlationId,
-                        GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
-                        Map.of("display_name", pretty));
-                  }
+                  requireNamespaceEmpty(request, namespace, catalogId, parentPath, correlationId);
 
                   if (!markerStore.advanceNamespaceMarker(namespaceId, markerVersion)) {
                     if (request.getRecursive()) {
@@ -634,34 +606,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                         GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
                         Map.of());
                   }
-                  if (hasRelations(
-                      catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())) {
-                    if (request.getRecursive()) {
-                      throw new BaseResourceRepository.AbortRetryableException(
-                          "namespace relations changed during recursive delete: "
-                              + namespaceId.getId());
-                    }
-                    var pretty =
-                        prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
-                    throw GrpcErrors.conflict(
-                        correlationId,
-                        GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
-                        Map.of("display_name", pretty));
-                  }
-                  if (hasImmediateChildren(
-                      catalogId.getAccountId(), catalogId.getId(), parentPath)) {
-                    if (request.getRecursive()) {
-                      throw new BaseResourceRepository.AbortRetryableException(
-                          "namespace children changed during recursive delete: "
-                              + namespaceId.getId());
-                    }
-                    var pretty =
-                        prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
-                    throw GrpcErrors.conflict(
-                        correlationId,
-                        GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
-                        Map.of("display_name", pretty));
-                  }
+                  // Same check again, after the marker advance: the scans are reads and cannot
+                  // join the delete's CAS batch, so emptiness has to be established on both sides
+                  // of
+                  // the fence.
+                  requireNamespaceEmpty(request, namespace, catalogId, parentPath, correlationId);
 
                   if (request.getRecursive()) {
                     // Descendants may already be irreversibly gone. If the caller's precondition on
@@ -729,6 +678,62 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
+  }
+
+  /**
+   * Refuses the delete unless the namespace owns nothing.
+   *
+   * <p>Called on both sides of the children-marker advance, because the scans are reads and a read
+   * cannot join the delete's CAS batch. Both calls must behave identically, which is why this is
+   * one method: inlined twice, the copies drifted — the pre-marker pair was missing the retryable
+   * conversion below for three review rounds, so a recursive delete that had already destroyed the
+   * subtree could report a plain NAMESPACE_NOT_EMPTY that reads like a no-op.
+   *
+   * <p>The relation count is over by-name index rows, but only a live relation can be deleted. A
+   * row whose relation is already gone — what a corrupt-blob delete leaves behind — would otherwise
+   * make a namespace holding nothing report NOT_EMPTY forever, with no delete path able to clear
+   * it, so those rows are reconciled once before the answer is trusted.
+   */
+  private void requireNamespaceEmpty(
+      DeleteNamespaceRequest request,
+      Namespace namespace,
+      ResourceId catalogId,
+      List<String> parentPath,
+      String correlationId) {
+    String accountId = catalogId.getAccountId();
+    String namespaceId = namespace.getResourceId().getId();
+
+    if (hasRelations(accountId, catalogId.getId(), namespaceId)) {
+      recursiveDropper.reclaimStrandedRelationNames(namespace);
+      if (hasRelations(accountId, catalogId.getId(), namespaceId)) {
+        throw notEmpty(request, namespace, correlationId, "relations");
+      }
+    }
+    if (hasImmediateChildren(accountId, catalogId.getId(), parentPath)) {
+      throw notEmpty(request, namespace, correlationId, "children");
+    }
+  }
+
+  /**
+   * Under {@code --recursive}, a namespace that is not empty here means a child was published while
+   * the drop was running: retryable, and the retry re-drops and converges. Without it, non-empty is
+   * simply the caller's answer.
+   */
+  private RuntimeException notEmpty(
+      DeleteNamespaceRequest request, Namespace namespace, String correlationId, String what) {
+    if (request.getRecursive()) {
+      return new BaseResourceRepository.AbortRetryableException(
+          "namespace "
+              + what
+              + " changed during recursive delete: "
+              + namespace.getResourceId().getId());
+    }
+    return GrpcErrors.conflict(
+        correlationId,
+        GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
+        Map.of(
+            "display_name",
+            prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName())));
   }
 
   /**
