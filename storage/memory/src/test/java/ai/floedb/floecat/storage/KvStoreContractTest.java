@@ -24,6 +24,7 @@ import ai.floedb.floecat.storage.kv.AttrValue;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.memory.InMemoryKvStore;
+import io.smallrye.mutiny.Uni;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -203,6 +204,25 @@ class KvStoreContractTest {
     assertEquals(AttrValue.of("new"), got.attrs().get("target"));
     assertEquals(AttrValue.of(8L), got.attrs().get("hits"));
     assertEquals(AttrValue.of("stay"), got.attrs().get("keep"));
+  }
+
+  @Test
+  void updateMetadataAttrsIfExists_applies_once_however_often_the_uni_is_subscribed() {
+    // The update must have already happened by the time the Uni is returned, not on subscription:
+    // a Uni carries no once-only guarantee, so a caller that awaits or chains the same one twice
+    // would otherwise increment twice. An atomic counter whose value depends on how many times its
+    // Uni was consumed is not a counter.
+    KvStore.Key k = key("pk1", "meta");
+    assertTrue(
+        kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of(0L))), 0L).await().indefinitely());
+
+    Uni<Optional<Long>> update = kv.updateMetadataAttrsIfExists(k, Map.of(), Map.of("hits", 1L));
+    assertEquals(Optional.of(2L), update.await().indefinitely());
+    assertEquals(Optional.of(2L), update.await().indefinitely());
+
+    KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
+    assertEquals(2L, got.version());
+    assertEquals(AttrValue.of(1L), got.attrs().get("hits"));
   }
 
   @Test

@@ -23,6 +23,7 @@ import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.cdi.KvTable;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.TestProfile;
+import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -285,6 +286,24 @@ public class KvStoreContractTest {
     assertEquals(AttrValue.of("new"), got.attrs().get("target"));
     assertEquals(AttrValue.of(8L), got.attrs().get("hits"));
     assertEquals(AttrValue.of("stay"), got.attrs().get("keep"));
+  }
+
+  @Test
+  void updateMetadataAttrsIfExists_applies_once_however_often_the_uni_is_subscribed() {
+    // The UpdateItem is already in flight by the time the Uni is returned, so subscribing twice
+    // observes one update rather than issuing a second one. Mirrored in the in-memory contract
+    // test, where the same guarantee has to be arranged by hand.
+    KvStore.Key k = key("pk1", "meta");
+    assertTrue(
+        kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of(0L))), 0L).await().indefinitely());
+
+    Uni<Optional<Long>> update = kv.updateMetadataAttrsIfExists(k, Map.of(), Map.of("hits", 1L));
+    assertEquals(Optional.of(2L), update.await().indefinitely());
+    assertEquals(Optional.of(2L), update.await().indefinitely());
+
+    KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
+    assertEquals(2L, got.version());
+    assertEquals(AttrValue.of(1L), got.attrs().get("hits"));
   }
 
   @Test
