@@ -155,8 +155,7 @@ public class KvStoreContractTest {
 
   @Test
   void putCas_rejects_numeric_expiry_stamp() {
-    // Written as N, the stamp is invisible to a replica that predates typed attributes, whose next
-    // whole-record write then drops the expiry for good. Rule and reason: AttrWriteRules.
+    // Rule and reason: AttrWriteRules.
     KvStore.Key k = key("pk1", "ttl");
     assertThrows(
         IllegalArgumentException.class,
@@ -195,9 +194,7 @@ public class KvStoreContractTest {
 
   @Test
   void numeric_expiry_stamp_written_out_of_band_stays_readable() {
-    // Writes are strict, reads are not: a foreign writer's N-typed stamp must still decode, which
-    // is
-    // the whole reason AttrValue.asLong accepts both forms.
+    // Writes are strict, reads are not: a foreign writer's N-typed stamp must still decode.
     Map<String, AttributeValue> item = rawItem("pk1", "foreign-ttl");
     item.put(KvAttributes.ATTR_VERSION, AttributeValue.fromN("1"));
     item.put(KvAttributes.ATTR_EXPIRES_AT, AttributeValue.fromN("4321"));
@@ -291,8 +288,7 @@ public class KvStoreContractTest {
   @Test
   void updateMetadataAttrsIfExists_applies_once_however_often_the_uni_is_subscribed() {
     // The UpdateItem is already in flight by the time the Uni is returned, so subscribing twice
-    // observes one update rather than issuing a second one. Mirrored in the in-memory contract
-    // test, where the same guarantee has to be arranged by hand.
+    // observes one update rather than issuing a second one.
     KvStore.Key k = key("pk1", "meta");
     assertTrue(
         kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of(0L))), 0L).await().indefinitely());
@@ -325,11 +321,9 @@ public class KvStoreContractTest {
 
   @Test
   void updateMetadataAttrsIfExists_increment_past_long_max_does_not_wrap() {
-    // The counterpart to the in-memory store's ArithmeticException, and deliberately not the same
-    // outcome. ADD is server-side arbitrary precision, so DynamoDB stores the true sum instead of
-    // wrapping; the narrowing is what fails, on the way back out. The shared guarantee is only that
-    // neither store ever reports success while holding a wrapped value — the in-memory store is the
-    // stricter of the two, so a caller it rejects is never one this store would have mangled.
+    // Deliberately not the in-memory ArithmeticException: ADD is server-side arbitrary precision,
+    // so DynamoDB stores the true sum and the narrowing fails on the way back out. Neither store
+    // ever reports success while holding a wrapped value.
     KvStore.Key k = key("pk1", "meta");
     assertTrue(
         kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of(Long.MAX_VALUE))), 0L)
@@ -342,8 +336,8 @@ public class KvStoreContractTest {
 
     KvStore.Record got = kv.get(k).await().indefinitely().orElseThrow();
     AttrValue hits = got.attrs().get("hits");
-    // Not wrapped, and not silently narrowed: the row holds a number no long can express, so the
-    // decoder keeps it as text and asLong refuses it rather than inventing a value.
+    // The row holds a number no long can express; the decoder keeps it as text and asLong refuses
+    // it rather than inventing a value.
     assertNotEquals(AttrValue.of(Long.MIN_VALUE), hits);
     assertNotEquals(AttrValue.of(Long.MAX_VALUE), hits);
     assertThrows(NumberFormatException.class, hits::asLong);
@@ -394,7 +388,7 @@ public class KvStoreContractTest {
   @Test
   void updateMetadataAttrsIfExists_version_0_record_becomes_version_1() {
     // putCas refuses a record at version 0, so the row is planted directly. A stored 0 and a
-    // missing version attribute are the same starting point per the SPI, so both are checked.
+    // missing version attribute are the same starting point, so both are checked.
     Map<String, AttributeValue> zero = rawItem("pk1", "zero");
     zero.put(KvAttributes.ATTR_VERSION, AttributeValue.fromN("0"));
     putRawItem(zero);
@@ -421,8 +415,8 @@ public class KvStoreContractTest {
 
   @Test
   void updateMetadataAttrsIfExists_sets_only_works() {
-    // The branch where the update expression must carry SET but omit nothing else; an empty ADD
-    // or SET clause is a DynamoDB ValidationException.
+    // The branch where the update expression carries a SET clause; an empty one would be a
+    // ValidationException.
     KvStore.Key k = key("pk1", "meta");
     assertTrue(
         kv.putCas(attrsRecord(k, 1L, Map.of("target", AttrValue.of("old"))), 0L)
@@ -492,10 +486,9 @@ public class KvStoreContractTest {
 
   @Test
   void updateMetadataAttrsIfExists_increment_of_string_attr_fails() {
-    // DynamoDB's ADD on an S-typed attribute is a server-side ValidationException, which the SDK
-    // does not model, so it arrives as a plain DynamoDbException. The in-memory store has the
-    // stored AttrValue in hand and throws IllegalStateException instead — hence the two contract
-    // tests assert different exception types for this case by design.
+    // ADD on an S-typed attribute is a server-side ValidationException the SDK does not model, so
+    // it arrives as a plain DynamoDbException; the in-memory store throws IllegalStateException
+    // instead, so the two contract tests assert different types by design.
     KvStore.Key k = key("pk1", "meta");
     assertTrue(
         kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of("abc"))), 0L)
@@ -509,8 +502,7 @@ public class KvStoreContractTest {
                 kv.updateMetadataAttrsIfExists(k, Map.of(), Map.of("hits", 1L))
                     .await()
                     .indefinitely());
-    // Must not be the one failure the store recovers into an empty result: a type error is not
-    // "the record was absent".
+    // A type error is not "the record was absent" — it must not recover into an empty result.
     assertFalse(thrown instanceof ConditionalCheckFailedException);
 
     // Never silently overwritten, and the version bump in the same request did not land either.
@@ -563,8 +555,8 @@ public class KvStoreContractTest {
 
   @Test
   void number_attr_round_trips_and_stays_visible_on_read() {
-    // The read path used to drop every non-string attribute type; a NumberValue written through
-    // putCas must come back as a NumberValue, not vanish.
+    // A NumberValue written through putCas must come back as a NumberValue, not vanish or turn
+    // into a string.
     KvStore.Key k = key("pk1", "meta");
     assertTrue(
         kv.putCas(

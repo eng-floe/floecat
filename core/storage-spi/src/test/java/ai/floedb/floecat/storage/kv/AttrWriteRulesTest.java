@@ -23,8 +23,8 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
- * The write-side typing rule itself. Both stores call it on every whole-record write — that each of
- * them does belongs to their {@code KvStoreContractTest} classes; this pins the rule.
+ * Pins the typing rule itself; that each store enforces it on every write belongs to the {@code
+ * KvStoreContractTest} classes.
  */
 public class AttrWriteRulesTest {
 
@@ -56,10 +56,8 @@ public class AttrWriteRulesTest {
 
   @Test
   void accepts_numeric_values_for_every_other_attr() {
-    // The rule is about one attribute's rollout constraint, not about numbers being suspect: index
-    // bookkeeping is numeric precisely so it can be incremented server-side.
-    // Deliberately not ATTR_TTL: that name is reserved (DynamoDB expires rows by it), so it is no
-    // example of an ordinary attr — KvStoreRecordTest pins its rejection.
+    // One attribute's rollout constraint, not numbers being suspect. Deliberately not ATTR_TTL,
+    // which is reserved rather than ordinary.
     assertDoesNotThrow(
         () ->
             AttrWriteRules.checkExpiryIsString(

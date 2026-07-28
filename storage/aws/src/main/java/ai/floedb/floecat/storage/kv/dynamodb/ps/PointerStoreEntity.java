@@ -151,8 +151,8 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     }
     var expiresAt = r.attrs().get(ATTR_EXPIRES_AT);
     if (expiresAt != null) {
-      // Accepts both the legacy string form and the native numeric one; a present but malformed
-      // stamp throws, so corrupt expiry data cannot read as "no expiry".
+      // String or numeric form both decode; a malformed stamp throws rather than reading as
+      // "no expiry".
       builder.setExpiresAt(Timestamps.fromMillis(expiresAt.asLong() * 1000L));
     }
     String rid = AttrValue.stringOr(r.attrs(), ATTR_RESOURCE_ID, null);
@@ -255,9 +255,8 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
         var attrs = attrsFor(upsert.next());
         if (upsert.next().hasExpiresAt()) {
           long ttl = Timestamps.toMillis(upsert.next().getExpiresAt()) / 1000L;
-          // Written as a string, not a number: an older replica's read path drops non-string
-          // attrs, and its next write of this record would then persist it without an expiry at
-          // all.
+          // String, not number: an older replica drops non-string attrs on read and would then
+          // rewrite the record without its expiry (see AttrWriteRules).
           attrs.put(ATTR_EXPIRES_AT, AttrValue.of(Long.toString(ttl)));
         }
         var rec =

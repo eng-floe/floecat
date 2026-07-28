@@ -110,10 +110,8 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
     var out = new HashMap<String, AttrValue>();
     for (var e : item.entrySet()) {
       var k = e.getKey();
-      // Reserved names carry the backend's own meaning, so Record's constructor refuses them as
-      // attrs. Other writers do put them on rows, and skipping them here is what keeps such a read
-      // from turning into an exception. Derived from the set rather than listed out, so that a name
-      // added there — ATTR_TTL, say — cannot turn into a read that throws.
+      // Record's constructor refuses reserved names, but other writers do put them on rows;
+      // dropping them keeps such rows readable.
       if (KvAttributes.RESERVED_ATTRS.contains(k)) continue;
       var v = e.getValue();
       if (v.s() != null) {
@@ -122,12 +120,12 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
         try {
           out.put(k, AttrValue.of(Long.parseLong(v.n())));
         } catch (NumberFormatException ex) {
-          // DynamoDB's N is wider than a long and admits fractions. A foreign writer's value that
-          // does not fit degrades to its raw decimal text rather than vanishing from the record.
+          // N is wider than long and admits fractions; a value that does not fit degrades to its
+          // decimal text rather than vanishing from the record.
           out.put(k, AttrValue.of(v.n()));
         }
       }
-      // B/BOOL/M/L have no AttrValue representation and are dropped, as they always have been.
+      // B/BOOL/M/L have no AttrValue representation and are dropped.
     }
     return out;
   }
@@ -155,15 +153,12 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
   }
 
   private Map<String, AttributeValue> recordToAv(Record r) {
-    // The one place every write of a whole record passes through — putCas and txnWriteCas both
-    // serialize here, synchronously, before their request is built.
+    // Every whole-record write (putCas and txnWriteCas) serializes here, before the request is
+    // built.
     AttrWriteRules.checkExpiryIsString(r.attrs());
     var item = new HashMap<String, AttributeValue>();
-    // Attrs first, structure second: Record's constructor already rejects reserved attr names, so
-    // this ordering is belt-and-braces — should that check ever gain a hole, the structural fields
-    // still win instead of being clobbered by an attr of the same name. Only the five it writes,
-    // though: ATTR_TTL is reserved too but never written here, so the constructor is its only
-    // guard.
+    // Attrs first, so the structural fields win if a reserved name ever slips past Record's
+    // constructor. ATTR_TTL is never written here, so the constructor is its only guard.
     item.putAll(attrsToAv(r.attrs()));
     item.put(ATTR_PARTITION_KEY, S(r.key().partitionKey()));
     item.put(ATTR_SORT_KEY, S(r.key().sortKey()));
@@ -332,12 +327,10 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
       addTerms.add("#a" + i + " :a" + i);
       i++;
     }
-    // ADD creates a missing attribute at the delta value, so a record with no stored version
-    // becomes version 1 — which is exactly the documented semantics.
+    // ADD creates a missing attribute at the delta, so a record with no stored version becomes 1.
     addTerms.add("#version :one");
 
-    // ADD always carries the version bump, but SET has no terms when the caller only asked for
-    // increments; a SET keyword with an empty clause is a ValidationException, so it is omitted.
+    // SET with an empty clause is a ValidationException, so it is omitted when there are no terms.
     var expr = new StringBuilder();
     if (!setTerms.isEmpty()) {
       expr.append("SET ").append(String.join(", ", setTerms)).append(' ');
@@ -359,17 +352,16 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
     return dynamo(client -> client.updateItem(req))
         .map(resp -> Optional.of(newVersionOf(resp)))
-        // Absent and refused are one and the same condition failure server-side; the SPI documents
-        // both as an empty result. Nothing else is recovered — a ValidationException (e.g. ADD on a
-        // string-typed attribute) must reach the caller.
+        // Absent and refused are the same condition failure server-side; both map to empty.
+        // Nothing else is recovered — a ValidationException (ADD on a string-typed attribute) must
+        // reach the caller.
         .onFailure(ConditionalCheckFailedException.class)
         .recoverWithItem(Optional.<Long>empty());
   }
 
   /**
-   * Reads the post-update version out of an {@code UPDATED_NEW} response. The version is always
-   * part of the update, so a missing or unparseable one is corruption, not absence, and must never
-   * be reported as an empty result.
+   * The post-update version from an {@code UPDATED_NEW} response; a missing or unparsable one is
+   * corruption, never absence.
    */
   private static long newVersionOf(UpdateItemResponse resp) {
     var v = resp.attributes() == null ? null : resp.attributes().get(ATTR_VERSION);

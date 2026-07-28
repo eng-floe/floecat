@@ -20,11 +20,8 @@ import java.util.Map;
 /**
  * A typed value of a {@link KvStore.Record} attribute.
  *
- * <p>Attributes carry small bits of metadata alongside a record: pointer targets, TTL stamps, index
- * bookkeeping. They used to be plain strings, which forced numeric metadata to travel as decimal
- * strings and be re-parsed on every read. A {@link NumberValue} is stored natively by backends that
- * have a numeric type (DynamoDB {@code N}), which is what makes atomic server-side increments
- * possible — see {@link KvStore#updateMetadataAttrsIfExists}.
+ * <p>A {@link NumberValue} is stored in the backend's native numeric type (DynamoDB {@code N}),
+ * which is what makes atomic server-side increments possible.
  */
 public sealed interface AttrValue permits AttrValue.StringValue, AttrValue.NumberValue {
 
@@ -55,15 +52,9 @@ public sealed interface AttrValue permits AttrValue.StringValue, AttrValue.Numbe
   }
 
   /**
-   * The value as a number: a {@link NumberValue} yields its value, a {@link StringValue} its parsed
-   * decimal form.
-   *
-   * <p>Accepting both forms is deliberate. Rows written before an attribute was retyped still hold
-   * it as a string, so readers of numeric metadata must accept both forms indefinitely.
-   *
-   * <p>Accepting both forms is not the same as accepting garbage: a present-but-unparsable value is
-   * corrupt metadata and throws rather than reading as some default, which for a TTL stamp would
-   * quietly make the record immortal.
+   * The value as a number; a {@link StringValue} is parsed as decimal, since rows written before an
+   * attribute was retyped still hold it as a string. An unparsable value throws rather than
+   * defaulting — for a TTL stamp a default would make the record immortal.
    *
    * @throws NumberFormatException if the value is a string with no decimal form
    */
@@ -81,13 +72,10 @@ public sealed interface AttrValue permits AttrValue.StringValue, AttrValue.Numbe
   }
 
   /**
-   * Null-safe numeric read of {@code name} from {@code attrs}, or {@code fallback} if the attribute
-   * is absent or unparsable.
-   *
-   * <p>Only for metadata that degrades gracefully when it is corrupt — cache bookkeeping, where an
-   * unreadable counter reading as 0 just makes the entry look cold. Metadata that must not be
-   * silently defaulted (a TTL stamp, whose fallback would make the record immortal) reads the
-   * attribute directly and lets {@link #asLong()} throw.
+   * Null-safe numeric read of {@code name} from {@code attrs}, or {@code fallback} if absent or
+   * unparsable. Only for metadata that degrades gracefully when corrupt (cache bookkeeping);
+   * metadata that must not silently default (a TTL stamp) reads the attribute directly and lets
+   * {@link #asLong()} throw.
    */
   static long longOr(Map<String, AttrValue> attrs, String name, long fallback) {
     var v = attrs.get(name);

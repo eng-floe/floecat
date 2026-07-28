@@ -140,8 +140,7 @@ class KvStoreContractTest {
 
   @Test
   void putCas_rejects_numeric_expiry_stamp() {
-    // Refused by the fake exactly as DynamoDB's writer refuses it, so an entity test cannot pass
-    // here on a record the real store would reject. Rule and reason: AttrWriteRules.
+    // Rule and reason: AttrWriteRules.
     KvStore.Key k = key("pk1", "ttl");
     assertThrows(
         IllegalArgumentException.class,
@@ -208,10 +207,8 @@ class KvStoreContractTest {
 
   @Test
   void updateMetadataAttrsIfExists_applies_once_however_often_the_uni_is_subscribed() {
-    // The update must have already happened by the time the Uni is returned, not on subscription:
-    // a Uni carries no once-only guarantee, so a caller that awaits or chains the same one twice
-    // would otherwise increment twice. An atomic counter whose value depends on how many times its
-    // Uni was consumed is not a counter.
+    // The update must have already happened by the time the Uni is returned: a Uni carries no
+    // once-only guarantee, so a caller awaiting the same one twice would otherwise increment twice.
     KvStore.Key k = key("pk1", "meta");
     assertTrue(
         kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of(0L))), 0L).await().indefinitely());
@@ -368,9 +365,8 @@ class KvStoreContractTest {
 
   @Test
   void updateMetadataAttrsIfExists_increment_of_string_attr_fails() {
-    // The in-memory store guards on the AttrValue type and throws IllegalStateException; the
-    // DynamoDB store has no local view of the stored type and lets the SDK's ValidationException
-    // surface instead, so the two contract tests assert different exception types here by design.
+    // The in-memory store throws IllegalStateException; the DynamoDB store surfaces the SDK's
+    // error instead, so the two contract tests assert different exception types by design.
     KvStore.Key k = key("pk1", "meta");
     assertTrue(
         kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of("abc"))), 0L)
@@ -391,7 +387,7 @@ class KvStoreContractTest {
   @Test
   void updateMetadataAttrsIfExists_increment_of_numeric_looking_string_attr_fails() {
     // "42" parses, but DynamoDB's ADD rejects an S-typed attribute regardless of its content, so
-    // the in-memory store rejects it too — otherwise a caller would pass here and fail in prod.
+    // the in-memory store must too.
     KvStore.Key k = key("pk1", "meta");
     assertTrue(
         kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of("42"))), 0L)
@@ -410,8 +406,7 @@ class KvStoreContractTest {
 
   @Test
   void updateMetadataAttrsIfExists_increment_past_long_max_fails_and_changes_nothing() {
-    // A wrap would have reported success while storing MIN_VALUE. Failing is the whole point: a
-    // counter silently 18 quintillion off is worse than an update that refuses.
+    // A wrap would have reported success while storing MIN_VALUE.
     KvStore.Key k = key("pk1", "meta");
     assertTrue(
         kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of(Long.MAX_VALUE))), 0L)
@@ -431,8 +426,7 @@ class KvStoreContractTest {
 
   @Test
   void updateMetadataAttrsIfExists_increment_past_long_min_fails() {
-    // The negative boundary matters too: deltas are signed, so a decrementing counter can walk off
-    // the other end.
+    // Deltas are signed, so a decrementing counter can walk off the other end.
     KvStore.Key k = key("pk1", "meta");
     assertTrue(
         kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of(Long.MIN_VALUE))), 0L)
@@ -498,11 +492,10 @@ class KvStoreContractTest {
     assertTrue(
         kv.putCas(attrsRecord(k, 1L, Map.of("hits", AttrValue.of(0L))), 0L).await().indefinitely());
 
-    // One call on this thread first, against a key that does not exist (so it changes nothing but
-    // still builds a Uni). Mutiny initializes its context-propagation interceptor on first use, and
-    // that initialization is not itself thread-safe: without this, several of the writers below can
-    // race into it and fail with "ContextManagerProvider already set". A Quarkus process has it set
-    // up at startup; a bare JVM test has to warm it explicitly.
+    // Warm-up call (no-op against an absent key): Mutiny's context-propagation interceptor
+    // initializes on first use and that initialization is not thread-safe — without it, the
+    // writers below can race into "ContextManagerProvider already set". Quarkus does this at
+    // startup; a bare JVM test must do it explicitly.
     kv.updateMetadataAttrsIfExists(key("pk1", "absent"), Map.of(), Map.of("hits", 1L))
         .await()
         .indefinitely();

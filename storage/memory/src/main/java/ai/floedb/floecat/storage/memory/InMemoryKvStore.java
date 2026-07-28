@@ -40,8 +40,7 @@ public final class InMemoryKvStore implements KvStore {
 
   @Override
   public Uni<Boolean> putCas(Record record, long expectedVersion) {
-    // Synchronous, like the DynamoDB store's check in recordToAv: the fake has no wire types of its
-    // own, so matching what the real store refuses is the only thing that keeps a test honest.
+    // Synchronous, matching when and what the DynamoDB store refuses.
     AttrWriteRules.checkExpiryIsString(record.attrs());
     return Uni.createFrom()
         .item(
@@ -79,11 +78,9 @@ public final class InMemoryKvStore implements KvStore {
       Key key, Map<String, AttrValue> sets, Map<String, Long> increments) {
     MetadataAttrUpdates.validate(key, sets, increments);
 
-    // Applied eagerly, like every other write in this class and like the DynamoDB store's
-    // already-in-flight UpdateItem: a Uni may be subscribed to more than once, and a mutation
-    // deferred to subscription time would increment again on every subscription. The failure is
-    // still handed back as a failed Uni rather than thrown out of a Uni-returning method, which
-    // is how the real store reports ADD on a string-typed attribute.
+    // Applied eagerly: a Uni may be subscribed more than once, and a mutation deferred to
+    // subscription time would increment on every subscription. The failure is still handed back
+    // as a failed Uni, matching how DynamoDB reports ADD on a string-typed attribute.
     Optional<Long> newVersion;
     try {
       newVersion = applyMetadataAttrUpdates(key, sets, increments);
@@ -100,17 +97,15 @@ public final class InMemoryKvStore implements KvStore {
    */
   private Optional<Long> applyMetadataAttrUpdates(
       Key key, Map<String, AttrValue> sets, Map<String, Long> increments) {
-    // A successful update always produces a version >= 1, so 0 is an unambiguous "the remap never
-    // ran, or refused". computeIfPresent's own return value cannot tell those apart from success,
-    // since a refusal also returns a non-null record.
+    // A successful update always yields version >= 1, so 0 means "never ran or refused";
+    // computeIfPresent's return value cannot tell a refusal from success.
     long[] newVersion = {0L};
     records.computeIfPresent(
         key,
         (unused, existing) -> {
           if (existing.value().length > 0) {
-            // Refused: a value-carrying record embeds a copy of the version inside its serialized
-            // payload, which this update does not rewrite. Leave it as is and leave newVersion
-            // unset.
+            // Refused: a value payload embeds its own copy of the version, which this update does
+            // not rewrite.
             return existing;
           }
 
@@ -119,11 +114,9 @@ public final class InMemoryKvStore implements KvStore {
           for (var increment : increments.entrySet()) {
             var name = increment.getKey();
             var current = attrs.get(name);
-            // Rejected on the type, not on whether the text happens to parse: DynamoDB's ADD
-            // raises ValidationException for any S-typed attribute, including a numeric-looking
-            // one like "42". Accepting those here would let a caller pass in memory and fail in
-            // production. Throwing from the remap leaves the mapping unchanged
-            // (ConcurrentHashMap's contract), so nothing is half-applied.
+            // Rejected on the type, not parseability: DynamoDB's ADD rejects any S-typed
+            // attribute, numeric-looking ones like "42" included. Throwing from the remap leaves
+            // the mapping unchanged, so nothing is half-applied.
             if (current != null && !(current instanceof AttrValue.NumberValue)) {
               throw new IllegalStateException(
                   "cannot increment attr "
@@ -133,10 +126,8 @@ public final class InMemoryKvStore implements KvStore {
                       + ": it currently holds a string value");
             }
             long base = current == null ? 0L : ((AttrValue.NumberValue) current).value();
-            // addExact, not +: a wrapped sum would report a successful update while storing a
-            // number nowhere near the one asked for. AttrValue cannot model a result outside long,
-            // so an out-of-range sum is an error, not a value. Throws from the same remap as the
-            // type check above, with the same all-or-nothing guarantee.
+            // addExact, not +: AttrValue cannot model a sum outside long, and a wrap would report
+            // success while storing a wildly wrong value.
             attrs.put(name, AttrValue.of(Math.addExact(base, increment.getValue())));
           }
 

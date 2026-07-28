@@ -30,17 +30,13 @@ public interface KvAttributes {
   String TARGET_SORT_KEY = "targetSk";
 
   /**
-   * Names a backend gives its own meaning, on a record it also stores attributes on. They are
-   * reserved: a record attribute may not use one. For {@link #ATTR_PARTITION_KEY}, {@link
-   * #ATTR_SORT_KEY}, {@link #ATTR_KIND}, {@link #ATTR_VALUE} and {@link #ATTR_VERSION} the harm is
-   * a collision with the structural field of the same name. For {@link #ATTR_TTL} it is worse and
-   * quieter: {@code DynamoDbTablesBootstrap} enables DynamoDB's TTL feature on that attribute, so
-   * an ordinary numeric attr that happens to be named {@code ttl} is read by DynamoDB as the row's
-   * expiry time and the row is deleted once it passes — no error, no trace.
+   * Names the backend gives its own meaning; a record attribute may not use one. Most would collide
+   * with the structural field of the same name. {@link #ATTR_TTL} is quieter: DynamoDB's TTL
+   * feature is enabled on that attribute, so a numeric attr named {@code ttl} silently schedules
+   * the row's deletion.
    *
-   * <p>Reserved on the way in only. A row that some other writer already put one of these names on
-   * still has to be readable, so decoders drop them rather than refusing the record (see {@code
-   * DynamoDbKvStore#avToAttrs}).
+   * <p>Reserved on writes only — rows written by others may carry these names, so decoders drop
+   * them rather than refusing the record.
    */
   Set<String> RESERVED_ATTRS =
       Set.of(ATTR_PARTITION_KEY, ATTR_SORT_KEY, ATTR_KIND, ATTR_VALUE, ATTR_VERSION, ATTR_TTL);

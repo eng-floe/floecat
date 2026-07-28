@@ -24,11 +24,8 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
- * Argument rules of {@link MetadataAttrUpdates#validate}, which both stores delegate to so that a
- * caller mistake is rejected identically — and synchronously, before any request is issued —
- * regardless of backend. The store-level behaviors (absent record, non-empty value, incrementing a
- * string) belong to the two {@code KvStoreContractTest} classes; this pins only the shared
- * front-door validation, including the branches no contract test reaches.
+ * Pins the shared front-door validation of {@link MetadataAttrUpdates#validate}; store-level
+ * behaviors belong to the {@code KvStoreContractTest} classes.
  */
 public class MetadataAttrUpdatesTest {
 
@@ -87,8 +84,8 @@ public class MetadataAttrUpdatesTest {
 
   @Test
   void rejects_expiry_stamp_in_sets_in_either_form() {
-    // The string form is legal in a whole-record write and still refused here: this primitive
-    // updates attrs by themselves, and an expiry belongs to the record it expires.
+    // The string form is legal in a whole-record write but refused here: an expiry belongs to the
+    // record it expires.
     for (AttrValue stamp : new AttrValue[] {AttrValue.of("2"), AttrValue.of(2L)}) {
       assertMessageContains(
           KvAttributes.ATTR_EXPIRES_AT,

@@ -67,8 +67,8 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
       var m = (M) defaultInstance.getParserForType().parseFrom(data);
       var ts = r.attrs().get(ATTR_EXPIRES_AT);
       if (ts != null) {
-        // Accepts both the legacy string form and the native numeric one; a present but malformed
-        // stamp throws, so corrupt expiry data cannot read as "no expiry".
+        // String or numeric form both decode; a malformed stamp throws rather than reading as
+        // "no expiry".
         m = setExpiresAt(m, ts.asLong());
       }
       return m;
@@ -126,8 +126,8 @@ public abstract class AbstractEntity<M extends MessageLite> implements KvAttribu
     long ts = getExpiresAt(withVer);
     if (ts > 0) {
       attrs = new java.util.HashMap<>(attrs);
-      // Written as a string, not a number: an older replica's read path drops non-string attrs, and
-      // its next write of this record would then persist it without an expiry at all.
+      // String, not number: an older replica drops non-string attrs on read and would then
+      // rewrite the record without its expiry (see AttrWriteRules).
       attrs.put(ATTR_EXPIRES_AT, AttrValue.of(Long.toString(ts)));
     }
     var rec = new KvStore.Record(key, kind, encode(withVer), attrs, nv);

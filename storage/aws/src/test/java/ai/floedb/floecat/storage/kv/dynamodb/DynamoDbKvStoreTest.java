@@ -344,10 +344,8 @@ public class DynamoDbKvStoreTest {
 
   @Test
   void reserved_attr_written_out_of_band_is_dropped_rather_than_failing_the_read() {
-    // ATTR_TTL is reserved because DynamoDB expires rows by it, and this store never writes it — so
-    // the only way a row carries one is another writer, and that row still has to be readable.
-    // Record's constructor rejects reserved names, so the decode has to drop it; letting it through
-    // would turn a foreign row into a read that throws.
+    // Only a foreign writer can put a reserved name like ttl on a row; the row must stay readable,
+    // and Record's constructor rejects reserved names, so the decode has to drop it.
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     DynamoDbKvStore store = newStore(handler);
 

@@ -49,10 +49,8 @@ public class KvStoreRecordTest {
 
   @Test
   void record_rejects_a_ttl_attr() {
-    // Named on its own, not left to the loop above, because its reason differs and outlives a
-    // reader who prunes the set: DynamoDB's TTL feature is enabled on this attribute, so a
-    // bookkeeping counter that happens to be called "ttl" is an epoch-second deletion schedule for
-    // the row that carries it. No error, no trace — hence a write-time rejection.
+    // Pinned by name: DynamoDB's TTL feature is enabled on this attribute, so a counter that
+    // happens to be called "ttl" silently schedules the row's deletion.
     Map<String, AttrValue> attrs = Map.of(KvAttributes.ATTR_TTL, AttrValue.of(9L));
     IllegalArgumentException thrown =
         assertThrows(IllegalArgumentException.class, () -> newRecord(attrs));
