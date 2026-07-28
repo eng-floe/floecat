@@ -2034,6 +2034,11 @@ control plane, and new workers cannot submit results to an old control plane. Mi
 worker/control-plane deployments are unsupported: drain leased work, stop the old worker fleet,
 deploy the control plane and matching workers as one coordinated cutover, then resume leasing.</p>
 </blockquote>
+<p>The current protocol also adds content-state and realized-index-selector fields. These protobuf
+additions are wire-compatible, but some are conditionally required by the control plane. Regenerate
+Rust protobuf bindings from <code>core/proto</code> and deploy matching workers with the control plane. An old
+file-group worker can continue to submit stats-only results, but an old worker cannot complete
+page-index capture because it cannot populate <code>FileGroupResultPayload.realized_index_selectors</code>.</p>
 <p>The goal is not to embed Rust into the JVM. The goal is to run a separate Rust process that:</p>
 <ol>
 <li>Leases eligible reconcile jobs from the control plane.</li>
@@ -2044,6 +2049,10 @@ deploy the control plane and matching workers as one coordinated cutover, then r
 <p>If you only need file-group capture replacement, you do not need to replace the Java planner
 workers. <code>PLAN_CONNECTOR</code>, <code>PLAN_TABLE</code>, <code>PLAN_VIEW</code>, and <code>PLAN_SNAPSHOT</code> can remain in the
 existing JVM control plane or executor fleet.</p>
+<p>If a remote implementation also owns <code>PLAN_SNAPSHOT</code>, it must preserve the leased snapshot task's
+<code>source_revision</code>, <code>metadata_fingerprint</code>, and complete <code>requested_coverage</code> in its successful
+planned task. Dropping those fields disables or corrupts content-state deduplication. A remote
+snapshot finalizer must likewise populate the realized-selector fields described below.</p>
 <h2 id="what-you-are-replacing">What You Are Replacing<a class="headerlink" href="#what-you-are-replacing" title="Permanent link">&para;</a></h2>
 <p>The current JVM path for file-group execution is:</p>
 <ul>
@@ -2261,6 +2270,8 @@ already cleared the lease as part of successful completion.</p>
 <li>worker-chosen parquet sidecars plus one fenced, hash-addressed <code>IndexArtifactRecord</code> wrapper per
   sidecar</li>
 <li>a bounded <code>FileGroupResultPayload</code> containing compact file-stats and index-wrapper descriptors</li>
+<li>the concrete index selectors present in the published wrappers, repeated in
+  <code>FileGroupResultPayload.realized_index_selectors</code></li>
 <li>a <code>ReconcileFileGroupResultDescriptor</code> sent in the success RPC</li>
 </ul>
 <p>The worker is responsible for ensuring:</p>
@@ -2270,6 +2281,13 @@ already cleared the lease as part of successful completion.</p>
 <li>every referenced stats object, sidecar, and index wrapper is committed before the success RPC</li>
 <li>every index wrapper uses the leased <code>stats_object_prefix</code> plus the required
   <code>index-artifacts/&lt;target-hash&gt;/&lt;payload-hash&gt;.pb</code> suffix</li>
+<li>every index wrapper records its concrete comma-separated selector set in the
+  <code>indexed_columns</code> property</li>
+<li><code>realized_index_selectors</code> is the sorted, distinct selector set represented by the file group's
+  index wrappers; omit it only when page-index output was not requested</li>
+<li>explicit index selection covers every requested selector; default selection resolves to a
+  non-empty selector set for non-empty snapshots, uses the same set for every file in the group,
+  and does not exceed <code>max_default_columns</code> for <code>FIRST_N</code></li>
 <li>every stats descriptor identifies its target storage ID and the object size and SHA-256</li>
 <li>the result descriptor's <code>artifact_references_sha256</code> is the canonical digest of its file-stats
   and index-artifact descriptor sets</li>
@@ -2308,6 +2326,12 @@ proportional to the snapshot's file count.</p>
 <p>The finalizer's <code>SnapshotCaptureManifest</code> must carry each durable file-group descriptor, including
 its <code>artifact_references_sha256</code>, but must not repeat the per-file stats or index descriptor lists.
 It carries only file-group descriptors, snapshot-wide aggregate descriptors, and counts.</p>
+<p>For page-index capture, the finalizer must also populate
+<code>SnapshotCaptureManifest.realized_index_selectors</code> with the sorted, distinct selectors represented
+by the activated index generation. It must cover all explicitly requested selectors. For default
+selection on a non-empty snapshot, it must be non-empty and must not exceed <code>max_default_columns</code>
+when the policy uses <code>FIRST_N</code>. The Java snapshot finalizer derives this set from the file-group
+payloads; a non-Java finalizer must perform the same validation and aggregation.</p>
 <p>The manifest must also repeat the leased capture policy exactly, including outputs, column
 policies, default column scope, maximum default-column count, and the complete opaque properties
 map. The control plane rejects policy drift during finalization.</p>
@@ -2316,11 +2340,11 @@ lookup per file group. It does not read file-group payloads or per-file objects.
 file group has not written its digest-bound prepared marker, the service returns a retryable error.
 The finalizer must retry the exact same finalization result; it must not regenerate a different
 result ID or manifest for that retry.</p>
-<p>During successful publication, the control plane activates the index generation first and commits
-the stats-generation root last. The root commit is the snapshot visibility point, so readers cannot
-observe the finalized snapshot before both its stats and index generations are active. This
-ordering is internal to the control plane and requires no additional RPC or sequencing step from
-the external finalizer.</p>
+<p>During successful publication, the control plane commits the stats-generation root and the index
+generation's active and capture-manifest pointers in one atomic pointer batch. Readers therefore
+cannot observe a finalized snapshot with only one generation activated. This publication fence is
+internal to the control plane and requires no additional RPC or sequencing step from the external
+finalizer.</p>
 <p>The digest field is required and has no legacy fallback. Existing in-flight or persisted
 file-group results without it must be drained or replanned before a finalizer using this contract
 can complete them.</p>
