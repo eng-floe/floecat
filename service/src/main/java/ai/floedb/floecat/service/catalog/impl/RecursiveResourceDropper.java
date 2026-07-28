@@ -190,18 +190,28 @@ public class RecursiveResourceDropper {
     // pointer, so pinning every removal below to this version means a namespace that escaped
     // mid-drop
     // is neither emptied nor deleted.
-    long pinnedVersion = pinDescendantToSubtree(namespace, rootPath);
-    if (pinnedVersion == UNPINNED) {
+    var pinned = pinDescendantToSubtree(namespace, rootPath);
+    if (pinned.isEmpty()) {
+      // The namespace itself is gone, but the by-path row this walk followed is not — a concurrent
+      // delete that could only remove the canonical pointer leaves exactly that. Every
+      // immediate-child probe counts that row, so leaving it here wedges the drop for good: the
+      // parent reports a child that cannot be resolved, let alone deleted.
       CLEANUP_LOG.infof(
           "recursive_drop_namespace_skipped_absent account_id=%s namespace_id=%s",
           namespaceId.getAccountId(), namespaceId.getId());
+      reclaimStrandedNamespacePath(namespace);
       return;
     }
-    var subtreePin = markerStore.namespacePinnedGuard(namespaceId, pinnedVersion);
+    var subtreePin = markerStore.namespacePinnedGuard(namespaceId, pinned.get().pointerVersion());
 
-    dropNamespaceRelations(namespace, summary, true, subtreePin);
-    var childrenGuard = requireNamespaceEmptyAndStable(namespace);
-    deleteNamespace(namespace, rootId, childrenGuard, pinnedVersion);
+    // Everything below works from the namespace the pin resolved, not the row the walk started
+    // from. They differ after an in-place rename: the scan's path is then stale, and probing for
+    // children under a stale path would miss one created under the new name and delete this
+    // namespace out from over a live child.
+    var resolved = pinned.get().resolved();
+    dropNamespaceRelations(resolved, summary, true, subtreePin);
+    var childrenGuard = requireNamespaceEmptyAndStable(resolved);
+    deleteNamespace(resolved, rootId, childrenGuard, pinned.get().pointerVersion());
     summary.namespacesDeleted++;
   }
 
@@ -225,17 +235,23 @@ public class RecursiveResourceDropper {
 
   /**
    * Re-reads a scanned descendant and returns the canonical pointer version that proves it is still
-   * under {@code rootPath}, or {@link #UNPINNED} when it no longer exists at all.
+   * under {@code rootPath}, together with the namespace that version resolved to — empty when it no
+   * longer exists at all.
    *
    * <p>The version and the content come from a single pointer read, so the pair is coherent: the
    * namespace path checked here is exactly the one that version resolved to. Verifying membership
    * against a separately-read version could otherwise pin a resource that had already moved.
+   *
+   * <p>Handing the resolved namespace back matters as much as the version. The row the walk started
+   * from carries the path as it was scanned, and an in-place rename makes that stale while leaving
+   * the namespace inside the subtree — so callers must work from what was verified here, not from
+   * what was scanned.
    */
-  private long pinDescendantToSubtree(Namespace scanned, List<String> rootPath) {
+  private Optional<DescendantPin> pinDescendantToSubtree(Namespace scanned, List<String> rootPath) {
     var namespaceId = scanned.getResourceId();
     var meta = namespaceRepo.metaForSafe(namespaceId);
     if (meta.getPointerVersion() == 0L) {
-      return UNPINNED;
+      return Optional.empty();
     }
     Optional<Namespace> live;
     try {
@@ -249,7 +265,9 @@ public class RecursiveResourceDropper {
       CLEANUP_LOG.warnf(
           "recursive_drop_namespace_blob_unparseable account_id=%s namespace_id=%s blob_uri=%s",
           namespaceId.getAccountId(), namespaceId.getId(), meta.getBlobUri());
-      return meta.getPointerVersion();
+      // Nothing better than the scanned row to work from: an unreadable namespace cannot state its
+      // own path, so its placement stays whatever the walk observed.
+      return Optional.of(new DescendantPin(meta.getPointerVersion(), scanned));
     }
     if (live.isEmpty()) {
       throw namespaceChanged(namespaceId);
@@ -257,8 +275,16 @@ public class RecursiveResourceDropper {
     if (!isDescendant(live.get(), rootPath)) {
       throw movedOutOfSubtree(namespaceId, String.join(".", rootPath));
     }
-    return meta.getPointerVersion();
+    return Optional.of(new DescendantPin(meta.getPointerVersion(), live.get()));
   }
+
+  /**
+   * The canonical pointer version a scanned descendant is pinned to, and the namespace that version
+   * resolved to — the live one where its blob could be read, the scanned row where it could not.
+   * Emptiness probes and the delete itself must both use {@code resolved}: it carries the path the
+   * namespace has now, which an in-place rename makes differ from the path the walk found it under.
+   */
+  private record DescendantPin(long pointerVersion, Namespace resolved) {}
 
   /**
    * Uses the same marker protocol as ordinary namespace deletion. This prevents a concurrently

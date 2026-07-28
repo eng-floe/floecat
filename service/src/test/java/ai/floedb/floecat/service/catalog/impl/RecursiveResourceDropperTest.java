@@ -312,6 +312,111 @@ class RecursiveResourceDropperTest {
   }
 
   /**
+   * A descendant whose canonical pointer is already gone still leaves the by-path row the walk
+   * followed, and every immediate-child probe counts that row. Skipping without reclaiming it
+   * wedges the drop permanently: the parent reports a child nothing can resolve, let alone delete.
+   */
+  @Test
+  void guardedDropReclaimsTheByPathRowOfADescendantThatIsAlreadyGone() {
+    var childId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("ns-child")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    when(namespaceRepo.listRefsUnder(eq("acct"), eq("cat"), eq(List.of("ns"))))
+        .thenReturn(
+            List.of(
+                new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("ns", "child"))));
+    // Canonical pointer gone: a concurrent delete that could only remove that one.
+    when(namespaceRepo.metaForSafe(eq(childId))).thenReturn(meta("", 0L));
+    String byPathKey = Keys.namespacePointerByPath("acct", "cat", List.of("ns", "child"));
+    when(pointerStore.get(eq(byPathKey)))
+        .thenReturn(
+            Optional.of(
+                Pointer.newBuilder()
+                    .setKey(byPathKey)
+                    .setVersion(2L)
+                    .setResourceId(childId)
+                    .build()));
+    when(pointerStore.compareAndSetBatch(any())).thenReturn(true);
+    when(tableRepo.deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any()))
+        .thenReturn(true);
+
+    var summary = dropper.dropNamespaceContents(root, true);
+
+    // Nothing was deleted — there was no namespace left — but the row it left behind is released.
+    assertEquals(0, summary.namespacesDeleted);
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<PointerStore.CasOp>> batch = ArgumentCaptor.forClass(List.class);
+    verify(pointerStore).compareAndSetBatch(batch.capture());
+    assertEquals(
+        List.<PointerStore.CasOp>of(
+            new PointerStore.CasCheckAbsent(Keys.namespacePointerById("acct", "ns-child")),
+            new PointerStore.CasDelete(byPathKey, 2L)),
+        batch.getValue());
+    verify(namespaceRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
+  }
+
+  /**
+   * The walk finds a descendant by its path, but an in-place rename makes that path stale while
+   * leaving the namespace inside the subtree. Probing for children under the scanned path would
+   * miss one created under the new name and delete this namespace out from over a live child.
+   */
+  @Test
+  void guardedDropProbesForChildrenUnderTheNamespacesCurrentPathNotTheScannedOne() {
+    var childId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("ns-child")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    var grandchildId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("ns-grandchild")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    // Scanned as "ns.child"...
+    when(namespaceRepo.listRefsUnder(eq("acct"), eq("cat"), eq(List.of("ns"))))
+        .thenReturn(
+            List.of(
+                new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("ns", "child"))));
+    when(namespaceRepo.metaForSafe(eq(childId)))
+        .thenReturn(meta("blob://acct/namespaces/ns-child/v3", 5L));
+    // ...but it has since been renamed in place to "ns.renamed", still inside the subtree.
+    when(namespaceRepo.getByBlobUri(eq("blob://acct/namespaces/ns-child/v3")))
+        .thenReturn(
+            Optional.of(
+                Namespace.newBuilder()
+                    .setResourceId(childId)
+                    .setCatalogId(CATALOG)
+                    .addParents("ns")
+                    .setDisplayName("renamed")
+                    .build()));
+    // A child was created under the new name. Only a probe on the current path can see it.
+    when(namespaceRepo.listRefsUnder(eq("acct"), eq("cat"), eq(List.of("ns", "renamed"))))
+        .thenReturn(
+            List.of(
+                new TopologyGraph.NamespaceRef(
+                    grandchildId, "g", CATALOG, List.of("ns", "renamed", "g"))));
+    // Everything else lets the delete through, so the abort below can only come from seeing that
+    // child: probing the stale path would find nothing and this would commit.
+    when(markerStore.advanceNamespaceMarker(eq(childId), anyLong())).thenReturn(true);
+    when(markerStore.namespaceMarkerVersion(eq(childId))).thenReturn(0L, 1L, 1L);
+    when(namespaceRepo.deleteWithPrecondition(eq(childId), eq(5L), any())).thenReturn(true);
+    when(tableRepo.deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any()))
+        .thenReturn(true);
+
+    assertThrows(
+        BaseResourceRepository.AbortRetryableException.class,
+        () -> dropper.dropNamespaceContents(root, true));
+
+    verify(namespaceRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
+    verify(namespaceRepo, never()).delete(any(), any());
+  }
+
+  /**
    * The namespace analogue, and the stakes are higher: descendants are dropped deepest-first, so
    * refusing on an unparseable namespace blob aborts an operation that has already destroyed
    * everything below it, leaving the tree half torn down. Placement came from the by-path row the
