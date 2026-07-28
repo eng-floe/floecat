@@ -231,7 +231,7 @@ class ReconcileSnapshotContentStateTest {
         ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(defaultPolicy));
     List<String> materializedDefault =
         ReconcileSnapshotContentState.materializedCoverage(
-            requestedDefault, List.of("customer_id", "order_id"));
+            requestedDefault, List.of(), List.of("customer_id", "order_id"));
     ReconcileCapturePolicy additionalPolicy =
         ReconcileCapturePolicy.of(
             List.of(new ReconcileCapturePolicy.Column("region", false, true)),
@@ -247,6 +247,117 @@ class ReconcileSnapshotContentStateTest {
     assertThat(narrowed.capturePolicy().columns())
         .extracting(ReconcileCapturePolicy.Column::selector)
         .containsExactly("region", "customer_id", "order_id");
+  }
+
+  @Test
+  void broaderDefaultCoverageSatisfiesNarrowerDefaultsAndRealizedExplicitColumns() {
+    ReconcileCapturePolicy broad =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(
+                ReconcileCapturePolicy.Output.COLUMN_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+            10);
+    ReconcileCapturePolicy narrow =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(
+                ReconcileCapturePolicy.Output.COLUMN_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+            3);
+    List<String> requestedBroad =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(broad));
+    List<String> materializedBroad =
+        ReconcileSnapshotContentState.materializedCoverage(
+            requestedBroad,
+            List.of("customer_id", "order_id", "region"),
+            List.of("customer_id", "order_id", "region"));
+
+    assertThat(
+            ReconcileSnapshotContentState.missingCoverage(
+                ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(narrow)),
+                materializedBroad))
+        .isEmpty();
+
+    ReconcileCapturePolicy explicit =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("order_id", true, true)),
+            Set.of(
+                ReconcileCapturePolicy.Output.COLUMN_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+            3);
+    assertThat(
+            ReconcileSnapshotContentState.missingCoverage(
+                ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(explicit)),
+                materializedBroad))
+        .isEmpty();
+  }
+
+  @Test
+  void explicitColumnCoverageIncludesRealizedSelectorAliases() {
+    ReconcileCapturePolicy explicit =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#2", true, true)),
+            Set.of(
+                ReconcileCapturePolicy.Output.COLUMN_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+            3);
+    List<String> materialized =
+        ReconcileSnapshotContentState.materializedCoverage(
+            ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(explicit)),
+            List.of("#2", "customer_name"),
+            List.of("#2", "customer_name"));
+    ReconcileCapturePolicy byName =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("customer_name", true, true)),
+            Set.of(
+                ReconcileCapturePolicy.Output.COLUMN_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+            3);
+
+    assertThat(
+            ReconcileSnapshotContentState.missingCoverage(
+                ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(byName)),
+                materialized))
+        .isEmpty();
+  }
+
+  @Test
+  void narrowerDefaultsAndUnrelatedExplicitColumnsDoNotSatisfyBroaderRequests() {
+    ReconcileCapturePolicy narrow =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS),
+            ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+            3);
+    ReconcileCapturePolicy broad =
+        ReconcileCapturePolicy.of(
+            List.of(),
+            Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS),
+            ReconcileCapturePolicy.DefaultColumnScope.FIRST_N,
+            10);
+    List<String> materializedNarrow =
+        ReconcileSnapshotContentState.materializedCoverage(
+            ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(narrow)),
+            List.of("customer_id", "order_id", "region"),
+            List.of());
+
+    assertThat(
+            ReconcileSnapshotContentState.missingCoverage(
+                ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(broad)),
+                materializedNarrow))
+        .isNotEmpty();
+    assertThat(
+            ReconcileSnapshotContentState.missingCoverage(
+                ReconcileSnapshotContentState.coverage(
+                    CaptureMode.CAPTURE_ONLY, scope(policy("missing"))),
+                materializedNarrow))
+        .isNotEmpty();
   }
 
   @Test

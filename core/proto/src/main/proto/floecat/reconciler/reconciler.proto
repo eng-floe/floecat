@@ -331,6 +331,8 @@ message FileGroupResultPayload {
   IndexGenerationPredecessor index_predecessor = 16;
   // Concrete column selectors present in this file group's published index artifacts.
   repeated string realized_index_selectors = 17;
+  // Concrete column selectors represented by this file group's column-stat aggregates.
+  repeated string realized_stats_selectors = 18;
 }
 
 // Immutable publication unit produced by the snapshot-finalize executor after it has verified all
@@ -359,6 +361,8 @@ message SnapshotCaptureManifest {
   IndexGenerationPredecessor index_predecessor = 20;
   // Concrete column selectors present in the activated index generation.
   repeated string realized_index_selectors = 21;
+  // Concrete column selectors present in the activated stats generation.
+  repeated string realized_stats_selectors = 22;
 }
 
 // Compact reference to a committed SnapshotCaptureManifest at the URI allocated for this fenced

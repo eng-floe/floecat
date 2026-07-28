@@ -12,11 +12,15 @@ worker that speaks Floecat's leased reconcile protocol directly.
 > worker/control-plane deployments are unsupported: drain leased work, stop the old worker fleet,
 > deploy the control plane and matching workers as one coordinated cutover, then resume leasing.
 
-The current protocol also adds content-state and realized-index-selector fields. These protobuf
-additions are wire-compatible, but some are conditionally required by the control plane. Regenerate
-Rust protobuf bindings from `core/proto` and deploy matching workers with the control plane. An old
-file-group worker can continue to submit stats-only results, but an old worker cannot complete
-page-index capture because it cannot populate `FileGroupResultPayload.realized_index_selectors`.
+The current protocol also adds content-state, realized-stats-selector, and
+realized-index-selector fields. These protobuf additions are wire-compatible, but some values are
+conditionally required by the control plane. Regenerate Rust protobuf bindings from `core/proto`
+and deploy matching workers with the control plane. An old file-group worker can continue to
+submit stats-only results, but without `FileGroupResultPayload.realized_stats_selectors` the
+control plane cannot record the concrete name/field-ID aliases or resolved default columns that
+were materialized. That can cause a later request for equivalent coverage to be captured again.
+An old worker also cannot complete default page-index capture because it cannot populate
+`FileGroupResultPayload.realized_index_selectors`.
 
 The goal is not to embed Rust into the JVM. The goal is to run a separate Rust process that:
 
@@ -283,6 +287,8 @@ The service expects the same logical outputs the Java runner currently produces:
 - worker-chosen parquet sidecars plus one fenced, hash-addressed `IndexArtifactRecord` wrapper per
   sidecar
 - a bounded `FileGroupResultPayload` containing compact file-stats and index-wrapper descriptors
+- the concrete column selectors represented by the published column-stat aggregates, repeated in
+  `FileGroupResultPayload.realized_stats_selectors`
 - the concrete index selectors present in the published wrappers, repeated in
   `FileGroupResultPayload.realized_index_selectors`
 - a `ReconcileFileGroupResultDescriptor` sent in the success RPC
@@ -296,11 +302,17 @@ The worker is responsible for ensuring:
   `index-artifacts/<target-hash>/<payload-hash>.pb` suffix
 - every index wrapper records its concrete comma-separated selector set in the
   `indexed_columns` property
+- `realized_stats_selectors` is the sorted, distinct selector set represented by the file group's
+  column-stat aggregates; omit it when column-stats output was not requested
+- report every equivalent selector known to the worker, such as both an Iceberg `#<field-id>` and
+  its column name, so content-state deduplication can recognize later requests using either form
 - `realized_index_selectors` is the sorted, distinct selector set represented by the file group's
   index wrappers; omit it only when page-index output was not requested
-- explicit index selection covers every requested selector; default selection resolves to a
-  non-empty selector set for non-empty snapshots, uses the same set for every file in the group,
-  and does not exceed `max_default_columns` for `FIRST_N`
+- explicit selectors need not appear verbatim when the persisted artifacts use a different or
+  unknown selector alias; an explicit field-ID request may therefore report only a name alias or
+  no known realized selector
+- default index selection resolves to a non-empty selector set for non-empty snapshots, uses the
+  same set for every file in the group, and does not exceed `max_default_columns` for `FIRST_N`
 - every stats descriptor identifies its target storage ID and the object size and SHA-256
 - the result descriptor's `artifact_references_sha256` is the canonical digest of its file-stats
   and index-artifact descriptor sets
@@ -348,12 +360,21 @@ The finalizer's `SnapshotCaptureManifest` must carry each durable file-group des
 its `artifact_references_sha256`, but must not repeat the per-file stats or index descriptor lists.
 It carries only file-group descriptors, snapshot-wide aggregate descriptors, and counts.
 
-For page-index capture, the finalizer must also populate
+For column-stats capture, the finalizer must populate
+`SnapshotCaptureManifest.realized_stats_selectors` with the sorted, distinct union reported by the
+file groups. When default stats selection is in use, every file group must report the same resolved
+selector set. For `FIRST_N`, the realized column count must not exceed `max_default_columns`.
+Name/field-ID aliases for the same columns may both be present; when field-ID selectors are
+available, the control plane counts those IDs rather than double-counting their name aliases.
+
+For page-index capture, the finalizer must populate
 `SnapshotCaptureManifest.realized_index_selectors` with the sorted, distinct selectors represented
-by the activated index generation. It must cover all explicitly requested selectors. For default
-selection on a non-empty snapshot, it must be non-empty and must not exceed `max_default_columns`
-when the policy uses `FIRST_N`. The Java snapshot finalizer derives this set from the file-group
-payloads; a non-Java finalizer must perform the same validation and aggregation.
+by the activated index generation. Explicitly requested selectors need not be repeated verbatim
+when the persisted artifacts use a different or unknown alias. For default selection on a
+non-empty snapshot, the realized set must be non-empty, every file group must report the same set,
+and the realized column count must not exceed `max_default_columns` for `FIRST_N`. The Java
+snapshot finalizer derives both stats and index sets from the file-group payloads; a non-Java
+finalizer must perform the same validation and aggregation.
 
 The manifest must also repeat the leased capture policy exactly, including outputs, column
 policies, default column scope, maximum default-column count, and the complete opaque properties

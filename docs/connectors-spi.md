@@ -22,6 +22,10 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Floec
     optional `targetSnapshotIds` for scoped enumeration.
   - `captureSnapshotTargetStats(...)` → targeted stats capture for one snapshot and optional selector
     hints (`#<column_id>` and/or connector-native names/paths).
+  - `captureSnapshotTargetStatsDirect(...)` → optional connector-native snapshot capture that
+    returns records, source-file count, and the concrete selectors represented by column stats.
+  - `capturePlannedFileGroup(...)` → captures one immutable planned file group and returns stats,
+    page-index entries, and its concrete realized stats selectors.
 - **`ConnectorFactory`** – Instantiates connectors given a `ConnectorConfig` (URI, options,
   authentication). The service uses it to validate specs and the reconciler uses it during runs.
 - **`ConnectorConfigMapper`** – Bidirectional conversion between RPC `Connector` protobufs and the
@@ -100,8 +104,17 @@ interface FloecatConnector extends Closeable {
   TableDescriptor describe(String namespaceFq, String tableName);
   List<SnapshotBundle> enumerateSnapshots(...);
   List<TargetStatsRecord> captureSnapshotTargetStats(...);
+  Optional<DirectSnapshotStatsCapture> captureSnapshotTargetStatsDirect(...);
+  FileGroupCaptureResult capturePlannedFileGroup(...);
 }
 ```
+`DirectSnapshotStatsCapture.realizedStatsSelectors` and
+`FileGroupCaptureResult.realizedStatsSelectors` must contain the sorted, distinct concrete selector
+aliases represented by emitted column-stat aggregates. Return an empty list when column stats were
+not requested. Include both `#<field-id>` and the corresponding name/path when the capture path can
+resolve both; this lets durable content state recognize later requests using either alias and
+avoids unnecessary recapture.
+
 For incremental reconcile, the runtime passes the set of already-ingested destination snapshot ids
 into connector enumeration. Connectors that support it can avoid expensive upstream work by returning
 only newly discovered snapshots. The reconciler still applies a destination-side filter as a safety net.

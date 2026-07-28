@@ -302,6 +302,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(),
             null);
 
     assertThat(client.submitSnapshotFinalizeSuccess(lease, prepared)).isTrue();
@@ -333,6 +334,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             "/stats/",
             "/manifest.pb",
             0,
+            List.of(),
             List.of(),
             List.of(),
             List.of(),
@@ -374,6 +376,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             List.of(),
             List.of(),
             List.of("customer_id"),
+            List.of("customer_id"),
             null);
 
     assertThat(client.submitSnapshotFinalizeSuccess(lease, prepared)).isTrue();
@@ -409,6 +412,7 @@ class GrpcRemoteReconcileExecutorClientTest {
                     List.of(
                         fileGroupResultDescriptor(indexPredecessor()),
                         fileGroupResultDescriptor(otherPredecessor)),
+                    List.of(),
                     List.of(),
                     List.of(),
                     List.of(),
@@ -1042,6 +1046,25 @@ class GrpcRemoteReconcileExecutorClientTest {
     assertThrows(
         IllegalArgumentException.class,
         () -> client.submitSuccess(remoteFileGroupLease(), payload, result));
+  }
+
+  @Test
+  void explicitIndexArtifactMayRealizeNoKnownSelectors() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#1", false, true)),
+            Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+            ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+            32);
+    var payload = indexFileGroupPayload("s3://bucket/file.parquet", policy);
+    var result =
+        new StandaloneFileGroupExecutionResult(
+            "result-1",
+            List.of(),
+            List.of(),
+            List.of(indexArtifact("s3://bucket/file.parquet", "")));
+
+    GrpcRemoteReconcileExecutorClient.validateIndexArtifactCoverage(payload, result);
   }
 
   @Test

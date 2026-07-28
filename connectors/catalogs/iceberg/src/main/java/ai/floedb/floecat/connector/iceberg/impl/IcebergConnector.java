@@ -445,12 +445,29 @@ public abstract class IcebergConnector implements FloecatConnector {
                 ? Set.of(StatsTargetKind.FILE)
                 : includeTargetKinds,
             plannedFilePaths);
+    Set<StatsTargetKind> requestedKinds =
+        includeTargetKinds == null || includeTargetKinds.isEmpty()
+            ? Set.of(StatsTargetKind.FILE)
+            : includeTargetKinds;
+    List<String> realizedStatsSelectors = List.of();
+    if (requestedKinds.contains(StatsTargetKind.COLUMN)) {
+      Schema schema = schemaForSnapshot(table, snapshot);
+      Set<String> aliases = new java.util.TreeSet<>();
+      for (int fieldId : resolveIncludedFieldIds(schema, includeColumns, columnSelectorPolicy)) {
+        aliases.add("#" + fieldId);
+        String columnName = schema.findColumnName(fieldId);
+        if (columnName != null && !columnName.isBlank()) {
+          aliases.add(columnName);
+        }
+      }
+      realizedStatsSelectors = List.copyOf(aliases);
+    }
     List<ParquetPageIndexEntry> pageIndexEntries =
         captureIndexes
             ? ParquetPageIndexReader.forIcebergIO(path -> table.io().newInputFile(path))
                 .readEntries(plannedFilePaths)
             : List.of();
-    return FileGroupCaptureResult.of(stats, pageIndexEntries);
+    return FileGroupCaptureResult.of(stats, pageIndexEntries, realizedStatsSelectors);
   }
 
   @Override

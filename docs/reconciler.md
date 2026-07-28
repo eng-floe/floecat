@@ -149,7 +149,9 @@ Internally, the worker poller exposes `pollEvery` via `@Scheduled` (default ever
   - `CaptureEngine.capture` accepts a `CaptureFileResultConsumer`. Engines emit file-scoped stats
     progressively through that consumer instead of retaining them in `CaptureEngineResult`.
   - The terminal result may contain compact group-level aggregate partials and staged index
-    outputs, but it must not contain file stats or page-index rows.
+    outputs, but it must not contain file stats or page-index rows. It also reports the sorted,
+    distinct concrete selectors represented by its column-stat aggregates so finalization can
+    preserve resolved default columns and name/field-ID aliases.
   - Engine capabilities use `PROGRESSIVE_FILE_OUTPUTS`. Implementations compiled against the old
     `capture(request)` or `COMPLETE_FILE_GROUP_OUTPUTS` API must be updated.
   - `ReconcilerBackend.indexCaptureComplete` is a snapshot-level completeness proof. Backend
@@ -324,7 +326,10 @@ perform a post-completion final lease confirmation after that RPC has durably co
 - **Incremental run**: `--incremental` enumerates snapshots selected by the explicit snapshot scope
   (`--current`, `--latest-n`, `--snapshot`, or `--all`). Durable content state then skips snapshots
   whose metadata fingerprint and requested capture coverage are already complete, or narrows work
-  to only the missing coverage. Full rescans bypass this content-state deduplication.
+  to only the missing coverage. Materialized coverage records the concrete stats and index
+  selectors reported by executors, allowing a field-ID/name alias to satisfy an equivalent later
+  request. An `ALL` default covers any narrower default, and a larger `FIRST_N` covers a smaller
+  `FIRST_N`; the reverse does not hold. Full rescans bypass this content-state deduplication.
 
 ## Cross-References
 - Connector SPI details: [`docs/connectors-spi.md`](connectors-spi.md)

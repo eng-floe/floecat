@@ -30,6 +30,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
@@ -475,7 +476,10 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
                 directStats.get().records().size(),
                 task.sourceRevision(),
                 task.metadataFingerprint(),
-                task.requestedCoverage(),
+                ReconcileSnapshotContentState.materializedCoverage(
+                    task.requestedCoverage(),
+                    directStats.get().realizedStatsSelectors(),
+                    List.of()),
                 task.indexPredecessor()),
             directStats.get().records()));
   }

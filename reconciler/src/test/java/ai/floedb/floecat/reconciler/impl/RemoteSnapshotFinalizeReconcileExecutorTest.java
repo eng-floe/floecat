@@ -234,7 +234,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
         preparedSnapshotFinalizeSuccess();
     when(workerClient.prepareSnapshotFinalizeSuccess(
             any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
-            anyList(), any()))
+            anyList(), anyList(), any()))
         .thenReturn(prepared);
     when(workerClient.submitSnapshotFinalizeSuccess(any(), any())).thenReturn(true);
 
@@ -263,6 +263,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             anyList(),
             anyList(),
             finalStats.capture(),
+            anyList(),
             anyList(),
             anyList(),
             indexPredecessor.capture());
@@ -318,7 +319,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             any(), any(), contains("unexpected snapshot file-group descriptor plan-1/group-c"));
     verify(workerClient, never())
         .prepareSnapshotFinalizeSuccess(
-            any(), any(), any(), any(), anyInt(), any(), any(), any(), any(), any(), any());
+            any(), any(), any(), any(), anyInt(), any(), any(), any(), any(), any(), any(), any());
     verify(workerClient, never()).submitSnapshotFinalizeSuccess(any(), any());
   }
 
@@ -336,7 +337,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(input);
     when(workerClient.prepareSnapshotFinalizeSuccess(
             any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
-            anyList(), any()))
+            anyList(), anyList(), any()))
         .thenThrow(new IllegalArgumentException("inconsistent predecessors"));
     when(workerClient.submitSnapshotFinalizeFailure(any(), any(), any())).thenReturn(true);
 
@@ -369,7 +370,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(emptyFinalizeInput());
     when(workerClient.prepareSnapshotFinalizeSuccess(
             any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
-            anyList(), any()))
+            anyList(), anyList(), any()))
         .thenReturn(preparedSnapshotFinalizeSuccess());
     when(workerClient.submitSnapshotFinalizeSuccess(any(), any())).thenReturn(false);
 
@@ -405,7 +406,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(emptyFinalizeInput());
     when(workerClient.prepareSnapshotFinalizeSuccess(
             any(), any(), any(), any(), anyInt(), anyList(), anyList(), anyList(), anyList(),
-            anyList(), any()))
+            anyList(), anyList(), any()))
         .thenReturn(preparedSnapshotFinalizeSuccess());
     when(workerClient.submitSnapshotFinalizeSuccess(any(), any())).thenThrow(uncertain);
 

@@ -44,6 +44,7 @@ final class JavaConnectorFileGroupCaptureAdapter {
     CaptureFileResultConsumer output =
         java.util.Objects.requireNonNull(fileResultConsumer, "fileResultConsumer");
     Set<String> publishedFileTargets = new HashSet<>();
+    Set<String> realizedStatsSelectors = new java.util.TreeSet<>();
     List<TargetStatsRecord> partialAggregates = List.of();
     for (String filePath : request.plannedFilePaths()) {
       throwIfCancellationRequested(request);
@@ -60,6 +61,7 @@ final class JavaConnectorFileGroupCaptureAdapter {
               request.columnSelectorPolicy());
       List<TargetStatsRecord> fileStats =
           uniqueFileStats(captured.statsRecords(), publishedFileTargets);
+      realizedStatsSelectors.addAll(captured.realizedStatsSelectors());
       List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries =
           filterPageIndexEntries(
               captured.pageIndexEntries(), request.indexColumns(), request.columnSelectorPolicy());
@@ -71,7 +73,8 @@ final class JavaConnectorFileGroupCaptureAdapter {
       }
       throwIfCancellationRequested(request);
     }
-    return CaptureEngineResult.of(partialAggregates, List.of(), List.of());
+    return CaptureEngineResult.of(
+        partialAggregates, List.of(), List.of(), List.copyOf(realizedStatsSelectors));
   }
 
   private static void throwIfCancellationRequested(CaptureEngineRequest request) {

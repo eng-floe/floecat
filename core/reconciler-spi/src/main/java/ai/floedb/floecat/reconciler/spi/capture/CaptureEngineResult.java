@@ -31,22 +31,41 @@ import java.util.List;
 public record CaptureEngineResult(
     List<TargetStatsRecord> statsRecords,
     List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries,
-    List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
+    List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts,
+    List<String> realizedStatsSelectors) {
   public CaptureEngineResult {
     statsRecords = statsRecords == null ? List.of() : List.copyOf(statsRecords);
     pageIndexEntries = pageIndexEntries == null ? List.of() : List.copyOf(pageIndexEntries);
     stagedIndexArtifacts =
         stagedIndexArtifacts == null ? List.of() : List.copyOf(stagedIndexArtifacts);
+    realizedStatsSelectors =
+        realizedStatsSelectors == null
+            ? List.of()
+            : realizedStatsSelectors.stream()
+                .filter(selector -> selector != null && !selector.isBlank())
+                .map(String::trim)
+                .distinct()
+                .sorted()
+                .toList();
   }
 
   public static CaptureEngineResult of(
       List<TargetStatsRecord> statsRecords,
       List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries,
       List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts) {
-    return new CaptureEngineResult(statsRecords, pageIndexEntries, stagedIndexArtifacts);
+    return new CaptureEngineResult(statsRecords, pageIndexEntries, stagedIndexArtifacts, List.of());
+  }
+
+  public static CaptureEngineResult of(
+      List<TargetStatsRecord> statsRecords,
+      List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries,
+      List<ReconcilerBackend.StagedIndexArtifact> stagedIndexArtifacts,
+      List<String> realizedStatsSelectors) {
+    return new CaptureEngineResult(
+        statsRecords, pageIndexEntries, stagedIndexArtifacts, realizedStatsSelectors);
   }
 
   public static CaptureEngineResult empty() {
-    return new CaptureEngineResult(List.of(), List.of(), List.of());
+    return new CaptureEngineResult(List.of(), List.of(), List.of(), List.of());
   }
 }

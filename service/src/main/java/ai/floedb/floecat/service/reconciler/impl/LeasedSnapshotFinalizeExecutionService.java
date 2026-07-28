@@ -185,7 +185,9 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                   validated.getStatsRecordCount(),
                   validated.getIndexArtifactCount(),
                   ReconcileSnapshotContentState.materializedCoverage(
-                      snapshotTask.requestedCoverage(), manifest.getRealizedIndexSelectorsList()),
+                      snapshotTask.requestedCoverage(),
+                      manifest.getRealizedStatsSelectorsList(),
+                      manifest.getRealizedIndexSelectorsList()),
                   System.currentTimeMillis(),
                   "Registered snapshot capture manifest " + snapshotTask.snapshotId());
           requireAcceptedLeaseOutcome(accepted, lease.jobId);
@@ -323,6 +325,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     }
     validateCapturePolicy(lease, manifest.getCapturePolicy());
     validateIndexPredecessor(lease, snapshotTask, manifest);
+    validateRealizedStatsSelectors(lease, manifest);
     validateRealizedIndexSelectors(lease, manifest);
     if (manifest
             .getCapturePolicy()
@@ -335,7 +338,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     return manifest;
   }
 
-  private static void validateRealizedIndexSelectors(
+  static void validateRealizedIndexSelectors(
       ReconcileJobStore.LeasedJob lease, SnapshotCaptureManifest manifest) {
     ReconcileCapturePolicy policy =
         lease.scope == null ? ReconcileCapturePolicy.empty() : lease.scope.capturePolicy();
@@ -355,10 +358,6 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
       return;
     }
     Set<String> required = policy.selectorsForIndex();
-    if (!realized.containsAll(required)) {
-      throw new IllegalArgumentException(
-          "snapshot capture manifest does not cover requested index selectors");
-    }
     boolean defaultSelection =
         required.isEmpty()
             && policy.defaultColumnScope()
@@ -372,10 +371,50 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     }
     if (defaultSelection
         && policy.defaultColumnScope() == ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
-        && realized.size() > policy.maxDefaultColumns()) {
+        && realizedColumnCount(realized) > policy.maxDefaultColumns()) {
       throw new IllegalArgumentException(
           "snapshot capture manifest exceeds the requested default index limit");
     }
+  }
+
+  private static void validateRealizedStatsSelectors(
+      ReconcileJobStore.LeasedJob lease, SnapshotCaptureManifest manifest) {
+    ReconcileCapturePolicy policy =
+        lease.scope == null ? ReconcileCapturePolicy.empty() : lease.scope.capturePolicy();
+    List<String> submitted = manifest.getRealizedStatsSelectorsList();
+    Set<String> realized = new HashSet<>();
+    for (String selector : submitted) {
+      if (selector == null || selector.isBlank() || !realized.add(selector.trim())) {
+        throw new IllegalArgumentException(
+            "snapshot capture manifest contains invalid realized stats selectors");
+      }
+    }
+    if (!policy.outputs().contains(ReconcileCapturePolicy.Output.COLUMN_STATS)) {
+      if (!realized.isEmpty()) {
+        throw new IllegalArgumentException(
+            "non-column-stats snapshot capture manifest contains realized stats selectors");
+      }
+      return;
+    }
+    boolean defaultSelection =
+        policy.columns().stream().noneMatch(ReconcileCapturePolicy.Column::captureStats)
+            && policy.defaultColumnScope()
+                != ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
+    if (manifest.getSourceFileCount() == 0) {
+      return;
+    }
+    if (defaultSelection
+        && policy.defaultColumnScope() == ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
+        && realizedColumnCount(realized) > policy.maxDefaultColumns()) {
+      throw new IllegalArgumentException(
+          "snapshot capture manifest exceeds the requested default stats limit");
+    }
+  }
+
+  static int realizedColumnCount(Set<String> selectors) {
+    int fieldIdCount =
+        (int) selectors.stream().filter(selector -> selector.startsWith("#")).count();
+    return fieldIdCount > 0 ? fieldIdCount : selectors.size();
   }
 
   private static void validateIndexPredecessor(

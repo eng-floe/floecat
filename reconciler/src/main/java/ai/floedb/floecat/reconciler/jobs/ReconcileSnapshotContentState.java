@@ -24,7 +24,7 @@ import java.util.TreeMap;
 
 /** Canonical content identity and set-like capture coverage for one materialized snapshot. */
 public final class ReconcileSnapshotContentState {
-  public static final int FORMAT_VERSION = 2;
+  public static final int FORMAT_VERSION = 3;
 
   private ReconcileSnapshotContentState() {}
 
@@ -62,11 +62,15 @@ public final class ReconcileSnapshotContentState {
 
   public static List<String> missingCoverage(
       List<String> requestedCoverage, List<String> materializedCoverage) {
-    Set<String> materialized =
-        materializedCoverage == null ? Set.of() : Set.copyOf(materializedCoverage);
+    List<String> materialized = materializedCoverage == null ? List.of() : materializedCoverage;
     return requestedCoverage == null
         ? List.of()
-        : requestedCoverage.stream().filter(atom -> !materialized.contains(atom)).sorted().toList();
+        : requestedCoverage.stream()
+            .filter(
+                requested ->
+                    materialized.stream().noneMatch(available -> covers(available, requested)))
+            .sorted()
+            .toList();
   }
 
   public static List<String> unionCoverage(List<String> left, List<String> right) {
@@ -80,35 +84,26 @@ public final class ReconcileSnapshotContentState {
     return union.stream().filter(value -> value != null && !value.isBlank()).sorted().toList();
   }
 
-  /** Expands symbolic default index coverage with the selectors actually materialized. */
+  /** Expands column coverage with every equivalent selector actually materialized. */
   public static List<String> materializedCoverage(
-      List<String> requestedCoverage, List<String> realizedIndexSelectors) {
+      List<String> requestedCoverage,
+      List<String> realizedStatsSelectors,
+      List<String> realizedIndexSelectors) {
     LinkedHashSet<String> materialized = new LinkedHashSet<>();
     if (requestedCoverage != null) {
       materialized.addAll(requestedCoverage);
     }
-    List<String> realized =
-        realizedIndexSelectors == null
-            ? List.of()
-            : realizedIndexSelectors.stream()
-                .filter(selector -> selector != null && !selector.isBlank())
-                .map(String::trim)
-                .distinct()
-                .sorted()
-                .toList();
-    if (realized.isEmpty()) {
-      return materialized.stream()
-          .filter(value -> value != null && !value.isBlank())
-          .sorted()
-          .toList();
-    }
     for (String encoded : requestedCoverage == null ? List.<String>of() : requestedCoverage) {
       CoverageAtom atom = parseAtom(encoded);
-      if (atom == null
-          || atom.output() != ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX
-          || !atom.selector().startsWith("@default:")) {
+      if (atom == null) {
         continue;
       }
+      List<String> realized =
+          switch (atom.output()) {
+            case COLUMN_STATS -> normalizedSelectors(realizedStatsSelectors);
+            case PARQUET_PAGE_INDEX -> normalizedSelectors(realizedIndexSelectors);
+            default -> List.of();
+          };
       for (String selector : realized) {
         materialized.add(atom(atom.output(), atom.target(), selector, atom.semantics()));
       }
@@ -120,7 +115,65 @@ public final class ReconcileSnapshotContentState {
   }
 
   public static boolean containsAll(List<String> available, List<String> requested) {
-    return available != null && available.containsAll(requested == null ? List.of() : requested);
+    return missingCoverage(requested, available).isEmpty();
+  }
+
+  private static List<String> normalizedSelectors(List<String> selectors) {
+    return selectors == null
+        ? List.of()
+        : selectors.stream()
+            .filter(selector -> selector != null && !selector.isBlank())
+            .map(String::trim)
+            .distinct()
+            .sorted()
+            .toList();
+  }
+
+  private static boolean covers(String available, String requested) {
+    if (java.util.Objects.equals(available, requested)) {
+      return true;
+    }
+    CoverageAtom availableAtom = parseAtom(available);
+    CoverageAtom requestedAtom = parseAtom(requested);
+    if (availableAtom == null
+        || requestedAtom == null
+        || availableAtom.output() != requestedAtom.output()
+        || !availableAtom.target().equals(requestedAtom.target())
+        || !availableAtom.semantics().equals(requestedAtom.semantics())) {
+      return false;
+    }
+    DefaultSelection availableDefault = parseDefaultSelection(availableAtom.selector());
+    DefaultSelection requestedDefault = parseDefaultSelection(requestedAtom.selector());
+    if (requestedDefault == null) {
+      return availableAtom.selector().equals(requestedAtom.selector())
+          || (availableDefault != null
+              && availableDefault.scope() == ReconcileCapturePolicy.DefaultColumnScope.ALL);
+    }
+    if (availableDefault == null) {
+      return false;
+    }
+    if (availableDefault.scope() == ReconcileCapturePolicy.DefaultColumnScope.ALL) {
+      return true;
+    }
+    return requestedDefault.scope() == ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
+        && availableDefault.scope() == ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
+        && availableDefault.limit() >= requestedDefault.limit();
+  }
+
+  private static DefaultSelection parseDefaultSelection(String selector) {
+    if (selector == null || !selector.startsWith("@default:")) {
+      return null;
+    }
+    String[] parts = selector.split(":", -1);
+    if (parts.length != 3) {
+      return null;
+    }
+    try {
+      return new DefaultSelection(
+          ReconcileCapturePolicy.DefaultColumnScope.valueOf(parts[1]), Integer.parseInt(parts[2]));
+    } catch (IllegalArgumentException ignored) {
+      return null;
+    }
   }
 
   public static ReconcileScope narrowScope(ReconcileScope scope, List<String> missingCoverage) {
@@ -405,11 +458,7 @@ public final class ReconcileSnapshotContentState {
   }
 
   private static String policySemantics(ReconcileCapturePolicy policy) {
-    return fingerprint(
-        Map.of(
-            "defaultColumnScope", policy.defaultColumnScope().name(),
-            "maxDefaultColumns", policy.maxDefaultColumns(),
-            "properties", policy.properties()));
+    return fingerprint(Map.of("properties", policy.properties()));
   }
 
   private static String nonColumnPolicySemantics(ReconcileCapturePolicy policy) {
@@ -528,6 +577,8 @@ public final class ReconcileSnapshotContentState {
 
   private record CoverageAtom(
       ReconcileCapturePolicy.Output output, String target, String selector, String semantics) {}
+
+  private record DefaultSelection(ReconcileCapturePolicy.DefaultColumnScope scope, int limit) {}
 
   private record DecodedPart(String value, int nextOffset) {}
 

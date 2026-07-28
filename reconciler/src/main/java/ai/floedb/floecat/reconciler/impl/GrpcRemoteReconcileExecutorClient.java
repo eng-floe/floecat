@@ -1051,7 +1051,8 @@ class GrpcRemoteReconcileExecutorClient
             .addAllPartialAggregateRecords(partialAggregates)
             .addAllIndexArtifacts(indexArtifacts)
             .addAllFileStats(fileStatsObjects)
-            .addAllRealizedIndexSelectors(realizedIndexSelectors);
+            .addAllRealizedIndexSelectors(realizedIndexSelectors)
+            .addAllRealizedStatsSelectors(result.realizedStatsSelectors());
     if (payload.capturePageIndex()) {
       packedPayloadBuilder.setIndexPredecessor(toProtoIndexPredecessor(payload.indexPredecessor()));
     }
@@ -1302,6 +1303,7 @@ class GrpcRemoteReconcileExecutorClient
       List<StatsObjectDescriptor> fileStats,
       List<TargetStatsRecord> finalStats,
       List<StatsObjectDescriptor> indexArtifacts,
+      List<String> realizedStatsSelectors,
       List<String> realizedIndexSelectors,
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor finalizeIndexPredecessor) {
     String stableResultId = resultId == null ? "" : resultId.trim();
@@ -1338,6 +1340,15 @@ class GrpcRemoteReconcileExecutorClient
         realizedIndexSelectors == null
             ? List.of()
             : realizedIndexSelectors.stream()
+                .filter(selector -> selector != null && !selector.isBlank())
+                .map(String::trim)
+                .distinct()
+                .sorted()
+                .toList();
+    List<String> stableRealizedStatsSelectors =
+        realizedStatsSelectors == null
+            ? List.of()
+            : realizedStatsSelectors.stream()
                 .filter(selector -> selector != null && !selector.isBlank())
                 .map(String::trim)
                 .distinct()
@@ -1381,7 +1392,8 @@ class GrpcRemoteReconcileExecutorClient
                     .sum())
             .setFinalStatsRecordCount(records.size())
             .setIndexArtifactCount(stableIndexArtifacts.size())
-            .addAllRealizedIndexSelectors(stableRealizedIndexSelectors);
+            .addAllRealizedIndexSelectors(stableRealizedIndexSelectors)
+            .addAllRealizedStatsSelectors(stableRealizedStatsSelectors);
     if (indexPredecessor != null) {
       manifest.setIndexPredecessor(toProtoIndexPredecessor(indexPredecessor));
     }
@@ -1621,7 +1633,7 @@ class GrpcRemoteReconcileExecutorClient
     return List.copyOf(out);
   }
 
-  private static void validateIndexArtifactCoverage(
+  static void validateIndexArtifactCoverage(
       StandaloneFileGroupExecutionPayload payload, StandaloneFileGroupExecutionResult result) {
     ReconcileCapturePolicy policy =
         payload.capturePolicy() == null ? ReconcileCapturePolicy.empty() : payload.capturePolicy();
@@ -1651,9 +1663,6 @@ class GrpcRemoteReconcileExecutorClient
             "index artifact targets do not match the planned file group");
       }
       Set<String> persistedSelectors = persistedIndexSelectors(record);
-      if (!persistedSelectors.containsAll(requiredSelectors)) {
-        throw new IllegalArgumentException("index artifact does not cover the requested selectors");
-      }
       if (defaultSelection && persistedSelectors.isEmpty()) {
         throw new IllegalArgumentException(
             "index artifact does not report its resolved default column coverage");

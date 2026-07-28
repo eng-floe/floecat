@@ -249,7 +249,7 @@ abstract class DeltaConnector implements FloecatConnector {
             : EnumSet.copyOf(includeTargetKinds);
     requestedKinds.remove(StatsTargetKind.EXPRESSION);
     if (requestedKinds.isEmpty()) {
-      return Optional.of(DirectSnapshotStatsCapture.of(List.of(), 0));
+      return Optional.of(DirectSnapshotStatsCapture.of(List.of(), 0, List.of()));
     }
 
     final String storageLocation = storageLocation(namespaceFq, tableName);
@@ -325,6 +325,21 @@ abstract class DeltaConnector implements FloecatConnector {
         planSnapshotFiles(namespaceFq, tableName, destinationTableId, snapshotId)
             .map(plan -> plan.dataFiles().size() + plan.deleteFiles().size())
             .orElse(0);
+    Set<String> realizedStatsSelectors = new java.util.TreeSet<>();
+    if (requestedKinds.contains(StatsTargetKind.COLUMN)) {
+      var columnIds =
+          LogicalSchemaMapper.buildColumnOrdinals(
+              ColumnIdAlgorithm.CID_PATH_ORDINAL,
+              TableFormat.TF_DELTA,
+              snapshotSchemaJson(snapshot));
+      for (String name : includeNames) {
+        realizedStatsSelectors.add(name);
+        long columnId = columnIds.getOrDefault(name, 0);
+        if (columnId > 0L) {
+          realizedStatsSelectors.add("#" + columnId);
+        }
+      }
+    }
     return Optional.of(
         DirectSnapshotStatsCapture.of(
             buildTargetStats(
@@ -337,7 +352,8 @@ abstract class DeltaConnector implements FloecatConnector {
                 requestedKinds,
                 Set.of(),
                 false),
-            sourceFileCount));
+            sourceFileCount,
+            List.copyOf(realizedStatsSelectors)));
   }
 
   @Override
@@ -394,11 +410,25 @@ abstract class DeltaConnector implements FloecatConnector {
                 ? Set.of(StatsTargetKind.FILE)
                 : includeTargetKinds,
             plannedFilePaths);
+    Set<StatsTargetKind> requestedKinds =
+        includeTargetKinds == null || includeTargetKinds.isEmpty()
+            ? Set.of(StatsTargetKind.FILE)
+            : includeTargetKinds;
+    List<String> realizedStatsSelectors =
+        requestedKinds.contains(StatsTargetKind.COLUMN)
+            ? FloecatConnector.resolveIncludedColumns(
+                    List.copyOf(DeltaTypeMapper.deltaTypeMap(snapshot.getSchema()).keySet()),
+                    includeColumns,
+                    columnSelectorPolicy)
+                .stream()
+                .sorted()
+                .toList()
+            : List.of();
     List<ParquetPageIndexEntry> pageIndexEntries =
         captureIndexes
             ? new ParquetPageIndexReader(parquetInput).readEntries(plannedFilePaths)
             : List.of();
-    return FileGroupCaptureResult.of(stats, pageIndexEntries);
+    return FileGroupCaptureResult.of(stats, pageIndexEntries, realizedStatsSelectors);
   }
 
   @Override

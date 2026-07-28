@@ -85,7 +85,8 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                             55L,
                             TableValueStats.newBuilder().setRowCount(7L).build(),
                             null)),
-                    5)));
+                    5,
+                    List.of())));
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
@@ -288,7 +289,8 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                             55L,
                             TableValueStats.newBuilder().setRowCount(7L).build(),
                             null)),
-                    5)));
+                    5,
+                    List.of())));
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any()))
         .thenThrow(
             new RemoteLeasePreconditionFailedException(
@@ -516,7 +518,8 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                 statsOnlyScope(),
                 snapshotTask()));
     when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
-        .thenReturn(Optional.of(FloecatConnector.DirectSnapshotStatsCapture.of(List.of(), 0)));
+        .thenReturn(
+            Optional.of(FloecatConnector.DirectSnapshotStatsCapture.of(List.of(), 0, List.of())));
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
@@ -556,7 +559,8 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                   snapshotTask());
             });
     when(backend.captureSnapshotTargetStatsDirect(any(), any(), eq(55L), any(), any(), any()))
-        .thenReturn(Optional.of(FloecatConnector.DirectSnapshotStatsCapture.of(List.of(), 0)));
+        .thenReturn(
+            Optional.of(FloecatConnector.DirectSnapshotStatsCapture.of(List.of(), 0, List.of())));
     when(workerClient.submitPlanSnapshotSuccess(any(), any(), any(), any())).thenReturn(true);
 
     assertTrue(

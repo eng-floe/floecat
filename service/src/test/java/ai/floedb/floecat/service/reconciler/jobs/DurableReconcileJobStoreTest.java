@@ -5735,6 +5735,49 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void terminalSnapshotCoverageClaimOwnerDoesNotContaminateReplacement() {
+    ReconcileScope tableScope = captureScope(Set.of(ReconcileCapturePolicy.Output.TABLE_STATS));
+    ReconcileScope fileScope = captureScope(Set.of(ReconcileCapturePolicy.Output.FILE_STATS));
+    List<String> tableCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, tableScope);
+    List<String> fileCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, fileScope);
+    String first =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            tableScope,
+            contentTask("revision-1", "", tableCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var firstLease = leaseJob(first);
+    store.markRunning(first, firstLease.leaseEpoch, 100L, "snapshot-planner");
+    store.markSucceeded(first, firstLease.leaseEpoch, 200L, 0L, 0L, 0L, 0L, 0L, 0L);
+
+    String replacement =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.CAPTURE_ONLY,
+            fileScope,
+            contentTask("revision-1", "", fileCoverage),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+
+    assertEquals(
+        fileCoverage,
+        store.get(ACCOUNT_ID, replacement).orElseThrow().snapshotTask.requestedCoverage());
+    assertEquals(
+        Set.of(ReconcileCapturePolicy.Output.FILE_STATS),
+        store.get(ACCOUNT_ID, replacement).orElseThrow().scope.capturePolicy().outputs());
+  }
+
+  @Test
   void leasedAggregateAcceptsCoverageUntilFreezeThenUsesOneSuccessor() {
     ReconcileScope tableScope = captureScope(Set.of(ReconcileCapturePolicy.Output.TABLE_STATS));
     ReconcileScope fileScope = captureScope(Set.of(ReconcileCapturePolicy.Output.FILE_STATS));

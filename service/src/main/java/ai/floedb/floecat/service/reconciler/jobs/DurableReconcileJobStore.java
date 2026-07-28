@@ -767,8 +767,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             PointerReferences.inlineJsonPointer(
                 claimKey, snapshotCoverageClaimReference(followerJobId), current.getVersion() + 1L);
         if (pointerStore.compareAndSet(claimKey, current.getVersion(), replacement)) {
-          completeSnapshotCoverageClaimReplacement(
-              spec.accountId, claimKey, followerJobId, ownerRecord);
+          // A missing or terminal owner has no pending coverage for its successor to inherit.
+          completeSnapshotCoverageClaimReplacement(spec.accountId, claimKey, followerJobId, "");
           return;
         }
         continue;
@@ -894,6 +894,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     Set<ReconcileCapturePolicy.Output> outputs = new java.util.LinkedHashSet<>(left.outputs());
     outputs.addAll(right.outputs());
+    ReconcileCapturePolicy.DefaultColumnScope defaultScope =
+        broaderDefaultScope(left.defaultColumnScope(), right.defaultColumnScope());
+    int maxDefaultColumns = Math.max(left.maxDefaultColumns(), right.maxDefaultColumns());
     List<ReconcileScope.ScopedCaptureRequest> requests =
         java.util.stream.Stream.concat(
                 current.destinationCaptureRequests().stream(),
@@ -904,8 +907,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         ReconcileCapturePolicy.of(
             List.copyOf(columns.values()),
             outputs,
-            left.defaultColumnScope(),
-            left.maxDefaultColumns(),
+            defaultScope,
+            maxDefaultColumns,
             left.properties());
     definition.destinationCaptureRequests = requests;
     definition.capturePolicyColumns = merged.columns();
@@ -913,6 +916,20 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     definition.capturePolicyDefaultColumnScope = merged.defaultColumnScope().name();
     definition.capturePolicyMaxDefaultColumns = merged.maxDefaultColumns();
     definition.capturePolicyProperties = merged.properties();
+  }
+
+  private static ReconcileCapturePolicy.DefaultColumnScope broaderDefaultScope(
+      ReconcileCapturePolicy.DefaultColumnScope left,
+      ReconcileCapturePolicy.DefaultColumnScope right) {
+    if (left == ReconcileCapturePolicy.DefaultColumnScope.ALL
+        || right == ReconcileCapturePolicy.DefaultColumnScope.ALL) {
+      return ReconcileCapturePolicy.DefaultColumnScope.ALL;
+    }
+    if (left == ReconcileCapturePolicy.DefaultColumnScope.FIRST_N
+        || right == ReconcileCapturePolicy.DefaultColumnScope.FIRST_N) {
+      return ReconcileCapturePolicy.DefaultColumnScope.FIRST_N;
+    }
+    return ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
   }
 
   private static void replaceCaptureDefinition(

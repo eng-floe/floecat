@@ -190,13 +190,21 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       List<TargetStatsRecord> partials = new ArrayList<>();
       List<StatsObjectDescriptor> fileStats = new ArrayList<>();
       List<StatsObjectDescriptor> indexArtifacts = new ArrayList<>();
+      Set<String> realizedStatsSelectors = new java.util.TreeSet<>();
       Set<String> realizedIndexSelectors = new java.util.TreeSet<>();
+      Set<String> resolvedDefaultStatsSelectors = null;
       Set<String> resolvedDefaultIndexSelectors = null;
       ReconcileCapturePolicy capturePolicy =
           lease.scope == null ? ReconcileCapturePolicy.empty() : lease.scope.capturePolicy();
       boolean defaultIndexSelection =
           capturePolicy.requestsIndexes()
               && capturePolicy.selectorsForIndex().isEmpty()
+              && capturePolicy.defaultColumnScope()
+                  != ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
+      boolean defaultStatsSelection =
+          capturePolicy.outputs().contains(ReconcileCapturePolicy.Output.COLUMN_STATS)
+              && capturePolicy.columns().stream()
+                  .noneMatch(ReconcileCapturePolicy.Column::captureStats)
               && capturePolicy.defaultColumnScope()
                   != ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY;
       for (ReconcileFileGroupResultDescriptor descriptor : descriptors) {
@@ -210,6 +218,15 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         partials.addAll(artifacts.partialAggregates());
         fileStats.addAll(artifacts.fileStats());
         indexArtifacts.addAll(artifacts.indexArtifacts());
+        if (defaultStatsSelection) {
+          Set<String> groupSelectors = Set.copyOf(artifacts.realizedStatsSelectors());
+          if (resolvedDefaultStatsSelectors == null) {
+            resolvedDefaultStatsSelectors = groupSelectors;
+          } else if (!resolvedDefaultStatsSelectors.equals(groupSelectors)) {
+            throw new IllegalArgumentException(
+                "snapshot file groups report inconsistent resolved default stats selectors");
+          }
+        }
         if (defaultIndexSelection) {
           Set<String> groupSelectors = Set.copyOf(artifacts.realizedIndexSelectors());
           if (resolvedDefaultIndexSelectors == null) {
@@ -220,6 +237,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
           }
         }
         realizedIndexSelectors.addAll(artifacts.realizedIndexSelectors());
+        realizedStatsSelectors.addAll(artifacts.realizedStatsSelectors());
       }
       Set<FloecatConnector.StatsTargetKind> aggregateKinds = requestedAggregateKinds(lease);
       List<TargetStatsRecord> finalStats =
@@ -242,6 +260,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
               fileStats,
               finalStats,
               indexArtifacts,
+              List.copyOf(realizedStatsSelectors),
               List.copyOf(realizedIndexSelectors),
               input.indexPredecessor());
       if (context.shouldStop().getAsBoolean()) {
@@ -393,6 +412,13 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
             .distinct()
             .sorted()
             .toList();
+    List<String> realizedStatsSelectors =
+        payload.getRealizedStatsSelectorsList().stream()
+            .filter(selector -> selector != null && !selector.isBlank())
+            .map(String::trim)
+            .distinct()
+            .sorted()
+            .toList();
     if (capturePolicy.requestsIndexes() && realizedIndexSelectors.isEmpty()) {
       throw new IllegalArgumentException(
           "snapshot file-group result does not report realized index selectors");
@@ -476,6 +502,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
         payload.getPartialAggregateRecordsList(),
         fileStatsObjects,
         payload.getIndexArtifactsList(),
+        realizedStatsSelectors,
         realizedIndexSelectors);
   }
 
@@ -664,5 +691,6 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
       List<TargetStatsRecord> partialAggregates,
       List<StatsObjectDescriptor> fileStats,
       List<StatsObjectDescriptor> indexArtifacts,
+      List<String> realizedStatsSelectors,
       List<String> realizedIndexSelectors) {}
 }

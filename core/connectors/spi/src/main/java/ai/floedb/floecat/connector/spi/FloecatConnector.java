@@ -330,31 +330,59 @@ public interface FloecatConnector extends Closeable {
   }
 
   record FileGroupCaptureResult(
-      List<TargetStatsRecord> statsRecords, List<ParquetPageIndexEntry> pageIndexEntries) {
+      List<TargetStatsRecord> statsRecords,
+      List<ParquetPageIndexEntry> pageIndexEntries,
+      List<String> realizedStatsSelectors) {
     public FileGroupCaptureResult {
       statsRecords = statsRecords == null ? List.of() : List.copyOf(statsRecords);
       pageIndexEntries = pageIndexEntries == null ? List.of() : List.copyOf(pageIndexEntries);
+      realizedStatsSelectors =
+          realizedStatsSelectors == null
+              ? List.of()
+              : realizedStatsSelectors.stream()
+                  .filter(selector -> selector != null && !selector.isBlank())
+                  .map(String::trim)
+                  .distinct()
+                  .sorted()
+                  .toList();
     }
 
     public static FileGroupCaptureResult of(
         List<TargetStatsRecord> statsRecords, List<ParquetPageIndexEntry> pageIndexEntries) {
-      return new FileGroupCaptureResult(statsRecords, pageIndexEntries);
+      return new FileGroupCaptureResult(statsRecords, pageIndexEntries, List.of());
+    }
+
+    public static FileGroupCaptureResult of(
+        List<TargetStatsRecord> statsRecords,
+        List<ParquetPageIndexEntry> pageIndexEntries,
+        List<String> realizedStatsSelectors) {
+      return new FileGroupCaptureResult(statsRecords, pageIndexEntries, realizedStatsSelectors);
     }
 
     public static FileGroupCaptureResult empty() {
-      return new FileGroupCaptureResult(List.of(), List.of());
+      return new FileGroupCaptureResult(List.of(), List.of(), List.of());
     }
   }
 
-  record DirectSnapshotStatsCapture(List<TargetStatsRecord> records, int sourceFileCount) {
+  record DirectSnapshotStatsCapture(
+      List<TargetStatsRecord> records, int sourceFileCount, List<String> realizedStatsSelectors) {
     public DirectSnapshotStatsCapture {
       records = records == null ? List.of() : List.copyOf(records);
       sourceFileCount = Math.max(0, sourceFileCount);
+      realizedStatsSelectors =
+          realizedStatsSelectors == null
+              ? List.of()
+              : realizedStatsSelectors.stream()
+                  .filter(selector -> selector != null && !selector.isBlank())
+                  .map(String::trim)
+                  .distinct()
+                  .sorted()
+                  .toList();
     }
 
     public static DirectSnapshotStatsCapture of(
-        List<TargetStatsRecord> records, int sourceFileCount) {
-      return new DirectSnapshotStatsCapture(records, sourceFileCount);
+        List<TargetStatsRecord> records, int sourceFileCount, List<String> realizedStatsSelectors) {
+      return new DirectSnapshotStatsCapture(records, sourceFileCount, realizedStatsSelectors);
     }
   }
 

@@ -134,7 +134,11 @@ public class RemoteFileGroupReconcileExecutor implements ReconcileExecutor {
       String successResultId = successResultId(lease, payload);
       var result =
           new StandaloneFileGroupExecutionResult(
-              successResultId, captured.statsRecords(), fileStats, captured.stagedIndexArtifacts());
+              successResultId,
+              captured.statsRecords(),
+              fileStats,
+              captured.stagedIndexArtifacts(),
+              captured.realizedStatsSelectors());
       if (payload.capturePageIndex() && captured.stagedIndexArtifacts().isEmpty()) {
         throw new IllegalStateException(
             "page-index capture produced no staged artifacts for file group " + payload.groupId());

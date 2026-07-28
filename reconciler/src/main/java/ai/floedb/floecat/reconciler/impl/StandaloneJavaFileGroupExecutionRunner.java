@@ -106,7 +106,8 @@ public class StandaloneJavaFileGroupExecutionRunner {
             });
     throwIfCancellationRequested(stop);
     stagedIndexArtifacts.addAll(capture.stagedIndexArtifacts());
-    return CaptureEngineResult.of(capture.statsRecords(), List.of(), stagedIndexArtifacts);
+    return CaptureEngineResult.of(
+        capture.statsRecords(), List.of(), stagedIndexArtifacts, capture.realizedStatsSelectors());
   }
 
   private static void throwIfCancellationRequested(BooleanSupplier shouldStop) {

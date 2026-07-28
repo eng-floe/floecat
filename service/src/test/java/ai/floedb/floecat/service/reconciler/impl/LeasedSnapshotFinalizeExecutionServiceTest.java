@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -67,6 +69,52 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class LeasedSnapshotFinalizeExecutionServiceTest {
+
+  @Test
+  void explicitIndexCaptureMayRealizeNoKnownSelectors() {
+    ReconcileScope scope =
+        ReconcileScope.of(
+            List.of(),
+            "",
+            "",
+            List.of(),
+            ReconcileCapturePolicy.of(
+                List.of(new ReconcileCapturePolicy.Column("#1", false, true)),
+                Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX),
+                ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+                32));
+    ReconcileJobStore.LeasedJob lease =
+        new ReconcileJobStore.LeasedJob(
+            FINALIZE_JOB_ID,
+            ACCOUNT_ID,
+            "connector",
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            ReconcileExecutionPolicy.defaults(),
+            LEASE_EPOCH,
+            "",
+            "");
+    SnapshotCaptureManifest manifest =
+        SnapshotCaptureManifest.newBuilder().setSourceFileCount(1).build();
+
+    assertDoesNotThrow(
+        () ->
+            LeasedSnapshotFinalizeExecutionService.validateRealizedIndexSelectors(lease, manifest));
+  }
+
+  @Test
+  void realizedColumnCountCountsNameAndFieldIdAliasesOnce() {
+    assertEquals(
+        2,
+        LeasedSnapshotFinalizeExecutionService.realizedColumnCount(
+            Set.of("#1", "#2", "customer_id", "customer_name")));
+    assertEquals(
+        2,
+        LeasedSnapshotFinalizeExecutionService.realizedColumnCount(
+            Set.of("customer_id", "customer_name")));
+  }
+
   private static final String ACCOUNT_ID = "acct";
   private static final String FINALIZE_JOB_ID = "finalize-job";
   private static final String LEASE_EPOCH = "lease-1";

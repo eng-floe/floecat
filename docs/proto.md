@@ -119,6 +119,10 @@ engine release.
   The root commit is the snapshot visibility point, so readers cannot observe the snapshot before
   both generations are active. Successful finalization clears protections; failed or cancelled
   full rescans delete the unpublished generation.
+  `FileGroupResultPayload.realized_stats_selectors` and `.realized_index_selectors` record the
+  concrete selector aliases materialized by each group. The finalizer aggregates them into the
+  corresponding `SnapshotCaptureManifest` fields so durable content state can satisfy later
+  requests expressed through an equivalent name, field ID, or narrower default selection.
   Index sidecar placement remains executor-controlled through `IndexArtifactRecord.artifact_uri`,
   but its serialized wrapper must be published beneath the leased `stats_object_prefix` as
   `index-artifacts/<sha256(target_storage_id)>/<payload_sha256>.pb`. Finalize manifests must repeat
