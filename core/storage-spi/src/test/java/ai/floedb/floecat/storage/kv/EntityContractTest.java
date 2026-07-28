@@ -191,11 +191,8 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
 
   @Test
   void fake_kv_delivers_increment_of_string_attr_as_a_failed_uni() {
-    // Pins the fake's failure delivery rather than any entity behaviour. Both real stores surface
-    // this as a failed Uni — InMemoryKvStore from a deferred supplier, DynamoDbKvStore from ADD's
-    // ValidationException — so a fake that threw synchronously would let a contract test which
-    // awaits the Uni pass here and fail in production. Nothing else exercises this override yet,
-    // which is exactly why the divergence could return unnoticed.
+    // Both real stores surface this as a failed Uni; a fake that threw synchronously would let a
+    // test that awaits the Uni pass here and fail in production.
     KvStore.Key key = key("pk", "sk-meta");
     kv.records.put(
         key,
@@ -488,46 +485,48 @@ public class EntityContractTest extends AbstractEntityTest<Pointer> {
         Key key, Map<String, AttrValue> sets, Map<String, Long> increments) {
       MetadataAttrUpdates.validate(key, sets, increments);
 
-      // Deferred (a supplier, unlike the eager item(...) used elsewhere in this fake) so that the
-      // non-numeric-increment failure below arrives as a failed Uni, the way InMemoryKvStore and
-      // DynamoDbKvStore both surface it, rather than as a synchronous throw a test awaiting the Uni
-      // would never catch. Argument validation above stays synchronous, matching them too.
-      return Uni.createFrom()
-          .item(
-              () -> {
-                Record existing = records.get(key);
-                if (existing == null || existing.value().length > 0) {
-                  return Optional.empty();
-                }
+      // Applied eagerly (a Uni can be subscribed more than once), with the failure delivered as a
+      // failed Uni rather than a synchronous throw — matching InMemoryKvStore.
+      Optional<Long> newVersion;
+      try {
+        newVersion = applyMetadataAttrUpdates(key, sets, increments);
+      } catch (RuntimeException failure) {
+        return Uni.createFrom().failure(failure);
+      }
+      return Uni.createFrom().item(newVersion);
+    }
 
-                var attrs = new HashMap<>(existing.attrs());
-                attrs.putAll(sets);
-                for (var increment : increments.entrySet()) {
-                  var name = increment.getKey();
-                  var current = attrs.get(name);
-                  // Rejected on the type, not on whether the text happens to parse — same rule as
-                  // InMemoryKvStore, because DynamoDB's ADD raises ValidationException for any
-                  // S-typed attribute, numeric-looking ones like "42" included. A laxer fake would
-                  // let an entity test pass here and fail in production.
-                  if (current != null && !(current instanceof AttrValue.NumberValue)) {
-                    throw new IllegalStateException(
-                        "cannot increment attr "
-                            + name
-                            + " on "
-                            + key
-                            + ": it currently holds a string value");
-                  }
-                  long base = current == null ? 0L : ((AttrValue.NumberValue) current).value();
-                  attrs.put(name, AttrValue.of(base + increment.getValue()));
-                }
+    private Optional<Long> applyMetadataAttrUpdates(
+        Key key, Map<String, AttrValue> sets, Map<String, Long> increments) {
+      Record existing = records.get(key);
+      if (existing == null || existing.value().length > 0) {
+        return Optional.empty();
+      }
 
-                long newVersion = existing.version() + 1;
-                records.put(
-                    key,
-                    new Record(
-                        existing.key(), existing.kind(), existing.value(), attrs, newVersion));
-                return Optional.of(newVersion);
-              });
+      var attrs = new HashMap<>(existing.attrs());
+      attrs.putAll(sets);
+      for (var increment : increments.entrySet()) {
+        var name = increment.getKey();
+        var current = attrs.get(name);
+        // Rejected on the type, not parseability: DynamoDB's ADD rejects any S-typed attribute,
+        // numeric-looking ones like "42" included.
+        if (current != null && !(current instanceof AttrValue.NumberValue)) {
+          throw new IllegalStateException(
+              "cannot increment attr "
+                  + name
+                  + " on "
+                  + key
+                  + ": it currently holds a string value");
+        }
+        long base = current == null ? 0L : ((AttrValue.NumberValue) current).value();
+        // addExact, not +: a wrapped sum would report success while storing a wildly wrong value.
+        attrs.put(name, AttrValue.of(Math.addExact(base, increment.getValue())));
+      }
+
+      long newVersion = existing.version() + 1;
+      records.put(
+          key, new Record(existing.key(), existing.kind(), existing.value(), attrs, newVersion));
+      return Optional.of(newVersion);
     }
 
     @Override
