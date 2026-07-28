@@ -93,6 +93,16 @@ class RecursiveResourceDropperTest {
   private static final long TABLE_POINTER_VERSION = 7L;
   private static final long ROOT_POINTER_VERSION = 3L;
 
+  /** The by-name index row the drop follows to reach the table; carries id and name, no blob. */
+  private static final Pointer TABLE_NAME_POINTER =
+      Pointer.newBuilder()
+          .setKey(Keys.tablePointerByName("acct", "cat", "ns", "orders"))
+          .setVersion(1L)
+          .setBlobUri(TABLE_BLOB)
+          .setResourceId(TABLE_ID)
+          .setDisplayName("orders")
+          .build();
+
   private NamespaceRepository namespaceRepo;
   private TableRepository tableRepo;
   private TableRootRepository tableRoots;
@@ -144,11 +154,11 @@ class RecursiveResourceDropperTest {
     // No descendants: dropNamespaceContents processes only the root's own relations.
     when(namespaceRepo.list(anyString(), anyString(), any(), anyInt(), anyString(), any()))
         .thenReturn(List.of());
-    // One table under the root, single page.
-    when(tableRepo.list(anyString(), anyString(), anyString(), anyInt(), anyString(), any()))
-        .thenReturn(List.of(table));
-    when(viewRepo.list(anyString(), anyString(), anyString(), anyInt(), anyString(), any()))
-        .thenReturn(List.of());
+    // One table under the root. Relations are enumerated through their by-name pointer rows, not
+    // their blobs, so a corrupt relation cannot break the listing itself.
+    when(tableRepo.listNamePointers(eq("acct"), eq("cat"), eq("ns")))
+        .thenReturn(List.of(TABLE_NAME_POINTER));
+    when(viewRepo.listNamePointers(anyString(), anyString(), anyString())).thenReturn(List.of());
 
     // The root pointer the guarded path pins its relation removals to.
     when(namespaceRepo.metaForSafe(any()))
@@ -265,21 +275,9 @@ class RecursiveResourceDropperTest {
    */
   @Test
   void guardedDropReclaimsAByNamePointerWhoseRelationIsAlreadyGone() {
-    String strandedKey = Keys.tablePointerByName("acct", "cat", "ns", "orders");
-    // Nothing resolvable is left to drop: the blob-loading listing sees no table...
-    when(tableRepo.list(anyString(), anyString(), anyString(), anyInt(), anyString(), any()))
-        .thenReturn(List.of());
-    // ...but the by-name pointer the gate counts is still there.
-    when(tableRepo.listNamePointers(eq("acct"), eq("cat"), eq("ns")))
-        .thenReturn(
-            List.of(
-                Pointer.newBuilder()
-                    .setKey(strandedKey)
-                    .setVersion(1L)
-                    .setBlobUri(TABLE_BLOB)
-                    .setResourceId(TABLE_ID)
-                    .setDisplayName("orders")
-                    .build()));
+    // The canonical pointer is gone, so nothing resolves the relation any more...
+    when(tableRepo.metaForSafe(eq(TABLE_ID))).thenReturn(meta("", 0L));
+    // ...but the by-name row the gate counts is still there.
     when(pointerStore.compareAndSetBatch(any())).thenReturn(true);
 
     var summary = dropper.dropNamespaceContents(root, true);
@@ -292,7 +290,7 @@ class RecursiveResourceDropperTest {
     assertEquals(
         List.<PointerStore.CasOp>of(
             new PointerStore.CasCheckAbsent(Keys.tablePointerById("acct", "tbl")),
-            new PointerStore.CasDelete(strandedKey, 1L)),
+            new PointerStore.CasDelete(TABLE_NAME_POINTER.getKey(), 1L)),
         batch.getValue());
     // Nothing was "deleted": there was no relation left, only its leftover index entry.
     assertEquals(0, summary.tablesDeleted);
@@ -302,27 +300,62 @@ class RecursiveResourceDropperTest {
 
   @Test
   void guardedDropLeavesAByNamePointerWhoseRelationStillExists() {
-    when(tableRepo.listNamePointers(eq("acct"), eq("cat"), eq("ns")))
-        .thenReturn(
-            List.of(
-                Pointer.newBuilder()
-                    .setKey(Keys.tablePointerByName("acct", "cat", "ns", "orders"))
-                    .setVersion(1L)
-                    .setBlobUri(TABLE_BLOB)
-                    .setResourceId(TABLE_ID)
-                    .setDisplayName("orders")
-                    .build()));
-    // The relation is alive, so its index entry is not leftover state and must not be touched.
-    when(pointerStore.get(eq(Keys.tablePointerById("acct", "tbl"))))
-        .thenReturn(
-            Optional.of(
-                Pointer.newBuilder().setKey("x").setVersion(TABLE_POINTER_VERSION).build()));
     when(tableRepo.deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any()))
         .thenReturn(true);
 
     var summary = dropper.dropNamespaceContents(root, true);
 
     assertEquals(1, summary.tablesDeleted);
+    verify(pointerStore, never()).compareAndSetBatch(any());
+  }
+
+  /**
+   * A corrupt relation blob must not wedge the subtree. Clearing damaged state is what a recursive
+   * delete is for, so an unparseable table is deleted on the evidence that survives — the by-name
+   * row that led here, and the canonical pointer version it is pinned to — rather than aborting the
+   * whole operation because the content cannot confirm the namespace it claims.
+   */
+  @Test
+  void guardedDropDeletesATableWhoseBlobCannotBeParsed() {
+    when(tableRepo.getByBlobUri(eq(TABLE_BLOB)))
+        .thenThrow(new BaseResourceRepository.CorruptionException("parse failed", null));
+    when(tableRepo.deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any()))
+        .thenReturn(true);
+    // The repository can only drop the canonical pointer for an unparseable resource, so the drop
+    // has to release the index rows itself.
+    when(tableRepo.metaForSafe(eq(TABLE_ID)))
+        .thenReturn(meta(TABLE_BLOB, TABLE_POINTER_VERSION), meta("", 0L));
+    when(pointerStore.compareAndSetBatch(any())).thenReturn(true);
+
+    var summary = dropper.dropNamespaceContents(root, true);
+
+    assertEquals(1, summary.tablesDeleted);
+    // Still pinned to the observed version, so a table reparented out of the subtree loses the CAS.
+    verify(tableRepo).deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any());
+    verify(tableRoots).purgeRoot(eq(TABLE_ID));
+    // ...and the by-name row the emptiness gate counts is released.
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<PointerStore.CasOp>> batch = ArgumentCaptor.forClass(List.class);
+    verify(pointerStore).compareAndSetBatch(batch.capture());
+    assertEquals(
+        List.<PointerStore.CasOp>of(
+            new PointerStore.CasCheckAbsent(Keys.tablePointerById("acct", "tbl")),
+            new PointerStore.CasDelete(TABLE_NAME_POINTER.getKey(), 1L)),
+        batch.getValue());
+  }
+
+  @Test
+  void guardedDropStillRefusesATableWhoseBlobIsReadableAndSaysAnotherNamespace() {
+    // The corrupt-blob tolerance above must not weaken the moved-out check when the blob CAN be
+    // read: a readable table that names another namespace is still refused.
+    when(tableRepo.getByBlobUri(eq(TABLE_BLOB)))
+        .thenReturn(Optional.of(table.toBuilder().setNamespaceId(OTHER_NS).build()));
+
+    assertThrows(
+        BaseResourceRepository.AbortRetryableException.class,
+        () -> dropper.dropNamespaceContents(root, true));
+
+    verify(tableRepo, never()).deleteWithPrecondition(any(), anyLong(), any());
     verify(pointerStore, never()).compareAndSetBatch(any());
   }
 

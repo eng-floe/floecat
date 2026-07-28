@@ -424,6 +424,56 @@ class BackendStorageIT {
   }
 
   /**
+   * A relation whose blob is present but unparseable must not wedge the subtree it lives in.
+   * Clearing damaged state is what a recursive delete is for, so it deletes the table on the
+   * evidence that survives — the by-name row that led to it and the canonical pointer version that
+   * row resolved — rather than failing the whole operation because the content cannot confirm the
+   * namespace it claims.
+   */
+  @Test
+  void recursiveNamespaceDeleteSucceedsWithAnUnparseableTableBlob() {
+    var cat = TestSupport.createCatalog(catalog, "cat_corrupt_" + clock.millis(), "corrupt");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "ns", List.of("db_corrupt"), "corrupt");
+    var tbl =
+        TestSupport.createTable(
+            table,
+            cat.getResourceId(),
+            ns.getResourceId(),
+            "t",
+            "s3://b/p",
+            "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
+            "d");
+    var tid = tbl.getResourceId();
+    String byId = Keys.tablePointerById(tid.getAccountId(), tid.getId());
+    String byName =
+        Keys.tablePointerByName(
+            tid.getAccountId(), cat.getResourceId().getId(), ns.getResourceId().getId(), "t");
+
+    // Corrupt in place: the pointer still resolves, but the bytes behind it no longer parse as a
+    // Table (field 31 / wire type 7 is not a valid tag).
+    String blobUri = ptr.get(byId).orElseThrow().getBlobUri();
+    blobs.put(
+        blobUri, new byte[] {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF}, "application/x-protobuf");
+
+    namespace.deleteNamespace(
+        DeleteNamespaceRequest.newBuilder()
+            .setNamespaceId(ns.getResourceId())
+            .setRecursive(true)
+            .build());
+
+    assertTrue(ptr.get(byId).isEmpty(), "the corrupt table's canonical pointer must be removed");
+    assertTrue(ptr.get(byName).isEmpty(), "its by-name row must be removed");
+    assertTrue(
+        ptr.get(
+                Keys.namespacePointerById(
+                    ns.getResourceId().getAccountId(), ns.getResourceId().getId()))
+            .isEmpty(),
+        "and the namespace itself must be deletable");
+  }
+
+  /**
    * A corrupt-blob delete removes the table's canonical pointer but leaves its by-name pointer, and
    * that row is what every emptiness check counts. Nothing can resolve the relation any more, so
    * without reconciling the leftover row the namespace would report NOT_EMPTY forever — neither a
