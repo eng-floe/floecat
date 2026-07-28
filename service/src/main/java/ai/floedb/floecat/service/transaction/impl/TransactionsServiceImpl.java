@@ -110,10 +110,15 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   private static final int APPLY_OPS_PER_PLAIN_INTENT = 3;
   // Canonical pointer, new by-name pointer, new relation claim, old by-name delete, old claim
   // delete, plus the two namespace-fence ops (pointer pin + children-marker advance) a table intent
-  // that publishes into a namespace carries. Estimated per intent even though intents sharing a
-  // namespace share one fence and connector intents carry none: the apply-time budget is checked
-  // against the real op count, so this must never under-count.
-  private static final int APPLY_OPS_PER_TABLE_OR_CONNECTOR_INTENT = 7;
+  // carries when it publishes into a namespace. Charged to every table intent even though intents
+  // sharing a namespace share one fence: apply checks the real op count, so this must not
+  // under-count.
+  private static final int APPLY_OPS_PER_TABLE_INTENT = 7;
+
+  // Connectors are account-scoped, never namespace children, so a connector intent carries no
+  // namespace fence. Charging it the table estimate would reject connector-heavy transactions at
+  // prepare time that fit comfortably under the real limit.
+  private static final int APPLY_OPS_PER_CONNECTOR_INTENT = 5;
   private static final int APPLY_OPS_FOR_TRANSACTION_FINALIZE = 1;
   private static final int TABLE_NAME_REPLAY_SCAN_PAGE_SIZE = 200;
   private static final String CAPTURE_STATISTICS_PROPERTY = "floecat.connector.capture-statistics";
@@ -627,10 +632,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       if (!seenTargets.add(pointerKey)) {
         throw new IllegalArgumentException("duplicate change for " + pointerKey);
       }
-      estimatedOps +=
-          isTableByIdPointer(pointerKey) || isConnectorByIdPointer(pointerKey)
-              ? APPLY_OPS_PER_TABLE_OR_CONNECTOR_INTENT
-              : APPLY_OPS_PER_PLAIN_INTENT;
+      estimatedOps += estimatedApplyOps(pointerKey);
       if (estimatedOps > MAX_POINTER_TXN_OPS) {
         throw new IllegalArgumentException(
             "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations");
@@ -1700,6 +1702,21 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     } catch (IllegalArgumentException e) {
       return false;
     }
+  }
+
+  /**
+   * Prepare-time upper bound on the pointer ops one intent contributes at apply. Used only as a
+   * pre-flight gate; apply re-checks against the real op count, so this must not under-count — but
+   * over-counting rejects transactions that would have fit, so each shape is charged its own cost.
+   */
+  private int estimatedApplyOps(String pointerKey) {
+    if (isTableByIdPointer(pointerKey)) {
+      return APPLY_OPS_PER_TABLE_INTENT;
+    }
+    if (isConnectorByIdPointer(pointerKey)) {
+      return APPLY_OPS_PER_CONNECTOR_INTENT;
+    }
+    return APPLY_OPS_PER_PLAIN_INTENT;
   }
 
   private boolean isTableByIdPointer(String pointerKey) {
