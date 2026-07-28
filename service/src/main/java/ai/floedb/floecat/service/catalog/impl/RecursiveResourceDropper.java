@@ -68,7 +68,20 @@ public class RecursiveResourceDropper {
 
   /** Drops all descendants of {@code root}, leaving the root namespace for its caller to delete. */
   public DropSummary dropNamespaceContents(Namespace root) {
-    return dropNamespaceContents(root, true);
+    return dropNamespaceContents(root, new DropSummary());
+  }
+
+  /**
+   * Guarded {@link #dropNamespaceContents(Namespace)} that accumulates into {@code summary} instead
+   * of returning a fresh one.
+   *
+   * <p>For callers that retry: this drop is irreversible but can abort part-way, and it can be
+   * re-entered after a concurrent child publish. Counting into a summary the caller owns means what
+   * an aborted attempt destroyed is still visible to the attempt that finally reports the outcome —
+   * a per-call summary would report only the last attempt, which sees an already-emptied subtree.
+   */
+  public DropSummary dropNamespaceContents(Namespace root, DropSummary summary) {
+    return dropNamespaceContents(root, true, summary);
   }
 
   /**
@@ -88,7 +101,10 @@ public class RecursiveResourceDropper {
    * immediate children.
    */
   public DropSummary dropNamespaceContents(Namespace root, boolean guarded) {
-    var summary = new DropSummary();
+    return dropNamespaceContents(root, guarded, new DropSummary());
+  }
+
+  private DropSummary dropNamespaceContents(Namespace root, boolean guarded, DropSummary summary) {
     var rootId = root.getResourceId();
     var rootPath = new ArrayList<>(root.getParentsList());
     rootPath.add(root.getDisplayName());
@@ -730,5 +746,12 @@ public class RecursiveResourceDropper {
     public int tablesDeleted;
     public int viewsDeleted;
     public int snapshotPrefixesDeleted;
+
+    /**
+     * Resources destroyed, for callers deciding whether a failed operation was still destructive.
+     */
+    public int total() {
+      return namespacesDeleted + tablesDeleted + viewsDeleted;
+    }
   }
 }

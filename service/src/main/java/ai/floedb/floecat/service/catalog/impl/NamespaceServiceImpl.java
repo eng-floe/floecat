@@ -518,6 +518,12 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   public Uni<DeleteNamespaceResponse> deleteNamespace(DeleteNamespaceRequest request) {
     var L = LogHelper.start(LOG, "DeleteNamespace");
 
+    // Destruction accumulated across every attempt of the retried body below. An attempt that drops
+    // most of the subtree and then aborts is still destruction the caller has to be told about, so
+    // this cannot live inside the lambda: a later attempt starting from a near-empty subtree would
+    // report near-zero counts for a subtree that is actually gone. Confined to this one call.
+    var destroyed = new RecursiveResourceDropper.DropSummary();
+
     // Recursive delete performs a large amount of blocking storage I/O and can raise
     // AbortRetryableException; runWithRetryOnWorker keeps the retry re-subscription off the Vert.x
     // event loop, where that blocking work would fail with "current thread cannot be blocked".
@@ -566,7 +572,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   long markerVersion = markerStore.namespaceMarkerVersion(namespaceId);
 
-                  RecursiveResourceDropper.DropSummary dropSummary = null;
                   if (request.getRecursive()) {
                     // Check the supplied condition before deleting descendants. The final delete
                     // below still uses the same condition to catch a concurrent root mutation.
@@ -579,7 +584,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           "namespace children changed before recursive delete: "
                               + namespaceId.getId());
                     }
-                    dropSummary = recursiveDropper.dropNamespaceContents(namespace);
+                    recursiveDropper.dropNamespaceContents(namespace, destroyed);
                     if (markerStore.namespaceMarkerVersion(namespaceId) != markerVersion + 1) {
                       throw new BaseResourceRepository.AbortRetryableException(
                           "namespace children changed during recursive delete: "
@@ -671,17 +676,14 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                         Map.of("display_name", pretty));
                   }
 
-                  if (request.getRecursive()
-                      && dropSummary != null
-                      && (dropSummary.namespacesDeleted
-                              + dropSummary.tablesDeleted
-                              + dropSummary.viewsDeleted)
-                          > 0) {
+                  if (request.getRecursive() && destroyed.total() > 0) {
                     // Descendants are already irreversibly gone. If the caller's precondition on
                     // the root no longer holds (a concurrent metadata bump, or a now-stale --etag),
                     // the final delete below would report a generic precondition failure that reads
                     // like a no-op. Surface the partial teardown with counts so callers can tell a
-                    // true no-op from a subtree that has actually been destroyed.
+                    // true no-op from a subtree that has actually been destroyed. The counts span
+                    // every attempt, so an earlier attempt's destruction is still reported when a
+                    // later one starts from an already-emptied subtree.
                     try {
                       MutationOps.BaseServiceChecks.enforcePreconditions(
                           correlationId,
@@ -693,11 +695,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           GeneratedErrorMessages.MessageKey.NAMESPACE_RECURSIVE_PARTIAL,
                           Map.of(
                               "deleted_namespaces",
-                              Integer.toString(dropSummary.namespacesDeleted),
+                              Integer.toString(destroyed.namespacesDeleted),
                               "deleted_tables",
-                              Integer.toString(dropSummary.tablesDeleted),
+                              Integer.toString(destroyed.tablesDeleted),
                               "deleted_views",
-                              Integer.toString(dropSummary.viewsDeleted)),
+                              Integer.toString(destroyed.viewsDeleted)),
                           pfe);
                     }
                   }
