@@ -352,6 +352,82 @@ class RecursiveResourceDropperTest {
    * followed, and every immediate-child probe counts that row. Skipping without reclaiming it
    * wedges the drop permanently: the parent reports a child nothing can resolve, let alone delete.
    */
+  /**
+   * A descendant whose canonical pointer is gone still owns its relations: they are keyed by
+   * namespace id, not by path, so they outlive that pointer. Releasing the by-path row without
+   * dropping them first strands them where nothing can reach them again — no emptiness gate counts
+   * them, and account teardown enumerates namespaces by that very row.
+   */
+  @Test
+  void guardedDropRemovesTheRelationsOfADescendantThatIsAlreadyGoneBeforeReleasingItsRow() {
+    var childId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("ns-child")
+            .setKind(ResourceKind.RK_NAMESPACE)
+            .build();
+    var childTableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("tbl-child")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    String childTableBlob = "blob://acct/tables/tbl-child/v1";
+    when(namespaceRepo.listRefsUnder(eq("acct"), eq("cat"), eq(List.of("ns"))))
+        .thenReturn(
+            List.of(
+                new TopologyGraph.NamespaceRef(childId, "child", CATALOG, List.of("ns", "child"))));
+    // The namespace is gone...
+    when(namespaceRepo.metaForSafe(eq(childId))).thenReturn(meta("", 0L));
+    // ...but it still owns a table, reachable only through its namespace id.
+    when(tableRepo.listNamePointers(eq("acct"), eq("cat"), eq("ns-child")))
+        .thenReturn(
+            List.of(
+                Pointer.newBuilder()
+                    .setKey(Keys.tablePointerByName("acct", "cat", "ns-child", "orders"))
+                    .setVersion(1L)
+                    .setBlobUri(childTableBlob)
+                    .setResourceId(childTableId)
+                    .setDisplayName("orders")
+                    .build()));
+    when(tableRepo.metaForSafe(eq(childTableId))).thenReturn(meta(childTableBlob, 4L));
+    when(tableRepo.getByBlobUri(eq(childTableBlob)))
+        .thenReturn(
+            Optional.of(
+                Table.newBuilder()
+                    .setResourceId(childTableId)
+                    .setCatalogId(CATALOG)
+                    .setNamespaceId(childId)
+                    .setDisplayName("orders")
+                    .build()));
+    when(tableRepo.deleteWithPrecondition(eq(childTableId), eq(4L), any())).thenReturn(true);
+    when(tableRepo.deleteWithPrecondition(eq(TABLE_ID), eq(TABLE_POINTER_VERSION), any()))
+        .thenReturn(true);
+    // The by-path row that is the namespace's only remaining handle, and gets released last.
+    String childByPath = Keys.namespacePointerByPath("acct", "cat", List.of("ns", "child"));
+    when(pointerStore.get(eq(childByPath)))
+        .thenReturn(
+            Optional.of(
+                Pointer.newBuilder()
+                    .setKey(childByPath)
+                    .setVersion(2L)
+                    .setResourceId(childId)
+                    .build()));
+    when(pointerStore.compareAndSetBatch(any())).thenReturn(true);
+
+    var summary = dropper.dropNamespaceContents(root, true);
+
+    // The orphan-to-be is destroyed, and its owned state with it.
+    assertEquals(2, summary.tablesDeleted);
+    verify(tableRepo).deleteWithPrecondition(eq(childTableId), eq(4L), any());
+    verify(tableRoots).purgeRoot(eq(childTableId));
+    // Order matters: the by-path row is the only handle left for finding this namespace, so it must
+    // not be released until its relations are gone.
+    var inOrder = org.mockito.Mockito.inOrder(tableRepo, pointerStore);
+    inOrder.verify(tableRepo).deleteWithPrecondition(eq(childTableId), eq(4L), any());
+    inOrder.verify(pointerStore).compareAndSetBatch(any());
+  }
+
   @Test
   void guardedDropReclaimsTheByPathRowOfADescendantThatIsAlreadyGone() {
     var childId =

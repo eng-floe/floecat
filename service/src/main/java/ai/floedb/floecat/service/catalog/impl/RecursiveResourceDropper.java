@@ -206,11 +206,19 @@ public class RecursiveResourceDropper {
     if (pinned.isEmpty()) {
       // The namespace itself is gone, but the by-path row this walk followed is not — a concurrent
       // delete that could only remove the canonical pointer leaves exactly that. Every
-      // immediate-child probe counts that row, so leaving it here wedges the drop for good: the
-      // parent reports a child that cannot be resolved, let alone deleted.
+      // immediate-child probe counts that row, so leaving it wedges the drop for good: the parent
+      // reports a child that cannot be resolved, let alone deleted.
       CLEANUP_LOG.infof(
           "recursive_drop_namespace_skipped_absent account_id=%s namespace_id=%s",
           namespaceId.getAccountId(), namespaceId.getId());
+      // Its relations do NOT go with it: they are keyed by namespace id, not by path, so they
+      // outlive the namespace's own pointer. Drop them first and release the by-path row only
+      // afterwards — that row is the only handle any later scan has for reaching this namespace, so
+      // releasing it while tables remain would strand them where no emptiness gate and no teardown
+      // sweep can ever walk to them again. Nothing survives to pin against, so removals rest on
+      // each
+      // relation's own canonical version, which still fails a CAS for anything reparented out.
+      dropNamespaceRelations(namespace, summary, true, BatchGuard.NONE);
       reclaimStrandedNamespacePath(namespace);
       return;
     }

@@ -262,6 +262,13 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
   @Override
   public Uni<DeleteStorageAuthorityResponse> deleteStorageAuthority(
       DeleteStorageAuthorityRequest request) {
+    // Retried, like every other delete that goes through MutationOps.deleteWithPreconditions: a
+    // lost
+    // pointer CAS on a resource that still exists is reported as retryable, and under plain run()
+    // that
+    // escapes to the caller as ABORTED while skipping the secret removal below. Safe to re-run —
+    // the
+    // delete is idempotent once the pointer is gone, and so is the secret delete.
     return mapFailures(
         runWithRetry(
             () -> {
