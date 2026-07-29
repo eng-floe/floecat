@@ -84,11 +84,14 @@ class BoundedFanoutTest {
   void refillsPermitsWhileTheFirstResultIsBlocked() throws Exception {
     CountDownLatch firstStarted = new CountDownLatch(1);
     CountDownLatch laterItemStarted = new CountDownLatch(1);
+    CountDownLatch allItemsSubmitted = new CountDownLatch(1);
     CountDownLatch releaseFirst = new CountDownLatch(1);
     AtomicInteger submissions = new AtomicInteger();
     Executor countingExecutor =
         command -> {
-          submissions.incrementAndGet();
+          if (submissions.incrementAndGet() == 100) {
+            allItemsSubmitted.countDown();
+          }
           CompletableFuture.runAsync(command);
         };
 
@@ -117,6 +120,7 @@ class BoundedFanoutTest {
     assertThat(firstStarted.await(1, TimeUnit.SECONDS)).isTrue();
     assertThat(laterItemStarted.await(1, TimeUnit.SECONDS)).isTrue();
     try {
+      assertThat(allItemsSubmitted.await(1, TimeUnit.SECONDS)).isTrue();
       assertThat(submissions.get()).isEqualTo(100);
     } finally {
       releaseFirst.countDown();

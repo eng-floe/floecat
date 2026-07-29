@@ -1621,6 +1621,10 @@ public class UserObjectBundleService {
     private final PhaseDiagnostics diagnostics = diagnostics("get_user_objects");
     private final long streamStartNs = System.nanoTime();
     private final Span parentSpan = Span.current();
+    // Coordinates the resolving-root handoff. Cancellation can arrive on a different thread than
+    // chunk production, so it must neither release pins being committed nor miss pins accumulated
+    // after its cleanup pass.
+    private final Object pendingChunkPinsLock = new Object();
     private RelationPinSet pendingChunkPins = RelationPinSet.getDefaultInstance();
 
     private int seq = 1;
@@ -1752,8 +1756,7 @@ public class UserObjectBundleService {
             throwIfCancelled(this::isCancelled);
             long accumulateStartNs = System.nanoTime();
             try {
-              accumulateChunkPins(chunkPins);
-              pinsAccumulated = true;
+              pinsAccumulated = accumulateChunkPins(chunkPins);
             } finally {
               diagnostics.nanos("pin.accumulate", System.nanoTime() - accumulateStartNs);
             }
@@ -1775,8 +1778,11 @@ public class UserObjectBundleService {
 
     private void cancel() {
       if (cancelled.compareAndSet(false, true)) {
-        RelationPinSet toRelease = pendingChunkPins;
-        pendingChunkPins = RelationPinSet.getDefaultInstance();
+        RelationPinSet toRelease;
+        synchronized (pendingChunkPinsLock) {
+          toRelease = pendingChunkPins;
+          pendingChunkPins = RelationPinSet.getDefaultInstance();
+        }
         queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toRelease));
         publishStreamTelemetry("cancelled");
       }
@@ -1928,7 +1934,7 @@ public class UserObjectBundleService {
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
             "Flushing resolution chunk query_id=%s seq=%d pending_items=%d pending_pins=%d",
-            ctx.getQueryId(), seq, chunkItems.size(), pendingChunkPins.getPinsCount());
+            ctx.getQueryId(), seq, chunkItems.size(), pendingChunkPinCount());
       }
       // Ensure pins are durable before accessing stats (which expect the QueryContext to be
       // pinned).
@@ -2329,44 +2335,61 @@ public class UserObjectBundleService {
     }
 
     // Track every pin that must be durable before the next chunk is emitted.
-    private void accumulateChunkPins(RelationPinSet incomingPins) {
+    private boolean accumulateChunkPins(RelationPinSet incomingPins) {
       if (incomingPins == null || incomingPins.getPinsCount() == 0) {
-        return;
+        return true;
       }
-      pendingChunkPins = QueryPins.mergeSets(pendingChunkPins, incomingPins, correlationId);
+      synchronized (pendingChunkPinsLock) {
+        if (isCancelled()) {
+          return false;
+        }
+        pendingChunkPins = QueryPins.mergeSets(pendingChunkPins, incomingPins, correlationId);
+        return true;
+      }
     }
 
     private void commitChunkPins() {
-      if (pendingChunkPins.getPinsCount() == 0) {
-        return;
-      }
-      if (LOG.isDebugEnabled()) {
-        LOG.debugf(
-            "Committing chunk pins query_id=%s pin_count=%d",
-            ctx.getQueryId(), pendingChunkPins.getPinsCount());
-      }
-      RelationPinSet toCommit = pendingChunkPins;
-      // The resolver registered these pins' blobs as transient GC roots at resolution, so they are
-      // protected across the collect→commit window; this update makes the context a durable root.
-      Optional<QueryContext> updated;
-      try {
-        updated =
-            queryStore.update(
-                ctx.getQueryId(), existing -> mergeRelationPins(existing, toCommit, correlationId));
-      } catch (RuntimeException | Error e) {
-        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
-        throw e;
-      }
-      pendingChunkPins = RelationPinSet.getDefaultInstance();
-      if (updated.isEmpty()) {
-        queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
-        LOG.warnf(
-            "Failed to commit chunk pins query_id=%s query context missing", ctx.getQueryId());
-        throw GrpcErrors.notFound(
-            correlationId, QUERY_NOT_FOUND, Map.of("query_id", ctx.getQueryId()));
+      synchronized (pendingChunkPinsLock) {
+        throwIfCancelled(this::isCancelled);
+        if (pendingChunkPins.getPinsCount() == 0) {
+          return;
+        }
+        if (LOG.isDebugEnabled()) {
+          LOG.debugf(
+              "Committing chunk pins query_id=%s pin_count=%d",
+              ctx.getQueryId(), pendingChunkPins.getPinsCount());
+        }
+        RelationPinSet toCommit = pendingChunkPins;
+        // Keep the cancellation cleanup out of this handoff until update establishes the durable
+        // query-context root. Otherwise a concurrent cancel could reopen the blob-GC window.
+        Optional<QueryContext> updated;
+        try {
+          updated =
+              queryStore.update(
+                  ctx.getQueryId(),
+                  existing -> mergeRelationPins(existing, toCommit, correlationId));
+        } catch (RuntimeException | Error e) {
+          pendingChunkPins = RelationPinSet.getDefaultInstance();
+          queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
+          throw e;
+        }
+        pendingChunkPins = RelationPinSet.getDefaultInstance();
+        if (updated.isEmpty()) {
+          queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
+          LOG.warnf(
+              "Failed to commit chunk pins query_id=%s query context missing", ctx.getQueryId());
+          throw GrpcErrors.notFound(
+              correlationId, QUERY_NOT_FOUND, Map.of("query_id", ctx.getQueryId()));
+        }
       }
       if (LOG.isDebugEnabled()) {
         LOG.debugf("Committed chunk pins query_id=%s", ctx.getQueryId());
+      }
+    }
+
+    private int pendingChunkPinCount() {
+      synchronized (pendingChunkPinsLock) {
+        return pendingChunkPins.getPinsCount();
       }
     }
   }

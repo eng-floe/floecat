@@ -52,6 +52,8 @@ class PropagatedContextTest {
     // A single-thread pool that never saw the request: its thread-locals are empty until supply()
     // re-establishes them, so a wrong read here would be the real regression.
     ExecutorService foreign = Executors.newSingleThreadExecutor();
+    MDC.put("floecat_component", "query-resolver");
+    MDC.put("floecat_operation", "resolve-inputs");
     try {
       String engineKind =
           ResolvedCallContexts.callWith(
@@ -69,6 +71,10 @@ class PropagatedContextTest {
                                   // carry the request's ids too.
                                   assertThat(MDC.get("floecat_engine_kind")).isEqualTo("duckdb");
                                   assertThat(MDC.get("correlation_id")).isEqualTo("corr-1");
+                                  assertThat(MDC.get("floecat_component"))
+                                      .isEqualTo("query-resolver");
+                                  assertThat(MDC.get("floecat_operation"))
+                                      .isEqualTo("resolve-inputs");
                                   return seen.engineContext().engineKind();
                                 }))
                     .get();
@@ -76,6 +82,8 @@ class PropagatedContextTest {
       assertThat(engineKind).isEqualTo("duckdb");
     } finally {
       foreign.shutdownNow();
+      MDC.remove("floecat_component");
+      MDC.remove("floecat_operation");
     }
   }
 

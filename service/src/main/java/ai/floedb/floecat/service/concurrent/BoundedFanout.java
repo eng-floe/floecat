@@ -33,7 +33,12 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
-/** Runs independent, mostly-blocking tasks on a shared executor with a concurrency bound. */
+/**
+ * Runs independent, mostly-blocking tasks with a concurrency bound.
+ *
+ * <p>All items are submitted immediately and wait on the internal semaphore, so callers must use an
+ * executor that can queue the full input set without rejecting or starving runnable tasks.
+ */
 public final class BoundedFanout {
 
   private static final long CANCELLATION_POLL_MILLIS = 10;

@@ -51,18 +51,23 @@ public final class PropagatedContext {
           "floecat_subject",
           "floecat_engine_kind",
           "floecat_engine_version");
+  private static final List<String> SOURCE_MDC_DIMENSIONS =
+      List.of("floecat_component", "floecat_operation");
 
   private final Context otel;
   private final ResolvedCallContext call; // null off any request (e.g. unit tests, startup)
+  private final Map<String, Object> sourceMdc;
 
-  private PropagatedContext(Context otel, ResolvedCallContext call) {
+  private PropagatedContext(Context otel, ResolvedCallContext call, Map<String, Object> sourceMdc) {
     this.otel = otel;
     this.call = call;
+    this.sourceMdc = sourceMdc;
   }
 
   /** Snapshot the calling thread's ambient context. Call on the request/driver thread. */
   public static PropagatedContext capture() {
-    return new PropagatedContext(Context.current(), ResolvedCallContexts.currentOrNull());
+    return new PropagatedContext(
+        Context.current(), ResolvedCallContexts.currentOrNull(), snapshotMdc());
   }
 
   /**
@@ -73,23 +78,24 @@ public final class PropagatedContext {
    */
   public <T> T supply(Supplier<T> body) {
     try (Scope ignored = otel.makeCurrent()) {
-      if (call == null) {
-        return body.get();
-      }
-      return ResolvedCallContexts.callWith(
-          call,
-          () -> {
-            // MDC is a projection of the call context; re-derive it so off-thread log lines carry
-            // the request's ids, then restore the worker's prior values for nested scopes and
-            // executors that already propagate MDC.
-            Map<String, Object> priorMdc = snapshotMdc();
-            InboundContextInterceptor.populateMdc(call);
-            try {
+      Map<String, Object> priorMdc = snapshotMdc();
+      installMdc(sourceMdc);
+      try {
+        if (call == null) {
+          return body.get();
+        }
+        return ResolvedCallContexts.callWith(
+            call,
+            () -> {
+              // Call-derived identifiers are canonical, while the source component and operation
+              // describe the work that dispatched this fan-out rather than the inbound RPC.
+              InboundContextInterceptor.populateMdc(call);
+              installMdc(sourceMdc, SOURCE_MDC_DIMENSIONS);
               return body.get();
-            } finally {
-              restoreMdc(priorMdc);
-            }
-          });
+            });
+      } finally {
+        restoreMdc(priorMdc);
+      }
     }
   }
 
@@ -116,6 +122,21 @@ public final class PropagatedContext {
   private static void restoreMdc(Map<String, Object> priorMdc) {
     for (String key : MDC_KEYS) {
       Object value = priorMdc.get(key);
+      if (value == null) {
+        MDC.remove(key);
+      } else {
+        MDC.put(key, value);
+      }
+    }
+  }
+
+  private static void installMdc(Map<String, Object> sourceMdc) {
+    installMdc(sourceMdc, MDC_KEYS);
+  }
+
+  private static void installMdc(Map<String, Object> sourceMdc, List<String> keys) {
+    for (String key : keys) {
+      Object value = sourceMdc.get(key);
       if (value == null) {
         MDC.remove(key);
       } else {
