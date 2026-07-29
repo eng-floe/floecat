@@ -2146,12 +2146,18 @@ field  ::= name &quot;:&quot; type
 <p>e.g. <code>ARRAY&lt;INT&gt;</code>, <code>MAP&lt;STRING, DOUBLE&gt;</code>, <code>ARRAY&lt;STRUCT&lt;sku: STRING, quantities: ARRAY&lt;INT&gt;&gt;&gt;</code>.
 Struct field names are case-preserved; names that are not simple identifiers are double-quoted
 with <code>""</code> escaping. Nullability is not part of the grammar (parsing defaults to nullable).</p>
-<p>On the wire, <code>SchemaColumn.logical_type</code> keeps the flat container tag (<code>ARRAY</code>, <code>MAP</code>, <code>STRUCT</code>)
-for legacy consumers, and <code>SchemaColumn.logical_type_full</code> carries the full grammar string for
-complex columns (empty for scalars and legacy producers). Struct fields additionally surface as
-child <code>SchemaColumn</code> rows with their own paths (e.g. <code>address.city</code>, <code>items[].sku</code>, <code>tags{}.v</code>) —
-those rows drive per-leaf stats and field-ID mapping, while <code>logical_type_full</code> is the
-authoritative carrier of the complete nested type.</p>
+<p>On the wire, <code>SchemaColumn.type</code> is the single authoritative semantic type: a recursive
+<code>floecat.types.LogicalType</code> message that preserves the full nested shape <em>including</em>
+element/value/field nullability, which the string grammar cannot carry. (The former flat
+<code>logical_type</code> string field is reserved; persisted columns written before the change must be
+re-reconciled from upstream metadata.) <code>LogicalTypeProtoAdapter.toProto</code>/<code>fromProto</code> convert
+between the JVM model and the wire message; the string grammar remains for textual inputs
+(generic schema declarations), docs, and debugging via <code>LogicalTypeFormat</code>.</p>
+<p>Nested fields additionally surface as child <code>SchemaColumn</code> rows with their own canonical paths —
+struct children as <code>parent.child</code>, list elements as <code>parent[]</code>, map keys as <code>parent.key</code>, map
+values as <code>parent{}</code> (e.g. <code>address.city</code>, <code>items[].sku</code>, <code>tags{}.v</code>). Schema construction and
+the stats-side fieldId→path maps share one traversal, so the schema path set and the stats path
+set are identical by construction; the child rows drive per-leaf stats and field-ID mapping.</p>
 <h2 id="architecture-responsibilities">Architecture &amp; Responsibilities<a class="headerlink" href="#architecture-responsibilities" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong><code>LogicalType</code> / <code>LogicalKind</code></strong> – Immutable representations of logical types. <code>LogicalType</code>
