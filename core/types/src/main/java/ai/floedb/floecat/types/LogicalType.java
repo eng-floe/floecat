@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.types;
 
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -37,6 +38,13 @@ import java.util.Objects;
  * LogicalKind#STRUCT}, {@link LogicalKind#VARIANT}) carry no meaningful min/max statistics. Use
  * {@link #isComplex()} to detect them before attempting stat coercions.
  *
+ * <p><b>Nested structure:</b> ARRAY, MAP, and STRUCT may carry a recursive type tree — {@link
+ * #element()} (+ {@link #elementNullable()}) for ARRAY, {@link #key()}/{@link #value()} (+ {@link
+ * #valueNullable()}) for MAP, and {@link #fields()} for STRUCT. A complex type without a tree
+ * (created via {@link #of(LogicalKind)}) is legal and represents the legacy non-parameterised
+ * container tag; {@link #hasTypeTree()} distinguishes the two. VARIANT is self-describing and never
+ * carries a tree.
+ *
  * <p>Factory methods:
  *
  * <ul>
@@ -45,9 +53,13 @@ import java.util.Objects;
  *   <li>{@link #interval(IntervalRange, Integer, Integer)} — for INTERVAL with optional range and
  *       precisions
  *   <li>{@link #decimal(int, int)} — for DECIMAL
+ *   <li>{@link #array(LogicalType, boolean)} — for ARRAY with a known element type
+ *   <li>{@link #map(LogicalType, LogicalType, boolean)} — for MAP with known key/value types
+ *   <li>{@link #struct(List)} — for STRUCT with known fields
  * </ul>
  *
  * @see LogicalKind
+ * @see LogicalField
  */
 public final class LogicalType {
   public static final int DEFAULT_TEMPORAL_PRECISION = 6;
@@ -61,6 +73,14 @@ public final class LogicalType {
   public final Integer intervalLeadingPrecision;
   public final Integer intervalFractionalPrecision;
 
+  // Nested type tree (null on non-parameterised complex types and all scalar kinds).
+  public final LogicalType element;
+  public final Boolean elementNullable;
+  public final LogicalType key;
+  public final LogicalType value;
+  public final Boolean valueNullable;
+  public final List<LogicalField> fields;
+
   private LogicalType(
       LogicalKind kind,
       Integer precision,
@@ -69,7 +89,61 @@ public final class LogicalType {
       IntervalRange intervalRange,
       Integer intervalLeadingPrecision,
       Integer intervalFractionalPrecision) {
+    this(
+        kind,
+        precision,
+        scale,
+        temporalPrecision,
+        intervalRange,
+        intervalLeadingPrecision,
+        intervalFractionalPrecision,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null);
+  }
+
+  private LogicalType(
+      LogicalKind kind,
+      Integer precision,
+      Integer scale,
+      Integer temporalPrecision,
+      IntervalRange intervalRange,
+      Integer intervalLeadingPrecision,
+      Integer intervalFractionalPrecision,
+      LogicalType element,
+      Boolean elementNullable,
+      LogicalType key,
+      LogicalType value,
+      Boolean valueNullable,
+      List<LogicalField> fields) {
     this.kind = Objects.requireNonNull(kind, "kind");
+    if (element != null && kind != LogicalKind.ARRAY) {
+      throw new IllegalArgumentException("element type is only allowed for ARRAY, not " + kind);
+    }
+    if ((key != null || value != null) && kind != LogicalKind.MAP) {
+      throw new IllegalArgumentException("key/value types are only allowed for MAP, not " + kind);
+    }
+    if (fields != null && kind != LogicalKind.STRUCT) {
+      throw new IllegalArgumentException("struct fields are only allowed for STRUCT, not " + kind);
+    }
+    if ((element == null) != (elementNullable == null)) {
+      throw new IllegalArgumentException("element and elementNullable must be set together");
+    }
+    if ((key == null) != (value == null) || (value == null) != (valueNullable == null)) {
+      throw new IllegalArgumentException("key, value, and valueNullable must be set together");
+    }
+    if (fields != null && fields.isEmpty()) {
+      throw new IllegalArgumentException("STRUCT fields must not be empty when present");
+    }
+    this.element = element;
+    this.elementNullable = elementNullable;
+    this.key = key;
+    this.value = value;
+    this.valueNullable = valueNullable;
+    this.fields = fields == null ? null : List.copyOf(fields);
     IntervalRange normalizedIntervalRange = intervalRange;
     if (kind == LogicalKind.DECIMAL) {
       if (precision == null || scale == null || precision < 1 || scale < 0 || scale > precision) {
@@ -216,6 +290,92 @@ public final class LogicalType {
     return new LogicalType(LogicalKind.DECIMAL, precision, scale, null, null, null, null);
   }
 
+  /**
+   * Creates an ARRAY logical type with a known element type.
+   *
+   * @param element the element type (must not be null)
+   * @param elementNullable whether elements accept nulls
+   * @return a new parameterised ARRAY {@code LogicalType}
+   */
+  public static LogicalType array(LogicalType element, boolean elementNullable) {
+    Objects.requireNonNull(element, "element type");
+    return new LogicalType(
+        LogicalKind.ARRAY,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        element,
+        elementNullable,
+        null,
+        null,
+        null,
+        null);
+  }
+
+  /** Convenience overload for an ARRAY whose elements are nullable. */
+  public static LogicalType array(LogicalType element) {
+    return array(element, true);
+  }
+
+  /**
+   * Creates a MAP logical type with known key and value types. Map keys are always non-nullable.
+   *
+   * @param key the key type (must not be null)
+   * @param value the value type (must not be null)
+   * @param valueNullable whether values accept nulls
+   * @return a new parameterised MAP {@code LogicalType}
+   */
+  public static LogicalType map(LogicalType key, LogicalType value, boolean valueNullable) {
+    Objects.requireNonNull(key, "key type");
+    Objects.requireNonNull(value, "value type");
+    return new LogicalType(
+        LogicalKind.MAP,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        key,
+        value,
+        valueNullable,
+        null);
+  }
+
+  /** Convenience overload for a MAP whose values are nullable. */
+  public static LogicalType map(LogicalType key, LogicalType value) {
+    return map(key, value, true);
+  }
+
+  /**
+   * Creates a STRUCT logical type with known fields.
+   *
+   * @param fields the struct fields, in ordinal order (must be non-empty)
+   * @return a new parameterised STRUCT {@code LogicalType}
+   */
+  public static LogicalType struct(List<LogicalField> fields) {
+    Objects.requireNonNull(fields, "struct fields");
+    return new LogicalType(
+        LogicalKind.STRUCT,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        fields);
+  }
+
   public LogicalKind kind() {
     return kind;
   }
@@ -246,6 +406,44 @@ public final class LogicalType {
 
   public int temporalPrecisionOrDefault() {
     return temporalPrecision == null ? DEFAULT_TEMPORAL_PRECISION : temporalPrecision;
+  }
+
+  /** Element type of a parameterised ARRAY, or null. */
+  public LogicalType element() {
+    return element;
+  }
+
+  /** Element nullability of a parameterised ARRAY, or null when no element type is present. */
+  public Boolean elementNullable() {
+    return elementNullable;
+  }
+
+  /** Key type of a parameterised MAP, or null. */
+  public LogicalType key() {
+    return key;
+  }
+
+  /** Value type of a parameterised MAP, or null. */
+  public LogicalType value() {
+    return value;
+  }
+
+  /** Value nullability of a parameterised MAP, or null when no value type is present. */
+  public Boolean valueNullable() {
+    return valueNullable;
+  }
+
+  /** Fields of a parameterised STRUCT (in ordinal order), or null. */
+  public List<LogicalField> fields() {
+    return fields;
+  }
+
+  /**
+   * Returns true iff this type carries a nested type tree — a parameterised ARRAY, MAP, or STRUCT.
+   * Non-parameterised complex tags (legacy) and all scalar kinds return false.
+   */
+  public boolean hasTypeTree() {
+    return element != null || key != null || fields != null;
   }
 
   /** Returns true iff this is a DECIMAL type. */
@@ -294,7 +492,13 @@ public final class LogicalType {
         && Objects.equals(temporalPrecision, that.temporalPrecision)
         && intervalRange == that.intervalRange
         && Objects.equals(intervalLeadingPrecision, that.intervalLeadingPrecision)
-        && Objects.equals(intervalFractionalPrecision, that.intervalFractionalPrecision);
+        && Objects.equals(intervalFractionalPrecision, that.intervalFractionalPrecision)
+        && Objects.equals(element, that.element)
+        && Objects.equals(elementNullable, that.elementNullable)
+        && Objects.equals(key, that.key)
+        && Objects.equals(value, that.value)
+        && Objects.equals(valueNullable, that.valueNullable)
+        && Objects.equals(fields, that.fields);
   }
 
   @Override
@@ -306,6 +510,12 @@ public final class LogicalType {
         temporalPrecision,
         intervalRange,
         intervalLeadingPrecision,
-        intervalFractionalPrecision);
+        intervalFractionalPrecision,
+        element,
+        elementNullable,
+        key,
+        value,
+        valueNullable,
+        fields);
   }
 }
