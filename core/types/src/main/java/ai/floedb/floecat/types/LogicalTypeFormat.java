@@ -166,7 +166,7 @@ public final class LogicalTypeFormat {
    * without a cap a malformed deeply nested input would overflow the stack instead of failing with
    * the {@link IllegalArgumentException} callers handle.
    */
-  static final int MAX_NESTING_DEPTH = 64;
+  public static final int MAX_NESTING_DEPTH = 64;
 
   private static LogicalType parseScalar(String s) {
     String trimmed = s.trim();

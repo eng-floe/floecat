@@ -103,12 +103,22 @@ e.g. `ARRAY<INT>`, `MAP<STRING, DOUBLE>`, `ARRAY<STRUCT<sku: STRING, quantities:
 Struct field names are case-preserved; names that are not simple identifiers are double-quoted
 with `""` escaping. Nullability is not part of the grammar (parsing defaults to nullable).
 
-On the wire, `SchemaColumn.logical_type` keeps the flat container tag (`ARRAY`, `MAP`, `STRUCT`)
-for legacy consumers, and `SchemaColumn.logical_type_full` carries the full grammar string for
-complex columns (empty for scalars and legacy producers). Struct fields additionally surface as
-child `SchemaColumn` rows with their own paths (e.g. `address.city`, `items[].sku`, `tags{}.v`) —
-those rows drive per-leaf stats and field-ID mapping, while `logical_type_full` is the
-authoritative carrier of the complete nested type.
+On the wire, `SchemaColumn.type` is the single authoritative semantic type: a recursive
+`floecat.types.LogicalType` message that preserves the full nested shape *including*
+element/value/field nullability, which the string grammar cannot carry. (The former flat
+`logical_type` string field is reserved; persisted columns written before the change are
+re-reconciled from upstream metadata where an upstream exists, and view output columns with no
+upstream are upgraded transparently on load via
+`LogicalTypeProtoAdapter.upgradeLegacyColumn`, which recovers the legacy string from protobuf
+unknown fields.) `LogicalTypeProtoAdapter.toProto`/`fromProto` convert
+between the JVM model and the wire message; the string grammar remains for textual inputs
+(generic schema declarations), docs, and debugging via `LogicalTypeFormat`.
+
+Nested fields additionally surface as child `SchemaColumn` rows with their own canonical paths —
+struct children as `parent.child`, list elements as `parent[]`, map keys as `parent.key`, map
+values as `parent{}` (e.g. `address.city`, `items[].sku`, `tags{}.v`). Schema construction and
+the stats-side fieldId→path maps share one traversal, so the schema path set and the stats path
+set are identical by construction; the child rows drive per-leaf stats and field-ID mapping.
 
 ## Architecture & Responsibilities
 - **`LogicalType` / `LogicalKind`** – Immutable representations of logical types. `LogicalType`

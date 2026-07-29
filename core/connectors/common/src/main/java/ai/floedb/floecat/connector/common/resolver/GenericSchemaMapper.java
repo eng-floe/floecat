@@ -22,6 +22,7 @@ import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -90,9 +91,7 @@ final class GenericSchemaMapper {
                 cid_algo,
                 SchemaColumn.newBuilder()
                     .setName(name)
-                    .setLogicalType(LogicalTypeFormat.formatTag(logicalType))
-                    .setLogicalTypeFull(
-                        logicalType.hasTypeTree() ? LogicalTypeFormat.format(logicalType) : "")
+                    .setType(LogicalTypeProtoAdapter.toProto(logicalType))
                     .setFieldId(ordinal) // deterministic order
                     .setNullable(true) // assume nullable
                     .setPhysicalPath(name)

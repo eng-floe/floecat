@@ -19,7 +19,6 @@ package ai.floedb.floecat.connector.common.resolver;
 import ai.floedb.floecat.types.LogicalField;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
-import ai.floedb.floecat.types.LogicalTypeFormat;
 import java.util.List;
 import java.util.Objects;
 import org.apache.iceberg.types.Type;
@@ -66,7 +65,8 @@ public final class IcebergTypeMappings {
             t.asStructType().fields().stream()
                 .map(f -> new LogicalField(f.name(), f.isOptional(), toLogical(f.type())))
                 .toList();
-        yield fields.isEmpty() ? LogicalType.of(LogicalKind.STRUCT) : LogicalType.struct(fields);
+        // An explicitly empty source struct is a known-empty shape, not the legacy tag.
+        yield LogicalType.struct(fields);
       }
       case VARIANT -> LogicalType.of(LogicalKind.VARIANT);
       case DECIMAL -> {
@@ -78,11 +78,6 @@ public final class IcebergTypeMappings {
       }
       default -> throw new IllegalArgumentException("Unrecognized Iceberg type: " + t.typeId());
     };
-  }
-
-  /** Convert an Iceberg {@link Type} to its canonical logical-type string. */
-  public static String toCanonical(Type t) {
-    return LogicalTypeFormat.format(toLogical(t));
   }
 
   private static final int MAX_DECIMAL_PRECISION = 38;

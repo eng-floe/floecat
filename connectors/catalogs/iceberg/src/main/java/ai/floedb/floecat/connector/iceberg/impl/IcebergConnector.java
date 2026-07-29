@@ -40,6 +40,7 @@ import ai.floedb.floecat.connector.common.ndv.ParquetAvgWidthProvider;
 import ai.floedb.floecat.connector.common.ndv.ParquetNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.SamplingNdvProvider;
 import ai.floedb.floecat.connector.common.ndv.StaticOnceNdvProvider;
+import ai.floedb.floecat.connector.common.resolver.IcebergNestedPaths;
 import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.ConnectorNotReadyException;
@@ -1382,77 +1383,17 @@ public abstract class IcebergConnector implements FloecatConnector {
     Map<Integer, Integer> ordinalMap = new LinkedHashMap<>();
 
     if (schema != null) {
-      int i = 0;
-      for (Types.NestedField top : schema.columns()) {
-        i++;
-        collectNestedWithOrdinal(top, "", i, pathMap, ordinalMap);
-      }
+      // The traversal and path notation are shared with IcebergSchemaMapper via
+      // IcebergNestedPaths, so the stats-side path set always matches the schema's.
+      IcebergNestedPaths.walk(
+          schema,
+          (field, path, ordinal) -> {
+            pathMap.put(field.fieldId(), path);
+            ordinalMap.put(field.fieldId(), ordinal);
+          });
     }
 
     return new java.util.AbstractMap.SimpleImmutableEntry<>(pathMap, ordinalMap);
-  }
-
-  /**
-   * Traverses the Iceberg schema and records (fieldId -> physical path) and/or (fieldId ->
-   * ordinal).
-   *
-   * <p>Paths use the same canonical notation as IcebergSchemaMapper: struct children as
-   * "parent.child", list elements as "parent[]" (children of struct elements as "parent[].child"),
-   * and map values as "parent{}" ("parent{}.child"). Iceberg's synthetic "element"/"key"/"value"
-   * field names never appear in a path — appending them on top of the "[]"/"{}" suffix used to
-   * produce paths like "arr[].element.x", which canonicalizePath() turned into "arr[][].x" and
-   * which never matched the schema's "arr[].x".
-   */
-  private static void collectNestedWithOrdinal(
-      Types.NestedField f,
-      String prefix,
-      int ordinal,
-      Map<Integer, String> idToPath,
-      Map<Integer, Integer> idToOrdinal) {
-
-    if (f == null) {
-      return;
-    }
-
-    final String name = prefix.isEmpty() ? f.name() : prefix + "." + f.name();
-    collectNestedAtPath(f, name, ordinal, idToPath, idToOrdinal);
-  }
-
-  /** Records {@code f} at the explicit {@code path} (no name appending) and recurses. */
-  private static void collectNestedAtPath(
-      Types.NestedField f,
-      String path,
-      int ordinal,
-      Map<Integer, String> idToPath,
-      Map<Integer, Integer> idToOrdinal) {
-
-    final Type t = f.type();
-
-    if (idToPath != null) {
-      idToPath.put(f.fieldId(), path);
-    }
-    if (idToOrdinal != null) {
-      idToOrdinal.put(f.fieldId(), ordinal);
-    }
-
-    if (t.isStructType()) {
-      int i = 0;
-      for (Types.NestedField child : t.asStructType().fields()) {
-        i++;
-        collectNestedWithOrdinal(child, path, i, idToPath, idToOrdinal);
-      }
-    } else if (t.isListType()) {
-      Types.ListType lt = t.asListType();
-      Types.NestedField elem = lt.fields().get(0);
-      collectNestedAtPath(elem, path + "[]", 1, idToPath, idToOrdinal);
-    } else if (t.isMapType()) {
-      Types.MapType mt = t.asMapType();
-      Types.NestedField key = mt.fields().get(0);
-      Types.NestedField val = mt.fields().get(1);
-      // Keys have no schema-side row; ".key" keeps them unique without inventing new notation.
-      collectNestedAtPath(key, path + ".key", 1, idToPath, idToOrdinal);
-      collectNestedAtPath(val, path + "{}", 2, idToPath, idToOrdinal);
-    }
   }
 
   private static void collectNotNullConstraints(

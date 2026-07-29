@@ -77,7 +77,7 @@ import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import ai.floedb.floecat.types.Hashing;
 import ai.floedb.floecat.types.LogicalType;
-import ai.floedb.floecat.types.LogicalTypeFormat;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import io.opentelemetry.api.trace.Span;
 import io.smallrye.mutiny.Multi;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -1405,17 +1405,13 @@ public class UserObjectBundleService {
   }
 
   private LogicalType parseLogicalType(SchemaColumn column) {
-    if (column == null) {
-      return null;
-    }
-    String logical = column.getLogicalType();
-    if (logical == null || logical.isBlank()) {
+    if (column == null || !column.hasType()) {
       return null;
     }
     try {
-      return LogicalTypeFormat.parse(logical);
+      return LogicalTypeProtoAdapter.columnType(column);
     } catch (IllegalArgumentException e) {
-      LOG.debugf(e, "Failed to parse logical type '%s'", logical);
+      LOG.debugf(e, "Failed to decode logical type for column '%s'", column.getName());
       return null;
     }
   }

@@ -19,6 +19,7 @@ package ai.floedb.floecat.systemcatalog.util;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.List;
 import java.util.Objects;
 
@@ -32,7 +33,7 @@ public final class SystemSchemaMapper {
     SchemaColumn.Builder builder =
         SchemaColumn.newBuilder()
             .setName(column.name())
-            .setLogicalType(column.type().getName())
+            .setType(LogicalTypeProtoAdapter.parseToProto(column.type().getName()))
             .setNullable(column.nullable())
             .setOrdinal(column.ordinal());
     builder.setId(column.hasId() ? column.id() : column.ordinal());
@@ -64,12 +65,12 @@ public final class SystemSchemaMapper {
 
   private static SystemColumnDef fromSchemaColumn(SchemaColumn column, int ordinal) {
     Objects.requireNonNull(column, "column");
-    String logicalType = column.getLogicalType();
-    if (logicalType == null || logicalType.isBlank()) {
+    if (!column.hasType()) {
       throw new IllegalArgumentException(
-          "logicalType must be provided for column '" + column.getName() + "'");
+          "type must be provided for column '" + column.getName() + "'");
     }
-    NameRef type = NameRef.newBuilder().setName(logicalType).build();
+    NameRef type =
+        NameRef.newBuilder().setName(LogicalTypeProtoAdapter.columnTypeString(column)).build();
     Long columnId = column.getId() != 0 ? column.getId() : null;
     return new SystemColumnDef(
         column.getName(), type, column.getNullable(), ordinal, columnId, List.of());

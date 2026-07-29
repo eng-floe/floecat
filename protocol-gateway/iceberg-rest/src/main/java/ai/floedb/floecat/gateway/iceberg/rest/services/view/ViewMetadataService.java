@@ -28,6 +28,7 @@ import ai.floedb.floecat.types.LogicalField;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -345,8 +346,7 @@ public class ViewMetadataService {
             SchemaColumn.newBuilder()
                 .setName(name)
                 .setNullable(!required)
-                .setLogicalType(LogicalTypeFormat.formatTag(logical))
-                .setLogicalTypeFull(logical.hasTypeTree() ? LogicalTypeFormat.format(logical) : "")
+                .setType(LogicalTypeProtoAdapter.toProto(logical))
                 .setLeaf(!isContainer);
         if (field.get("id") instanceof Number id) {
           column.setFieldId(id.intValue());
@@ -391,6 +391,14 @@ public class ViewMetadataService {
    * types and nullability ({@code element-required}, {@code value-required}, {@code required}).
    */
   static LogicalType icebergTypeValueToLogical(Object typeValue) {
+    return icebergTypeValueToLogical(typeValue, 0);
+  }
+
+  private static LogicalType icebergTypeValueToLogical(Object typeValue, int depth) {
+    if (depth > LogicalTypeFormat.MAX_NESTING_DEPTH) {
+      throw new IllegalArgumentException(
+          "nested type depth exceeds " + LogicalTypeFormat.MAX_NESTING_DEPTH);
+    }
     if (typeValue instanceof String s) {
       String lower = s.trim().toLowerCase();
       return switch (lower) {
@@ -427,17 +435,22 @@ public class ViewMetadataService {
         return switch (k.toLowerCase().trim()) {
           case "list" ->
               LogicalType.array(
-                  icebergTypeValueToLogical(map.get("element")),
+                  icebergTypeValueToLogical(map.get("element"), depth + 1),
                   !Boolean.TRUE.equals(map.get("element-required")));
           case "map" ->
               LogicalType.map(
-                  icebergTypeValueToLogical(map.get("key")),
-                  icebergTypeValueToLogical(map.get("value")),
+                  icebergTypeValueToLogical(map.get("key"), depth + 1),
+                  icebergTypeValueToLogical(map.get("value"), depth + 1),
                   !Boolean.TRUE.equals(map.get("value-required")));
           case "struct" -> {
             Object rawFields = map.get("fields");
-            if (!(rawFields instanceof List<?> fields) || fields.isEmpty()) {
+            if (!(rawFields instanceof List<?> fields)) {
+              // No field list at all: unknown shape, keep the legacy tag.
               yield LogicalType.of(LogicalKind.STRUCT);
+            }
+            if (fields.isEmpty()) {
+              // An explicit empty field list is a known-empty struct.
+              yield LogicalType.struct(List.of());
             }
             List<LogicalField> structFields = new ArrayList<>();
             for (Object rawField : fields) {
@@ -448,7 +461,7 @@ public class ViewMetadataService {
                   new LogicalField(
                       String.valueOf(fieldMap.get("name")),
                       !Boolean.TRUE.equals(fieldMap.get("required")),
-                      icebergTypeValueToLogical(fieldMap.get("type"))));
+                      icebergTypeValueToLogical(fieldMap.get("type"), depth + 1)));
             }
             yield LogicalType.struct(structFields);
           }

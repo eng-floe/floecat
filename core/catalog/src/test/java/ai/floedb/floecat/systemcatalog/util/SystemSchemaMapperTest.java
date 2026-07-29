@@ -79,16 +79,11 @@ class SystemSchemaMapperTest {
   @Test
   void fromSchemaColumns_rejectsBlankLogicalType() {
     SchemaColumn column =
-        SchemaColumn.newBuilder()
-            .setName("id")
-            .setLogicalType("")
-            .setNullable(false)
-            .setOrdinal(1)
-            .build();
+        SchemaColumn.newBuilder().setName("id").setNullable(false).setOrdinal(1).build();
 
     assertThatThrownBy(() -> SystemSchemaMapper.fromSchemaColumns(List.of(column)))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("logicalType");
+        .hasMessageContaining("type must be provided");
   }
 
   private static NameRef name(String name) {

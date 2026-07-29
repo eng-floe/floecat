@@ -183,28 +183,33 @@ public final class LogicalTypeProtoAdapter {
     if (t.intervalFractionalPrecision() != null) {
       b.setIntervalFractionalPrecision(t.intervalFractionalPrecision());
     }
-    if (t.element() != null) {
-      b.setArray(
-          ai.floedb.floecat.types.rpc.ArrayShape.newBuilder()
-              .setElement(toProto(t.element(), depth + 1))
-              .setElementNullable(t.elementNullable()));
-    } else if (t.key() != null) {
-      b.setMap(
-          ai.floedb.floecat.types.rpc.MapShape.newBuilder()
-              .setKey(toProto(t.key(), depth + 1))
-              .setValue(toProto(t.value(), depth + 1))
-              .setValueNullable(t.valueNullable()));
-    } else if (t.fields() != null) {
-      ai.floedb.floecat.types.rpc.StructShape.Builder struct =
-          ai.floedb.floecat.types.rpc.StructShape.newBuilder();
-      for (LogicalField field : t.fields()) {
-        struct.addFields(
-            ai.floedb.floecat.types.rpc.LogicalField.newBuilder()
-                .setName(field.name())
-                .setNullable(field.nullable())
-                .setType(toProto(field.type(), depth + 1)));
+    // Exhaustive dispatch on the shape variant; the wire encodes *required* (inverted from the
+    // model's nullable) so an unset proto3 bool defaults to the safe direction.
+    switch (t.shape()) {
+      case Shape.Array array ->
+          b.setArray(
+              ai.floedb.floecat.types.rpc.ArrayShape.newBuilder()
+                  .setElement(toProto(array.element(), depth + 1))
+                  .setElementRequired(!array.elementNullable()));
+      case Shape.Map map ->
+          b.setMap(
+              ai.floedb.floecat.types.rpc.MapShape.newBuilder()
+                  .setKey(toProto(map.key(), depth + 1))
+                  .setValue(toProto(map.value(), depth + 1))
+                  .setValueRequired(!map.valueNullable()));
+      case Shape.Struct struct -> {
+        ai.floedb.floecat.types.rpc.StructShape.Builder structShape =
+            ai.floedb.floecat.types.rpc.StructShape.newBuilder();
+        for (LogicalField field : struct.fields()) {
+          structShape.addFields(
+              ai.floedb.floecat.types.rpc.LogicalField.newBuilder()
+                  .setName(field.name())
+                  .setRequired(!field.nullable())
+                  .setType(toProto(field.type(), depth + 1)));
+        }
+        b.setStruct(structShape);
       }
-      b.setStruct(struct);
+      case null -> {}
     }
     return b.build();
   }
@@ -237,7 +242,7 @@ public final class LogicalTypeProtoAdapter {
           throw new IllegalArgumentException("array shape on non-ARRAY kind: " + kind);
         }
         return LogicalType.array(
-            fromProto(p.getArray().getElement(), depth + 1), p.getArray().getElementNullable());
+            fromProto(p.getArray().getElement(), depth + 1), !p.getArray().getElementRequired());
       }
       case MAP -> {
         if (kind != LogicalKind.MAP) {
@@ -246,7 +251,7 @@ public final class LogicalTypeProtoAdapter {
         return LogicalType.map(
             fromProto(p.getMap().getKey(), depth + 1),
             fromProto(p.getMap().getValue(), depth + 1),
-            p.getMap().getValueNullable());
+            !p.getMap().getValueRequired());
       }
       case STRUCT -> {
         if (kind != LogicalKind.STRUCT) {
@@ -255,7 +260,7 @@ public final class LogicalTypeProtoAdapter {
         java.util.List<LogicalField> fields = new java.util.ArrayList<>();
         for (ai.floedb.floecat.types.rpc.LogicalField f : p.getStruct().getFieldsList()) {
           fields.add(
-              new LogicalField(f.getName(), f.getNullable(), fromProto(f.getType(), depth + 1)));
+              new LogicalField(f.getName(), !f.getRequired(), fromProto(f.getType(), depth + 1)));
         }
         return LogicalType.struct(fields);
       }
@@ -294,6 +299,54 @@ public final class LogicalTypeProtoAdapter {
    */
   public static ai.floedb.floecat.types.rpc.LogicalType parseToProto(String s) {
     return toProto(LogicalTypeFormat.parse(s));
+  }
+
+  /** Reserved field number of the legacy SchemaColumn.logical_type string. */
+  private static final int LEGACY_LOGICAL_TYPE_FIELD = 2;
+
+  /**
+   * Recovers the type of a {@link ai.floedb.floecat.query.rpc.SchemaColumn} persisted before the
+   * typed migration. The legacy {@code logical_type} string (reserved field 2) survives in the
+   * message's unknown fields; when the column has no typed field, parse the legacy value into one
+   * so pre-migration rows — notably output columns of views created directly via gRPC, which have
+   * no upstream to re-reconcile from — stay usable. Complex legacy values were flat container tags,
+   * so they upgrade to the legacy non-parameterised form (no nested tree).
+   *
+   * <p>Returns the column unchanged when it already has a type, has no legacy value, or the legacy
+   * value does not parse (readers then degrade as for any untyped column).
+   */
+  public static ai.floedb.floecat.query.rpc.SchemaColumn upgradeLegacyColumn(
+      ai.floedb.floecat.query.rpc.SchemaColumn column) {
+    if (column.hasType()) {
+      return column;
+    }
+    for (com.google.protobuf.ByteString bytes :
+        column.getUnknownFields().getField(LEGACY_LOGICAL_TYPE_FIELD).getLengthDelimitedList()) {
+      String legacy = bytes.toStringUtf8();
+      if (legacy.isBlank()) {
+        continue;
+      }
+      try {
+        return column.toBuilder().setType(parseToProto(legacy)).build();
+      } catch (IllegalArgumentException unparseable) {
+        return column;
+      }
+    }
+    return column;
+  }
+
+  /** Decodes a {@link ai.floedb.floecat.query.rpc.SchemaColumn}'s typed field. */
+  public static LogicalType columnType(ai.floedb.floecat.query.rpc.SchemaColumn column) {
+    Objects.requireNonNull(column, "schema column");
+    return fromProto(column.getType());
+  }
+
+  /**
+   * Formats a {@link ai.floedb.floecat.query.rpc.SchemaColumn}'s type as its full canonical string
+   * (e.g. {@code "INT"}, {@code "ARRAY<STRING>"}), for display and diagnostics.
+   */
+  public static String columnTypeString(ai.floedb.floecat.query.rpc.SchemaColumn column) {
+    return LogicalTypeFormat.format(columnType(column));
   }
 
   public static LogicalType columnLogicalType(ScalarStats cs) {

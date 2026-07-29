@@ -79,7 +79,7 @@ class DeltaSchemaMapperTest {
   void deltaTimestampMapsToTimestamptz() {
     // Delta "timestamp" is UTC-adjusted → canonical TIMESTAMPTZ
     SchemaColumn col = firstColumn(singleFieldSchema("ts", "timestamp"));
-    assertThat(col.getLogicalType()).isEqualTo("TIMESTAMPTZ");
+    assertThat(typeTag(col)).isEqualTo("TIMESTAMPTZ");
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -87,7 +87,7 @@ class DeltaSchemaMapperTest {
   void deltaTimestampNtzMapsToTimestamp() {
     // Delta "timestamp_ntz" is timezone-naive → canonical TIMESTAMP
     SchemaColumn col = firstColumn(singleFieldSchema("ts", "timestamp_ntz"));
-    assertThat(col.getLogicalType()).isEqualTo("TIMESTAMP");
+    assertThat(typeTag(col)).isEqualTo("TIMESTAMP");
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -100,7 +100,7 @@ class DeltaSchemaMapperTest {
       strings = {"byte", "tinyint", "short", "smallint", "integer", "int", "long", "bigint"})
   void integerAliasesMapsToInt(String deltaType) {
     SchemaColumn col = firstColumn(singleFieldSchema("n", deltaType));
-    assertThat(col.getLogicalType()).isEqualTo("INT");
+    assertThat(typeTag(col)).isEqualTo("INT");
   }
 
   // ---------------------------------------------------------------------------
@@ -119,7 +119,7 @@ class DeltaSchemaMapperTest {
   })
   void scalarTypesMappedCorrectly(String deltaType, String expected) {
     SchemaColumn col = firstColumn(singleFieldSchema("col", deltaType));
-    assertThat(col.getLogicalType()).isEqualTo(expected);
+    assertThat(typeTag(col)).isEqualTo(expected);
   }
 
   // ---------------------------------------------------------------------------
@@ -129,14 +129,14 @@ class DeltaSchemaMapperTest {
   @Test
   void decimalTypeIsUppercasedAndPassedThrough() {
     SchemaColumn col = firstColumn(singleFieldSchema("amt", "decimal(10,2)"));
-    assertThat(col.getLogicalType()).isEqualTo("DECIMAL(10,2)");
+    assertThat(typeTag(col)).isEqualTo("DECIMAL(10,2)");
   }
 
   @Test
   void decimalWithVariousPrecisions() {
-    assertThat(firstColumn(singleFieldSchema("x", "decimal(38,0)")).getLogicalType())
+    assertThat(typeTag(firstColumn(singleFieldSchema("x", "decimal(38,0)"))))
         .isEqualTo("DECIMAL(38,0)");
-    assertThat(firstColumn(singleFieldSchema("x", "decimal(1,0)")).getLogicalType())
+    assertThat(typeTag(firstColumn(singleFieldSchema("x", "decimal(1,0)"))))
         .isEqualTo("DECIMAL(1,0)");
   }
 
@@ -192,7 +192,7 @@ class DeltaSchemaMapperTest {
         ]}
         """;
     SchemaColumn col = firstColumn(json);
-    assertThat(col.getLogicalType()).isEqualTo("STRUCT");
+    assertThat(typeTag(col)).isEqualTo("STRUCT");
     assertThat(col.getLeaf()).isFalse();
   }
 
@@ -206,7 +206,7 @@ class DeltaSchemaMapperTest {
         ]}
         """;
     SchemaColumn col = firstColumn(json);
-    assertThat(col.getLogicalType()).isEqualTo("ARRAY");
+    assertThat(typeTag(col)).isEqualTo("ARRAY");
     assertThat(col.getLeaf()).isFalse();
   }
 
@@ -220,7 +220,7 @@ class DeltaSchemaMapperTest {
         ]}
         """;
     SchemaColumn col = firstColumn(json);
-    assertThat(col.getLogicalType()).isEqualTo("MAP");
+    assertThat(typeTag(col)).isEqualTo("MAP");
     assertThat(col.getLeaf()).isFalse();
   }
 
@@ -234,8 +234,8 @@ class DeltaSchemaMapperTest {
         ]}
         """;
     SchemaColumn col = firstColumn(json);
-    assertThat(col.getLogicalType()).isEqualTo("ARRAY");
-    assertThat(col.getLogicalTypeFull()).isEqualTo("ARRAY<STRING>");
+    assertThat(typeTag(col)).isEqualTo("ARRAY");
+    assertThat(typeString(col)).isEqualTo("ARRAY<STRING>");
   }
 
   @Test
@@ -249,8 +249,8 @@ class DeltaSchemaMapperTest {
         ]}
         """;
     SchemaColumn col = firstColumn(json);
-    assertThat(col.getLogicalType()).isEqualTo("MAP");
-    assertThat(col.getLogicalTypeFull()).isEqualTo("MAP<STRING, ARRAY<INT>>");
+    assertThat(typeTag(col)).isEqualTo("MAP");
+    assertThat(typeString(col)).isEqualTo("MAP<STRING, ARRAY<INT>>");
   }
 
   @Test
@@ -265,7 +265,7 @@ class DeltaSchemaMapperTest {
         ]}
         """;
     SchemaColumn col = firstColumn(json);
-    assertThat(col.getLogicalTypeFull()).isEqualTo("ARRAY<STRUCT<name: STRING, ts: TIMESTAMPTZ>>");
+    assertThat(typeString(col)).isEqualTo("ARRAY<STRUCT<name: STRING, ts: TIMESTAMPTZ>>");
   }
 
   @Test
@@ -276,7 +276,7 @@ class DeltaSchemaMapperTest {
           {"name":"n","type":"integer","nullable":true}
         ]}
         """;
-    assertThat(firstColumn(json).getLogicalTypeFull()).isEmpty();
+    assertThat(hasTypeTree(firstColumn(json))).isFalse();
   }
 
   @Test
@@ -288,7 +288,7 @@ class DeltaSchemaMapperTest {
         ]}
         """;
     SchemaColumn col = firstColumn(json);
-    assertThat(col.getLogicalType()).isEqualTo("VARIANT");
+    assertThat(typeTag(col)).isEqualTo("VARIANT");
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -303,7 +303,7 @@ class DeltaSchemaMapperTest {
         ]}
         """;
     SchemaColumn col = firstColumn(json);
-    assertThat(col.getLogicalType()).isEqualTo("VARIANT");
+    assertThat(typeTag(col)).isEqualTo("VARIANT");
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -332,19 +332,19 @@ class DeltaSchemaMapperTest {
     assertThat(desc.getColumnsCount()).isEqualTo(4);
 
     assertThat(desc.getColumns(0).getName()).isEqualTo("id");
-    assertThat(desc.getColumns(0).getLogicalType()).isEqualTo("INT");
+    assertThat(typeTag(desc.getColumns(0))).isEqualTo("INT");
     assertThat(desc.getColumns(0).getLeaf()).isTrue();
 
     assertThat(desc.getColumns(1).getName()).isEqualTo("location");
-    assertThat(desc.getColumns(1).getLogicalType()).isEqualTo("STRUCT");
+    assertThat(typeTag(desc.getColumns(1))).isEqualTo("STRUCT");
     assertThat(desc.getColumns(1).getLeaf()).isFalse();
 
     assertThat(desc.getColumns(2).getPhysicalPath()).isEqualTo("location.lat");
-    assertThat(desc.getColumns(2).getLogicalType()).isEqualTo("DOUBLE");
+    assertThat(typeTag(desc.getColumns(2))).isEqualTo("DOUBLE");
     assertThat(desc.getColumns(2).getLeaf()).isTrue();
 
     assertThat(desc.getColumns(3).getPhysicalPath()).isEqualTo("location.lon");
-    assertThat(desc.getColumns(3).getLogicalType()).isEqualTo("DOUBLE");
+    assertThat(typeTag(desc.getColumns(3))).isEqualTo("DOUBLE");
     assertThat(desc.getColumns(3).getLeaf()).isTrue();
   }
 
@@ -505,7 +505,7 @@ class DeltaSchemaMapperTest {
     assertThat(desc.getColumnsList().stream().map(SchemaColumn::getPhysicalPath))
         .containsExactly("payload", "payload.id", "payload.attrs", "message");
     assertThat(desc.getColumns(1).getFieldId()).isEqualTo(17);
-    assertThat(desc.getColumns(2).getLogicalType()).isEqualTo("VARIANT");
+    assertThat(typeTag(desc.getColumns(2))).isEqualTo("VARIANT");
   }
 
   // ---------------------------------------------------------------------------
@@ -525,5 +525,18 @@ class DeltaSchemaMapperTest {
     assertThatThrownBy(() -> DeltaSchemaMapper.map(CID, "{not-valid-json", Set.of()))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Failed to parse Delta schema JSON");
+  }
+
+  private static String typeTag(ai.floedb.floecat.query.rpc.SchemaColumn column) {
+    return ai.floedb.floecat.types.LogicalTypeFormat.formatTag(
+        ai.floedb.floecat.types.LogicalTypeProtoAdapter.columnType(column));
+  }
+
+  private static String typeString(ai.floedb.floecat.query.rpc.SchemaColumn column) {
+    return ai.floedb.floecat.types.LogicalTypeProtoAdapter.columnTypeString(column);
+  }
+
+  private static boolean hasTypeTree(ai.floedb.floecat.query.rpc.SchemaColumn column) {
+    return ai.floedb.floecat.types.LogicalTypeProtoAdapter.columnType(column).hasTypeTree();
   }
 }

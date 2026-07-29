@@ -36,17 +36,22 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Metrics;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.jboss.logging.Logger;
 
 /**
  * Responsible for materialising immutable relation nodes from repository metadata.
@@ -61,6 +66,12 @@ public class NodeLoader {
   private final NamespaceRepository namespaceRepository;
   private final TableRepository tableRepository;
   private final ViewRepository viewRepository;
+  // Global registry: NodeLoader is also constructed outside CDI (UserGraph), so counters bind to
+  // the globally-registered Micrometer registry rather than an injected one.
+  private final Counter legacyColumnsRecovered =
+      Metrics.counter("floecat.view.legacy_column_upgrade", "outcome", "recovered");
+  private final Counter legacyColumnsUnrecovered =
+      Metrics.counter("floecat.view.legacy_column_upgrade", "outcome", "unrecovered");
 
   @Inject
   public NodeLoader(
@@ -243,6 +254,39 @@ public class NodeLoader {
         hints.columnHints());
   }
 
+  private static final Logger LOG = Logger.getLogger(NodeLoader.class);
+
+  /**
+   * Views created directly via gRPC have no upstream to re-reconcile from; recover the typed field
+   * of pre-migration output columns from the legacy logical_type string. Recovery outcomes are
+   * logged and counted so a failed migration surfaces here, not as an opaque missing-logical-type
+   * planning error at query time.
+   */
+  private List<SchemaColumn> upgradeLegacyOutputColumns(View view) {
+    List<SchemaColumn> out = new java.util.ArrayList<>(view.getOutputColumnsCount());
+    for (SchemaColumn column : view.getOutputColumnsList()) {
+      if (column.hasType()) {
+        out.add(column);
+        continue;
+      }
+      SchemaColumn upgraded = LogicalTypeProtoAdapter.upgradeLegacyColumn(column);
+      if (upgraded.hasType()) {
+        legacyColumnsRecovered.increment();
+        LOG.debugf(
+            "Recovered legacy type for view %s column '%s'",
+            view.getResourceId().getId(), column.getName());
+      } else {
+        legacyColumnsUnrecovered.increment();
+        LOG.warnf(
+            "View %s output column '%s' has no type and no recoverable legacy value;"
+                + " it will fail engine decoration until the view is re-created or updated",
+            view.getResourceId().getId(), column.getName());
+      }
+      out.add(upgraded);
+    }
+    return out;
+  }
+
   private ViewNode toViewNode(View view, MutationMeta meta) {
     RelationHints hints = relationHints(view.getPropertiesMap());
     return new ViewNode(
@@ -252,7 +296,7 @@ public class NodeLoader {
         view.getNamespaceId(),
         view.getDisplayName(),
         view.getSqlDefinitionsList(),
-        view.getOutputColumnsList(),
+        upgradeLegacyOutputColumns(view),
         parseBaseRelations(view.getBaseRelationsList()),
         view.getCreationSearchPathList(),
         GraphNodeOrigin.USER,

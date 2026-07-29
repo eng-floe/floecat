@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -31,7 +32,7 @@ class UserObjectBundleUtilsTest {
         SchemaColumn.newBuilder()
             .setId(42)
             .setName("ts")
-            .setLogicalType("TIMESTAMPTZ")
+            .setType(LogicalTypeProtoAdapter.parseToProto("TIMESTAMPTZ"))
             .setNullable(true)
             .setOrdinal(1)
             .build();

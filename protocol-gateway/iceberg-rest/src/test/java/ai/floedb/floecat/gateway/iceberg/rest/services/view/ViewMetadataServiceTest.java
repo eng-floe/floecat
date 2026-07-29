@@ -224,7 +224,8 @@ class ViewMetadataServiceTest {
     assertEquals(1, cols.size());
     assertEquals("col_a", cols.get(0).getName());
     assertFalse(cols.get(0).getNullable()); // required=true → nullable=false
-    assertEquals("INT", cols.get(0).getLogicalType());
+    assertEquals(
+        "INT", ai.floedb.floecat.types.LogicalTypeProtoAdapter.columnTypeString(cols.get(0)));
   }
 
   // ── icebergTypeValueToCanonical timestamp semantics ──────────────────────
@@ -291,6 +292,19 @@ class ViewMetadataServiceTest {
         ViewMetadataService.icebergTypeValueToLogical(
             java.util.Map.of("type", "map", "key", "string", "value", "double"));
     assertEquals("MAP<STRING, DOUBLE>", ai.floedb.floecat.types.LogicalTypeFormat.format(logical));
+  }
+
+  @Test
+  void deeplyNestedTypeValueIsRejectedAtWriteTime() {
+    // A ~70-deep nested list must fail validation here, not persist and then throw on decode.
+    Object type = "string";
+    for (int i = 0; i < 70; i++) {
+      type = java.util.Map.of("type", "list", "element", type);
+    }
+    Object deepest = type;
+    org.junit.jupiter.api.Assertions.assertThrows(
+        IllegalArgumentException.class,
+        () -> ViewMetadataService.icebergTypeValueToLogical(deepest));
   }
 
   @Test

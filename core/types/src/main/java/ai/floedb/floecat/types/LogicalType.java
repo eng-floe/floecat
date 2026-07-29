@@ -38,12 +38,13 @@ import java.util.Objects;
  * LogicalKind#STRUCT}, {@link LogicalKind#VARIANT}) carry no meaningful min/max statistics. Use
  * {@link #isComplex()} to detect them before attempting stat coercions.
  *
- * <p><b>Nested structure:</b> ARRAY, MAP, and STRUCT may carry a recursive type tree — {@link
- * #element()} (+ {@link #elementNullable()}) for ARRAY, {@link #key()}/{@link #value()} (+ {@link
- * #valueNullable()}) for MAP, and {@link #fields()} for STRUCT. A complex type without a tree
- * (created via {@link #of(LogicalKind)}) is legal and represents the legacy non-parameterised
- * container tag; {@link #hasTypeTree()} distinguishes the two. VARIANT is self-describing and never
- * carries a tree.
+ * <p><b>Nested structure:</b> ARRAY, MAP, and STRUCT may carry a recursive type tree, held as a
+ * {@link Shape} that mirrors the wire model's {@code oneof shape} ({@link Shape.Array}, {@link
+ * Shape.Map}, {@link Shape.Struct}); convenience accessors ({@link #element()}, {@link #key()},
+ * {@link #value()}, {@link #fields()}) project out of it. A complex type without a shape (created
+ * via {@link #of(LogicalKind)}) is legal and represents the legacy non-parameterised container tag;
+ * {@link #hasTypeTree()} distinguishes the two. VARIANT is self-describing and never carries a
+ * tree.
  *
  * <p>Factory methods:
  *
@@ -74,12 +75,7 @@ public final class LogicalType {
   public final Integer intervalFractionalPrecision;
 
   // Nested type tree (null on non-parameterised complex types and all scalar kinds).
-  public final LogicalType element;
-  public final Boolean elementNullable;
-  public final LogicalType key;
-  public final LogicalType value;
-  public final Boolean valueNullable;
-  public final List<LogicalField> fields;
+  private final Shape shape;
 
   private LogicalType(
       LogicalKind kind,
@@ -97,11 +93,6 @@ public final class LogicalType {
         intervalRange,
         intervalLeadingPrecision,
         intervalFractionalPrecision,
-        null,
-        null,
-        null,
-        null,
-        null,
         null);
   }
 
@@ -113,34 +104,24 @@ public final class LogicalType {
       IntervalRange intervalRange,
       Integer intervalLeadingPrecision,
       Integer intervalFractionalPrecision,
-      LogicalType element,
-      Boolean elementNullable,
-      LogicalType key,
-      LogicalType value,
-      Boolean valueNullable,
-      List<LogicalField> fields) {
+      Shape shape) {
     this.kind = Objects.requireNonNull(kind, "kind");
-    if (element != null && kind != LogicalKind.ARRAY) {
-      throw new IllegalArgumentException("element type is only allowed for ARRAY, not " + kind);
+    LogicalKind shapeKind =
+        switch (shape) {
+          case null -> null;
+          case Shape.Array a -> LogicalKind.ARRAY;
+          case Shape.Map m -> LogicalKind.MAP;
+          case Shape.Struct st -> LogicalKind.STRUCT;
+        };
+    if (shapeKind != null && shapeKind != kind) {
+      throw new IllegalArgumentException(
+          shape.getClass().getSimpleName()
+              + " shape is only allowed for "
+              + shapeKind
+              + ", not "
+              + kind);
     }
-    if ((key != null || value != null) && kind != LogicalKind.MAP) {
-      throw new IllegalArgumentException("key/value types are only allowed for MAP, not " + kind);
-    }
-    if (fields != null && kind != LogicalKind.STRUCT) {
-      throw new IllegalArgumentException("struct fields are only allowed for STRUCT, not " + kind);
-    }
-    if ((element == null) != (elementNullable == null)) {
-      throw new IllegalArgumentException("element and elementNullable must be set together");
-    }
-    if ((key == null) != (value == null) || (value == null) != (valueNullable == null)) {
-      throw new IllegalArgumentException("key, value, and valueNullable must be set together");
-    }
-    this.element = element;
-    this.elementNullable = elementNullable;
-    this.key = key;
-    this.value = value;
-    this.valueNullable = valueNullable;
-    this.fields = fields == null ? null : List.copyOf(fields);
+    this.shape = shape;
     IntervalRange normalizedIntervalRange = intervalRange;
     if (kind == LogicalKind.DECIMAL) {
       if (precision == null || scale == null || precision < 1 || scale < 0 || scale > precision) {
@@ -295,7 +276,6 @@ public final class LogicalType {
    * @return a new parameterised ARRAY {@code LogicalType}
    */
   public static LogicalType array(LogicalType element, boolean elementNullable) {
-    Objects.requireNonNull(element, "element type");
     return new LogicalType(
         LogicalKind.ARRAY,
         null,
@@ -304,12 +284,7 @@ public final class LogicalType {
         null,
         null,
         null,
-        element,
-        elementNullable,
-        null,
-        null,
-        null,
-        null);
+        new Shape.Array(element, elementNullable));
   }
 
   /** Convenience overload for an ARRAY whose elements are nullable. */
@@ -326,8 +301,6 @@ public final class LogicalType {
    * @return a new parameterised MAP {@code LogicalType}
    */
   public static LogicalType map(LogicalType key, LogicalType value, boolean valueNullable) {
-    Objects.requireNonNull(key, "key type");
-    Objects.requireNonNull(value, "value type");
     return new LogicalType(
         LogicalKind.MAP,
         null,
@@ -336,12 +309,7 @@ public final class LogicalType {
         null,
         null,
         null,
-        null,
-        null,
-        key,
-        value,
-        valueNullable,
-        null);
+        new Shape.Map(key, value, valueNullable));
   }
 
   /** Convenience overload for a MAP whose values are nullable. */
@@ -357,21 +325,8 @@ public final class LogicalType {
    * @return a new parameterised STRUCT {@code LogicalType}
    */
   public static LogicalType struct(List<LogicalField> fields) {
-    Objects.requireNonNull(fields, "struct fields");
     return new LogicalType(
-        LogicalKind.STRUCT,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        fields);
+        LogicalKind.STRUCT, null, null, null, null, null, null, new Shape.Struct(fields));
   }
 
   public LogicalKind kind() {
@@ -406,34 +361,39 @@ public final class LogicalType {
     return temporalPrecision == null ? DEFAULT_TEMPORAL_PRECISION : temporalPrecision;
   }
 
+  /** Nested shape of a parameterised ARRAY/MAP/STRUCT, or null for scalars and legacy tags. */
+  public Shape shape() {
+    return shape;
+  }
+
   /** Element type of a parameterised ARRAY, or null. */
   public LogicalType element() {
-    return element;
+    return shape instanceof Shape.Array a ? a.element() : null;
   }
 
   /** Element nullability of a parameterised ARRAY, or null when no element type is present. */
   public Boolean elementNullable() {
-    return elementNullable;
+    return shape instanceof Shape.Array a ? a.elementNullable() : null;
   }
 
   /** Key type of a parameterised MAP, or null. */
   public LogicalType key() {
-    return key;
+    return shape instanceof Shape.Map m ? m.key() : null;
   }
 
   /** Value type of a parameterised MAP, or null. */
   public LogicalType value() {
-    return value;
+    return shape instanceof Shape.Map m ? m.value() : null;
   }
 
   /** Value nullability of a parameterised MAP, or null when no value type is present. */
   public Boolean valueNullable() {
-    return valueNullable;
+    return shape instanceof Shape.Map m ? m.valueNullable() : null;
   }
 
   /** Fields of a parameterised STRUCT (in ordinal order), or null. */
   public List<LogicalField> fields() {
-    return fields;
+    return shape instanceof Shape.Struct st ? st.fields() : null;
   }
 
   /**
@@ -441,7 +401,7 @@ public final class LogicalType {
    * Non-parameterised complex tags (legacy) and all scalar kinds return false.
    */
   public boolean hasTypeTree() {
-    return element != null || key != null || fields != null;
+    return shape != null;
   }
 
   /** Returns true iff this is a DECIMAL type. */
@@ -491,12 +451,7 @@ public final class LogicalType {
         && intervalRange == that.intervalRange
         && Objects.equals(intervalLeadingPrecision, that.intervalLeadingPrecision)
         && Objects.equals(intervalFractionalPrecision, that.intervalFractionalPrecision)
-        && Objects.equals(element, that.element)
-        && Objects.equals(elementNullable, that.elementNullable)
-        && Objects.equals(key, that.key)
-        && Objects.equals(value, that.value)
-        && Objects.equals(valueNullable, that.valueNullable)
-        && Objects.equals(fields, that.fields);
+        && Objects.equals(shape, that.shape);
   }
 
   @Override
@@ -509,11 +464,6 @@ public final class LogicalType {
         intervalRange,
         intervalLeadingPrecision,
         intervalFractionalPrecision,
-        element,
-        elementNullable,
-        key,
-        value,
-        valueNullable,
-        fields);
+        shape);
   }
 }

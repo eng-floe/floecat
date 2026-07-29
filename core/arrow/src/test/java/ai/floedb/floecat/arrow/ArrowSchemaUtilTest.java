@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.List;
 import org.apache.arrow.vector.types.DateUnit;
 import org.apache.arrow.vector.types.TimeUnit;
@@ -32,7 +33,11 @@ class ArrowSchemaUtilTest {
 
   @Test
   void mapsCanonicalIntToSigned64BitArrowInt() {
-    SchemaColumn column = SchemaColumn.newBuilder().setName("id").setLogicalType("INT").build();
+    SchemaColumn column =
+        SchemaColumn.newBuilder()
+            .setName("id")
+            .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
+            .build();
 
     Schema schema = ArrowSchemaUtil.toArrowSchema(List.of(column));
     ArrowType.Int arrowType = (ArrowType.Int) schema.getFields().get(0).getType();
@@ -43,7 +48,11 @@ class ArrowSchemaUtilTest {
 
   @Test
   void mapsIntegerAliasToSigned64BitArrowInt() {
-    SchemaColumn column = SchemaColumn.newBuilder().setName("id").setLogicalType("INTEGER").build();
+    SchemaColumn column =
+        SchemaColumn.newBuilder()
+            .setName("id")
+            .setType(LogicalTypeProtoAdapter.parseToProto("INTEGER"))
+            .build();
 
     Schema schema = ArrowSchemaUtil.toArrowSchema(List.of(column));
     ArrowType.Int arrowType = (ArrowType.Int) schema.getFields().get(0).getType();
@@ -55,7 +64,10 @@ class ArrowSchemaUtilTest {
   @Test
   void mapsSmallintAliasToSigned64BitArrowInt() {
     SchemaColumn column =
-        SchemaColumn.newBuilder().setName("id").setLogicalType("SMALLINT").build();
+        SchemaColumn.newBuilder()
+            .setName("id")
+            .setType(LogicalTypeProtoAdapter.parseToProto("SMALLINT"))
+            .build();
 
     Schema schema = ArrowSchemaUtil.toArrowSchema(List.of(column));
     ArrowType.Int arrowType = (ArrowType.Int) schema.getFields().get(0).getType();
@@ -69,10 +81,22 @@ class ArrowSchemaUtilTest {
     Schema schema =
         ArrowSchemaUtil.toArrowSchema(
             List.of(
-                SchemaColumn.newBuilder().setName("d").setLogicalType("DATE").build(),
-                SchemaColumn.newBuilder().setName("t").setLogicalType("TIME").build(),
-                SchemaColumn.newBuilder().setName("ts").setLogicalType("TIMESTAMP").build(),
-                SchemaColumn.newBuilder().setName("tstz").setLogicalType("TIMESTAMPTZ").build()));
+                SchemaColumn.newBuilder()
+                    .setName("d")
+                    .setType(LogicalTypeProtoAdapter.parseToProto("DATE"))
+                    .build(),
+                SchemaColumn.newBuilder()
+                    .setName("t")
+                    .setType(LogicalTypeProtoAdapter.parseToProto("TIME"))
+                    .build(),
+                SchemaColumn.newBuilder()
+                    .setName("ts")
+                    .setType(LogicalTypeProtoAdapter.parseToProto("TIMESTAMP"))
+                    .build(),
+                SchemaColumn.newBuilder()
+                    .setName("tstz")
+                    .setType(LogicalTypeProtoAdapter.parseToProto("TIMESTAMPTZ"))
+                    .build()));
 
     ArrowType.Date dateType = (ArrowType.Date) schema.getFields().get(0).getType();
     ArrowType.Time timeType = (ArrowType.Time) schema.getFields().get(1).getType();
@@ -93,11 +117,26 @@ class ArrowSchemaUtilTest {
     Schema schema =
         ArrowSchemaUtil.toArrowSchema(
             List.of(
-                SchemaColumn.newBuilder().setName("dec").setLogicalType("DECIMAL(12,3)").build(),
-                SchemaColumn.newBuilder().setName("dec256").setLogicalType("DECIMAL(50,2)").build(),
-                SchemaColumn.newBuilder().setName("uuid").setLogicalType("UUID").build(),
-                SchemaColumn.newBuilder().setName("bin").setLogicalType("BINARY").build(),
-                SchemaColumn.newBuilder().setName("json").setLogicalType("JSON").build()));
+                SchemaColumn.newBuilder()
+                    .setName("dec")
+                    .setType(LogicalTypeProtoAdapter.parseToProto("DECIMAL(12,3)"))
+                    .build(),
+                SchemaColumn.newBuilder()
+                    .setName("dec256")
+                    .setType(LogicalTypeProtoAdapter.parseToProto("DECIMAL(50,2)"))
+                    .build(),
+                SchemaColumn.newBuilder()
+                    .setName("uuid")
+                    .setType(LogicalTypeProtoAdapter.parseToProto("UUID"))
+                    .build(),
+                SchemaColumn.newBuilder()
+                    .setName("bin")
+                    .setType(LogicalTypeProtoAdapter.parseToProto("BINARY"))
+                    .build(),
+                SchemaColumn.newBuilder()
+                    .setName("json")
+                    .setType(LogicalTypeProtoAdapter.parseToProto("JSON"))
+                    .build()));
 
     ArrowType.Decimal decimalType = (ArrowType.Decimal) schema.getFields().get(0).getType();
     ArrowType.Decimal decimal256Type = (ArrowType.Decimal) schema.getFields().get(1).getType();
@@ -120,7 +159,10 @@ class ArrowSchemaUtilTest {
   @Test
   void decimalPrecisionAboveArrowLimitThrows() {
     SchemaColumn column =
-        SchemaColumn.newBuilder().setName("dec").setLogicalType("DECIMAL(77,2)").build();
+        SchemaColumn.newBuilder()
+            .setName("dec")
+            .setType(LogicalTypeProtoAdapter.parseToProto("DECIMAL(77,2)"))
+            .build();
     assertThatThrownBy(() -> ArrowSchemaUtil.toArrowSchema(List.of(column)))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("DECIMAL precision")
@@ -130,7 +172,10 @@ class ArrowSchemaUtilTest {
   @Test
   void intervalIsRejectedForArrowSchema() {
     SchemaColumn column =
-        SchemaColumn.newBuilder().setName("iv").setLogicalType("INTERVAL").build();
+        SchemaColumn.newBuilder()
+            .setName("iv")
+            .setType(LogicalTypeProtoAdapter.parseToProto("INTERVAL"))
+            .build();
     assertThatThrownBy(() -> ArrowSchemaUtil.toArrowSchema(List.of(column)))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("INTERVAL has no stable Arrow representation");
@@ -139,7 +184,11 @@ class ArrowSchemaUtilTest {
   @Test
   void complexLogicalTypesAreRejectedForArrowSchema() {
     for (String type : List.of("ARRAY", "MAP", "STRUCT", "VARIANT")) {
-      SchemaColumn column = SchemaColumn.newBuilder().setName("x").setLogicalType(type).build();
+      SchemaColumn column =
+          SchemaColumn.newBuilder()
+              .setName("x")
+              .setType(LogicalTypeProtoAdapter.parseToProto(type))
+              .build();
       assertThatThrownBy(() -> ArrowSchemaUtil.toArrowSchema(List.of(column)))
           .isInstanceOf(IllegalArgumentException.class)
           .hasMessageContaining("Complex logical types");
@@ -147,21 +196,23 @@ class ArrowSchemaUtilTest {
   }
 
   @Test
-  void unknownLogicalTypeFailsFast() {
+  void unknownLogicalTypeKindFailsFast() {
     SchemaColumn column =
-        SchemaColumn.newBuilder().setName("x").setLogicalType("NOT_A_TYPE").build();
+        SchemaColumn.newBuilder()
+            .setName("x")
+            .setType(ai.floedb.floecat.types.rpc.LogicalType.newBuilder())
+            .build();
     assertThatThrownBy(() -> ArrowSchemaUtil.toArrowSchema(List.of(column)))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("Unrecognized logical type")
-        .hasMessageContaining("NOT_A_TYPE");
+        .hasMessageContaining("Unrecognized logical type kind");
   }
 
   @Test
-  void nullLogicalTypeFailsFast() {
+  void missingTypeFailsFast() {
     SchemaColumn column = SchemaColumn.newBuilder().setName("x").build();
     assertThatThrownBy(() -> ArrowSchemaUtil.toArrowSchema(List.of(column)))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("must not be blank");
+        .hasMessageContaining("has no type");
   }
 
   @Test

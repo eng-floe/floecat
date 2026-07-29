@@ -67,7 +67,7 @@ class IcebergSchemaMapperTest {
   void utcTimestampMapsToTimestamptz() {
     Types.TimestampType sourceType = Types.TimestampType.withZone();
     SchemaColumn col = singleColumn(Types.NestedField.optional(1, "ts_utc", sourceType));
-    assertThat(col.getLogicalType()).isEqualTo("TIMESTAMPTZ");
+    assertThat(typeTag(col)).isEqualTo("TIMESTAMPTZ");
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -75,7 +75,7 @@ class IcebergSchemaMapperTest {
   void nonUtcTimestampMapsToTimestamp() {
     SchemaColumn col =
         singleColumn(Types.NestedField.optional(1, "ts_ntz", Types.TimestampType.withoutZone()));
-    assertThat(col.getLogicalType()).isEqualTo("TIMESTAMP");
+    assertThat(typeTag(col)).isEqualTo("TIMESTAMP");
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -84,7 +84,7 @@ class IcebergSchemaMapperTest {
     SchemaColumn col =
         singleColumn(
             Types.NestedField.optional(1, "ts_utc_nano", Types.TimestampNanoType.withZone()));
-    assertThat(col.getLogicalType()).isEqualTo("TIMESTAMPTZ");
+    assertThat(typeTag(col)).isEqualTo("TIMESTAMPTZ");
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -93,7 +93,7 @@ class IcebergSchemaMapperTest {
     SchemaColumn col =
         singleColumn(
             Types.NestedField.optional(1, "ts_ntz_nano", Types.TimestampNanoType.withoutZone()));
-    assertThat(col.getLogicalType()).isEqualTo("TIMESTAMP");
+    assertThat(typeTag(col)).isEqualTo("TIMESTAMP");
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -104,13 +104,13 @@ class IcebergSchemaMapperTest {
   @Test
   void integerMapsToInt() {
     SchemaColumn col = singleColumn(Types.NestedField.required(1, "n", Types.IntegerType.get()));
-    assertThat(col.getLogicalType()).isEqualTo("INT");
+    assertThat(typeTag(col)).isEqualTo("INT");
   }
 
   @Test
   void longMapsToInt() {
     SchemaColumn col = singleColumn(Types.NestedField.required(1, "n", Types.LongType.get()));
-    assertThat(col.getLogicalType()).isEqualTo("INT");
+    assertThat(typeTag(col)).isEqualTo("INT");
   }
 
   // ---------------------------------------------------------------------------
@@ -130,14 +130,14 @@ class IcebergSchemaMapperTest {
             Types.NestedField.optional(7, "dt", Types.DateType.get()),
             Types.NestedField.optional(8, "t", Types.TimeType.get()));
 
-    assertThat(desc.getColumns(0).getLogicalType()).isEqualTo("BOOLEAN");
-    assertThat(desc.getColumns(1).getLogicalType()).isEqualTo("FLOAT");
-    assertThat(desc.getColumns(2).getLogicalType()).isEqualTo("DOUBLE");
-    assertThat(desc.getColumns(3).getLogicalType()).isEqualTo("STRING");
-    assertThat(desc.getColumns(4).getLogicalType()).isEqualTo("BINARY");
-    assertThat(desc.getColumns(5).getLogicalType()).isEqualTo("UUID");
-    assertThat(desc.getColumns(6).getLogicalType()).isEqualTo("DATE");
-    assertThat(desc.getColumns(7).getLogicalType()).isEqualTo("TIME");
+    assertThat(typeTag(desc.getColumns(0))).isEqualTo("BOOLEAN");
+    assertThat(typeTag(desc.getColumns(1))).isEqualTo("FLOAT");
+    assertThat(typeTag(desc.getColumns(2))).isEqualTo("DOUBLE");
+    assertThat(typeTag(desc.getColumns(3))).isEqualTo("STRING");
+    assertThat(typeTag(desc.getColumns(4))).isEqualTo("BINARY");
+    assertThat(typeTag(desc.getColumns(5))).isEqualTo("UUID");
+    assertThat(typeTag(desc.getColumns(6))).isEqualTo("DATE");
+    assertThat(typeTag(desc.getColumns(7))).isEqualTo("TIME");
   }
 
   @Test
@@ -145,7 +145,7 @@ class IcebergSchemaMapperTest {
     // Iceberg FIXED (fixed-length byte array) must collapse to canonical BINARY.
     SchemaColumn col =
         singleColumn(Types.NestedField.optional(1, "fingerprint", Types.FixedType.ofLength(16)));
-    assertThat(col.getLogicalType()).isEqualTo("BINARY");
+    assertThat(typeTag(col)).isEqualTo("BINARY");
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -157,7 +157,7 @@ class IcebergSchemaMapperTest {
   void decimalMapsWithPrecisionAndScale() {
     SchemaColumn col =
         singleColumn(Types.NestedField.optional(1, "amt", Types.DecimalType.of(10, 2)));
-    assertThat(col.getLogicalType()).isEqualTo("DECIMAL(10,2)");
+    assertThat(typeTag(col)).isEqualTo("DECIMAL(10,2)");
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -171,7 +171,7 @@ class IcebergSchemaMapperTest {
         singleColumn(
             Types.NestedField.optional(
                 1, "items", Types.ListType.ofOptional(2, Types.StringType.get())));
-    assertThat(col.getLogicalType()).isEqualTo("ARRAY");
+    assertThat(typeTag(col)).isEqualTo("ARRAY");
     assertThat(col.getLeaf()).isFalse();
   }
 
@@ -183,7 +183,7 @@ class IcebergSchemaMapperTest {
                 1,
                 "attrs",
                 Types.MapType.ofOptional(2, 3, Types.StringType.get(), Types.StringType.get())));
-    assertThat(col.getLogicalType()).isEqualTo("MAP");
+    assertThat(typeTag(col)).isEqualTo("MAP");
     assertThat(col.getLeaf()).isFalse();
   }
 
@@ -196,14 +196,14 @@ class IcebergSchemaMapperTest {
                 "info",
                 Types.StructType.of(
                     Types.NestedField.optional(2, "city", Types.StringType.get()))));
-    assertThat(col.getLogicalType()).isEqualTo("STRUCT");
+    assertThat(typeTag(col)).isEqualTo("STRUCT");
     assertThat(col.getLeaf()).isFalse();
   }
 
   @Test
   void variantFieldMapsToVariantAndIsLeaf() {
     SchemaColumn col = singleColumn(Types.NestedField.optional(1, "v", Types.VariantType.get()));
-    assertThat(col.getLogicalType()).isEqualTo("VARIANT");
+    assertThat(typeTag(col)).isEqualTo("VARIANT");
     assertThat(col.getLeaf()).isTrue();
   }
 
@@ -214,7 +214,7 @@ class IcebergSchemaMapperTest {
   @Test
   void scalarFieldHasNoFullType() {
     SchemaColumn col = singleColumn(Types.NestedField.required(1, "n", Types.IntegerType.get()));
-    assertThat(col.getLogicalTypeFull()).isEmpty();
+    assertThat(hasTypeTree(col)).isFalse();
   }
 
   @Test
@@ -223,8 +223,8 @@ class IcebergSchemaMapperTest {
         singleColumn(
             Types.NestedField.optional(
                 1, "items", Types.ListType.ofOptional(2, Types.StringType.get())));
-    assertThat(col.getLogicalType()).isEqualTo("ARRAY");
-    assertThat(col.getLogicalTypeFull()).isEqualTo("ARRAY<STRING>");
+    assertThat(typeTag(col)).isEqualTo("ARRAY");
+    assertThat(typeString(col)).isEqualTo("ARRAY<STRING>");
   }
 
   @Test
@@ -236,7 +236,7 @@ class IcebergSchemaMapperTest {
                 "matrix",
                 Types.ListType.ofOptional(
                     2, Types.ListType.ofRequired(3, Types.IntegerType.get()))));
-    assertThat(col.getLogicalTypeFull()).isEqualTo("ARRAY<ARRAY<INT>>");
+    assertThat(typeString(col)).isEqualTo("ARRAY<ARRAY<INT>>");
   }
 
   @Test
@@ -247,8 +247,8 @@ class IcebergSchemaMapperTest {
                 1,
                 "attrs",
                 Types.MapType.ofOptional(2, 3, Types.StringType.get(), Types.LongType.get())));
-    assertThat(col.getLogicalType()).isEqualTo("MAP");
-    assertThat(col.getLogicalTypeFull()).isEqualTo("MAP<STRING, INT>");
+    assertThat(typeTag(col)).isEqualTo("MAP");
+    assertThat(typeString(col)).isEqualTo("MAP<STRING, INT>");
   }
 
   @Test
@@ -266,8 +266,7 @@ class IcebergSchemaMapperTest {
                             4,
                             "quantities",
                             Types.ListType.ofOptional(5, Types.IntegerType.get()))))));
-    assertThat(col.getLogicalTypeFull())
-        .isEqualTo("ARRAY<STRUCT<sku: STRING, quantities: ARRAY<INT>>>");
+    assertThat(typeString(col)).isEqualTo("ARRAY<STRUCT<sku: STRING, quantities: ARRAY<INT>>>");
   }
 
   @Test
@@ -283,7 +282,7 @@ class IcebergSchemaMapperTest {
                     Types.StringType.get(),
                     Types.ListType.ofRequired(4, Types.DecimalType.of(38, 9)))));
     ai.floedb.floecat.types.LogicalType parsed =
-        ai.floedb.floecat.types.LogicalTypeFormat.parse(col.getLogicalTypeFull());
+        ai.floedb.floecat.types.LogicalTypeFormat.parse(typeString(col));
     assertThat(parsed.kind()).isEqualTo(ai.floedb.floecat.types.LogicalKind.MAP);
     assertThat(parsed.value().element())
         .isEqualTo(ai.floedb.floecat.types.LogicalType.decimal(38, 9));
@@ -312,12 +311,12 @@ class IcebergSchemaMapperTest {
 
     SchemaColumn id = desc.getColumns(0);
     assertThat(id.getName()).isEqualTo("id");
-    assertThat(id.getLogicalType()).isEqualTo("INT");
+    assertThat(typeTag(id)).isEqualTo("INT");
     assertThat(id.getLeaf()).isTrue();
 
     SchemaColumn address = desc.getColumns(1);
     assertThat(address.getName()).isEqualTo("address");
-    assertThat(address.getLogicalType()).isEqualTo("STRUCT");
+    assertThat(typeTag(address)).isEqualTo("STRUCT");
     assertThat(address.getLeaf()).isFalse();
     assertThat(address.getPhysicalPath()).isEqualTo("address");
 
@@ -325,7 +324,7 @@ class IcebergSchemaMapperTest {
     assertThat(city.getName()).isEqualTo("city");
     assertThat(city.getPhysicalPath()).isEqualTo("address.city");
     assertThat(city.getLeaf()).isTrue();
-    assertThat(city.getLogicalType()).isEqualTo("STRING");
+    assertThat(typeTag(city)).isEqualTo("STRING");
 
     SchemaColumn zip = desc.getColumns(3);
     assertThat(zip.getName()).isEqualTo("zip");
@@ -395,5 +394,18 @@ class IcebergSchemaMapperTest {
             () -> IcebergSchemaMapper.map(ColumnIdAlgorithm.CID_FIELD_ID, "{not-json", Set.of()))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Failed to parse Iceberg schema JSON");
+  }
+
+  private static String typeTag(ai.floedb.floecat.query.rpc.SchemaColumn column) {
+    return ai.floedb.floecat.types.LogicalTypeFormat.formatTag(
+        ai.floedb.floecat.types.LogicalTypeProtoAdapter.columnType(column));
+  }
+
+  private static String typeString(ai.floedb.floecat.query.rpc.SchemaColumn column) {
+    return ai.floedb.floecat.types.LogicalTypeProtoAdapter.columnTypeString(column);
+  }
+
+  private static boolean hasTypeTree(ai.floedb.floecat.query.rpc.SchemaColumn column) {
+    return ai.floedb.floecat.types.LogicalTypeProtoAdapter.columnType(column).hasTypeTree();
   }
 }

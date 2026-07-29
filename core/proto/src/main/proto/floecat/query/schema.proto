@@ -22,6 +22,7 @@ option java_outer_classname = "QuerySchemaProto";
 
 import "floecat/common/common.proto";
 import "floecat/query/pinning.proto";
+import "floecat/types/types.proto";
 
 /**
  * LOGICAL SCHEMA MODEL
@@ -39,12 +40,15 @@ import "floecat/query/pinning.proto";
  * It intentionally omits storage-level layout or engine-specific details.
  */
 message SchemaColumn {
-  string name = 1; // Logical column name.
+  // Breaking change: the flat canonical type string (e.g. "INT", "ARRAY") was replaced by the
+  // typed recursive `type` field below. Persisted columns written before this change are
+  // re-reconciled from upstream metadata where an upstream exists; view output columns with no
+  // upstream (created directly via gRPC) are upgraded transparently on load by recovering the
+  // legacy string from unknown fields (LogicalTypeProtoAdapter.upgradeLegacyColumn).
+  reserved 2;
+  reserved "logical_type";
 
-  // Flat canonical type, e.g. INT, STRING, DECIMAL(10,2), TIMESTAMP, TIMESTAMPTZ. For complex
-  // columns this is only the container tag (ARRAY, MAP, STRUCT, VARIANT) for legacy consumers;
-  // the full tree is in logical_type_full.
-  string logical_type = 2;
+  string name = 1; // Logical column name.
   int32 field_id = 3; // Stable format-level field ID.
   bool nullable = 4; // True if column may contain NULLs.
   string physical_path = 5; // Optional nested path in the physical layout.
@@ -53,11 +57,11 @@ message SchemaColumn {
   int32 ordinal = 8; // Ordinal position in the schema (1-based within the parent struct).
   bool leaf = 9; // True if this is a leaf (stats-capable); false for containers.
 
-  // Full recursive canonical type for complex columns, in the nested grammar of
-  // LogicalTypeFormat, e.g. ARRAY<INT>, MAP<STRING, DOUBLE>,
-  // ARRAY<STRUCT<sku: STRING, quantities: ARRAY<INT>>>. Empty when logical_type is already
-  // complete (scalar columns) or when the source tree is unknown (legacy producers).
-  string logical_type_full = 10;
+  // The only authoritative semantic type for the column: a recursive tree preserving nested
+  // structure and element/value/field nullability. Scalar columns carry a scalar node; complex
+  // columns carry the full shape (a complex kind without a shape is a legacy non-parameterised
+  // container tag).
+  ai.floedb.floecat.types.LogicalType type = 10;
 }
 
 /**

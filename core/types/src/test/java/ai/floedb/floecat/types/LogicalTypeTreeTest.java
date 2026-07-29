@@ -266,6 +266,28 @@ class LogicalTypeTreeTest {
   }
 
   @Test
+  void wireEncodesRequiredSoUnsetDefaultsToNullable() {
+    // A producer that never sets the required bits must decode as nullable (the safe default).
+    ai.floedb.floecat.types.rpc.LogicalType bareWire =
+        ai.floedb.floecat.types.rpc.LogicalType.newBuilder()
+            .setKind(ai.floedb.floecat.types.rpc.LogicalType.Kind.TK_ARRAY)
+            .setArray(
+                ai.floedb.floecat.types.rpc.ArrayShape.newBuilder()
+                    .setElement(LogicalTypeProtoAdapter.toProto(INT)))
+            .build();
+    assertThat(LogicalTypeProtoAdapter.fromProto(bareWire).elementNullable()).isTrue();
+
+    // And the inversion is explicit both ways: NOT NULL model <-> required wire.
+    ai.floedb.floecat.types.rpc.LogicalType notNullWire =
+        LogicalTypeProtoAdapter.toProto(LogicalType.array(INT, false));
+    assertThat(notNullWire.getArray().getElementRequired()).isTrue();
+    ai.floedb.floecat.types.rpc.LogicalType nullableWire =
+        LogicalTypeProtoAdapter.toProto(
+            LogicalType.struct(List.of(new LogicalField("a", true, INT))));
+    assertThat(nullableWire.getStruct().getFields(0).getRequired()).isFalse();
+  }
+
+  @Test
   void stringGrammarLosesNullabilityButProtoDoesNot() {
     LogicalType t = LogicalType.array(INT, false);
     // The grammar has no nullability syntax: re-parsing defaults to nullable.
@@ -274,6 +296,85 @@ class LogicalTypeTreeTest {
     assertThat(
             LogicalTypeProtoAdapter.fromProto(LogicalTypeProtoAdapter.toProto(t)).elementNullable())
         .isFalse();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Legacy column recovery (pre-migration logical_type string in unknown fields)
+  // ---------------------------------------------------------------------------
+
+  private static ai.floedb.floecat.query.rpc.SchemaColumn legacyColumn(String legacyLogicalType) {
+    // Simulate a column persisted before the typed migration: field 2 (the reserved
+    // logical_type string) arrives in the parsed message's unknown fields.
+    com.google.protobuf.UnknownFieldSet unknown =
+        com.google.protobuf.UnknownFieldSet.newBuilder()
+            .addField(
+                2,
+                com.google.protobuf.UnknownFieldSet.Field.newBuilder()
+                    .addLengthDelimited(
+                        com.google.protobuf.ByteString.copyFromUtf8(legacyLogicalType))
+                    .build())
+            .build();
+    return ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder()
+        .setName("c")
+        .setUnknownFields(unknown)
+        .build();
+  }
+
+  @Test
+  void upgradeLegacyColumnRecoversScalarType() {
+    var upgraded = LogicalTypeProtoAdapter.upgradeLegacyColumn(legacyColumn("DECIMAL(10,2)"));
+    assertThat(upgraded.hasType()).isTrue();
+    assertThat(LogicalTypeProtoAdapter.columnType(upgraded)).isEqualTo(LogicalType.decimal(10, 2));
+  }
+
+  @Test
+  void upgradeLegacyColumnRecoversComplexTagAsLegacyForm() {
+    var upgraded = LogicalTypeProtoAdapter.upgradeLegacyColumn(legacyColumn("ARRAY"));
+    assertThat(upgraded.hasType()).isTrue();
+    LogicalType t = LogicalTypeProtoAdapter.columnType(upgraded);
+    assertThat(t.kind()).isEqualTo(LogicalKind.ARRAY);
+    assertThat(t.hasTypeTree()).isFalse();
+  }
+
+  @Test
+  void upgradeLegacyColumnRecoversBytesWrittenByPreChangeSchema() throws Exception {
+    // Serialize field 2 exactly as the pre-change proto did (a known string field), then parse
+    // those bytes as the NEW SchemaColumn — proving real pre-migration bytes arrive as the
+    // unknown-field shape the recovery reads, not just that our hand-built fixture does.
+    java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+    com.google.protobuf.CodedOutputStream out =
+        com.google.protobuf.CodedOutputStream.newInstance(bytes);
+    out.writeString(1, "amount"); // name
+    out.writeString(2, "DECIMAL(12,2)"); // legacy logical_type, field 2, wire type 2
+    out.writeBool(4, true); // nullable
+    out.flush();
+
+    ai.floedb.floecat.query.rpc.SchemaColumn parsed =
+        ai.floedb.floecat.query.rpc.SchemaColumn.parseFrom(bytes.toByteArray());
+    assertThat(parsed.hasType()).isFalse();
+    assertThat(parsed.getName()).isEqualTo("amount");
+
+    var upgraded = LogicalTypeProtoAdapter.upgradeLegacyColumn(parsed);
+    assertThat(upgraded.hasType()).isTrue();
+    assertThat(LogicalTypeProtoAdapter.columnType(upgraded)).isEqualTo(LogicalType.decimal(12, 2));
+    assertThat(upgraded.getNullable()).isTrue();
+  }
+
+  @Test
+  void upgradeLegacyColumnLeavesTypedAndUnrecoverableColumnsAlone() {
+    // Already typed: unchanged.
+    var typed =
+        ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder()
+            .setName("c")
+            .setType(LogicalTypeProtoAdapter.toProto(INT))
+            .build();
+    assertThat(LogicalTypeProtoAdapter.upgradeLegacyColumn(typed)).isSameAs(typed);
+    // No legacy value: unchanged.
+    var bare = ai.floedb.floecat.query.rpc.SchemaColumn.newBuilder().setName("c").build();
+    assertThat(LogicalTypeProtoAdapter.upgradeLegacyColumn(bare)).isSameAs(bare);
+    // Unparseable legacy value: unchanged (readers degrade as for any untyped column).
+    var junk = legacyColumn("NOT_A_TYPE");
+    assertThat(LogicalTypeProtoAdapter.upgradeLegacyColumn(junk)).isSameAs(junk);
   }
 
   @Test
@@ -293,7 +394,7 @@ class LogicalTypeTreeTest {
             .setArray(
                 ai.floedb.floecat.types.rpc.ArrayShape.newBuilder()
                     .setElement(LogicalTypeProtoAdapter.toProto(INT))
-                    .setElementNullable(true))
+                    .setElementRequired(false))
             .build();
     assertThatThrownBy(() -> LogicalTypeProtoAdapter.fromProto(arrayShapeOnMapKind))
         .isInstanceOf(IllegalArgumentException.class)
@@ -348,7 +449,7 @@ class LogicalTypeTreeTest {
               .setArray(
                   ai.floedb.floecat.types.rpc.ArrayShape.newBuilder()
                       .setElement(deep)
-                      .setElementNullable(true))
+                      .setElementRequired(false))
               .build();
     }
     ai.floedb.floecat.types.rpc.LogicalType finalDeep = deep;

@@ -22,6 +22,7 @@ import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.expr.Expr;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.apache.arrow.memory.BufferAllocator;
@@ -39,10 +40,14 @@ class ArrowFilterOperatorTest {
   void filtersRowsAccordingToExpression() {
     List<SchemaColumn> schema =
         List.of(
-            SchemaColumn.newBuilder().setName("id").setLogicalType("INT").setFieldId(1).build(),
+            SchemaColumn.newBuilder()
+                .setName("id")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
+                .setFieldId(1)
+                .build(),
             SchemaColumn.newBuilder()
                 .setName("label")
-                .setLogicalType("VARCHAR")
+                .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
                 .setFieldId(2)
                 .build());
 
@@ -77,10 +82,14 @@ class ArrowFilterOperatorTest {
   void filtersRowsWithGreaterThanExpression() {
     List<SchemaColumn> schema =
         List.of(
-            SchemaColumn.newBuilder().setName("id").setLogicalType("INT").setFieldId(1).build(),
+            SchemaColumn.newBuilder()
+                .setName("id")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
+                .setFieldId(1)
+                .build(),
             SchemaColumn.newBuilder()
                 .setName("label")
-                .setLogicalType("VARCHAR")
+                .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
                 .setFieldId(2)
                 .build());
 
@@ -115,7 +124,7 @@ class ArrowFilterOperatorTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("value")
-                .setLogicalType("BIGINT")
+                .setType(LogicalTypeProtoAdapter.parseToProto("BIGINT"))
                 .setFieldId(1)
                 .build());
 
@@ -139,7 +148,11 @@ class ArrowFilterOperatorTest {
   @Test
   void filtersRowsWithVarCharEmptyStringEq() {
     SchemaColumn column =
-        SchemaColumn.newBuilder().setName("label").setLogicalType("VARCHAR").setFieldId(1).build();
+        SchemaColumn.newBuilder()
+            .setName("label")
+            .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
+            .setFieldId(1)
+            .build();
     List<SchemaColumn> schema = List.of(column);
     List<SystemObjectRow> rows =
         List.of(new SystemObjectRow(new Object[] {""}), new SystemObjectRow(new Object[] {"x"}));
@@ -157,7 +170,11 @@ class ArrowFilterOperatorTest {
   @Test
   void filtersRowsWithVarCharUtf8MultiByte() {
     SchemaColumn column =
-        SchemaColumn.newBuilder().setName("label").setLogicalType("VARCHAR").setFieldId(1).build();
+        SchemaColumn.newBuilder()
+            .setName("label")
+            .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
+            .setFieldId(1)
+            .build();
     List<SchemaColumn> schema = List.of(column);
     List<SystemObjectRow> rows =
         List.of(
@@ -179,7 +196,7 @@ class ArrowFilterOperatorTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("flag")
-                .setLogicalType("VARCHAR")
+                .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
                 .setFieldId(1)
                 .build());
 
@@ -203,7 +220,7 @@ class ArrowFilterOperatorTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("value")
-                .setLogicalType("FLOAT8")
+                .setType(LogicalTypeProtoAdapter.parseToProto("FLOAT8"))
                 .setFieldId(1)
                 .build());
 
@@ -228,7 +245,7 @@ class ArrowFilterOperatorTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("value")
-                .setLogicalType("FLOAT8")
+                .setType(LogicalTypeProtoAdapter.parseToProto("FLOAT8"))
                 .setFieldId(1)
                 .build());
 
@@ -250,10 +267,14 @@ class ArrowFilterOperatorTest {
   void filtersRowsWithAndExpression() {
     List<SchemaColumn> schema =
         List.of(
-            SchemaColumn.newBuilder().setName("id").setLogicalType("INT").setFieldId(1).build(),
+            SchemaColumn.newBuilder()
+                .setName("id")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
+                .setFieldId(1)
+                .build(),
             SchemaColumn.newBuilder()
                 .setName("label")
-                .setLogicalType("VARCHAR")
+                .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
                 .setFieldId(2)
                 .build());
 
@@ -282,7 +303,7 @@ class ArrowFilterOperatorTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("value")
-                .setLogicalType("FLOAT")
+                .setType(LogicalTypeProtoAdapter.parseToProto("FLOAT"))
                 .setFieldId(1)
                 .build());
 
@@ -311,7 +332,7 @@ class ArrowFilterOperatorTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("value")
-                .setLogicalType("FLOAT")
+                .setType(LogicalTypeProtoAdapter.parseToProto("FLOAT"))
                 .setFieldId(1)
                 .build());
 
@@ -338,7 +359,7 @@ class ArrowFilterOperatorTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("value")
-                .setLogicalType("FLOAT")
+                .setType(LogicalTypeProtoAdapter.parseToProto("FLOAT"))
                 .setFieldId(1)
                 .build());
 
@@ -361,7 +382,7 @@ class ArrowFilterOperatorTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("value")
-                .setLogicalType("FLOAT")
+                .setType(LogicalTypeProtoAdapter.parseToProto("FLOAT"))
                 .setFieldId(1)
                 .build());
 
@@ -386,7 +407,7 @@ class ArrowFilterOperatorTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("value")
-                .setLogicalType("FLOAT")
+                .setType(LogicalTypeProtoAdapter.parseToProto("FLOAT"))
                 .setFieldId(1)
                 .build());
 
@@ -411,7 +432,7 @@ class ArrowFilterOperatorTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("value")
-                .setLogicalType("FLOAT")
+                .setType(LogicalTypeProtoAdapter.parseToProto("FLOAT"))
                 .setFieldId(1)
                 .build());
 
@@ -437,7 +458,7 @@ class ArrowFilterOperatorTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("value")
-                .setLogicalType("FLOAT")
+                .setType(LogicalTypeProtoAdapter.parseToProto("FLOAT"))
                 .setFieldId(1)
                 .build());
 
@@ -462,7 +483,7 @@ class ArrowFilterOperatorTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("value")
-                .setLogicalType("FLOAT8")
+                .setType(LogicalTypeProtoAdapter.parseToProto("FLOAT8"))
                 .setFieldId(1)
                 .build());
 
@@ -491,7 +512,7 @@ class ArrowFilterOperatorTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("value")
-                .setLogicalType("FLOAT8")
+                .setType(LogicalTypeProtoAdapter.parseToProto("FLOAT8"))
                 .setFieldId(1)
                 .build());
 
@@ -519,7 +540,7 @@ class ArrowFilterOperatorTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("value")
-                .setLogicalType("FLOAT8")
+                .setType(LogicalTypeProtoAdapter.parseToProto("FLOAT8"))
                 .setFieldId(1)
                 .build());
 
@@ -540,10 +561,14 @@ class ArrowFilterOperatorTest {
   void filtersRowsWithOrExpression() {
     List<SchemaColumn> schema =
         List.of(
-            SchemaColumn.newBuilder().setName("id").setLogicalType("INT").setFieldId(1).build(),
+            SchemaColumn.newBuilder()
+                .setName("id")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
+                .setFieldId(1)
+                .build(),
             SchemaColumn.newBuilder()
                 .setName("label")
-                .setLogicalType("VARCHAR")
+                .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
                 .setFieldId(2)
                 .build());
 
@@ -572,7 +597,7 @@ class ArrowFilterOperatorTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("maybe")
-                .setLogicalType("VARCHAR")
+                .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
                 .setFieldId(1)
                 .build());
 
@@ -596,12 +621,12 @@ class ArrowFilterOperatorTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("flag")
-                .setLogicalType("BOOLEAN")
+                .setType(LogicalTypeProtoAdapter.parseToProto("BOOLEAN"))
                 .setFieldId(1)
                 .build(),
             SchemaColumn.newBuilder()
                 .setName("value")
-                .setLogicalType("FLOAT8")
+                .setType(LogicalTypeProtoAdapter.parseToProto("FLOAT8"))
                 .setFieldId(2)
                 .build());
 

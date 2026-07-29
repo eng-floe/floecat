@@ -20,7 +20,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.types.LogicalType;
-import ai.floedb.floecat.types.LogicalTypeFormat;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.Set;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
@@ -30,8 +30,10 @@ import org.apache.iceberg.types.Types;
 /**
  * IcebergSchemaMapper: Converts Iceberg-formatted schema JSON to logical SchemaDescriptor.
  *
- * <p>Handles Iceberg's native field IDs and nested structures (struct, list<struct>,
- * map<*,struct>).
+ * <p>Traversal and physical-path notation come from {@link IcebergNestedPaths}, the single walk
+ * shared with the stats-side fieldId→path maps — every visited node (including list elements, map
+ * keys, and map values) becomes a SchemaColumn row, so the schema path set and the stats path set
+ * are identical by construction.
  */
 public final class IcebergSchemaMapper {
 
@@ -51,94 +53,37 @@ public final class IcebergSchemaMapper {
       Schema iceberg = SchemaParser.fromJson(schemaJson);
       SchemaDescriptor.Builder sb = SchemaDescriptor.newBuilder();
 
-      int ordinal = 1;
-      for (Types.NestedField field : iceberg.columns()) {
-        addIcebergField(cid_algo, sb, field, "", partitionKeys, ordinal++);
-      }
+      IcebergNestedPaths.walk(
+          iceberg,
+          (field, path, ordinal) -> {
+            Type t = field.type();
+            boolean isLeaf =
+                !(t instanceof Types.StructType)
+                    && !(t instanceof Types.ListType)
+                    && !(t instanceof Types.MapType);
+            boolean isPartition =
+                partitionKeys.contains(field.name()) || partitionKeys.contains(path);
+            LogicalType logicalType = IcebergTypeMappings.toLogical(t);
+
+            sb.addColumns(
+                ColumnIdComputer.withComputedId(
+                    cid_algo,
+                    SchemaColumn.newBuilder()
+                        .setName(field.name())
+                        .setType(LogicalTypeProtoAdapter.toProto(logicalType))
+                        .setFieldId(field.fieldId())
+                        .setNullable(!field.isRequired())
+                        .setPhysicalPath(path)
+                        .setPartitionKey(isPartition)
+                        .setOrdinal(ordinal)
+                        .setLeaf(isLeaf)
+                        .build()));
+          });
 
       return sb.build();
 
     } catch (Exception e) {
       throw new IllegalArgumentException("Failed to parse Iceberg schema JSON", e);
-    }
-  }
-
-  /**
-   * Recursively add an Iceberg field (and its nested children) to the schema builder.
-   *
-   * @param cid_algo Column ID algorithm
-   * @param sb SchemaDescriptor builder accumulating columns
-   * @param field The Iceberg NestedField to process
-   * @param prefix Current path prefix (e.g., "" for top-level, "address" for nested in address
-   *     struct)
-   * @param partitionKeys Set of partition column names
-   * @param ordinal 1-based ordinal within the parent container
-   */
-  private static void addIcebergField(
-      ColumnIdAlgorithm cid_algo,
-      SchemaDescriptor.Builder sb,
-      Types.NestedField field,
-      String prefix,
-      Set<String> partitionKeys,
-      int ordinal) {
-
-    String physical = prefix.isEmpty() ? field.name() : prefix + "." + field.name();
-
-    boolean isPartition = partitionKeys.contains(field.name()) || partitionKeys.contains(physical);
-
-    Type t = field.type();
-
-    // Emit both container and leaf nodes. Stats will later filter to leaf=true.
-    // We treat struct/list/map as non-leaf (containers).
-    boolean isLeaf =
-        !(t instanceof Types.StructType)
-            && !(t instanceof Types.ListType)
-            && !(t instanceof Types.MapType);
-
-    LogicalType logicalType = IcebergTypeMappings.toLogical(field.type());
-
-    sb.addColumns(
-        ColumnIdComputer.withComputedId(
-            cid_algo,
-            SchemaColumn.newBuilder()
-                .setName(field.name())
-                .setLogicalType(LogicalTypeFormat.formatTag(logicalType))
-                .setLogicalTypeFull(
-                    logicalType.hasTypeTree() ? LogicalTypeFormat.format(logicalType) : "")
-                .setFieldId(field.fieldId())
-                .setNullable(!field.isRequired())
-                .setPhysicalPath(physical)
-                .setPartitionKey(isPartition)
-                .setOrdinal(ordinal) // 1-based ordinal within the parent schema object
-                .setLeaf(isLeaf)
-                .build()));
-
-    // struct
-    if (t instanceof Types.StructType st) {
-      int childOrdinal = 1;
-      for (Types.NestedField child : st.fields()) {
-        addIcebergField(cid_algo, sb, child, physical, partitionKeys, childOrdinal++);
-      }
-      return;
-    }
-
-    // list<struct>
-    if (t instanceof Types.ListType lt && lt.elementType() instanceof Types.StructType st2) {
-      String childPrefix = physical + "[]";
-      int childOrdinal = 1;
-      for (Types.NestedField child : st2.fields()) {
-        addIcebergField(cid_algo, sb, child, childPrefix, partitionKeys, childOrdinal++);
-      }
-      return;
-    }
-
-    // map<*, struct>
-    if (t instanceof Types.MapType mt && mt.valueType() instanceof Types.StructType st3) {
-      String childPrefix = physical + "{}";
-      int childOrdinal = 1;
-      for (Types.NestedField child : st3.fields()) {
-        addIcebergField(cid_algo, sb, child, childPrefix, partitionKeys, childOrdinal++);
-      }
     }
   }
 }

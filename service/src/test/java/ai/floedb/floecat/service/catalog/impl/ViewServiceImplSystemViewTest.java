@@ -300,7 +300,12 @@ class ViewServiceImplSystemViewTest {
                 .setCatalogId(userCatalogId)
                 .setNamespaceId(namespaceId)
                 .setDisplayName("orders")
-                .addOutputColumns(SchemaColumn.newBuilder().setName("c").build())
+                .addOutputColumns(
+                    SchemaColumn.newBuilder()
+                        .setName("c")
+                        .setType(
+                            ai.floedb.floecat.types.LogicalTypeProtoAdapter.parseToProto("INT"))
+                        .build())
                 .addSqlDefinitions(ViewSqlDefinition.newBuilder().setSql("select 1").build()))
         .build();
   }

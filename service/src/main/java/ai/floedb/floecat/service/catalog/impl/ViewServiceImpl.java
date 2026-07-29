@@ -180,6 +180,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   if (spec.getOutputColumnsList().isEmpty()) {
                     throw GrpcErrors.invalidArgument(corr, VIEW_OUTPUT_COLUMNS_REQUIRED, Map.of());
                   }
+                  var outputColumns = requireTypedOutputColumns(spec.getOutputColumnsList(), corr);
 
                   var rawName = mustNonEmpty(spec.getDisplayName(), "spec.display_name", corr);
                   var normName = normalizeName(rawName);
@@ -205,7 +206,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           .putAllProperties(spec.getPropertiesMap())
                           .addAllBaseRelations(spec.getBaseRelationsList())
                           .addAllCreationSearchPath(spec.getCreationSearchPathList())
-                          .addAllOutputColumns(spec.getOutputColumnsList());
+                          .addAllOutputColumns(outputColumns);
                   applySqlDefinitions(viewBuilder, spec, corr);
                   var view = viewBuilder.build();
 
@@ -513,7 +514,8 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
       if (spec.getOutputColumnsList().isEmpty()) {
         throw GrpcErrors.invalidArgument(corr, VIEW_OUTPUT_COLUMNS_REQUIRED, Map.of());
       }
-      b.clearOutputColumns().addAllOutputColumns(spec.getOutputColumnsList());
+      b.clearOutputColumns()
+          .addAllOutputColumns(requireTypedOutputColumns(spec.getOutputColumnsList(), corr));
     }
 
     if (maskTargets(mask, "base_relations")) {
@@ -575,6 +577,33 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
       }
     }
     return out.build();
+  }
+
+  /**
+   * Every persisted output column must carry a decodable type — the typed field is the sole
+   * authority, and an untyped column is unrecoverable once written (it fails Arrow mapping, engine
+   * decoration, and information_schema rendering). Columns from older clients that still send the
+   * legacy logical_type string are upgraded transparently before validation, so the persisted form
+   * is always typed.
+   */
+  private static java.util.List<ai.floedb.floecat.query.rpc.SchemaColumn> requireTypedOutputColumns(
+      java.util.List<ai.floedb.floecat.query.rpc.SchemaColumn> columns, String corr) {
+    var typed = new java.util.ArrayList<ai.floedb.floecat.query.rpc.SchemaColumn>(columns.size());
+    for (var column : columns) {
+      var upgraded = ai.floedb.floecat.types.LogicalTypeProtoAdapter.upgradeLegacyColumn(column);
+      if (!upgraded.hasType()) {
+        throw GrpcErrors.invalidArgument(
+            corr, VIEW_OUTPUT_COLUMN_TYPE_REQUIRED, Map.of("column", column.getName()));
+      }
+      try {
+        ai.floedb.floecat.types.LogicalTypeProtoAdapter.fromProto(upgraded.getType());
+      } catch (IllegalArgumentException e) {
+        throw GrpcErrors.invalidArgument(
+            corr, VIEW_OUTPUT_COLUMN_TYPE_REQUIRED, Map.of("column", column.getName()));
+      }
+      typed.add(upgraded);
+    }
+    return typed;
   }
 
   private static byte[] canonicalFingerprint(ViewSpec s) {

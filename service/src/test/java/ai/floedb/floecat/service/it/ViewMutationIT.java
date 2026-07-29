@@ -31,6 +31,7 @@ import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -347,7 +348,12 @@ class ViewMutationIT {
 
     var key = IdempotencyKey.newBuilder().setKey(viewPrefix + "k-view-1").build();
 
-    var defaultCol = SchemaColumn.newBuilder().setName("_col0").setNullable(true).build();
+    var defaultCol =
+        SchemaColumn.newBuilder()
+            .setName("_col0")
+            .setType(LogicalTypeProtoAdapter.parseToProto("STRING"))
+            .setNullable(true)
+            .build();
 
     var specA =
         ViewSpec.newBuilder()
@@ -383,6 +389,72 @@ class ViewMutationIT {
   }
 
   @Test
+  void createViewRejectsUntypedOutputColumn() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, viewPrefix + "cat_untyped", "vcat-untyped");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "untyped_ns", List.of("db_untyped"), "ns");
+
+    var untyped = SchemaColumn.newBuilder().setName("c").setNullable(true).build();
+    var request =
+        CreateViewRequest.newBuilder()
+            .setSpec(
+                ViewSpec.newBuilder()
+                    .setCatalogId(cat.getResourceId())
+                    .setNamespaceId(ns.getResourceId())
+                    .setDisplayName("untyped_view")
+                    .addSqlDefinitions(
+                        ViewSqlDefinition.newBuilder().setSql("SELECT 1").setDialect("ansi"))
+                    .addOutputColumns(untyped))
+            .build();
+
+    var ex =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            io.grpc.StatusRuntimeException.class, () -> view.createView(request));
+    assertEquals(io.grpc.Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+  }
+
+  @Test
+  void createViewUpgradesLegacyStringTypedColumnFromOldClients() throws Exception {
+    var cat = TestSupport.createCatalog(catalog, viewPrefix + "cat_legacy", "vcat-legacy");
+    var ns =
+        TestSupport.createNamespace(
+            namespace, cat.getResourceId(), "legacy_ns", List.of("db_legacy"), "ns");
+
+    // Simulate a pre-migration client: field 2 (the reserved logical_type string) written as a
+    // real field, arriving here as unknown-field bytes on the new SchemaColumn.
+    java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+    var out = com.google.protobuf.CodedOutputStream.newInstance(bytes);
+    out.writeString(1, "amount");
+    out.writeString(2, "DECIMAL(12,2)");
+    out.writeBool(4, true);
+    out.flush();
+    var legacyColumn = SchemaColumn.parseFrom(bytes.toByteArray());
+    org.junit.jupiter.api.Assertions.assertFalse(legacyColumn.hasType());
+
+    var created =
+        view.createView(
+                CreateViewRequest.newBuilder()
+                    .setSpec(
+                        ViewSpec.newBuilder()
+                            .setCatalogId(cat.getResourceId())
+                            .setNamespaceId(ns.getResourceId())
+                            .setDisplayName("legacy_view")
+                            .addSqlDefinitions(
+                                ViewSqlDefinition.newBuilder()
+                                    .setSql("SELECT amount FROM t")
+                                    .setDialect("ansi"))
+                            .addOutputColumns(legacyColumn))
+                    .build())
+            .getView();
+
+    // The persisted form is typed: the legacy string was upgraded on write, not stored raw.
+    var stored = created.getOutputColumns(0);
+    org.junit.jupiter.api.Assertions.assertTrue(stored.hasType());
+    assertEquals("DECIMAL(12,2)", LogicalTypeProtoAdapter.columnTypeString(stored));
+  }
+
+  @Test
   void viewSemanticFieldsRoundTrip() throws Exception {
     var cat = TestSupport.createCatalog(catalog, viewPrefix + "cat_sem", "vcat-sem");
     var ns =
@@ -393,7 +465,7 @@ class ViewMutationIT {
         SchemaColumn.newBuilder()
             .setName("order_id")
             .setNullable(false)
-            .setLogicalType("INT")
+            .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
             .build();
 
     var created =
@@ -424,7 +496,7 @@ class ViewMutationIT {
     assertEquals(List.of("sales"), fetched.getCreationSearchPathList());
     assertEquals(1, fetched.getOutputColumnsCount());
     assertEquals("order_id", fetched.getOutputColumns(0).getName());
-    assertEquals("INT", fetched.getOutputColumns(0).getLogicalType());
+    assertEquals("INT", LogicalTypeProtoAdapter.columnTypeString(fetched.getOutputColumns(0)));
     assertFalse(fetched.getOutputColumns(0).getNullable());
   }
 
@@ -462,7 +534,11 @@ class ViewMutationIT {
             namespace, cat.getResourceId(), "upd_ns", List.of("db_upd"), "update ns");
 
     var colV1 =
-        SchemaColumn.newBuilder().setName("id").setNullable(false).setLogicalType("INT").build();
+        SchemaColumn.newBuilder()
+            .setName("id")
+            .setNullable(false)
+            .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
+            .build();
     var created =
         view.createView(
                 CreateViewRequest.newBuilder()
@@ -481,7 +557,11 @@ class ViewMutationIT {
             .getView();
 
     var colV2 =
-        SchemaColumn.newBuilder().setName("id").setNullable(true).setLogicalType("BIGINT").build();
+        SchemaColumn.newBuilder()
+            .setName("id")
+            .setNullable(true)
+            .setType(LogicalTypeProtoAdapter.parseToProto("BIGINT"))
+            .build();
     var mask =
         FieldMask.newBuilder().addPaths("sql_definitions").addPaths("output_columns").build();
     var updated =
@@ -502,7 +582,7 @@ class ViewMutationIT {
 
     assertEquals("trino", updated.getSqlDefinitions(0).getDialect());
     assertEquals(1, updated.getOutputColumnsCount());
-    assertEquals("BIGINT", updated.getOutputColumns(0).getLogicalType());
+    assertEquals("INT", LogicalTypeProtoAdapter.columnTypeString(updated.getOutputColumns(0)));
     assertTrue(updated.getOutputColumns(0).getNullable());
   }
 }

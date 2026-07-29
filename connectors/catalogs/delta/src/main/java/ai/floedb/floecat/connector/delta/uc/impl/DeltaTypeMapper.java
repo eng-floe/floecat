@@ -112,7 +112,8 @@ final class DeltaTypeMapper {
           struct.fields().stream()
               .map(f -> new LogicalField(f.getName(), f.isNullable(), toLogical(f.getDataType())))
               .toList();
-      return fields.isEmpty() ? LogicalType.of(LogicalKind.STRUCT) : LogicalType.struct(fields);
+      // An explicitly empty source struct is a known-empty shape, not the legacy tag.
+      return LogicalType.struct(fields);
     }
     if (dt instanceof VariantType) return LogicalType.of(LogicalKind.VARIANT);
     if (dt instanceof DecimalType dec) {

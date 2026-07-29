@@ -19,6 +19,7 @@ package ai.floedb.floecat.scanner.columnar;
 import ai.floedb.floecat.arrow.ColumnarBatch;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.apache.arrow.memory.BufferAllocator;
@@ -36,17 +37,17 @@ class RowStreamToArrowBatchAdapterTest {
         List.of(
             SchemaColumn.newBuilder()
                 .setName("id")
-                .setLogicalType("INT")
+                .setType(LogicalTypeProtoAdapter.parseToProto("INT"))
                 .setNullable(false)
                 .build(),
             SchemaColumn.newBuilder()
                 .setName("label")
-                .setLogicalType("VARCHAR")
+                .setType(LogicalTypeProtoAdapter.parseToProto("VARCHAR"))
                 .setNullable(true)
                 .build(),
             SchemaColumn.newBuilder()
                 .setName("tags")
-                .setLogicalType("VARCHAR[]")
+                .setType(LogicalTypeProtoAdapter.parseToProto("ARRAY<STRING>"))
                 .setNullable(true)
                 .build());
 
@@ -83,19 +84,18 @@ class RowStreamToArrowBatchAdapterTest {
 
   @Test
   void stringifiesCanonicalArrayColumns() {
-    // Schema mappers emit "ARRAY" / "ARRAY<...>" (never a "[]" suffix); those columns must be
-    // stringified rather than falling through to ArrowSchemaUtil, which rejects complex kinds.
+    // Array-kinded columns (bare legacy tags or parameterised trees) must be stringified
+    // rather than falling through to ArrowSchemaUtil, which rejects complex kinds.
     List<SchemaColumn> schema =
         List.of(
             SchemaColumn.newBuilder()
                 .setName("tags")
-                .setLogicalType("ARRAY")
-                .setLogicalTypeFull("ARRAY<STRING>")
+                .setType(LogicalTypeProtoAdapter.parseToProto("ARRAY"))
                 .setNullable(true)
                 .build(),
             SchemaColumn.newBuilder()
                 .setName("counts")
-                .setLogicalType("ARRAY<INT>")
+                .setType(LogicalTypeProtoAdapter.parseToProto("ARRAY<INT>"))
                 .setNullable(true)
                 .build());
 

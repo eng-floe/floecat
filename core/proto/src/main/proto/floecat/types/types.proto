@@ -74,15 +74,21 @@ message LogicalType {
   reserved "params";
 }
 
+// Nullability is encoded as *required* so the proto3 default (false) is the safe direction:
+// a producer that forgets to set it declares the child nullable, which can only cost
+// performance — never correctness. (A forgotten "nullable=false" would license consumers to
+// skip null handling.) This also matches the upstream vocabulary the connectors read
+// (Iceberg element-required / value-required / required).
 message ArrayShape {
   LogicalType element = 1;
-  bool element_nullable = 2;
+  bool element_required = 2;
 }
 
 message MapShape {
+  // Map keys carry no nullability: they are always required.
   LogicalType key = 1;
   LogicalType value = 2;
-  bool value_nullable = 3;
+  bool value_required = 3;
 }
 
 message StructShape {
@@ -92,7 +98,7 @@ message StructShape {
 message LogicalField {
   string name = 1;
   LogicalType type = 2;
-  bool nullable = 3;
+  bool required = 3;
 }
 
 message ScalarValue {
