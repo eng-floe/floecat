@@ -208,8 +208,12 @@ public class RecursiveResourceDropper {
 
     if (!guarded) {
       dropNamespaceRelations(namespace, summary, false, BatchGuard.NONE);
-      deleteNamespace(namespace, rootId, BatchGuard.NONE, UNPINNED);
-      summary.namespacesDeleted++;
+      // Count only a namespace this call actually removed — teardown reaches namespaces an earlier
+      // subtree already took, and this number is the reconstruction record for an irreversible
+      // operation. dropNamespaceTree already worked this way; this branch did not.
+      if (deleteNamespace(namespace, rootId, BatchGuard.NONE, UNPINNED)) {
+        summary.namespacesDeleted++;
+      }
       return;
     }
 
@@ -306,7 +310,14 @@ public class RecursiveResourceDropper {
       return Optional.of(new DescendantPin(meta.getPointerVersion(), scanned));
     }
     if (live.isEmpty()) {
-      throw namespaceChanged(namespaceId);
+      // The blob is gone rather than unreadable, which is just as stable: aborting here would report
+      // NAMESPACE_RECURSIVE_PARTIAL on every attempt, after this namespace's own descendants are
+      // already destroyed, with nothing a retry could change. Same treatment as the unparseable case,
+      // and the same protection — the removal is pinned to the version read above.
+      CLEANUP_LOG.warnf(
+          "recursive_drop_namespace_blob_absent account_id=%s namespace_id=%s blob_uri=%s",
+          namespaceId.getAccountId(), namespaceId.getId(), meta.getBlobUri());
+      return Optional.of(new DescendantPin(meta.getPointerVersion(), scanned));
     }
     if (!isDescendant(live.get(), rootPath)) {
       throw movedOutOfSubtree(namespaceId, String.join(".", rootPath));
