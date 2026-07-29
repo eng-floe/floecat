@@ -2067,7 +2067,9 @@ engine release.</p>
   allows <code>SS_CURRENT</code>. Planner RPCs interpret <code>as_of</code> timestamps when enumerating snapshots.</li>
 <li><strong>File-level stats</strong> – <code>FileTargetStats</code> anchors counts and sketches to
   a file path. File stats are written as <code>TargetStatsRecord</code> values with <code>target.file</code> identity via
-  <code>PutTargetStats</code>; the service enforces consistent <code>table_id</code>/<code>snapshot_id</code> in a stream.</li>
+  <code>PutTargetStats</code>; the service enforces consistent <code>table_id</code>/<code>snapshot_id</code> in a stream. Its
+  canonical target storage ID is <code>file-&lt;sha256&gt;</code> over <code>F</code>, <code>0x1f</code>, and the trimmed UTF-8 file path.
+  This differs from the <code>file:&lt;source-file-path&gt;</code> identity used by file index targets.</li>
 <li><strong>Index artifact streams</strong> – <code>PutIndexArtifacts</code> requires each client stream to target exactly one
   <code>table_id</code> and one <code>snapshot_id</code>. Multiple snapshots must be written through separate client
   streams.</li>
@@ -2075,7 +2077,9 @@ engine release.</p>
   require <code>result_id</code>. Success carries immutable stats/artifact pointers and an
   <code>artifact_references_sha256</code> binding those pointer mappings to the durable descriptor. The
   control plane first accepts the immutable result and completes the child job, then stages
-  generation-scoped mappings without reading their objects and writes a prepared marker last.
+  generation-scoped references without reading their objects and writes the prepared marker.
+  Snapshot finalization waits for that marker, so exact replay closes a crash gap without allowing
+  a rejected lease to mutate generation pointers.
   These writes are ordered and idempotent rather than one atomic storage transaction. A timeout,
   retryable error, or uncertain outcome requires an exact replay of the same success request, even
   when the child job is already terminal. Snapshot finalization carries only group descriptors,
@@ -2092,10 +2096,21 @@ engine release.</p>
   but its serialized wrapper must be published beneath the leased <code>stats_object_prefix</code> as
   <code>index-artifacts/&lt;sha256(target_storage_id)&gt;/&lt;payload_sha256&gt;.pb</code>. Finalize manifests must repeat
   the leased capture policy exactly, including opaque properties.</li>
+<li><strong>File-group delete artifacts</strong> – <code>FileExecutionPlan</code> attaches Iceberg position/equality delete
+  files and Delta deletion vectors to a planned data file. When stats are requested, exact group
+  coverage includes the planned data files, each distinct attached Iceberg delete path, and each
+  on-disk Delta deletion vector (<code>storage_type</code> <code>u</code> or <code>p</code>). Inline Delta vectors (<code>i</code>) remain
+  unsupported. Auxiliary targets increase stats descriptor counts but do not increase data-file
+  progress counts or page-index coverage, and they are excluded from table/column aggregate
+  rollups. One Iceberg delete file may recur in multiple groups; those repeated references are
+  duplicate work rather than additional logical files. Snapshot finalization verifies their
+  existing descriptor sizes and SHA-256 values and retains one unique target without reading the
+  delete-file content. File-group descriptors retain group-level counts, while
+  <code>SnapshotCaptureManifest.file_stats_record_count</code> reports the deduplicated unique-target count.</li>
 <li><strong>File-group planning ceiling</strong> – snapshot planning uses at most 128 files per group by default.
   <code>floecat.reconciler.snapshot-plan.max-files-per-group</code> configures that ceiling and is clamped to
-  at least one. The service validates commits against the immutable planned group but does not
-  impose a separate absolute maximum.</li>
+  at least one. The service rejects submitted plans containing a group above the same configured
+  ceiling and validates commits against the immutable planned group.</li>
 <li><strong>Executor leasing filters</strong> – <code>LeaseReconcileJobRequest</code> accepts execution class, lane, job kind,
   <code>executor_id</code>, and repeated <code>executor_ids</code> selectors so a worker fleet can advertise both its
   concrete worker identity and the executor implementations it is willing to run.</li>
