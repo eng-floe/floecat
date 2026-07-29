@@ -80,6 +80,7 @@ import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeFormat;
 import io.opentelemetry.api.trace.Span;
 import io.smallrye.mutiny.Multi;
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayDeque;
@@ -98,6 +99,9 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
@@ -140,8 +144,17 @@ public class UserObjectBundleService {
   private final long slowRpcMs;
   private final LogicalSchemaMapper logicalSchemaMapper = new LogicalSchemaMapper();
   private final FlightEndpointRef floecatFlightEndpoint;
+  // Cancellation can be signalled by a transport thread; release its store roots on a managed
+  // virtual-thread executor instead of blocking that termination callback.
+  private final ExecutorService cancellationTeardownExecutor =
+      Executors.newVirtualThreadPerTaskExecutor();
 
   @Inject Observability observability;
+
+  @PreDestroy
+  void closeCancellationTeardownExecutor() {
+    cancellationTeardownExecutor.close();
+  }
 
   private static void warnFlightHost(String flightHost, String quarkusProfile) {
     if (flightHost == null) {
@@ -277,7 +290,12 @@ public class UserObjectBundleService {
               return Multi.createFrom()
                   .iterable(() -> iterator)
                   .onFailure()
-                  .invoke(ignored -> iterator.publishStreamTelemetry("failed"))
+                  .invoke(
+                      failure -> {
+                        if (!(failure instanceof CancellationException)) {
+                          iterator.publishStreamTelemetry("failed");
+                        }
+                      })
                   .onTermination()
                   .invoke(iterator::cancel);
             });
@@ -1626,6 +1644,11 @@ public class UserObjectBundleService {
     // after its cleanup pass. Store I/O always happens outside this lock.
     private final Object pendingChunkPinsLock = new Object();
     private RelationPinSet pendingChunkPins = RelationPinSet.getDefaultInstance();
+    // Serializes the producer's mutable iterator state with cancellation telemetry. A teardown
+    // task may publish only after the active next() call has finished mutating diagnostics/caches.
+    private final Object producerStateLock = new Object();
+    private boolean producerActive;
+    private boolean cancellationTelemetryPending;
 
     private int seq = 1;
     private int nextInputIndex = 0;
@@ -1692,35 +1715,39 @@ public class UserObjectBundleService {
 
     @Override
     public UserObjectsBundleChunk next() {
-      throwIfCancelled(this::isCancelled);
-      if (!headerEmitted) {
-        headerEmitted = true;
-        if (LOG.isDebugEnabled()) {
-          LOG.debugf("Emitting header chunk query_id=%s seq=%d", ctx.getQueryId(), seq);
+      beginProducerStep();
+      try {
+        if (!headerEmitted) {
+          headerEmitted = true;
+          if (LOG.isDebugEnabled()) {
+            LOG.debugf("Emitting header chunk query_id=%s seq=%d", ctx.getQueryId(), seq);
+          }
+          return headerChunk(ctx.getQueryId(), seq++);
         }
-        return headerChunk(ctx.getQueryId(), seq++);
-      }
 
-      if (pending.isEmpty() && (nextInputIndex < resolutionCount || !eagerBaseQueue.isEmpty())) {
-        fillPending();
-      }
-
-      if (!pending.isEmpty()) {
-        return flushResolutionChunk();
-      }
-
-      if (!endEmitted) {
-        endEmitted = true;
-        publishStreamTelemetry("completed");
-        if (LOG.isDebugEnabled()) {
-          LOG.debugf(
-              "Emitting end chunk query_id=%s seq=%d resolutions=%d found=%d not_found=%d",
-              ctx.getQueryId(), seq, resolutionCount, foundCount, notFoundCount);
+        if (pending.isEmpty() && (nextInputIndex < resolutionCount || !eagerBaseQueue.isEmpty())) {
+          fillPending();
         }
-        return endChunk(ctx.getQueryId(), seq++, resolutionCount, foundCount, notFoundCount);
-      }
 
-      throw new NoSuchElementException();
+        if (!pending.isEmpty()) {
+          return flushResolutionChunk();
+        }
+
+        if (!endEmitted) {
+          endEmitted = true;
+          publishStreamTelemetry("completed");
+          if (LOG.isDebugEnabled()) {
+            LOG.debugf(
+                "Emitting end chunk query_id=%s seq=%d resolutions=%d found=%d not_found=%d",
+                ctx.getQueryId(), seq, resolutionCount, foundCount, notFoundCount);
+          }
+          return endChunk(ctx.getQueryId(), seq++, resolutionCount, foundCount, notFoundCount);
+        }
+
+        throw new NoSuchElementException();
+      } finally {
+        finishProducerStep();
+      }
     }
 
     private void fillPending() {
@@ -1783,14 +1810,72 @@ public class UserObjectBundleService {
           toRelease = pendingChunkPins;
           pendingChunkPins = RelationPinSet.getDefaultInstance();
         }
+        synchronized (producerStateLock) {
+          cancellationTelemetryPending = true;
+        }
         // onTermination may run on a transport/event-loop thread. Root release can perform store
-        // I/O and telemetry finishes spans, so only the state handoff runs inline there.
-        Thread.startVirtualThread(
-            () -> {
-              queryStore.releaseResolvingPinBlobs(
-                  ctx.getQueryId(), QueryPins.gcRootUris(toRelease));
-              publishStreamTelemetry("cancelled");
-            });
+        // I/O, so teardown runs on a managed executor. Telemetry is published only after the
+        // producer reports that no mutable iterator state remains active.
+        try {
+          cancellationTeardownExecutor.submit(
+              () -> {
+                try {
+                  queryStore.releaseResolvingPinBlobs(
+                      ctx.getQueryId(), QueryPins.gcRootUris(toRelease));
+                } catch (RuntimeException releaseFailure) {
+                  LOG.warnf(
+                      releaseFailure,
+                      "Failed to release cancelled stream pin roots query_id=%s",
+                      ctx.getQueryId());
+                }
+                publishCancellationTelemetryIfIdle();
+              });
+        } catch (RejectedExecutionException shutdown) {
+          LOG.warnf(
+              shutdown,
+              "Cancellation teardown executor stopped before pin-root release query_id=%s",
+              ctx.getQueryId());
+        }
+      }
+    }
+
+    private void beginProducerStep() {
+      synchronized (producerStateLock) {
+        throwIfCancelled(this::isCancelled);
+        producerActive = true;
+      }
+    }
+
+    private void finishProducerStep() {
+      boolean publishCancellation;
+      synchronized (producerStateLock) {
+        producerActive = false;
+        publishCancellation = cancellationTelemetryPending;
+        cancellationTelemetryPending = false;
+      }
+      if (publishCancellation) {
+        publishCancellationTelemetry();
+      }
+    }
+
+    private void publishCancellationTelemetryIfIdle() {
+      synchronized (producerStateLock) {
+        if (producerActive || !cancellationTelemetryPending) {
+          return;
+        }
+        cancellationTelemetryPending = false;
+      }
+      publishCancellationTelemetry();
+    }
+
+    private void publishCancellationTelemetry() {
+      try {
+        publishStreamTelemetry("cancelled");
+      } catch (RuntimeException telemetryFailure) {
+        LOG.warnf(
+            telemetryFailure,
+            "Failed to publish cancelled stream telemetry query_id=%s",
+            ctx.getQueryId());
       }
     }
 

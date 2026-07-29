@@ -57,7 +57,6 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
@@ -101,7 +100,6 @@ public class QueryInputResolver {
   private static final int DEFAULT_MAX_PARALLEL_INPUT_RESOLUTIONS = 8;
   private static final int MAX_PARALLEL_INPUT_RESOLUTIONS = 16;
   private static final int MAX_CONCURRENT_INPUT_RESOLUTIONS = 64;
-  private static final long GLOBAL_PERMIT_POLL_MILLIS = 10;
 
   // Cap on inputs resolved concurrently. Each is an independent, mostly-blocking chain of metadata
   // store reads; a small fan-out overlaps their round-trips without flooding the store. This is a
@@ -146,7 +144,7 @@ public class QueryInputResolver {
     this.queryStore = queryStore;
     this.maxParallelInputResolutions = maxParallelInputResolutions;
     this.concurrentInputResolutionPermits =
-        new Semaphore(maxConcurrentInputResolutions, true /* fair across requests */);
+        new Semaphore(maxConcurrentInputResolutions, true /* FIFO across requests */);
   }
 
   /** Test-only constructor: no store (no pin-root registration). */
@@ -215,6 +213,7 @@ public class QueryInputResolver {
     // Tracks transient roots owned by this resolution attempt until they are retained or discarded.
     final ResolvingPinRoots resolvingPinRoots;
     final PhaseDiagnostics diagnostics;
+    final BooleanSupplier cancelled;
 
     ResolutionState(
         String queryId,
@@ -223,7 +222,8 @@ public class QueryInputResolver {
         Optional<String> defaultCatalog,
         ConcurrentMap<ResourceId, CompletableFuture<TablePin>> currentSnapshotPinCache,
         ResolvingPinRoots resolvingPinRoots,
-        PhaseDiagnostics diagnostics) {
+        PhaseDiagnostics diagnostics,
+        BooleanSupplier cancelled) {
       this.queryId = queryId;
       this.correlationId = correlationId;
       this.asOfDefault = asOfDefault;
@@ -231,6 +231,7 @@ public class QueryInputResolver {
       this.currentSnapshotPinCache = currentSnapshotPinCache;
       this.resolvingPinRoots = resolvingPinRoots;
       this.diagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
+      this.cancelled = cancelled;
     }
 
     /**
@@ -247,7 +248,8 @@ public class QueryInputResolver {
           defaultCatalog,
           currentSnapshotPinCache,
           resolvingPinRoots,
-          taskDiagnostics);
+          taskDiagnostics,
+          cancelled);
     }
   }
 
@@ -464,7 +466,8 @@ public class QueryInputResolver {
             defaultCatalog,
             currentSnapshotPinCache,
             new ResolvingPinRoots(queryStore, queryId),
-            diag);
+            diag,
+            cancelled);
 
     try {
       // Batch-resolve all NAME inputs up front: names sharing a catalog/namespace resolve their
@@ -545,7 +548,7 @@ public class QueryInputResolver {
       BooleanSupplier cancelled) {
     for (QueryInput in : inputs) {
       throwIfCancelled(cancelled);
-      mergePlan(state, planInputWithPermit(state, in, resolvedNames, cancelled));
+      mergePlan(state, planInput(state, in, resolvedNames));
     }
   }
 
@@ -573,7 +576,7 @@ public class QueryInputResolver {
           inputs,
           maxParallelInputResolutions,
           blockingExecutor,
-          in -> planInputWithPermit(taskState, in, resolvedNames, cancelled),
+          in -> planInput(taskState, in, resolvedNames),
           plan -> mergePlan(state, plan),
           cancelled);
     } finally {
@@ -589,24 +592,15 @@ public class QueryInputResolver {
     }
   }
 
-  /** Run a metadata-resolution plan while holding the service-wide store-I/O capacity. */
-  private InputPlan planInputWithPermit(
-      ResolutionState state,
-      QueryInput input,
-      Map<NameRef, Optional<ResourceId>> resolvedNames,
-      BooleanSupplier cancelled) {
-    return withInputResolutionPermit(cancelled, () -> planInput(state, input, resolvedNames));
-  }
-
   private <T> T withInputResolutionPermit(BooleanSupplier cancelled, Supplier<T> operation) {
     boolean acquired = false;
     try {
-      while (!acquired) {
-        throwIfCancelled(cancelled);
-        acquired =
-            concurrentInputResolutionPermits.tryAcquire(
-                GLOBAL_PERMIT_POLL_MILLIS, TimeUnit.MILLISECONDS);
-      }
+      throwIfCancelled(cancelled);
+      // A blocking acquire retains Semaphore's FIFO queue. BoundedFanout interrupts a queued
+      // worker on stream cancellation, so cancellation remains prompt without repeatedly leaving
+      // and rejoining the fair queue at its tail.
+      concurrentInputResolutionPermits.acquire();
+      acquired = true;
       throwIfCancelled(cancelled);
       return operation.get();
     } catch (InterruptedException e) {
@@ -721,7 +715,10 @@ public class QueryInputResolver {
       if (inflight == null) {
         try {
           long snapshotPinStartNs = System.nanoTime();
-          pin = metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault);
+          pin =
+              withInputResolutionPermit(
+                  state.cancelled,
+                  () -> metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault));
           state.resolvingPinRoots.register(pin);
           state.diagnostics.count("pin.snapshot_calls");
           state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
@@ -775,7 +772,10 @@ public class QueryInputResolver {
       }
     }
     long snapshotPinStartNs = System.nanoTime();
-    TablePin resolved = metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault);
+    TablePin resolved =
+        withInputResolutionPermit(
+            state.cancelled,
+            () -> metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault));
     state.resolvingPinRoots.register(resolved);
     state.diagnostics.count("pin.snapshot_calls");
     state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
@@ -850,10 +850,13 @@ public class QueryInputResolver {
     }
     long viewResolveStartNs = System.nanoTime();
     Optional<ViewNode> view =
-        metadataGraph
-            .resolve(relationId)
-            .filter(ViewNode.class::isInstance)
-            .map(ViewNode.class::cast);
+        withInputResolutionPermit(
+            state.cancelled,
+            () ->
+                metadataGraph
+                    .resolve(relationId)
+                    .filter(ViewNode.class::isInstance)
+                    .map(ViewNode.class::cast));
     state.diagnostics.nanos("pin.view_node_resolve", System.nanoTime() - viewResolveStartNs);
     view.ifPresent(
         resolvedView -> {
@@ -871,7 +874,8 @@ public class QueryInputResolver {
           }
           long baseNameStartNs = System.nanoTime();
           Map<NameRef, Optional<ResourceId>> baseIds =
-              metadataGraph.resolveNames(state.correlationId, baseRefs);
+              withInputResolutionPermit(
+                  state.cancelled, () -> metadataGraph.resolveNames(state.correlationId, baseRefs));
           state.diagnostics.nanos(
               "pin.view_base_name_resolve", System.nanoTime() - baseNameStartNs);
           for (NameRef baseRef : baseRefs) {
