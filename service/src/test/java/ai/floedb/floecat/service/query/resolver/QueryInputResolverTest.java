@@ -931,6 +931,37 @@ public class QueryInputResolverTest {
   }
 
   @Test
+  void viewBaseConflictPrecedesFailureFromALaterBase() {
+    ResourceId base = rid("VIEW_CONFLICT_BASE");
+    ResourceId laterBase = rid("VIEW_FAILING_BASE");
+    ResourceId view = viewRid("VIEW_CONFLICT_PRECEDENCE");
+    metadataGraph.setAsOfSnapshot(base, 999L);
+    metadataGraph.addNode(viewNode(view, List.of(nameRef(base), nameRef(laterBase))));
+    metadataGraph.failPinFor(laterBase);
+    Timestamp asOf = Timestamp.newBuilder().setSeconds(123).build();
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                resolver.resolveInputs(
+                    "cid",
+                    List.of(
+                        QueryInput.newBuilder()
+                            .setTableId(base)
+                            .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(888))
+                            .build(),
+                        QueryInput.newBuilder()
+                            .setViewId(view)
+                            .setSnapshot(SnapshotRef.newBuilder().setAsOf(asOf))
+                            .build()),
+                    Optional.empty(),
+                    Optional.empty()));
+
+    assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, failure.getStatus().getCode());
+  }
+
+  @Test
   void conflicting_asof_and_explicit_snapshot_for_same_table_fail() {
     // An AS_OF reference resolves to a concrete snapshot; if a later explicit-snapshot reference to
     // the same table names a different snapshot, the two temporal intents conflict and planning
@@ -1109,6 +1140,7 @@ public class QueryInputResolverTest {
     private final Map<NameRef, RuntimeException> failures = new HashMap<>();
     private final Map<String, Long> currentSnapshots = new HashMap<>();
     private final Map<String, Long> asOfSnapshots = new HashMap<>();
+    private final Set<ResourceId> failingPins = new HashSet<>();
     private final List<PinCall> pinCalls = new ArrayList<>();
     private final Map<ResourceId, String> catalogNames = new HashMap<>();
     private Consumer<ResourceId> beforeTablePin = ignored -> {};
@@ -1161,6 +1193,9 @@ public class QueryInputResolverTest {
         Optional<Timestamp> asOfDefault) {
 
       beforeTablePin.accept(tableId);
+      if (failingPins.contains(tableId)) {
+        throw new StatusRuntimeException(io.grpc.Status.NOT_FOUND);
+      }
       pinCalls.add(new PinCall(correlationId, tableId, override, asOfDefault));
 
       TablePin.Builder builder =
@@ -1208,6 +1243,10 @@ public class QueryInputResolverTest {
 
     void setAsOfSnapshot(ResourceId id, long snapshotId) {
       asOfSnapshots.put(id.getId(), snapshotId);
+    }
+
+    void failPinFor(ResourceId id) {
+      failingPins.add(id);
     }
 
     void beforeTablePin(Consumer<ResourceId> callback) {

@@ -316,12 +316,18 @@ public class QueryInputResolver {
    * ordered. A view's id is recorded but the pins are its base tables'; a table records its id and
    * its own single pin.
    */
-  private record InputPlan(ResourceId resolvedId, List<TablePin> pins) {}
+  private record InputPlan(ResourceId resolvedId, List<TablePin> pins, Throwable terminalFailure) {}
 
   private void mergePlan(ResolutionState state, InputPlan plan) {
     state.resolved.add(plan.resolvedId());
     for (TablePin pin : plan.pins()) {
       mergePin(state, pin);
+    }
+    if (plan.terminalFailure() instanceof RuntimeException runtime) {
+      throw runtime;
+    }
+    if (plan.terminalFailure() instanceof Error error) {
+      throw error;
     }
   }
 
@@ -366,19 +372,25 @@ public class QueryInputResolver {
         };
 
     List<TablePin> pins = new ArrayList<>();
-    if (rid.getKind() == ResourceKind.RK_VIEW) {
-      // Views are not pinned directly. We only pin their base tables.
-      // Reject snapshot_id overrides for views; allow AS-OF and apply it to dependency pins.
-      validateViewOverride(state.correlationId, rid, override);
-      collectBaseTablePins(
-          state, rid, effectiveAsOf(override, state.asOfDefault), new HashSet<>(), pins);
-    } else {
-      TablePin pin = pinForResource(state, rid, override, state.asOfDefault);
-      if (pin != null) {
-        pins.add(pin);
+    try {
+      if (rid.getKind() == ResourceKind.RK_VIEW) {
+        // Views are not pinned directly. We only pin their base tables.
+        // Reject snapshot_id overrides for views; allow AS-OF and apply it to dependency pins.
+        validateViewOverride(state.correlationId, rid, override);
+        collectBaseTablePins(
+            state, rid, effectiveAsOf(override, state.asOfDefault), new HashSet<>(), pins);
+      } else {
+        TablePin pin = pinForResource(state, rid, override, state.asOfDefault);
+        if (pin != null) {
+          pins.add(pin);
+        }
       }
+    } catch (RuntimeException | Error failure) {
+      // Preserve a view's successful dependency prefix so its conflicts are reconciled in request
+      // order before a later dependency's planning failure is reported.
+      return new InputPlan(rid, pins, failure);
     }
-    return new InputPlan(rid, pins);
+    return new InputPlan(rid, pins, null);
   }
 
   private TablePin pinForResource(
