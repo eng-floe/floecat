@@ -479,7 +479,8 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
                 ReconcileSnapshotContentState.materializedCoverage(
                     task.requestedCoverage(),
                     directStats.get().realizedStatsSelectors(),
-                    List.of()),
+                    List.of(),
+                    directStats.get().sourceFileCount()),
                 task.indexPredecessor()),
             directStats.get().records()));
   }

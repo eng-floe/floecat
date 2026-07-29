@@ -88,7 +88,9 @@ public final class ReconcileSnapshotContentState {
   public static List<String> materializedCoverage(
       List<String> requestedCoverage,
       List<String> realizedStatsSelectors,
-      List<String> realizedIndexSelectors) {
+      List<String> realizedIndexSelectors,
+      int sourceFileCount) {
+    validateMaterializedStatsCoverage(requestedCoverage, realizedStatsSelectors, sourceFileCount);
     LinkedHashSet<String> materialized = new LinkedHashSet<>();
     if (requestedCoverage != null) {
       materialized.addAll(requestedCoverage);
@@ -112,6 +114,62 @@ public final class ReconcileSnapshotContentState {
         .filter(value -> value != null && !value.isBlank())
         .sorted()
         .toList();
+  }
+
+  /** Rejects successful non-empty captures that do not prove their requested column coverage. */
+  public static void validateMaterializedStatsCoverage(
+      List<String> requestedCoverage, List<String> realizedStatsSelectors, int sourceFileCount) {
+    if (sourceFileCount <= 0) {
+      return;
+    }
+    List<CoverageAtom> requestedAtoms =
+        (requestedCoverage == null ? List.<String>of() : requestedCoverage)
+            .stream()
+                .map(ReconcileSnapshotContentState::parseAtom)
+                .filter(java.util.Objects::nonNull)
+                .toList();
+    validateRealizedStatsSelectors(requestedAtoms, realizedStatsSelectors);
+  }
+
+  private static void validateRealizedStatsSelectors(
+      List<CoverageAtom> requestedAtoms, List<String> realizedSelectors) {
+    List<CoverageAtom> requested =
+        requestedAtoms.stream()
+            .filter(atom -> atom.output() == ReconcileCapturePolicy.Output.COLUMN_STATS)
+            .toList();
+    if (requested.isEmpty()) {
+      return;
+    }
+    List<String> realized = normalizedSelectors(realizedSelectors);
+    if (realized.isEmpty()) {
+      throw new IllegalArgumentException(
+          "non-empty snapshot capture does not report realized stats selectors");
+    }
+
+    Map<String, Set<String>> explicitSelectorsByTarget = new TreeMap<>();
+    for (CoverageAtom atom : requested) {
+      if (parseDefaultSelection(atom.selector()) == null) {
+        explicitSelectorsByTarget
+            .computeIfAbsent(atom.target(), ignored -> new LinkedHashSet<>())
+            .add(atom.selector());
+      }
+    }
+    int requiredExplicitSelectors =
+        explicitSelectorsByTarget.values().stream().mapToInt(Set::size).max().orElse(0);
+    int realizedColumns = realizedColumnCount(realized);
+    if (realizedColumns < requiredExplicitSelectors) {
+      throw new IllegalArgumentException(
+          "snapshot capture reports fewer realized stats selectors than requested: requested="
+              + requiredExplicitSelectors
+              + " realized="
+              + realizedColumns);
+    }
+  }
+
+  private static int realizedColumnCount(List<String> selectors) {
+    int fieldIds = (int) selectors.stream().filter(selector -> selector.startsWith("#")).count();
+    int names = selectors.size() - fieldIds;
+    return Math.max(fieldIds, names);
   }
 
   public static boolean containsAll(List<String> available, List<String> requested) {

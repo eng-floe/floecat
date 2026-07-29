@@ -191,7 +191,8 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
                   ReconcileSnapshotContentState.materializedCoverage(
                       snapshotTask.requestedCoverage(),
                       manifest.getRealizedStatsSelectorsList(),
-                      manifest.getRealizedIndexSelectorsList()),
+                      manifest.getRealizedIndexSelectorsList(),
+                      manifest.getSourceFileCount()),
                   System.currentTimeMillis(),
                   "Registered snapshot capture manifest " + snapshotTask.snapshotId());
           requireAcceptedLeaseOutcome(accepted, lease.jobId);
@@ -331,6 +332,10 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     validateIndexPredecessor(lease, snapshotTask, manifest);
     validateRealizedStatsSelectors(lease, manifest);
     validateRealizedIndexSelectors(lease, manifest);
+    ReconcileSnapshotContentState.validateMaterializedStatsCoverage(
+        snapshotTask.requestedCoverage(),
+        manifest.getRealizedStatsSelectorsList(),
+        manifest.getSourceFileCount());
     if (manifest
             .getCapturePolicy()
             .getOutputsList()

@@ -11,6 +11,7 @@
 package ai.floedb.floecat.reconciler.jobs;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
 
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
@@ -307,7 +308,7 @@ class ReconcileSnapshotContentStateTest {
         ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(defaultPolicy));
     List<String> materializedDefault =
         ReconcileSnapshotContentState.materializedCoverage(
-            requestedDefault, List.of(), List.of("customer_id", "order_id"));
+            requestedDefault, List.of(), List.of("customer_id", "order_id"), 1);
     ReconcileCapturePolicy additionalPolicy =
         ReconcileCapturePolicy.of(
             List.of(new ReconcileCapturePolicy.Column("region", false, true)),
@@ -349,7 +350,8 @@ class ReconcileSnapshotContentStateTest {
         ReconcileSnapshotContentState.materializedCoverage(
             requestedBroad,
             List.of("customer_id", "order_id", "region"),
-            List.of("customer_id", "order_id", "region"));
+            List.of("customer_id", "order_id", "region"),
+            1);
 
     assertThat(
             ReconcileSnapshotContentState.missingCoverage(
@@ -386,7 +388,8 @@ class ReconcileSnapshotContentStateTest {
         ReconcileSnapshotContentState.materializedCoverage(
             ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(explicit)),
             List.of("#2", "customer_name"),
-            List.of("#2", "customer_name"));
+            List.of("#2", "customer_name"),
+            1);
     ReconcileCapturePolicy byName =
         ReconcileCapturePolicy.of(
             List.of(new ReconcileCapturePolicy.Column("customer_name", true, true)),
@@ -401,6 +404,63 @@ class ReconcileSnapshotContentStateTest {
                 ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(byName)),
                 materialized))
         .isEmpty();
+  }
+
+  @Test
+  void nonEmptyColumnCaptureRejectsMissingRealizedSelectors() {
+    List<String> requested =
+        ReconcileSnapshotContentState.coverage(
+            CaptureMode.CAPTURE_ONLY, scope(policy("customer_id")));
+
+    assertThatThrownBy(
+            () ->
+                ReconcileSnapshotContentState.materializedCoverage(
+                    requested, List.of(), List.of(), 1))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("does not report realized stats selectors");
+  }
+
+  @Test
+  void nonEmptyColumnCaptureRejectsPartialRealizedSelectors() {
+    List<String> requested =
+        ReconcileSnapshotContentState.coverage(
+            CaptureMode.CAPTURE_ONLY, scope(policy("customer_id", "region")));
+
+    assertThatThrownBy(
+            () ->
+                ReconcileSnapshotContentState.materializedCoverage(
+                    requested, List.of("customer_id"), List.of(), 2))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("fewer realized stats selectors than requested");
+  }
+
+  @Test
+  void explicitFieldIdMayBeProvenByRealizedNameAlias() {
+    List<String> requested =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(policy("#2")));
+
+    List<String> materialized =
+        ReconcileSnapshotContentState.materializedCoverage(
+            requested, List.of("customer_name"), List.of(), 1);
+
+    assertThat(materialized).containsAll(requested);
+    assertThat(
+            ReconcileSnapshotContentState.missingCoverage(
+                ReconcileSnapshotContentState.coverage(
+                    CaptureMode.CAPTURE_ONLY, scope(policy("customer_name"))),
+                materialized))
+        .isEmpty();
+  }
+
+  @Test
+  void emptySnapshotMayMaterializeColumnCoverageWithoutSelectors() {
+    List<String> requested =
+        ReconcileSnapshotContentState.coverage(
+            CaptureMode.CAPTURE_ONLY, scope(policy("customer_id", "region")));
+
+    assertThat(
+            ReconcileSnapshotContentState.materializedCoverage(requested, List.of(), List.of(), 0))
+        .containsExactlyElementsOf(requested);
   }
 
   @Test
@@ -421,7 +481,8 @@ class ReconcileSnapshotContentStateTest {
         ReconcileSnapshotContentState.materializedCoverage(
             ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, scope(narrow)),
             List.of("customer_id", "order_id", "region"),
-            List.of());
+            List.of(),
+            1);
 
     assertThat(
             ReconcileSnapshotContentState.missingCoverage(

@@ -414,6 +414,58 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
+  void successRejectsMissingRealizedStatsCoverageBeforePublication() {
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("customer_id", true, false)),
+            Set.of(ReconcileCapturePolicy.Output.COLUMN_STATS),
+            ReconcileCapturePolicy.DefaultColumnScope.EXPLICIT_ONLY,
+            32);
+    ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), policy);
+    byte[] manifestBytes =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(ACCOUNT_ID)
+            .setConnectorId("connector")
+            .setParentJobId("parent-job")
+            .setFinalizeJobId(FINALIZE_JOB_ID)
+            .setTableId(TABLE_ID)
+            .setSnapshotId(SNAPSHOT_ID)
+            .setLeaseEpoch(LEASE_EPOCH)
+            .setResultId("result-1")
+            .setCapturePolicy(
+                ai.floedb.floecat.reconciler.rpc.CapturePolicy.newBuilder()
+                    .addOutputs(CaptureOutput.CO_COLUMN_STATS)
+                    .setDefaultColumnScope(
+                        ai.floedb.floecat.reconciler.rpc.DefaultColumnScope.DCS_EXPLICIT_ONLY)
+                    .setMaxDefaultColumns(32)
+                    .addColumns(
+                        ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy.newBuilder()
+                            .setSelector("customer_id")
+                            .setCaptureStats(true)))
+            .setSourceFileCount(1)
+            .build()
+            .toByteArray();
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJobView("JS_RUNNING", 0, 1, scope)));
+    when(blobs.get(manifestUri())).thenReturn(manifestBytes);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            service.persistSuccess(
+                principal,
+                FINALIZE_JOB_ID,
+                LEASE_EPOCH,
+                "result-1",
+                descriptor(manifestUri(), manifestBytes, 0, 1, 0)));
+
+    verify(jobs, never()).beginSnapshotFinalizeCommit(anyString(), anyString());
+    verify(persistence, never())
+        .publishPreparedStatsGeneration(any(), anyLong(), anyString(), any(), any(), any());
+  }
+
+  @Test
   void incrementalFinalizeActivatesTheRemoteAdditiveIndexGeneration() {
     ReconcileCapturePolicy policy = indexCapturePolicy();
     ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), policy);
@@ -786,6 +838,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         .setLeaseEpoch(LEASE_EPOCH)
         .setResultId("result-1")
         .addRealizedIndexSelectors("#7")
+        .addRealizedStatsSelectors("#7")
         .setIndexPredecessor(
             IndexGenerationPredecessor.newBuilder()
                 .setGenerationId("prior")
@@ -857,7 +910,12 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
                 sourceFileCount,
                 "",
                 0)
-            .withContentState("revision-1", "metadata-1", List.of());
+            .withContentState(
+                "revision-1",
+                "metadata-1",
+                ReconcileSnapshotContentState.coverage(
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    scope == null ? ReconcileScope.empty() : scope));
     if (scope != null && scope.capturePolicy().requestsIndexes()) {
       snapshotTask = snapshotTask.withIndexPredecessor(INDEX_PREDECESSOR);
     }
