@@ -67,9 +67,10 @@ import org.jboss.logging.Logger;
  *   <li>explicit capture execution via {@link #triggerBatch(StatsCaptureBatchRequest)}
  * </ul>
  *
- * <p>Resolution is sync-first when {@code floecat.stats.sync.enabled=true} (default): on a store
- * miss the orchestrator attempts a bounded synchronous capture before falling back to async
- * enqueue. The outcome is encoded in {@link StatsResolutionResult} so callers can inspect quality.
+ * <p>Resolution is query-capture enabled only when {@code floecat.stats.sync.enabled=true}: on a
+ * store miss the orchestrator attempts a bounded synchronous capture before falling back to async
+ * enqueue. When disabled, query-time resolution is store-only and never enqueues capture work. The
+ * outcome is encoded in {@link StatsResolutionResult} so callers can inspect quality.
  *
  * <p>Planner-facing store resolution — generation ordering, the fallback ladder, and the planner
  * stats cache — lives in {@link PlannerStatsResolver}; capture policy stays here.
@@ -97,7 +98,7 @@ public class StatsOrchestrator {
       TableRepository tableRepository,
       ConnectorRepository connectorRepository,
       StatsSyncCapture statsSyncCapture,
-      @ConfigProperty(name = "floecat.stats.sync.enabled", defaultValue = "true")
+      @ConfigProperty(name = "floecat.stats.sync.enabled", defaultValue = "false")
           boolean syncEnabled,
       Instance<Observability> observability) {
     this.statsStore = statsStore;
@@ -124,7 +125,7 @@ public class StatsOrchestrator {
         tableRepository,
         connectorRepository,
         new StatsSyncCapture(reconcileJobStore, connectorRepository),
-        true,
+        false,
         null);
   }
 
@@ -183,9 +184,11 @@ public class StatsOrchestrator {
 
   /** Bounded sync capture, then async-enqueue fallback, for a store miss. */
   private StatsResolutionResult captureAndResolve(StatsCaptureRequest request, long startNanos) {
-    if (syncEnabled
-        && request.executionMode() == StatsExecutionMode.SYNC
-        && request.latencyBudget().isPresent()) {
+    if (!syncEnabled) {
+      observeSyncOutcome(StatsSyncOutcome.SKIPPED, startNanos);
+      return StatsResolutionResult.skipped("query_capture_disabled");
+    }
+    if (request.executionMode() == StatsExecutionMode.SYNC && request.latencyBudget().isPresent()) {
       StatsSyncOutcome syncOutcome = attemptSyncCapture(request);
       observeSyncOutcome(syncOutcome, startNanos);
 
@@ -335,7 +338,12 @@ public class StatsOrchestrator {
     java.util.List<StatsCaptureRequest> asyncQueue = new java.util.ArrayList<>();
     for (StatsCaptureRequest req : resolution.stillMissing()) {
       String key = PlannerStatsResolver.storageId(req);
-      if (!syncEnabled || req.executionMode() != StatsExecutionMode.SYNC) {
+      if (!syncEnabled) {
+        diagnostics.record(PlannerLookupOutcome.CAPTURE_PENDING);
+        out.put(key, StatsResolutionResult.skipped("query_capture_disabled"));
+        continue;
+      }
+      if (req.executionMode() != StatsExecutionMode.SYNC) {
         asyncQueue.add(req);
         diagnostics.record(PlannerLookupOutcome.CAPTURE_PENDING);
         out.put(key, StatsResolutionResult.skipped("async_mode"));
@@ -419,8 +427,12 @@ public class StatsOrchestrator {
       }
       // Sync is not attempted in batch mode — individual sync would serialize all requests.
       // Callers needing sync semantics should use the single-item resolve().
-      unresolvedForAsync.add(request);
-      resolved.add(StatsResolutionResult.skipped("batch_async_fallback"));
+      if (syncEnabled) {
+        unresolvedForAsync.add(request);
+        resolved.add(StatsResolutionResult.skipped("batch_async_fallback"));
+      } else {
+        resolved.add(StatsResolutionResult.skipped("query_capture_disabled"));
+      }
     }
 
     if (!unresolvedForAsync.isEmpty()) {
